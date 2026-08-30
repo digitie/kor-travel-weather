@@ -37,15 +37,15 @@ cp .env.example .env
 set -a; . .env; set +a
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
-# PostgreSQL만 지원한다. Compose DB를 먼저 기동한다(호스트 포트 12100).
+# PostgreSQL만 지원한다. Compose DB를 먼저 기동한다(호스트 포트 14100).
 docker compose up -d db
 # 로컬 PostgreSQL schema + API
 uv run python -m kortravelweather.cli init-db
 # 운영/배포 DB는 위 명령 대신 `uv run alembic upgrade head`를 먼저 적용한다.
-PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12101
+PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 14101
 
 # Dagster code location
-PYTHONPATH=packages/kor-travel-weather-dagster/src uv run dagster dev -m kortravelweather_dagster.definitions -p 12102
+PYTHONPATH=packages/kor-travel-weather-dagster/src uv run dagster dev -m kortravelweather_dagster.definitions -p 14102
 ```
 
 KMA live 수집에는 `KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY`가 필요하다. 외부
@@ -55,7 +55,7 @@ Weatherbit.io, Weatherstack, AccuWeather는 각 provider API key가 필요하다
 없을 때도 fixture/mock 테스트와 admin UI는 동작하며, live asset은 명확한 credential
 오류로 중단된다. 데이터베이스는 PostgreSQL만 지원하며
 `KOR_TRAVEL_WEATHER_DATABASE_URL`에 PostgreSQL DSN을 지정한다. 로컬 Compose는
-`127.0.0.1:12100`으로 PostgreSQL을 노출한다. 운영 API는
+`127.0.0.1:14100`으로 PostgreSQL을 노출한다. 운영 API는
 `https://weather-api.digitie.mywire.org`, Dagster는
 `https://weather-dagster.digitie.mywire.org`, admin web은
 `https://weather.digitie.mywire.org`에서 제공한다.
@@ -66,7 +66,7 @@ Admin frontend:
 cd packages/kor-travel-weather-admin/frontend
 cp .env.example .env.local  # set WEATHER_API_INTERNAL_URL/WEATHER_ADMIN_TOKEN
 npm ci
-npm run dev                 # http://127.0.0.1:12105
+npm run dev                 # http://127.0.0.1:14105
 ```
 
 운영에서 frontend를 외부에 노출하지 말고 reverse proxy/SSO 또는

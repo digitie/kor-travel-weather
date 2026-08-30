@@ -5,10 +5,10 @@ binding은 모두 `127.0.0.1`이므로 외부 노출은 별도 gateway/SSH tunne
 
 | 서비스 | 포트 | 역할 |
 | --- | ---: | --- |
-| `db` | 12100 | PostgreSQL 16 |
-| `api` | 12101 | FastAPI + Alembic |
-| `dagster` | 12102 | Dagster webserver/daemon + KMA asset |
-| `web` | 12105 | Next.js admin |
+| `db` | 14100 | PostgreSQL 16 |
+| `api` | 14101 | FastAPI + Alembic |
+| `dagster` | 14102 | Dagster webserver/daemon + KMA asset |
+| `web` | 14105 | Next.js admin |
 
 실행 전 compose가 읽는 환경 파일에 `POSTGRES_PASSWORD`,
 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`, `WEATHER_UI_PASSWORD`를 설정한다. root `.env`를
@@ -23,8 +23,8 @@ KMA live
 ```bash
 docker compose -f compose.yaml up -d --build
 docker compose -f compose.yaml ps
-curl http://127.0.0.1:12101/health
-open http://127.0.0.1:12105
+curl http://127.0.0.1:14101/health
+open http://127.0.0.1:14105
 ```
 
 n150 운영에서는 다음 HTTPS 도메인을 reverse proxy의 정본으로 사용한다.

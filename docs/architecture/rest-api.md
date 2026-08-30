@@ -1,7 +1,7 @@
 # REST API contract
 
 운영 Base URL은 `https://weather-api.digitie.mywire.org`이며, 로컬 Compose Base URL은
-`http://127.0.0.1:12101`이다. 성공 응답은 `{data, meta}` envelope다.
+`http://127.0.0.1:14101`이다. 성공 응답은 `{data, meta}` envelope다.
 목록의 `meta.page`에는 `limit`, `offset`, `returned`, `total`이 포함된다.
 `meta.request_id`는 `X-Request-ID`와 같다. raw payload는 public response에 노출하지 않고
 `source_record_key`만 반환한다.

@@ -56,7 +56,7 @@ class WeatherSettings(BaseSettings):
     # Local development is explicit in `.env.example` (development).
     environment: str = Field(default="production", validation_alias="KOR_TRAVEL_WEATHER_ENV")
     database_url: str = Field(
-        default="postgresql+psycopg://weather@127.0.0.1:12100/weather",
+        default="postgresql+psycopg://weather@127.0.0.1:14100/weather",
         validation_alias="KOR_TRAVEL_WEATHER_DATABASE_URL",
     )
     git_commit: str | None = Field(default=None, validation_alias="KOR_TRAVEL_WEATHER_GIT_COMMIT")
@@ -171,7 +171,7 @@ class WeatherSettings(BaseSettings):
         default_factory=list, validation_alias="KOR_TRAVEL_WEATHER_CORS_ORIGINS"
     )
     api_base_url: str = Field(
-        default="http://127.0.0.1:12101",
+        default="http://127.0.0.1:14101",
         validation_alias="KOR_TRAVEL_WEATHER_API_BASE_URL",
     )
 
