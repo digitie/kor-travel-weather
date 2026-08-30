@@ -13,10 +13,10 @@ from .settings import get_settings
 
 def _init_db() -> int:
     settings = get_settings()
-    if not settings.database_url.startswith("sqlite:"):
+    if not settings.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
         raise RuntimeError(
-            "ktwctl init-db는 SQLite 개발 fixture 전용입니다. "
-            "PostgreSQL 운영 DB에는 alembic upgrade head를 사용하세요."
+            "ktwctl init-db는 PostgreSQL 전용입니다. "
+            "운영 DB는 alembic upgrade head를 사용하세요."
         )
     repository = repository_from_settings(settings)
     repository.create_schema()

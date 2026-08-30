@@ -194,9 +194,9 @@ class WeatherValue(BaseModel):
         if canonical_target is not None:
             if canonical_target.tzinfo is None:
                 raise ValueError("target_at은 timezone-aware여야 합니다.")
-            # SQLite stores timestamps as UTC and PostgreSQL drivers may return
-            # a different equivalent offset.  Hash the instant, never its
-            # presentation offset, so value_id survives a DB round-trip.
+            # PostgreSQL drivers may return a different equivalent offset.
+            # Hash the instant, never its presentation offset, so value_id
+            # survives a DB round-trip.
             canonical_target_text = canonical_target.astimezone(UTC).isoformat()
         else:
             canonical_target_text = None

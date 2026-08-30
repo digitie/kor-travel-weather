@@ -31,10 +31,8 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      # Compose is a production-shaped deployment surface.  Local SQLite
-      # development runs should use uvicorn directly with an explicit
-      # ``KOR_TRAVEL_WEATHER_ENV=development``; never let a copied example
-      # file silently disable admin authentication in this stack.
+      # Compose is the supported PostgreSQL deployment surface.  Local runs
+      # should use the PostgreSQL service (or another PostgreSQL DSN).
       KOR_TRAVEL_WEATHER_ENV: production
       # Pass the password through libpq rather than interpolating it in a URL;
       # punctuation such as @ and : therefore remains safe.

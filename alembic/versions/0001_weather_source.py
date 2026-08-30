@@ -154,7 +154,6 @@ def upgrade() -> None:
         "weather_sync_runs",
         ["provider", "dataset_key"],
         unique=True,
-        sqlite_where=sa.text("status = 'running'"),
         postgresql_where=sa.text("status = 'running'"),
     )
     op.create_table(
@@ -174,42 +173,27 @@ def upgrade() -> None:
         sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
     )
     bind = op.get_bind()
-    if bind.dialect.name == "sqlite":
-        for table in ("weather_source_records", "weather_values"):
-            op.execute(
-                f"CREATE TRIGGER {table}_no_update BEFORE UPDATE ON {table} "
-                "BEGIN SELECT RAISE(ABORT, 'weather history is immutable'); END;"
-            )
-            op.execute(
-                f"CREATE TRIGGER {table}_no_delete BEFORE DELETE ON {table} "
-                "BEGIN SELECT RAISE(ABORT, 'weather history is immutable'); END;"
-            )
-    elif bind.dialect.name == "postgresql":
+    if bind.dialect.name != "postgresql":
+        raise RuntimeError("kor-travel-weather schema는 PostgreSQL만 지원합니다.")
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
+        END; $$;
+        """
+    )
+    for table in ("weather_source_records", "weather_values"):
         op.execute(
-            """
-            CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
-            LANGUAGE plpgsql AS $$ BEGIN
-              RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
-            END; $$;
-            """
+            f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
+            "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
         )
-        for table in ("weather_source_records", "weather_values"):
-            op.execute(
-                f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
-                "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
-            )
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name == "sqlite":
-        for table in ("weather_source_records", "weather_values"):
-            op.execute(f"DROP TRIGGER IF EXISTS {table}_no_update")
-            op.execute(f"DROP TRIGGER IF EXISTS {table}_no_delete")
-    elif bind.dialect.name == "postgresql":
-        for table in ("weather_source_records", "weather_values"):
-            op.execute(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
-        op.execute("DROP FUNCTION IF EXISTS weather_immutable_row()")
+    for table in ("weather_source_records", "weather_values"):
+        op.execute(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
+    op.execute("DROP FUNCTION IF EXISTS weather_immutable_row()")
     op.drop_table("weather_sync_run_sources")
     op.drop_index("uq_weather_sync_runs_active", table_name="weather_sync_runs")
     op.drop_index("ix_weather_sync_runs_started", table_name="weather_sync_runs")

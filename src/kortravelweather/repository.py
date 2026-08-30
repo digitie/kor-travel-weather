@@ -1,9 +1,9 @@
 """SQLAlchemy 기반 weather repository.
 
 원본의 ``infra/*_repo.py`` raw SQL 경계를 단순화해, 도메인 model과 저장소를
-분리했다. SQLite는 개발/fixture용이고 PostgreSQL은 같은 테이블 계약으로
-운영할 수 있다. weather fact는 ``value_id``(identity hash)를 primary key로
-사용하므로 재수집은 멱등 upsert가 된다.
+분리했다. 저장소는 PostgreSQL을 유일한 지원 데이터베이스로 사용한다.
+weather fact는 ``value_id``(identity hash)를 primary key로 사용하므로
+재수집은 멱등 append-only insert가 된다.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import math
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
@@ -31,7 +30,6 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     desc,
-    event,
     func,
     nullslast,
     select,
@@ -42,7 +40,6 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
-from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
 
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
@@ -54,26 +51,19 @@ class Base(DeclarativeBase):
 
 
 class AwareDateTime(TypeDecorator[datetime]):
-    """SQLite에서도 timezone-aware datetime을 round-trip하는 타입.
-
-    SQLite는 timezone 정보를 저장하지 않으므로 UTC naive 값으로 저장하고,
-    읽을 때 UTC tzinfo를 복원한다. PostgreSQL에서는 native timestamptz를
-    사용하되 결과가 naive인 드라이버도 방어적으로 UTC를 부착한다.
-    """
+    """PostgreSQL ``timestamptz``를 애플리케이션의 aware datetime으로 노출한다."""
 
     impl = DateTime
     cache_ok = True
 
     def load_dialect_impl(self, dialect: Any) -> Any:
-        return dialect.type_descriptor(DateTime(timezone=dialect.name == "postgresql"))
+        return dialect.type_descriptor(DateTime(timezone=True))
 
     def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None
         if value.tzinfo is None:
             raise ValueError("datetime은 timezone-aware여야 합니다.")
-        if dialect.name == "sqlite":
-            return value.astimezone(UTC).replace(tzinfo=None)
         return value
 
     def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
@@ -219,7 +209,6 @@ class SyncRunRow(Base):
             "provider",
             "dataset_key",
             unique=True,
-            sqlite_where=text("status = 'running'"),
             postgresql_where=text("status = 'running'"),
         ),
     )
@@ -263,18 +252,6 @@ class SyncRunSourceRow(Base):
         primary_key=True,
     )
     recorded_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
-
-
-def _ensure_sqlite_parent(database_url: str) -> None:
-    if not database_url.startswith("sqlite:///"):
-        return
-    path_text = database_url.removeprefix("sqlite:///")
-    if path_text in {":memory:", ""}:
-        return
-    path = Path(path_text)
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:
@@ -324,51 +301,23 @@ def _metric_source_key(value: WeatherValue) -> str:
 
 def install_immutability_triggers(engine: Engine) -> None:
     """Block direct UPDATE/DELETE of source and weather fact history."""
+    if engine.dialect.name != "postgresql":
+        raise RuntimeError("weather repository는 PostgreSQL만 지원합니다.")
     with engine.begin() as connection:
-        if engine.dialect.name == "sqlite":
+        connection.exec_driver_sql(
+            """
+            CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
+            LANGUAGE plpgsql AS $$ BEGIN
+              RAISE EXCEPTION '%% is immutable', TG_TABLE_NAME;
+            END; $$;
+            """
+        )
+        for table in ("weather_source_records", "weather_values"):
+            connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
             connection.exec_driver_sql(
-                """
-                CREATE TRIGGER IF NOT EXISTS weather_source_records_no_update
-                BEFORE UPDATE ON weather_source_records
-                BEGIN SELECT RAISE(ABORT, 'weather_source_records is immutable'); END;
-                """
+                f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
+                "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
             )
-            connection.exec_driver_sql(
-                """
-                CREATE TRIGGER IF NOT EXISTS weather_source_records_no_delete
-                BEFORE DELETE ON weather_source_records
-                BEGIN SELECT RAISE(ABORT, 'weather_source_records is immutable'); END;
-                """
-            )
-            connection.exec_driver_sql(
-                """
-                CREATE TRIGGER IF NOT EXISTS weather_values_no_update
-                BEFORE UPDATE ON weather_values
-                BEGIN SELECT RAISE(ABORT, 'weather_values is immutable'); END;
-                """
-            )
-            connection.exec_driver_sql(
-                """
-                CREATE TRIGGER IF NOT EXISTS weather_values_no_delete
-                BEFORE DELETE ON weather_values
-                BEGIN SELECT RAISE(ABORT, 'weather_values is immutable'); END;
-                """
-            )
-        elif engine.dialect.name == "postgresql":
-            connection.exec_driver_sql(
-                """
-                CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
-                LANGUAGE plpgsql AS $$ BEGIN
-                  RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
-                END; $$;
-                """
-            )
-            for table in ("weather_source_records", "weather_values"):
-                connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
-                connection.exec_driver_sql(
-                    f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
-                    "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
-                )
 
 
 class WeatherRepository:
@@ -379,39 +328,18 @@ class WeatherRepository:
     """
 
     def __init__(self, database_url: str) -> None:
-        _ensure_sqlite_parent(database_url)
-        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+        if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+            raise ValueError("WeatherRepository는 PostgreSQL DSN만 지원합니다.")
         normalized_url = database_url
         if normalized_url.startswith("postgresql://"):
             normalized_url = "postgresql+psycopg://" + normalized_url.removeprefix("postgresql://")
-        engine_options: dict[str, Any] = {"future": True, "connect_args": connect_args}
-        if normalized_url in {"sqlite:///:memory:", "sqlite://"}:
-            # A TestClient/API request may run on another worker thread. Keep
-            # one shared in-memory connection so its schema and fixtures are
-            # visible across those threads.
-            engine_options["poolclass"] = StaticPool
-        self.engine: Engine = create_engine(normalized_url, **engine_options)
-        if normalized_url.startswith("sqlite"):
-
-            @event.listens_for(self.engine, "connect")
-            def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
-                cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.execute("PRAGMA busy_timeout=10000")
-                cursor.close()
+        self.engine: Engine = create_engine(normalized_url, future=True)
 
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
         install_immutability_triggers(self.engine)
-
-    def _begin_write(self, session: Session) -> None:
-        if self.engine.dialect.name == "sqlite":
-            # ``SELECT ... FOR UPDATE`` is a no-op on SQLite.  BEGIN IMMEDIATE
-            # obtains the database writer lock before a check-then-insert so
-            # concurrent replaying workers observe the committed winner.
-            session.execute(text("BEGIN IMMEDIATE"))
 
     def _location_model(self, row: WeatherLocationRow) -> WeatherLocation:
         return WeatherLocation(
@@ -474,13 +402,10 @@ class WeatherRepository:
 
     def _lock_location_session(self, session: Session, location_id: str) -> None:
         """Serialize anchor mutation and fact publication for one location."""
-        if self.engine.dialect.name == "postgresql":
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:location_scope))"),
-                {"location_scope": f"location:{location_id}"},
-            )
-        # SQLite ignores FOR UPDATE but serializes the eventual writer; the
-        # PostgreSQL row lock closes the read/check/update race explicitly.
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:location_scope))"),
+            {"location_scope": f"location:{location_id}"},
+        )
         session.execute(
             select(WeatherLocationRow.location_id)
             .where(WeatherLocationRow.location_id == location_id)
@@ -490,7 +415,6 @@ class WeatherRepository:
     def upsert_location(self, location: WeatherLocation) -> WeatherLocation:
         now = kst_now()
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             self._lock_location_session(session, location.location_id)
             row = session.get(WeatherLocationRow, location.location_id)
             if row is None:
@@ -537,7 +461,6 @@ class WeatherRepository:
         now = kst_now()
         try:
             with self._session_factory.begin() as session:
-                self._begin_write(session)
                 self._lock_location_session(session, location.location_id)
                 if session.get(WeatherLocationRow, location.location_id) is not None:
                     raise ValueError(f"location_id가 이미 존재합니다: {location.location_id}")
@@ -563,7 +486,6 @@ class WeatherRepository:
     def patch_location(self, location_id: str, changes: Mapping[str, Any]) -> WeatherLocation:
         """Apply an admin patch atomically without overwriting concurrent fields."""
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             self._lock_location_session(session, location_id)
             row = session.get(WeatherLocationRow, location_id)
             if row is None:
@@ -612,7 +534,6 @@ class WeatherRepository:
     ) -> WeatherLocation:
         """Persist a derived KMA grid without replaying a stale catalog row."""
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             self._lock_location_session(session, location_id)
             row = session.get(WeatherLocationRow, location_id)
             if row is None:
@@ -706,11 +627,10 @@ class WeatherRepository:
         payload = dict(record["payload"])
         fetched = record.get("fetched_at") or kst_now()
         raw_hash = _payload_hash(payload)
-        if self.engine.dialect.name == "postgresql":
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
-                {"source_key": source_record_key},
-            )
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
+            {"source_key": source_record_key},
+        )
         row = session.get(SourceRecordRow, source_record_key)
         if row is not None and (
             row.provider != provider
@@ -785,11 +705,10 @@ class WeatherRepository:
             or value.collected_at
         )
         value_id = value.identity_key(source_key, target_at=canonical_target)
-        if self.engine.dialect.name == "postgresql":
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
-                {"source_key": source_key},
-            )
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
+            {"source_key": source_key},
+        )
         explicit_source = value.source_record_key is not None
         source = session.get(SourceRecordRow, source_key)
         if source is None:
@@ -976,7 +895,6 @@ class WeatherRepository:
         if not records and not facts:
             return 0
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             return self._ingest_batch_session(session, records, facts)
 
     def publish_and_finish(
@@ -997,7 +915,6 @@ class WeatherRepository:
         prevents stale-run recovery from observing a half-published success.
         """
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             loaded = self._ingest_batch_session(session, source_records, values)
             result = session.execute(
                 update(SyncRunRow)
@@ -1207,12 +1124,10 @@ class WeatherRepository:
         )
         try:
             with self._session_factory.begin() as session:
-                self._begin_write(session)
-                if self.engine.dialect.name == "postgresql":
-                    session.execute(
-                        text("SELECT pg_advisory_xact_lock(hashtext(:run_scope))"),
-                        {"run_scope": f"{provider}:{dataset_key}"},
-                    )
+                session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:run_scope))"),
+                    {"run_scope": f"{provider}:{dataset_key}"},
+                )
                 self._reconcile_stale_sync_runs_session(session)
                 active = session.scalar(
                     select(SyncRunRow.run_id)
@@ -1227,8 +1142,6 @@ class WeatherRepository:
                     raise RuntimeError(f"동일 provider/dataset 실행이 이미 진행 중입니다: {active}")
                 session.add(SyncRunRow(**run.model_dump()))
         except IntegrityError as exc:
-            # SQLite writers cannot take a PostgreSQL advisory lock, so the
-            # partial unique index is the final race guard there.
             raise RuntimeError(
                 "동일 provider/dataset 실행이 이미 진행 중입니다 (concurrent insert)."
             ) from exc
@@ -1237,11 +1150,9 @@ class WeatherRepository:
     def reconcile_stale_sync_runs(self, *, max_age_minutes: int = 180) -> int:
         """프로세스 중단으로 남은 running row를 failed로 회수한다."""
         with self._session_factory.begin() as session:
-            self._begin_write(session)
-            if self.engine.dialect.name == "postgresql":
-                session.execute(
-                    text("SELECT pg_advisory_xact_lock(hashtext('weather_sync_reconcile'))")
-                )
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('weather_sync_reconcile'))")
+            )
             return self._reconcile_stale_sync_runs_session(session, max_age_minutes=max_age_minutes)
 
     @staticmethod
@@ -1266,7 +1177,6 @@ class WeatherRepository:
     def heartbeat_sync_run(self, run_id: str) -> bool:
         """Refresh a running sync lease using an atomic status check."""
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             result = session.execute(
                 update(SyncRunRow)
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
@@ -1286,7 +1196,6 @@ class WeatherRepository:
         error: str | None = None,
     ) -> SyncRun:
         with self._session_factory.begin() as session:
-            self._begin_write(session)
             session.execute(
                 update(SyncRunRow)
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
