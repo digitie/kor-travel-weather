@@ -3,6 +3,8 @@
 ```bash
 uv sync --extra dev --extra dagster
 cp .env.example .env
+set -a; . .env; set +a
+export PGPASSWORD="$POSTGRES_PASSWORD"
 docker compose up -d db
 uv run python -m kortravelweather.cli init-db
 PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12721

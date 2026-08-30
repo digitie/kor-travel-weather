@@ -34,6 +34,8 @@ provider client 위에 불필요한 wrapper를 만들지 않고, Dagster resourc
 cd /mnt/f/dev/kor-travel-weather
 uv sync --extra dev --extra dagster
 cp .env.example .env
+set -a; . .env; set +a
+export PGPASSWORD="$POSTGRES_PASSWORD"
 
 # PostgreSQL만 지원한다. Compose DB를 먼저 기동한다(호스트 포트 11000).
 docker compose up -d db
