@@ -64,6 +64,28 @@ KMA_METRIC_NAMES: dict[str, str] = {
 }
 
 
+def parse_weather_extra_points(value: str | None) -> list[tuple[float, float]]:
+    """Parse ``lon,lat;lon,lat`` bootstrap coordinates with Korean bounds."""
+    if value is None or not value.strip():
+        return []
+    points: list[tuple[float, float]] = []
+    for chunk in value.split(";"):
+        part = chunk.strip()
+        if not part:
+            continue
+        pieces = [piece.strip() for piece in part.split(",")]
+        if len(pieces) != 2:
+            raise ValueError(f"좌표는 'lon,lat' 형식이어야 합니다: {part!r}")
+        try:
+            lon, lat = float(pieces[0]), float(pieces[1])
+        except ValueError as exc:
+            raise ValueError(f"좌표 숫자 변환 실패: {part!r}") from exc
+        if not (124.0 <= lon <= 132.0 and 33.0 <= lat <= 43.0):
+            raise ValueError(f"좌표가 한국 bbox 밖입니다: {part!r}")
+        points.append((lon, lat))
+    return points
+
+
 class KmaForecastLike(Protocol):
     base_date: str
     base_time: str
@@ -420,7 +442,6 @@ def mid_land_forecast_to_weather_values(
         issued = _mid_announce(tm_fc)
         source_key = _mid_source_key("kma_mid_forecast", location_id, item, source_record_key)
         for day, period, start, end in _MID_LAND_PERIODS:
-            period_suffix = period or ""
             camel_suffix = f"{day}{period.capitalize()}" if period else str(day)
             snake_suffix = f"{day}_{period}" if period else str(day)
             weather = _field(item, f"wf_{snake_suffix}", f"wf{camel_suffix}")
