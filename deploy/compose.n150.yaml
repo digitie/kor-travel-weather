@@ -1,0 +1,17 @@
+# n150 gateway override.
+#
+# The base compose file binds every host port to loopback.  n150's HAProxy
+# runs outside the Docker network, so the application ports are explicitly
+# bound to the host LAN address here.  PostgreSQL remains loopback-only.
+services:
+  api:
+    ports: !override
+      - "192.168.1.14:14101:14101"
+
+  dagster:
+    ports: !override
+      - "192.168.1.14:14102:14102"
+
+  web:
+    ports: !override
+      - "192.168.1.14:14105:14105"
