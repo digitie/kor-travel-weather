@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.installed.cfg
+
+# venv
+.venv/
+venv/
+env/
+
+# caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Office / Word lock files
+~$*
+*.tmp
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# data / artifacts (kept on NTFS, not in git per AGENTS.md §dev-environment)
+data/
+artifacts/
+*.log
+
+# alembic generated migrations cache (none yet, kept for future)
+alembic/__pycache__/
+
+# Codex / Claude / agent local state
+.claude/settings.local.json
+.codex_tmp/
+
+# codegraph (colbymchenry/codegraph) — agent용 semantic knowledge graph 인덱스
+# `.codegraph/codegraph.db`는 worktree 로컬 SQLite index. 공유하지 않음.
+# 자세히는 docs/codegraph-worktree.md.
+.codegraph/
+
+# Local tool state
+.dagster/
+
+# Node / npm workspace (frontend debug UI — ADR-025/029/043)
+node_modules/
+# Windows-side Playwright e2e scratch (frontend WSL + Playwright Windows, #117)
+.e2e-win/
+
+# Local-only sensitive notes (prod 배포 런북 / 접속 — 민감정보 포함) — 커밋 금지.
+# 정본 위치/절차는 AGENTS.md §prod 배포 & 보안 감사. 각 worktree docs/에 수동 복사.
+*.local.md
+docs/deploy-runbook.local.md
+docs/prod-access.local.md
+.security-audit-patterns.local
