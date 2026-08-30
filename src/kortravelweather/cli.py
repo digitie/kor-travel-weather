@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from typing import Sequence
+from collections.abc import Sequence
 
 from .models import WeatherLocation
 from .repository import repository_from_settings

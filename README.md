@@ -31,11 +31,13 @@ provider client 위에 불필요한 wrapper를 만들지 않고, Dagster resourc
 
 ```bash
 cd /mnt/f/dev/kor-travel-weather
-uv sync --extra dev
+uv sync --extra dev --extra dagster
 cp .env.example .env
 
 # 로컬 SQLite schema + API
 uv run python -m kortravelweather.cli init-db
+# 운영/배포 DB는 create_all 대신 migration을 적용한다.
+uv run alembic upgrade head
 uv run uvicorn kortravelweather_api.app:app --reload --port 12721
 
 # Dagster code location

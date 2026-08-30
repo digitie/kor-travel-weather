@@ -21,7 +21,7 @@ class WeatherSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="KOR_TRAVEL_WEATHER_",
         env_file=(".env",),
-        extra="ignore",
+        extra="forbid",
         case_sensitive=False,
     )
 
@@ -30,9 +30,7 @@ class WeatherSettings(BaseSettings):
         default="sqlite:///./data/weather.db",
         validation_alias="KOR_TRAVEL_WEATHER_DATABASE_URL",
     )
-    git_commit: str | None = Field(
-        default=None, validation_alias="KOR_TRAVEL_WEATHER_GIT_COMMIT"
-    )
+    git_commit: str | None = Field(default=None, validation_alias="KOR_TRAVEL_WEATHER_GIT_COMMIT")
     admin_token: SecretStr | None = Field(
         default=None, validation_alias="KOR_TRAVEL_WEATHER_ADMIN_TOKEN"
     )
@@ -40,8 +38,10 @@ class WeatherSettings(BaseSettings):
         default=None, validation_alias="KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY"
     )
     provider_http_timeout_seconds: float = Field(
-        default=15.0, validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS",
-        gt=0, le=120,
+        default=15.0,
+        validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS",
+        gt=0,
+        le=120,
     )
     provider_retries: int = Field(
         default=1, validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_RETRIES", ge=0, le=5
@@ -78,6 +78,13 @@ class WeatherSettings(BaseSettings):
             return []
         if isinstance(value, str):
             return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("admin_token", "data_go_kr_service_key", mode="before")
+    @classmethod
+    def _empty_secret_is_missing(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
         return value
 
     @property

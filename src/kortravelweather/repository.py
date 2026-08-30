@@ -8,30 +8,36 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     create_engine,
     desc,
+    event,
     func,
+    nullslast,
     select,
+    text,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.types import TypeDecorator
 
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
 from .settings import WeatherSettings, get_settings
@@ -39,6 +45,35 @@ from .settings import WeatherSettings, get_settings
 
 class Base(DeclarativeBase):
     pass
+
+
+class AwareDateTime(TypeDecorator[datetime]):
+    """SQLite에서도 timezone-aware datetime을 round-trip하는 타입.
+
+    SQLite는 timezone 정보를 저장하지 않으므로 UTC naive 값으로 저장하고,
+    읽을 때 UTC tzinfo를 복원한다. PostgreSQL에서는 native timestamptz를
+    사용하되 결과가 naive인 드라이버도 방어적으로 UTC를 부착한다.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect: Any) -> Any:
+        return dialect.type_descriptor(DateTime(timezone=dialect.name == "postgresql"))
+
+    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("datetime은 timezone-aware여야 합니다.")
+        if dialect.name == "sqlite":
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
+        if value is None:
+            return None
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 class WeatherLocationRow(Base):
@@ -56,25 +91,67 @@ class WeatherLocationRow(Base):
     ny: Mapped[int | None] = mapped_column(Integer)
     region_code: Mapped[str | None] = mapped_column(String(32))
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+
+
+class SourceRecordRow(Base):
+    """provider raw response lineage."""
+
+    __tablename__ = "weather_source_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "provider",
+            "dataset_key",
+            "source_entity_type",
+            "source_entity_id",
+            "raw_payload_hash",
+            name="uq_weather_source_records_identity",
+        ),
+        Index("ix_weather_source_records_dataset_fetched", "dataset_key", "fetched_at"),
+    )
+
+    source_record_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(120), nullable=False)
+    dataset_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_entity_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_entity_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    raw_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    fetched_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
 class WeatherValueRow(Base):
     __tablename__ = "weather_values"
     __table_args__ = (
         UniqueConstraint(
-            "location_id", "provider", "dataset_key", "metric_key", "issued_at", "valid_at",
-            "observed_at", name="uq_weather_values_identity",
+            "location_id",
+            "provider",
+            "dataset_key",
+            "weather_domain",
+            "forecast_style",
+            "metric_key",
+            "issued_at",
+            "valid_at",
+            "observed_at",
+            "target_at",
+            "source_record_key",
+            name="uq_weather_values_identity",
         ),
         Index("ix_weather_values_location_time", "location_id", "valid_at", "observed_at"),
+        Index("ix_weather_values_location_target_known", "location_id", "target_at", "known_at"),
         Index("ix_weather_values_dataset_metric", "dataset_key", "metric_key"),
     )
 
     value_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     location_id: Mapped[str] = mapped_column(
-        String(120), ForeignKey("weather_locations.location_id", ondelete="CASCADE"), nullable=False
+        String(120),
+        ForeignKey("weather_locations.location_id", ondelete="RESTRICT"),
+        nullable=False,
     )
     provider: Mapped[str] = mapped_column(String(120), nullable=False)
     dataset_key: Mapped[str] = mapped_column(String(160), nullable=False)
@@ -89,15 +166,21 @@ class WeatherValueRow(Base):
     value_text: Mapped[str | None] = mapped_column(Text)
     unit: Mapped[str | None] = mapped_column(String(32))
     severity: Mapped[str | None] = mapped_column(String(64))
-    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    issued_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    valid_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    valid_from: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    valid_until: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    observed_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    target_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     normalization_version: Mapped[str] = mapped_column(String(40), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
-    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    source_record_key: Mapped[str | None] = mapped_column(String(255))
+    collected_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    source_record_key: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
+        nullable=False,
+    )
 
 
 class SyncRunRow(Base):
@@ -108,8 +191,8 @@ class SyncRunRow(Base):
     provider: Mapped[str] = mapped_column(String(120), nullable=False)
     dataset_key: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     locations_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     grids_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     values_loaded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -128,6 +211,31 @@ def _ensure_sqlite_parent(database_url: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _payload_hash(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _metric_source_key(value: WeatherValue) -> str:
+    """Legacy/custom DTO도 안정적인 local lineage를 갖도록 한다.
+
+    Dagster는 실제 KMA response hash를 명시적으로 전달한다. 이 fallback은
+    수동 fixture나 API 테스트에서만 사용하며 전체 response인 것처럼 가장하지
+    않도록 ``metric_row`` entity type으로 기록한다.
+    """
+    canonical = json.dumps(
+        [value.provider, value.dataset_key, value.location_id, value.identity(), value.payload],
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return "sr_local_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
+
+
 class WeatherRepository:
     """동기 SQLAlchemy repository.
 
@@ -138,7 +246,18 @@ class WeatherRepository:
     def __init__(self, database_url: str) -> None:
         _ensure_sqlite_parent(database_url)
         connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-        self.engine: Engine = create_engine(database_url, future=True, connect_args=connect_args)
+        normalized_url = database_url
+        if normalized_url.startswith("postgresql://"):
+            normalized_url = "postgresql+psycopg://" + normalized_url.removeprefix("postgresql://")
+        self.engine: Engine = create_engine(normalized_url, future=True, connect_args=connect_args)
+        if normalized_url.startswith("sqlite"):
+
+            @event.listens_for(self.engine, "connect")
+            def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.close()
+
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_schema(self) -> None:
@@ -146,30 +265,58 @@ class WeatherRepository:
 
     def _location_model(self, row: WeatherLocationRow) -> WeatherLocation:
         return WeatherLocation(
-            location_id=row.location_id, name=row.name, latitude=float(row.latitude),
-            longitude=float(row.longitude), nx=row.nx, ny=row.ny, region_code=row.region_code,
-            enabled=row.enabled, metadata=dict(row.metadata_json or {}),
+            location_id=row.location_id,
+            name=row.name,
+            latitude=float(row.latitude),
+            longitude=float(row.longitude),
+            nx=row.nx,
+            ny=row.ny,
+            region_code=row.region_code,
+            enabled=row.enabled,
+            metadata=dict(row.metadata_json or {}),
         )
 
     def _value_model(self, row: WeatherValueRow) -> WeatherValue:
         return WeatherValue(
-            location_id=row.location_id, provider=row.provider, dataset_key=row.dataset_key,
-            weather_domain=row.weather_domain, forecast_style=row.forecast_style,
-            timeline_bucket=row.timeline_bucket, metric_key=row.metric_key,
-            metric_name=row.metric_name, source_metric_key=row.source_metric_key,
-            source_metric_name=row.source_metric_name, value_number=row.value_number,
-            value_text=row.value_text, unit=row.unit, severity=row.severity,
-            issued_at=row.issued_at, valid_at=row.valid_at, valid_from=row.valid_from,
-            valid_until=row.valid_until, observed_at=row.observed_at,
-            normalization_version=row.normalization_version, payload=dict(row.payload or {}),
-            collected_at=row.collected_at, source_record_key=row.source_record_key,
+            location_id=row.location_id,
+            provider=row.provider,
+            dataset_key=row.dataset_key,
+            weather_domain=row.weather_domain,
+            forecast_style=row.forecast_style,
+            timeline_bucket=row.timeline_bucket,
+            metric_key=row.metric_key,
+            metric_name=row.metric_name,
+            source_metric_key=row.source_metric_key,
+            source_metric_name=row.source_metric_name,
+            value_number=row.value_number,
+            value_text=row.value_text,
+            unit=row.unit,
+            severity=row.severity,
+            issued_at=row.issued_at,
+            valid_at=row.valid_at,
+            valid_from=row.valid_from,
+            valid_until=row.valid_until,
+            observed_at=row.observed_at,
+            target_at=row.target_at,
+            known_at=row.known_at,
+            normalization_version=row.normalization_version,
+            payload=dict(row.payload or {}),
+            collected_at=row.collected_at,
+            source_record_key=row.source_record_key,
         )
 
     def _sync_model(self, row: SyncRunRow) -> SyncRun:
         return SyncRun(
-            run_id=row.run_id, provider=row.provider, dataset_key=row.dataset_key, status=row.status,
-            started_at=row.started_at, finished_at=row.finished_at, locations_total=row.locations_total,
-            grids_fetched=row.grids_fetched, values_loaded=row.values_loaded, error=row.error,
+            run_id=row.run_id,
+            provider=row.provider,
+            dataset_key=row.dataset_key,
+            status=row.status,
+            started_at=row.started_at,
+            finished_at=row.finished_at,
+            locations_total=row.locations_total,
+            grids_fetched=row.grids_fetched,
+            values_loaded=row.values_loaded,
+            error=row.error,
         )
 
     def upsert_location(self, location: WeatherLocation) -> WeatherLocation:
@@ -198,16 +345,27 @@ class WeatherRepository:
             return self._location_model(row) if row else None
 
     def list_locations(
-        self, *, enabled_only: bool = False, search: str | None = None, limit: int = 100, offset: int = 0
+        self,
+        *,
+        enabled_only: bool = False,
+        search: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[WeatherLocation]:
         with self._session_factory() as session:
-            stmt = select(WeatherLocationRow).order_by(WeatherLocationRow.name).limit(limit).offset(offset)
+            stmt = (
+                select(WeatherLocationRow)
+                .order_by(WeatherLocationRow.name)
+                .limit(limit)
+                .offset(offset)
+            )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
-                    WeatherLocationRow.name.ilike(needle) | WeatherLocationRow.location_id.ilike(needle)
+                    WeatherLocationRow.name.ilike(needle)
+                    | WeatherLocationRow.location_id.ilike(needle)
                 )
             return [self._location_model(row) for row in session.scalars(stmt).all()]
 
@@ -216,11 +374,51 @@ class WeatherRepository:
             return 0
         with self._session_factory.begin() as session:
             for value in values:
-                value_id = value.identity_key()
+                source_key = value.source_record_key or _metric_source_key(value)
+                value_id = value.identity_key(source_key)
+                if self.engine.dialect.name == "postgresql":
+                    # Same response replay/concurrent Dagster runs serialize on a
+                    # transaction-local advisory lock; different responses remain
+                    # independent and retain append-only revision semantics.
+                    session.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
+                        {"source_key": source_key},
+                    )
+                source = session.get(SourceRecordRow, source_key)
+                raw_hash = _payload_hash(value.payload)
+                if source is None:
+                    source = SourceRecordRow(
+                        source_record_key=source_key,
+                        provider=value.provider,
+                        dataset_key=value.dataset_key,
+                        source_entity_type="metric_row",
+                        source_entity_id=value.location_id,
+                        raw_payload_hash=raw_hash,
+                        payload=value.payload,
+                        fetched_at=value.known_at or value.collected_at,
+                        imported_at=kst_now(),
+                    )
+                    session.add(source)
+                elif (
+                    source.provider != value.provider
+                    or source.dataset_key != value.dataset_key
+                    or source.raw_payload_hash != raw_hash
+                ):
+                    raise ValueError(f"immutable source record 충돌: {source_key}")
                 row = session.get(WeatherValueRow, value_id)
                 if row is None:
                     row = WeatherValueRow(value_id=value_id)
                     session.add(row)
+                else:
+                    # fact는 immutable이다. 동일 revision 재전송은 no-op으로
+                    # 취급하되 payload/value 충돌은 명시적으로 거부한다.
+                    if (
+                        row.payload != value.payload
+                        or row.value_number != value.value_number
+                        or row.value_text != value.value_text
+                    ):
+                        raise ValueError(f"immutable weather fact 충돌: {value_id}")
+                    continue
                 row.location_id = value.location_id
                 row.provider = value.provider
                 row.dataset_key = value.dataset_key
@@ -240,27 +438,118 @@ class WeatherRepository:
                 row.valid_from = value.valid_from
                 row.valid_until = value.valid_until
                 row.observed_at = value.observed_at
+                row.target_at = value.target_at or value.valid_at or value.observed_at
+                row.known_at = value.known_at or value.collected_at
                 row.normalization_version = value.normalization_version
                 row.payload = value.payload
                 row.collected_at = value.collected_at
-                row.source_record_key = value.source_record_key
+                row.source_record_key = source_key
         return len(values)
+
+    def record_source(
+        self,
+        *,
+        source_record_key: str,
+        provider: str,
+        dataset_key: str,
+        source_entity_type: str,
+        source_entity_id: str,
+        payload: dict[str, Any],
+        fetched_at: datetime | None = None,
+    ) -> None:
+        """원천 응답을 보존해 weather fact와 raw lineage를 연결한다."""
+        raw_hash = _payload_hash(payload)
+        fetched = fetched_at or kst_now()
+        with self._session_factory.begin() as session:
+            row = session.get(SourceRecordRow, source_record_key)
+            if row is not None and (
+                row.provider != provider
+                or row.dataset_key != dataset_key
+                or row.source_entity_type != source_entity_type
+                or row.source_entity_id != source_entity_id
+                or row.raw_payload_hash != raw_hash
+            ):
+                raise ValueError(f"immutable source record 충돌: {source_record_key}")
+            if row is None:
+                row = SourceRecordRow(
+                    source_record_key=source_record_key,
+                    provider=provider,
+                    dataset_key=dataset_key,
+                    source_entity_type=source_entity_type,
+                    source_entity_id=source_entity_id,
+                    raw_payload_hash=raw_hash,
+                    payload=payload,
+                    fetched_at=fetched,
+                    imported_at=kst_now(),
+                )
+                session.add(row)
+            # 동일 key/동일 hash 재시도는 no-op으로 취급한다.
+
+    @staticmethod
+    def _ranked_current_ids(session: Session, stmt: Any) -> Any:
+        """logical weather point별 최신 known/source revision id를 반환한다."""
+        ranked = select(
+            WeatherValueRow.value_id.label("value_id"),
+            func.row_number()
+            .over(
+                partition_by=(
+                    WeatherValueRow.location_id,
+                    WeatherValueRow.provider,
+                    WeatherValueRow.dataset_key,
+                    WeatherValueRow.weather_domain,
+                    WeatherValueRow.forecast_style,
+                    WeatherValueRow.metric_key,
+                    WeatherValueRow.target_at,
+                ),
+                order_by=(
+                    nullslast(desc(WeatherValueRow.known_at)),
+                    nullslast(desc(WeatherValueRow.source_record_key)),
+                    desc(WeatherValueRow.value_id),
+                ),
+            )
+            .label("revision_rank"),
+        ).select_from(WeatherValueRow)
+        # ``stmt`` is a select(WeatherValueRow) with all public filters applied.
+        ranked = ranked.where(*stmt._where_criteria).subquery("current_weather_revision")
+        return ranked
 
     def latest_values(self, location_id: str, *, limit: int = 100) -> list[WeatherValue]:
         with self._session_factory() as session:
-            timestamp = func.coalesce(WeatherValueRow.valid_at, WeatherValueRow.observed_at, WeatherValueRow.issued_at)
+            timestamp = func.coalesce(
+                WeatherValueRow.target_at,
+                WeatherValueRow.valid_at,
+                WeatherValueRow.observed_at,
+                WeatherValueRow.issued_at,
+            )
+            base = select(WeatherValueRow).where(WeatherValueRow.location_id == location_id)
+            ranked = self._ranked_current_ids(session, base)
             stmt = (
-                select(WeatherValueRow).where(WeatherValueRow.location_id == location_id)
-                .order_by(desc(timestamp), desc(WeatherValueRow.collected_at)).limit(limit)
+                select(WeatherValueRow)
+                .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
+                .where(ranked.c.revision_rank == 1)
+                .order_by(desc(timestamp), desc(WeatherValueRow.known_at))
+                .limit(limit)
             )
             return [self._value_model(row) for row in session.scalars(stmt).all()]
 
     def timeline(
-        self, location_id: str, *, from_at: datetime | None = None, to_at: datetime | None = None,
-        dataset_key: str | None = None, metric_key: str | None = None, limit: int = 500
+        self,
+        location_id: str,
+        *,
+        from_at: datetime | None = None,
+        to_at: datetime | None = None,
+        dataset_key: str | None = None,
+        metric_key: str | None = None,
+        limit: int = 500,
+        include_revisions: bool = False,
     ) -> list[WeatherValue]:
         with self._session_factory() as session:
-            timestamp = func.coalesce(WeatherValueRow.valid_at, WeatherValueRow.observed_at, WeatherValueRow.issued_at)
+            timestamp = func.coalesce(
+                WeatherValueRow.target_at,
+                WeatherValueRow.valid_at,
+                WeatherValueRow.observed_at,
+                WeatherValueRow.issued_at,
+            )
             stmt = select(WeatherValueRow).where(WeatherValueRow.location_id == location_id)
             if from_at is not None:
                 stmt = stmt.where(timestamp >= from_at)
@@ -270,10 +559,17 @@ class WeatherRepository:
                 stmt = stmt.where(WeatherValueRow.dataset_key == dataset_key)
             if metric_key:
                 stmt = stmt.where(WeatherValueRow.metric_key == metric_key)
+            if not include_revisions:
+                ranked = self._ranked_current_ids(session, stmt)
+                stmt = stmt.join(ranked, WeatherValueRow.value_id == ranked.c.value_id).where(
+                    ranked.c.revision_rank == 1
+                )
             stmt = stmt.order_by(timestamp, WeatherValueRow.metric_key).limit(limit)
             return [self._value_model(row) for row in session.scalars(stmt).all()]
 
-    def nearest_locations(self, latitude: float, longitude: float, *, radius_km: float, limit: int = 20) -> list[tuple[WeatherLocation, float]]:
+    def nearest_locations(
+        self, latitude: float, longitude: float, *, radius_km: float, limit: int = 20
+    ) -> list[tuple[WeatherLocation, float]]:
         """활성 위치를 읽어 Haversine 거리로 정렬한다.
 
         운영 PostgreSQL에서는 latitude/longitude 인덱스 또는 PostGIS projection을
@@ -288,24 +584,38 @@ class WeatherRepository:
             d_lat = math.radians(candidate.latitude - latitude)
             d_lon = math.radians(candidate.longitude - longitude)
             lat2 = math.radians(candidate.latitude)
-            a = math.sin(d_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(d_lon / 2) ** 2
+            a = (
+                math.sin(d_lat / 2) ** 2
+                + math.cos(lat1) * math.cos(lat2) * math.sin(d_lon / 2) ** 2
+            )
             distance = earth_km * 2 * math.asin(math.sqrt(a))
             if distance <= radius_km:
                 result.append((candidate, distance))
         result.sort(key=lambda item: item[1])
         return result[:limit]
 
-    def start_sync_run(self, *, provider: str, dataset_key: str, locations_total: int = 0) -> SyncRun:
+    def start_sync_run(
+        self, *, provider: str, dataset_key: str, locations_total: int = 0
+    ) -> SyncRun:
         run = SyncRun(
-            run_id=f"run_{uuid.uuid4().hex}", provider=provider, dataset_key=dataset_key,
-            status="running", started_at=kst_now(), locations_total=locations_total,
+            run_id=f"run_{uuid.uuid4().hex}",
+            provider=provider,
+            dataset_key=dataset_key,
+            status="running",
+            started_at=kst_now(),
+            locations_total=locations_total,
         )
         with self._session_factory.begin() as session:
             session.add(SyncRunRow(**run.model_dump()))
         return run
 
     def finish_sync_run(
-        self, run_id: str, *, status: str, grids_fetched: int = 0, values_loaded: int = 0,
+        self,
+        run_id: str,
+        *,
+        status: str,
+        grids_fetched: int = 0,
+        values_loaded: int = 0,
         error: str | None = None,
     ) -> SyncRun:
         with self._session_factory.begin() as session:

@@ -1,7 +1,8 @@
 """weather locations/facts/sync runs."""
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "0001_weather_source"
 down_revision = None
@@ -23,13 +24,55 @@ def upgrade() -> None:
         sa.Column("metadata", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "latitude >= 33 AND latitude <= 43", name="ck_weather_locations_latitude"
+        ),
+        sa.CheckConstraint(
+            "longitude >= 124 AND longitude <= 132", name="ck_weather_locations_longitude"
+        ),
+        sa.CheckConstraint("nx IS NULL OR (nx >= 1 AND nx <= 300)", name="ck_weather_locations_nx"),
+        sa.CheckConstraint("ny IS NULL OR (ny >= 1 AND ny <= 300)", name="ck_weather_locations_ny"),
     )
-    op.create_index("ix_weather_locations_enabled_region", "weather_locations", ["enabled", "region_code"])
-    op.create_index("ix_weather_locations_coordinates", "weather_locations", ["latitude", "longitude"])
+    op.create_index(
+        "ix_weather_locations_enabled_region", "weather_locations", ["enabled", "region_code"]
+    )
+    op.create_index(
+        "ix_weather_locations_coordinates", "weather_locations", ["latitude", "longitude"]
+    )
+    op.create_table(
+        "weather_source_records",
+        sa.Column("source_record_key", sa.String(length=255), primary_key=True),
+        sa.Column("provider", sa.String(length=120), nullable=False),
+        sa.Column("dataset_key", sa.String(length=160), nullable=False),
+        sa.Column("source_entity_type", sa.String(length=80), nullable=False),
+        sa.Column("source_entity_id", sa.String(length=200), nullable=False),
+        sa.Column("raw_payload_hash", sa.String(length=64), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
+        sa.Column("fetched_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("imported_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint(
+            "provider",
+            "dataset_key",
+            "source_entity_type",
+            "source_entity_id",
+            "raw_payload_hash",
+            name="uq_weather_source_records_identity",
+        ),
+    )
+    op.create_index(
+        "ix_weather_source_records_dataset_fetched",
+        "weather_source_records",
+        ["dataset_key", "fetched_at"],
+    )
     op.create_table(
         "weather_values",
         sa.Column("value_id", sa.String(length=64), primary_key=True),
-        sa.Column("location_id", sa.String(length=120), sa.ForeignKey("weather_locations.location_id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "location_id",
+            sa.String(length=120),
+            sa.ForeignKey("weather_locations.location_id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
         sa.Column("provider", sa.String(length=120), nullable=False),
         sa.Column("dataset_key", sa.String(length=160), nullable=False),
         sa.Column("weather_domain", sa.String(length=120), nullable=False),
@@ -48,17 +91,53 @@ def upgrade() -> None:
         sa.Column("valid_from", sa.DateTime(timezone=True), nullable=True),
         sa.Column("valid_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("target_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("known_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "source_record_key",
+            sa.String(length=255),
+            sa.ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
+            nullable=False,
+        ),
         sa.Column("normalization_version", sa.String(length=40), nullable=False),
         sa.Column("payload", sa.JSON(), nullable=False, server_default=sa.text("'{}'")),
         sa.Column("collected_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("source_record_key", sa.String(length=255), nullable=True),
         sa.UniqueConstraint(
-            "location_id", "provider", "dataset_key", "metric_key", "issued_at", "valid_at", "observed_at",
+            "location_id",
+            "provider",
+            "dataset_key",
+            "weather_domain",
+            "forecast_style",
+            "metric_key",
+            "issued_at",
+            "valid_at",
+            "observed_at",
+            "target_at",
+            "source_record_key",
             name="uq_weather_values_identity",
         ),
+        sa.CheckConstraint(
+            "value_number IS NOT NULL OR value_text IS NOT NULL",
+            name="ck_weather_values_has_value",
+        ),
+        sa.CheckConstraint(
+            "valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from",
+            name="ck_weather_values_valid_window",
+        ),
     )
-    op.create_index("ix_weather_values_location_time", "weather_values", ["location_id", "valid_at", "observed_at"])
-    op.create_index("ix_weather_values_dataset_metric", "weather_values", ["dataset_key", "metric_key"])
+    op.create_index(
+        "ix_weather_values_location_time",
+        "weather_values",
+        ["location_id", "valid_at", "observed_at"],
+    )
+    op.create_index(
+        "ix_weather_values_location_target_known",
+        "weather_values",
+        ["location_id", "target_at", "known_at"],
+    )
+    op.create_index(
+        "ix_weather_values_dataset_metric", "weather_values", ["dataset_key", "metric_key"]
+    )
     op.create_table(
         "weather_sync_runs",
         sa.Column("run_id", sa.String(length=64), primary_key=True),
@@ -79,8 +158,11 @@ def downgrade() -> None:
     op.drop_index("ix_weather_sync_runs_started", table_name="weather_sync_runs")
     op.drop_table("weather_sync_runs")
     op.drop_index("ix_weather_values_dataset_metric", table_name="weather_values")
+    op.drop_index("ix_weather_values_location_target_known", table_name="weather_values")
     op.drop_index("ix_weather_values_location_time", table_name="weather_values")
     op.drop_table("weather_values")
+    op.drop_index("ix_weather_source_records_dataset_fetched", table_name="weather_source_records")
+    op.drop_table("weather_source_records")
     op.drop_index("ix_weather_locations_coordinates", table_name="weather_locations")
     op.drop_index("ix_weather_locations_enabled_region", table_name="weather_locations")
     op.drop_table("weather_locations")

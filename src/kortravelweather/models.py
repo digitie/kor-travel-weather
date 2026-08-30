@@ -73,6 +73,8 @@ class WeatherValue(BaseModel):
     valid_from: datetime | None = None
     valid_until: datetime | None = None
     observed_at: datetime | None = None
+    target_at: datetime | None = None
+    known_at: datetime | None = None
     normalization_version: str = "kma-v1"
     payload: dict[str, Any] = Field(default_factory=dict)
     collected_at: datetime = Field(default_factory=lambda: datetime.now(KST))
@@ -84,6 +86,8 @@ class WeatherValue(BaseModel):
         "valid_from",
         "valid_until",
         "observed_at",
+        "target_at",
+        "known_at",
         "collected_at",
     )
     @classmethod
@@ -98,22 +102,68 @@ class WeatherValue(BaseModel):
             raise ValueError("value_number 또는 value_text 중 하나는 필요합니다.")
         if self.valid_from and self.valid_until and self.valid_until < self.valid_from:
             raise ValueError("valid_until은 valid_from보다 빠를 수 없습니다.")
+        if self.value_number is not None and not self.value_number.is_finite():
+            raise ValueError("value_number는 유한한 숫자여야 합니다.")
+        ranges: dict[str, tuple[Decimal | None, Decimal | None]] = {
+            "REH": (Decimal("0"), Decimal("100")),
+            "POP": (Decimal("0"), Decimal("100")),
+            "VEC": (Decimal("0"), Decimal("360")),
+            "WSD": (Decimal("0"), None),
+            "WSDM": (Decimal("0"), None),
+            "RN1": (Decimal("0"), None),
+            "PCP": (Decimal("0"), None),
+            "SNO": (Decimal("0"), None),
+        }
+        if self.value_number is not None and self.metric_key in ranges:
+            lower, upper = ranges[self.metric_key]
+            if lower is not None and self.value_number < lower:
+                raise ValueError(f"{self.metric_key} 값은 {lower} 이상이어야 합니다.")
+            if upper is not None and self.value_number > upper:
+                raise ValueError(f"{self.metric_key} 값은 {upper} 이하여야 합니다.")
         return self
 
-    def identity(self) -> tuple[str, str, str, str, str, datetime | None, datetime | None, datetime | None]:
-        """멱등 upsert에 사용하는 자연키."""
+    def identity(
+        self,
+    ) -> tuple[
+        str,
+        str,
+        str,
+        str,
+        str,
+        str,
+        datetime | None,
+        datetime | None,
+        datetime | None,
+    ]:
+        """provider와 발표/유효 시각으로 정의하는 자연키.
+
+        ``known_at``은 수신 시각이고 ``target_at``은 bitemporal 질의 축이므로
+        재수집 때 자연키를 바꾸지 않는다. 원천 응답의 수정본을 append-only로
+        보존하기 위해 실제 ``value_id``(아래 ``identity_key``)에는
+        ``target_at``과 ``source_record_key``를 revision 축으로 추가한다.
+        """
         return (
             self.location_id,
             self.provider,
             self.dataset_key,
-            self.metric_key,
             self.weather_domain,
+            self.forecast_style.value,
+            self.metric_key,
             self.issued_at,
             self.valid_at,
             self.observed_at,
         )
 
-    def identity_key(self) -> str:
+    def identity_key(self, source_record_key: str | None = None) -> str:
+        """immutable fact id.
+
+        A source response key is a revision discriminator, not a temporal
+        observation. Passing it explicitly lets the repository create a stable
+        lineage key for legacy/custom values that omitted one.
+        """
+        revision_key = (
+            source_record_key if source_record_key is not None else self.source_record_key
+        )
         encoded = json.dumps(
             [
                 self.location_id,
@@ -125,6 +175,8 @@ class WeatherValue(BaseModel):
                 self.issued_at.isoformat() if self.issued_at else None,
                 self.valid_at.isoformat() if self.valid_at else None,
                 self.observed_at.isoformat() if self.observed_at else None,
+                self.target_at.isoformat() if self.target_at else None,
+                revision_key,
             ],
             ensure_ascii=False,
             separators=(",", ":"),
