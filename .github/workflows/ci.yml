@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked --extra dev --extra dagster
+      - name: Test
+        run: TMPDIR=/tmp uv run --locked --extra dev --extra dagster pytest -q
+      - name: Lint
+        run: uv run --locked ruff check .
+      - name: Check OpenAPI is exported
+        run: |
+          export KOR_TRAVEL_WEATHER_ENV=development
+          PYTHONPATH=src:packages/kor-travel-weather-api/src \
+            uv run --locked python packages/kor-travel-weather-api/scripts/export_openapi.py
+          git diff --exit-code -- packages/kor-travel-weather-api/openapi.json
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/kor-travel-weather-admin/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/kor-travel-weather-admin/frontend/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run type-check
+      - run: npm run build

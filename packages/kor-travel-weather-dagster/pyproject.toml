@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kor-travel-weather-dagster"
+version = "0.1.0.dev0"
+description = "Dagster KMA ingestion assets for kor-travel-weather."
+requires-python = ">=3.11"
+dependencies = [
+  "kor-travel-weather",
+  "dagster>=1.9,<2",
+  "dagster-webserver>=1.9,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.uv.sources]
+kor-travel-weather = { path = "../..", editable = true }
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
