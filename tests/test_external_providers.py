@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC
 from decimal import Decimal
 from typing import Any
@@ -26,6 +27,11 @@ from kortravelweather.providers.external import HttpWeatherProvider
 from kortravelweather.providers.factory import create_configured_provider
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
+
+TEST_DATABASE_URL = os.environ.get(
+    "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
+    "postgresql+psycopg://weather:weather@127.0.0.1:15432/weather_test",
+)
 
 
 class FakeResponse:
@@ -365,7 +371,7 @@ def test_external_dagster_boundary_is_atomic_and_idempotent(tmp_path: Any) -> No
     }
     transport = FixtureTransport(FakeResponse(payload), FakeResponse(payload))
     provider = OpenMeteoProvider(transport=transport)
-    repository = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repository = WeatherRepository(TEST_DATABASE_URL)
     repository.create_schema()
     repository.upsert_location(
         WeatherLocation(

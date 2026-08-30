@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,11 @@ from kortravelweather_api.app import create_app
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
+
+TEST_DATABASE_URL = os.environ.get(
+    "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
+    "postgresql+psycopg://weather:weather@127.0.0.1:15432/weather_test",
+)
 
 
 def test_health_and_location_admin(api_client: TestClient) -> None:
@@ -174,7 +180,7 @@ def test_checked_in_openapi_matches_runtime(api_client: TestClient) -> None:
 
 def test_production_requires_admin_token(tmp_path) -> None:
     settings = WeatherSettings(
-        environment="production", database_url=f"sqlite:///{tmp_path / 'weather.db'}"
+        environment="production", database_url=TEST_DATABASE_URL
     )
     try:
         create_app(settings, WeatherRepository(settings.database_url))
@@ -184,8 +190,8 @@ def test_production_requires_admin_token(tmp_path) -> None:
         raise AssertionError("production app must fail closed without admin token")
 
 
-def test_in_memory_repository_is_visible_to_testclient() -> None:
-    settings = WeatherSettings(environment="development", database_url="sqlite:///:memory:")
+def test_postgresql_repository_is_visible_to_testclient() -> None:
+    settings = WeatherSettings(environment="development", database_url=TEST_DATABASE_URL)
     repository = WeatherRepository(settings.database_url)
     repository.create_schema()
     response = create_app(settings, repository).state.repository.list_locations()
@@ -196,7 +202,7 @@ def test_in_memory_repository_is_visible_to_testclient() -> None:
 
 def test_revisions_are_deduped_for_public_latest(tmp_path) -> None:
     settings = WeatherSettings(
-        environment="development", database_url=f"sqlite:///{tmp_path / 'weather.db'}"
+        environment="development", database_url=TEST_DATABASE_URL
     )
     repo = WeatherRepository(settings.database_url)
     repo.create_schema()

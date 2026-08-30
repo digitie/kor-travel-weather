@@ -22,5 +22,5 @@ target_at, source_record_key)`다. `value_id`는 이 축의 hash이며 source re
 `known_at`은 수신 시각이다. public latest/timeline은 logical target별 최신 revision 하나를
 선택하며 `history=true`일 때만 모든 revision을 반환한다.
 
-`weather_values`와 `weather_source_records`는 DB trigger로 UPDATE/DELETE를 막는다.
-SQLite에서도 timezone-aware 값은 UTC로 round-trip한다.
+`weather_values`와 `weather_source_records`는 PostgreSQL DB trigger로 UPDATE/DELETE를 막는다.
+PostgreSQL `timestamptz`가 timezone-aware 값의 저장·조회 기준이다.

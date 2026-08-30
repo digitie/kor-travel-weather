@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+import os
 
 import pytest
 from alembic.config import Config
@@ -10,19 +10,27 @@ from alembic import command
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import get_settings
 
+TEST_DATABASE_URL = os.environ.get(
+    "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
+    "postgresql+psycopg://weather:weather@127.0.0.1:15432/weather_test",
+)
 
-def test_alembic_sqlite_schema_has_shared_safety_contract(tmp_path: Path, monkeypatch) -> None:
-    database_url = f"sqlite:///{tmp_path / 'migration.db'}"
+
+def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> None:
+    database_url = TEST_DATABASE_URL
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
     get_settings.cache_clear()
     try:
+        engine = WeatherRepository(database_url).engine
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
         config = Config("alembic.ini")
         command.upgrade(config, "head")
-        # SQLite uses non-transactional DDL; the version row must still be
-        # durable so a second upgrade is a no-op rather than replaying DDL.
+        # A second PostgreSQL upgrade is a no-op because the revision is
+        # committed transactionally with the schema.
         command.upgrade(config, "head")
 
-        engine = WeatherRepository(database_url).engine
         inspector = inspect(engine)
         assert "ck_weather_locations_latitude" in {
             item["name"] for item in inspector.get_check_constraints("weather_locations")
@@ -39,33 +47,27 @@ def test_alembic_sqlite_schema_has_shared_safety_contract(tmp_path: Path, monkey
             ).scalar_one()
             assert version == "0003_sync_run_heartbeat"
         with engine.begin() as connection:
-            foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
-            assert foreign_keys == 1
             connection.execute(
                 text(
                     "INSERT INTO weather_sync_runs "
                     "(run_id, provider, dataset_key, status, started_at) "
-                    "VALUES ('run-1', 'p', 'd', 'running', '2026-01-01 00:00:00')"
+                    "VALUES ('run-1', 'p', 'd', 'running', '2026-01-01 00:00:00+00')"
                 )
             )
-            try:
+            with pytest.raises(Exception, match="unique"), connection.begin_nested():
                 connection.execute(
                     text(
                         "INSERT INTO weather_sync_runs "
                         "(run_id, provider, dataset_key, status, started_at) "
-                        "VALUES ('run-2', 'p', 'd', 'running', '2026-01-01 00:00:00')"
+                        "VALUES ('run-2', 'p', 'd', 'running', '2026-01-01 00:00:00+00')"
                     )
                 )
-            except Exception as exc:
-                assert "UNIQUE" in str(exc).upper()
-            else:
-                raise AssertionError("active provider/dataset runs must be unique")
             connection.execute(
                 text(
                     "INSERT INTO weather_locations "
                     "(location_id, name, latitude, longitude, nx, ny, created_at, updated_at) "
                     "VALUES ('immutability', 'Immutable', 37, 127, 60, 127, "
-                    "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+                    "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
                 )
             )
             connection.execute(
@@ -74,7 +76,7 @@ def test_alembic_sqlite_schema_has_shared_safety_contract(tmp_path: Path, monkey
                     "(source_record_key, provider, dataset_key, source_entity_type, "
                     "source_entity_id, raw_payload_hash, payload, fetched_at, imported_at) "
                     "VALUES ('immutable-source', 'p', 'd', 'weather_response', 'immutability', "
-                    "'hash', '{}', '2026-01-01 00:00:00', '2026-01-01 00:00:00')"
+                    "'hash', '{}', '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
                 )
             )
             connection.execute(
@@ -84,7 +86,7 @@ def test_alembic_sqlite_schema_has_shared_safety_contract(tmp_path: Path, monkey
                     "forecast_style, metric_key, target_at, normalization_version, payload, "
                     "collected_at, source_record_key, value_number) VALUES "
                     "('immutable-value', 'immutability', 'p', 'd', 'd', 'short', 'TMP', "
-                    "'2026-01-01 00:00:00', 'test', '{}', '2026-01-01 00:00:00', "
+                    "'2026-01-01 00:00:00+00', 'test', '{}', '2026-01-01 00:00:00+00', "
                     "'immutable-source', 1)"
                 )
             )

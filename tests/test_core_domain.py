@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from kortravelweather.models import KST, ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.providers.kma import (
@@ -12,6 +14,19 @@ from kortravelweather.providers.kma import (
     short_forecast_to_weather_values,
 )
 from kortravelweather.repository import WeatherRepository
+from kortravelweather.settings import WeatherSettings
+
+TEST_DATABASE_URL = os.environ.get(
+    "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
+    "postgresql+psycopg://weather:weather@127.0.0.1:15432/weather_test",
+)
+
+
+def test_sqlite_database_urls_are_rejected() -> None:
+    with pytest.raises(ValueError, match="PostgreSQL"):
+        WeatherRepository("sqlite:///:memory:")
+    with pytest.raises(ValueError, match="postgresql"):
+        WeatherSettings(_env_file=None, database_url="sqlite:///:memory:")
 
 
 def _location() -> WeatherLocation:
@@ -66,7 +81,7 @@ def test_kma_raw_aliases_and_qualifier() -> None:
 
 
 def test_repository_is_immutable_and_timezone_safe(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     issued = datetime(2026, 1, 1, tzinfo=UTC)
@@ -103,8 +118,8 @@ def test_repository_is_immutable_and_timezone_safe(tmp_path) -> None:
         repo.upsert_values([value.model_copy(update={"unit": "bogus"})])
 
 
-def test_value_id_is_stable_across_kst_sqlite_round_trip(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+def test_value_id_is_stable_across_kst_postgresql_round_trip(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     target = datetime(2026, 1, 1, 9, tzinfo=KST)
@@ -133,7 +148,7 @@ def test_value_id_is_stable_across_kst_sqlite_round_trip(tmp_path) -> None:
 
 
 def test_response_source_is_shared_by_metrics_without_payload_corruption(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     target = datetime(2026, 1, 1, tzinfo=UTC)
@@ -168,7 +183,7 @@ def test_response_source_is_shared_by_metrics_without_payload_corruption(tmp_pat
 
 
 def test_location_anchor_cannot_move_after_fact(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     target = datetime(2026, 1, 1, tzinfo=UTC)
@@ -200,7 +215,7 @@ def test_location_anchor_cannot_move_after_fact(tmp_path) -> None:
 
 
 def test_location_patch_preserves_independent_concurrent_fields(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     repo.patch_location("x", {"name": "renamed"})
@@ -212,7 +227,7 @@ def test_location_patch_preserves_independent_concurrent_fields(tmp_path) -> Non
 
 
 def test_nearest_locations_scans_full_enabled_catalog(tmp_path, monkeypatch) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     observed: dict[str, object] = {}
 
     def all_locations(*, enabled_only: bool, limit: int | None) -> list[WeatherLocation]:
@@ -234,7 +249,7 @@ def test_nearest_locations_scans_full_enabled_catalog(tmp_path, monkeypatch) -> 
 
 
 def test_location_coordinates_match_numeric_storage_precision(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     location = WeatherLocation(
         location_id="precise",
@@ -254,7 +269,7 @@ def test_location_coordinates_match_numeric_storage_precision(tmp_path) -> None:
 
 
 def test_replayed_decimal_is_canonical_at_database_precision(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     repo.record_source(
@@ -282,7 +297,7 @@ def test_replayed_decimal_is_canonical_at_database_precision(tmp_path) -> None:
 
 
 def test_local_source_identity_normalizes_equivalent_timezones(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(_location())
     common = dict(
@@ -301,15 +316,16 @@ def test_local_source_identity_normalizes_equivalent_timezones(tmp_path) -> None
 
 
 def test_late_finish_cannot_resurrect_reconciled_run(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     run = repo.start_sync_run(provider="p", dataset_key="d")
     with repo.engine.begin() as connection:
-        connection.exec_driver_sql(
-            "UPDATE weather_sync_runs SET started_at = '2020-01-01 00:00:00', "
-            "heartbeat_at = '2020-01-01 00:00:00' "
-            "WHERE run_id = ?",
-            (run.run_id,),
+        connection.execute(
+            text(
+                "UPDATE weather_sync_runs SET started_at = '2020-01-01 00:00:00+00', "
+                "heartbeat_at = '2020-01-01 00:00:00+00' WHERE run_id = :run_id"
+            ),
+            {"run_id": run.run_id},
         )
     assert repo.reconcile_stale_sync_runs(max_age_minutes=1) == 1
     late = repo.finish_sync_run(run.run_id, status="success", values_loaded=99)
@@ -318,22 +334,24 @@ def test_late_finish_cannot_resurrect_reconciled_run(tmp_path) -> None:
 
 
 def test_sync_run_heartbeat_keeps_active_worker_from_stale_recovery(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     run = repo.start_sync_run(provider="p", dataset_key="d")
     assert repo.heartbeat_sync_run(run.run_id)
     with repo.engine.begin() as connection:
-        connection.exec_driver_sql(
-            "UPDATE weather_sync_runs SET heartbeat_at = '2020-01-01 00:00:00' "
-            "WHERE run_id = ?",
-            (run.run_id,),
+        connection.execute(
+            text(
+                "UPDATE weather_sync_runs SET heartbeat_at = '2020-01-01 00:00:00+00' "
+                "WHERE run_id = :run_id"
+            ),
+            {"run_id": run.run_id},
         )
     assert repo.reconcile_stale_sync_runs(max_age_minutes=1) == 1
     assert repo.heartbeat_sync_run(run.run_id) is False
 
 
 def test_source_lineage_rejects_other_grid(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     repo.upsert_location(
         WeatherLocation(location_id="other", name="Other", latitude=37, longitude=127, nx=2, ny=2)
@@ -362,7 +380,7 @@ def test_source_lineage_rejects_other_grid(tmp_path) -> None:
 
 
 def test_sync_run_source_provider_and_dataset_must_match(tmp_path) -> None:
-    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
     run = repo.start_sync_run(provider="p", dataset_key="d")
     with pytest.raises(ValueError, match="provider/dataset"):

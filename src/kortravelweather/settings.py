@@ -56,7 +56,7 @@ class WeatherSettings(BaseSettings):
     # Local development is explicit in `.env.example` (development).
     environment: str = Field(default="production", validation_alias="KOR_TRAVEL_WEATHER_ENV")
     database_url: str = Field(
-        default="sqlite:///./data/weather.db",
+        default="postgresql+psycopg://weather@127.0.0.1:11000/weather",
         validation_alias="KOR_TRAVEL_WEATHER_DATABASE_URL",
     )
     git_commit: str | None = Field(default=None, validation_alias="KOR_TRAVEL_WEATHER_GIT_COMMIT")
@@ -174,6 +174,16 @@ class WeatherSettings(BaseSettings):
         default="http://127.0.0.1:12721",
         validation_alias="KOR_TRAVEL_WEATHER_API_BASE_URL",
     )
+
+    @field_validator("database_url")
+    @classmethod
+    def _postgresql_only(cls, value: str) -> str:
+        if not value.startswith(("postgresql://", "postgresql+psycopg://")):
+            raise ValueError(
+                "KOR_TRAVEL_WEATHER_DATABASE_URL은 postgresql:// 또는 "
+                "postgresql+psycopg:// DSN이어야 합니다."
+            )
+        return value
 
     @field_validator("targets", mode="before")
     @classmethod
