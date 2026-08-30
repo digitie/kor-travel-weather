@@ -17,7 +17,7 @@ REST/OpenAPI를 통해 날씨 데이터를 소비한다.
 ## 운영 모델
 
 ```text
-KMA/external providers ──> Dagster assets ──> PostgreSQL/SQLite ──> FastAPI/OpenAPI
+KMA/external providers ──> Dagster assets ──> PostgreSQL ──> FastAPI/OpenAPI
                                            │                  │
                                            └──────────────> Next.js admin UI
 ```
@@ -35,7 +35,9 @@ cd /mnt/f/dev/kor-travel-weather
 uv sync --extra dev --extra dagster
 cp .env.example .env
 
-# 로컬 SQLite schema + API (개발 fixture)
+# PostgreSQL만 지원한다. Compose DB를 먼저 기동한다(호스트 포트 11000).
+docker compose up -d db
+# 로컬 PostgreSQL schema + API
 uv run python -m kortravelweather.cli init-db
 # 운영/배포 DB는 위 명령 대신 `uv run alembic upgrade head`를 먼저 적용한다.
 PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12721
@@ -49,8 +51,9 @@ provider는 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`로 선택하며, Open-Meteo�
 키 없이 사용할 수 있다. WeatherAPI, OpenWeatherMap, Visual Crossing, Tomorrow.io,
 Weatherbit.io, Weatherstack, AccuWeather는 각 provider API key가 필요하다. 키가
 없을 때도 fixture/mock 테스트와 admin UI는 동작하며, live asset은 명확한 credential
-오류로 중단된다. 기본 DB는 `data/weather.db` SQLite이고 운영에서는
-`KOR_TRAVEL_WEATHER_DATABASE_URL`에 PostgreSQL DSN을 지정한다.
+오류로 중단된다. 데이터베이스는 PostgreSQL만 지원하며
+`KOR_TRAVEL_WEATHER_DATABASE_URL`에 PostgreSQL DSN을 지정한다. 로컬 Compose는
+`127.0.0.1:11000`으로 PostgreSQL을 노출한다.
 
 Admin frontend:
 
@@ -73,7 +76,7 @@ location의 enabled/좌표/metadata는 admin 소유이므로 재실행해도 덮
 ```text
 src/kortravelweather/                 공용 도메인·설정·repository
   models.py                            WeatherLocation/WeatherValue/SyncRun DTO
-  repository.py                        SQLAlchemy raw repository (SQLite/PostgreSQL)
+  repository.py                        SQLAlchemy raw repository (PostgreSQL)
   providers/base.py                     공통 protocol/HTTP/retry/redaction 경계
   providers/external.py                9개 external provider → WeatherValue 정규화
   providers/catalog.py                 provider/dataset catalog

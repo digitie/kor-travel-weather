@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -18,6 +19,11 @@ from kortravelweather_dagster.kma_weather import (
 from kortravelweather.models import WeatherLocation
 from kortravelweather.providers.kma import mid_land_forecast_to_weather_values
 from kortravelweather.repository import WeatherRepository
+
+TEST_DATABASE_URL = os.environ.get(
+    "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
+    "postgresql+psycopg://weather:weather@127.0.0.1:15432/weather_test",
+)
 
 
 def _target() -> WeatherTarget:
@@ -283,7 +289,7 @@ def test_sync_publishes_only_after_all_grids() -> None:
 
 
 def test_sync_publishes_bundle_run_to_sqlalchemy_repository(tmp_path) -> None:
-    repository = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repository = WeatherRepository(TEST_DATABASE_URL)
     repository.create_schema()
     repository.upsert_location(_target().location)
     result = run_weather_sync(repository=repository, client=FakeClient(), targets=[_target()])
