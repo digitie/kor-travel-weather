@@ -16,5 +16,7 @@ durable cursor가 없어 매 실행에서 응답을 재검증하고, raw respons
 # Run from the repository root so the shared .env and catalog are used.
 cd ../..
 uv sync --extra dagster
-PYTHONPATH=packages/kor-travel-weather-dagster/src uv run dagster dev -m kortravelweather_dagster.definitions -p 12722
+PYTHONPATH=packages/kor-travel-weather-dagster/src uv run dagster dev -m kortravelweather_dagster.definitions -p 12102
 ```
+
+n150 운영 Dagster UI는 `https://weather-dagster.digitie.mywire.org`에서 제공한다.

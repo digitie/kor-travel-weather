@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-const apiBase = () => process.env.WEATHER_API_INTERNAL_URL ?? "http://127.0.0.1:12721";
+const apiBase = () => process.env.WEATHER_API_INTERNAL_URL ?? "http://127.0.0.1:12101";
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;

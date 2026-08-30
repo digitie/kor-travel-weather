@@ -5,10 +5,10 @@ binding은 모두 `127.0.0.1`이므로 외부 노출은 별도 gateway/SSH tunne
 
 | 서비스 | 포트 | 역할 |
 | --- | ---: | --- |
-| `db` | 11000 | PostgreSQL 16 |
-| `api` | 11001 | FastAPI + Alembic |
-| `dagster` | 11002 | Dagster webserver/daemon + KMA asset |
-| `web` | 11003 | Next.js admin |
+| `db` | 12100 | PostgreSQL 16 |
+| `api` | 12101 | FastAPI + Alembic |
+| `dagster` | 12102 | Dagster webserver/daemon + KMA asset |
+| `web` | 12105 | Next.js admin |
 
 실행 전 compose가 읽는 환경 파일에 `POSTGRES_PASSWORD`,
 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`, `WEATHER_UI_PASSWORD`를 설정한다. root `.env`를
@@ -23,9 +23,20 @@ KMA live
 ```bash
 docker compose -f compose.yaml up -d --build
 docker compose -f compose.yaml ps
-curl http://127.0.0.1:11001/health
-open http://127.0.0.1:11003
+curl http://127.0.0.1:12101/health
+open http://127.0.0.1:12105
 ```
+
+n150 운영에서는 다음 HTTPS 도메인을 reverse proxy의 정본으로 사용한다.
+
+| 서비스 | 운영 URL |
+| --- | --- |
+| API | `https://weather-api.digitie.mywire.org` |
+| Dagster | `https://weather-dagster.digitie.mywire.org` |
+| admin web | `https://weather.digitie.mywire.org` |
+
+admin web Basic Auth 운영 계정 아이디는 `admin`이며 비밀번호는 배포 secret 파일로만
+주입한다. 비밀번호를 저장소나 로그에 기록하지 않는다.
 
 `migrate` one-shot 컨테이너가 API/Dagster보다 먼저 `alembic upgrade head`를 한 번
 수행하고, 두 서비스는 migration 성공 후에만 시작한다. migration이 실패하거나

@@ -31,4 +31,4 @@ RUN if [ "${INSTALL_DAGSTER}" = "1" ]; then \
 COPY packages/kor-travel-weather-api/src ./packages/kor-travel-weather-api/src
 COPY packages/kor-travel-weather-dagster/src ./packages/kor-travel-weather-dagster/src
 
-EXPOSE 11001 11002
+EXPOSE 12101 12102

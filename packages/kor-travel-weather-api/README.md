@@ -8,10 +8,13 @@ surface다. API는 `kortravelweather.WeatherValue`의 normalized 필드만 공�
 # Run from the repository root so the shared .env and PostgreSQL DSN are used.
 cd ../..
 uv sync --extra dev
-PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12721
+PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12101
 PYTHONPATH=packages/kor-travel-weather-api/src uv run python packages/kor-travel-weather-api/scripts/export_openapi.py
 ```
 
 공개 경로는 `/v1/weather/*`, 운영 경로는 `/v1/admin/*`이다. 운영에서는
 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`과 PostgreSQL DSN을 반드시 설정한다. admin에는
 삭제 route가 없으며 위치는 `PATCH enabled=false`로 비활성화한다.
+
+로컬 API는 `http://127.0.0.1:12101`에서 실행하며, n150 운영 API는
+`https://weather-api.digitie.mywire.org`에서 제공한다.

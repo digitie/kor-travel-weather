@@ -9,7 +9,7 @@ services:
     # Bind service ports to loopback; expose them through an authenticated
     # gateway/SSH tunnel rather than publishing the database directly.
     ports:
-      - "127.0.0.1:11000:5432"
+      - "127.0.0.1:12100:5432"
     volumes:
       - weather-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -39,7 +39,8 @@ services:
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
-      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '["http://127.0.0.1:11003"]'
+      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:12105"]}'
+      KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
       KOR_TRAVEL_WEATHER_GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-container}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","open_meteo","wttr_in"]}
@@ -55,11 +56,11 @@ services:
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
     ports:
-      - "127.0.0.1:11001:11001"
-    command: ["uvicorn", "kortravelweather_api.app:app", "--host", "0.0.0.0", "--port", "11001"]
+      - "127.0.0.1:12101:12101"
+    command: ["uvicorn", "kortravelweather_api.app:app", "--host", "0.0.0.0", "--port", "12101"]
     working_dir: /app
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11001/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:12101/health', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -104,10 +105,10 @@ services:
       KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-500000}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
     ports:
-      - "127.0.0.1:11002:11002"
+      - "127.0.0.1:12102:12102"
     volumes:
       - dagster-home:/opt/dagster/home
-    command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "11002"]
+    command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "12102"]
     working_dir: /app
 
   migrate:
@@ -135,12 +136,12 @@ services:
       api:
         condition: service_healthy
     environment:
-      WEATHER_API_INTERNAL_URL: http://api:11001
+      WEATHER_API_INTERNAL_URL: http://api:12101
       WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
-      WEATHER_UI_USER: ${WEATHER_UI_USER:-operator}
+      WEATHER_UI_USER: ${WEATHER_UI_USER:-admin}
       WEATHER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
     ports:
-      - "127.0.0.1:11003:11003"
+      - "127.0.0.1:12105:12105"
 
 volumes:
   weather-postgres:
