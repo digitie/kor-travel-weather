@@ -1,7 +1,9 @@
 # Docker 배포 표면
 
 `compose.yaml`은 PostgreSQL과 세 실행 표면을 고정된 포트로 묶는다. 기본 host
-binding은 모두 `127.0.0.1`이므로 외부 노출은 별도 gateway/SSH tunnel에서 명시한다.
+binding은 모두 `127.0.0.1`이다. n150처럼 gateway가 Docker 호스트 외부에서 실행되는
+환경은 `deploy/compose.n150.yaml` override를 함께 사용해 API/Dagster/web만 LAN
+주소에 바인딩한다. PostgreSQL은 항상 loopback에 둔다.
 
 | 서비스 | 포트 | 역할 |
 | --- | ---: | --- |
@@ -25,6 +27,19 @@ docker compose -f compose.yaml up -d --build
 docker compose -f compose.yaml ps
 curl http://127.0.0.1:14101/health
 open http://127.0.0.1:14105
+```
+
+n150 배포는 다음처럼 gateway가 접근할 LAN 주소를 명시한다. LAN 방화벽에서는
+HAProxy 호스트에서 오는 `14101`, `14102`, `14105`만 허용한다.
+
+```bash
+docker compose --env-file .env \
+  -f compose.yaml -f deploy/compose.n150.yaml up -d --build
+docker compose --env-file .env \
+  -f compose.yaml -f deploy/compose.n150.yaml ps
+curl http://192.168.1.14:14101/health
+curl http://192.168.1.14:14102/server_info
+curl -u admin:'<WEATHER_UI_PASSWORD>' http://192.168.1.14:14105/
 ```
 
 n150 운영에서는 다음 HTTPS 도메인을 reverse proxy의 정본으로 사용한다.
