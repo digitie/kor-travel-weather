@@ -16,7 +16,7 @@
    API `https://weather-api.digitie.mywire.org`, Dagster
    `https://weather-dagster.digitie.mywire.org`, web
    `https://weather.digitie.mywire.org`를 사용한다. 로컬 loopback 포트는 각각
-   `12101`, `12102`, `12105`이며 PostgreSQL은 `12100`이다.
+   `14101`, `14102`, `14105`이며 PostgreSQL은 `14100`이다.
 
 현재 migration head는 `0003_sync_run_heartbeat`다. 장시간 KMA 실행은 그룹마다
 heartbeat를 갱신하므로, 180분 동안 heartbeat가 없는 running row만 자동으로 failed
