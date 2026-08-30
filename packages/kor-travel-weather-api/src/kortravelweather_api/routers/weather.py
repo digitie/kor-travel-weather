@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
-from decimal import Decimal
 from time import perf_counter
 from typing import Annotated, Any
 
@@ -11,11 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
-from kortravelweather.models import WeatherLocation, WeatherValue
+from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue
+from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import WeatherRepository
 
 from ..auth import require_admin
-from ..response import envelope
+from ..response import Envelope, envelope
 
 router = APIRouter(prefix="/v1/weather", tags=["weather"])
 admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -65,10 +66,67 @@ class WeatherValueOut(BaseModel):
     source_record_key: str
 
 
+class NearbyOut(LocationOut):
+    distance_km: float
+    latest: list[WeatherValueOut] = Field(default_factory=list)
+
+
+class SourceRecordSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_record_key: str
+    provider: str
+    dataset_key: str
+    source_entity_type: str
+    source_entity_id: str
+    raw_payload_hash: str
+    fetched_at: datetime
+    imported_at: datetime
+    row_count: int | None = None
+    response_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+LocationListResponse = Envelope[list[LocationOut]]
+LocationResponse = Envelope[LocationOut]
+WeatherValueListResponse = Envelope[list[WeatherValueOut]]
+NearbyListResponse = Envelope[list[NearbyOut]]
+SyncRunListResponse = Envelope[list[SyncRun]]
+SourceRecordListResponse = Envelope[list[SourceRecordSummary]]
+
+
+class ProviderDatasetOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    description: str
+    endpoint: str
+    cadence: str
+    forecast: bool
+
+
+class ProviderOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    label: str
+    auth_required: bool
+    credential_configured: bool | None
+    base_url: str
+    datasets: list[ProviderDatasetOut]
+
+
+ProviderListResponse = Envelope[list[ProviderOut]]
+
+
 class LocationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    location_id: str = Field(min_length=1, max_length=120)
+    location_id: str = Field(
+        min_length=1,
+        max_length=120,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
     name: str = Field(min_length=1, max_length=200)
     latitude: float = Field(ge=33, le=43)
     longitude: float = Field(ge=124, le=132)
@@ -116,7 +174,7 @@ def repository(request: Request) -> WeatherRepository:
     return request.app.state.repository
 
 
-def location_out(value: WeatherLocation) -> LocationOut:
+def location_out(value: WeatherLocation, *, public: bool = True) -> LocationOut:
     return LocationOut(
         location_id=value.location_id,
         name=value.name,
@@ -126,7 +184,9 @@ def location_out(value: WeatherLocation) -> LocationOut:
         ny=value.ny,
         region_code=value.region_code,
         enabled=value.enabled,
-        metadata=value.metadata,
+        # metadata may contain operational notes or credentials. It is an
+        # admin-only field; public consumers receive an intentionally empty map.
+        metadata=value.metadata if not public else {},
     )
 
 
@@ -160,34 +220,43 @@ def value_out(value: WeatherValue) -> WeatherValueOut:
     )
 
 
-@router.get("/locations")
+@router.get("/locations", response_model=LocationListResponse)
 async def list_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
-    enabled: bool = True,
+    enabled: bool = Query(default=True, include_in_schema=False),
     search: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     started = perf_counter()
     rows = await run_in_threadpool(
-        repo.list_locations, enabled_only=enabled, search=search, limit=limit, offset=offset
+        repo.list_locations, enabled_only=True, search=search, limit=limit, offset=offset
     )
-    return envelope(request, started, [location_out(row).model_dump(mode="json") for row in rows], limit=limit, offset=offset, returned=len(rows))
+    total = await run_in_threadpool(repo.count_locations, enabled_only=True, search=search)
+    return envelope(
+        request,
+        started,
+        [location_out(row).model_dump(mode="json") for row in rows],
+        limit=limit,
+        offset=offset,
+        total=total,
+        returned=len(rows),
+    )
 
 
-@router.get("/locations/{location_id}")
+@router.get("/locations/{location_id}", response_model=LocationResponse)
 async def get_location(
     location_id: str, request: Request, repo: Annotated[WeatherRepository, Depends(repository)]
 ) -> dict[str, Any]:
     started = perf_counter()
     row = await run_in_threadpool(repo.get_location, location_id)
-    if row is None:
+    if row is None or not row.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     return envelope(request, started, location_out(row).model_dump(mode="json"))
 
 
-@router.get("/locations/{location_id}/latest")
+@router.get("/locations/{location_id}/latest", response_model=WeatherValueListResponse)
 async def latest(
     location_id: str,
     request: Request,
@@ -195,19 +264,26 @@ async def latest(
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> dict[str, Any]:
     started = perf_counter()
-    if await run_in_threadpool(repo.get_location, location_id) is None:
+    location = await run_in_threadpool(repo.get_location, location_id)
+    if location is None or not location.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     rows = await run_in_threadpool(repo.latest_values, location_id, limit=limit)
-    return envelope(request, started, [value_out(row).model_dump(mode="json") for row in rows], limit=limit, returned=len(rows))
+    return envelope(
+        request,
+        started,
+        [value_out(row).model_dump(mode="json") for row in rows],
+        limit=limit,
+        returned=len(rows),
+    )
 
 
-@router.get("/locations/{location_id}/forecast")
+@router.get("/locations/{location_id}/forecast", response_model=WeatherValueListResponse)
 async def forecast(
     location_id: str,
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
-    from_at: datetime | None = Query(default=None, alias="from"),
-    to_at: datetime | None = Query(default=None, alias="to"),
+    from_at: Annotated[datetime | None, Query(alias="from")] = None,
+    to_at: Annotated[datetime | None, Query(alias="to")] = None,
     dataset_key: str | None = None,
     metric_key: str | None = None,
     history: bool = Query(default=False, description="수정 revision까지 반환"),
@@ -216,9 +292,13 @@ async def forecast(
     try:
         ForecastQuery(from_at=from_at, to_at=to_at)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        raise HTTPException(
+            status_code=422,
+            detail="from/to 시간 범위가 올바르지 않습니다.",
+        ) from exc
     started = perf_counter()
-    if await run_in_threadpool(repo.get_location, location_id) is None:
+    location = await run_in_threadpool(repo.get_location, location_id)
+    if location is None or not location.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     rows = await run_in_threadpool(
         repo.timeline,
@@ -230,10 +310,16 @@ async def forecast(
         limit=limit,
         include_revisions=history,
     )
-    return envelope(request, started, [value_out(row).model_dump(mode="json") for row in rows], limit=limit, returned=len(rows))
+    return envelope(
+        request,
+        started,
+        [value_out(row).model_dump(mode="json") for row in rows],
+        limit=limit,
+        returned=len(rows),
+    )
 
 
-@router.get("/nearby")
+@router.get("/nearby", response_model=NearbyListResponse)
 async def nearby(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
@@ -246,14 +332,36 @@ async def nearby(
     rows = await run_in_threadpool(
         repo.nearest_locations, lat, lon, radius_km=radius_km, limit=limit
     )
-    data = [
-        {**location_out(location).model_dump(mode="json"), "distance_km": distance}
-        for location, distance in rows
-    ]
+    latest_many = getattr(repo, "latest_values_many", None)
+    latest_by_location = (
+        await run_in_threadpool(
+            latest_many, [location.location_id for location, _ in rows], limit_per_location=20
+        )
+        if callable(latest_many)
+        else {}
+    )
+    data = []
+    for location, distance in rows:
+        latest_rows = latest_by_location.get(location.location_id, [])
+        if not latest_rows and not callable(latest_many):
+            latest_rows = await run_in_threadpool(
+                repo.latest_values, location.location_id, limit=20
+            )
+        data.append(
+            {
+                **location_out(location).model_dump(mode="json"),
+                "distance_km": distance,
+                "latest": [value_out(row).model_dump(mode="json") for row in latest_rows],
+            }
+        )
     return envelope(request, started, data, limit=limit, returned=len(data))
 
 
-@admin_router.get("/locations", dependencies=[Depends(require_admin)])
+@admin_router.get(
+    "/locations",
+    response_model=LocationListResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def admin_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
@@ -265,24 +373,68 @@ async def admin_locations(
     rows = await run_in_threadpool(
         repo.list_locations, enabled_only=False, search=search, limit=limit, offset=offset
     )
-    return envelope(request, started, [location_out(row).model_dump(mode="json") for row in rows], limit=limit, offset=offset, returned=len(rows))
+
+    total = await run_in_threadpool(repo.count_locations, enabled_only=False, search=search)
+    return envelope(
+        request,
+        started,
+        [location_out(row, public=False).model_dump(mode="json") for row in rows],
+        limit=limit,
+        offset=offset,
+        total=total,
+        returned=len(rows),
+    )
 
 
-@admin_router.post("/locations", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
+@admin_router.get(
+    "/providers",
+    response_model=ProviderListResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def admin_providers(request: Request) -> dict[str, Any]:
+    """credential 자체가 아닌 configured 여부와 dataset 계약만 노출한다."""
+    started = perf_counter()
+    runtime_settings = request.app.state.settings
+    configured = {
+        spec.key: (
+            not spec.auth_required or runtime_settings.provider_api_key(spec.key) is not None
+        )
+        for spec in PROVIDER_CATALOG
+    }
+    return envelope(request, started, catalog_dicts(configured=configured))
+
+
+@admin_router.post(
+    "/locations",
+    status_code=status.HTTP_201_CREATED,
+    response_model=LocationResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def create_location(
     body: LocationCreate,
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
 ) -> dict[str, Any]:
     started = perf_counter()
-    location = WeatherLocation(**body.model_dump())
-    if await run_in_threadpool(repo.get_location, location.location_id) is not None:
-        raise HTTPException(status_code=409, detail="location_id가 이미 존재합니다.")
-    await run_in_threadpool(repo.upsert_location, location)
-    return envelope(request, started, location_out(location).model_dump(mode="json"))
+    try:
+        location = WeatherLocation(**body.model_dump())
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="location 값이 API 계약에 맞지 않습니다.",
+        ) from exc
+    try:
+        await run_in_threadpool(repo.create_location, location)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return envelope(request, started, location_out(location, public=False).model_dump(mode="json"))
 
 
-@admin_router.patch("/locations/{location_id}", dependencies=[Depends(require_admin)])
+@admin_router.patch(
+    "/locations/{location_id}",
+    response_model=LocationResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def patch_location(
     location_id: str,
     body: LocationPatch,
@@ -290,19 +442,28 @@ async def patch_location(
     repo: Annotated[WeatherRepository, Depends(repository)],
 ) -> dict[str, Any]:
     started = perf_counter()
-    current = await run_in_threadpool(repo.get_location, location_id)
-    if current is None:
-        raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     changes = body.model_dump(exclude_unset=True)
-    updated = current.model_copy(update=changes)
-    # model_copy does not re-run pydantic validation; reconstruct to keep
-    # coordinate/id constraints effective for admin writes.
-    updated = WeatherLocation.model_validate(updated.model_dump())
-    await run_in_threadpool(repo.upsert_location, updated)
-    return envelope(request, started, location_out(updated).model_dump(mode="json"))
+    try:
+        updated = await run_in_threadpool(repo.patch_location, location_id, changes)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.") from None
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422, detail="location patch 값이 올바르지 않습니다."
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
+    return envelope(request, started, location_out(updated, public=False).model_dump(mode="json"))
 
 
-@admin_router.get("/sync-runs", dependencies=[Depends(require_admin)])
+@admin_router.get(
+    "/sync-runs",
+    response_model=SyncRunListResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def sync_runs(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
@@ -310,4 +471,91 @@ async def sync_runs(
 ) -> dict[str, Any]:
     started = perf_counter()
     rows = await run_in_threadpool(repo.list_sync_runs, limit=limit)
-    return envelope(request, started, [row.model_dump(mode="json") for row in rows], limit=limit, returned=len(rows))
+    return envelope(
+        request,
+        started,
+        [row.model_dump(mode="json") for row in rows],
+        limit=limit,
+        returned=len(rows),
+    )
+
+
+def source_out(record: dict[str, Any]) -> dict[str, Any]:
+    payload = record.get("payload") or {}
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+
+    def redact(value: Any) -> Any:
+        def normalized_key(key: Any) -> str:
+            # Handle snake/kebab as well as provider camelCase aliases such as
+            # accessToken and clientSecret.
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower().replace("-", "_")
+
+        secret_names = {
+            "servicekey",
+            "service_key",
+            "apikey",
+            "api_key",
+            "x_api_key",
+            "token",
+            "access_token",
+            "authkey",
+            "auth_key",
+            "authorization",
+            "password",
+            "secret",
+            "client_secret",
+            "appkey",
+            "app_key",
+            "key",
+        }
+        if isinstance(value, dict):
+            return {
+                key: "[REDACTED]" if normalized_key(key) in secret_names else redact(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(
+                r"(?i)(service[_-]?key|api[_-]?key|auth[_-]?key|access[_-]?token|token|password|secret|key)(=|:)([^&\s,;]+)",
+                r"\1\2[REDACTED]",
+                value,
+            )
+        return value
+
+    response_metadata = payload.get("response_metadata", {}) if isinstance(payload, dict) else {}
+    return {
+        "source_record_key": record["source_record_key"],
+        "provider": record["provider"],
+        "dataset_key": record["dataset_key"],
+        "source_entity_type": record["source_entity_type"],
+        "source_entity_id": record["source_entity_id"],
+        "raw_payload_hash": record["raw_payload_hash"],
+        "fetched_at": record["fetched_at"],
+        "imported_at": record["imported_at"],
+        "row_count": len(rows) if isinstance(rows, list) else None,
+        "response_metadata": redact(response_metadata),
+    }
+
+
+@admin_router.get(
+    "/sync-runs/{run_id}/sources",
+    response_model=SourceRecordListResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def sync_run_sources(
+    run_id: str,
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, Any]:
+    started = perf_counter()
+    run = await run_in_threadpool(repo.get_sync_run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="sync run을 찾을 수 없습니다.")
+    keys = await run_in_threadpool(repo.list_sync_run_sources, run_id)
+    records = []
+    for key in keys:
+        record = await run_in_threadpool(repo.get_source_record, key)
+        if record is not None:
+            records.append(source_out(record))
+    return envelope(request, started, records, limit=len(records), returned=len(records))

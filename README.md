@@ -1,6 +1,7 @@
 # kor-travel-weather
 
-대한민국 전역의 관측·예보·특보를 모아 제공하는 독립 날씨 데이터 소스다. 
+대한민국 전역의 관측·예보를 모아 제공하는 독립 날씨 데이터 소스다. 특보는
+원천 API의 별도 계약과 운영 검증을 거친 뒤 추가하는 후속 범위다.
 `kor-travel-map`의 데이터 계약·운영 패턴을 가져오되, 장소/축제/가격 같은 지도
 도메인은 소유하지 않는다. PinVi와 `kor-travel-map`은 저장소를 직접 읽지 않고
 REST/OpenAPI를 통해 날씨 데이터를 소비한다.
@@ -16,7 +17,7 @@ REST/OpenAPI를 통해 날씨 데이터를 소비한다.
 ## 운영 모델
 
 ```text
-python-kma-api ──> Dagster asset ──> PostgreSQL/SQLite ──> FastAPI/OpenAPI
+KMA/external providers ──> Dagster assets ──> PostgreSQL/SQLite ──> FastAPI/OpenAPI
                                            │                  │
                                            └──────────────> Next.js admin UI
 ```
@@ -34,17 +35,19 @@ cd /mnt/f/dev/kor-travel-weather
 uv sync --extra dev --extra dagster
 cp .env.example .env
 
-# 로컬 SQLite schema + API
+# 로컬 SQLite schema + API (개발 fixture)
 uv run python -m kortravelweather.cli init-db
-# 운영/배포 DB는 create_all 대신 migration을 적용한다.
-uv run alembic upgrade head
-uv run uvicorn kortravelweather_api.app:app --reload --port 12721
+# 운영/배포 DB는 위 명령 대신 `uv run alembic upgrade head`를 먼저 적용한다.
+PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12721
 
 # Dagster code location
-uv run dagster dev -m kortravelweather_dagster.definitions -p 12722
+PYTHONPATH=packages/kor-travel-weather-dagster/src uv run dagster dev -m kortravelweather_dagster.definitions -p 12722
 ```
 
-KMA live 수집에는 `KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY`가 필요하다. 키가
+KMA live 수집에는 `KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY`가 필요하다. 외부
+provider는 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`로 선택하며, Open-Meteo와 wttr.in은
+키 없이 사용할 수 있다. WeatherAPI, OpenWeatherMap, Visual Crossing, Tomorrow.io,
+Weatherbit.io, Weatherstack, AccuWeather는 각 provider API key가 필요하다. 키가
 없을 때도 fixture/mock 테스트와 admin UI는 동작하며, live asset은 명확한 credential
 오류로 중단된다. 기본 DB는 `data/weather.db` SQLite이고 운영에서는
 `KOR_TRAVEL_WEATHER_DATABASE_URL`에 PostgreSQL DSN을 지정한다.
@@ -53,9 +56,17 @@ Admin frontend:
 
 ```bash
 cd packages/kor-travel-weather-admin/frontend
+cp .env.example .env.local  # set WEATHER_API_INTERNAL_URL/WEATHER_ADMIN_TOKEN
 npm ci
 npm run dev                 # http://127.0.0.1:12725
 ```
+
+운영에서 frontend를 외부에 노출하지 말고 reverse proxy/SSO 또는
+`WEATHER_UI_USER`·`WEATHER_UI_PASSWORD` Basic Auth를 설정한다. Next proxy는
+서버에서만 backend admin token을 주입하며 브라우저에 token을 전달하지 않는다.
+
+`ktwctl init-db`는 비어 있는 catalog를 위한 insert-only bootstrap이다. 기존
+location의 enabled/좌표/metadata는 admin 소유이므로 재실행해도 덮어쓰지 않는다.
 
 ## 저장소 구조
 
@@ -63,24 +74,34 @@ npm run dev                 # http://127.0.0.1:12725
 src/kortravelweather/                 공용 도메인·설정·repository
   models.py                            WeatherLocation/WeatherValue/SyncRun DTO
   repository.py                        SQLAlchemy raw repository (SQLite/PostgreSQL)
+  providers/base.py                     공통 protocol/HTTP/retry/redaction 경계
+  providers/external.py                9개 external provider → WeatherValue 정규화
+  providers/catalog.py                 provider/dataset catalog
   providers/kma.py                     KMA row → WeatherValue 정규화
   cli.py                               schema 초기화·fixture 명령
 
 packages/kor-travel-weather-api/      FastAPI/OpenAPI REST backend
 packages/kor-travel-weather-dagster/  KMA asset·resource·hourly schedule
 packages/kor-travel-weather-admin/    Next.js 운영 UI와 server-side API proxy
+packages/python-airkorea-api/         python-airkorea-api 0.4 provider client snapshot
 alembic/                               schema migration
 docs/                                 architecture, ADR, ETL, runbook, integration 계약
 tests/                                unit/API/Dagster 계약 테스트
 ```
+
+대기질 공급자가 필요한 소비자는 [`packages/python-airkorea-api`](packages/python-airkorea-api)
+에 함께 보존한 `airkorea` 패키지를 독립적으로 설치·사용할 수 있다. 이 snapshot은
+`python-airkorea-api` 커밋 `9b00dd654f248821798688a1e4afb6edbfd4779f`에서 복사했으며,
+weather fact 저장소와는 결합하지 않는다.
 
 ## 소비자 계약
 
 - `GET /v1/weather/locations`: 위치 카탈로그
 - `GET /v1/weather/locations/{location_id}/latest`: 최신 metric 묶음
 - `GET /v1/weather/locations/{location_id}/forecast`: 시각·dataset·metric 필터가 있는 timeline
-- `GET /v1/weather/nearby?lat=...&lon=...`: 위치 반경 검색과 최신값
+- `GET /v1/weather/nearby?lat=...&lon=...`: 위치 반경 검색과 각 위치의 최신값
 - `/v1/admin/*`: 위치와 수집 이력 관리 (admin token 보호)
+- `/v1/admin/providers`: credential configured 여부와 dataset catalog (secret 비노출)
 - `/health`, `/version`: 의존성 없는 liveness와 버전 확인
 
 응답은 `{data, meta}` envelope이며 `meta.request_id`로 로그와 Dagster run을 연결한다.
@@ -92,8 +113,10 @@ tests/                                unit/API/Dagster 계약 테스트
 기반 원본은 `digitie/kor-travel-map`의 2026-08-30 최신 `main` 커밋
 `41aaa86c43c75e8d9e26d73917008292db0bcb5a`다. 특히 weather DTO의 두 시간축
 (`forecast_style`/`timeline_bucket`), KMA raw payload 보존, `kma_weather.py`의
-격자 dedupe·cursor·retry 패턴, admin weather panel의 loading/error/stale UX를
-날씨 전용 계약에 맞춰 이식했다.
+격자 dedupe·retry 패턴, admin weather panel의 loading/error/stale UX를 날씨 전용
+계약에 맞춰 이식했다. 현재 MVP에는 durable base-time cursor가 없으며, source
+response idempotency와 run overlap guard로 중복 publish를 막고 매 실행에서 응답을
+재검증한다. 호출 비용을 줄이는 cursor는 후속 운영 범위다.
 
 ## 라이선스
 
