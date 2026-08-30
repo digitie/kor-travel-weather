@@ -175,6 +175,8 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             targets=targets,
             dataset_key=resource.dataset_key,
             max_targets=runtime.max_targets_per_run,
+            max_response_rows=runtime.max_response_rows_per_run,
+            max_values=runtime.max_values_per_run,
         )
         context.add_output_metadata(result)
         return result

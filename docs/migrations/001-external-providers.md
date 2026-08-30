@@ -15,6 +15,9 @@
 외부 provider job은 기본 schedule에 자동 연결하지 않는다. 유료 API의 quota와
 provider별 cadence가 서로 다르므로, 운영자가 대상 provider resource와 budget을
 검토한 뒤 `external_weather_job`을 수동 launch하거나 별도 schedule을 명시한다.
+Dagster run config에서 resource의 `provider_key`와 `dataset_key`를 catalog에 있는
+쌍으로 지정하고, `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`에도 같은 provider를
+포함해야 한다.
 
 기존 `weather_values`/`weather_source_records` schema migration은 필요 없다. 새
 dataset은 기존 source lineage의 `provider`, `dataset_key`, `source_record_key` 축을
