@@ -132,15 +132,14 @@ class WeatherValue(BaseModel):
         str,
         str,
         datetime | None,
-        datetime | None,
-        datetime | None,
+        str | None,
     ]:
-        """provider와 발표/유효 시각으로 정의하는 자연키.
+        """ADR-089 fact identity의 논리 축.
 
-        ``known_at``은 수신 시각이고 ``target_at``은 bitemporal 질의 축이므로
-        재수집 때 자연키를 바꾸지 않는다. 원천 응답의 수정본을 append-only로
-        보존하기 위해 실제 ``value_id``(아래 ``identity_key``)에는
-        ``target_at``과 ``source_record_key``를 revision 축으로 추가한다.
+        ``issued_at``/``valid_at``/``observed_at``/``known_at``은 원천·bitemporal
+        부가 시각이고, 수정 응답은 ``source_record_key``가 다른 append-only
+        revision으로 보존된다. ``target_at``은 forecast/observation을 공통으로
+        조회하는 canonical target 축이다.
         """
         return (
             self.location_id,
@@ -149,12 +148,16 @@ class WeatherValue(BaseModel):
             self.weather_domain,
             self.forecast_style.value,
             self.metric_key,
-            self.issued_at,
-            self.valid_at,
-            self.observed_at,
+            self.target_at,
+            self.source_record_key,
         )
 
-    def identity_key(self, source_record_key: str | None = None) -> str:
+    def identity_key(
+        self,
+        source_record_key: str | None = None,
+        *,
+        target_at: datetime | None = None,
+    ) -> str:
         """immutable fact id.
 
         A source response key is a revision discriminator, not a temporal
@@ -164,6 +167,7 @@ class WeatherValue(BaseModel):
         revision_key = (
             source_record_key if source_record_key is not None else self.source_record_key
         )
+        canonical_target = target_at if target_at is not None else self.target_at
         encoded = json.dumps(
             [
                 self.location_id,
@@ -172,10 +176,7 @@ class WeatherValue(BaseModel):
                 self.weather_domain,
                 self.forecast_style.value,
                 self.metric_key,
-                self.issued_at.isoformat() if self.issued_at else None,
-                self.valid_at.isoformat() if self.valid_at else None,
-                self.observed_at.isoformat() if self.observed_at else None,
-                self.target_at.isoformat() if self.target_at else None,
+                canonical_target.isoformat() if canonical_target else None,
                 revision_key,
             ],
             ensure_ascii=False,

@@ -91,7 +91,7 @@ def upgrade() -> None:
         sa.Column("valid_from", sa.DateTime(timezone=True), nullable=True),
         sa.Column("valid_until", sa.DateTime(timezone=True), nullable=True),
         sa.Column("observed_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("target_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("target_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("known_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "source_record_key",
@@ -109,9 +109,6 @@ def upgrade() -> None:
             "weather_domain",
             "forecast_style",
             "metric_key",
-            "issued_at",
-            "valid_at",
-            "observed_at",
             "target_at",
             "source_record_key",
             name="uq_weather_values_identity",

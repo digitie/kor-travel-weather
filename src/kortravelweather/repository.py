@@ -135,9 +135,6 @@ class WeatherValueRow(Base):
             "weather_domain",
             "forecast_style",
             "metric_key",
-            "issued_at",
-            "valid_at",
-            "observed_at",
             "target_at",
             "source_record_key",
             name="uq_weather_values_identity",
@@ -171,7 +168,7 @@ class WeatherValueRow(Base):
     valid_from: Mapped[datetime | None] = mapped_column(AwareDateTime())
     valid_until: Mapped[datetime | None] = mapped_column(AwareDateTime())
     observed_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
-    target_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    target_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     normalization_version: Mapped[str] = mapped_column(String(40), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -369,82 +366,140 @@ class WeatherRepository:
                 )
             return [self._location_model(row) for row in session.scalars(stmt).all()]
 
-    def upsert_values(self, values: list[WeatherValue]) -> int:
-        if not values:
+    def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> None:
+        source_record_key = str(record["source_record_key"])
+        provider = str(record["provider"])
+        dataset_key = str(record["dataset_key"])
+        source_entity_type = str(record["source_entity_type"])
+        source_entity_id = str(record["source_entity_id"])
+        payload = dict(record["payload"])
+        fetched = record.get("fetched_at") or kst_now()
+        raw_hash = _payload_hash(payload)
+        if self.engine.dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
+                {"source_key": source_record_key},
+            )
+        row = session.get(SourceRecordRow, source_record_key)
+        if row is not None and (
+            row.provider != provider
+            or row.dataset_key != dataset_key
+            or row.source_entity_type != source_entity_type
+            or row.source_entity_id != source_entity_id
+            or row.raw_payload_hash != raw_hash
+        ):
+            raise ValueError(f"immutable source record 충돌: {source_record_key}")
+        if row is None:
+            session.add(
+                SourceRecordRow(
+                    source_record_key=source_record_key,
+                    provider=provider,
+                    dataset_key=dataset_key,
+                    source_entity_type=source_entity_type,
+                    source_entity_id=source_entity_id,
+                    raw_payload_hash=raw_hash,
+                    payload=payload,
+                    fetched_at=fetched,
+                    imported_at=kst_now(),
+                )
+            )
+
+    def _insert_value_session(self, session: Session, value: WeatherValue) -> bool:
+        source_key = value.source_record_key or _metric_source_key(value)
+        canonical_target = (
+            value.target_at
+            or value.valid_at
+            or value.observed_at
+            or value.issued_at
+            or value.collected_at
+        )
+        value_id = value.identity_key(source_key, target_at=canonical_target)
+        if self.engine.dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
+                {"source_key": source_key},
+            )
+        source = session.get(SourceRecordRow, source_key)
+        if source is None:
+            # Explicit response records should be inserted by Dagster first;
+            # this fallback keeps hand-authored fixtures usable without claiming
+            # their row payload is the full provider response.
+            session.add(
+                SourceRecordRow(
+                    source_record_key=source_key,
+                    provider=value.provider,
+                    dataset_key=value.dataset_key,
+                    source_entity_type="metric_row",
+                    source_entity_id=value.location_id,
+                    raw_payload_hash=_payload_hash(value.payload),
+                    payload=value.payload,
+                    fetched_at=value.known_at or value.collected_at,
+                    imported_at=kst_now(),
+                )
+            )
+        elif source.provider != value.provider or source.dataset_key != value.dataset_key:
+            raise ValueError(f"immutable source record 충돌: {source_key}")
+        row = session.get(WeatherValueRow, value_id)
+        if row is not None:
+            if (
+                row.payload != value.payload
+                or row.value_number != value.value_number
+                or row.value_text != value.value_text
+            ):
+                raise ValueError(f"immutable weather fact 충돌: {value_id}")
+            return False
+        row = WeatherValueRow(value_id=value_id)
+        session.add(row)
+        row.location_id = value.location_id
+        row.provider = value.provider
+        row.dataset_key = value.dataset_key
+        row.weather_domain = value.weather_domain
+        row.forecast_style = value.forecast_style.value
+        row.timeline_bucket = value.timeline_bucket.value if value.timeline_bucket else None
+        row.metric_key = value.metric_key
+        row.metric_name = value.metric_name
+        row.source_metric_key = value.source_metric_key
+        row.source_metric_name = value.source_metric_name
+        row.value_number = value.value_number
+        row.value_text = value.value_text
+        row.unit = value.unit
+        row.severity = value.severity
+        row.issued_at = value.issued_at
+        row.valid_at = value.valid_at
+        row.valid_from = value.valid_from
+        row.valid_until = value.valid_until
+        row.observed_at = value.observed_at
+        row.target_at = canonical_target
+        row.known_at = value.known_at or value.collected_at
+        row.normalization_version = value.normalization_version
+        row.payload = value.payload
+        row.collected_at = value.collected_at
+        row.source_record_key = source_key
+        return True
+
+    def ingest_batch(
+        self,
+        *,
+        source_records: list[Mapping[str, Any]] | None = None,
+        values: list[WeatherValue] | None = None,
+    ) -> int:
+        """원천 record와 normalized facts를 한 transaction으로 publish한다."""
+        records = source_records or []
+        facts = values or []
+        if not records and not facts:
             return 0
         with self._session_factory.begin() as session:
-            for value in values:
-                source_key = value.source_record_key or _metric_source_key(value)
-                value_id = value.identity_key(source_key)
-                if self.engine.dialect.name == "postgresql":
-                    # Same response replay/concurrent Dagster runs serialize on a
-                    # transaction-local advisory lock; different responses remain
-                    # independent and retain append-only revision semantics.
-                    session.execute(
-                        text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
-                        {"source_key": source_key},
-                    )
-                source = session.get(SourceRecordRow, source_key)
-                raw_hash = _payload_hash(value.payload)
-                if source is None:
-                    source = SourceRecordRow(
-                        source_record_key=source_key,
-                        provider=value.provider,
-                        dataset_key=value.dataset_key,
-                        source_entity_type="metric_row",
-                        source_entity_id=value.location_id,
-                        raw_payload_hash=raw_hash,
-                        payload=value.payload,
-                        fetched_at=value.known_at or value.collected_at,
-                        imported_at=kst_now(),
-                    )
-                    session.add(source)
-                elif (
-                    source.provider != value.provider
-                    or source.dataset_key != value.dataset_key
-                    or source.raw_payload_hash != raw_hash
-                ):
-                    raise ValueError(f"immutable source record 충돌: {source_key}")
-                row = session.get(WeatherValueRow, value_id)
-                if row is None:
-                    row = WeatherValueRow(value_id=value_id)
-                    session.add(row)
-                else:
-                    # fact는 immutable이다. 동일 revision 재전송은 no-op으로
-                    # 취급하되 payload/value 충돌은 명시적으로 거부한다.
-                    if (
-                        row.payload != value.payload
-                        or row.value_number != value.value_number
-                        or row.value_text != value.value_text
-                    ):
-                        raise ValueError(f"immutable weather fact 충돌: {value_id}")
-                    continue
-                row.location_id = value.location_id
-                row.provider = value.provider
-                row.dataset_key = value.dataset_key
-                row.weather_domain = value.weather_domain
-                row.forecast_style = value.forecast_style.value
-                row.timeline_bucket = value.timeline_bucket.value if value.timeline_bucket else None
-                row.metric_key = value.metric_key
-                row.metric_name = value.metric_name
-                row.source_metric_key = value.source_metric_key
-                row.source_metric_name = value.source_metric_name
-                row.value_number = value.value_number
-                row.value_text = value.value_text
-                row.unit = value.unit
-                row.severity = value.severity
-                row.issued_at = value.issued_at
-                row.valid_at = value.valid_at
-                row.valid_from = value.valid_from
-                row.valid_until = value.valid_until
-                row.observed_at = value.observed_at
-                row.target_at = value.target_at or value.valid_at or value.observed_at
-                row.known_at = value.known_at or value.collected_at
-                row.normalization_version = value.normalization_version
-                row.payload = value.payload
-                row.collected_at = value.collected_at
-                row.source_record_key = source_key
-        return len(values)
+            for record in records:
+                self._record_source_session(session, record)
+            # pending source rows must be visible to FK checks/value lookup.
+            session.flush()
+            inserted = sum(self._insert_value_session(session, value) for value in facts)
+        return inserted
+
+    def upsert_values(self, values: list[WeatherValue]) -> int:
+        # Historical method name is retained for callers; semantics are now
+        # append-only insert/no-op replay, never an UPDATE.
+        return self.ingest_batch(values=values)
 
     def record_source(
         self,
@@ -458,32 +513,19 @@ class WeatherRepository:
         fetched_at: datetime | None = None,
     ) -> None:
         """원천 응답을 보존해 weather fact와 raw lineage를 연결한다."""
-        raw_hash = _payload_hash(payload)
-        fetched = fetched_at or kst_now()
-        with self._session_factory.begin() as session:
-            row = session.get(SourceRecordRow, source_record_key)
-            if row is not None and (
-                row.provider != provider
-                or row.dataset_key != dataset_key
-                or row.source_entity_type != source_entity_type
-                or row.source_entity_id != source_entity_id
-                or row.raw_payload_hash != raw_hash
-            ):
-                raise ValueError(f"immutable source record 충돌: {source_record_key}")
-            if row is None:
-                row = SourceRecordRow(
-                    source_record_key=source_record_key,
-                    provider=provider,
-                    dataset_key=dataset_key,
-                    source_entity_type=source_entity_type,
-                    source_entity_id=source_entity_id,
-                    raw_payload_hash=raw_hash,
-                    payload=payload,
-                    fetched_at=fetched,
-                    imported_at=kst_now(),
-                )
-                session.add(row)
-            # 동일 key/동일 hash 재시도는 no-op으로 취급한다.
+        self.ingest_batch(
+            source_records=[
+                {
+                    "source_record_key": source_record_key,
+                    "provider": provider,
+                    "dataset_key": dataset_key,
+                    "source_entity_type": source_entity_type,
+                    "source_entity_id": source_entity_id,
+                    "payload": payload,
+                    "fetched_at": fetched_at or kst_now(),
+                }
+            ]
+        )
 
     @staticmethod
     def _ranked_current_ids(session: Session, stmt: Any) -> Any:

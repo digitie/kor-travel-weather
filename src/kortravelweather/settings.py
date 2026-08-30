@@ -23,6 +23,7 @@ class WeatherSettings(BaseSettings):
         env_file=(".env",),
         extra="forbid",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
     environment: str = Field(default="development", validation_alias="KOR_TRAVEL_WEATHER_ENV")
