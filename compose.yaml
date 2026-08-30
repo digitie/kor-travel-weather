@@ -1,0 +1,124 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-weather}
+      POSTGRES_USER: ${POSTGRES_USER:-weather}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    # Bind service ports to loopback; expose them through an authenticated
+    # gateway/SSH tunnel rather than publishing the database directly.
+    ports:
+      - "127.0.0.1:11000:5432"
+    volumes:
+      - weather-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "0"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      # Compose is a production-shaped deployment surface.  Local SQLite
+      # development runs should use uvicorn directly with an explicit
+      # ``KOR_TRAVEL_WEATHER_ENV=development``; never let a copied example
+      # file silently disable admin authentication in this stack.
+      KOR_TRAVEL_WEATHER_ENV: production
+      # Pass the password through libpq rather than interpolating it in a URL;
+      # punctuation such as @ and : therefore remains safe.
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '["http://127.0.0.1:11003"]'
+      KOR_TRAVEL_WEATHER_GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-container}
+    ports:
+      - "127.0.0.1:11001:11001"
+    command: ["uvicorn", "kortravelweather_api.app:app", "--host", "0.0.0.0", "--port", "11001"]
+    working_dir: /app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11001/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  dagster:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "1"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DAGSTER_HOME: /opt/dagster/home
+      KOR_TRAVEL_WEATHER_ENV: production
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
+      KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-15}
+      KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-1}
+      KOR_TRAVEL_WEATHER_TARGETS: ${KOR_TRAVEL_WEATHER_TARGETS:-[]}
+      KOR_TRAVEL_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_WEATHER_EXTRA_POINTS:-}
+      KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN:-300}
+      KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN:-10000}
+      KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
+      KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-500000}
+    ports:
+      - "127.0.0.1:11002:11002"
+    volumes:
+      - dagster-home:/opt/dagster/home
+    command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "11002"]
+    working_dir: /app
+
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "0"
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      WEATHER_API_INTERNAL_URL: http://api:11001
+      WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      WEATHER_UI_USER: ${WEATHER_UI_USER:-operator}
+      WEATHER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:11003:11003"
+
+volumes:
+  weather-postgres:
+  dagster-home:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
@@ -88,6 +89,7 @@ class ProviderResponse:
     source_record: dict[str, Any]
     values: list[WeatherValue]
     requests_fetched: int = 1
+    response_rows: int = 1
 
 
 _SECRET_KEYS = {
@@ -192,7 +194,10 @@ def make_source_record(
     fetched_at: datetime | None = None,
 ) -> dict[str, Any]:
     safe_payload = redact_secrets(dict(payload))
-    safe_metadata: dict[str, Any] = {"endpoint": endpoint}
+    # Endpoint URLs are part of the persisted lineage.  Apply the same
+    # recursive/query-string redaction used for request params so a custom
+    # endpoint such as ``...?api_key=...`` can never leak a credential.
+    safe_metadata: dict[str, Any] = {"endpoint": redact_secrets(endpoint)}
     if request_params:
         safe_metadata["request_params"] = redact_secrets(dict(request_params))
     if status_code is not None:
@@ -285,6 +290,7 @@ def request_json(
                 )
             if status_code == 429:
                 if attempt + 1 < attempts:
+                    time.sleep(min(0.5 * (2**attempt), 5.0))
                     continue
                 raise ProviderError(
                     "provider rate limit입니다.",
@@ -294,6 +300,7 @@ def request_json(
                 )
             if status_code >= 500:
                 if attempt + 1 < attempts:
+                    time.sleep(min(0.5 * (2**attempt), 5.0))
                     continue
                 raise ProviderError(
                     "provider server 오류입니다.",
@@ -327,20 +334,36 @@ def request_json(
         except (TimeoutError, OSError) as exc:
             last_error = exc
             if attempt + 1 < attempts:
+                time.sleep(min(0.5 * (2**attempt), 5.0))
                 continue
             raise ProviderError(
                 "provider 네트워크/timeout 오류입니다.", code="network", retryable=True
             ) from exc
         except Exception as exc:
-            # httpx.TimeoutException/RequestError는 optional transport가 정의한
-            # 예외이므로 이름으로 분류해 adapter import 의존성을 유지한다.
+            # httpx.RequestError(ConnectError/ReadError/RemoteProtocolError 포함)는
+            # transient transport failure다. import를 이 경계 안에서 수행해
+            # fixture transport와 optional dependency도 계속 지원한다.
             last_error = exc
             name = type(exc).__name__.lower()
-            if (
-                "timeout" in name or "network" in name or "request" in name
-            ) and attempt + 1 < attempts:
+            retryable_transport = (
+                "timeout" in name
+                or "network" in name
+                or "request" in name
+                or "connect" in name
+                or "readerror" in name
+                or "writeerror" in name
+                or "protocol" in name
+            )
+            try:
+                import httpx
+
+                retryable_transport = retryable_transport or isinstance(exc, httpx.RequestError)
+            except ImportError:
+                pass
+            if retryable_transport and attempt + 1 < attempts:
+                time.sleep(min(0.5 * (2**attempt), 5.0))
                 continue
-            if "timeout" in name or "network" in name or "request" in name:
+            if retryable_transport:
                 raise ProviderError(
                     "provider 네트워크/timeout 오류입니다.", code="network", retryable=True
                 ) from exc

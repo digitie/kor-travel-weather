@@ -22,7 +22,7 @@ provider adapter는 외부 client의 응답 shape만 정규화하며, 공통 tra
 | `visual_crossing` | `visual_crossing_timeline` | `VISUAL_CROSSING_API_KEY` | metric, timezone → UTC |
 | `tomorrow_io` | `tomorrow_io_realtime`, `tomorrow_io_forecast` | `TOMORROW_IO_API_KEY` | SI, ISO-8601 → UTC |
 | `weatherbit` | `weatherbit_current`, `weatherbit_forecast` | `WEATHERBIT_API_KEY` | metric, timestamp → UTC |
-| `weatherstack` | `weatherstack_current` | `WEATHERSTACK_API_KEY` | metric, timezone → UTC |
+| `weatherstack` | `weatherstack_current` | `WEATHERSTACK_API_KEY` | HTTPS only, timezone → UTC |
 | `accuweather` | `accuweather_current`, `accuweather_forecast` | `ACCUWEATHER_API_KEY` | metric, ISO/epoch → UTC |
 | `wttr_in` | `wttr_in_current`, `wttr_in_forecast` | 없음 | metric, location timezone → UTC |
 

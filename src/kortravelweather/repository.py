@@ -12,13 +12,15 @@ import hashlib
 import json
 import math
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -34,9 +36,13 @@ from sqlalchemy import (
     nullslast,
     select,
     text,
+    true,
+    update,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeDecorator
 
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
@@ -67,13 +73,13 @@ class AwareDateTime(TypeDecorator[datetime]):
         if value.tzinfo is None:
             raise ValueError("datetime은 timezone-aware여야 합니다.")
         if dialect.name == "sqlite":
-            return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value.astimezone(UTC).replace(tzinfo=None)
         return value
 
     def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class WeatherLocationRow(Base):
@@ -81,6 +87,12 @@ class WeatherLocationRow(Base):
     __table_args__ = (
         Index("ix_weather_locations_enabled_region", "enabled", "region_code"),
         Index("ix_weather_locations_coordinates", "latitude", "longitude"),
+        CheckConstraint("latitude >= 33 AND latitude <= 43", name="ck_weather_locations_latitude"),
+        CheckConstraint(
+            "longitude >= 124 AND longitude <= 132", name="ck_weather_locations_longitude"
+        ),
+        CheckConstraint("nx IS NULL OR (nx >= 1 AND nx <= 300)", name="ck_weather_locations_nx"),
+        CheckConstraint("ny IS NULL OR (ny >= 1 AND ny <= 300)", name="ck_weather_locations_ny"),
     )
 
     location_id: Mapped[str] = mapped_column(String(120), primary_key=True)
@@ -90,9 +102,11 @@ class WeatherLocationRow(Base):
     nx: Mapped[int | None] = mapped_column(Integer)
     ny: Mapped[int | None] = mapped_column(Integer)
     region_code: Mapped[str | None] = mapped_column(String(32))
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
-        "metadata", JSON, nullable=False, default=dict
+        "metadata", JSON, nullable=False, default=dict, server_default=text("'{}'")
     )
     created_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
@@ -120,7 +134,9 @@ class SourceRecordRow(Base):
     source_entity_type: Mapped[str] = mapped_column(String(80), nullable=False)
     source_entity_id: Mapped[str] = mapped_column(String(200), nullable=False)
     raw_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'")
+    )
     fetched_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     imported_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
@@ -142,6 +158,14 @@ class WeatherValueRow(Base):
         Index("ix_weather_values_location_time", "location_id", "valid_at", "observed_at"),
         Index("ix_weather_values_location_target_known", "location_id", "target_at", "known_at"),
         Index("ix_weather_values_dataset_metric", "dataset_key", "metric_key"),
+        CheckConstraint(
+            "value_number IS NOT NULL OR value_text IS NOT NULL",
+            name="ck_weather_values_has_value",
+        ),
+        CheckConstraint(
+            "valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from",
+            name="ck_weather_values_valid_window",
+        ),
     )
 
     value_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -171,7 +195,9 @@ class WeatherValueRow(Base):
     target_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     normalization_version: Mapped[str] = mapped_column(String(40), nullable=False)
-    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'")
+    )
     collected_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     source_record_key: Mapped[str] = mapped_column(
         String(255),
@@ -182,7 +208,20 @@ class WeatherValueRow(Base):
 
 class SyncRunRow(Base):
     __tablename__ = "weather_sync_runs"
-    __table_args__ = (Index("ix_weather_sync_runs_started", "started_at"),)
+    __table_args__ = (
+        Index("ix_weather_sync_runs_started", "started_at"),
+        # A provider/dataset may have at most one live run.  The application
+        # checks first for a useful error message, while this partial unique
+        # index closes the check-then-insert race between workers.
+        Index(
+            "uq_weather_sync_runs_active",
+            "provider",
+            "dataset_key",
+            unique=True,
+            sqlite_where=text("status = 'running'"),
+            postgresql_where=text("status = 'running'"),
+        ),
+    )
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     provider: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -190,10 +229,38 @@ class SyncRunRow(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     started_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
-    locations_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    grids_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    values_loaded: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    locations_total: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    grids_fetched: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    mid_groups_fetched: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    requests_fetched: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    values_loaded: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class SyncRunSourceRow(Base):
+    """한 실행이 관측한 immutable source response association."""
+
+    __tablename__ = "weather_sync_run_sources"
+
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("weather_sync_runs.run_id", ondelete="RESTRICT"), primary_key=True
+    )
+    source_record_key: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    recorded_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
 def _ensure_sqlite_parent(database_url: str) -> None:
@@ -216,6 +283,23 @@ def _payload_hash(payload: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _canonical_datetime(value: datetime | None) -> datetime | None:
+    """Normalize equivalent aware instants before DB comparison/identity."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        raise ValueError("datetime은 timezone-aware여야 합니다.")
+    return value.astimezone(UTC)
+
+
+def _canonical_row_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return value
+    return _canonical_datetime(value)
+
+
 def _metric_source_key(value: WeatherValue) -> str:
     """Legacy/custom DTO도 안정적인 local lineage를 갖도록 한다.
 
@@ -223,14 +307,66 @@ def _metric_source_key(value: WeatherValue) -> str:
     수동 fixture나 API 테스트에서만 사용하며 전체 response인 것처럼 가장하지
     않도록 ``metric_row`` entity type으로 기록한다.
     """
+    identity = list(value.identity())
+    if identity[6] is not None:
+        identity[6] = identity[6].astimezone(UTC).isoformat()
     canonical = json.dumps(
-        [value.provider, value.dataset_key, value.location_id, value.identity(), value.payload],
+        [value.provider, value.dataset_key, value.location_id, identity, value.payload],
         ensure_ascii=False,
         sort_keys=True,
         default=str,
         separators=(",", ":"),
     )
     return "sr_local_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
+
+
+def install_immutability_triggers(engine: Engine) -> None:
+    """Block direct UPDATE/DELETE of source and weather fact history."""
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            connection.exec_driver_sql(
+                """
+                CREATE TRIGGER IF NOT EXISTS weather_source_records_no_update
+                BEFORE UPDATE ON weather_source_records
+                BEGIN SELECT RAISE(ABORT, 'weather_source_records is immutable'); END;
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE TRIGGER IF NOT EXISTS weather_source_records_no_delete
+                BEFORE DELETE ON weather_source_records
+                BEGIN SELECT RAISE(ABORT, 'weather_source_records is immutable'); END;
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE TRIGGER IF NOT EXISTS weather_values_no_update
+                BEFORE UPDATE ON weather_values
+                BEGIN SELECT RAISE(ABORT, 'weather_values is immutable'); END;
+                """
+            )
+            connection.exec_driver_sql(
+                """
+                CREATE TRIGGER IF NOT EXISTS weather_values_no_delete
+                BEFORE DELETE ON weather_values
+                BEGIN SELECT RAISE(ABORT, 'weather_values is immutable'); END;
+                """
+            )
+        elif engine.dialect.name == "postgresql":
+            connection.exec_driver_sql(
+                """
+                CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
+                LANGUAGE plpgsql AS $$ BEGIN
+                  RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
+                END; $$;
+                """
+            )
+            for table in ("weather_source_records", "weather_values"):
+                connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
+                connection.exec_driver_sql(
+                    f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
+                    "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
+                )
 
 
 class WeatherRepository:
@@ -246,19 +382,34 @@ class WeatherRepository:
         normalized_url = database_url
         if normalized_url.startswith("postgresql://"):
             normalized_url = "postgresql+psycopg://" + normalized_url.removeprefix("postgresql://")
-        self.engine: Engine = create_engine(normalized_url, future=True, connect_args=connect_args)
+        engine_options: dict[str, Any] = {"future": True, "connect_args": connect_args}
+        if normalized_url in {"sqlite:///:memory:", "sqlite://"}:
+            # A TestClient/API request may run on another worker thread. Keep
+            # one shared in-memory connection so its schema and fixtures are
+            # visible across those threads.
+            engine_options["poolclass"] = StaticPool
+        self.engine: Engine = create_engine(normalized_url, **engine_options)
         if normalized_url.startswith("sqlite"):
 
             @event.listens_for(self.engine, "connect")
             def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=10000")
                 cursor.close()
 
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_schema(self) -> None:
         Base.metadata.create_all(self.engine)
+        install_immutability_triggers(self.engine)
+
+    def _begin_write(self, session: Session) -> None:
+        if self.engine.dialect.name == "sqlite":
+            # ``SELECT ... FOR UPDATE`` is a no-op on SQLite.  BEGIN IMMEDIATE
+            # obtains the database writer lock before a check-then-insert so
+            # concurrent replaying workers observe the committed winner.
+            session.execute(text("BEGIN IMMEDIATE"))
 
     def _location_model(self, row: WeatherLocationRow) -> WeatherLocation:
         return WeatherLocation(
@@ -312,19 +463,61 @@ class WeatherRepository:
             finished_at=row.finished_at,
             locations_total=row.locations_total,
             grids_fetched=row.grids_fetched,
+            mid_groups_fetched=row.mid_groups_fetched,
+            requests_fetched=row.requests_fetched,
             values_loaded=row.values_loaded,
             error=row.error,
         )
 
+    def _lock_location_session(self, session: Session, location_id: str) -> None:
+        """Serialize anchor mutation and fact publication for one location."""
+        if self.engine.dialect.name == "postgresql":
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:location_scope))"),
+                {"location_scope": f"location:{location_id}"},
+            )
+        # SQLite ignores FOR UPDATE but serializes the eventual writer; the
+        # PostgreSQL row lock closes the read/check/update race explicitly.
+        session.execute(
+            select(WeatherLocationRow.location_id)
+            .where(WeatherLocationRow.location_id == location_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+
     def upsert_location(self, location: WeatherLocation) -> WeatherLocation:
         now = kst_now()
         with self._session_factory.begin() as session:
+            self._begin_write(session)
+            self._lock_location_session(session, location.location_id)
             row = session.get(WeatherLocationRow, location.location_id)
             if row is None:
                 row = WeatherLocationRow(
                     location_id=location.location_id, created_at=now, updated_at=now
                 )
                 session.add(row)
+            else:
+                coordinate_changed = any(
+                    current != incoming
+                    for current, incoming in (
+                        (float(row.latitude), location.latitude),
+                        (float(row.longitude), location.longitude),
+                        (row.nx, location.nx),
+                        (row.ny, location.ny),
+                    )
+                )
+                if (
+                    coordinate_changed
+                    and session.scalar(
+                        select(WeatherValueRow.value_id)
+                        .where(WeatherValueRow.location_id == location.location_id)
+                        .limit(1)
+                    )
+                    is not None
+                ):
+                    raise ValueError(
+                        "fact가 있는 location의 좌표/grid는 변경할 수 없습니다. "
+                        "새 location_id를 사용하세요."
+                    )
             row.name = location.name
             row.latitude = location.latitude
             row.longitude = location.longitude
@@ -336,25 +529,138 @@ class WeatherRepository:
             row.updated_at = now
         return location
 
+    def create_location(self, location: WeatherLocation) -> WeatherLocation:
+        """Insert a new catalog row without an update-on-conflict path."""
+        now = kst_now()
+        try:
+            with self._session_factory.begin() as session:
+                self._begin_write(session)
+                self._lock_location_session(session, location.location_id)
+                if session.get(WeatherLocationRow, location.location_id) is not None:
+                    raise ValueError(f"location_id가 이미 존재합니다: {location.location_id}")
+                session.add(
+                    WeatherLocationRow(
+                        location_id=location.location_id,
+                        name=location.name,
+                        latitude=location.latitude,
+                        longitude=location.longitude,
+                        nx=location.nx,
+                        ny=location.ny,
+                        region_code=location.region_code,
+                        enabled=location.enabled,
+                        metadata_json=location.metadata,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        except IntegrityError as exc:
+            raise ValueError(f"location_id가 이미 존재합니다: {location.location_id}") from exc
+        return location
+
+    def patch_location(self, location_id: str, changes: Mapping[str, Any]) -> WeatherLocation:
+        """Apply an admin patch atomically without overwriting concurrent fields."""
+        with self._session_factory.begin() as session:
+            self._begin_write(session)
+            self._lock_location_session(session, location_id)
+            row = session.get(WeatherLocationRow, location_id)
+            if row is None:
+                raise KeyError(location_id)
+            current = self._location_model(row)
+            patch = dict(changes)
+            if patch.get("metadata") is None and "metadata" in patch:
+                patch["metadata"] = {}
+            updated = WeatherLocation.model_validate({**current.model_dump(), **patch})
+            coordinate_changed = any(
+                getattr(current, field) != getattr(updated, field)
+                for field in ("latitude", "longitude", "nx", "ny")
+            )
+            if (
+                coordinate_changed
+                and session.scalar(
+                    select(WeatherValueRow.value_id)
+                    .where(WeatherValueRow.location_id == location_id)
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise ValueError(
+                    "fact가 있는 location의 좌표/grid는 변경할 수 없습니다. "
+                    "새 location_id를 사용하세요."
+                )
+            row.name = updated.name
+            row.latitude = updated.latitude
+            row.longitude = updated.longitude
+            row.nx = updated.nx
+            row.ny = updated.ny
+            row.region_code = updated.region_code
+            row.enabled = updated.enabled
+            row.metadata_json = updated.metadata
+            row.updated_at = kst_now()
+            return updated
+
+    def ensure_location_grid(
+        self,
+        location_id: str,
+        *,
+        nx: int,
+        ny: int,
+        latitude: float | None = None,
+        longitude: float | None = None,
+    ) -> WeatherLocation:
+        """Persist a derived KMA grid without replaying a stale catalog row."""
+        with self._session_factory.begin() as session:
+            self._begin_write(session)
+            self._lock_location_session(session, location_id)
+            row = session.get(WeatherLocationRow, location_id)
+            if row is None:
+                raise KeyError(location_id)
+            if latitude is not None and float(row.latitude) != latitude:
+                raise ValueError("location 좌표가 변경되어 grid 계산 결과를 적용할 수 없습니다.")
+            if longitude is not None and float(row.longitude) != longitude:
+                raise ValueError("location 좌표가 변경되어 grid 계산 결과를 적용할 수 없습니다.")
+            if (row.nx, row.ny) == (nx, ny):
+                return self._location_model(row)
+            if row.nx is not None and row.nx != nx:
+                raise ValueError("location의 기존 KMA grid는 변경할 수 없습니다.")
+            if row.ny is not None and row.ny != ny:
+                raise ValueError("location의 기존 KMA grid는 변경할 수 없습니다.")
+            # Legacy/admin rows may have only one half of the optional pair.
+            # Fill the missing coordinate while preserving the existing half.
+            row.nx = nx if row.nx is None else row.nx
+            row.ny = ny if row.ny is None else row.ny
+            row.updated_at = kst_now()
+            return self._location_model(row)
+
     def get_location(self, location_id: str) -> WeatherLocation | None:
         with self._session_factory() as session:
             row = session.get(WeatherLocationRow, location_id)
             return self._location_model(row) if row else None
+
+    def has_values(self, location_id: str) -> bool:
+        """위치 anchor를 변경해도 되는지 확인하는 최소 projection."""
+        with self._session_factory() as session:
+            return (
+                session.scalar(
+                    select(WeatherValueRow.value_id)
+                    .where(WeatherValueRow.location_id == location_id)
+                    .limit(1)
+                )
+                is not None
+            )
 
     def list_locations(
         self,
         *,
         enabled_only: bool = False,
         search: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
         offset: int = 0,
     ) -> list[WeatherLocation]:
         with self._session_factory() as session:
-            stmt = (
-                select(WeatherLocationRow)
-                .order_by(WeatherLocationRow.name)
-                .limit(limit)
-                .offset(offset)
+            # Stable tie-breaker keeps offset pagination deterministic when
+            # many anchors share a display name.
+            stmt = select(WeatherLocationRow).order_by(
+                WeatherLocationRow.name, WeatherLocationRow.location_id
             )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
@@ -364,7 +670,29 @@ class WeatherRepository:
                     WeatherLocationRow.name.ilike(needle)
                     | WeatherLocationRow.location_id.ilike(needle)
                 )
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            if offset:
+                stmt = stmt.offset(offset)
             return [self._location_model(row) for row in session.scalars(stmt).all()]
+
+    def count_locations(
+        self,
+        *,
+        enabled_only: bool = False,
+        search: str | None = None,
+    ) -> int:
+        with self._session_factory() as session:
+            stmt = select(func.count()).select_from(WeatherLocationRow)
+            if enabled_only:
+                stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            if search:
+                needle = f"%{search.strip()}%"
+                stmt = stmt.where(
+                    WeatherLocationRow.name.ilike(needle)
+                    | WeatherLocationRow.location_id.ilike(needle)
+                )
+            return int(session.scalar(stmt) or 0)
 
     def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> None:
         source_record_key = str(record["source_record_key"])
@@ -404,9 +732,49 @@ class WeatherRepository:
                 )
             )
 
+    @staticmethod
+    def _validate_source_lineage(
+        session: Session, source: SourceRecordRow, value: WeatherValue
+    ) -> None:
+        """Ensure a known KMA response entity can serve this location.
+
+        A grid response is intentionally fanned out to every catalog anchor on
+        that grid.  Other response entities are location-scoped and must name
+        the same anchor; unknown generic entity types remain extensible.
+        """
+        if source.source_entity_type not in {"weather_response", "kma_grid"}:
+            return
+        entity_id = source.source_entity_id
+        if entity_id == value.location_id:
+            return
+        if entity_id.startswith(("mid-land:", "mid-temperature:")):
+            expected_region = entity_id.split(":", 1)[1]
+            payload_region = value.payload.get("reg_id", value.payload.get("regId"))
+            if payload_region is not None and str(payload_region).strip() == expected_region:
+                return
+            raise ValueError(
+                f"source record 중기 지역이 fact와 일치하지 않습니다: "
+                f"{entity_id} -> {payload_region!r}"
+            )
+        if entity_id.startswith("grid:"):
+            parts = entity_id.split(":")
+            if len(parts) >= 3:
+                try:
+                    source_nx, source_ny = int(parts[1]), int(parts[2])
+                except ValueError:
+                    source_nx = source_ny = -1
+                location = session.get(WeatherLocationRow, value.location_id)
+                if location is not None and (location.nx, location.ny) == (source_nx, source_ny):
+                    return
+        raise ValueError(
+            f"source record entity가 location과 일치하지 않습니다: "
+            f"{source.source_entity_id} -> {value.location_id}"
+        )
+
     def _insert_value_session(self, session: Session, value: WeatherValue) -> bool:
+        self._lock_location_session(session, value.location_id)
         source_key = value.source_record_key or _metric_source_key(value)
-        canonical_target = (
+        canonical_target = _canonical_datetime(
             value.target_at
             or value.valid_at
             or value.observed_at
@@ -419,8 +787,11 @@ class WeatherRepository:
                 text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
                 {"source_key": source_key},
             )
+        explicit_source = value.source_record_key is not None
         source = session.get(SourceRecordRow, source_key)
         if source is None:
+            if explicit_source:
+                raise ValueError(f"source record를 먼저 기록해야 합니다: {source_key}")
             # Explicit response records should be inserted by Dagster first;
             # this fallback keeps hand-authored fixtures usable without claiming
             # their row payload is the full provider response.
@@ -437,16 +808,66 @@ class WeatherRepository:
                     imported_at=kst_now(),
                 )
             )
+            canonical_known = _canonical_datetime(value.known_at or value.collected_at)
+            canonical_collected = _canonical_datetime(value.collected_at)
         elif source.provider != value.provider or source.dataset_key != value.dataset_key:
             raise ValueError(f"immutable source record 충돌: {source_key}")
+        else:
+            self._validate_source_lineage(session, source, value)
+            # A response key is stable across re-fetches. Preserve the first
+            # source observation clock so a later transport timestamp cannot
+            # turn an identical response into a false immutable conflict.
+            canonical_known = _canonical_datetime(source.fetched_at)
+            canonical_collected = _canonical_datetime(source.fetched_at)
         row = session.get(WeatherValueRow, value_id)
         if row is not None:
-            if (
-                row.payload != value.payload
-                or row.value_number != value.value_number
-                or row.value_text != value.value_text
-            ):
-                raise ValueError(f"immutable weather fact 충돌: {value_id}")
+            expected = {
+                "location_id": value.location_id,
+                "provider": value.provider,
+                "dataset_key": value.dataset_key,
+                "weather_domain": value.weather_domain,
+                "forecast_style": value.forecast_style.value,
+                "timeline_bucket": value.timeline_bucket.value if value.timeline_bucket else None,
+                "metric_key": value.metric_key,
+                "metric_name": value.metric_name,
+                "source_metric_key": value.source_metric_key,
+                "source_metric_name": value.source_metric_name,
+                "value_number": value.value_number,
+                "value_text": value.value_text,
+                "unit": value.unit,
+                "severity": value.severity,
+                "issued_at": _canonical_datetime(value.issued_at),
+                "valid_at": _canonical_datetime(value.valid_at),
+                "valid_from": _canonical_datetime(value.valid_from),
+                "valid_until": _canonical_datetime(value.valid_until),
+                "observed_at": _canonical_datetime(value.observed_at),
+                "target_at": canonical_target,
+                "known_at": canonical_known,
+                "normalization_version": value.normalization_version,
+                "payload": value.payload,
+                "collected_at": canonical_collected,
+                "source_record_key": source_key,
+            }
+            actual = {
+                key: (
+                    _canonical_row_datetime(getattr(row, key))
+                    if key in {
+                        "issued_at",
+                        "valid_at",
+                        "valid_from",
+                        "valid_until",
+                        "observed_at",
+                        "target_at",
+                        "known_at",
+                        "collected_at",
+                    }
+                    else getattr(row, key if key != "payload" else "payload")
+                )
+                for key in expected
+            }
+            if actual != expected:
+                changed = sorted(key for key in expected if actual[key] != expected[key])
+                raise ValueError(f"immutable weather fact 충돌: {value_id} ({', '.join(changed)})")
             return False
         row = WeatherValueRow(value_id=value_id)
         session.add(row)
@@ -464,18 +885,81 @@ class WeatherRepository:
         row.value_text = value.value_text
         row.unit = value.unit
         row.severity = value.severity
-        row.issued_at = value.issued_at
-        row.valid_at = value.valid_at
-        row.valid_from = value.valid_from
-        row.valid_until = value.valid_until
-        row.observed_at = value.observed_at
+        row.issued_at = _canonical_datetime(value.issued_at)
+        row.valid_at = _canonical_datetime(value.valid_at)
+        row.valid_from = _canonical_datetime(value.valid_from)
+        row.valid_until = _canonical_datetime(value.valid_until)
+        row.observed_at = _canonical_datetime(value.observed_at)
         row.target_at = canonical_target
-        row.known_at = value.known_at or value.collected_at
+        row.known_at = canonical_known
         row.normalization_version = value.normalization_version
         row.payload = value.payload
-        row.collected_at = value.collected_at
+        row.collected_at = canonical_collected
         row.source_record_key = source_key
         return True
+
+    def _ingest_batch_session(
+        self,
+        session: Session,
+        records: list[Mapping[str, Any]],
+        facts: list[WeatherValue],
+    ) -> int:
+        # Lock and validate every referenced run before source/fact work.
+        # Reconciliation and finish use the same row-level lock/conditional
+        # transition, so a terminal run cannot publish after ownership loss.
+        run_rows: dict[str, SyncRunRow] = {}
+        for record in records:
+            run_id = record.get("run_id")
+            if run_id is None:
+                continue
+            run_key = str(run_id)
+            if run_key in run_rows:
+                continue
+            run = session.execute(
+                select(SyncRunRow)
+                .where(SyncRunRow.run_id == run_key)
+                .with_for_update()
+            ).scalar_one_or_none()
+            if run is None:
+                raise ValueError(f"sync run을 찾을 수 없습니다: {run_id}")
+            if run.status != "running":
+                raise ValueError(f"sync run이 이미 종료되었습니다: {run_id}")
+            run_rows[run_key] = run
+        for record in records:
+            self._record_source_session(session, record)
+        # pending source rows must be visible to FK checks/value lookup.
+        session.flush()
+        for record in records:
+            run_id = record.get("run_id")
+            if run_id is not None:
+                source_key = str(record["source_record_key"])
+                run = run_rows[str(run_id)]
+                source_provider = str(record["provider"])
+                source_dataset = str(record["dataset_key"])
+                dataset_matches = run.dataset_key == source_dataset or (
+                    run.dataset_key == "kma_weather_bundle" and source_dataset.startswith("kma_")
+                )
+                if run.provider != source_provider or not dataset_matches:
+                    raise ValueError(
+                        "sync run과 source record의 provider/dataset이 일치하지 않습니다."
+                    )
+                existing = session.get(
+                    SyncRunSourceRow, {"run_id": str(run_id), "source_record_key": source_key}
+                )
+                if existing is None:
+                    session.add(
+                        SyncRunSourceRow(
+                            run_id=str(run_id),
+                            source_record_key=source_key,
+                            recorded_at=kst_now(),
+                        )
+                    )
+        # Acquire location locks in a stable order before inserting facts;
+        # concurrent batches that touch several anchors cannot deadlock by
+        # taking the same advisory/row locks in opposite orders.
+        for location_id in sorted({value.location_id for value in facts}):
+            self._lock_location_session(session, location_id)
+        return sum(self._insert_value_session(session, value) for value in facts)
 
     def ingest_batch(
         self,
@@ -489,12 +973,48 @@ class WeatherRepository:
         if not records and not facts:
             return 0
         with self._session_factory.begin() as session:
-            for record in records:
-                self._record_source_session(session, record)
-            # pending source rows must be visible to FK checks/value lookup.
-            session.flush()
-            inserted = sum(self._insert_value_session(session, value) for value in facts)
-        return inserted
+            self._begin_write(session)
+            return self._ingest_batch_session(session, records, facts)
+
+    def publish_and_finish(
+        self,
+        *,
+        run_id: str,
+        source_records: list[Mapping[str, Any]],
+        values: list[WeatherValue],
+        grids_fetched: int,
+        mid_groups_fetched: int = 0,
+        requests_fetched: int = 0,
+        status: str = "success",
+        error: str | None = None,
+    ) -> tuple[int, SyncRun]:
+        """Publish facts and terminalize their run in one transaction.
+
+        Keeping the run row lock until the conditional terminal transition
+        prevents stale-run recovery from observing a half-published success.
+        """
+        with self._session_factory.begin() as session:
+            self._begin_write(session)
+            loaded = self._ingest_batch_session(session, source_records, values)
+            result = session.execute(
+                update(SyncRunRow)
+                .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
+                .values(
+                    status=status,
+                    finished_at=kst_now(),
+                    grids_fetched=grids_fetched,
+                    mid_groups_fetched=mid_groups_fetched,
+                    requests_fetched=requests_fetched,
+                    values_loaded=loaded,
+                    error=error,
+                )
+            )
+            if result.rowcount != 1:
+                raise RuntimeError("sync run ownership was lost before publish completion")
+            row = session.get(SyncRunRow, run_id)
+            if row is None:
+                raise KeyError(run_id)
+            return loaded, self._sync_model(row)
 
     def upsert_values(self, values: list[WeatherValue]) -> int:
         # Historical method name is retained for callers; semantics are now
@@ -552,8 +1072,7 @@ class WeatherRepository:
             .label("revision_rank"),
         ).select_from(WeatherValueRow)
         # ``stmt`` is a select(WeatherValueRow) with all public filters applied.
-        ranked = ranked.where(*stmt._where_criteria).subquery("current_weather_revision")
-        return ranked
+        return ranked.where(*stmt._where_criteria).subquery("current_weather_revision")
 
     def latest_values(self, location_id: str, *, limit: int = 100) -> list[WeatherValue]:
         with self._session_factory() as session:
@@ -573,6 +1092,40 @@ class WeatherRepository:
                 .limit(limit)
             )
             return [self._value_model(row) for row in session.scalars(stmt).all()]
+
+    def latest_values_many(
+        self, location_ids: Sequence[str], *, limit_per_location: int = 100
+    ) -> dict[str, list[WeatherValue]]:
+        """Fetch current projections for several locations in one query."""
+        if not location_ids:
+            return {}
+        with self._session_factory() as session:
+            timestamp = func.coalesce(
+                WeatherValueRow.target_at,
+                WeatherValueRow.valid_at,
+                WeatherValueRow.observed_at,
+                WeatherValueRow.issued_at,
+            )
+            base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
+            ranked = self._ranked_current_ids(session, base)
+            current = (
+                select(WeatherValueRow)
+                .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
+                .where(ranked.c.revision_rank == 1)
+                .order_by(
+                    WeatherValueRow.location_id,
+                    desc(timestamp),
+                    desc(WeatherValueRow.known_at),
+                )
+            )
+            result: dict[str, list[WeatherValue]] = {
+                location_id: [] for location_id in location_ids
+            }
+            for row in session.scalars(current).all():
+                values = result.setdefault(row.location_id, [])
+                if len(values) < limit_per_location:
+                    values.append(self._value_model(row))
+            return result
 
     def timeline(
         self,
@@ -618,7 +1171,7 @@ class WeatherRepository:
         추가할 수 있다. API 계약과 저장 포맷은 좌표계를 고정하므로 소비자 영향 없이
         query plan을 교체할 수 있다.
         """
-        candidates = self.list_locations(enabled_only=True, limit=10000)
+        candidates = self.list_locations(enabled_only=True, limit=None)
         earth_km = 6371.0088
         lat1 = math.radians(latitude)
         result: list[tuple[WeatherLocation, float]] = []
@@ -647,9 +1200,60 @@ class WeatherRepository:
             started_at=kst_now(),
             locations_total=locations_total,
         )
-        with self._session_factory.begin() as session:
-            session.add(SyncRunRow(**run.model_dump()))
+        try:
+            with self._session_factory.begin() as session:
+                self._begin_write(session)
+                if self.engine.dialect.name == "postgresql":
+                    session.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtext(:run_scope))"),
+                        {"run_scope": f"{provider}:{dataset_key}"},
+                    )
+                self._reconcile_stale_sync_runs_session(session)
+                active = session.scalar(
+                    select(SyncRunRow.run_id)
+                    .where(
+                        SyncRunRow.provider == provider,
+                        SyncRunRow.dataset_key == dataset_key,
+                        SyncRunRow.status == "running",
+                    )
+                    .limit(1)
+                )
+                if active is not None:
+                    raise RuntimeError(f"동일 provider/dataset 실행이 이미 진행 중입니다: {active}")
+                session.add(SyncRunRow(**run.model_dump()))
+        except IntegrityError as exc:
+            # SQLite writers cannot take a PostgreSQL advisory lock, so the
+            # partial unique index is the final race guard there.
+            raise RuntimeError(
+                "동일 provider/dataset 실행이 이미 진행 중입니다 (concurrent insert)."
+            ) from exc
         return run
+
+    def reconcile_stale_sync_runs(self, *, max_age_minutes: int = 180) -> int:
+        """프로세스 중단으로 남은 running row를 failed로 회수한다."""
+        with self._session_factory.begin() as session:
+            self._begin_write(session)
+            if self.engine.dialect.name == "postgresql":
+                session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('weather_sync_reconcile'))")
+                )
+            return self._reconcile_stale_sync_runs_session(session, max_age_minutes=max_age_minutes)
+
+    @staticmethod
+    def _reconcile_stale_sync_runs_session(
+        session: Session, *, max_age_minutes: int = 180
+    ) -> int:
+        cutoff = kst_now() - timedelta(minutes=max_age_minutes)
+        result = session.execute(
+            update(SyncRunRow)
+            .where(SyncRunRow.status == "running", SyncRunRow.started_at < cutoff)
+            .values(
+                status="failed",
+                finished_at=kst_now(),
+                error="stale sync run recovered after worker interruption",
+            )
+        )
+        return int(result.rowcount or 0)
 
     def finish_sync_run(
         self,
@@ -657,25 +1261,69 @@ class WeatherRepository:
         *,
         status: str,
         grids_fetched: int = 0,
+        mid_groups_fetched: int = 0,
+        requests_fetched: int = 0,
         values_loaded: int = 0,
         error: str | None = None,
     ) -> SyncRun:
         with self._session_factory.begin() as session:
+            self._begin_write(session)
+            session.execute(
+                update(SyncRunRow)
+                .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
+                .values(
+                    status=status,
+                    finished_at=kst_now(),
+                    grids_fetched=grids_fetched,
+                    mid_groups_fetched=mid_groups_fetched,
+                    requests_fetched=requests_fetched,
+                    values_loaded=values_loaded,
+                    error=error,
+                )
+            )
             row = session.get(SyncRunRow, run_id)
             if row is None:
                 raise KeyError(run_id)
-            row.status = status
-            row.finished_at = kst_now()
-            row.grids_fetched = grids_fetched
-            row.values_loaded = values_loaded
-            row.error = error
-            result = self._sync_model(row)
-        return result
+            # Conditional UPDATE is the ownership/CAS boundary. If another
+            # worker reconciled this run first, return its terminal row intact.
+            return self._sync_model(row)
 
     def list_sync_runs(self, *, limit: int = 50) -> list[SyncRun]:
         with self._session_factory() as session:
             stmt = select(SyncRunRow).order_by(desc(SyncRunRow.started_at)).limit(limit)
             return [self._sync_model(row) for row in session.scalars(stmt).all()]
+
+    def get_sync_run(self, run_id: str) -> SyncRun | None:
+        with self._session_factory() as session:
+            row = session.get(SyncRunRow, run_id)
+            return self._sync_model(row) if row else None
+
+    def list_sync_run_sources(self, run_id: str) -> list[str]:
+        with self._session_factory() as session:
+            stmt = (
+                select(SyncRunSourceRow.source_record_key)
+                .where(SyncRunSourceRow.run_id == run_id)
+                .order_by(SyncRunSourceRow.source_record_key)
+            )
+            return list(session.scalars(stmt).all())
+
+    def get_source_record(self, source_record_key: str) -> dict[str, Any] | None:
+        """관리자/재처리 경계에서 immutable 원천 응답을 읽는다."""
+        with self._session_factory() as session:
+            row = session.get(SourceRecordRow, source_record_key)
+            if row is None:
+                return None
+            return {
+                "source_record_key": row.source_record_key,
+                "provider": row.provider,
+                "dataset_key": row.dataset_key,
+                "source_entity_type": row.source_entity_type,
+                "source_entity_id": row.source_entity_id,
+                "raw_payload_hash": row.raw_payload_hash,
+                "payload": dict(row.payload or {}),
+                "fetched_at": row.fetched_at,
+                "imported_at": row.imported_at,
+            }
 
 
 def repository_from_settings(settings: WeatherSettings | None = None) -> WeatherRepository:

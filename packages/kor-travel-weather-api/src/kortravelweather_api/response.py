@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from time import perf_counter
-from typing import Any
+from typing import Any, Generic, TypeVar
 from uuid import uuid4
 
 from fastapi import Request
@@ -18,6 +18,7 @@ class PageMeta(BaseModel):
     limit: int
     offset: int = 0
     returned: int
+    total: int | None = None
 
 
 class Meta(BaseModel):
@@ -27,6 +28,18 @@ class Meta(BaseModel):
     generated_at: str
     duration_ms: int
     page: PageMeta | None = None
+
+
+ResponseData = TypeVar("ResponseData")
+
+
+class Envelope(BaseModel, Generic[ResponseData]):
+    """Typed public envelope shared by generated API clients."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    data: ResponseData
+    meta: Meta
 
 
 def request_id(request: Request) -> str:
@@ -45,13 +58,14 @@ def make_meta(
     limit: int | None = None,
     offset: int = 0,
     returned: int | None = None,
+    total: int | None = None,
 ) -> Meta:
     return Meta(
         request_id=request_id(request),
         generated_at=kst_now().isoformat(),
         duration_ms=max(0, int((perf_counter() - started_at) * 1000)),
         page=(
-            PageMeta(limit=limit, offset=offset, returned=returned or 0)
+            PageMeta(limit=limit, offset=offset, returned=returned or 0, total=total)
             if limit is not None
             else None
         ),

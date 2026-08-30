@@ -18,6 +18,11 @@ def create_configured_provider(
     **overrides: Any,
 ) -> WeatherProvider:
     runtime = settings or WeatherSettings()
+    if provider_key == "python-kma-api":
+        raise ValueError(
+            "python-kma-api는 외부 HTTP factory가 아니라 "
+            "Dagster KmaClientResource로 생성해야 합니다."
+        )
     if provider_key not in runtime.enabled_providers:
         raise ValueError(f"provider가 비활성화되어 있습니다: {provider_key}")
     spec = provider_spec(provider_key)

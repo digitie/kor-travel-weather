@@ -5,10 +5,11 @@ surface다. API는 `kortravelweather.WeatherValue`의 normalized 필드만 공�
 원천 raw payload는 `source_record_key`로만 추적한다.
 
 ```bash
-cd packages/kor-travel-weather-api
+# Run from the repository root so the shared .env and SQLite path are used.
+cd ../..
 uv sync --extra dev
-uv run uvicorn kortravelweather_api.app:app --reload --port 12721
-uv run python scripts/export_openapi.py
+PYTHONPATH=packages/kor-travel-weather-api/src uv run uvicorn kortravelweather_api.app:app --reload --port 12721
+PYTHONPATH=packages/kor-travel-weather-api/src uv run python packages/kor-travel-weather-api/scripts/export_openapi.py
 ```
 
 공개 경로는 `/v1/weather/*`, 운영 경로는 `/v1/admin/*`이다. 운영에서는

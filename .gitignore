@@ -18,6 +18,7 @@ env/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+*.tsbuildinfo
 .import_linter_cache/
 .coverage
 .coverage.*
@@ -39,6 +40,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+deploy/*.env
 
 # data / artifacts (kept on NTFS, not in git per AGENTS.md §dev-environment)
 data/
@@ -59,9 +61,11 @@ alembic/__pycache__/
 
 # Local tool state
 .dagster/
+.tmp_dagster_home*/
 
 # Node / npm workspace (frontend debug UI — ADR-025/029/043)
 node_modules/
+.next/
 # Windows-side Playwright e2e scratch (frontend WSL + Playwright Windows, #117)
 .e2e-win/
 

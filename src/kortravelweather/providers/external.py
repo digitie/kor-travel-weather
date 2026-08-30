@@ -28,6 +28,7 @@ from .base import (
     parse_datetime,
     request_json,
 )
+from .catalog import provider_spec
 
 TEMP = "TEMP"
 FEELS_LIKE = "FEELS_LIKE"
@@ -146,6 +147,21 @@ class HttpWeatherProvider:
             raise CredentialError(self.provider_key)
         return self.api_key
 
+    def _dataset(self, dataset_key: str | None, default: str) -> str:
+        """Validate dataset against the stable provider catalog before I/O."""
+        dataset = dataset_key or default
+        try:
+            allowed = {item.key for item in provider_spec(self.provider_key).datasets}
+        except KeyError as exc:  # pragma: no cover - adapter registration bug
+            raise ProviderError(
+                f"provider catalog가 없습니다: {self.provider_key}", code="dataset"
+            ) from exc
+        if dataset not in allowed:
+            raise ProviderError(
+                f"{self.provider_key}가 지원하지 않는 dataset입니다: {dataset}", code="dataset"
+            )
+        return dataset
+
     def _request(
         self,
         path: str,
@@ -212,7 +228,13 @@ class HttpWeatherProvider:
         ]
         if not normalized:
             raise ProviderError("provider 응답에 정규화할 weather metric이 없습니다.", code="empty")
-        return ProviderResponse(self.provider_key, dataset_key, source, normalized)
+        return ProviderResponse(
+            self.provider_key,
+            dataset_key,
+            source,
+            normalized,
+            response_rows=max(1, len(rows)),
+        )
 
 
 def _simple_values(
@@ -238,9 +260,7 @@ class WeatherApiProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "weatherapi_current"
-        if dataset not in {"weatherapi_current", "weatherapi_forecast"}:
-            raise ValueError(f"지원하지 않는 dataset: {dataset}")
+        dataset = self._dataset(dataset_key, "weatherapi_current")
         params = {
             "key": self._require_key(),
             "q": f"{location.latitude},{location.longitude}",
@@ -322,9 +342,7 @@ class OpenWeatherMapProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "openweathermap_current"
-        if dataset not in {"openweathermap_current", "openweathermap_forecast"}:
-            raise ValueError(f"지원하지 않는 dataset: {dataset}")
+        dataset = self._dataset(dataset_key, "openweathermap_current")
         params = {
             "appid": self._require_key(),
             "lat": location.latitude,
@@ -401,7 +419,7 @@ class OpenMeteoProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "open_meteo_current"
+        dataset = self._dataset(dataset_key, "open_meteo_current")
         params = {
             "latitude": location.latitude,
             "longitude": location.longitude,
@@ -491,7 +509,7 @@ class VisualCrossingProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "visual_crossing_timeline"
+        dataset = self._dataset(dataset_key, "visual_crossing_timeline")
         params = {
             "key": self._require_key(),
             "unitGroup": "metric",
@@ -570,7 +588,7 @@ class TomorrowIoProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "tomorrow_io_realtime"
+        dataset = self._dataset(dataset_key, "tomorrow_io_realtime")
         path = "weather/forecast" if dataset.endswith("forecast") else "weather/realtime"
         params = {"location": f"{location.latitude},{location.longitude}", "timesteps": "1h"}
         payload, metadata = self._request(
@@ -634,7 +652,7 @@ class WeatherbitProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "weatherbit_current"
+        dataset = self._dataset(dataset_key, "weatherbit_current")
         params = {
             "key": self._require_key(),
             "lat": location.latitude,
@@ -690,7 +708,8 @@ class WeatherbitProvider(HttpWeatherProvider):
 
 class WeatherstackProvider(HttpWeatherProvider):
     provider_key = "weatherstack"
-    default_base_url = "http://api.weatherstack.com"
+    # The API key is sent as a query parameter; never put it on cleartext HTTP.
+    default_base_url = "https://api.weatherstack.com"
 
     def fetch(
         self,
@@ -699,7 +718,7 @@ class WeatherstackProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "weatherstack_current"
+        dataset = self._dataset(dataset_key, "weatherstack_current")
         params = {
             "access_key": self._require_key(),
             "query": f"{location.latitude},{location.longitude}",
@@ -754,7 +773,7 @@ class AccuWeatherProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "accuweather_current"
+        dataset = self._dataset(dataset_key, "accuweather_current")
         key = self._require_key()
         configured = location.provider_metadata.get(
             "accuweather_location_key"
@@ -831,7 +850,7 @@ class WttrInProvider(HttpWeatherProvider):
         dataset_key: str | None = None,
         at: datetime | None = None,
     ) -> ProviderResponse:
-        dataset = dataset_key or "wttr_in_current"
+        dataset = self._dataset(dataset_key, "wttr_in_current")
         place = (
             location.provider_metadata.get("wttr_location")
             or f"{location.latitude},{location.longitude}"

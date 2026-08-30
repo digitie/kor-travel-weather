@@ -1,0 +1,30 @@
+{
+  "name": "kor-travel-weather-admin-frontend",
+  "version": "0.1.0-dev",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 12725",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1 --port 12725",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.66.8",
+    "lucide-react": "^0.468.0",
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.6",
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.5.24",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

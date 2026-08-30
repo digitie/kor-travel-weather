@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any
 
@@ -16,8 +17,11 @@ def run_external_weather_sync(
     targets: Iterable[ProviderLocation],
     dataset_key: str,
     max_targets: int = 10_000,
+    max_response_rows: int = 1_000_000,
+    max_values: int = 500_000,
+    max_payload_bytes: int = 16 * 1024 * 1024,
 ) -> dict[str, Any]:
-    """모든 provider 응답을 메모리에 stage한 후 하나의 publish transaction으로 저장한다."""
+    """응답을 bounded stage한 후 하나의 publish transaction으로 저장한다."""
     target_list = list(targets)
     if not target_list:
         raise ValueError("external weather target이 비어 있습니다.")
@@ -25,6 +29,8 @@ def run_external_weather_sync(
         raise ValueError(f"external weather target 수가 상한을 초과했습니다: {len(target_list)}")
     if len({target.location_id for target in target_list}) != len(target_list):
         raise ValueError("external weather location_id가 중복됩니다.")
+    if max_response_rows <= 0 or max_values <= 0 or max_payload_bytes <= 0:
+        raise ValueError("external weather budget은 양수여야 합니다.")
 
     run = repository.start_sync_run(
         provider=provider.provider_key,
@@ -36,6 +42,31 @@ def run_external_weather_sync(
     try:
         for target in target_list:
             response = provider.fetch(target, dataset_key=dataset_key)
+            if response.provider != provider.provider_key or response.dataset_key != dataset_key:
+                raise ValueError("provider 응답의 provider/dataset 계약이 요청과 다릅니다.")
+            if response.response_rows > max_response_rows:
+                raise ValueError(
+                    f"provider 응답 row 수가 상한을 초과했습니다: {response.response_rows}"
+                )
+            payload_size = len(
+                json.dumps(
+                    response.source_record.get("payload", {}),
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            if payload_size > max_payload_bytes:
+                raise ValueError(
+                    f"provider raw payload가 상한을 초과했습니다: {payload_size} bytes"
+                )
+            if len(staged_values) + len(response.values) > max_values:
+                raise ValueError("external weather normalized value 수가 상한을 초과했습니다.")
+            if any(
+                value.provider != provider.provider_key or value.dataset_key != dataset_key
+                for value in response.values
+            ):
+                raise ValueError("provider 응답 fact의 provider/dataset 계약이 요청과 다릅니다.")
             staged_sources.append({**response.source_record, "run_id": run.run_id})
             staged_values.extend(response.values)
         loaded, finished = repository.publish_and_finish(

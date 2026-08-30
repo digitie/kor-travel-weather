@@ -149,9 +149,69 @@ def upgrade() -> None:
         sa.Column("error", sa.Text(), nullable=True),
     )
     op.create_index("ix_weather_sync_runs_started", "weather_sync_runs", ["started_at"])
+    op.create_index(
+        "uq_weather_sync_runs_active",
+        "weather_sync_runs",
+        ["provider", "dataset_key"],
+        unique=True,
+        sqlite_where=sa.text("status = 'running'"),
+        postgresql_where=sa.text("status = 'running'"),
+    )
+    op.create_table(
+        "weather_sync_run_sources",
+        sa.Column(
+            "run_id",
+            sa.String(length=64),
+            sa.ForeignKey("weather_sync_runs.run_id", ondelete="RESTRICT"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "source_record_key",
+            sa.String(length=255),
+            sa.ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
+            primary_key=True,
+        ),
+        sa.Column("recorded_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        for table in ("weather_source_records", "weather_values"):
+            op.execute(
+                f"CREATE TRIGGER {table}_no_update BEFORE UPDATE ON {table} "
+                "BEGIN SELECT RAISE(ABORT, 'weather history is immutable'); END;"
+            )
+            op.execute(
+                f"CREATE TRIGGER {table}_no_delete BEFORE DELETE ON {table} "
+                "BEGIN SELECT RAISE(ABORT, 'weather history is immutable'); END;"
+            )
+    elif bind.dialect.name == "postgresql":
+        op.execute(
+            """
+            CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
+            LANGUAGE plpgsql AS $$ BEGIN
+              RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
+            END; $$;
+            """
+        )
+        for table in ("weather_source_records", "weather_values"):
+            op.execute(
+                f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
+                "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
+            )
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        for table in ("weather_source_records", "weather_values"):
+            op.execute(f"DROP TRIGGER IF EXISTS {table}_no_update")
+            op.execute(f"DROP TRIGGER IF EXISTS {table}_no_delete")
+    elif bind.dialect.name == "postgresql":
+        for table in ("weather_source_records", "weather_values"):
+            op.execute(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
+        op.execute("DROP FUNCTION IF EXISTS weather_immutable_row()")
+    op.drop_table("weather_sync_run_sources")
+    op.drop_index("uq_weather_sync_runs_active", table_name="weather_sync_runs")
     op.drop_index("ix_weather_sync_runs_started", table_name="weather_sync_runs")
     op.drop_table("weather_sync_runs")
     op.drop_index("ix_weather_values_dataset_metric", table_name="weather_values")

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+import math
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -47,6 +48,20 @@ class WeatherLocation(BaseModel):
     region_code: str | None = Field(default=None, max_length=32)
     enabled: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("latitude", "longitude", mode="after")
+    @classmethod
+    def _database_precision(cls, value: float) -> float:
+        """Normalize coordinates to the six decimals used by Numeric(9, 6).
+
+        KMA anchors are persisted with six fractional digits.  Normalizing at
+        the DTO boundary keeps a value loaded from SQLAlchemy equal to the
+        original configuration, so the immutable-anchor guard does not treat
+        database rounding as a coordinate mutation on every sync.
+        """
+        if not math.isfinite(value):
+            raise ValueError("좌표는 유한한 숫자여야 합니다.")
+        return float(Decimal(str(value)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
 
 
 class WeatherValue(BaseModel):
@@ -96,14 +111,22 @@ class WeatherValue(BaseModel):
             raise ValueError("datetime은 timezone-aware여야 합니다.")
         return value
 
+    @field_validator("value_number", mode="after")
+    @classmethod
+    def _database_value_precision(cls, value: Decimal | None) -> Decimal | None:
+        """Match the NUMERIC(14, 4) storage contract before identity checks."""
+        if value is None:
+            return None
+        if not value.is_finite():
+            raise ValueError("value_number는 유한한 숫자여야 합니다.")
+        return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
     @model_validator(mode="after")
     def _valid_value(self) -> WeatherValue:
         if self.value_number is None and self.value_text is None:
             raise ValueError("value_number 또는 value_text 중 하나는 필요합니다.")
         if self.valid_from and self.valid_until and self.valid_until < self.valid_from:
             raise ValueError("valid_until은 valid_from보다 빠를 수 없습니다.")
-        if self.value_number is not None and not self.value_number.is_finite():
-            raise ValueError("value_number는 유한한 숫자여야 합니다.")
         ranges: dict[str, tuple[Decimal | None, Decimal | None]] = {
             "REH": (Decimal("0"), Decimal("100")),
             "POP": (Decimal("0"), Decimal("100")),
@@ -168,6 +191,15 @@ class WeatherValue(BaseModel):
             source_record_key if source_record_key is not None else self.source_record_key
         )
         canonical_target = target_at if target_at is not None else self.target_at
+        if canonical_target is not None:
+            if canonical_target.tzinfo is None:
+                raise ValueError("target_at은 timezone-aware여야 합니다.")
+            # SQLite stores timestamps as UTC and PostgreSQL drivers may return
+            # a different equivalent offset.  Hash the instant, never its
+            # presentation offset, so value_id survives a DB round-trip.
+            canonical_target_text = canonical_target.astimezone(UTC).isoformat()
+        else:
+            canonical_target_text = None
         encoded = json.dumps(
             [
                 self.location_id,
@@ -176,7 +208,7 @@ class WeatherValue(BaseModel):
                 self.weather_domain,
                 self.forecast_style.value,
                 self.metric_key,
-                canonical_target.isoformat() if canonical_target else None,
+                canonical_target_text,
                 revision_key,
             ],
             ensure_ascii=False,
@@ -198,6 +230,8 @@ class SyncRun(BaseModel):
     finished_at: datetime | None = None
     locations_total: int = 0
     grids_fetched: int = 0
+    mid_groups_fetched: int = 0
+    requests_fetched: int = 0
     values_loaded: int = 0
     error: str | None = None
 

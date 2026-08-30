@@ -13,11 +13,40 @@ from .settings import get_settings
 
 def _init_db() -> int:
     settings = get_settings()
+    if not settings.database_url.startswith("sqlite:"):
+        raise RuntimeError(
+            "ktwctl init-db는 SQLite 개발 fixture 전용입니다. "
+            "PostgreSQL 운영 DB에는 alembic upgrade head를 사용하세요."
+        )
     repository = repository_from_settings(settings)
     repository.create_schema()
     for raw in settings.targets:
-        location = WeatherLocation.model_validate(raw)
-        repository.upsert_location(location)
+        provider_fields = {
+            "mid_region_code",
+            "mid_land_region_code",
+            "mid_temperature_region_code",
+            "mid_land_reg_id",
+            "mid_ta_reg_id",
+        }
+        provider_values = {
+            key: raw[key] for key in provider_fields if raw.get(key) is not None
+        }
+        payload = {key: value for key, value in raw.items() if key not in provider_fields}
+        if provider_values:
+            metadata = dict(payload.get("metadata") or {})
+            metadata.update(provider_values)
+            payload["metadata"] = metadata
+        location = WeatherLocation.model_validate(payload)
+        # Bootstrap is intentionally insert-only. Existing rows are owned by
+        # the admin catalog; rerunning init-db must not resurrect disabled
+        # anchors or overwrite coordinates/metadata after facts exist.
+        if repository.get_location(location.location_id) is not None:
+            continue
+        try:
+            repository.create_location(location)
+        except ValueError:
+            # Another bootstrap worker won the insert race.
+            continue
     print(json.dumps({"database": settings.database_url, "targets_loaded": len(settings.targets)}))
     return 0
 

@@ -21,7 +21,7 @@ from kortravelweather.providers import (
     WeatherstackProvider,
     WttrInProvider,
 )
-from kortravelweather.providers.base import CredentialError
+from kortravelweather.providers.base import CredentialError, make_source_record, request_json
 from kortravelweather.providers.external import HttpWeatherProvider
 from kortravelweather.providers.factory import create_configured_provider
 from kortravelweather.repository import WeatherRepository
@@ -200,6 +200,45 @@ def test_missing_credential_is_non_network_error() -> None:
         WeatherApiProvider(transport=transport).fetch(LOCATION)
     assert error.value.code == "credential_missing"
     assert transport.calls == []
+
+
+def test_source_endpoint_query_is_redacted() -> None:
+    source = make_source_record(
+        provider="fixture",
+        dataset_key="fixture_current",
+        location_id="seoul",
+        payload={"temperature": 25},
+        endpoint="https://example.test/weather?api_key=REAL_SECRET&city=seoul",
+    )
+    metadata = source["payload"]["response_metadata"]
+    assert "REAL_SECRET" not in metadata["endpoint"]
+    assert "api_key=[REDACTED]" in metadata["endpoint"]
+
+
+def test_dataset_contract_rejects_unknown_before_transport() -> None:
+    transport = FixtureTransport()
+    with pytest.raises(ProviderError, match="지원하지 않는 dataset"):
+        OpenMeteoProvider(transport=transport).fetch(LOCATION, dataset_key="not_a_catalog_dataset")
+    assert transport.calls == []
+
+
+def test_httpx_connect_error_is_retried() -> None:
+    import httpx
+
+    class FailingTransport:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def request(self, method: str, url: str, **kwargs: Any) -> Any:
+            self.calls += 1
+            raise httpx.ConnectError("dns down")
+
+    transport = FailingTransport()
+    with pytest.raises(ProviderError) as error:
+        request_json(transport, "GET", "https://example.test", retries=2)
+    assert error.value.code == "network"
+    assert error.value.retryable is True
+    assert transport.calls == 3
 
 
 def test_retry_only_retries_transient_http_status() -> None:

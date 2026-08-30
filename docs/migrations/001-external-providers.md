@@ -12,6 +12,10 @@
 4. 성공한 응답만 source record와 normalized facts로 atomic publish한다. 실패한
    실행은 failed sync run만 남기며 기존 immutable fact를 변경하지 않는다.
 
+외부 provider job은 기본 schedule에 자동 연결하지 않는다. 유료 API의 quota와
+provider별 cadence가 서로 다르므로, 운영자가 대상 provider resource와 budget을
+검토한 뒤 `external_weather_job`을 수동 launch하거나 별도 schedule을 명시한다.
+
 기존 `weather_values`/`weather_source_records` schema migration은 필요 없다. 새
 dataset은 기존 source lineage의 `provider`, `dataset_key`, `source_record_key` 축을
 사용한다. `WeatherValue.identity_key()`는 source response key를 revision으로

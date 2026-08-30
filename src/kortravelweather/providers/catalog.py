@@ -185,7 +185,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "Weatherstack",
         True,
         "weatherstack_api_key",
-        "http://api.weatherstack.com",
+        "https://api.weatherstack.com",
         (
             DatasetSpec(
                 "weatherstack_current", "현재 관측", "Weatherstack current", "/current", "요청 시점"
