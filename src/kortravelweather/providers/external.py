@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from kortravelweather.models import ForecastStyle, TimelineBucket
+from kortravelweather.models import ForecastStyle, TimelineBucket, WeatherValue
 
 from .base import (
     CredentialError,
@@ -203,8 +203,17 @@ class HttpWeatherProvider:
             status_code=metadata.get("status"),
         )
         source_key = source["source_record_key"]
-        normalized = [
-            make_value(
+        # Current and hourly/forecast sections frequently overlap at the
+        # current hour.  A response has one source revision, so retaining both
+        # rows would produce duplicate immutable fact identities and abort the
+        # whole publish.  Keep the last row for each metric/instant; adapters
+        # append forecast rows after current rows, making the forecast value
+        # the authoritative winner for an overlapping instant.
+        normalized_by_identity: dict[tuple[str, datetime], WeatherValue] = {}
+        for row, metric, raw_value, unit, target, source_metric in values:
+            if raw_value is None:
+                continue
+            normalized_by_identity[(metric, target.astimezone(UTC))] = make_value(
                 provider=self.provider_key,
                 dataset_key=dataset_key,
                 location_id=location.location_id,
@@ -223,9 +232,7 @@ class HttpWeatherProvider:
                 source_record_key=source_key,
                 raw=row,
             )
-            for row, metric, raw_value, unit, target, source_metric in values
-            if raw_value is not None
-        ]
+        normalized = list(normalized_by_identity.values())
         if not normalized:
             raise ProviderError("provider 응답에 정규화할 weather metric이 없습니다.", code="empty")
         return ProviderResponse(

@@ -194,6 +194,39 @@ def test_common_unit_conversion_and_weather_value_round_trip() -> None:
     assert restored.identity_key() == wind.identity_key()
 
 
+def test_forecast_overlap_prefers_hourly_row_without_duplicate_identity() -> None:
+    payload = {
+        "location": {"tz_id": "Asia/Seoul"},
+        "current": {
+            "last_updated": "2026-08-30 12:00",
+            "temp_c": 25,
+            "humidity": 50,
+            "condition": {"code": 1000},
+        },
+        "forecast": {
+            "forecastday": [
+                {
+                    "date": "2026-08-30",
+                    "hour": [
+                        {
+                            "time": "2026-08-30 12:00",
+                            "temp_c": 26,
+                            "humidity": 51,
+                            "condition": {"code": 1000},
+                        }
+                    ],
+                }
+            ]
+        },
+    }
+    response = WeatherApiProvider(
+        api_key="secret", transport=FixtureTransport(FakeResponse(payload))
+    ).fetch(LOCATION, dataset_key="weatherapi_forecast")
+    temperatures = [value for value in response.values if value.metric_key == "TEMP"]
+    assert len(temperatures) == 1
+    assert temperatures[0].value_number == Decimal("26.0000")
+
+
 def test_missing_credential_is_non_network_error() -> None:
     transport = FixtureTransport()
     with pytest.raises(CredentialError) as error:
