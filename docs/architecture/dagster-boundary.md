@@ -11,8 +11,8 @@ DB에서 disabled 된 id는 env가 재활성화할 수 없다. lat/lon만 있는
 응답은 region별로 한 번 호출하고 `mid-land:<code>`/`mid-temperature:<code>` source
 entity로 추적한다.
 
-각 grid의 nowcast/ultra-short/short (필요하면 mid) 응답을 메모리에 stage한다. 모든
-응답이 유효하고 non-empty일 때만 full raw source record와 normalized facts를 한
+각 grid의 nowcast/ultra-short/short (필요하면 mid) 응답을 남은 row/fact budget
+안에서 bounded stage한다. 모든 응답이 유효하고 non-empty일 때만 full raw source record와 normalized facts를 한
 `ingest_batch` transaction으로 publish한다. N번째 grid 실패, quota/4xx, wrong grid,
 malformed date는 이전 fact를 변경하지 않는다. response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직
@@ -26,3 +26,6 @@ location catalog를 `ProviderLocation`으로 변환한다. provider별 응답은
 schema 오류가 발생하면 failed run만 남고 기존 KMA 또는 external fact는 publish되지
 않는다. provider가 반환한 `source_record_key`는 response payload와 redacted request
 metadata의 hash라서 같은 응답 replay는 no-op이며, 수정 응답은 새 source revision이다.
+KMA/외부 실행은 provider 응답을 bounded iterable로 소비하고 run heartbeat를
+그룹/대상 경계에서 갱신한다. stale 회수는 `heartbeat_at`(legacy row는
+`started_at` fallback)을 기준으로 하므로 정상적인 장기 실행을 조기에 회수하지 않는다.

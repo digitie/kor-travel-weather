@@ -161,6 +161,12 @@ class WeatherSettings(BaseSettings):
         gt=0,
         le=10_000_000,
     )
+    max_payload_bytes_per_run: int = Field(
+        default=16 * 1024 * 1024,
+        validation_alias="KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN",
+        gt=0,
+        le=256 * 1024 * 1024,
+    )
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=list, validation_alias="KOR_TRAVEL_WEATHER_CORS_ORIGINS"
     )

@@ -274,6 +274,42 @@ def test_httpx_connect_error_is_retried() -> None:
     assert transport.calls == 3
 
 
+def test_http_payload_limit_is_checked_before_json_parsing() -> None:
+    class HugeResponse:
+        status_code = 200
+        headers = {"content-length": "10"}
+        content = b"0123456789"
+
+        def __init__(self) -> None:
+            self.json_calls = 0
+
+        @property
+        def text(self) -> str:
+            return self.content.decode()
+
+        def json(self) -> Any:
+            self.json_calls += 1
+            raise AssertionError("JSON must not be parsed after the size check")
+
+    class HugeTransport:
+        def __init__(self) -> None:
+            self.response = HugeResponse()
+
+        def request(self, method: str, url: str, **kwargs: Any) -> HugeResponse:
+            return self.response
+
+    transport = HugeTransport()
+    with pytest.raises(ProviderError) as error:
+        request_json(
+            transport,
+            "GET",
+            "https://example.test",
+            max_bytes=5,
+        )
+    assert error.value.code == "payload_too_large"
+    assert transport.response.json_calls == 0
+
+
 def test_retry_only_retries_transient_http_status() -> None:
     transport = FixtureTransport(
         FakeResponse({}, status_code=500),

@@ -210,6 +210,7 @@ class SyncRunRow(Base):
     __tablename__ = "weather_sync_runs"
     __table_args__ = (
         Index("ix_weather_sync_runs_started", "started_at"),
+        Index("ix_weather_sync_runs_heartbeat", "heartbeat_at"),
         # A provider/dataset may have at most one live run.  The application
         # checks first for a useful error message, while this partial unique
         # index closes the check-then-insert race between workers.
@@ -228,6 +229,7 @@ class SyncRunRow(Base):
     dataset_key: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     started_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     finished_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     locations_total: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
@@ -460,6 +462,7 @@ class WeatherRepository:
             dataset_key=row.dataset_key,
             status=row.status,
             started_at=row.started_at,
+            heartbeat_at=row.heartbeat_at,
             finished_at=row.finished_at,
             locations_total=row.locations_total,
             grids_fetched=row.grids_fetched,
@@ -1192,12 +1195,14 @@ class WeatherRepository:
     def start_sync_run(
         self, *, provider: str, dataset_key: str, locations_total: int = 0
     ) -> SyncRun:
+        started_at = kst_now()
         run = SyncRun(
             run_id=f"run_{uuid.uuid4().hex}",
             provider=provider,
             dataset_key=dataset_key,
             status="running",
-            started_at=kst_now(),
+            started_at=started_at,
+            heartbeat_at=started_at,
             locations_total=locations_total,
         )
         try:
@@ -1246,7 +1251,10 @@ class WeatherRepository:
         cutoff = kst_now() - timedelta(minutes=max_age_minutes)
         result = session.execute(
             update(SyncRunRow)
-            .where(SyncRunRow.status == "running", SyncRunRow.started_at < cutoff)
+            .where(
+                SyncRunRow.status == "running",
+                func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at) < cutoff,
+            )
             .values(
                 status="failed",
                 finished_at=kst_now(),
@@ -1254,6 +1262,17 @@ class WeatherRepository:
             )
         )
         return int(result.rowcount or 0)
+
+    def heartbeat_sync_run(self, run_id: str) -> bool:
+        """Refresh a running sync lease using an atomic status check."""
+        with self._session_factory.begin() as session:
+            self._begin_write(session)
+            result = session.execute(
+                update(SyncRunRow)
+                .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
+                .values(heartbeat_at=kst_now())
+            )
+            return result.rowcount == 1
 
     def finish_sync_run(
         self,

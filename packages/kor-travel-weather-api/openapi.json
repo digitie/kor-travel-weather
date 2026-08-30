@@ -1639,6 +1639,18 @@
             "format": "date-time",
             "title": "Started At"
           },
+          "heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At"
+          },
           "finished_at": {
             "anyOf": [
               {
