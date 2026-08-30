@@ -32,6 +32,7 @@ def create_configured_provider(
         "api_key": runtime.provider_api_key(provider_key),
         "timeout": runtime.provider_http_timeout_seconds,
         "retries": runtime.provider_retries,
+        "max_payload_bytes": runtime.max_payload_bytes_per_run,
     }
     if provider_key == "open_meteo":
         kwargs["base_url"] = runtime.open_meteo_base_url

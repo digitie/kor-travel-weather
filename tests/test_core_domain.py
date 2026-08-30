@@ -306,7 +306,8 @@ def test_late_finish_cannot_resurrect_reconciled_run(tmp_path) -> None:
     run = repo.start_sync_run(provider="p", dataset_key="d")
     with repo.engine.begin() as connection:
         connection.exec_driver_sql(
-            "UPDATE weather_sync_runs SET started_at = '2020-01-01 00:00:00' "
+            "UPDATE weather_sync_runs SET started_at = '2020-01-01 00:00:00', "
+            "heartbeat_at = '2020-01-01 00:00:00' "
             "WHERE run_id = ?",
             (run.run_id,),
         )
@@ -314,6 +315,21 @@ def test_late_finish_cannot_resurrect_reconciled_run(tmp_path) -> None:
     late = repo.finish_sync_run(run.run_id, status="success", values_loaded=99)
     assert late.status == "failed"
     assert late.values_loaded == 0
+
+
+def test_sync_run_heartbeat_keeps_active_worker_from_stale_recovery(tmp_path) -> None:
+    repo = WeatherRepository(f"sqlite:///{tmp_path / 'weather.db'}")
+    repo.create_schema()
+    run = repo.start_sync_run(provider="p", dataset_key="d")
+    assert repo.heartbeat_sync_run(run.run_id)
+    with repo.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "UPDATE weather_sync_runs SET heartbeat_at = '2020-01-01 00:00:00' "
+            "WHERE run_id = ?",
+            (run.run_id,),
+        )
+    assert repo.reconcile_stale_sync_runs(max_age_minutes=1) == 1
+    assert repo.heartbeat_sync_run(run.run_id) is False
 
 
 def test_source_lineage_rejects_other_grid(tmp_path) -> None:

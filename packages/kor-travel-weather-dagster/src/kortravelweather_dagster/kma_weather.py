@@ -368,6 +368,38 @@ def _mid_region(rows: Sequence[Any], region_code: str) -> None:
             )
 
 
+def _bounded_rows(items: Iterable[Any], *, limit: int | None, label: str) -> list[Any]:
+    """Materialize at most ``limit`` provider rows, failing before overflow."""
+    if limit is not None and limit <= 0:
+        raise ValueError(f"{label} 응답 row 예산이 소진되었습니다.")
+    rows: list[Any] = []
+    for item in items:
+        if limit is not None and len(rows) >= limit:
+            raise ValueError(f"{label} 응답 row 수가 상한을 초과했습니다: {limit}")
+        rows.append(item)
+    return rows
+
+
+def _bounded_conversion(
+    rows: Sequence[Any],
+    converter: Any,
+    *,
+    max_values: int | None,
+    **kwargs: Any,
+) -> list[WeatherValue]:
+    """Convert one row at a time so fan-out cannot allocate an unbounded list."""
+    values: list[WeatherValue] = []
+    for row in rows:
+        converted = converter([row], **kwargs)
+        if max_values is not None and len(values) + len(converted) > max_values:
+            raise ValueError(
+                f"normalized fact 수가 상한을 초과했습니다: "
+                f"{len(values) + len(converted)} > {max_values}"
+            )
+        values.extend(converted)
+    return values
+
+
 def stage_grid(
     *,
     client: Any,
@@ -378,68 +410,125 @@ def stage_grid(
     data_client: Any | None = None,
     retries: int = 0,
     source_entity_id: str | None = None,
+    max_response_rows: int | None = None,
+    max_normalized_values: int | None = None,
 ) -> list[StagedResponse]:
-    """Fetch one grid into memory; no database side effect occurs here."""
+    """Fetch one grid with bounded row/value materialization.
+
+    Provider iterables are consumed only up to the remaining run budget.  Each
+    row is normalized independently so a single malformed or fan-out-heavy
+    response cannot allocate an unbounded list before the cap is enforced.
+    """
     location = target.location
     assert location.nx is not None and location.ny is not None
     fetched = fetched_at or kst_now()
     entity_id = source_entity_id or location.location_id
     staged: list[StagedResponse] = []
+    rows_budget = max_response_rows
+    values_budget = max_normalized_values
+    if rows_budget is not None and rows_budget <= 0:
+        raise ValueError("provider response row 예산이 소진되었습니다.")
+    if values_budget is not None and values_budget <= 0:
+        raise ValueError("normalized fact 예산이 소진되었습니다.")
+
+    def row_limit(multiplier: int = 1) -> int | None:
+        if rows_budget is None:
+            return None
+        limit = rows_budget
+        if values_budget is not None:
+            limit = min(limit, max(1, values_budget // multiplier))
+        return limit
+
     if include_base:
         snapshot = _retry_call(lambda: client.now(nx=location.nx, ny=location.ny), retries=retries)
-        now_items = list((getattr(snapshot, "raw", None) or {}).get("items", []))
+        raw_snapshot = getattr(snapshot, "raw", None)
+        raw_items = raw_snapshot.get("items", []) if isinstance(raw_snapshot, Mapping) else []
+        now_items = _bounded_rows(raw_items, limit=row_limit(), label="초단기실황")
         _nowcast_grid(now_items, location.nx, location.ny)
+        if rows_budget is not None:
+            rows_budget -= len(now_items)
         now_metadata = _metadata_dict(getattr(snapshot, "metadata", None))
         now_key = response_source_key("kma_ultra_short_nowcast", entity_id, now_items, now_metadata)
+        now_values = _bounded_conversion(
+            now_items,
+            ultra_short_nowcast_to_weather_values,
+            max_values=values_budget,
+            location_id=location.location_id,
+            source_record_key=now_key,
+            known_at=fetched,
+        )
+        if values_budget is not None:
+            values_budget -= len(now_values)
         staged.append(
             StagedResponse(
                 _source_spec(
                     "kma_ultra_short_nowcast", entity_id, now_items, fetched, now_metadata
                 ),
-                ultra_short_nowcast_to_weather_values(
-                    now_items,
-                    location_id=location.location_id,
-                    source_record_key=now_key,
-                    known_at=fetched,
-                ),
+                now_values,
             )
         )
-        ultra_rows = list(
+        if rows_budget is not None and rows_budget <= 0:
+            raise ValueError("provider response row 수가 상한을 초과했습니다.")
+        if values_budget is not None and values_budget <= 0:
+            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+        ultra_rows = _bounded_rows(
             _retry_call(
                 lambda: client.forecast.short(nx=location.nx, ny=location.ny), retries=retries
-            )
+            ),
+            limit=row_limit(),
+            label="초단기예보",
         )
         _forecast_grid(ultra_rows, location.nx, location.ny)
+        if rows_budget is not None:
+            rows_budget -= len(ultra_rows)
         ultra_key = response_source_key("kma_ultra_short_forecast", entity_id, ultra_rows)
+        ultra_values = _bounded_conversion(
+            ultra_rows,
+            ultra_short_forecast_to_weather_values,
+            max_values=values_budget,
+            location_id=location.location_id,
+            source_record_key=ultra_key,
+            known_at=fetched,
+        )
+        if values_budget is not None:
+            values_budget -= len(ultra_values)
         staged.append(
             StagedResponse(
                 _source_spec("kma_ultra_short_forecast", entity_id, ultra_rows, fetched),
-                ultra_short_forecast_to_weather_values(
-                    ultra_rows,
-                    location_id=location.location_id,
-                    source_record_key=ultra_key,
-                    known_at=fetched,
-                ),
+                ultra_values,
             )
         )
-        short_rows = list(
+        if rows_budget is not None and rows_budget <= 0:
+            raise ValueError("provider response row 수가 상한을 초과했습니다.")
+        if values_budget is not None and values_budget <= 0:
+            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+        short_rows = _bounded_rows(
             _retry_call(
                 lambda: client.forecast.vilage(nx=location.nx, ny=location.ny), retries=retries
-            )
+            ),
+            limit=row_limit(),
+            label="단기예보",
         )
         _forecast_grid(short_rows, location.nx, location.ny)
+        if rows_budget is not None:
+            rows_budget -= len(short_rows)
         short_key = response_source_key("kma_short_forecast", entity_id, short_rows)
+        short_values = _bounded_conversion(
+            short_rows,
+            short_forecast_to_weather_values,
+            max_values=values_budget,
+            location_id=location.location_id,
+            source_record_key=short_key,
+            known_at=fetched,
+        )
         staged.append(
             StagedResponse(
                 _source_spec("kma_short_forecast", entity_id, short_rows, fetched),
-                short_forecast_to_weather_values(
-                    short_rows,
-                    location_id=location.location_id,
-                    source_record_key=short_key,
-                    known_at=fetched,
-                ),
+                short_values,
             )
         )
+        if values_budget is not None:
+            values_budget -= len(short_values)
     if include_mid and target.has_mid:
         if data_client is None:
             raise ValueError("중기예보에는 DataGoKrClient가 필요합니다.")
@@ -449,47 +538,77 @@ def stage_grid(
             raise ValueError(
                 "중기예보에는 mid_land_region_code와 mid_temperature_region_code가 모두 필요합니다."
             )
-        land_rows = list(
+        land_rows = _bounded_rows(
             _retry_call(
-                lambda: data_client.mid_land_forecast(reg_id=land_region_code),
-                retries=retries,
+                lambda: data_client.mid_land_forecast(reg_id=land_region_code), retries=retries
+            ),
+            limit=row_limit(26),
+            label="중기육상예보",
+        )
+        if rows_budget is not None:
+            rows_budget -= len(land_rows)
+        if not land_rows:
+            raise ValueError("중기예보 응답이 비어 있습니다.")
+        _mid_region(land_rows, land_region_code)
+        land_key = response_source_key(
+            "kma_mid_forecast", f"mid-land:{land_region_code}", land_rows
+        )
+        land_values = _bounded_conversion(
+            land_rows,
+            mid_land_forecast_to_weather_values,
+            max_values=values_budget,
+            location_id=location.location_id,
+            source_record_key=land_key,
+            known_at=fetched,
+        )
+        if values_budget is not None:
+            values_budget -= len(land_values)
+        staged.append(
+            StagedResponse(
+                _source_spec(
+                    "kma_mid_forecast", f"mid-land:{land_region_code}", land_rows, fetched
+                ),
+                land_values,
             )
         )
-        temp_rows = list(
+        if rows_budget is not None and rows_budget <= 0:
+            raise ValueError("provider response row 수가 상한을 초과했습니다.")
+        if values_budget is not None and values_budget <= 0:
+            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+        temp_rows = _bounded_rows(
             _retry_call(
                 lambda: data_client.mid_temperature_forecast(reg_id=temperature_region_code),
                 retries=retries,
-            )
+            ),
+            limit=row_limit(16),
+            label="중기기온예보",
         )
-        if not land_rows or not temp_rows:
+        if rows_budget is not None:
+            rows_budget -= len(temp_rows)
+        if not temp_rows:
             raise ValueError("중기예보 응답이 비어 있습니다.")
-        _mid_region(land_rows, land_region_code)
         _mid_region(temp_rows, temperature_region_code)
-        land_entity_id = f"mid-land:{land_region_code}"
-        temp_entity_id = f"mid-temperature:{temperature_region_code}"
-        land_key = response_source_key("kma_mid_forecast", land_entity_id, land_rows)
-        temp_key = response_source_key("kma_mid_forecast", temp_entity_id, temp_rows)
-        staged.extend(
-            [
-                StagedResponse(
-                    _source_spec("kma_mid_forecast", land_entity_id, land_rows, fetched),
-                    mid_land_forecast_to_weather_values(
-                        land_rows,
-                        location_id=location.location_id,
-                        source_record_key=land_key,
-                        known_at=fetched,
-                    ),
+        temp_key = response_source_key(
+            "kma_mid_forecast", f"mid-temperature:{temperature_region_code}", temp_rows
+        )
+        temp_values = _bounded_conversion(
+            temp_rows,
+            mid_temperature_to_weather_values,
+            max_values=values_budget,
+            location_id=location.location_id,
+            source_record_key=temp_key,
+            known_at=fetched,
+        )
+        staged.append(
+            StagedResponse(
+                _source_spec(
+                    "kma_mid_forecast",
+                    f"mid-temperature:{temperature_region_code}",
+                    temp_rows,
+                    fetched,
                 ),
-                StagedResponse(
-                    _source_spec("kma_mid_forecast", temp_entity_id, temp_rows, fetched),
-                    mid_temperature_to_weather_values(
-                        temp_rows,
-                        location_id=location.location_id,
-                        source_record_key=temp_key,
-                        known_at=fetched,
-                    ),
-                ),
-            ]
+                temp_values,
+            )
         )
     if not any(response.values for response in staged):
         raise ValueError("KMA 응답에서 normalized weather fact가 생성되지 않았습니다.")
@@ -511,13 +630,12 @@ def run_weather_sync(
     retries: int = 0,
     sync_run: Any | None = None,
 ) -> dict[str, Any]:
-    """Stage every grid, then publish one complete manifest transactionally."""
+    """Fetch and publish every grid with bounded, sequential staging."""
     run = sync_run or repository.start_sync_run(
         provider=KMA_PROVIDER_NAME,
         dataset_key="kma_weather_bundle",
         locations_total=len(targets),
     )
-    staged: list[StagedResponse] = []
     try:
         if not targets:
             raise ValueError("weather target이 비어 있습니다.")
@@ -601,64 +719,87 @@ def run_weather_sync(
                 f"중기예보 지역 조합 수가 상한을 초과했습니다: "
                 f"{len(mid_groups)} > {mid_limit}"
             )
-        staged_by_grid: dict[tuple[int, int], list[StagedResponse]] = {}
-        for grid_key, group_targets in grid_groups.items():
-            target = group_targets[0]
-            entity_id = f"grid:{grid_key[0]}:{grid_key[1]}"
-            staged_by_grid[grid_key] = stage_grid(
-                client=client,
-                target=target,
-                include_mid=False,
-                data_client=data_client,
-                retries=retries,
-                source_entity_id=entity_id,
-            )
-        staged_by_mid: dict[tuple[str, str], list[StagedResponse]] = {}
-        for mid_region_codes, group_targets in mid_groups.items():
-            target = group_targets[0]
-            staged_by_mid[mid_region_codes] = stage_grid(
-                client=client,
-                target=target,
-                include_mid=True,
-                include_base=False,
-                data_client=data_client,
-                retries=retries,
-                source_entity_id=f"mid-region:{mid_region_codes[0]}:{mid_region_codes[1]}",
-            )
-        staged = [response for responses in staged_by_grid.values() for response in responses]
-        staged.extend(response for responses in staged_by_mid.values() for response in responses)
-        response_rows = sum(
-            len((response.source_record.get("payload") or {}).get("rows", []))
-            for response in staged
-        )
-        if response_rows > max_response_rows:
-            raise ValueError(
-                f"provider response row 수가 상한을 초과했습니다: "
-                f"{response_rows} > {max_response_rows}"
-            )
-        sources = [{**response.source_record, "run_id": run.run_id} for response in staged]
-        # stage_grid uses the representative target for parsing, then fan the
-        # same immutable response facts out to every catalog location on that
-        # grid. Location id is part of fact identity, so each consumer anchor
-        # gets its own value row without another provider request.
+        sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
+        response_rows_total = 0
+        heartbeat = getattr(repository, "heartbeat_sync_run", None)
+
+        def keep_alive() -> None:
+            if callable(heartbeat) and heartbeat(run.run_id) is False:
+                raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+
+        def stage_and_append(
+            target: WeatherTarget,
+            group_targets: Sequence[WeatherTarget],
+            *,
+            include_mid_for_group: bool,
+            source_entity_id: str,
+        ) -> None:
+            nonlocal response_rows_total
+            keep_alive()
+            remaining_rows = max_response_rows - response_rows_total
+            remaining_values = max_values - len(values)
+            if remaining_rows <= 0:
+                raise ValueError("provider response row 예산이 소진되었습니다.")
+            if remaining_values < len(group_targets):
+                raise ValueError(
+                    "normalized fact 예산이 target fan-out을 수용하지 못합니다: "
+                    f"{remaining_values} < {len(group_targets)}"
+                )
+            per_target_values = max(1, remaining_values // len(group_targets))
+            responses = stage_grid(
+                client=client,
+                target=target,
+                include_mid=include_mid_for_group,
+                include_base=not include_mid_for_group,
+                data_client=data_client,
+                retries=retries,
+                source_entity_id=source_entity_id,
+                max_response_rows=remaining_rows,
+                max_normalized_values=per_target_values,
+            )
+            for response in responses:
+                payload = response.source_record.get("payload") or {}
+                row_count = len(payload.get("rows", [])) if isinstance(payload, Mapping) else 0
+                response_rows_total += row_count
+                if response_rows_total > max_response_rows:
+                    raise ValueError(
+                        f"provider response row 수가 상한을 초과했습니다: "
+                        f"{response_rows_total} > {max_response_rows}"
+                    )
+                sources.append({**response.source_record, "run_id": run.run_id})
+                # One immutable response is fanned out to every catalog anchor
+                # sharing its grid/region. Append one fact at a time so the
+                # aggregate cap is enforced before another object is retained.
+                for target_row in group_targets:
+                    for value in response.values:
+                        if len(values) >= max_values:
+                            raise ValueError(
+                                f"normalized fact 수가 상한을 초과했습니다: "
+                                f">= {max_values}"
+                            )
+                        values.append(
+                            value.model_copy(
+                                update={"location_id": target_row.location.location_id}
+                            )
+                        )
+            keep_alive()
+
+        # Grid requests are deduplicated first; each staged response is
+        # immediately bounded, fanned out, and released before the next grid.
         for grid_key, group_targets in grid_groups.items():
-            for response in staged_by_grid[grid_key]:
-                for target in group_targets:
-                    values.extend(
-                        value.model_copy(update={"location_id": target.location.location_id})
-                        for value in response.values
-                    )
+            stage_and_append(
+                group_targets[0],
+                group_targets,
+                include_mid_for_group=False,
+                source_entity_id=f"grid:{grid_key[0]}:{grid_key[1]}",
+            )
         for mid_region_codes, group_targets in mid_groups.items():
-            for response in staged_by_mid[mid_region_codes]:
-                for target in group_targets:
-                    values.extend(
-                        value.model_copy(update={"location_id": target.location.location_id})
-                        for value in response.values
-                    )
-        if len(values) > max_values:
-            raise ValueError(
-                f"normalized fact 수가 상한을 초과했습니다: {len(values)} > {max_values}"
+            stage_and_append(
+                group_targets[0],
+                group_targets,
+                include_mid_for_group=True,
+                source_entity_id=f"mid-region:{mid_region_codes[0]}:{mid_region_codes[1]}",
             )
         publish_and_finish = getattr(repository, "publish_and_finish", None)
         if callable(publish_and_finish):

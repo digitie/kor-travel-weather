@@ -14,6 +14,10 @@
    인터넷에 직접 publish하지 않는다.
 5. `/health`, `/version`, admin sync-runs에서 smoke를 확인한다.
 
+현재 migration head는 `0003_sync_run_heartbeat`다. 장시간 KMA 실행은 그룹마다
+heartbeat를 갱신하므로, 180분 동안 heartbeat가 없는 running row만 자동으로 failed
+회수된다.
+
 Next.js admin은 내부 네트워크에서만 노출한다. 외부 접근이 필요하면
 `WEATHER_UI_USER`/`WEATHER_UI_PASSWORD` Basic Auth(또는 조직 SSO)를 reverse
 proxy 앞에 두고, `WEATHER_API_INTERNAL_URL`과 `WEATHER_ADMIN_TOKEN`은

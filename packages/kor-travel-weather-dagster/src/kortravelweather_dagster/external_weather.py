@@ -41,6 +41,9 @@ def run_external_weather_sync(
     staged_values = []
     try:
         for target in target_list:
+            heartbeat = getattr(repository, "heartbeat_sync_run", None)
+            if callable(heartbeat) and heartbeat(run.run_id) is False:
+                raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
             response = provider.fetch(target, dataset_key=dataset_key)
             if response.provider != provider.provider_key or response.dataset_key != dataset_key:
                 raise ValueError("provider 응답의 provider/dataset 계약이 요청과 다릅니다.")
@@ -69,6 +72,8 @@ def run_external_weather_sync(
                 raise ValueError("provider 응답 fact의 provider/dataset 계약이 요청과 다릅니다.")
             staged_sources.append({**response.source_record, "run_id": run.run_id})
             staged_values.extend(response.values)
+            if callable(heartbeat) and heartbeat(run.run_id) is False:
+                raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
         loaded, finished = repository.publish_and_finish(
             run_id=run.run_id,
             source_records=staged_sources,

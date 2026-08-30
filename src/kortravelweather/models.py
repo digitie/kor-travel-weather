@@ -227,6 +227,7 @@ class SyncRun(BaseModel):
     dataset_key: str
     status: str
     started_at: datetime
+    heartbeat_at: datetime | None = None
     finished_at: datetime | None = None
     locations_total: int = 0
     grids_fetched: int = 0

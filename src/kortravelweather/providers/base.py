@@ -12,6 +12,7 @@ import json
 import re
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, tzinfo
 from decimal import Decimal, InvalidOperation
@@ -55,6 +56,7 @@ class HttpTransport(Protocol):
         params: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        max_bytes: int | None = None,
     ) -> ProviderResponseLike: ...
 
 
@@ -272,8 +274,11 @@ def request_json(
     headers: Mapping[str, str] | None = None,
     timeout: float = 15.0,
     retries: int = 1,
+    max_bytes: int | None = None,
 ) -> tuple[Any, ProviderResponseLike, dict[str, Any]]:
     """HTTP 호출을 provider 공통 retry/error 분류로 감싼다."""
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("provider max_bytes는 양수여야 합니다.")
     clean_params = redact_secrets(dict(params or {}))
     attempts = retries + 1
     last_error: Exception | None = None
@@ -281,7 +286,12 @@ def request_json(
     for attempt in range(attempts):
         try:
             response = transport.request(
-                method, url, params=params, headers=headers, timeout=timeout
+                method,
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout,
+                max_bytes=max_bytes,
             )
             status_code = response.status_code
             if status_code == 401 or status_code == 403:
@@ -312,6 +322,8 @@ def request_json(
                 raise ProviderError(
                     "provider client 오류입니다.", code="client", status_code=status_code
                 )
+            if max_bytes is not None:
+                _enforce_response_size(response, max_bytes)
             try:
                 payload = response.json()
             except Exception as exc:
@@ -373,7 +385,97 @@ def request_json(
     ) from last_error
 
 
-def httpx_transport() -> HttpTransport:
-    import httpx
+def _enforce_response_size(response: ProviderResponseLike, max_bytes: int) -> None:
+    """JSON 파싱 전에 response body 크기를 제한한다."""
+    headers = getattr(response, "headers", {})
+    content_length = None
+    with suppress(AttributeError):
+        content_length = headers.get("content-length") or headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_bytes:
+                raise ProviderError(
+                    f"provider response가 크기 상한을 초과했습니다: {content_length} bytes",
+                    code="payload_too_large",
+                )
+        except ValueError:
+            # Malformed Content-Length is not a size proof; inspect the
+            # buffered body below and let the response continue.
+            pass
+    try:
+        content = getattr(response, "content", None)
+    except Exception:
+        # Streaming responses intentionally have no buffered ``content`` yet;
+        # the bounded httpx transport checks each chunk below.
+        content = None
+    if isinstance(content, (bytes, bytearray)) and len(content) > max_bytes:
+        raise ProviderError(
+            f"provider response가 크기 상한을 초과했습니다: {len(content)} bytes",
+            code="payload_too_large",
+        )
+    try:
+        text = getattr(response, "text", None)
+    except Exception:
+        text = None
+    if isinstance(text, str) and len(text.encode("utf-8")) > max_bytes:
+        raise ProviderError(
+            f"provider response가 크기 상한을 초과했습니다: {len(text.encode('utf-8'))} bytes",
+            code="payload_too_large",
+        )
 
-    return httpx.Client(follow_redirects=True)
+
+class _HttpxTransport:
+    """httpx transport with a streaming body limit."""
+
+    def __init__(self) -> None:
+        import httpx
+
+        self._client = httpx.Client(follow_redirects=True)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        max_bytes: int | None = None,
+    ) -> ProviderResponseLike:
+        if max_bytes is None:
+            return self._client.request(
+                method, url, params=params, headers=headers, timeout=timeout
+            )
+        import httpx
+
+        with self._client.stream(
+            method, url, params=params, headers=headers, timeout=timeout
+        ) as response:
+            _enforce_response_size(response, max_bytes)
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes():
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ProviderError(
+                        f"provider response가 크기 상한을 초과했습니다: {total} bytes",
+                        code="payload_too_large",
+                    )
+                chunks.append(chunk)
+            response_headers = dict(response.headers)
+            for header in ("content-encoding", "transfer-encoding", "content-length"):
+                response_headers.pop(header, None)
+            response_headers["content-length"] = str(total)
+            return httpx.Response(
+                response.status_code,
+                headers=response_headers,
+                content=b"".join(chunks),
+                request=response.request,
+            )
+
+    def close(self) -> None:
+        self._client.close()
+
+
+def httpx_transport() -> HttpTransport:
+    return _HttpxTransport()

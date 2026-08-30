@@ -30,11 +30,14 @@ def test_alembic_sqlite_schema_has_shared_safety_contract(tmp_path: Path, monkey
         assert "uq_weather_sync_runs_active" in {
             item["name"] for item in inspector.get_indexes("weather_sync_runs")
         }
+        assert "ix_weather_sync_runs_heartbeat" in {
+            item["name"] for item in inspector.get_indexes("weather_sync_runs")
+        }
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0002_sync_run_counters"
+            assert version == "0003_sync_run_heartbeat"
         with engine.begin() as connection:
             foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
             assert foreign_keys == 1

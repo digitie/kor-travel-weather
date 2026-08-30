@@ -61,6 +61,7 @@ export type SyncRun = {
   dataset_key: string;
   status: string;
   started_at: string;
+  heartbeat_at: string | null;
   finished_at: string | null;
   locations_total: number;
   grids_fetched: number;

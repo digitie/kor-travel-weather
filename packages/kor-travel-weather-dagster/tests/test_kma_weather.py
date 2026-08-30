@@ -464,6 +464,62 @@ def test_wrong_grid_is_not_retried() -> None:
     assert client.now_calls == 1
 
 
+def test_row_budget_rejects_before_copying_next_kma_response() -> None:
+    class OversizedClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {"now": 0, "short": 0, "vilage": 0}
+
+        def now(self, **kwargs):
+            self.calls["now"] += 1
+            row = super().now(**kwargs).raw["items"][0]
+            return SimpleNamespace(raw={"items": [row, row]})
+
+        def short(self, **kwargs):
+            self.calls["short"] += 1
+            return super().short(**kwargs)
+
+        def vilage(self, **kwargs):
+            self.calls["vilage"] += 1
+            return super().vilage(**kwargs)
+
+    client = OversizedClient()
+    with pytest.raises(ValueError, match="row 수가 상한"):
+        stage_grid(client=client, target=_target(), max_response_rows=1)
+    assert client.calls == {"now": 1, "short": 0, "vilage": 0}
+
+
+def test_value_budget_stops_before_fanout_and_next_provider_call() -> None:
+    class CountingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {"now": 0, "short": 0, "vilage": 0}
+
+        def now(self, **kwargs):
+            self.calls["now"] += 1
+            return super().now(**kwargs)
+
+        def short(self, **kwargs):
+            self.calls["short"] += 1
+            return super().short(**kwargs)
+
+        def vilage(self, **kwargs):
+            self.calls["vilage"] += 1
+            return super().vilage(**kwargs)
+
+    repository = FakeRepository()
+    client = CountingClient()
+    with pytest.raises(ValueError, match="normalized fact"):
+        run_weather_sync(
+            repository=repository,
+            client=client,
+            targets=[_target()],
+            max_values=1,
+        )
+    assert client.calls == {"now": 1, "short": 0, "vilage": 0}
+    assert repository.values == []
+
+
 def test_non_retryable_kma_auth_error_is_called_once() -> None:
     calls = 0
 

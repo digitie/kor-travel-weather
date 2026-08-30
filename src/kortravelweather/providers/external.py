@@ -130,12 +130,16 @@ class HttpWeatherProvider:
         base_url: str | None = None,
         timeout: float = 15.0,
         retries: int = 1,
+        max_payload_bytes: int = 16 * 1024 * 1024,
     ) -> None:
+        if max_payload_bytes <= 0:
+            raise ValueError("provider max_payload_bytes는 양수여야 합니다.")
         self.api_key = api_key.strip() if api_key and api_key.strip() else None
         self.transport = transport or httpx_transport()
         self.base_url = (base_url or self.default_base_url).rstrip("/")
         self.timeout = timeout
         self.retries = retries
+        self.max_payload_bytes = max_payload_bytes
 
     def close(self) -> None:
         close = getattr(self.transport, "close", None)
@@ -177,6 +181,7 @@ class HttpWeatherProvider:
             headers=headers,
             timeout=self.timeout,
             retries=self.retries,
+            max_bytes=self.max_payload_bytes,
         )
         return payload, {
             **metadata,
