@@ -1,0 +1,41 @@
+groups:
+  - name: kor-travel-weather
+    rules:
+      - alert: KorTravelWeatherScrapeDown
+        expr: up{job=~"kor-travel-weather-(api|dagster)"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Weather metrics scrape target is down"
+          description: "{{ $labels.job }} has not been scraped successfully for 5 minutes."
+
+      - alert: KorTravelWeatherApiErrors
+        expr: |
+          sum(rate(kor_travel_weather_http_requests_total{status_class="5xx"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Weather API is returning server errors"
+          description: "5xx responses have been observed for at least 10 minutes."
+
+      - alert: KorTravelWeatherProviderErrors
+        expr: |
+          sum(rate(kor_travel_weather_provider_requests_total{outcome="error"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Weather provider requests are failing"
+          description: "At least one provider request has failed for 10 minutes."
+
+      - alert: KorTravelWeatherSyncFailed
+        expr: |
+          sum(increase(kor_travel_weather_sync_runs_finished_total{status=~"failed|partial"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A weather sync run failed or was partial"
+          description: "Inspect the sync-run catalog and provider coverage before the next hourly run."

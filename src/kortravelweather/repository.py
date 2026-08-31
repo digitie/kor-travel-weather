@@ -45,6 +45,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
+from .metrics import observe_stale_recovered, observe_sync_finished, observe_sync_started
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
 from .settings import WeatherSettings, get_settings
 
@@ -993,6 +994,8 @@ class WeatherRepository:
         Keeping the run row lock until the conditional terminal transition
         prevents stale-run recovery from observing a half-published success.
         """
+        finished: SyncRun
+        loaded: int
         with self._session_factory.begin() as session:
             loaded = self._ingest_batch_session(session, source_records, values)
             result = session.execute(
@@ -1013,7 +1016,16 @@ class WeatherRepository:
             row = session.get(SyncRunRow, run_id)
             if row is None:
                 raise KeyError(run_id)
-            return loaded, self._sync_model(row)
+            finished = self._sync_model(row)
+        observe_sync_finished(
+            finished.provider,
+            finished.dataset_key,
+            status=finished.status,
+            requests=requests_fetched,
+            sources=len(source_records),
+            values=loaded,
+        )
+        return loaded, finished
 
     def upsert_values(self, values: list[WeatherValue]) -> int:
         # Historical method name is retained for callers; semantics are now
@@ -1281,6 +1293,7 @@ class WeatherRepository:
             raise RuntimeError(
                 "동일 provider/dataset 실행이 이미 진행 중입니다 (concurrent insert)."
             ) from exc
+        observe_sync_started(provider, dataset_key)
         return run
 
     def reconcile_stale_sync_runs(self, *, max_age_minutes: int = 180) -> int:
@@ -1289,13 +1302,23 @@ class WeatherRepository:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_sync_reconcile'))")
             )
-            return self._reconcile_stale_sync_runs_session(session, max_age_minutes=max_age_minutes)
+            recovered = self._reconcile_stale_sync_runs_session(
+                session, max_age_minutes=max_age_minutes
+            )
+        observe_stale_recovered(recovered)
+        return recovered
 
     @staticmethod
     def _reconcile_stale_sync_runs_session(
         session: Session, *, max_age_minutes: int = 180
     ) -> int:
         cutoff = kst_now() - timedelta(minutes=max_age_minutes)
+        stale_rows = session.scalars(
+            select(SyncRunRow).where(
+                SyncRunRow.status == "running",
+                func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at) < cutoff,
+            )
+        ).all()
         result = session.execute(
             update(SyncRunRow)
             .where(
@@ -1308,7 +1331,10 @@ class WeatherRepository:
                 error="stale sync run recovered after worker interruption",
             )
         )
-        return int(result.rowcount or 0)
+        recovered = int(result.rowcount or 0)
+        for row in stale_rows[:recovered]:
+            observe_sync_finished(row.provider, row.dataset_key, status="failed")
+        return recovered
 
     def heartbeat_sync_run(self, run_id: str) -> bool:
         """Refresh a running sync lease using an atomic status check."""
@@ -1331,8 +1357,9 @@ class WeatherRepository:
         values_loaded: int = 0,
         error: str | None = None,
     ) -> SyncRun:
+        transitioned = False
         with self._session_factory.begin() as session:
-            session.execute(
+            result = session.execute(
                 update(SyncRunRow)
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
                 .values(
@@ -1345,12 +1372,22 @@ class WeatherRepository:
                     error=error,
                 )
             )
+            transitioned = result.rowcount == 1
             row = session.get(SyncRunRow, run_id)
             if row is None:
                 raise KeyError(run_id)
             # Conditional UPDATE is the ownership/CAS boundary. If another
             # worker reconciled this run first, return its terminal row intact.
-            return self._sync_model(row)
+            finished = self._sync_model(row)
+        if transitioned:
+            observe_sync_finished(
+                finished.provider,
+                finished.dataset_key,
+                status=finished.status,
+                requests=requests_fetched,
+                values=values_loaded,
+            )
+        return finished
 
     def list_sync_runs(self, *, limit: int = 50) -> list[SyncRun]:
         with self._session_factory() as session:

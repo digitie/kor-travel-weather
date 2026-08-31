@@ -45,6 +45,19 @@ jobs:
         run: TMPDIR=/tmp uv run --locked --extra dev --extra dagster pytest -q
       - name: Lint
         run: uv run --locked ruff check .
+      - name: Check Prometheus configuration
+        run: |
+          docker run --rm \
+            --entrypoint promtool \
+            -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+            -v /dev/null:/run/secrets/metrics.token:ro \
+            prom/prometheus:v3.5.0 \
+            check config /etc/prometheus/prometheus.yml
+          docker run --rm \
+            --entrypoint promtool \
+            -v "$PWD/deploy/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v3.5.0 \
+            check rules /etc/prometheus/alerts.yml
       - name: Check OpenAPI is exported
         run: |
           export KOR_TRAVEL_WEATHER_ENV=development

@@ -36,7 +36,10 @@ provider client 위에 불필요한 wrapper를 만들지 않고, Dagster resourc
 cd /mnt/f/dev/kor-travel-weather
 uv sync --extra dev --extra dagster
 cp .env.example .env
+# Full Compose also requires non-empty admin/UI, encryption and scrape secrets.
+# Generate a distinct 16+ character scrape token before exporting the file.
 set -a; . .env; set +a
+export KOR_TRAVEL_WEATHER_METRICS_TOKEN="$(openssl rand -hex 32)"
 export PGPASSWORD="$POSTGRES_PASSWORD"
 
 # PostgreSQL만 지원한다. Compose DB를 먼저 기동한다(호스트 포트 14100).
@@ -79,6 +82,11 @@ projection과 forecast preview가 오른쪽 inspector에 열린다. `/login`은 
 통해 health·catalog·provider·sync-run API를 실행한다. `/admin/dagster`에서는
 repository, schedule 상태와 최근 run을 확인하고 Dagster 원본 화면으로 이동한다.
 브라우저에는 backend admin token이 내려가지 않는다.
+
+Prometheus 계측은 [`docs/observability.md`](docs/observability.md)에 정의되어 있다.
+Compose의 Prometheus는 `127.0.0.1:14104`에만 노출하며 API scrape에는 전용
+`KOR_TRAVEL_WEATHER_METRICS_TOKEN` bearer token을 사용한다. API와 Dagster의
+집계 지표에는 위치/실행 ID·URL·credential이 label로 들어가지 않는다.
 
 운영에서 frontend를 외부에 노출하지 말고 reverse proxy/SSO 또는
 `WEATHER_UI_USER`·`WEATHER_UI_PASSWORD` Basic Auth를 설정한다. Next proxy는

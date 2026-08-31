@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
+from kortravelweather.metrics import provider_request
 from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
 from kortravelweather.repository import WeatherRepository
 
@@ -44,7 +45,8 @@ def run_external_weather_sync(
             heartbeat = getattr(repository, "heartbeat_sync_run", None)
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
-            response = provider.fetch(target, dataset_key=dataset_key)
+            with provider_request(provider.provider_key, dataset_key):
+                response = provider.fetch(target, dataset_key=dataset_key)
             if response.provider != provider.provider_key or response.dataset_key != dataset_key:
                 raise ValueError("provider 응답의 provider/dataset 계약이 요청과 다릅니다.")
             if response.response_rows > max_response_rows:

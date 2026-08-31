@@ -72,10 +72,10 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         <aside className="rail" aria-label="관리자 사이드바" data-slot="admin-shell-rail">
           <div className="rail-shell">
             <div className="rail-header">
-              <Link className="brand" href="/" aria-label="kor-travel-weather admin">
+              <Link className="brand" href="/" aria-label="Weather Scraper Admin UI 홈">
                 <span className="brand-mark" aria-hidden="true"><CloudSun size={17} /></span>
-                <span className="brand-wordmark">kor-travel-weather</span>
-                <span className="brand-subtitle">admin</span>
+                <span className="brand-wordmark">Weather Scraper</span>
+                <span className="brand-subtitle">Admin UI</span>
               </Link>
             </div>
             <nav className="rail-nav" aria-label="주요 메뉴">

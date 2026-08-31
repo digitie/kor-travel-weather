@@ -8,8 +8,8 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
 
 export const metadata: Metadata = {
-  title: "kor-travel-weather 운영",
-  description: "KMA weather source administration",
+  title: "Weather Scraper Admin UI",
+  description: "Weather Scraper 운영·수집 관리 화면",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

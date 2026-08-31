@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from time import sleep
 from typing import Any
 
+from kortravelweather.metrics import provider_request
 from kortravelweather.models import WeatherLocation, WeatherValue, kst_now
 from kortravelweather.providers.kma import (
     KMA_PROVIDER_NAME,
@@ -51,6 +52,12 @@ class WeatherTarget:
 class StagedResponse:
     source_record: dict[str, Any]
     values: list[WeatherValue]
+
+
+def _kma_provider_call(call: Any, *, dataset: str, retries: int) -> Any:
+    """Observe one logical KMA/DataGo.kr call across the retry boundary."""
+    with provider_request(KMA_PROVIDER_NAME, dataset):
+        return _retry_call(call, retries=retries)
 
 
 def targets_from_settings(
@@ -474,7 +481,11 @@ def stage_grid(
         return limit
 
     if include_base:
-        snapshot = _retry_call(lambda: client.now(nx=location.nx, ny=location.ny), retries=retries)
+        snapshot = _kma_provider_call(
+            lambda: client.now(nx=location.nx, ny=location.ny),
+            dataset="kma_ultra_short_nowcast",
+            retries=retries,
+        )
         raw_snapshot = getattr(snapshot, "raw", None)
         raw_items = raw_snapshot.get("items", []) if isinstance(raw_snapshot, Mapping) else []
         now_items = _bounded_rows(raw_items, limit=row_limit(), label="초단기실황")
@@ -506,8 +517,10 @@ def stage_grid(
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
         ultra_rows = _bounded_rows(
-            _retry_call(
-                lambda: client.forecast.short(nx=location.nx, ny=location.ny), retries=retries
+            _kma_provider_call(
+                lambda: client.forecast.short(nx=location.nx, ny=location.ny),
+                dataset="kma_ultra_short_forecast",
+                retries=retries,
             ),
             limit=row_limit(),
             label="초단기예보",
@@ -537,8 +550,10 @@ def stage_grid(
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
         short_rows = _bounded_rows(
-            _retry_call(
-                lambda: client.forecast.vilage(nx=location.nx, ny=location.ny), retries=retries
+            _kma_provider_call(
+                lambda: client.forecast.vilage(nx=location.nx, ny=location.ny),
+                dataset="kma_short_forecast",
+                retries=retries,
             ),
             limit=row_limit(),
             label="단기예보",
@@ -573,8 +588,10 @@ def stage_grid(
                 "중기예보에는 mid_land_region_code와 mid_temperature_region_code가 모두 필요합니다."
             )
         land_rows = _bounded_rows(
-            _retry_call(
-                lambda: data_client.mid_land_forecast(reg_id=land_region_code), retries=retries
+            _kma_provider_call(
+                lambda: data_client.mid_land_forecast(reg_id=land_region_code),
+                dataset="kma_mid_forecast",
+                retries=retries,
             ),
             limit=row_limit(26),
             label="중기육상예보",
@@ -610,8 +627,9 @@ def stage_grid(
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
         temp_rows = _bounded_rows(
-            _retry_call(
+            _kma_provider_call(
                 lambda: data_client.mid_temperature_forecast(reg_id=temperature_region_code),
+                dataset="kma_mid_forecast",
                 retries=retries,
             ),
             limit=row_limit(16),
@@ -878,7 +896,11 @@ def run_weather_sync(
                     )
 
                 warning_items = _bounded_rows(
-                    _retry_call(fetch_warnings, retries=retries),
+                    _kma_provider_call(
+                        fetch_warnings,
+                        dataset="kma_weather_alerts",
+                        retries=retries,
+                    ),
                     limit=max_response_rows - response_rows_total,
                     label="기상특보",
                 )
