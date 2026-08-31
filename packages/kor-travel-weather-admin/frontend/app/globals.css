@@ -78,6 +78,7 @@ h3 { font-size: 0.9rem; margin: 0; }
 .summary-card-head > span:first-child { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
 .summary-card-icon { align-items: center; background: var(--color-accent-soft); border-radius: 0.75rem; color: var(--color-accent); display: inline-flex; height: 2.5rem; justify-content: center; width: 2.5rem; }
 .summary-card small { font-size: 0.8125rem; }
+.home-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .skeleton { background: var(--color-surface-muted, var(--color-rule)); border-radius: 0.35rem; display: inline-block; vertical-align: middle; }
 .skeleton-value { height: 2.25rem; width: 5.5rem; }
 .skeleton-line { height: 0.85rem; width: 7.5rem; }
@@ -400,6 +401,7 @@ td code { color: var(--color-ink-muted); }
   .location-create-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .location-create-form button { grid-column: 1 / -1; justify-self: start; }
   .dataset-list { grid-template-columns: 1fr; }
+  .home-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 42rem) {
@@ -418,4 +420,5 @@ td code { color: var(--color-ink-muted); }
   .pagination .toolbar { width: 100%; }
   .pagination .toolbar button { flex: 1; }
   .dataset-row { min-height: 0; }
+  .home-metrics { grid-template-columns: 1fr; }
 }

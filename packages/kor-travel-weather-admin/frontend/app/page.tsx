@@ -85,7 +85,7 @@ export default function HomePage() {
         <SummaryCard icon={MapPin} label="활성 위치" value={activeTotal.toLocaleString("ko-KR")} detail="public catalog" loading={loading} />
         <SummaryCard icon={Database} label="카탈로그 전체" value={catalogTotal.toLocaleString("ko-KR")} detail="관리 대상 anchor" loading={loading} />
         <SummaryCard icon={Activity} label="최근 수집" value={lastRun?.status ?? "—"} detail={lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")} facts` : "실행 기록 없음"} loading={loading} />
-        <SummaryCard icon={CloudSun} label="API 상태" value={health} detail="weather source" loading={loading} />
+        <SummaryCard icon={CloudSun} label="API 상태" value={loading ? "—" : health} detail="weather source" loading={loading} />
       </section>
       <section className="panel dashboard-note">
         <div className="panel-head"><div><h2>운영 기준</h2><p>수집 실패 시 이전 immutable fact는 그대로 보존됩니다.</p></div></div>
