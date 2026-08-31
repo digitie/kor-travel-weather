@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 
+import { PageHeader } from "@/components/admin-shell";
+
 type Preset = { label: string; method: "GET" | "POST"; path: string; description: string };
 
 const PRESETS: Preset[] = [
@@ -53,10 +55,12 @@ export default function ApiTestPage() {
 
   return (
     <>
-      <header className="header">
-        <div><div className="eyebrow">developer tools</div><h1>API 테스트</h1><p className="description">운영 UI 인증 세션을 통해 public/admin API 응답과 문제 envelope를 빠르게 확인합니다.</p></div>
-        <span className="status on">proxy ready</span>
-      </header>
+      <PageHeader
+        actions={<span className="status on">proxy ready</span>}
+        description="운영 UI 인증 세션을 통해 public/admin API 응답과 문제 envelope를 빠르게 확인합니다."
+        section="Developer tools"
+        title="API 테스트"
+      />
       <section className="api-console">
         <aside className="api-presets panel">
           <div className="panel-head"><div><h2>빠른 요청</h2><p>자주 확인하는 endpoint</p></div></div>

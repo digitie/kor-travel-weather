@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { PageHeader } from "@/components/admin-shell";
 import { WeatherMap } from "@/components/weather-map";
 import { getAllPublicLocations, Location } from "@/lib/api";
 
@@ -20,14 +21,12 @@ export default function WeatherPage() {
 
   return (
     <>
-      <header className="header weather-header">
-        <div>
-          <div className="eyebrow">feature weather</div>
-          <h1>날씨 지도</h1>
-          <p className="description">kor-travel-map의 feature 조회 흐름처럼 지도에서 위치를 고르고 최신 관측·예보를 확인합니다.</p>
-        </div>
-        <div className="header-note"><span className="status on">LIVE</span><span>{locations.length || "—"} active locations</span></div>
-      </header>
+      <PageHeader
+        actions={<span className="status on">{locations.length || "—"} active locations</span>}
+        description="kor-travel-map의 feature 조회 흐름처럼 지도에서 위치를 고르고 최신 관측·예보를 확인합니다."
+        section="Weather"
+        title="날씨 지도"
+      />
       {message ? <div className={message.includes("못") ? "error" : "loading-banner"}>{message}</div> : null}
       {locations.length ? <WeatherMap locations={locations} /> : null}
     </>

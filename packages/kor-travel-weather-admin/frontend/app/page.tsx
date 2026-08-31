@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 
+import { PageHeader } from "@/components/admin-shell";
 import { getHealth, getLocations, getPublicLocations, getSyncRuns, Location, SyncRun } from "@/lib/api";
 
 export default function HomePage() {
@@ -27,14 +29,17 @@ export default function HomePage() {
   const lastRun = runs[0];
   return (
     <>
-      <header className="header">
-        <div>
-          <div className="eyebrow">operator console</div>
-          <h1>Weather source</h1>
-          <p className="description">KMA 원천 응답과 공개용 weather fact를 한 곳에서 점검합니다.</p>
-        </div>
-        <span className="status on">API {health}</span>
-      </header>
+      <PageHeader
+        actions={
+          <>
+            <Link className="button secondary" href="/weather">날씨 지도</Link>
+            <Link className="button secondary" href="/sync-runs">수집 실행</Link>
+          </>
+        }
+        description="KMA 원천 응답과 공개용 weather fact를 한 곳에서 점검합니다."
+        section="Overview"
+        title="Weather source"
+      />
       {error ? <div className="error" role="alert">{error}</div> : null}
       <section className="cards" aria-label="운영 요약">
         <div className="panel card"><span>활성 위치</span><strong>{activeTotal}</strong></div>

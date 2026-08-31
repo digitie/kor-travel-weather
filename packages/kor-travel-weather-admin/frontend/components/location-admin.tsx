@@ -99,14 +99,14 @@ export function LocationAdmin() {
 
   return (
     <>
-      <div className="panel" style={{ marginBottom: 18 }}>
+      <div className="panel location-create-panel">
         <div className="panel-head">
           <div>
             <h2>새 KMA 위치</h2>
             <p>좌표와 격자 anchor를 등록합니다.</p>
           </div>
         </div>
-        <form className="toolbar" onSubmit={submit} style={{ flexWrap: "wrap", padding: 18 }}>
+        <form className="location-create-form" onSubmit={submit}>
           {newLocationFields.map((field) => (
             <label className="location-field" htmlFor={`new-location-${field.key}`} key={field.key}>
               <span>{field.label}</span>
@@ -132,7 +132,7 @@ export function LocationAdmin() {
             <h2>Location catalog</h2>
             <p>비활성화는 이력 보존을 위해 enabled=false로 처리합니다.</p>
           </div>
-          <div className="toolbar">
+          <div className="toolbar catalog-toolbar">
             <input
               aria-label="위치 검색"
               id="location-search"
@@ -156,6 +156,7 @@ export function LocationAdmin() {
         ) : locations.length === 0 ? (
           <div className="empty">등록된 위치가 없습니다.</div>
         ) : (
+          <div className="table-wrap">
           <table>
             <thead>
               <tr><th scope="col">location</th><th scope="col">grid</th><th scope="col">coordinates</th><th scope="col">status</th><th scope="col" /></tr>
@@ -172,6 +173,7 @@ export function LocationAdmin() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
         <div className="pagination" aria-label="위치 페이지 이동">
           <span>{total.toLocaleString("ko-KR")}개 위치 · {first}–{last}</span>

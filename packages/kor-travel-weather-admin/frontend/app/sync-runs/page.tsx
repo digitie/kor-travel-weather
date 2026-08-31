@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { PageHeader } from "@/components/admin-shell";
 import {
   getSyncRunSources,
   getSyncRuns,
@@ -43,13 +44,11 @@ export default function SyncRunsPage() {
 
   return (
     <>
-      <header className="header">
-        <div>
-          <div className="eyebrow">operations</div>
-          <h1>수집 실행</h1>
-          <p className="description">Dagster hourly asset의 성공·실패와 publish 결과입니다.</p>
-        </div>
-      </header>
+      <PageHeader
+        description="Dagster hourly asset의 성공·실패와 publish 결과입니다."
+        section="Operations"
+        title="수집 실행"
+      />
       <section className="panel">
         {error ? <div className="error" role="alert">{error}</div> : null}
         {runs.length === 0 ? (
