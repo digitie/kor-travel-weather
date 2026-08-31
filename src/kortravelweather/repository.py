@@ -29,6 +29,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    case,
     create_engine,
     delete,
     desc,
@@ -730,11 +731,24 @@ class WeatherRepository:
         that grid.  Other response entities are location-scoped and must name
         the same anchor; unknown generic entity types remain extensible.
         """
-        if source.source_entity_type not in {"weather_response", "kma_grid"}:
+        if source.source_entity_type not in {
+            "weather_response",
+            "kma_grid",
+            "airkorea_station",
+        }:
             return
         entity_id = source.source_entity_id
         if entity_id == value.location_id:
             return
+        if entity_id.startswith("kma-alert:"):
+            expected_station = entity_id.split(":", 1)[1]
+            payload_station = value.payload.get("stn_id", value.payload.get("stnId"))
+            if payload_station is not None and str(payload_station).strip() == expected_station:
+                return
+            raise ValueError(
+                f"source record 특보 관측소가 fact와 일치하지 않습니다: "
+                f"{entity_id} -> {payload_station!r}"
+            )
         if entity_id.startswith(("mid-land:", "mid-temperature:")):
             expected_region = entity_id.split(":", 1)[1]
             payload_region = value.payload.get("reg_id", value.payload.get("regId"))
@@ -1073,7 +1087,19 @@ class WeatherRepository:
                 select(WeatherValueRow)
                 .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
                 .where(ranked.c.revision_rank == 1)
-                .order_by(desc(timestamp), desc(WeatherValueRow.known_at))
+                .order_by(
+                    case(
+                        (
+                            WeatherValueRow.forecast_style.in_(
+                                ("observed", "nowcast")
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
+                    desc(timestamp),
+                    desc(WeatherValueRow.known_at),
+                )
                 .limit(limit)
             )
             return [self._value_model(row) for row in session.scalars(stmt).all()]
@@ -1084,6 +1110,51 @@ class WeatherRepository:
         """Fetch current projections for several locations in one query."""
         if not location_ids:
             return {}
+        with self._session_factory() as session:
+            timestamp = func.coalesce(
+                WeatherValueRow.target_at,
+                WeatherValueRow.valid_at,
+                WeatherValueRow.observed_at,
+                WeatherValueRow.issued_at,
+            )
+            base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
+            ranked = self._ranked_current_ids(session, base)
+            current = (
+                select(WeatherValueRow)
+                .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
+                .where(ranked.c.revision_rank == 1)
+                .order_by(
+                    WeatherValueRow.location_id,
+                    case(
+                        (
+                            WeatherValueRow.forecast_style.in_(
+                                ("observed", "nowcast")
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
+                    desc(timestamp),
+                    desc(WeatherValueRow.known_at),
+                )
+            )
+            result: dict[str, list[WeatherValue]] = {
+                location_id: [] for location_id in location_ids
+            }
+            for row in session.scalars(current).all():
+                values = result.setdefault(row.location_id, [])
+                if len(values) < limit_per_location:
+                    values.append(self._value_model(row))
+            return result
+
+    def timeline_many(
+        self, location_ids: Sequence[str], *, limit_per_location: int = 500
+    ) -> dict[str, list[WeatherValue]]:
+        """Return current projections for forecast/alert bundle queries in one SQL read."""
+        if not location_ids:
+            return {}
+        if limit_per_location <= 0:
+            raise ValueError("limit_per_location은 양수여야 합니다.")
         with self._session_factory() as session:
             timestamp = func.coalesce(
                 WeatherValueRow.target_at,

@@ -441,7 +441,8 @@ class OpenMeteoProvider(HttpWeatherProvider):
                 "wind_speed_10m,wind_direction_10m,weather_code"
             ),
             "hourly": (
-                "temperature_2m,relative_humidity_2m,precipitation_probability,precipitation,"
+                "temperature_2m,relative_humidity_2m,apparent_temperature,"
+                "precipitation_probability,precipitation,"
                 "wind_speed_10m,wind_direction_10m,weather_code"
             ),
         }

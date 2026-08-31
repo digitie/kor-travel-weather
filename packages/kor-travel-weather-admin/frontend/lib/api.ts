@@ -55,6 +55,43 @@ export type WeatherValue = {
   source_record_key: string;
 };
 
+export type MeasurementPoint = {
+  provider: string;
+  station_id: string | null;
+  station_name: string;
+  address: string | null;
+  network: string | null;
+  latitude: number;
+  longitude: number;
+  distance_km: number;
+};
+
+export type NearbyWeather = Location & {
+  distance_km: number;
+  measurement_point: MeasurementPoint | null;
+  latest: WeatherValue[];
+  forecast: WeatherValue[];
+  alerts: WeatherValue[];
+};
+
+export type ResolvedWeather = {
+  requested: { latitude: number; longitude: number };
+  location: Location;
+  distance_km: number;
+  measurement_point: MeasurementPoint | null;
+  latest: WeatherValue[];
+  forecast: WeatherValue[];
+  alerts: WeatherValue[];
+  source_locations: Location[];
+};
+
+export type WeatherMarker = {
+  location_id: string;
+  measurement_point: MeasurementPoint | null;
+  latest: WeatherValue[];
+  alerts: WeatherValue[];
+};
+
 export type SyncRun = {
   run_id: string;
   provider: string;
@@ -188,6 +225,40 @@ export function getForecast(
   return request<WeatherValue[]>(
     `/v1/weather/locations/${encodeURIComponent(locationId)}/forecast?${query.toString()}`,
   );
+}
+
+export function getNearby(
+  latitude: number,
+  longitude: number,
+  radiusKm = 500,
+  limit = 100,
+): Promise<ApiEnvelope<NearbyWeather[]>> {
+  const query = new URLSearchParams({
+    lat: String(latitude),
+    lon: String(longitude),
+    radius_km: String(radiusKm),
+    limit: String(limit),
+  });
+  return request<NearbyWeather[]>(`/v1/weather/nearby?${query}`);
+}
+
+export function getWeatherResolve(
+  latitude: number,
+  longitude: number,
+  radiusKm = 500,
+): Promise<ApiEnvelope<ResolvedWeather>> {
+  const query = new URLSearchParams({
+    lat: String(latitude),
+    lon: String(longitude),
+    radius_km: String(radiusKm),
+  });
+  return request<ResolvedWeather>(`/v1/weather/resolve?${query}`);
+}
+
+export function getMarkerSummaries(locationIds: string[]): Promise<ApiEnvelope<WeatherMarker[]>> {
+  const query = new URLSearchParams();
+  for (const locationId of locationIds) query.append("location_id", locationId);
+  return request<WeatherMarker[]>(`/v1/weather/markers?${query.toString()}`);
 }
 
 export function getSyncRuns(limit = 50): Promise<ApiEnvelope<SyncRun[]>> {

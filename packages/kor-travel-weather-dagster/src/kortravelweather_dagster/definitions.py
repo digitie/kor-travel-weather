@@ -1,5 +1,7 @@
 """Dagster Definitions and hourly KMA sync schedule."""
 
+from collections.abc import Mapping
+
 from dagster import (
     AssetExecutionContext,
     DefaultScheduleStatus,
@@ -9,12 +11,41 @@ from dagster import (
     define_asset_job,
 )
 
-from kortravelweather.providers import ProviderLocation
+from kortravelweather.providers import (
+    PROVIDER_CATALOG,
+    ProviderLocation,
+    create_configured_provider,
+    redact_secrets,
+)
 from kortravelweather.settings import WeatherSettings
 
+from .airkorea_weather import run_airkorea_weather_sync
 from .external_weather import run_external_weather_sync
 from .kma_weather import run_weather_sync, targets_from_settings
-from .resources import ExternalWeatherProviderResource, KmaClientResource, WeatherRepositoryResource
+from .resources import (
+    AirKoreaResource,
+    ExternalWeatherProviderResource,
+    KmaClientResource,
+    WeatherRepositoryResource,
+)
+
+
+def _is_kma_target_location(location: object) -> bool:
+    """Keep AirKorea station anchors out of KMA's grid target set by default.
+
+    AirKorea's nationwide station catalog is intentionally the anchor source
+    for external providers.  Treating every station as a KMA target would turn
+    a 300+ station catalog into hundreds of KMA grid calls and make the KMA
+    budget fail.  An administrator can opt a shared anchor into KMA explicitly
+    with ``metadata.kma_opt_in=true``.
+    """
+    metadata = getattr(location, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return True
+    return not (
+        isinstance(metadata.get("measurement_point"), Mapping)
+        and metadata.get("kma_opt_in") is not True
+    )
 
 
 @asset(
@@ -63,7 +94,7 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             **provider_codes(location.metadata),
         }
         for location in db_locations
-        if location.enabled
+        if location.enabled and _is_kma_target_location(location)
     ]
     merged: dict[str, dict[str, object]] = {row["location_id"]: row for row in db_targets}
     for row in settings.targets:
@@ -94,6 +125,37 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             extra_points=settings.extra_points,
             disabled_location_ids=disabled_ids,
         )
+        # Measurement anchors are intentionally excluded from KMA base-grid
+        # fetches to keep the grid budget bounded, but KMA advisories must still
+        # be visible on their map markers. Build a separate alert-only target
+        # snapshot from every enabled catalog row (plus enabled env targets).
+        alert_rows: dict[str, dict[str, object]] = {
+            location.location_id: {
+                **location.model_dump(),
+                **provider_codes(location.metadata),
+            }
+            for location in db_locations
+            if location.enabled
+        }
+        for row in settings.targets:
+            location_id = row.get("location_id")
+            if not isinstance(location_id, str) or location_id in disabled_ids:
+                continue
+            if location_id in alert_rows:
+                for key in (
+                    "mid_region_code",
+                    "mid_land_region_code",
+                    "mid_temperature_region_code",
+                    "mid_land_reg_id",
+                    "mid_ta_reg_id",
+                ):
+                    if row.get(key):
+                        alert_rows[location_id][key] = row[key]
+            elif row.get("enabled", True):
+                alert_rows[location_id] = dict(row)
+        alert_targets = targets_from_settings(
+            alert_rows.values(), disabled_location_ids=disabled_ids
+        )
         # Count the validated target set, including generated extra points,
         # rather than the pre-validation catalog snapshot.
         run = repository.start_sync_run(
@@ -102,11 +164,7 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             locations_total=len(targets),
         )
         client = client_resource.create_client(settings=settings, repository=repository)
-        data_client = (
-            client_resource.create_data_client(settings=settings, repository=repository)
-            if any(target.has_mid for target in targets)
-            else None
-        )
+        data_client = client_resource.create_data_client(settings=settings, repository=repository)
         sync_started = True
         result = run_weather_sync(
             repository=repository,
@@ -117,6 +175,9 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             max_response_rows=settings.max_response_rows_per_run,
             max_values=settings.max_values_per_run,
             include_mid=any(target.has_mid for target in targets),
+            include_alerts=True,
+            alert_station_id=settings.kma_alert_station_id,
+            alert_targets=alert_targets,
             data_client=data_client,
             # python-kma-api owns the transport retry boundary through the
             # resource above.  Do not retry the same client call a second time
@@ -149,16 +210,47 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
 
 
 @asset(
+    name="airkorea_weather_sync",
+    required_resource_keys={"airkorea_client", "weather_repository"},
+    description="AirKorea 측정소 catalog와 최신 대기질 관측을 hourly publish한다.",
+)
+def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
+    runtime = WeatherSettings()
+    repository = context.resources.weather_repository.create_repository()
+    client = context.resources.airkorea_client.create_client(
+        settings=runtime, repository=repository
+    )
+    try:
+        result = run_airkorea_weather_sync(
+            repository=repository,
+            client=client,
+            max_stations=runtime.airkorea_max_stations,
+            max_values=runtime.max_values_per_run,
+        )
+        context.add_output_metadata(result)
+        return result
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+@asset(
     name="external_weather_sync",
-    required_resource_keys={"external_weather", "weather_repository"},
+    required_resource_keys={"weather_repository"},
     description="provider-independent external weather response를 atomic publish한다.",
 )
 def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     repository = context.resources.weather_repository.create_repository()
-    resource = context.resources.external_weather
-    provider = resource.create_provider(settings=runtime, repository=repository)
-    locations = repository.list_locations(enabled_only=True, limit=None)
+    # External APIs are intentionally anchored to the AirKorea measurement
+    # catalog.  This keeps hourly quota predictable and gives consumers a
+    # station identity/distance alongside every provider bundle.
+    locations = [
+        location
+        for location in repository.list_locations(enabled_only=True, limit=None)
+        if isinstance(location.metadata.get("measurement_point"), dict)
+    ]
     targets = [
         ProviderLocation(
             location_id=location.location_id,
@@ -168,26 +260,78 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
         )
         for location in locations
     ]
-    try:
-        result = run_external_weather_sync(
-            repository=repository,
-            provider=provider,
-            targets=targets,
-            dataset_key=resource.dataset_key,
-            max_targets=runtime.max_targets_per_run,
-            max_response_rows=runtime.max_response_rows_per_run,
-            max_values=runtime.max_values_per_run,
-            max_payload_bytes=runtime.max_payload_bytes_per_run,
-        )
-        context.add_output_metadata(result)
-        return result
-    finally:
-        close = getattr(provider, "close", None)
-        if callable(close):
-            close()
+    results: list[dict[str, object]] = []
+    skipped: list[str] = []
+    failed: list[dict[str, object]] = []
+    external_keys = {
+        key
+        for key in runtime.enabled_providers
+        if key not in {"python-kma-api", "python-airkorea-api"}
+    }
+    for spec in PROVIDER_CATALOG:
+        if spec.key not in external_keys:
+            continue
+        try:
+            provider = create_configured_provider(
+                spec.key, settings=runtime, repository=repository
+            )
+        except Exception as exc:
+            # Missing optional credentials are represented in the run output;
+            # one unavailable provider must not prevent other sources from
+            # refreshing on the same hourly tick.
+            if spec.auth_required and "credential" in str(exc).lower():
+                skipped.append(spec.key)
+                continue
+            failed.append(
+                {
+                    "provider": spec.key,
+                    "dataset_key": None,
+                    "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
+                }
+            )
+            continue
+        try:
+            for dataset in spec.datasets:
+                try:
+                    result = run_external_weather_sync(
+                        repository=repository,
+                        provider=provider,
+                        targets=targets,
+                        dataset_key=dataset.key,
+                        max_targets=runtime.max_targets_per_run,
+                        max_response_rows=runtime.max_response_rows_per_run,
+                        max_values=runtime.max_values_per_run,
+                        max_payload_bytes=runtime.max_payload_bytes_per_run,
+                    )
+                except Exception as exc:
+                    failed.append(
+                        {
+                            "provider": spec.key,
+                            "dataset_key": dataset.key,
+                            "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
+                        }
+                    )
+                    continue
+                results.append(result)
+        finally:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
+    result = {
+        "status": "partial" if failed else "success",
+        "providers": results,
+        "skipped_providers": skipped,
+        "failed_providers": failed,
+        "locations_total": len(targets),
+    }
+    context.add_output_metadata(result)
+    return result
 
 
 _unresolved_weather_job = define_asset_job("kma_weather_job", selection=[kma_weather_sync])
+_unresolved_airkorea_job = define_asset_job(
+    "airkorea_weather_job", selection=[airkorea_weather_sync]
+)
 _unresolved_external_job = define_asset_job(
     "external_weather_job", selection=[external_weather_sync]
 )
@@ -198,13 +342,17 @@ _unresolved_external_job = define_asset_job(
 _resources = {
     "kma_client": KmaClientResource(),
     "weather_repository": WeatherRepositoryResource(),
+    "airkorea_client": AirKoreaResource(),
     "external_weather": ExternalWeatherProviderResource(),
 }
 
 
 def _resolve_weather_job():
     """Resolve the asset job without exposing a second module-level Definitions."""
-    asset_defs = Definitions(assets=[kma_weather_sync, external_weather_sync], resources=_resources)
+    asset_defs = Definitions(
+        assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+        resources=_resources,
+    )
     return _unresolved_weather_job.resolve(
         asset_defs.resolve_asset_graph(),
         resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
@@ -214,8 +362,25 @@ def _resolve_weather_job():
 weather_job = _resolve_weather_job()
 
 
+def _resolve_airkorea_job():
+    asset_defs = Definitions(
+        assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+        resources=_resources,
+    )
+    return _unresolved_airkorea_job.resolve(
+        asset_defs.resolve_asset_graph(),
+        resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
+    )
+
+
+airkorea_job = _resolve_airkorea_job()
+
+
 def _resolve_external_job():
-    asset_defs = Definitions(assets=[kma_weather_sync, external_weather_sync], resources=_resources)
+    asset_defs = Definitions(
+        assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+        resources=_resources,
+    )
     return _unresolved_external_job.resolve(
         asset_defs.resolve_asset_graph(),
         resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
@@ -232,10 +397,30 @@ hourly_kma_weather_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+hourly_airkorea_weather_schedule = ScheduleDefinition(
+    name="hourly_airkorea_weather",
+    cron_schedule="10 * * * *",
+    job=airkorea_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+hourly_external_weather_schedule = ScheduleDefinition(
+    name="hourly_external_weather",
+    cron_schedule="15 * * * *",
+    job=external_weather_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 
 defs = Definitions(
-    assets=[kma_weather_sync, external_weather_sync],
-    jobs=[weather_job, external_weather_job],
-    schedules=[hourly_kma_weather_schedule],
+    assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+    jobs=[weather_job, airkorea_job, external_weather_job],
+    schedules=[
+        hourly_kma_weather_schedule,
+        hourly_airkorea_weather_schedule,
+        hourly_external_weather_schedule,
+    ],
     resources=_resources,
 )

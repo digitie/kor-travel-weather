@@ -472,6 +472,128 @@
         }
       }
     },
+    "/v1/weather/resolve": {
+      "get": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "Resolve Weather",
+        "description": "Resolve a coordinate to one nearest anchor and all source projections.",
+        "operationId": "resolve_weather_v1_weather_resolve_get",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 43,
+              "minimum": 33,
+              "title": "Lat"
+            }
+          },
+          {
+            "name": "lon",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "maximum": 132,
+              "minimum": 124,
+              "title": "Lon"
+            }
+          },
+          {
+            "name": "radius_km",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 500,
+              "exclusiveMinimum": 0,
+              "default": 100,
+              "title": "Radius Km"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_ResolvedWeatherOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/weather/markers": {
+      "get": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "Marker Summaries",
+        "description": "Return current/alert marker state for a bounded visible-location batch.",
+        "operationId": "marker_summaries_v1_weather_markers_get",
+        "parameters": [
+          {
+            "name": "location_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_list_WeatherMarkerOut__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/locations": {
       "get": {
         "tags": [
@@ -1078,6 +1200,25 @@
   },
   "components": {
     "schemas": {
+      "CoordinateRequestOut": {
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "title": "CoordinateRequestOut"
+      },
       "Envelope_LocationOut_": {
         "properties": {
           "data": {
@@ -1111,6 +1252,23 @@
           "meta"
         ],
         "title": "Envelope[ProviderCredentialOut]"
+      },
+      "Envelope_ResolvedWeatherOut_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ResolvedWeatherOut"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[ResolvedWeatherOut]"
       },
       "Envelope_list_LocationOut__": {
         "properties": {
@@ -1237,6 +1395,27 @@
           "meta"
         ],
         "title": "Envelope[list[SyncRun]]"
+      },
+      "Envelope_list_WeatherMarkerOut__": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherMarkerOut"
+            },
+            "type": "array",
+            "title": "Data"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[list[WeatherMarkerOut]]"
       },
       "Envelope_list_WeatherValueOut__": {
         "properties": {
@@ -1537,6 +1716,74 @@
         "type": "object",
         "title": "LocationPatch"
       },
+      "MeasurementPointOut": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "station_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Station Id"
+          },
+          "station_name": {
+            "type": "string",
+            "title": "Station Name"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "network": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network"
+          },
+          "latitude": {
+            "type": "number",
+            "title": "Latitude"
+          },
+          "longitude": {
+            "type": "number",
+            "title": "Longitude"
+          },
+          "distance_km": {
+            "type": "number",
+            "title": "Distance Km"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "provider",
+          "station_name",
+          "latitude",
+          "longitude",
+          "distance_km"
+        ],
+        "title": "MeasurementPointOut",
+        "description": "Public, allow-listed AirKorea measurement-point metadata."
+      },
       "Meta": {
         "properties": {
           "request_id": {
@@ -1635,12 +1882,36 @@
             "type": "number",
             "title": "Distance Km"
           },
+          "measurement_point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasurementPointOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "latest": {
             "items": {
               "$ref": "#/components/schemas/WeatherValueOut"
             },
             "type": "array",
             "title": "Latest"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Forecast"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Alerts"
           }
         },
         "additionalProperties": false,
@@ -1857,6 +2128,66 @@
         ],
         "title": "ProviderOut"
       },
+      "ResolvedWeatherOut": {
+        "properties": {
+          "requested": {
+            "$ref": "#/components/schemas/CoordinateRequestOut"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationOut"
+          },
+          "distance_km": {
+            "type": "number",
+            "title": "Distance Km"
+          },
+          "measurement_point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasurementPointOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source_locations": {
+            "items": {
+              "$ref": "#/components/schemas/LocationOut"
+            },
+            "type": "array",
+            "title": "Source Locations"
+          },
+          "latest": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Latest"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Forecast"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Alerts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "requested",
+          "location",
+          "distance_km"
+        ],
+        "title": "ResolvedWeatherOut"
+      },
       "SourceRecordSummary": {
         "properties": {
           "source_record_key": {
@@ -2059,6 +2390,45 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WeatherMarkerOut": {
+        "properties": {
+          "location_id": {
+            "type": "string",
+            "title": "Location Id"
+          },
+          "measurement_point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasurementPointOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Latest"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Alerts"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "location_id"
+        ],
+        "title": "WeatherMarkerOut",
+        "description": "Bounded marker projection used by the map without full nearby payloads."
       },
       "WeatherValueOut": {
         "properties": {

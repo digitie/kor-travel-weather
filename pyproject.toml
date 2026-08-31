@@ -22,6 +22,7 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "cryptography>=42",
   "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@0868b76bd4b7de96b20f667e431c3f43b67cb537",
+  "python-airkorea-api",
   "pyproj>=3.5",
 ]
 
@@ -67,6 +68,9 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RET", "SIM"]
+
+[tool.uv.sources]
+python-airkorea-api = { path = "packages/python-airkorea-api" }
 
 [tool.mypy]
 python_version = "3.11"

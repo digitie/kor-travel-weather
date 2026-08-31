@@ -1,17 +1,19 @@
 # kor-travel-weather
 
-대한민국 전역의 관측·예보를 모아 제공하는 독립 날씨 데이터 소스다. 특보는
-원천 API의 별도 계약과 운영 검증을 거친 뒤 추가하는 후속 범위다.
+대한민국 전역의 관측·예보·기상특보를 모아 제공하는 독립 날씨 데이터 소스다.
 `kor-travel-map`의 데이터 계약·운영 패턴을 가져오되, 장소/축제/가격 같은 지도
 도메인은 소유하지 않는다. PinVi와 `kor-travel-map`은 저장소를 직접 읽지 않고
 REST/OpenAPI를 통해 날씨 데이터를 소비한다.
 
 ## 목표
 
-- `python-kma-api`를 통해 기상청 초단기실황·초단기예보·단기예보를 주기적으로 수집한다.
+- `python-kma-api`를 통해 기상청 초단기실황·초단기예보·단기예보·중기예보·특보를
+  매시간 수집한다.
+- `python-airkorea-api`로 측정소 카탈로그와 대기질 관측을 매시간 갱신하고, AirKorea
+  측정소 좌표를 외부 weather provider의 공통 anchor로 사용한다.
 - 위치와 원천 시각을 보존하는 정규화된 weather fact를 멱등적으로 저장한다.
 - 공용 REST API로 최신값·예보 timeline·좌표 기반 근접 위치를 제공한다.
-- Dagster schedule과 운영 이력을 admin UI에서 확인하고 위치를 관리한다.
+- Dagster의 KMA·AirKorea·외부 provider hourly schedule과 운영 이력을 admin UI에서 확인하고 위치를 관리한다.
 - 특정 소비자에 종속되지 않는 provider/dataset/metric 계약과 raw payload 추적성을 유지한다.
 
 ## 운영 모델
@@ -69,7 +71,8 @@ npm ci
 npm run dev                 # http://127.0.0.1:14105
 ```
 
-운영 UI는 `kor-travel-map` admin과 같은 좌측 rail·그룹 navigation을 사용한다.
+운영 UI는 `kor-travel-map` admin과 같은 좌측 rail·카드형 page header·4pt spacing과
+navy design token을 사용한다.
 `/weather`는 위치 목록과 지도를 함께 보여 주며, 지도 marker를 선택하면 최신
 projection과 forecast preview가 오른쪽 inspector에 열린다. `/login`은 UI 계정으로
 서명된 HttpOnly session을 만들고, `/api-test`는 같은 세션의 server-side proxy를
@@ -117,9 +120,13 @@ weather fact 저장소와는 결합하지 않는다.
 - `GET /v1/weather/locations`: 위치 카탈로그
 - `GET /v1/weather/locations/{location_id}/latest`: 최신 metric 묶음
 - `GET /v1/weather/locations/{location_id}/forecast`: 시각·dataset·metric 필터가 있는 timeline
-- `GET /v1/weather/nearby?lat=...&lon=...`: 위치 반경 검색과 각 위치의 최신값
+- `GET /v1/weather/nearby?lat=...&lon=...`: 위치 반경 검색과 각 위치의
+  current/forecast/alert/측정소 bundle
+- `GET /v1/weather/resolve?lat=...&lon=...`: 요청 좌표에서 가장 가까운 AirKorea
+  측정소와 모든 연결 provider의 current/forecast/특보 bundle
 - `/v1/admin/*`: 위치와 수집 이력 관리 (admin token 보호)
 - `/v1/admin/providers`: credential configured 여부와 dataset catalog (secret 비노출)
+- `/v1/admin/provider-credentials`: provider API key 암호화 저장·교체·삭제
 - `/health`, `/version`: 의존성 없는 liveness와 버전 확인
 
 응답은 `{data, meta}` envelope이며 `meta.request_id`로 로그와 Dagster run을 연결한다.

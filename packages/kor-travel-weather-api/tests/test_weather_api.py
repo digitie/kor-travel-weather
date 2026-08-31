@@ -153,6 +153,117 @@ def test_forecast_order_is_422(api_client: TestClient) -> None:
     assert "pydantic.dev" not in response.text
 
 
+def test_resolve_merges_nearby_station_and_kma_source_bundle(api_client: TestClient) -> None:
+    repository = api_client.app.state.repository
+    station = WeatherLocation(
+        location_id="airkorea-seoul",
+        name="서울 측정소",
+        latitude=37.5,
+        longitude=127.0,
+        metadata={
+            "measurement_point": {
+                "provider": "python-airkorea-api",
+                "station_name": "서울",
+                "address": "서울",
+            }
+        },
+    )
+    kma = WeatherLocation(
+        location_id="kma-seoul",
+        name="서울 KMA",
+        latitude=37.51,
+        longitude=127.01,
+        nx=60,
+        ny=127,
+    )
+    repository.create_location(station)
+    repository.create_location(kma)
+    for key, provider, location_id, style, metric in (
+        ("resolve-air", "python-airkorea-api", station.location_id, ForecastStyle.OBSERVED, "PM10"),
+        ("resolve-kma", "python-kma-api", kma.location_id, ForecastStyle.SHORT, "TMP"),
+    ):
+        dataset_key = (
+            "airkorea_realtime_measurement"
+            if provider.startswith("python-air")
+            else "kma_short_forecast"
+        )
+        weather_domain = "air_quality" if provider.startswith("python-air") else "weather"
+        repository.record_source(
+            source_record_key=key,
+            provider=provider,
+            dataset_key=dataset_key,
+            source_entity_type="weather_response",
+            source_entity_id=location_id,
+            payload={"rows": [{"metric": metric}]},
+        )
+        repository.upsert_values(
+            [
+                WeatherValue(
+                    location_id=location_id,
+                    provider=provider,
+                    dataset_key=dataset_key,
+                    weather_domain=weather_domain,
+                    forecast_style=style,
+                    metric_key=metric,
+                    target_at=datetime(2026, 8, 31, 12, tzinfo=UTC),
+                    value_number=Decimal("12"),
+                    source_record_key=key,
+                )
+            ]
+        )
+    response = api_client.get(
+        "/v1/weather/resolve", params={"lat": 37.5, "lon": 127.0, "radius_km": 25}
+    )
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["location"]["location_id"] == station.location_id
+    assert {item["location_id"] for item in body["source_locations"]} == {
+        station.location_id,
+        kma.location_id,
+    }
+    assert {item["provider"] for item in body["latest"] + body["forecast"]} == {
+        "python-airkorea-api",
+        "python-kma-api",
+    }
+
+
+def test_marker_batch_returns_weather_and_alert_state(api_client: TestClient) -> None:
+    repository = api_client.app.state.repository
+    location = WeatherLocation(
+        location_id="marker-seoul",
+        name="마커 서울",
+        latitude=37.5,
+        longitude=127,
+    )
+    repository.create_location(location)
+    repository.record_source(
+        source_record_key="marker-source",
+        provider="python-kma-api",
+        dataset_key="kma_ultra_short_nowcast",
+        source_entity_type="weather_response",
+        source_entity_id=location.location_id,
+        payload={"rows": [{"metric": "PTY"}]},
+    )
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id=location.location_id,
+                provider="python-kma-api",
+                dataset_key="kma_ultra_short_nowcast",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.NOWCAST,
+                metric_key="PTY",
+                target_at=datetime(2026, 8, 31, 12, tzinfo=UTC),
+                value_number=Decimal("1"),
+                source_record_key="marker-source",
+            )
+        ]
+    )
+    response = api_client.get("/v1/weather/markers", params={"location_id": location.location_id})
+    assert response.status_code == 200
+    assert response.json()["data"][0]["latest"][0]["metric_key"] == "PTY"
+
+
 def test_openapi_error_contract_matches_problem_handler(api_client: TestClient) -> None:
     schema = api_client.app.openapi()
     forecast_errors = schema["paths"]["/v1/weather/locations/{location_id}/forecast"]["get"][

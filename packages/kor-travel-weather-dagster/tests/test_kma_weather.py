@@ -288,6 +288,46 @@ def test_sync_publishes_only_after_all_grids() -> None:
     assert repository.values
 
 
+def test_alert_targets_include_measurement_anchor_markers() -> None:
+    class AlertClient:
+        def weather_warning_list(self, **kwargs):
+            return [
+                {
+                    "stnId": "108",
+                    "tmFc": "202601010600",
+                    "tmSeq": "1",
+                    "title": "호우주의보",
+                }
+            ]
+
+    measurement_target = WeatherTarget(
+        WeatherLocation(
+            location_id="airkorea-station",
+            name="측정소",
+            latitude=37.5,
+            longitude=127,
+            nx=60,
+            ny=127,
+            metadata={"measurement_point": {"provider": "python-airkorea-api"}},
+        )
+    )
+    repository = FakeRepository()
+    result = run_weather_sync(
+        repository=repository,
+        client=FakeClient(),
+        targets=[_target()],
+        include_alerts=True,
+        data_client=AlertClient(),
+        alert_targets=[measurement_target],
+    )
+
+    assert result["alerts_fetched"] == 1
+    assert any(
+        value.location_id == "airkorea-station" and value.metric_key == "ALERT"
+        for value in repository.values
+    )
+
+
 def test_sync_publishes_bundle_run_to_sqlalchemy_repository(tmp_path) -> None:
     repository = WeatherRepository(TEST_DATABASE_URL)
     repository.create_schema()

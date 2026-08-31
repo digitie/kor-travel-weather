@@ -2,8 +2,8 @@
  * kor-travel-map admin visual source
  *
  * This file intentionally keeps the weather console on the map console's
- * Rail-Workbench recipe: Pretendard-first typography, a 4pt rhythm, hairline
- * surfaces, grouped navigation, flush headers, and compact controls. Weather
+ * Rail-Workbench recipe: Geist/Pretendard typography, a 4pt rhythm, hairline
+ * surfaces, flat map-style navigation, card headers, and compact controls. Weather
  * pages only add domain-specific map/metric rules below the shared shell.
  * Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V5 · contrast: pass · nav: N3 · footer: Ft2 · responsive: pass
  */
@@ -252,7 +252,7 @@ h3 {
 
 .app-grid {
   display: grid;
-  grid-template-columns: 16rem minmax(0, 1fr);
+  grid-template-columns: 17rem minmax(0, 1fr);
   min-height: 100dvh;
   min-width: 0;
 }
@@ -269,6 +269,7 @@ h3 {
   top: 0;
   border-right: 1px solid var(--surface-muted);
   background: var(--card);
+  box-shadow: var(--shadow-card);
 }
 
 .rail-shell {
@@ -280,14 +281,14 @@ h3 {
 
 .rail-header {
   display: flex;
-  height: 3.5rem;
+  height: auto;
   min-width: 0;
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  border-bottom: 1px solid var(--surface-muted);
-  padding: 0 1rem;
+  border-bottom: 0;
+  padding: 1.25rem;
 }
 
 .brand {
@@ -301,6 +302,18 @@ h3 {
   font-size: 0.875rem;
   font-weight: 600;
   letter-spacing: -0.02em;
+}
+
+.brand-mark {
+  display: inline-flex;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  background: var(--brand-tint);
+  color: var(--brand);
 }
 
 .brand-wordmark,
@@ -398,8 +411,8 @@ h3 {
   position: relative;
   display: flex;
   min-width: 0;
-  min-height: var(--control-h-sm);
-  height: var(--control-h-sm);
+  min-height: var(--control-h);
+  height: var(--control-h);
   flex-shrink: 0;
   align-items: center;
   justify-content: flex-start;
@@ -528,8 +541,8 @@ h3 {
 /* PageHeader remains a component because each weather route supplies title and
  * action content; its frame is the same flush header band as map's shell. */
 .page-header-wrap {
-  border-bottom: 1px solid var(--surface-muted);
-  padding: 1.25rem 1.5rem 1rem;
+  border: 0;
+  padding: 1.5rem 1.5rem 0;
 }
 
 .page-header {
@@ -538,11 +551,11 @@ h3 {
   align-items: flex-start;
   justify-content: space-between;
   gap: 1.5rem;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--surface-muted) 70%, transparent);
+  border-radius: 1rem;
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+  padding: 1.5rem;
 }
 
 .page-header-copy {
@@ -560,6 +573,17 @@ h3 {
   color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 500;
+}
+
+.page-context .page-section {
+  min-height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--brand-tint);
+  color: var(--brand);
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
 }
 
 .page-section {
@@ -2280,3 +2304,79 @@ tbody tr:hover {
     max-width: 24rem;
   }
 }
+
+/* Weather-aware map markers.  Shapes remain the map console's compact navy
+ * control while color/glyph communicates the latest provider projection. */
+.weather-marker {
+  position: relative;
+  display: inline-flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 2px solid var(--card);
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--brand-foreground);
+  box-shadow: 0 2px 8px oklch(20% 0.04 255 / 0.32);
+  font-size: 1.15rem;
+  transition: transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.weather-marker:hover,
+.weather-marker.selected {
+  z-index: 2;
+  transform: scale(1.12);
+  box-shadow: 0 3px 12px oklch(20% 0.04 255 / 0.42);
+}
+
+.weather-marker-clear { background: #d98b20; }
+.weather-marker-cloud { background: #526b90; }
+.weather-marker-rain { background: #2563a8; }
+.weather-marker-snow { background: #5f82a8; }
+.weather-marker-storm,
+.weather-marker-alert { background: #b13b4a; }
+.weather-marker-unknown { background: var(--brand); }
+
+.weather-marker-glyph { line-height: 1; }
+.weather-marker-glyph {
+  display: inline-flex;
+  width: 1.5rem;
+  height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+}
+.weather-marker-glyph svg { width: 1.5rem; height: 1.5rem; }
+.weather-marker-badge {
+  position: absolute;
+  right: -0.2rem;
+  top: -0.35rem;
+  display: grid;
+  width: 1.2rem;
+  height: 1.2rem;
+  place-items: center;
+  border: 2px solid var(--card);
+  border-radius: 999px;
+  background: #8f2035;
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.measurement-point,
+.alert-panel {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--surface-muted);
+  border-radius: var(--radius-panel);
+  background: var(--brand-tint);
+}
+
+.measurement-point strong,
+.alert-panel strong { color: var(--brand); }
+.measurement-point small,
+.alert-panel span { color: var(--text-secondary); font-size: 0.75rem; }

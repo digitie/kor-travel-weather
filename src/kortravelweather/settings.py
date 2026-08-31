@@ -18,6 +18,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 SUPPORTED_PROVIDER_KEYS = {
     "python-kma-api",
+    "python-airkorea-api",
     "weatherapi",
     "openweathermap",
     "open_meteo",
@@ -84,6 +85,14 @@ class WeatherSettings(BaseSettings):
     data_go_kr_service_key: SecretStr | None = Field(
         default=None, validation_alias="KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY"
     )
+    airkorea_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY",
+            "AIRKOREA_API_KEY",
+            "KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY",
+        ),
+    )
     weatherapi_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -143,7 +152,19 @@ class WeatherSettings(BaseSettings):
         validation_alias="KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL",
     )
     enabled_providers: Annotated[list[str], NoDecode] = Field(
-        default_factory=lambda: ["python-kma-api", "open_meteo", "wttr_in"],
+        default_factory=lambda: [
+            "python-kma-api",
+            "python-airkorea-api",
+            "open_meteo",
+            "weatherapi",
+            "openweathermap",
+            "visual_crossing",
+            "tomorrow_io",
+            "weatherbit",
+            "weatherstack",
+            "accuweather",
+            "wttr_in",
+        ],
         validation_alias=AliasChoices("KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS", "WEATHER_PROVIDERS"),
     )
     provider_http_timeout_seconds: float = Field(
@@ -184,6 +205,18 @@ class WeatherSettings(BaseSettings):
         validation_alias="KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN",
         gt=0,
         le=256 * 1024 * 1024,
+    )
+    airkorea_max_stations: int = Field(
+        default=1000,
+        validation_alias="KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS",
+        gt=0,
+        le=5000,
+    )
+    kma_alert_station_id: str = Field(
+        default="108",
+        validation_alias="KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID",
+        min_length=1,
+        max_length=16,
     )
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=list, validation_alias="KOR_TRAVEL_WEATHER_CORS_ORIGINS"
@@ -267,6 +300,7 @@ class WeatherSettings(BaseSettings):
         "admin_token",
         "credential_encryption_key",
         "data_go_kr_service_key",
+        "airkorea_api_key",
         "weatherapi_api_key",
         "openweathermap_api_key",
         "visual_crossing_api_key",
@@ -341,6 +375,7 @@ class WeatherSettings(BaseSettings):
         """provider key를 SecretStr 외부로 노출하지 않고 필요한 순간에만 반환한다."""
         fields = {
             "python-kma-api": "data_go_kr_service_key",
+            "python-airkorea-api": "airkorea_api_key",
             "weatherapi": "weatherapi_api_key",
             "openweathermap": "openweathermap_api_key",
             "visual_crossing": "visual_crossing_api_key",
@@ -353,6 +388,12 @@ class WeatherSettings(BaseSettings):
         if field_name is None:
             return None
         value = getattr(self, field_name)
+        # AirKorea's public-data service uses the same Data.go.kr service key
+        # as the KMA adapter.  Compose intentionally exposes the dedicated
+        # AirKorea variable as optional, so an empty override must not mask the
+        # shared key already configured for the vendored client.
+        if provider == "python-airkorea-api" and not value:
+            value = self.data_go_kr_service_key
         return value.get_secret_value() if value else None
 
 

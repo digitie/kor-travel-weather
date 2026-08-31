@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from time import sleep
 from typing import Any
 
@@ -22,6 +22,7 @@ from kortravelweather.providers.kma import (
     short_forecast_to_weather_values,
     ultra_short_forecast_to_weather_values,
     ultra_short_nowcast_to_weather_values,
+    weather_warning_to_weather_values,
 )
 from kortravelweather.repository import WeatherRepository
 
@@ -400,6 +401,39 @@ def _bounded_conversion(
     return values
 
 
+def _warning_matches_target(item: Any, target: WeatherTarget) -> bool:
+    """Keep a regional warning from being fanned out to another region.
+
+    KMA warning rows are not completely uniform across service revisions.  If
+    a row carries an area/region identifier, compare it with the target's
+    configured ``region_code``.  Rows without that optional field are treated
+    as national-scope notices and remain eligible for every target in the
+    requested issuing-office group.
+    """
+    expected = target.location.region_code
+    if not expected:
+        return True
+    raw = _json_row(item)
+    aliases = (
+        "reg_id",
+        "regId",
+        "area_code",
+        "areaCode",
+        "zone_code",
+        "zoneCode",
+        "area_name",
+        "areaName",
+        "zone",
+        "area",
+    )
+    returned = next((raw.get(key) for key in aliases if raw.get(key) not in (None, "")), None)
+    if returned is None:
+        return True
+    expected_text = str(expected).strip().lower()
+    returned_text = str(returned).strip().lower()
+    return expected_text == returned_text or expected_text in returned_text
+
+
 def stage_grid(
     *,
     client: Any,
@@ -620,12 +654,15 @@ def run_weather_sync(
     repository: WeatherRepository,
     client: Any,
     targets: Sequence[WeatherTarget],
+    alert_targets: Sequence[WeatherTarget] | None = None,
     max_grids: int = 300,
     max_mid_groups: int | None = None,
     max_targets: int = 10_000,
     max_response_rows: int = 1_000_000,
     max_values: int = 500_000,
     include_mid: bool = False,
+    include_alerts: bool = False,
+    alert_station_id: str | int | None = None,
     data_client: Any | None = None,
     retries: int = 0,
     sync_run: Any | None = None,
@@ -642,6 +679,12 @@ def run_weather_sync(
         if len(targets) > max_targets:
             raise ValueError(
                 f"weather target 수가 상한을 초과했습니다: {len(targets)} > {max_targets}"
+            )
+        alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
+        if len(alert_target_list) > max_targets:
+            raise ValueError(
+                f"weather alert target 수가 상한을 초과했습니다: "
+                f"{len(alert_target_list)} > {max_targets}"
             )
         unique_grid_count = len({(target.location.nx, target.location.ny) for target in targets})
         if unique_grid_count > max_grids:
@@ -801,6 +844,85 @@ def run_weather_sync(
                 include_mid_for_group=True,
                 source_entity_id=f"mid-region:{mid_region_codes[0]}:{mid_region_codes[1]}",
             )
+        alert_groups = 0
+        alert_rows_total = 0
+        if include_alerts:
+            if data_client is None:
+                raise ValueError("특보에는 DataGoKrClient가 필요합니다.")
+            alert_targets: dict[str, list[WeatherTarget]] = {}
+            for target in alert_target_list:
+                configured = target.location.metadata.get("kma_alert_station_id")
+                station = str(configured or alert_station_id or "108").strip()
+                if not station:
+                    raise ValueError("KMA 특보 관측소 ID가 비어 있습니다.")
+                alert_targets.setdefault(station, []).append(target)
+            # The warning API accepts date/datetime values. Keep a short,
+            # deterministic window so hourly runs do not repeatedly fetch an
+            # unbounded historical response. Each target group is tied to its
+            # configured issuing office; Seoul warnings are never fanned out to
+            # a target configured for another office.
+            for station, station_targets in alert_targets.items():
+                keep_alive()
+                alert_to = kst_now()
+                alert_from = alert_to - timedelta(days=3)
+                def fetch_warnings(
+                    station_id: str = station,
+                    from_at: datetime = alert_from,
+                    to_at: datetime = alert_to,
+                ) -> Any:
+                    return data_client.weather_warning_list(
+                        stn_id=station_id,
+                        from_tm_fc=from_at,
+                        to_tm_fc=to_at,
+                        num_of_rows=min(100, max_response_rows),
+                    )
+
+                warning_items = _bounded_rows(
+                    _retry_call(fetch_warnings, retries=retries),
+                    limit=max_response_rows - response_rows_total,
+                    label="기상특보",
+                )
+                alert_groups += 1
+                alert_rows_total += len(warning_items)
+                response_rows_total += len(warning_items)
+                # One source row per notice keeps the immutable fact identity
+                # unique even when several notices share the same issue time.
+                for item in warning_items:
+                    entity_id = f"kma-alert:{station}"
+                    template = weather_warning_to_weather_values(
+                        [item], location_id=entity_id, known_at=alert_to
+                    )
+                    if not template:
+                        continue
+                    source_key = template[0].source_record_key
+                    raw = _json_row(item)
+                    source = {
+                        "source_record_key": source_key,
+                        "provider": KMA_PROVIDER_NAME,
+                        "dataset_key": "kma_weather_alerts",
+                        "source_entity_type": "weather_response",
+                        "source_entity_id": entity_id,
+                        "payload": {
+                            "dataset_key": "kma_weather_alerts",
+                            "location_id": entity_id,
+                            "rows": [raw],
+                            "response_metadata": {},
+                        },
+                        "fetched_at": alert_to,
+                        "run_id": run.run_id,
+                    }
+                    sources.append(source)
+                    for target in station_targets:
+                        if not _warning_matches_target(item, target):
+                            continue
+                        if len(values) >= max_values:
+                            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+                        values.append(
+                            template[0].model_copy(
+                                update={"location_id": target.location.location_id}
+                            )
+                        )
+                keep_alive()
         publish_and_finish = getattr(repository, "publish_and_finish", None)
         if callable(publish_and_finish):
             loaded, finished = publish_and_finish(
@@ -809,7 +931,9 @@ def run_weather_sync(
                 values=values,
                 grids_fetched=len(grid_groups),
                 mid_groups_fetched=len(mid_groups),
-                requests_fetched=len(grid_groups) * 3 + len(mid_groups) * 2,
+                requests_fetched=len(grid_groups) * 3
+                + len(mid_groups) * 2
+                + alert_groups,
             )
         else:
             loaded = repository.ingest_batch(source_records=sources, values=values)
@@ -818,7 +942,9 @@ def run_weather_sync(
                 status="success",
                 grids_fetched=len(grid_groups),
                 mid_groups_fetched=len(mid_groups),
-                requests_fetched=len(grid_groups) * 3 + len(mid_groups) * 2,
+                requests_fetched=len(grid_groups) * 3
+                + len(mid_groups) * 2
+                + alert_groups,
                 values_loaded=loaded,
             )
         if finished.status != "success":
@@ -830,7 +956,10 @@ def run_weather_sync(
             "status": finished.status,
             "grids_fetched": len(grid_groups),
             "mid_groups_fetched": len(mid_groups),
-            "requests_fetched": len(grid_groups) * 3 + len(mid_groups) * 2,
+            "requests_fetched": len(grid_groups) * 3
+            + len(mid_groups) * 2
+            + alert_groups,
+            "alerts_fetched": alert_rows_total,
             "values_loaded": loaded,
         }
     except Exception as exc:

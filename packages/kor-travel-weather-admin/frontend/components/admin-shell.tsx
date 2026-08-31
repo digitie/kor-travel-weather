@@ -117,6 +117,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
           <div className="rail-shell">
             <div className="rail-header">
               <Link className="brand" href="/" aria-label="kor-travel-weather admin">
+                <span className="brand-mark" aria-hidden="true"><CloudSun size={17} /></span>
                 <span className="brand-wordmark">kor-travel-weather</span>
                 <span className="brand-subtitle">admin</span>
                 <span className="brand-short" aria-hidden="true">ktw</span>
@@ -144,29 +145,24 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               </div>
             </div>
             <nav className="rail-nav" aria-label="주요 메뉴">
-              {NAV_GROUPS.map((group) => (
-                <div className="nav-group" key={group.group ?? "overview"}>
-                  {group.group ? <div className="nav-section"><span>{group.group}</span><i aria-hidden="true" /></div> : null}
-                  {group.items.map((item) => {
-                    const active = item.href === activeItem?.href;
-                    const Icon = item.icon;
-                    return (
-                      <Link
-                        aria-current={active ? "page" : undefined}
-                        aria-label={sidebarCollapsed ? item.label : undefined}
-                        className={`nav-link${active ? " active" : ""}`}
-                        href={item.href}
-                        key={item.href}
-                        ref={active ? activeItemRef : undefined}
-                        title={sidebarCollapsed ? item.label : undefined}
-                      >
-                        <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
-                        <span>{item.label}</span>
-                      </Link>
-                    );
-                  })}
-                </div>
-              ))}
+              {NAV_ITEMS.map((item) => {
+                const active = item.href === activeItem?.href;
+                const Icon = item.icon;
+                return (
+                  <Link
+                    aria-current={active ? "page" : undefined}
+                    aria-label={sidebarCollapsed ? item.label : undefined}
+                    className={`nav-link${active ? " active" : ""}`}
+                    href={item.href}
+                    key={item.href}
+                    ref={active ? activeItemRef : undefined}
+                    title={sidebarCollapsed ? item.label : undefined}
+                  >
+                    <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
             </nav>
             <div className="rail-footer">
               <button
@@ -204,6 +200,7 @@ export function PageHeader({
         <div className="page-header-copy">
           <div className="page-context">
             {section ? <span className="page-section">{section}</span> : null}
+            <span className="page-path">{usePathname()}</span>
           </div>
           <div className="page-header-row">
             <h1>{title}</h1>
