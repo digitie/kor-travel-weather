@@ -11,13 +11,11 @@ import {
   KeyRound,
   LogOut,
   MapPin,
-  PanelLeftClose,
-  PanelLeftOpen,
   Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 type NavigationItem = {
   href: string;
@@ -25,41 +23,18 @@ type NavigationItem = {
   icon: typeof Home;
 };
 
-type NavigationGroup = {
-  group: string | null;
-  items: NavigationItem[];
-};
-
-// Keep the same grouped rail recipe as kor-travel-map. Weather destinations
-// are slotted into the same operator phases so both consoles feel identical.
-const NAV_GROUPS: NavigationGroup[] = [
-  { group: null, items: [{ href: "/", label: "홈", icon: Home }] },
-  {
-    group: "날씨 탐색",
-    items: [
-      { href: "/weather", label: "날씨 지도", icon: CloudSun },
-      { href: "/locations", label: "위치 카탈로그", icon: MapPin },
-    ],
-  },
-  {
-    group: "수집 파이프라인",
-    items: [
-      { href: "/datasets", label: "데이터셋", icon: Database },
-      { href: "/sync-runs", label: "수집 실행", icon: Activity },
-    ],
-  },
-  {
-    group: "시스템",
-    items: [
-      { href: "/settings/providers", label: "API 키 설정", icon: KeyRound },
-      { href: "/admin/dagster", label: "Dagster", icon: Workflow },
-      { href: "/api-test", label: "API 테스트", icon: Code2 },
-    ],
-  },
+// Keep the same flat rail recipe as kor-travel-map. Weather destinations use
+// the same icon/label/link treatment while retaining weather-specific routes.
+const NAV_ITEMS: NavigationItem[] = [
+  { href: "/", label: "홈", icon: Home },
+  { href: "/weather", label: "날씨 지도", icon: CloudSun },
+  { href: "/locations", label: "위치 카탈로그", icon: MapPin },
+  { href: "/datasets", label: "데이터셋", icon: Database },
+  { href: "/sync-runs", label: "수집 실행", icon: Activity },
+  { href: "/settings/providers", label: "API 키 설정", icon: KeyRound },
+  { href: "/admin/dagster", label: "Dagster", icon: Workflow },
+  { href: "/api-test", label: "API 테스트", icon: Code2 },
 ];
-
-const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
-const SIDEBAR_COLLAPSED_KEY = "kor-travel-weather:sidebar-collapsed";
 
 function isActive(pathname: string, href: string) {
   if (href === "/") return pathname === href;
@@ -74,29 +49,10 @@ function logout() {
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const activeItemRef = useRef<HTMLAnchorElement | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-  });
   const [loggingOut, setLoggingOut] = useState(false);
   const activeItem = [...NAV_ITEMS]
     .filter((item) => isActive(pathname, item.href))
     .sort((left, right) => right.href.length - left.href.length)[0];
-
-  useEffect(() => {
-    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? "1" : "0");
-  }, [sidebarCollapsed]);
-
-  useEffect(() => {
-    if (window.innerWidth >= 1024) return;
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    activeItemRef.current?.scrollIntoView({
-      behavior: reduceMotion ? "auto" : "smooth",
-      block: "nearest",
-      inline: "center",
-    });
-  }, [activeItem?.href]);
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -112,7 +68,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="weather-shell">
       <a className="skip-link" href="#main-content">본문으로 건너뛰기</a>
-      <div className={`app-grid${sidebarCollapsed ? " sidebar-collapsed" : ""}`} data-testid="admin-shell">
+      <div className="app-grid" data-testid="admin-shell">
         <aside className="rail" aria-label="관리자 사이드바" data-slot="admin-shell-rail">
           <div className="rail-shell">
             <div className="rail-header">
@@ -120,29 +76,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 <span className="brand-mark" aria-hidden="true"><CloudSun size={17} /></span>
                 <span className="brand-wordmark">kor-travel-weather</span>
                 <span className="brand-subtitle">admin</span>
-                <span className="brand-short" aria-hidden="true">ktw</span>
               </Link>
-              <div className="rail-header-actions">
-                <button
-                  aria-label="로그아웃"
-                  className="rail-icon-button rail-mobile-logout"
-                  disabled={loggingOut}
-                  onClick={() => void handleLogout()}
-                  title="로그아웃"
-                  type="button"
-                >
-                  <LogOut aria-hidden="true" size={16} />
-                </button>
-                <button
-                  aria-label={sidebarCollapsed ? "좌측 메뉴 펼치기" : "좌측 메뉴 접기"}
-                  className="rail-icon-button rail-collapse"
-                  onClick={() => setSidebarCollapsed((value) => !value)}
-                  title={sidebarCollapsed ? "좌측 메뉴 펼치기" : "좌측 메뉴 접기"}
-                  type="button"
-                >
-                  {sidebarCollapsed ? <PanelLeftOpen aria-hidden="true" size={16} /> : <PanelLeftClose aria-hidden="true" size={16} />}
-                </button>
-              </div>
             </div>
             <nav className="rail-nav" aria-label="주요 메뉴">
               {NAV_ITEMS.map((item) => {
@@ -151,12 +85,9 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 return (
                   <Link
                     aria-current={active ? "page" : undefined}
-                    aria-label={sidebarCollapsed ? item.label : undefined}
                     className={`nav-link${active ? " active" : ""}`}
                     href={item.href}
                     key={item.href}
-                    ref={active ? activeItemRef : undefined}
-                    title={sidebarCollapsed ? item.label : undefined}
                   >
                     <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
                     <span>{item.label}</span>
