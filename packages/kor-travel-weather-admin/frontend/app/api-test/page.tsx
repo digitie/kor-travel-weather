@@ -58,7 +58,7 @@ export default function ApiTestPage() {
       <PageHeader
         actions={<span className="status on">proxy ready</span>}
         description="운영 UI 인증 세션을 통해 public/admin API 응답과 문제 envelope를 빠르게 확인합니다."
-        section="Developer tools"
+        section="시스템"
         title="API 테스트"
       />
       <section className="api-console">

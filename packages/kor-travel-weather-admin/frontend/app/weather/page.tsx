@@ -31,7 +31,7 @@ export default function WeatherPage() {
       <PageHeader
         actions={<span className="status on">{locations.length || "—"} active locations</span>}
         description="kor-travel-map의 feature 조회 흐름처럼 지도에서 위치를 고르고 최신 관측·예보를 확인합니다."
-        section="Weather"
+        section="날씨 탐색"
         title="날씨 지도"
       />
       {loading ? <div className="loading-banner" role="status" aria-live="polite" aria-busy="true">위치 카탈로그를 불러오는 중…</div> : null}

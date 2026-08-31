@@ -6,7 +6,7 @@ export default function LocationsPage() {
     <>
       <PageHeader
         description="KMA 격자 anchor를 등록하고 공개 여부를 관리합니다."
-        section="Catalog"
+        section="날씨 탐색"
         title="위치 카탈로그"
       />
       <LocationAdmin />
