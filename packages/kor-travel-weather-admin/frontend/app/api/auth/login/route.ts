@@ -77,6 +77,28 @@ function tooManyRequests(retryAfter: number) {
   });
 }
 
+/** Read a request body without buffering bytes beyond the configured limit. */
+async function readBoundedText(request: NextRequest, maxBytes: number): Promise<string | null> {
+  const reader = request.body?.getReader();
+  if (!reader) {
+    const text = await request.text();
+    return new TextEncoder().encode(text).byteLength <= maxBytes ? text : null;
+  }
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
 export async function POST(request: NextRequest) {
   const username = process.env.WEATHER_UI_USER;
   const password = process.env.WEATHER_UI_PASSWORD;
@@ -107,8 +129,8 @@ export async function POST(request: NextRequest) {
   }
   let body: { username?: unknown; password?: unknown };
   try {
-    const raw = await request.text();
-    if (new TextEncoder().encode(raw).byteLength > MAX_BODY_BYTES) {
+    const raw = await readBoundedText(request, MAX_BODY_BYTES);
+    if (raw === null) {
       return NextResponse.json(
         { detail: "로그인 요청이 너무 큽니다." },
         { status: 413, headers: { "cache-control": "no-store" } },

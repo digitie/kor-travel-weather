@@ -193,6 +193,21 @@ def test_production_requires_admin_token(tmp_path) -> None:
         raise AssertionError("production app must fail closed without admin token")
 
 
+def test_production_rejects_weak_admin_token() -> None:
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="production",
+        database_url=TEST_DATABASE_URL,
+        admin_token="change-this-token",
+    )
+    try:
+        create_app(settings, WeatherRepository(settings.database_url))
+    except RuntimeError as exc:
+        assert "무작위" in str(exc)
+    else:
+        raise AssertionError("production app must reject weak admin tokens")
+
+
 def test_provider_credential_admin_api_encrypts_and_redacts() -> None:
     encryption_key = Fernet.generate_key().decode("ascii")
     settings = WeatherSettings(
@@ -293,6 +308,25 @@ def test_provider_credential_environment_fallback_and_missing_encryption_key() -
     )
     assert response.status_code == 503
     assert "must-not-persist" not in response.text
+    assert repository.get_provider_credential_metadata("weatherapi") is None
+
+
+def test_provider_credential_rejects_short_key() -> None:
+    encryption_key = Fernet.generate_key().decode("ascii")
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+        credential_encryption_key=encryption_key,
+    )
+    repository = WeatherRepository(settings.database_url)
+    repository.create_schema()
+    repository.delete_provider_credential("weatherapi")
+    client = TestClient(create_app(settings, repository))
+    response = client.put(
+        "/v1/admin/provider-credentials/weatherapi", json={"api_key": "abcd"}
+    )
+    assert response.status_code == 422
     assert repository.get_provider_credential_metadata("weatherapi") is None
 
 

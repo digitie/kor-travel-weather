@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { revokeSessionValue, SESSION_COOKIE } from "@/lib/session";
+import {
+  revokeSessionValue,
+  SESSION_COOKIE,
+  sessionSecret,
+  verifySessionValue,
+} from "@/lib/session";
 
 function isAllowedOrigin(request: NextRequest) {
   const origin = request.headers.get("origin");
@@ -39,12 +44,29 @@ async function persistRevocation(session: string) {
   }
 }
 
+/**
+ * Only persist revocation markers for a session that this deployment issued.
+ * An arbitrary cookie must still be cleared, but storing attacker-controlled
+ * digests would let the logout endpoint grow the revocation table forever.
+ */
+async function isConfiguredSession(session: string) {
+  const username = process.env.WEATHER_UI_USER;
+  const password = process.env.WEATHER_UI_PASSWORD;
+  if (!username || !password) return false;
+  try {
+    const secret = sessionSecret(username, password);
+    return (await verifySessionValue(session, secret)) === username;
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: NextRequest) {
   if (!isAllowedOrigin(request)) {
     return NextResponse.json({ detail: "교차 사이트 요청이 차단되었습니다." }, { status: 403 });
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
-  if (session && !(await persistRevocation(session))) {
+  if (session && (await isConfiguredSession(session)) && !(await persistRevocation(session))) {
     return NextResponse.json(
       { detail: "로그아웃을 완료할 수 없습니다. 잠시 후 다시 시도해 주세요." },
       { status: 503, headers: { "cache-control": "no-store" } },

@@ -1758,7 +1758,7 @@
           "api_key": {
             "type": "string",
             "maxLength": 4096,
-            "minLength": 4,
+            "minLength": 8,
             "title": "Api Key"
           }
         },

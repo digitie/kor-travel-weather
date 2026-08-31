@@ -35,6 +35,20 @@ PROVIDER_KEY_ALIASES = {
     "wttr.in": "wttr_in",
 }
 
+ADMIN_TOKEN_MIN_LENGTH = 16
+_WEAK_ADMIN_TOKENS = {
+    "admin",
+    "change-me",
+    "change-this-token",
+    "changeme",
+    "password",
+    "placeholder",
+    "replace-me",
+    "secret",
+    "test-token",
+    "your-token",
+}
+
 
 class WeatherSettings(BaseSettings):
     """kor-travel-weather 런타임 설정."""
@@ -278,7 +292,15 @@ class WeatherSettings(BaseSettings):
             if self.is_production:
                 raise RuntimeError("production에서는 KOR_TRAVEL_WEATHER_ADMIN_TOKEN이 필요합니다.")
             return None
-        return self.admin_token.get_secret_value()
+        value = self.admin_token.get_secret_value().strip()
+        if self.is_production:
+            normalized = value.lower().replace("_", "-").replace(" ", "-")
+            if len(value) < ADMIN_TOKEN_MIN_LENGTH or normalized in _WEAK_ADMIN_TOKENS:
+                raise RuntimeError(
+                    "production에서는 KOR_TRAVEL_WEATHER_ADMIN_TOKEN에 "
+                    f"{ADMIN_TOKEN_MIN_LENGTH}자 이상의 무작위 값을 설정해야 합니다."
+                )
+        return value
 
     def require_credential_encryption_key(self) -> str:
         """Return the Fernet key used for database-backed provider secrets.
