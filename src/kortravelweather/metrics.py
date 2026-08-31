@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import os
 import re
+import signal
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from threading import Lock
@@ -60,6 +61,29 @@ def _cleanup_multiprocess_gauges() -> None:
 
 if _MULTIPROCESS_DIR:
     atexit.register(_cleanup_multiprocess_gauges)
+
+    _previous_signal_handlers: dict[int, object] = {}
+
+    def _cleanup_on_signal(signum: int, frame: object) -> None:
+        _cleanup_multiprocess_gauges()
+        previous = _previous_signal_handlers.get(signum, signal.SIG_DFL)
+        if previous is signal.SIG_IGN:
+            return
+        if callable(previous):
+            previous(signum, frame)
+            return
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    for _signal_number in (signal.SIGTERM, signal.SIGINT):
+        try:
+            _previous_signal_handlers[_signal_number] = signal.getsignal(_signal_number)
+            signal.signal(_signal_number, _cleanup_on_signal)
+        except (OSError, RuntimeError, ValueError):
+            # Worker imports can occur outside the main thread.  Normal
+            # atexit cleanup still applies in that case.
+            pass
 
 HTTP_REQUESTS = Counter(
     "kor_travel_weather_http_requests_total",
@@ -202,7 +226,23 @@ _KNOWN_DATASETS = frozenset(
 )
 _SAFE_LABEL = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _KNOWN_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
-_FIXED_ROUTES = frozenset({"/health", "/version", "/metrics"})
+_FIXED_ROUTES = frozenset(
+    {
+        "/health",
+        "/version",
+        "/metrics",
+        "/v1/weather/locations",
+        "/v1/weather/nearby",
+        "/v1/weather/resolve",
+        "/v1/weather/markers",
+        "/v1/admin/locations",
+        "/v1/admin/providers",
+        "/v1/admin/provider-credentials",
+        "/v1/admin/session-revocations/revoke",
+        "/v1/admin/session-revocations/check",
+        "/v1/admin/sync-runs",
+    }
+)
 _state_lock = Lock()
 _active_sync_counts: dict[tuple[str, str], int] = {}
 

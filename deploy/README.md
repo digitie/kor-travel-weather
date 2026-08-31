@@ -10,6 +10,7 @@ binding은 모두 `127.0.0.1`이다. n150처럼 gateway가 Docker 호스트 외�
 | `db` | 14100 | PostgreSQL 16 |
 | `api` | 14101 | FastAPI + Alembic |
 | `dagster-gateway` | 14102 | Basic Auth로 보호된 Dagster webserver gateway |
+| `prometheus` | 14104 | 내부 전용 Prometheus scrape/alerting |
 | `web` | 14105 | Next.js admin |
 
 실행 전 compose가 읽는 환경 파일에 `POSTGRES_PASSWORD`,

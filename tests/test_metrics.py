@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -71,13 +73,23 @@ def test_metrics_labels_collapse_unregistered_provider_and_dataset() -> None:
 def test_metrics_http_method_label_is_bounded() -> None:
     observe_http_request(
         method="x-random-method-that-must-not-be-a-series",
-        route="/health",
+        route="/v1/weather/locations",
         status_code=405,
         duration_seconds=0.001,
     )
     text = metrics_payload().decode("utf-8")
     assert 'method="other"' in text
     assert "x-random-method-that-must-not-be-a-series" not in text
+    assert 'route="/v1/weather/locations"' in text
+    observe_http_request(
+        method="GET",
+        route="/v1/weather/locations/attacker-controlled-id",
+        status_code=404,
+        duration_seconds=0.001,
+    )
+    text = metrics_payload().decode("utf-8")
+    assert 'route="unmatched"' in text
+    assert "attacker-controlled-id" not in text
 
 
 def test_production_requires_a_dedicated_metrics_token() -> None:
@@ -121,3 +133,48 @@ def test_multiprocess_registry_aggregates_worker_samples(tmp_path) -> None:
         'kor_travel_weather_provider_requests_total{dataset="weatherapi_current",'
         'outcome="success",provider="weatherapi"} 2.0'
     ) in scraper.stdout
+
+
+def test_multiprocess_live_gauge_is_cleaned_on_sigterm(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal; "
+            "from kortravelweather.metrics import observe_sync_started; "
+            "observe_sync_started('weatherapi', 'weatherapi_current'); signal.pause()",
+        ],
+        env=environment,
+    )
+    try:
+        for _ in range(100):
+            if any(tmp_path.iterdir()):
+                break
+            time.sleep(0.01)
+        worker.send_signal(signal.SIGTERM)
+        worker.wait(timeout=5)
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=5)
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
+        scraper.stdout
+    )
