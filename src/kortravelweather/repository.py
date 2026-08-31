@@ -29,6 +29,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    case,
     create_engine,
     delete,
     desc,
@@ -1086,7 +1087,19 @@ class WeatherRepository:
                 select(WeatherValueRow)
                 .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
                 .where(ranked.c.revision_rank == 1)
-                .order_by(desc(timestamp), desc(WeatherValueRow.known_at))
+                .order_by(
+                    case(
+                        (
+                            WeatherValueRow.forecast_style.in_(
+                                ("observed", "nowcast")
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
+                    desc(timestamp),
+                    desc(WeatherValueRow.known_at),
+                )
                 .limit(limit)
             )
             return [self._value_model(row) for row in session.scalars(stmt).all()]
@@ -1112,6 +1125,15 @@ class WeatherRepository:
                 .where(ranked.c.revision_rank == 1)
                 .order_by(
                     WeatherValueRow.location_id,
+                    case(
+                        (
+                            WeatherValueRow.forecast_style.in_(
+                                ("observed", "nowcast")
+                            ),
+                            0,
+                        ),
+                        else_=1,
+                    ),
                     desc(timestamp),
                     desc(WeatherValueRow.known_at),
                 )
