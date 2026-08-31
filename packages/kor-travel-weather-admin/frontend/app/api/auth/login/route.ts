@@ -14,7 +14,7 @@ type NextRequestWithSocketIp = NextRequest & { ip?: string };
 function socketIp(request: NextRequest) {
   const value = (request as NextRequestWithSocketIp).ip;
   const candidate = typeof value === "string" ? value.trim() : "";
-  return candidate || "unknown";
+  return candidate || null;
 }
 
 function trustedForwardedIp(request: NextRequest) {
@@ -22,14 +22,23 @@ function trustedForwardedIp(request: NextRequest) {
   // proxy strips and rewrites them. Opt in only when that proxy contract is
   // explicitly configured; otherwise use the request's socket address.
   if (process.env[TRUST_PROXY_ENV]?.trim().toLowerCase() !== "true") return null;
+  // Proxies commonly append the client address to an existing chain. The
+  // right-most value is the address added by the trusted last hop, while a
+  // caller-supplied left-most value may be spoofed.
   const candidate = (request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip"))
-    ?.split(",")[0]
+    ?.split(",")
+    .at(-1)
     ?.trim();
   return candidate && candidate.length <= 64 ? candidate : null;
 }
 
 function clientKey(request: NextRequest) {
-  return `ip:${(trustedForwardedIp(request) ?? socketIp(request)).slice(0, 64)}`;
+  const address = trustedForwardedIp(request) ?? socketIp(request);
+  // NextRequest does not expose a socket address in every adapter/runtime.
+  // Never put all such callers in one global bucket: a single attacker must
+  // not be able to lock out every operator. The deployment proxy must supply
+  // a trusted address (or configure an adapter that exposes request.ip).
+  return address ? `ip:${address.slice(0, 64)}` : null;
 }
 
 function evictOneKey() {
@@ -44,7 +53,8 @@ function evictOneKey() {
   if (oldestKey !== undefined) attempts.delete(oldestKey);
 }
 
-function rateLimit(key: string) {
+function rateLimit(key: string | null) {
+  if (!key) return null;
   const now = Date.now();
   for (const [entryKey, entry] of attempts) {
     if (entry.resetAt <= now) attempts.delete(entryKey);
@@ -104,7 +114,9 @@ export async function POST(request: NextRequest) {
         { status: 413, headers: { "cache-control": "no-store" } },
       );
     }
-    body = JSON.parse(raw) as { username?: unknown; password?: unknown };
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object expected");
+    body = parsed as { username?: unknown; password?: unknown };
   } catch {
     return NextResponse.json(
       { detail: "로그인 요청 형식이 올바르지 않습니다." },
@@ -117,7 +129,7 @@ export async function POST(request: NextRequest) {
       { status: 401, headers: { "cache-control": "no-store" } },
     );
   }
-  attempts.delete(key);
+  if (key) attempts.delete(key);
   const response = NextResponse.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ?? new URL(request.url).protocol.replace(":", "");
   response.cookies.set({

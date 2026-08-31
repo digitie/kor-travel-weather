@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
 import { WeatherMap } from "@/components/weather-map";
@@ -8,16 +8,23 @@ import { getAllPublicLocations, Location } from "@/lib/api";
 
 export default function WeatherPage() {
   const [locations, setLocations] = useState<Location[]>([]);
-  const [message, setMessage] = useState("위치 카탈로그를 불러오는 중…");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadLocations = useCallback(() => {
+    setLoading(true);
+    setError(null);
     getAllPublicLocations()
       .then((result) => {
         setLocations(result);
-        setMessage(result.length ? "" : "활성화된 위치가 없습니다.");
       })
-      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "위치를 불러오지 못했습니다."));
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "위치를 불러오지 못했습니다."))
+      .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadLocations();
+  }, [loadLocations]);
 
   return (
     <>
@@ -27,8 +34,10 @@ export default function WeatherPage() {
         section="Weather"
         title="날씨 지도"
       />
-      {message ? <div className={message.includes("못") ? "error" : "loading-banner"}>{message}</div> : null}
-      {locations.length ? <WeatherMap locations={locations} /> : null}
+      {loading ? <div className="loading-banner" role="status" aria-live="polite" aria-busy="true">위치 카탈로그를 불러오는 중…</div> : null}
+      {error ? <div className="weather-notice" role="alert"><span>{error}</span><button className="secondary" onClick={loadLocations} type="button">다시 시도</button></div> : null}
+      {!loading && !error && locations.length ? <WeatherMap locations={locations} /> : null}
+      {!loading && !error && !locations.length ? <div className="empty" role="status">활성화된 위치가 없습니다.</div> : null}
     </>
   );
 }

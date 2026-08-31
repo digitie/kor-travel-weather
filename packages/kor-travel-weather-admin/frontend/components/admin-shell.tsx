@@ -6,34 +6,33 @@ import {
   Code2,
   Database,
   Home,
+  KeyRound,
   LogOut,
   MapPin,
   Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-
 import { useState } from "react";
 
-const groups = [
-  { label: "개요", items: [{ href: "/", label: "홈", icon: Home }] },
-  {
-    label: "Weather source",
-    items: [
-      { href: "/weather", label: "날씨 지도", icon: CloudSun },
-      { href: "/locations", label: "위치 카탈로그", icon: MapPin },
-      { href: "/datasets", label: "데이터셋", icon: Database },
-    ],
-  },
-  {
-    label: "운영",
-    items: [
-      { href: "/sync-runs", label: "수집 실행", icon: Activity },
-      { href: "/admin/dagster", label: "Dagster", icon: Workflow },
-      { href: "/api-test", label: "API 테스트", icon: Code2 },
-    ],
-  },
+// kor-travel-map uses one ordered navigation rail rather than nested menu
+// headings. Keeping the weather routes in that same shape makes the two
+// operator consoles feel like one product when they are open side by side.
+const navItems = [
+  { href: "/", label: "홈", icon: Home },
+  { href: "/weather", label: "날씨 지도", icon: CloudSun },
+  { href: "/locations", label: "위치 카탈로그", icon: MapPin },
+  { href: "/datasets", label: "데이터셋", icon: Database },
+  { href: "/settings/providers", label: "API 키 설정", icon: KeyRound },
+  { href: "/sync-runs", label: "수집 실행", icon: Activity },
+  { href: "/admin/dagster", label: "Dagster", icon: Workflow },
+  { href: "/api-test", label: "API 테스트", icon: Code2 },
 ] as const;
+
+function isActive(pathname: string, href: string) {
+  if (href === "/") return pathname === href;
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -57,26 +56,21 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       </a>
       <div className="app-grid" data-testid="admin-shell">
         <aside className="rail" aria-label="관리자 사이드바">
-          <Link className="brand" href="/">
-            <span className="brand-mark"><CloudSun size={18} strokeWidth={2.2} /></span>
-            <span>kor-travel-weather</span>
-            <small>operator console</small>
-          </Link>
+          <div className="rail-inner">
+            <Link className="brand" href="/">
+              <span className="brand-mark"><CloudSun size={16} strokeWidth={2.2} /></span>
+              <span>kor-travel-weather</span>
+            </Link>
           <nav className="rail-nav" aria-label="주 메뉴">
-            {groups.map((group) => (
-              <div className="nav-group" key={group.label}>
-                <div className="nav-section">{group.label}</div>
-                {group.items.map(({ href, label, icon: Icon }) => {
-                  const active = href === "/" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
-                  return (
-                    <Link aria-current={active ? "page" : undefined} className={`nav-link${active ? " active" : ""}`} href={href} key={href}>
-                      <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
-                      <span>{label}</span>
-                    </Link>
-                  );
-                })}
-              </div>
-            ))}
+            {navItems.map(({ href, label, icon: Icon }) => {
+              const active = isActive(pathname, href);
+              return (
+                <Link aria-current={active ? "page" : undefined} className={`nav-link${active ? " active" : ""}`} href={href} key={href}>
+                  <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
+                  <span>{label}</span>
+                </Link>
+              );
+            })}
           </nav>
           <div className="rail-footer">
             <div className="operator-chip"><span className="operator-dot" /> admin</div>
@@ -84,6 +78,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
               <LogOut size={16} strokeWidth={1.8} />
               <span>{loggingOut ? "로그아웃 중…" : "로그아웃"}</span>
             </button>
+          </div>
           </div>
         </aside>
         <main className="main" id="main-content" tabIndex={-1}>{children}</main>
@@ -113,16 +108,18 @@ export function PageHeader({
   const pathname = usePathname();
 
   return (
-    <header className="page-header">
-      <div className="page-header-copy">
-        <div className="page-context">
-          {section ? <span className="status context-badge">{section}</span> : null}
-          <span className="page-path">{pathname}</span>
+    <header className="page-header-wrap">
+      <div className="page-header">
+        <div className="page-header-copy">
+          <div className="page-context">
+            {section ? <span className="status context-badge">{section}</span> : null}
+            <span className="page-path">{pathname}</span>
+          </div>
+          <h1>{title}</h1>
+          {description ? <p className="description">{description}</p> : null}
         </div>
-        <h1>{title}</h1>
-        {description ? <p className="description">{description}</p> : null}
+        {actions ? <div className="page-header-actions">{actions}</div> : null}
       </div>
-      {actions ? <div className="page-header-actions">{actions}</div> : null}
     </header>
   );
 }
