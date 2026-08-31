@@ -8,8 +8,10 @@
 2. `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`에 provider key를 추가한다. `open_meteo`와
    `wttr_in`은 key 없이도 사용할 수 있다.
 3. admin의 provider/dataset catalog와 Dagster `external_weather_job`에서 응답을
-   확인한다. `hourly_external_weather` schedule은 AirKorea 측정소 catalog가
-   성공한 뒤 활성 provider를 매시간 실행한다.
+   확인한다. `hourly_airkorea_weather`가 측정소 catalog/관측을 갱신하고,
+   `hourly_external_weather`가 마지막으로 성공한 AirKorea anchor를 사용해
+   활성 provider를 매시간 실행한다. AirKorea 일시 장애가 기존 외부 수집을
+   막지 않도록 두 schedule은 독립적으로 실행된다.
 4. 성공한 응답만 source record와 normalized facts로 atomic publish한다. 실패한
    실행은 failed sync run만 남기며 기존 immutable fact를 변경하지 않는다.
 

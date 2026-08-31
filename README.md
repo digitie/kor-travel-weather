@@ -13,7 +13,7 @@ REST/OpenAPI를 통해 날씨 데이터를 소비한다.
   측정소 좌표를 외부 weather provider의 공통 anchor로 사용한다.
 - 위치와 원천 시각을 보존하는 정규화된 weather fact를 멱등적으로 저장한다.
 - 공용 REST API로 최신값·예보 timeline·좌표 기반 근접 위치를 제공한다.
-- Dagster schedule과 운영 이력을 admin UI에서 확인하고 위치를 관리한다.
+- Dagster의 KMA·AirKorea·외부 provider hourly schedule과 운영 이력을 admin UI에서 확인하고 위치를 관리한다.
 - 특정 소비자에 종속되지 않는 provider/dataset/metric 계약과 raw payload 추적성을 유지한다.
 
 ## 운영 모델

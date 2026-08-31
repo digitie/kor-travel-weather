@@ -205,7 +205,6 @@ def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
 @asset(
     name="external_weather_sync",
     required_resource_keys={"weather_repository"},
-    deps=[airkorea_weather_sync],
     description="provider-independent external weather response를 atomic publish한다.",
 )
 def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
@@ -282,7 +281,7 @@ _unresolved_airkorea_job = define_asset_job(
     "airkorea_weather_job", selection=[airkorea_weather_sync]
 )
 _unresolved_external_job = define_asset_job(
-    "external_weather_job", selection=[airkorea_weather_sync, external_weather_sync]
+    "external_weather_job", selection=[external_weather_sync]
 )
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
@@ -346,6 +345,14 @@ hourly_kma_weather_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+hourly_airkorea_weather_schedule = ScheduleDefinition(
+    name="hourly_airkorea_weather",
+    cron_schedule="10 * * * *",
+    job=airkorea_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 hourly_external_weather_schedule = ScheduleDefinition(
     name="hourly_external_weather",
     cron_schedule="15 * * * *",
@@ -358,6 +365,10 @@ hourly_external_weather_schedule = ScheduleDefinition(
 defs = Definitions(
     assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
     jobs=[weather_job, airkorea_job, external_weather_job],
-    schedules=[hourly_kma_weather_schedule, hourly_external_weather_schedule],
+    schedules=[
+        hourly_kma_weather_schedule,
+        hourly_airkorea_weather_schedule,
+        hourly_external_weather_schedule,
+    ],
     resources=_resources,
 )

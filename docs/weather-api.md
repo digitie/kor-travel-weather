@@ -63,13 +63,16 @@ and severity badge. It is safe to refresh on every map viewport update.
 
 ## Hourly ingestion and providers
 
-The Dagster `hourly_kma_weather` and `hourly_external_weather` schedules run in
-Asia/Seoul. KMA is collected by the existing grid pipeline, including
-`kma_weather_alerts`. The external schedule refreshes the AirKorea station
-catalog first, then collects every enabled non-KMA provider at those station
-coordinates. Providers with no configured key (for example Open-Meteo and
-wttr.in) remain keyless; keyed providers are skipped with an auditable run
-result until their admin credential is configured.
+The Dagster `hourly_kma_weather`, `hourly_airkorea_weather`, and
+`hourly_external_weather` schedules run in Asia/Seoul. KMA is collected by the
+existing grid pipeline, including `kma_weather_alerts`. AirKorea refreshes its
+station catalog and measurements independently at the ten-minute mark; the
+external schedule then collects every enabled non-KMA provider from the latest
+enabled AirKorea station anchors. An AirKorea quota or provider outage must
+not prevent already-known anchors from receiving external updates. Providers
+with no configured key (for example Open-Meteo and wttr.in) remain keyless;
+keyed providers are skipped with an auditable run result until their admin
+credential is configured.
 
 The provider catalog currently includes WeatherAPI, OpenWeatherMap, Open-Meteo,
 Visual Crossing, Tomorrow.io, Weatherbit, Weatherstack, AccuWeather, and
