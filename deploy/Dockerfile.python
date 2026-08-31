@@ -20,6 +20,10 @@ COPY pyproject.toml uv.lock README.md ./
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY src ./src
+# python-airkorea-api is a path dependency of the weather runtime.  Copy the
+# vendored library before ``uv sync`` so clean Docker builds resolve the same
+# package that local/CI installs use.
+COPY packages/python-airkorea-api ./packages/python-airkorea-api
 
 ARG INSTALL_DAGSTER=0
 RUN if [ "${INSTALL_DAGSTER}" = "1" ]; then \
