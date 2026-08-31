@@ -29,7 +29,11 @@ export async function middleware(request: NextRequest) {
     // Basic credentials are cached by browsers, so an attacker could
     // otherwise submit a cross-site form to the server-side admin proxy.
     // Require an exact same-origin Origin on every state-changing request.
-    if (request.headers.get("origin") !== request.nextUrl.origin) return csrfBlocked();
+    const origin = request.headers.get("origin");
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ?? request.nextUrl.protocol.replace(":", "");
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ?? request.headers.get("host") ?? request.nextUrl.host;
+    const expectedOrigin = `${forwardedProto}://${forwardedHost}`;
+    if (!origin || origin !== expectedOrigin) return csrfBlocked();
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (session && username && password && (await verifySessionValue(session, sessionSecret(username, password)))) {
