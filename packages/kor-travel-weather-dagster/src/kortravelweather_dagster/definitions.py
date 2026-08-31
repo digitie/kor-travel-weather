@@ -15,6 +15,7 @@ from kortravelweather.providers import (
     PROVIDER_CATALOG,
     ProviderLocation,
     create_configured_provider,
+    redact_secrets,
 )
 from kortravelweather.settings import WeatherSettings
 
@@ -261,6 +262,7 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     ]
     results: list[dict[str, object]] = []
     skipped: list[str] = []
+    failed: list[dict[str, object]] = []
     external_keys = {
         key
         for key in runtime.enabled_providers
@@ -280,28 +282,46 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             if spec.auth_required and "credential" in str(exc).lower():
                 skipped.append(spec.key)
                 continue
-            raise
+            failed.append(
+                {
+                    "provider": spec.key,
+                    "dataset_key": None,
+                    "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
+                }
+            )
+            continue
         try:
             for dataset in spec.datasets:
-                result = run_external_weather_sync(
-                    repository=repository,
-                    provider=provider,
-                    targets=targets,
-                    dataset_key=dataset.key,
-                    max_targets=runtime.max_targets_per_run,
-                    max_response_rows=runtime.max_response_rows_per_run,
-                    max_values=runtime.max_values_per_run,
-                    max_payload_bytes=runtime.max_payload_bytes_per_run,
-                )
+                try:
+                    result = run_external_weather_sync(
+                        repository=repository,
+                        provider=provider,
+                        targets=targets,
+                        dataset_key=dataset.key,
+                        max_targets=runtime.max_targets_per_run,
+                        max_response_rows=runtime.max_response_rows_per_run,
+                        max_values=runtime.max_values_per_run,
+                        max_payload_bytes=runtime.max_payload_bytes_per_run,
+                    )
+                except Exception as exc:
+                    failed.append(
+                        {
+                            "provider": spec.key,
+                            "dataset_key": dataset.key,
+                            "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
+                        }
+                    )
+                    continue
                 results.append(result)
         finally:
             close = getattr(provider, "close", None)
             if callable(close):
                 close()
     result = {
-        "status": "success",
+        "status": "partial" if failed else "success",
         "providers": results,
         "skipped_providers": skipped,
+        "failed_providers": failed,
         "locations_total": len(targets),
     }
     context.add_output_metadata(result)
