@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "아이디 또는 비밀번호가 올바르지 않습니다." }, { status: 401 });
   }
   const response = NextResponse.json({ ok: true });
+  const forwardedProtocol = request.headers.get("x-forwarded-proto") ?? new URL(request.url).protocol.replace(":", "");
   response.cookies.set({
     name: SESSION_COOKIE,
     value: await createSessionValue(username, sessionSecret(username, password)),
@@ -25,7 +26,7 @@ export async function POST(request: NextRequest) {
     maxAge: SESSION_MAX_AGE,
     path: "/",
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" && forwardedProtocol === "https",
   });
   return response;
 }

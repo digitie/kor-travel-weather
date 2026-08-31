@@ -69,6 +69,14 @@ npm ci
 npm run dev                 # http://127.0.0.1:14105
 ```
 
+운영 UI는 `kor-travel-map` admin과 같은 좌측 rail·그룹 navigation을 사용한다.
+`/weather`는 위치 목록과 지도를 함께 보여 주며, 지도 marker를 선택하면 최신
+projection과 forecast preview가 오른쪽 inspector에 열린다. `/login`은 UI 계정으로
+서명된 HttpOnly session을 만들고, `/api-test`는 같은 세션의 server-side proxy를
+통해 health·catalog·provider·sync-run API를 실행한다. `/admin/dagster`에서는
+repository, schedule 상태와 최근 run을 확인하고 Dagster 원본 화면으로 이동한다.
+브라우저에는 backend admin token이 내려가지 않는다.
+
 운영에서 frontend를 외부에 노출하지 말고 reverse proxy/SSO 또는
 `WEATHER_UI_USER`·`WEATHER_UI_PASSWORD` Basic Auth를 설정한다. Next proxy는
 서버에서만 backend admin token을 주입하며 브라우저에 token을 전달하지 않는다.
@@ -115,6 +123,9 @@ weather fact 저장소와는 결합하지 않는다.
 응답은 `{data, meta}` envelope이며 `meta.request_id`로 로그와 Dagster run을 연결한다.
 자세한 내용은 [`docs/architecture/rest-api.md`](docs/architecture/rest-api.md)와
 [`docs/integration-map.md`](docs/integration-map.md)를 참고한다.
+
+UI 정보구조와 화면별 상태/반응형 계약은
+[`docs/architecture/admin-ui.md`](docs/architecture/admin-ui.md)에 정리한다.
 
 ## 원본 이식 기록
 
