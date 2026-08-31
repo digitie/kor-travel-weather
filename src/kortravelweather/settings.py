@@ -388,6 +388,12 @@ class WeatherSettings(BaseSettings):
         if field_name is None:
             return None
         value = getattr(self, field_name)
+        # AirKorea's public-data service uses the same Data.go.kr service key
+        # as the KMA adapter.  Compose intentionally exposes the dedicated
+        # AirKorea variable as optional, so an empty override must not mask the
+        # shared key already configured for the vendored client.
+        if provider == "python-airkorea-api" and not value:
+            value = self.data_go_kr_service_key
         return value.get_secret_value() if value else None
 
 

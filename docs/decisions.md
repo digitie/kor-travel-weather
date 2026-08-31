@@ -9,4 +9,7 @@
 - [ADR-072] `known_at`/`target_at` bitemporal 축
 - [ADR-074] append-only write safety와 disabled lifecycle
 - [ADR-089] current summary fact reference, source revision, rebuild receipt
-- [ADR-101] MVP 범위는 관측·예보이며 특보는 별도 dataset 계약으로 후속 추가
+- [ADR-101] KMA 특보를 정식 weather bundle dataset으로 수집·표시한다. 기존의
+  “후속 추가” 결정은 KMA alert adapter, hourly asset, API bundle 도입으로
+  대체되었으며, 지역별 발령기관 매핑·철회 reconciliation은 운영 hardening으로
+  추적한다.

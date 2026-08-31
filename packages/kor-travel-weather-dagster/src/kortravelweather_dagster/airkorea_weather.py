@@ -31,6 +31,12 @@ def run_airkorea_weather_sync(
     """
     if max_stations <= 0 or max_values <= 0:
         raise ValueError("AirKorea budget은 양수여야 합니다.")
+
+    def keep_alive(run_id: str) -> None:
+        heartbeat = getattr(repository, "heartbeat_sync_run", None)
+        if callable(heartbeat) and heartbeat(run_id) is False:
+            raise RuntimeError("AirKorea sync run lease가 만료되어 publish를 중단했습니다.")
+
     catalog_run = repository.start_sync_run(
         provider=AIRKOREA_PROVIDER,
         dataset_key=AIRKOREA_STATION_DATASET,
@@ -41,6 +47,7 @@ def run_airkorea_weather_sync(
         catalog_entries = fetch_station_catalog(client, max_stations=max_stations)
         active_locations = []
         for location, _ in catalog_entries:
+            keep_alive(catalog_run.run_id)
             existing = repository.get_location(location.location_id)
             if existing is None:
                 try:
@@ -81,6 +88,7 @@ def run_airkorea_weather_sync(
     fetched_at = datetime.now(UTC)
     try:
         for location in active_locations:
+            keep_alive(measurement_run.run_id)
             response = fetch_station_measurement(
                 client,
                 station_name=str(
@@ -102,6 +110,7 @@ def run_airkorea_weather_sync(
                 raise ValueError("AirKorea normalized fact 수가 상한을 초과했습니다.")
             sources.append({**source, "run_id": measurement_run.run_id})
             values.extend(station_values)
+            keep_alive(measurement_run.run_id)
         loaded, finished = repository.publish_and_finish(
             run_id=measurement_run.run_id,
             source_records=sources,

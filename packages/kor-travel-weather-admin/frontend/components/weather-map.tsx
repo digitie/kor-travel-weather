@@ -44,6 +44,68 @@ type MarkerState = {
   label: string;
 };
 
+function numericCode(value: WeatherValue): number | null {
+  const candidate = value.value_number ?? (value.value_text ? Number(value.value_text) : NaN);
+  return Number.isFinite(candidate) ? candidate : null;
+}
+
+function classifyProviderCode(provider: string, value: WeatherValue): MarkerState["kind"] | null {
+  const rawText = (value.value_text ?? value.metric_name ?? "").trim().toLocaleLowerCase();
+  const code = numericCode(value);
+  const source = provider.toLocaleLowerCase();
+
+  if (source === "visual_crossing" && !code) {
+    if (/thunder|storm|번개|뇌우/.test(rawText)) return "storm";
+    if (/snow|sleet|ice|눈|진눈깨비/.test(rawText)) return "snow";
+    if (/rain|drizzle|shower|비|소나기/.test(rawText)) return "rain";
+    if (/cloud|overcast|fog|안개|구름/.test(rawText)) return "cloud";
+    if (/clear|sunny|맑음|쾌청/.test(rawText)) return "clear";
+  }
+  if (code === null) return null;
+
+  if (source === "openweathermap" || source === "weatherbit") {
+    if (code >= 200 && code < 300) return "storm";
+    if (code >= 300 && code < 600) return "rain";
+    if (code >= 600 && code < 700) return "snow";
+    if (code >= 700 && code < 800) return "cloud";
+    if (code === 800) return "clear";
+    if (code > 800 && code <= 804) return "cloud";
+  }
+  if (source === "weatherapi") {
+    if ([1000].includes(code)) return "clear";
+    if ([1003, 1006, 1009, 1030, 1135, 1147].includes(code)) return "cloud";
+    if ([1087, 1273, 1276, 1279, 1282].includes(code)) return "storm";
+    if ([1066, 1114, 1117, 1210, 1214, 1218, 1222, 1225, 1255, 1258].includes(code)) return "snow";
+    if (code >= 1063 && code <= 1201 || code >= 1240 && code <= 1246 || code >= 1150 && code <= 1168) return "rain";
+  }
+  if (source === "tomorrow_io") {
+    if ([1000, 1100].includes(code)) return "clear";
+    if ([1001, 1101, 1102, 1002].includes(code)) return "cloud";
+    if (code >= 4000 && code <= 4201) return "rain";
+    if (code >= 5000 && code <= 5100) return "snow";
+    if (code === 8000) return "storm";
+  }
+  if (source === "accuweather") {
+    if (code >= 1 && code <= 5 || code >= 30 && code <= 35) return "clear";
+    if (code >= 6 && code <= 11 || code >= 36 && code <= 38) return "cloud";
+    if (code >= 12 && code <= 18 || code >= 39 && code <= 47) return "rain";
+    if (code >= 19 && code <= 29 || code >= 43 && code <= 44) return "snow";
+  }
+  if (source === "weatherstack" || source === "wttr_in") {
+    if (code === 113) return "clear";
+    if ([116, 119, 122].includes(code)) return "cloud";
+    if (code >= 176 && code <= 359) return "rain";
+    if (code >= 368 && code <= 395) return "snow";
+  }
+  // KMA/Open-Meteo WMO weather codes.
+  if ([95, 96, 99].includes(code)) return "storm";
+  if (code >= 71 && code <= 86) return "snow";
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return "rain";
+  if (code === 0 || code === 1) return "clear";
+  if (code >= 2 && code <= 48) return "cloud";
+  return null;
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function markerIcon(kind: MarkerState["kind"]): SVGSVGElement {
@@ -96,22 +158,23 @@ function markerState(summary: WeatherMarker | undefined): MarkerState {
     return { kind: "alert", glyph: "!", label: `특보 ${summary.alerts.length}건` };
   }
   const rows = summary.latest;
-  const codeRow = rows.find((row) =>
+  const codeRows = rows.filter((row) =>
     ["WEATHER_CODE", "weather_code", "SKY", "PTY"].includes(row.metric_key),
   );
-  const code = codeRow?.value_number ?? Number(codeRow?.value_text);
-  if (codeRow?.metric_key === "PTY" && code > 0) {
-    const snow = code === 3 || code === 7;
-    return { kind: snow ? "snow" : "rain", glyph: snow ? "❄" : "☂", label: snow ? "눈" : "강수" };
-  }
-  if (Number.isFinite(code)) {
-    if ([95, 96, 99].includes(code)) return { kind: "storm", glyph: "⚡", label: "뇌우" };
-    if (code >= 71 && code <= 86) return { kind: "snow", glyph: "❄", label: "눈" };
-    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
-      return { kind: "rain", glyph: "☂", label: "비" };
+  for (const codeRow of codeRows) {
+    if (codeRow.metric_key === "PTY") {
+      const code = numericCode(codeRow);
+      if (code !== null && code > 0) {
+        const snow = code === 3 || code === 7;
+        return { kind: snow ? "snow" : "rain", glyph: snow ? "❄" : "☂", label: snow ? "눈" : "강수" };
+      }
     }
-    if (code === 0 || code === 1) return { kind: "clear", glyph: "☀", label: "맑음" };
-    if (code >= 2 && code <= 4) return { kind: "cloud", glyph: "☁", label: "구름" };
+    const kind = classifyProviderCode(codeRow.provider, codeRow);
+    if (kind) {
+      const glyph = kind === "storm" ? "⚡" : kind === "snow" ? "❄" : kind === "rain" ? "☂" : kind === "clear" ? "☀" : "☁";
+      const label = kind === "storm" ? "뇌우" : kind === "snow" ? "눈" : kind === "rain" ? "비" : kind === "clear" ? "맑음" : "구름";
+      return { kind, glyph, label };
+    }
   }
   return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
 }
