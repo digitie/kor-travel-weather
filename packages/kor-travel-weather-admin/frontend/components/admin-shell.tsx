@@ -91,3 +91,38 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     </>
   );
 }
+
+/**
+ * Page header shared by every weather console route.
+ *
+ * kor-travel-map keeps the route context, title, description and actions in
+ * one quiet card. Keeping this as a component prevents individual pages from
+ * drifting on spacing, typography, or action alignment.
+ */
+export function PageHeader({
+  title,
+  description,
+  section,
+  actions,
+}: {
+  title: string;
+  description?: string;
+  section?: string;
+  actions?: React.ReactNode;
+}) {
+  const pathname = usePathname();
+
+  return (
+    <header className="page-header">
+      <div className="page-header-copy">
+        <div className="page-context">
+          {section ? <span className="status context-badge">{section}</span> : null}
+          <span className="page-path">{pathname}</span>
+        </div>
+        <h1>{title}</h1>
+        {description ? <p className="description">{description}</p> : null}
+      </div>
+      {actions ? <div className="page-header-actions">{actions}</div> : null}
+    </header>
+  );
+}
