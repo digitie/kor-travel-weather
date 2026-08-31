@@ -13,10 +13,14 @@ binding은 모두 `127.0.0.1`이다. n150처럼 gateway가 Docker 호스트 외�
 | `web` | 14105 | Next.js admin |
 
 실행 전 compose가 읽는 환경 파일에 `POSTGRES_PASSWORD`,
-`KOR_TRAVEL_WEATHER_ADMIN_TOKEN`, `WEATHER_UI_PASSWORD`를 설정한다. root `.env`를
+`KOR_TRAVEL_WEATHER_ADMIN_TOKEN`, `WEATHER_UI_PASSWORD`,
+`KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`를 설정한다. root `.env`를
 사용해도 되지만 이 변수들은 compose 전용이며 애플리케이션 설정에서는 무시된다.
 Compose의 API/Dagster 컨테이너는 `KOR_TRAVEL_WEATHER_ENV=production`을 고정해
 `.env.example`의 개발 프로파일이 인증을 우회하지 않도록 한다.
+`KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`는 API 키 설정 화면의 DB override를
+암호화하는 Fernet URL-safe key이며 API와 Dagster에 동일하게 전달해야 한다. 이 값이
+없으면 환경변수 credential만 사용할 수 있고 설정 화면 저장은 503으로 거부된다.
 KMA live
 수집을 사용할 때만 `KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY`와 JSON target을
 추가한다. PostgreSQL 비밀번호는 `PGPASSWORD`로 컨테이너에 전달하므로 `@`, `:` 같은
