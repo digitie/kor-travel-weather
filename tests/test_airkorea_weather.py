@@ -34,6 +34,14 @@ def test_airkorea_station_ids_are_ascii_and_collision_resistant() -> None:
     assert first.location_id.isascii() and second.location_id.isascii()
 
 
+def test_airkorea_long_station_address_stays_in_metadata() -> None:
+    address = "전남 광주 통합 특별 관측소 노인당 옥상 측정 지점"
+    location = station_location(_station("광주 관측소", address, 35.15, 126.85))
+    assert location is not None
+    assert len(location.region_code or "") <= 32
+    assert location.metadata["measurement_point"]["address"] == address
+
+
 def test_kma_warning_rows_have_distinct_fact_keys() -> None:
     rows = [
         {"stnId": "108", "tmFc": "202608311200", "tmSeq": "1", "title": "호우주의보"},

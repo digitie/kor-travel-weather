@@ -66,7 +66,11 @@ def station_location(station: Station) -> WeatherLocation | None:
         name=station.station_name,
         latitude=station.lat,
         longitude=station.lon,
-        region_code=station.addr,
+        # ``region_code`` is a compact catalog field, while the complete
+        # address remains in the allow-listed measurement_point metadata.
+        # AirKorea occasionally returns a long building/site description that
+        # exceeds WeatherLocation's 32-character region-code contract.
+        region_code=(station.addr or "").strip()[:32] or None,
         metadata=metadata,
     )
 
