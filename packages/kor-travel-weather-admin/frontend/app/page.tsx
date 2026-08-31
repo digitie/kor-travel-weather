@@ -12,11 +12,13 @@ function SummaryCard({
   label,
   value,
   detail,
+  loading,
 }: {
   icon: typeof Activity;
   label: string;
   value: string;
   detail: string;
+  loading: boolean;
 }) {
   return (
     <div className="panel card summary-card">
@@ -24,8 +26,8 @@ function SummaryCard({
         <span>{label}</span>
         <span className="summary-card-icon"><Icon size={18} aria-hidden="true" /></span>
       </div>
-      <strong>{value}</strong>
-      <small>{detail}</small>
+      <strong>{loading ? <span className="skeleton skeleton-value" aria-label="불러오는 중" /> : value}</strong>
+      <small>{loading ? <span className="skeleton skeleton-line" aria-hidden="true" /> : detail}</small>
     </div>
   );
 }
@@ -79,11 +81,11 @@ export default function HomePage() {
         title="Weather source"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}
-      <section className="cards home-metrics" aria-label="운영 요약">
-        <SummaryCard icon={MapPin} label="활성 위치" value={activeTotal.toLocaleString("ko-KR")} detail="public catalog" />
-        <SummaryCard icon={Database} label="카탈로그 전체" value={catalogTotal.toLocaleString("ko-KR")} detail="관리 대상 anchor" />
-        <SummaryCard icon={Activity} label="최근 수집" value={lastRun?.status ?? "—"} detail={lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")} facts` : "실행 기록 없음"} />
-        <SummaryCard icon={CloudSun} label="API 상태" value={health} detail="weather source" />
+      <section className="cards home-metrics" aria-busy={loading} aria-label="운영 요약">
+        <SummaryCard icon={MapPin} label="활성 위치" value={activeTotal.toLocaleString("ko-KR")} detail="public catalog" loading={loading} />
+        <SummaryCard icon={Database} label="카탈로그 전체" value={catalogTotal.toLocaleString("ko-KR")} detail="관리 대상 anchor" loading={loading} />
+        <SummaryCard icon={Activity} label="최근 수집" value={lastRun?.status ?? "—"} detail={lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")} facts` : "실행 기록 없음"} loading={loading} />
+        <SummaryCard icon={CloudSun} label="API 상태" value={health} detail="weather source" loading={loading} />
       </section>
       <section className="panel dashboard-note">
         <div className="panel-head"><div><h2>운영 기준</h2><p>수집 실패 시 이전 immutable fact는 그대로 보존됩니다.</p></div></div>
