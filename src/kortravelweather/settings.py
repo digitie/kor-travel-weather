@@ -63,6 +63,10 @@ class WeatherSettings(BaseSettings):
     admin_token: SecretStr | None = Field(
         default=None, validation_alias="KOR_TRAVEL_WEATHER_ADMIN_TOKEN"
     )
+    credential_encryption_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY",
+    )
     data_go_kr_service_key: SecretStr | None = Field(
         default=None, validation_alias="KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY"
     )
@@ -247,6 +251,7 @@ class WeatherSettings(BaseSettings):
 
     @field_validator(
         "admin_token",
+        "credential_encryption_key",
         "data_go_kr_service_key",
         "weatherapi_api_key",
         "openweathermap_api_key",
@@ -274,6 +279,41 @@ class WeatherSettings(BaseSettings):
                 raise RuntimeError("production에서는 KOR_TRAVEL_WEATHER_ADMIN_TOKEN이 필요합니다.")
             return None
         return self.admin_token.get_secret_value()
+
+    def require_credential_encryption_key(self) -> str:
+        """Return the Fernet key used for database-backed provider secrets.
+
+        The setting remains optional so deployments which only use environment
+        credentials do not fail during process startup.  Any code that reads
+        or writes an encrypted database credential must call this method and
+        therefore fails closed when the key is absent or malformed.
+        """
+        value = (
+            self.credential_encryption_key.get_secret_value()
+            if self.credential_encryption_key
+            else None
+        )
+        if not value:
+            raise RuntimeError(
+                "KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY가 필요합니다."
+            )
+        try:
+            from cryptography.fernet import Fernet
+
+            Fernet(value.encode("ascii"))
+        except (ImportError, UnicodeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY가 올바른 Fernet key가 아닙니다."
+            ) from exc
+        return value
+
+    def optional_credential_encryption_key(self) -> str | None:
+        """Return the configured Fernet key for internal provider resolution."""
+        return (
+            self.credential_encryption_key.get_secret_value()
+            if self.credential_encryption_key
+            else None
+        )
 
     def provider_api_key(self, provider: str) -> str | None:
         """provider key를 SecretStr 외부로 노출하지 않고 필요한 순간에만 반환한다."""

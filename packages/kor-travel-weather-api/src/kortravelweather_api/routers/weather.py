@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from time import perf_counter
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -13,7 +13,11 @@ from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
-from kortravelweather.repository import WeatherRepository
+from kortravelweather.repository import (
+    WeatherRepository,
+    provider_credential_fingerprint,
+    provider_credential_last4,
+)
 
 from ..auth import require_admin
 from ..response import Envelope, envelope
@@ -117,6 +121,43 @@ class ProviderOut(BaseModel):
 
 
 ProviderListResponse = Envelope[list[ProviderOut]]
+
+
+class ProviderCredentialOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    configured: bool
+    source: Literal["database", "environment", "none"]
+    fingerprint: str | None = None
+    last4: str | None = None
+    updated_at: datetime | None = None
+
+
+class ProviderCredentialPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str = Field(min_length=4, max_length=4096)
+
+    @field_validator("api_key")
+    @classmethod
+    def normalize_api_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 4:
+            raise ValueError("provider api key는 4자 이상이어야 합니다.")
+        return normalized
+
+
+ProviderCredentialListResponse = Envelope[list[ProviderCredentialOut]]
+ProviderCredentialResponse = Envelope[ProviderCredentialOut]
+
+
+class AdminSessionAction(BaseModel):
+    """Internal web-session revocation payload; the token is never persisted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session: str = Field(min_length=1, max_length=4096)
 
 
 class LocationCreate(BaseModel):
@@ -395,13 +436,173 @@ async def admin_providers(request: Request) -> dict[str, Any]:
     """credential 자체가 아닌 configured 여부와 dataset 계약만 노출한다."""
     started = perf_counter()
     runtime_settings = request.app.state.settings
+    repo = request.app.state.repository
+    database_credentials = {
+        row["provider"]
+        for row in await run_in_threadpool(repo.list_provider_credential_metadata)
+    }
     configured = {
         spec.key: (
-            not spec.auth_required or runtime_settings.provider_api_key(spec.key) is not None
+            not spec.auth_required
+            or spec.key in database_credentials
+            or runtime_settings.provider_api_key(spec.key) is not None
         )
         for spec in PROVIDER_CATALOG
     }
     return envelope(request, started, catalog_dicts(configured=configured))
+
+
+def _credential_provider_spec(provider: str) -> Any:
+    for spec in PROVIDER_CATALOG:
+        if spec.key == provider:
+            if not spec.auth_required:
+                raise HTTPException(
+                    status_code=409, detail="이 provider는 API key를 사용하지 않습니다."
+                )
+            return spec
+    raise HTTPException(status_code=404, detail="provider를 찾을 수 없습니다.")
+
+
+def _credential_out(
+    provider: str,
+    *,
+    database: dict[str, Any] | None,
+    environment_key: str | None,
+) -> ProviderCredentialOut:
+    if database is not None:
+        return ProviderCredentialOut(
+            provider=provider,
+            configured=True,
+            source="database",
+            fingerprint=f"sha256:{database['fingerprint']}",
+            last4=database["last4"],
+            updated_at=database["updated_at"],
+        )
+    if environment_key is not None:
+        return ProviderCredentialOut(
+            provider=provider,
+            configured=True,
+            source="environment",
+            fingerprint=f"sha256:{provider_credential_fingerprint(environment_key)}",
+            last4=provider_credential_last4(environment_key),
+        )
+    return ProviderCredentialOut(provider=provider, configured=False, source="none")
+
+
+@admin_router.get(
+    "/provider-credentials",
+    response_model=ProviderCredentialListResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def provider_credentials(
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, Any]:
+    """List provider credential status without exposing key material."""
+    started = perf_counter()
+    runtime_settings = request.app.state.settings
+    rows = {
+        row["provider"]: row
+        for row in await run_in_threadpool(repo.list_provider_credential_metadata)
+    }
+    data = [
+        _credential_out(
+            spec.key,
+            database=rows.get(spec.key),
+            environment_key=runtime_settings.provider_api_key(spec.key),
+        ).model_dump(mode="json")
+        for spec in PROVIDER_CATALOG
+        if spec.auth_required
+    ]
+    return envelope(request, started, data)
+
+
+@admin_router.put(
+    "/provider-credentials/{provider}",
+    response_model=ProviderCredentialResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def put_provider_credential(
+    provider: str,
+    body: ProviderCredentialPut,
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, Any]:
+    """Encrypt and store an admin-managed provider API key."""
+    spec = _credential_provider_spec(provider)
+    started = perf_counter()
+    runtime_settings = request.app.state.settings
+    try:
+        encryption_key = runtime_settings.require_credential_encryption_key()
+        metadata = await run_in_threadpool(
+            repo.set_provider_credential, spec.key, body.api_key, encryption_key
+        )
+    except RuntimeError as exc:
+        # Do not return Fernet validation details or any key material.
+        raise HTTPException(
+            status_code=503,
+            detail="provider credential 저장 기능이 설정되지 않았습니다.",
+        ) from exc
+    result = _credential_out(spec.key, database=metadata, environment_key=None)
+    return envelope(request, started, result.model_dump(mode="json"))
+
+
+@admin_router.delete(
+    "/provider-credentials/{provider}",
+    response_model=ProviderCredentialResponse,
+    dependencies=[Depends(require_admin)],
+)
+async def delete_provider_credential(
+    provider: str,
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, Any]:
+    """Remove a database override and reveal only the resulting status."""
+    spec = _credential_provider_spec(provider)
+    started = perf_counter()
+    await run_in_threadpool(repo.delete_provider_credential, spec.key)
+    runtime_settings = request.app.state.settings
+    metadata = await run_in_threadpool(repo.get_provider_credential_metadata, spec.key)
+    result = _credential_out(
+        spec.key,
+        database=metadata,
+        environment_key=runtime_settings.provider_api_key(spec.key),
+    )
+    return envelope(request, started, result.model_dump(mode="json"))
+
+
+@admin_router.post(
+    "/session-revocations/revoke",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+async def revoke_admin_session(
+    body: AdminSessionAction,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, bool]:
+    """Persist a web logout marker for the server-side Next.js middleware."""
+    try:
+        await run_in_threadpool(repo.revoke_admin_session, body.session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="session 값이 올바르지 않습니다.") from exc
+    return {"revoked": True}
+
+
+@admin_router.post(
+    "/session-revocations/check",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+async def check_admin_session(
+    body: AdminSessionAction,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, bool]:
+    """Check one web session without exposing its digest or bearer value."""
+    try:
+        revoked = await run_in_threadpool(repo.is_admin_session_revoked, body.session)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="session 값이 올바르지 않습니다.") from exc
+    return {"revoked": revoked}
 
 
 @admin_router.post(

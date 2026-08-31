@@ -14,16 +14,24 @@ from kortravelweather.settings import WeatherSettings
 class KmaClientResource(ConfigurableResource):
     """Construct the official clients at execution time, never at import time."""
 
-    def create_client(self, *, settings: WeatherSettings | None = None) -> Any:
+    def create_client(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> Any:
         from kma import KmaClient
 
         runtime = settings or WeatherSettings()
-        configured_key = (
-            runtime.data_go_kr_service_key.get_secret_value()
-            if runtime.data_go_kr_service_key
-            else ""
+        database_key = (
+            repository.get_provider_credential(
+                "python-kma-api", runtime.optional_credential_encryption_key()
+            )
+            if repository
+            else None
         )
-        key = configured_key
+        configured_key = runtime.provider_api_key("python-kma-api")
+        key = database_key or configured_key or ""
         if not key:
             raise RuntimeError("KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY가 필요합니다.")
         return KmaClient(
@@ -32,16 +40,24 @@ class KmaClientResource(ConfigurableResource):
             retries=runtime.provider_retries,
         )
 
-    def create_data_client(self, *, settings: WeatherSettings | None = None) -> Any:
+    def create_data_client(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> Any:
         from kma import DataGoKrClient
 
         runtime = settings or WeatherSettings()
-        configured_key = (
-            runtime.data_go_kr_service_key.get_secret_value()
-            if runtime.data_go_kr_service_key
-            else ""
+        database_key = (
+            repository.get_provider_credential(
+                "python-kma-api", runtime.optional_credential_encryption_key()
+            )
+            if repository
+            else None
         )
-        key = configured_key
+        configured_key = runtime.provider_api_key("python-kma-api")
+        key = database_key or configured_key or ""
         if not key:
             raise RuntimeError("KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY가 필요합니다.")
         return DataGoKrClient(
@@ -72,5 +88,12 @@ class ExternalWeatherProviderResource(ConfigurableResource):
     provider_key: str = "open_meteo"
     dataset_key: str = "open_meteo_current"
 
-    def create_provider(self, *, settings: WeatherSettings | None = None) -> Any:
-        return create_configured_provider(self.provider_key, settings=settings)
+    def create_provider(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> Any:
+        return create_configured_provider(
+            self.provider_key, settings=settings, repository=repository
+        )

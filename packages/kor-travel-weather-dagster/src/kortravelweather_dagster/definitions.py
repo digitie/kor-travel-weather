@@ -101,9 +101,9 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             dataset_key="kma_weather_bundle",
             locations_total=len(targets),
         )
-        client = client_resource.create_client(settings=settings)
+        client = client_resource.create_client(settings=settings, repository=repository)
         data_client = (
-            client_resource.create_data_client(settings=settings)
+            client_resource.create_data_client(settings=settings, repository=repository)
             if any(target.has_mid for target in targets)
             else None
         )
@@ -157,7 +157,7 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     repository = context.resources.weather_repository.create_repository()
     resource = context.resources.external_weather
-    provider = resource.create_provider(settings=runtime)
+    provider = resource.create_provider(settings=runtime, repository=repository)
     locations = repository.list_locations(enabled_only=True, limit=None)
     targets = [
         ProviderLocation(

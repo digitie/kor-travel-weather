@@ -88,7 +88,7 @@ def create_app(
             CORSMiddleware,
             allow_origins=runtime_settings.cors_origins,
             allow_credentials=False,
-            allow_methods=["GET", "POST", "PATCH"],
+            allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
             allow_headers=["*"],
         )
 
@@ -183,7 +183,13 @@ def create_app(
                 if "{location_id}" in path or "{run_id}" in path:
                     responses["404"] = problem_response("Resource not found")
                 operation_name = operation.get("operationId", "").split("_")[0]
-                if path.startswith("/v1/admin/") and operation_name in {"create", "patch"}:
+                if path.startswith("/v1/admin/") and (
+                    operation_name in {"create", "patch", "put", "delete"}
+                    or (
+                        "provider-credentials" in path
+                        and operation_name in {"put", "delete"}
+                    )
+                ):
                     responses["409"] = problem_response("Resource conflict")
         api.openapi_schema = schema
         return schema

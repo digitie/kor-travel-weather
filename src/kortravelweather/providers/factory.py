@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 from .base import CredentialError, WeatherProvider
@@ -15,6 +16,7 @@ def create_configured_provider(
     provider_key: str,
     *,
     settings: WeatherSettings | None = None,
+    repository: WeatherRepository | None = None,
     **overrides: Any,
 ) -> WeatherProvider:
     runtime = settings or WeatherSettings()
@@ -26,10 +28,18 @@ def create_configured_provider(
     if provider_key not in runtime.enabled_providers:
         raise ValueError(f"provider가 비활성화되어 있습니다: {provider_key}")
     spec = provider_spec(provider_key)
-    if spec.auth_required and runtime.provider_api_key(provider_key) is None:
+    database_key = (
+        repository.get_provider_credential(
+            provider_key, runtime.optional_credential_encryption_key()
+        )
+        if repository
+        else None
+    )
+    configured_key = database_key or runtime.provider_api_key(provider_key)
+    if spec.auth_required and configured_key is None:
         raise CredentialError(provider_key)
     kwargs: dict[str, Any] = {
-        "api_key": runtime.provider_api_key(provider_key),
+        "api_key": configured_key,
         "timeout": runtime.provider_http_timeout_seconds,
         "retries": runtime.provider_retries,
         "max_payload_bytes": runtime.max_payload_bytes_per_run,
