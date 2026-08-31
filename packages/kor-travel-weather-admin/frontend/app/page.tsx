@@ -1,30 +1,65 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Activity, CloudSun, Database, MapPin, RefreshCw } from "lucide-react";
 import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
-import { getHealth, getLocations, getPublicLocations, getSyncRuns, Location, SyncRun } from "@/lib/api";
+import { getHealth, getLocations, getPublicLocations, getSyncRuns, SyncRun } from "@/lib/api";
+
+function SummaryCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="panel card summary-card">
+      <div className="summary-card-head">
+        <span>{label}</span>
+        <span className="summary-card-icon"><Icon size={18} aria-hidden="true" /></span>
+      </div>
+      <strong>{value}</strong>
+      <small>{detail}</small>
+    </div>
+  );
+}
 
 export default function HomePage() {
-  const [locations, setLocations] = useState<Location[]>([]);
   const [runs, setRuns] = useState<SyncRun[]>([]);
   const [health, setHealth] = useState("확인 중");
   const [error, setError] = useState<string | null>(null);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [activeTotal, setActiveTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    Promise.all([getLocations(undefined, 1000), getPublicLocations(1), getSyncRuns(10), getHealth()])
-      .then(([locationResult, activeResult, runResult, healthResult]) => {
-        setLocations(locationResult.data);
-        setCatalogTotal(locationResult.meta.page?.total ?? locationResult.data.length);
-        setRuns(runResult.data);
-        setHealth(healthResult.status === "ok" ? "정상" : healthResult.status);
-        setActiveTotal(activeResult.meta.page?.total ?? activeResult.data.length);
-      })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "상태를 불러오지 못했습니다."));
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [locationResult, activeResult, runResult, healthResult] = await Promise.all([
+        getLocations(undefined, 1),
+        getPublicLocations(1),
+        getSyncRuns(10),
+        getHealth(),
+      ]);
+      setCatalogTotal(locationResult.meta.page?.total ?? locationResult.data.length);
+      setRuns(runResult.data);
+      setHealth(healthResult.status === "ok" ? "정상" : healthResult.status);
+      setActiveTotal(activeResult.meta.page?.total ?? activeResult.data.length);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "상태를 불러오지 못했습니다.");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
 
   const lastRun = runs[0];
   return (
@@ -32,6 +67,9 @@ export default function HomePage() {
       <PageHeader
         actions={
           <>
+            <button className="button secondary" disabled={loading} onClick={() => void refresh()} type="button">
+              <RefreshCw size={15} className={loading ? "spin" : ""} /> 새로고침
+            </button>
             <Link className="button secondary" href="/weather">날씨 지도</Link>
             <Link className="button secondary" href="/sync-runs">수집 실행</Link>
           </>
@@ -41,10 +79,11 @@ export default function HomePage() {
         title="Weather source"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}
-      <section className="cards" aria-label="운영 요약">
-        <div className="panel card"><span>활성 위치</span><strong>{activeTotal}</strong></div>
-        <div className="panel card"><span>카탈로그 전체</span><strong>{catalogTotal}</strong></div>
-        <div className="panel card"><span>최근 수집</span><strong>{lastRun?.status ?? "—"}</strong></div>
+      <section className="cards home-metrics" aria-label="운영 요약">
+        <SummaryCard icon={MapPin} label="활성 위치" value={activeTotal.toLocaleString("ko-KR")} detail="public catalog" />
+        <SummaryCard icon={Database} label="카탈로그 전체" value={catalogTotal.toLocaleString("ko-KR")} detail="관리 대상 anchor" />
+        <SummaryCard icon={Activity} label="최근 수집" value={lastRun?.status ?? "—"} detail={lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")} facts` : "실행 기록 없음"} />
+        <SummaryCard icon={CloudSun} label="API 상태" value={health} detail="weather source" />
       </section>
       <section className="panel dashboard-note">
         <div className="panel-head"><div><h2>운영 기준</h2><p>수집 실패 시 이전 immutable fact는 그대로 보존됩니다.</p></div></div>
