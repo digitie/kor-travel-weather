@@ -107,7 +107,7 @@ export default function ProviderSettingsPage() {
           </button>
         }
         description="provider별 API 키를 암호화된 DB override로 관리합니다. 키 원문은 다시 표시하지 않습니다."
-        section="Settings"
+        section="시스템"
         title="Provider API 키"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}

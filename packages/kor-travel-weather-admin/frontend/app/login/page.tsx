@@ -55,15 +55,10 @@ export default function LoginPage() {
           <div className="login-mark" aria-hidden="true"><CloudSun size={27} /></div>
           <div>
             <div className="eyebrow">kor-travel-weather</div>
-            <h1>Weather source, made visible.</h1>
-            <p>원천 응답부터 공개용 forecast projection까지, 한국 여행 데이터의 흐름을 한 화면에서 확인합니다.</p>
+            <h1>관리자 로그인</h1>
           </div>
-          <small>operator console · secure access</small>
         </section>
         <section className="login-form-panel">
-          <div className="eyebrow">operator access</div>
-          <h2>운영 콘솔 로그인</h2>
-          <p>관리자 권한이 필요한 화면입니다. 세션은 이 브라우저에만 안전하게 저장됩니다.</p>
           <form aria-busy={loading} className="login-form" onSubmit={submit}>
             <div className="login-field">
               <label htmlFor="username">아이디</label>
@@ -79,7 +74,6 @@ export default function LoginPage() {
               {loading ? "확인 중…" : "콘솔 들어가기"}
             </button>
           </form>
-          <div className="login-note">접속 문제가 있으면 배포 담당자에게 UI 계정과 reverse proxy 상태를 확인해 주세요.</div>
         </section>
       </div>
     </main>

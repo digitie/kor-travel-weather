@@ -15,7 +15,7 @@ export default function DatasetsPage() {
     <>
       <PageHeader
         description="provider별 raw source를 공통 WeatherValue와 dataset 계약으로 정규화합니다."
-        section="Providers"
+        section="수집 파이프라인"
         title="데이터셋"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}

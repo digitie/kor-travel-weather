@@ -77,8 +77,8 @@ export default function HomePage() {
           </>
         }
         description="KMA 원천 응답과 공개용 weather fact를 한 곳에서 점검합니다."
-        section="Overview"
-        title="Weather source"
+        section="개요"
+        title="운영 홈"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}
       <section className="cards home-metrics" aria-busy={loading} aria-label="운영 요약">

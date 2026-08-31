@@ -46,7 +46,7 @@ export default function SyncRunsPage() {
     <>
       <PageHeader
         description="Dagster hourly asset의 성공·실패와 publish 결과입니다."
-        section="Operations"
+        section="수집 파이프라인"
         title="수집 실행"
       />
       <section className="panel">

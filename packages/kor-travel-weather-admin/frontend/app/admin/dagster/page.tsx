@@ -55,7 +55,7 @@ export default function DagsterPage() {
           </>
         }
         description="kor-travel-map 운영 화면과 같은 방식으로 repository, schedule, 최근 실행을 한눈에 확인합니다."
-        section="Orchestration"
+        section="시스템"
         title="Dagster 운영"
       />
       {error ? <div className="error" role="alert">{error} <button type="button" className="ghost" onClick={load}>다시 시도</button></div> : null}
