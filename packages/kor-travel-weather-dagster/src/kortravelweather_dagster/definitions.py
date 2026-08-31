@@ -124,6 +124,37 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             extra_points=settings.extra_points,
             disabled_location_ids=disabled_ids,
         )
+        # Measurement anchors are intentionally excluded from KMA base-grid
+        # fetches to keep the grid budget bounded, but KMA advisories must still
+        # be visible on their map markers. Build a separate alert-only target
+        # snapshot from every enabled catalog row (plus enabled env targets).
+        alert_rows: dict[str, dict[str, object]] = {
+            location.location_id: {
+                **location.model_dump(),
+                **provider_codes(location.metadata),
+            }
+            for location in db_locations
+            if location.enabled
+        }
+        for row in settings.targets:
+            location_id = row.get("location_id")
+            if not isinstance(location_id, str) or location_id in disabled_ids:
+                continue
+            if location_id in alert_rows:
+                for key in (
+                    "mid_region_code",
+                    "mid_land_region_code",
+                    "mid_temperature_region_code",
+                    "mid_land_reg_id",
+                    "mid_ta_reg_id",
+                ):
+                    if row.get(key):
+                        alert_rows[location_id][key] = row[key]
+            elif row.get("enabled", True):
+                alert_rows[location_id] = dict(row)
+        alert_targets = targets_from_settings(
+            alert_rows.values(), disabled_location_ids=disabled_ids
+        )
         # Count the validated target set, including generated extra points,
         # rather than the pre-validation catalog snapshot.
         run = repository.start_sync_run(
@@ -145,6 +176,7 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             include_mid=any(target.has_mid for target in targets),
             include_alerts=True,
             alert_station_id=settings.kma_alert_station_id,
+            alert_targets=alert_targets,
             data_client=data_client,
             # python-kma-api owns the transport retry boundary through the
             # resource above.  Do not retry the same client call a second time

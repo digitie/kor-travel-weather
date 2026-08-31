@@ -654,6 +654,7 @@ def run_weather_sync(
     repository: WeatherRepository,
     client: Any,
     targets: Sequence[WeatherTarget],
+    alert_targets: Sequence[WeatherTarget] | None = None,
     max_grids: int = 300,
     max_mid_groups: int | None = None,
     max_targets: int = 10_000,
@@ -678,6 +679,12 @@ def run_weather_sync(
         if len(targets) > max_targets:
             raise ValueError(
                 f"weather target 수가 상한을 초과했습니다: {len(targets)} > {max_targets}"
+            )
+        alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
+        if len(alert_target_list) > max_targets:
+            raise ValueError(
+                f"weather alert target 수가 상한을 초과했습니다: "
+                f"{len(alert_target_list)} > {max_targets}"
             )
         unique_grid_count = len({(target.location.nx, target.location.ny) for target in targets})
         if unique_grid_count > max_grids:
@@ -843,7 +850,7 @@ def run_weather_sync(
             if data_client is None:
                 raise ValueError("특보에는 DataGoKrClient가 필요합니다.")
             alert_targets: dict[str, list[WeatherTarget]] = {}
-            for target in targets:
+            for target in alert_target_list:
                 configured = target.location.metadata.get("kma_alert_station_id")
                 station = str(configured or alert_station_id or "108").strip()
                 if not station:
