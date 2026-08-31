@@ -137,14 +137,14 @@ class ProviderCredentialOut(BaseModel):
 class ProviderCredentialPut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    api_key: str = Field(min_length=4, max_length=4096)
+    api_key: str = Field(min_length=8, max_length=4096)
 
     @field_validator("api_key")
     @classmethod
     def normalize_api_key(cls, value: str) -> str:
         normalized = value.strip()
-        if len(normalized) < 4:
-            raise ValueError("provider api key는 4자 이상이어야 합니다.")
+        if len(normalized) < 8:
+            raise ValueError("provider api key는 8자 이상이어야 합니다.")
         return normalized
 
 

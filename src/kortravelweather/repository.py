@@ -302,8 +302,8 @@ def _credential_fernet(encryption_key: str | None) -> Fernet:
 def normalize_provider_credential(api_key: str) -> str:
     """Normalize and bound an admin-supplied credential before encryption."""
     normalized = api_key.strip()
-    if len(normalized) < 4:
-        raise ValueError("provider api key는 4자 이상이어야 합니다.")
+    if len(normalized) < 8:
+        raise ValueError("provider api key는 8자 이상이어야 합니다.")
     if len(normalized) > 4096:
         raise ValueError("provider api key는 4096자를 초과할 수 없습니다.")
     return normalized
@@ -316,7 +316,7 @@ def provider_credential_fingerprint(api_key: str) -> str:
 
 def provider_credential_last4(api_key: str) -> str | None:
     """Return a safe suffix without exposing short credentials verbatim."""
-    return api_key[-4:] if len(api_key) >= 4 else None
+    return api_key[-4:] if len(api_key) >= 8 else None
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:
