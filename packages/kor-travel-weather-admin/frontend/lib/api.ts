@@ -176,6 +176,20 @@ export function getLatest(locationId: string, limit = 200): Promise<ApiEnvelope<
   );
 }
 
+export function getForecast(
+  locationId: string,
+  from?: string,
+  to?: string,
+  limit = 200,
+): Promise<ApiEnvelope<WeatherValue[]>> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (from) query.set("from", from);
+  if (to) query.set("to", to);
+  return request<WeatherValue[]>(
+    `/v1/weather/locations/${encodeURIComponent(locationId)}/forecast?${query.toString()}`,
+  );
+}
+
 export function getSyncRuns(limit = 50): Promise<ApiEnvelope<SyncRun[]>> {
   return request<SyncRun[]>(`/v1/admin/sync-runs?limit=${limit}`);
 }

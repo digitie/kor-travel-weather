@@ -1,32 +1,93 @@
 "use client";
 
-import { Activity, CloudSun, Database, Home, MapPin } from "lucide-react";
+import {
+  Activity,
+  CloudSun,
+  Code2,
+  Database,
+  Home,
+  LogOut,
+  MapPin,
+  Workflow,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { useState } from "react";
+
 const groups = [
   { label: "개요", items: [{ href: "/", label: "홈", icon: Home }] },
-  { label: "Weather source", items: [{ href: "/locations", label: "위치 카탈로그", icon: MapPin }, { href: "/weather", label: "최신 날씨", icon: CloudSun }] },
-  { label: "운영", items: [{ href: "/sync-runs", label: "수집 실행", icon: Activity }, { href: "/datasets", label: "데이터셋", icon: Database }] },
+  {
+    label: "Weather source",
+    items: [
+      { href: "/weather", label: "날씨 지도", icon: CloudSun },
+      { href: "/locations", label: "위치 카탈로그", icon: MapPin },
+      { href: "/datasets", label: "데이터셋", icon: Database },
+    ],
+  },
+  {
+    label: "운영",
+    items: [
+      { href: "/sync-runs", label: "수집 실행", icon: Activity },
+      { href: "/admin/dagster", label: "Dagster", icon: Workflow },
+      { href: "/api-test", label: "API 테스트", icon: Code2 },
+    ],
+  },
 ] as const;
 
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  if (pathname === "/login") return <>{children}</>;
+
+  async function logout() {
+    setLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      window.location.assign("/login");
+    }
+  }
+
   return (
-    <div className="app-grid">
-      <aside className="rail">
-        <div className="brand">kor-travel-weather<small>operator console</small></div>
-        {groups.map((group) => (
-          <div key={group.label}>
-            <div className="nav-section">{group.label}</div>
-            {group.items.map(({ href, label, icon: Icon }) => {
-              const active = href === "/" ? pathname === href : pathname.startsWith(href);
-              return <Link className={`nav-link${active ? " active" : ""}`} href={href} key={href}><Icon size={15} strokeWidth={1.8} />{label}</Link>;
-            })}
+    <>
+      <a className="skip-link" href="#main-content">
+        본문으로 건너뛰기
+      </a>
+      <div className="app-grid" data-testid="admin-shell">
+        <aside className="rail" aria-label="관리자 사이드바">
+          <Link className="brand" href="/">
+            <span className="brand-mark"><CloudSun size={18} strokeWidth={2.2} /></span>
+            <span>kor-travel-weather</span>
+            <small>operator console</small>
+          </Link>
+          <nav className="rail-nav" aria-label="주 메뉴">
+            {groups.map((group) => (
+              <div className="nav-group" key={group.label}>
+                <div className="nav-section">{group.label}</div>
+                {group.items.map(({ href, label, icon: Icon }) => {
+                  const active = href === "/" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
+                  return (
+                    <Link aria-current={active ? "page" : undefined} className={`nav-link${active ? " active" : ""}`} href={href} key={href}>
+                      <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
+                      <span>{label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+          <div className="rail-footer">
+            <div className="operator-chip"><span className="operator-dot" /> admin</div>
+            <button className="nav-link logout-button" disabled={loggingOut} onClick={() => void logout()} type="button">
+              <LogOut size={16} strokeWidth={1.8} />
+              <span>{loggingOut ? "로그아웃 중…" : "로그아웃"}</span>
+            </button>
           </div>
-        ))}
-      </aside>
-      <main className="main" id="main-content">{children}</main>
-    </div>
+        </aside>
+        <main className="main" id="main-content" tabIndex={-1}>{children}</main>
+      </div>
+    </>
   );
 }

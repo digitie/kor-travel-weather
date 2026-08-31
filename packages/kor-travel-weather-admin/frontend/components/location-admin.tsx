@@ -7,6 +7,15 @@ import { createLocation, getLocations, Location, updateLocation } from "@/lib/ap
 
 const PAGE_SIZE = 100;
 
+const newLocationFields = [
+  { key: "location_id", label: "위치 ID", type: "text" },
+  { key: "name", label: "이름", type: "text" },
+  { key: "latitude", label: "위도", type: "number", step: "any" },
+  { key: "longitude", label: "경도", type: "number", step: "any" },
+  { key: "nx", label: "격자 X", type: "number", step: "1" },
+  { key: "ny", label: "격자 Y", type: "number", step: "1" },
+] as const;
+
 export function LocationAdmin() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [search, setSearch] = useState("");
@@ -98,19 +107,22 @@ export function LocationAdmin() {
           </div>
         </div>
         <form className="toolbar" onSubmit={submit} style={{ flexWrap: "wrap", padding: 18 }}>
-          {(["location_id", "name", "latitude", "longitude", "nx", "ny"] as const).map(
-            (key) => (
+          {newLocationFields.map((field) => (
+            <label className="location-field" htmlFor={`new-location-${field.key}`} key={field.key}>
+              <span>{field.label}</span>
               <input
-                key={key}
+                id={`new-location-${field.key}`}
+                name={field.key}
                 required
-                placeholder={key}
-                value={newLocation[key]}
+                step={field.type === "number" ? field.step : undefined}
+                type={field.type}
+                value={newLocation[field.key]}
                 onChange={(event) =>
-                  setNewLocation((current) => ({ ...current, [key]: event.target.value }))
+                  setNewLocation((current) => ({ ...current, [field.key]: event.target.value }))
                 }
               />
-            ),
-          )}
+            </label>
+          ))}
           <button type="submit">위치 추가</button>
         </form>
       </div>
@@ -123,7 +135,10 @@ export function LocationAdmin() {
           <div className="toolbar">
             <input
               aria-label="위치 검색"
+              id="location-search"
+              name="search"
               placeholder="검색"
+              type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
@@ -143,7 +158,7 @@ export function LocationAdmin() {
         ) : (
           <table>
             <thead>
-              <tr><th>location</th><th>grid</th><th>coordinates</th><th>status</th><th /></tr>
+              <tr><th scope="col">location</th><th scope="col">grid</th><th scope="col">coordinates</th><th scope="col">status</th><th scope="col" /></tr>
             </thead>
             <tbody>
               {locations.map((location) => (

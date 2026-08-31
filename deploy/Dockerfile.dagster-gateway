@@ -1,0 +1,6 @@
+FROM nginx:1.27-alpine
+
+RUN apk add --no-cache openssl
+COPY deploy/nginx/dagster-gateway.conf /etc/nginx/conf.d/default.conf
+
+CMD ["/bin/sh", "-c", "printf '%s:%s\\n' \"$DAGSTER_UI_USER\" \"$(openssl passwd -apr1 \"$DAGSTER_UI_PASSWORD\")\" > /etc/nginx/.htpasswd && exec nginx -g 'daemon off;'"]

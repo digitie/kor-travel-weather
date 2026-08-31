@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SESSION_COOKIE, sessionSecret, verifySessionValue } from "@/lib/session";
 
 function unauthorized() {
   return new NextResponse("관리자 UI 인증이 필요합니다.", {
@@ -11,21 +12,51 @@ function csrfBlocked() {
   return new NextResponse("교차 사이트 요청이 차단되었습니다.", { status: 403 });
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  // Login/logout are deliberately public; they establish/clear the signed
+  // session used by the rest of the admin surface.
+  if (pathname === "/login" || pathname === "/api/auth/login" || pathname === "/api/auth/logout") {
+    return NextResponse.next();
+  }
   if (process.env.NODE_ENV !== "production") return NextResponse.next();
   const username = process.env.WEATHER_UI_USER;
   const password = process.env.WEATHER_UI_PASSWORD;
   if (!username || !password) {
     return new NextResponse("WEATHER_UI_USER/WEATHER_UI_PASSWORD 설정이 필요합니다.", { status: 503 });
   }
+  let secret: string;
+  try {
+    // Validate the production session key even when the request uses the
+    // Basic-Auth fallback. Otherwise a placeholder key would silently leave
+    // the deployment with no usable signed-session boundary.
+    secret = sessionSecret(username, password);
+  } catch {
+    return new NextResponse("WEATHER_UI_SESSION_SECRET 설정이 필요합니다.", { status: 503 });
+  }
   if (["POST", "PATCH", "PUT", "DELETE"].includes(request.method)) {
     // Basic credentials are cached by browsers, so an attacker could
     // otherwise submit a cross-site form to the server-side admin proxy.
     // Require an exact same-origin Origin on every state-changing request.
-    if (request.headers.get("origin") !== request.nextUrl.origin) return csrfBlocked();
+    const origin = request.headers.get("origin");
+    const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ?? request.nextUrl.protocol.replace(":", "");
+    const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ?? request.headers.get("host") ?? request.nextUrl.host;
+    const expectedOrigin = `${forwardedProto}://${forwardedHost}`;
+    if (!origin || origin !== expectedOrigin) return csrfBlocked();
+  }
+  const session = request.cookies.get(SESSION_COOKIE)?.value;
+  if (session && (await verifySessionValue(session, secret))) {
+    return NextResponse.next();
   }
   const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Basic ")) return unauthorized();
+  if (!authorization?.startsWith("Basic ")) {
+    if (request.headers.get("accept")?.includes("text/html")) {
+      const login = new URL("/login", request.url);
+      login.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
+      return NextResponse.redirect(login);
+    }
+    return unauthorized();
+  }
   const encoded = authorization.slice("Basic ".length);
   let supplied: string;
   try {

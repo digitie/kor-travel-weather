@@ -13,7 +13,7 @@
    필요한 경우 인증된 gateway 또는 SSH tunnel만 web/API에 연결한다. DB port를
    인터넷에 직접 publish하지 않는다.
 5. `/health`, `/version`, admin sync-runs에서 smoke를 확인한다. n150 운영 endpoint는
-   API `https://weather-api.digitie.mywire.org`, Dagster
+   API `https://weather-api.digitie.mywire.org`, Basic Auth로 보호된 Dagster
    `https://weather-dagster.digitie.mywire.org`, web
    `https://weather.digitie.mywire.org`를 사용한다. 로컬 loopback 포트는 각각
    `14101`, `14102`, `14105`이며 PostgreSQL은 `14100`이다.
@@ -22,7 +22,9 @@
 heartbeat를 갱신하므로, 180분 동안 heartbeat가 없는 running row만 자동으로 failed
 회수된다.
 
-Next.js admin은 내부 네트워크에서만 노출한다. n150 reverse proxy에서 외부 접근을
+Next.js admin은 내부 네트워크에서만 노출한다. Dagster 14102도
+`dagster-gateway` Basic Auth 뒤에 있으며, web의 server-side GraphQL proxy만
+내부 `dagster:14102`에 직접 접근한다. n150 reverse proxy에서 외부 접근을
 허용할 때는 `admin` Basic Auth(비밀번호는 secret 파일) 또는
 조직 SSO를 사용한다. 외부 접근이 필요하면
 `WEATHER_UI_USER`/`WEATHER_UI_PASSWORD` Basic Auth(또는 조직 SSO)를 reverse
