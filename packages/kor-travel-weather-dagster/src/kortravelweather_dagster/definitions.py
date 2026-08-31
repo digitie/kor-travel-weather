@@ -1,5 +1,7 @@
 """Dagster Definitions and hourly KMA sync schedule."""
 
+from collections.abc import Mapping
+
 from dagster import (
     AssetExecutionContext,
     DefaultScheduleStatus,
@@ -25,6 +27,24 @@ from .resources import (
     KmaClientResource,
     WeatherRepositoryResource,
 )
+
+
+def _is_kma_target_location(location: object) -> bool:
+    """Keep AirKorea station anchors out of KMA's grid target set by default.
+
+    AirKorea's nationwide station catalog is intentionally the anchor source
+    for external providers.  Treating every station as a KMA target would turn
+    a 300+ station catalog into hundreds of KMA grid calls and make the KMA
+    budget fail.  An administrator can opt a shared anchor into KMA explicitly
+    with ``metadata.kma_opt_in=true``.
+    """
+    metadata = getattr(location, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return True
+    return not (
+        isinstance(metadata.get("measurement_point"), Mapping)
+        and metadata.get("kma_opt_in") is not True
+    )
 
 
 @asset(
@@ -73,7 +93,7 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             **provider_codes(location.metadata),
         }
         for location in db_locations
-        if location.enabled
+        if location.enabled and _is_kma_target_location(location)
     ]
     merged: dict[str, dict[str, object]] = {row["location_id"]: row for row in db_targets}
     for row in settings.targets:
