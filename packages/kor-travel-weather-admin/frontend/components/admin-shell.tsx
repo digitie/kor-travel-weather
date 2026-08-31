@@ -51,36 +51,43 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="app-grid" data-testid="admin-shell">
-      <aside className="rail" aria-label="주 메뉴">
-        <Link className="brand" href="/">
-          <span className="brand-mark"><CloudSun size={18} strokeWidth={2.2} /></span>
-          <span>kor-travel-weather</span>
-          <small>operator console</small>
-        </Link>
-        {groups.map((group) => (
-          <div key={group.label}>
-            <div className="nav-section">{group.label}</div>
-            {group.items.map(({ href, label, icon: Icon }) => {
-              const active = href === "/" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
-              return (
-                <Link className={`nav-link${active ? " active" : ""}`} href={href} key={href}>
-                  <Icon size={16} strokeWidth={1.8} />
-                  <span>{label}</span>
-                </Link>
-              );
-            })}
+    <>
+      <a className="skip-link" href="#main-content">
+        본문으로 건너뛰기
+      </a>
+      <div className="app-grid" data-testid="admin-shell">
+        <aside className="rail" aria-label="관리자 사이드바">
+          <Link className="brand" href="/">
+            <span className="brand-mark"><CloudSun size={18} strokeWidth={2.2} /></span>
+            <span>kor-travel-weather</span>
+            <small>operator console</small>
+          </Link>
+          <nav className="rail-nav" aria-label="주 메뉴">
+            {groups.map((group) => (
+              <div className="nav-group" key={group.label}>
+                <div className="nav-section">{group.label}</div>
+                {group.items.map(({ href, label, icon: Icon }) => {
+                  const active = href === "/" ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
+                  return (
+                    <Link aria-current={active ? "page" : undefined} className={`nav-link${active ? " active" : ""}`} href={href} key={href}>
+                      <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
+                      <span>{label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+          <div className="rail-footer">
+            <div className="operator-chip"><span className="operator-dot" /> admin</div>
+            <button className="nav-link logout-button" disabled={loggingOut} onClick={() => void logout()} type="button">
+              <LogOut size={16} strokeWidth={1.8} />
+              <span>{loggingOut ? "로그아웃 중…" : "로그아웃"}</span>
+            </button>
           </div>
-        ))}
-        <div className="rail-footer">
-          <div className="operator-chip"><span className="operator-dot" /> admin</div>
-          <button className="nav-link logout-button" disabled={loggingOut} onClick={() => void logout()} type="button">
-            <LogOut size={16} strokeWidth={1.8} />
-            <span>{loggingOut ? "로그아웃 중…" : "로그아웃"}</span>
-          </button>
-        </div>
-      </aside>
-      <main className="main" id="main-content">{children}</main>
-    </div>
+        </aside>
+        <main className="main" id="main-content" tabIndex={-1}>{children}</main>
+      </div>
+    </>
   );
 }

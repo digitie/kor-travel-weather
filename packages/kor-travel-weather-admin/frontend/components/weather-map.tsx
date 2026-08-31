@@ -51,7 +51,17 @@ export function WeatherMap({ locations }: WeatherMapProps) {
       `${location.name} ${location.location_id} ${location.region_code ?? ""}`.toLocaleLowerCase().includes(normalized),
     );
   }, [locations, query]);
-  const selected = locations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+  const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+
+  useEffect(() => {
+    if (!visibleLocations.length) {
+      if (selectedId) setSelectedId("");
+      return;
+    }
+    if (!visibleLocations.some((location) => location.location_id === selectedId)) {
+      setSelectedId(visibleLocations[0].location_id);
+    }
+  }, [selectedId, visibleLocations]);
 
   useEffect(() => {
     if (!mapNode.current || map.current) return;
@@ -129,15 +139,27 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           {query ? <button type="button" aria-label="검색어 지우기" onClick={() => setQuery("")}><X size={15} /></button> : null}
         </div>
         <div className="view-switcher" role="tablist" aria-label="조회 방식">
-          <button className={mode === "map" ? "active" : ""} type="button" role="tab" aria-selected={mode === "map"} onClick={() => setMode("map")}><MapIcon size={15} /> 지도</button>
-          <button className={mode === "list" ? "active" : ""} type="button" role="tab" aria-selected={mode === "list"} onClick={() => setMode("list")}><List size={15} /> 목록</button>
+          <button aria-controls="weather-map-panel" aria-selected={mode === "map"} className={mode === "map" ? "active" : ""} id="weather-map-tab" onClick={() => setMode("map")} role="tab" type="button"><MapIcon aria-hidden="true" size={15} /> 지도</button>
+          <button aria-controls="weather-list-panel" aria-selected={mode === "list"} className={mode === "list" ? "active" : ""} id="weather-list-tab" onClick={() => setMode("list")} role="tab" type="button"><List aria-hidden="true" size={15} /> 목록</button>
         </div>
         <span className="toolbar-count">{visibleLocations.length} locations</span>
       </div>
 
       <div className={`weather-layout ${mode === "list" ? "list-mode" : ""}`}>
-        <div className="map-card">
-          <div ref={mapNode} className="map-canvas" aria-label="날씨 위치 지도" />
+        <div
+          aria-labelledby={mode === "map" ? "weather-map-tab" : "weather-list-tab"}
+          className="map-card"
+          id={mode === "map" ? "weather-map-panel" : "weather-list-panel"}
+          role="tabpanel"
+          tabIndex={0}
+        >
+          <div
+            ref={mapNode}
+            aria-hidden={mode === "list"}
+            aria-label="날씨 위치 지도"
+            className="map-canvas"
+            role="region"
+          />
           <div className="map-legend"><span className="legend-dot" /> 활성 날씨 위치 <span className="legend-muted">{visibleLocations.length}곳</span></div>
           {mode === "list" ? (
             <div className="location-list map-list-overlay">
