@@ -104,12 +104,26 @@ services:
       KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
       KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-500000}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
-    ports:
-      - "127.0.0.1:14102:14102"
+    expose:
+      - "14102"
     volumes:
       - dagster-home:/opt/dagster/home
     command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "14102"]
     working_dir: /app
+
+  dagster-gateway:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.dagster-gateway
+    restart: unless-stopped
+    depends_on:
+      dagster:
+        condition: service_started
+    environment:
+      DAGSTER_UI_USER: ${DAGSTER_UI_USER:-admin}
+      DAGSTER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:14102:14102"
 
   migrate:
     build:

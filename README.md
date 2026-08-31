@@ -80,6 +80,8 @@ repository, schedule 상태와 최근 run을 확인하고 Dagster 원본 화면�
 운영에서 frontend를 외부에 노출하지 말고 reverse proxy/SSO 또는
 `WEATHER_UI_USER`·`WEATHER_UI_PASSWORD` Basic Auth를 설정한다. Next proxy는
 서버에서만 backend admin token을 주입하며 브라우저에 token을 전달하지 않는다.
+Dagster 원본 UI 도메인은 gateway Basic Auth로 보호되며, UI의 Dagster 상태 화면은
+인증된 Next server-side proxy를 사용한다.
 
 `ktwctl init-db`는 비어 있는 catalog를 위한 insert-only bootstrap이다. 기존
 location의 enabled/좌표/metadata는 admin 소유이므로 재실행해도 덮어쓰지 않는다.

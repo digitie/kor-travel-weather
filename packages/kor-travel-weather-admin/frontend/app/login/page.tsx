@@ -4,6 +4,16 @@ import { CloudSun, LoaderCircle, LockKeyhole } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
+function sanitizeLocalPath(value: string | null) {
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return "/";
+  try {
+    const parsed = new URL(value, window.location.origin);
+    return parsed.origin === window.location.origin ? `${parsed.pathname}${parsed.search}${parsed.hash}` : "/";
+  } catch {
+    return "/";
+  }
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [nextPath, setNextPath] = useState("/");
@@ -14,7 +24,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     const next = new URLSearchParams(window.location.search).get("next");
-    if (next?.startsWith("/")) setNextPath(next);
+    setNextPath(sanitizeLocalPath(next));
   }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {

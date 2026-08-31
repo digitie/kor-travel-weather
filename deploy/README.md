@@ -9,7 +9,7 @@ binding은 모두 `127.0.0.1`이다. n150처럼 gateway가 Docker 호스트 외�
 | --- | ---: | --- |
 | `db` | 14100 | PostgreSQL 16 |
 | `api` | 14101 | FastAPI + Alembic |
-| `dagster` | 14102 | Dagster webserver/daemon + KMA asset |
+| `dagster-gateway` | 14102 | Basic Auth로 보호된 Dagster webserver gateway |
 | `web` | 14105 | Next.js admin |
 
 실행 전 compose가 읽는 환경 파일에 `POSTGRES_PASSWORD`,
@@ -38,7 +38,7 @@ docker compose --env-file .env \
 docker compose --env-file .env \
   -f compose.yaml -f deploy/compose.n150.yaml ps
 curl http://192.168.1.14:14101/health
-curl http://192.168.1.14:14102/server_info
+curl -u admin:'<WEATHER_UI_PASSWORD>' http://192.168.1.14:14102/server_info
 curl -u admin:'<WEATHER_UI_PASSWORD>' http://192.168.1.14:14105/
 ```
 
@@ -52,6 +52,8 @@ n150 운영에서는 다음 HTTPS 도메인을 reverse proxy의 정본으로 사
 
 admin web Basic Auth 운영 계정 아이디는 `admin`이며 비밀번호는 배포 secret 파일로만
 주입한다. 비밀번호를 저장소나 로그에 기록하지 않는다.
+Dagster 도메인도 같은 gateway Basic Auth로 보호하며, web의 `/admin/dagster` 화면은
+인증된 Next server-side proxy를 통해 내부 Dagster service를 조회한다.
 
 `migrate` one-shot 컨테이너가 API/Dagster보다 먼저 `alembic upgrade head`를 한 번
 수행하고, 두 서비스는 migration 성공 후에만 시작한다. migration이 실패하거나
