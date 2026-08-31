@@ -6,7 +6,14 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { getForecast, getLatest, Location, WeatherValue } from "@/lib/api";
+import {
+  getForecast,
+  getLatest,
+  getMarkerSummaries,
+  Location,
+  WeatherMarker,
+  WeatherValue,
+} from "@/lib/api";
 
 type WeatherMapProps = {
   locations: Location[];
@@ -29,6 +36,84 @@ function forecastGroups(values: WeatherValue[]) {
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .slice(0, 6);
+}
+
+type MarkerState = {
+  kind: "clear" | "cloud" | "rain" | "snow" | "storm" | "alert" | "unknown";
+  glyph: string;
+  label: string;
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function markerIcon(kind: MarkerState["kind"]): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("focusable", "false");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.8");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const add = (tag: string, attributes: Record<string, string>) => {
+    const node = document.createElementNS(SVG_NS, tag);
+    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
+    svg.append(node);
+  };
+  if (kind === "clear") {
+    add("circle", { cx: "12", cy: "12", r: "4" });
+    for (const [x1, y1, x2, y2] of [
+      [12, 2, 12, 5], [12, 19, 12, 22], [2, 12, 5, 12], [19, 12, 22, 12],
+      [4.9, 4.9, 7, 7], [17, 17, 19.1, 19.1], [17, 7, 19.1, 4.9], [4.9, 19.1, 7, 17],
+    ]) add("line", { x1: String(x1), y1: String(y1), x2: String(x2), y2: String(y2) });
+  } else if (kind === "cloud") {
+    add("path", { d: "M6.5 18h10.7a4.3 4.3 0 0 0 .4-8.6A6 6 0 0 0 6 10.5 3.8 3.8 0 0 0 6.5 18Z" });
+  } else if (kind === "rain") {
+    add("path", { d: "M5.5 15.5h10a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 7 9a3.2 3.2 0 0 0-1.5 6.5Z" });
+    add("line", { x1: "8", y1: "18", x2: "7", y2: "21" });
+    add("line", { x1: "13", y1: "18", x2: "12", y2: "21" });
+    add("line", { x1: "18", y1: "18", x2: "17", y2: "21" });
+  } else if (kind === "snow") {
+    add("path", { d: "M6 15.5h10.5a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 7 9a3.2 3.2 0 0 0-1 6.5Z" });
+    add("path", { d: "m9 18 3 3m0-3-3 3m6-3 2 2m0-2-2 2" });
+  } else if (kind === "storm") {
+    add("path", { d: "M6 14.5h10.5a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 7 8a3.2 3.2 0 0 0-1 6.5Z" });
+    add("path", { d: "m13 14-3 5h3l-1 4 4-6h-3l2-3Z", fill: "currentColor" });
+  } else if (kind === "alert") {
+    add("circle", { cx: "12", cy: "12", r: "8.5" });
+    add("line", { x1: "12", y1: "7", x2: "12", y2: "13" });
+    add("circle", { cx: "12", cy: "17", r: "0.7", fill: "currentColor", stroke: "none" });
+  } else {
+    add("circle", { cx: "12", cy: "12", r: "2.5", fill: "currentColor", stroke: "none" });
+  }
+  return svg;
+}
+
+function markerState(summary: WeatherMarker | undefined): MarkerState {
+  if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
+  if (summary.alerts.length) {
+    return { kind: "alert", glyph: "!", label: `특보 ${summary.alerts.length}건` };
+  }
+  const rows = summary.latest;
+  const codeRow = rows.find((row) =>
+    ["WEATHER_CODE", "weather_code", "SKY", "PTY"].includes(row.metric_key),
+  );
+  const code = codeRow?.value_number ?? Number(codeRow?.value_text);
+  if (codeRow?.metric_key === "PTY" && code > 0) {
+    const snow = code === 3 || code === 7;
+    return { kind: snow ? "snow" : "rain", glyph: snow ? "❄" : "☂", label: snow ? "눈" : "강수" };
+  }
+  if (Number.isFinite(code)) {
+    if ([95, 96, 99].includes(code)) return { kind: "storm", glyph: "⚡", label: "뇌우" };
+    if (code >= 71 && code <= 86) return { kind: "snow", glyph: "❄", label: "눈" };
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+      return { kind: "rain", glyph: "☂", label: "비" };
+    }
+    if (code === 0 || code === 1) return { kind: "clear", glyph: "☀", label: "맑음" };
+    if (code >= 2 && code <= 4) return { kind: "cloud", glyph: "☁", label: "구름" };
+  }
+  return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
 }
 
 function mapStyle() {
@@ -59,6 +144,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [message, setMessage] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
+  const [summaries, setSummaries] = useState<Record<string, WeatherMarker>>({});
 
   const visibleLocations = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -121,12 +207,24 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     if (!map.current) return;
     markers.current.forEach((marker) => marker.remove());
     markers.current = visibleLocations.map((location) => {
+      const state = markerState(summaries[location.location_id]);
       const element = document.createElement("button");
       element.type = "button";
-      element.className = `weather-marker${location.location_id === selectedId ? " selected" : ""}`;
+      element.className = `weather-marker weather-marker-${state.kind}${location.location_id === selectedId ? " selected" : ""}`;
       element.title = location.name;
-      element.setAttribute("aria-label", `${location.name} 날씨 보기`);
+      element.setAttribute("aria-label", `${location.name}: ${state.label} 날씨 보기`);
       element.setAttribute("aria-pressed", String(location.location_id === selectedId));
+      const glyph = document.createElement("span");
+      glyph.className = "weather-marker-glyph";
+      glyph.append(markerIcon(state.kind));
+      element.append(glyph);
+      if (state.kind === "alert") {
+        const alert = document.createElement("span");
+        alert.className = "weather-marker-badge";
+        alert.setAttribute("aria-hidden", "true");
+        alert.textContent = String(summaries[location.location_id]?.alerts.length ?? "!");
+        element.append(alert);
+      }
       element.addEventListener("click", () => setSelectedId(location.location_id));
       return new maplibregl.Marker({ element })
         .setLngLat([location.longitude, location.latitude])
@@ -135,7 +233,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     if (selected) {
       map.current.easeTo({ center: [selected.longitude, selected.latitude], duration: 500 });
     }
-  }, [selected, selectedId, visibleLocations]);
+  }, [selected, selectedId, summaries, visibleLocations]);
 
   useEffect(() => {
     if (!selected) {
@@ -169,6 +267,28 @@ export function WeatherMap({ locations }: WeatherMapProps) {
       cancelled = true;
     };
   }, [refreshToken, selected]);
+
+  useEffect(() => {
+    if (!locations.length) return;
+    let cancelled = false;
+    const chunks: string[][] = [];
+    for (let index = 0; index < locations.length; index += 500) {
+      chunks.push(locations.slice(index, index + 500).map((location) => location.location_id));
+    }
+    Promise.all(chunks.map((chunk) => getMarkerSummaries(chunk)))
+      .then((responses) => {
+        if (!cancelled) {
+          const all = responses.flatMap((response) => response.data);
+          setSummaries(Object.fromEntries(all.map((item) => [item.location_id, item])));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSummaries({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [locations, refreshToken]);
 
   useEffect(() => {
     if (mode !== "map" || !map.current) return;
@@ -224,6 +344,15 @@ export function WeatherMap({ locations }: WeatherMapProps) {
               <div className="inspector-heading"><div><span className="eyebrow">selected location</span><h2>{selected.name}</h2><p>{selected.location_id} · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</p><div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "fresh" : "stale"}</span><small>{freshnessTimestamp ? freshnessTimestamp.toLocaleString("ko-KR") : "수집 시각 없음"}</small>{lastRefreshedAt ? <small>확인 {lastRefreshedAt.toLocaleTimeString("ko-KR")}</small> : null}<small>{values[0]?.provider ?? "provider 없음"} · {values[0]?.dataset_key ?? "dataset 없음"}</small>{values[0]?.source_record_key ? <small>source {values[0].source_record_key.slice(0, 12)}…</small> : null}</div></div><div className="inspector-actions"><button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button><button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button></div></div>
               {loading ? <div className="loading-block" role="status" aria-live="polite">최신 날씨를 불러오는 중…</div> : <>
                 {message ? <div className="empty" role="status">{message}</div> : null}
+                {summaries[selected.location_id]?.measurement_point ? (
+                  <div className="measurement-point">
+                    <span className="section-label">측정 지점</span>
+                    <strong>{summaries[selected.location_id].measurement_point?.station_name}</strong>
+                    <small>
+                      {summaries[selected.location_id].measurement_point?.address ?? ""} · {summaries[selected.location_id].measurement_point?.distance_km.toFixed(1)}km
+                    </small>
+                  </div>
+                ) : null}
                 <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
                 <div className="inspector-section"><div className="section-label"><span>latest metrics</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 metric이 없습니다.</div> : null}</div></div>
                 <div className="inspector-section forecast-section">
@@ -245,6 +374,16 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                     </div>
                   ) : <p className="muted-note">예보 데이터가 없습니다.</p>}
                 </div>
+                {summaries[selected.location_id]?.alerts.length ? (
+                  <div className="alert-panel" role="status">
+                    <strong>기상특보</strong>
+                    {summaries[selected.location_id].alerts.slice(0, 3).map((alert) => (
+                      <span key={alert.value_id}>
+                        {alert.value_text ?? alert.metric_name ?? "특보"} · {alert.severity ?? "advisory"}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
               </>}
             </>
           ) : <div className="empty">지도에서 위치를 선택하세요.</div>}

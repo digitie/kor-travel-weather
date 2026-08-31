@@ -46,6 +46,11 @@ same `latest`, `forecast`, `alerts`, and `measurement_point` fields for each
 nearby anchor, ordered by distance. Use `limit` and `radius_km` to bound a map
 viewport request.
 
+`GET /v1/weather/markers?location_id=...` is a bounded marker projection. Pass
+up to 500 enabled location IDs (the admin map sends batches of 500); each item
+contains only the current metrics and KMA alert facts needed to choose an icon
+and severity badge. It is safe to refresh on every map viewport update.
+
 ## Location and history routes
 
 - `GET /v1/weather/locations` — enabled location catalog (paginated).
@@ -58,18 +63,23 @@ viewport request.
 
 ## Hourly ingestion and providers
 
-The Dagster `hourly_weather` schedule runs in Asia/Seoul. KMA is collected by
-the existing grid pipeline. Other enabled providers are collected at the
-AirKorea station coordinates; an AirKorea station catalog refresh first
-upserts station anchors with safe `measurement_point` metadata. Providers with
-no configured key (for example Open-Meteo and wttr.in) remain keyless; keyed
-providers are skipped with an auditable run result until their admin credential
-is configured.
+The Dagster `hourly_kma_weather` and `hourly_external_weather` schedules run in
+Asia/Seoul. KMA is collected by the existing grid pipeline, including
+`kma_weather_alerts`. The external schedule refreshes the AirKorea station
+catalog first, then collects every enabled non-KMA provider at those station
+coordinates. Providers with no configured key (for example Open-Meteo and
+wttr.in) remain keyless; keyed providers are skipped with an auditable run
+result until their admin credential is configured.
 
 The provider catalog currently includes WeatherAPI, OpenWeatherMap, Open-Meteo,
 Visual Crossing, Tomorrow.io, Weatherbit, Weatherstack, AccuWeather, and
 wttr.in. KMA weather warnings are stored as `kma_weather_alerts` facts and are
-available through `alerts` and the map marker warning badge.
+available through `alerts` and the map marker warning badge. KMA warning
+issuing offices are selected by each target's `metadata.kma_alert_station_id`,
+falling back to `KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID` (default `108`). A
+deployment covering multiple offices must configure one target group per
+office; rows carrying an explicit region are only fanned out to matching
+anchors.
 
 ## Consumer guidance
 

@@ -61,6 +61,7 @@ KMA_METRIC_NAMES: dict[str, str] = {
     "UUU": "동서바람성분",
     "VVV": "남북바람성분",
     "LGT": "낙뢰",
+    "ALERT": "기상특보",
 }
 
 
@@ -104,6 +105,13 @@ class KmaNowcastLike(Protocol):
     ny: int
     category: str
     obsr_value: str
+
+
+class KmaWarningLike(Protocol):
+    stn_id: str | None
+    tm_fc: str | None
+    seq: str | None
+    title: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -588,3 +596,75 @@ def mid_forecast_to_weather_values(
         source_record_key=source_record_key,
         known_at=known_at,
     )
+
+
+def _warning_issued_at(item: Any, fallback: datetime) -> datetime:
+    value = _field(item, "tm_fc", "tmFc", "issue_time", "issueTime")
+    text = str(value or "").strip()
+    for fmt in ("%Y%m%d%H%M", "%Y%m%d%H", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=KST)
+        except ValueError:
+            continue
+    return fallback
+
+
+def _warning_severity(text: str) -> str:
+    normalized = text.lower()
+    if "경보" in normalized or "warning" in normalized:
+        return "warning"
+    if "주의" in normalized or "watch" in normalized:
+        return "watch"
+    return "advisory"
+
+
+def weather_warning_to_weather_values(
+    items: Iterable[Any],
+    *,
+    location_id: str,
+    source_record_key: str | None = None,
+    known_at: datetime | None = None,
+) -> list[WeatherValue]:
+    """Convert ``WthrWrnInfoService`` rows to marker-friendly alert facts."""
+    fetched = known_at or datetime.now(KST)
+    values: list[WeatherValue] = []
+    for index, item in enumerate(items):
+        raw = _mapping_for(item)
+        issued = _warning_issued_at(item, fetched)
+        title = _field(item, "title", "msg", "warning", "content", "tm_fc", "tmFc")
+        text = str(title or "기상특보").strip()
+        payload = {
+            "stn_id": _field(item, "stn_id", "stnId"),
+            "tm_fc": _field(item, "tm_fc", "tmFc"),
+            "seq": _field(item, "seq", "tmSeq") or str(index),
+            "title": text,
+            "raw": dict(raw),
+        }
+        # A warning response can contain several notices with the same issue
+        # minute.  Facts therefore need a row-level revision key; callers can
+        # still retain the response-level key in the source payload/metadata.
+        source_key = _derived_source_key(
+            "kma_weather_alerts",
+            location_id,
+            {"response_key": source_record_key, **payload},
+        )
+        values.append(
+            WeatherValue(
+                location_id=location_id,
+                provider=KMA_PROVIDER_NAME,
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                metric_name=KMA_METRIC_NAMES["ALERT"],
+                value_text=text,
+                severity=_warning_severity(text),
+                issued_at=issued,
+                observed_at=issued,
+                target_at=issued,
+                known_at=fetched,
+                payload=payload,
+                source_record_key=source_key,
+            )
+        )
+    return values

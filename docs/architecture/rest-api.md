@@ -13,7 +13,10 @@
 - `GET /v1/weather/locations/{location_id}`
 - `GET /v1/weather/locations/{location_id}/latest?limit=`
 - `GET /v1/weather/locations/{location_id}/forecast?from=&to=&dataset_key=&metric_key=&history=&limit=`
-- `GET /v1/weather/nearby?lat=&lon=&radius_km=&limit=` (각 결과에 `latest` projection 포함)
+- `GET /v1/weather/nearby?lat=&lon=&radius_km=&limit=` (각 결과에 측정소,
+  `latest`, `forecast`, `alerts` 포함)
+- `GET /v1/weather/resolve?lat=&lon=&radius_km=` (가장 가까운 AirKorea 측정소의
+  모든 provider bundle)
 
 `from > to`, timezone 없는 ISO-8601, 대한민국 밖 좌표, 과도한 limit은 422다.
 disabled location은 404로 숨긴다. forecast의 기본 응답은 current projection이고
@@ -37,7 +40,7 @@ admin에도 DELETE는 없다. 운영 설정에서 token이 없으면 app startup
 ## Consumer adapter boundary
 
 이 서비스의 canonical key는 `location_id`다. `kor-travel-map` feature는 자체
-feature identity와 좌표를 유지하고, `nearby`로 가장 가까운 weather location을
-선택한 뒤 `latest` 또는 `locations/{id}/forecast`를 호출한다. PinVi도 같은
-adapter를 사용한다. 지도 전용 `/v1/features/*` 경로는 이 source가 소유하지
-않으며, 특보(alert)도 MVP 범위에 포함하지 않는다.
+feature identity와 좌표를 유지하고, `/resolve`로 가장 가까운 AirKorea 측정소의
+all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 전용
+`/v1/features/*` 경로는 이 source가 소유하지 않지만, KMA 특보는 `alerts`와
+지도 marker 상태로 제공한다.

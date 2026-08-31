@@ -72,7 +72,56 @@ class WeatherValueOut(BaseModel):
 
 class NearbyOut(LocationOut):
     distance_km: float
+    measurement_point: MeasurementPointOut | None = None
     latest: list[WeatherValueOut] = Field(default_factory=list)
+    forecast: list[WeatherValueOut] = Field(default_factory=list)
+    alerts: list[WeatherValueOut] = Field(default_factory=list)
+
+
+class MeasurementPointOut(BaseModel):
+    """Public, allow-listed AirKorea measurement-point metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    station_id: str | None = None
+    station_name: str
+    address: str | None = None
+    network: str | None = None
+    latitude: float
+    longitude: float
+    distance_km: float
+
+
+class CoordinateRequestOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    latitude: float
+    longitude: float
+
+
+class ResolvedWeatherOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requested: CoordinateRequestOut
+    location: LocationOut
+    distance_km: float
+    measurement_point: MeasurementPointOut | None = None
+    source_locations: list[LocationOut] = Field(default_factory=list)
+    latest: list[WeatherValueOut] = Field(default_factory=list)
+    forecast: list[WeatherValueOut] = Field(default_factory=list)
+    alerts: list[WeatherValueOut] = Field(default_factory=list)
+
+
+class WeatherMarkerOut(BaseModel):
+    """Bounded marker projection used by the map without full nearby payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    measurement_point: MeasurementPointOut | None = None
+    latest: list[WeatherValueOut] = Field(default_factory=list)
+    alerts: list[WeatherValueOut] = Field(default_factory=list)
 
 
 class SourceRecordSummary(BaseModel):
@@ -94,6 +143,8 @@ LocationListResponse = Envelope[list[LocationOut]]
 LocationResponse = Envelope[LocationOut]
 WeatherValueListResponse = Envelope[list[WeatherValueOut]]
 NearbyListResponse = Envelope[list[NearbyOut]]
+ResolvedWeatherResponse = Envelope[ResolvedWeatherOut]
+WeatherMarkerListResponse = Envelope[list[WeatherMarkerOut]]
 SyncRunListResponse = Envelope[list[SyncRun]]
 SourceRecordListResponse = Envelope[list[SourceRecordSummary]]
 
@@ -261,6 +312,66 @@ def value_out(value: WeatherValue) -> WeatherValueOut:
     )
 
 
+def measurement_point_out(
+    location: WeatherLocation, *, distance_km: float
+) -> MeasurementPointOut | None:
+    point = location.metadata.get("measurement_point")
+    if not isinstance(point, dict):
+        return None
+    station_name = point.get("station_name")
+    if not isinstance(station_name, str) or not station_name.strip():
+        return None
+    return MeasurementPointOut(
+        provider=str(point.get("provider") or "unknown"),
+        station_id=(str(point["station_id"]) if point.get("station_id") else None),
+        station_name=station_name,
+        address=(str(point["address"]) if point.get("address") else None),
+        network=(str(point["network"]) if point.get("network") else None),
+        latitude=location.latitude,
+        longitude=location.longitude,
+        distance_km=distance_km,
+    )
+
+
+def _split_weather_values(
+    rows: list[WeatherValue],
+) -> tuple[list[WeatherValue], list[WeatherValue], list[WeatherValue]]:
+    alerts: list[WeatherValue] = []
+    forecast: list[WeatherValue] = []
+    latest: list[WeatherValue] = []
+    for row in rows:
+        marker = f"{row.dataset_key} {row.weather_domain}".lower()
+        if "alert" in marker or "warning" in marker or row.metric_key == "ALERT":
+            alerts.append(row)
+        elif row.forecast_style.value in {"short", "mid", "ultra_short"}:
+            forecast.append(row)
+        else:
+            latest.append(row)
+    return latest, forecast, alerts
+
+
+def _weather_bundle(
+    location: WeatherLocation,
+    distance_km: float,
+    *,
+    latest_rows: list[WeatherValue],
+    forecast_rows: list[WeatherValue],
+    alert_rows: list[WeatherValue],
+) -> dict[str, Any]:
+    return {
+        **location_out(location).model_dump(mode="json"),
+        "distance_km": distance_km,
+        "measurement_point": (
+            measurement_point_out(location, distance_km=distance_km).model_dump(mode="json")
+            if measurement_point_out(location, distance_km=distance_km)
+            else None
+        ),
+        "latest": [value_out(row).model_dump(mode="json") for row in latest_rows],
+        "forecast": [value_out(row).model_dump(mode="json") for row in forecast_rows],
+        "alerts": [value_out(row).model_dump(mode="json") for row in alert_rows],
+    }
+
+
 @router.get("/locations", response_model=LocationListResponse)
 async def list_locations(
     request: Request,
@@ -373,12 +484,17 @@ async def nearby(
     rows = await run_in_threadpool(
         repo.nearest_locations, lat, lon, radius_km=radius_km, limit=limit
     )
+    location_ids = [location.location_id for location, _ in rows]
     latest_many = getattr(repo, "latest_values_many", None)
     latest_by_location = (
-        await run_in_threadpool(
-            latest_many, [location.location_id for location, _ in rows], limit_per_location=20
-        )
+        await run_in_threadpool(latest_many, location_ids, limit_per_location=200)
         if callable(latest_many)
+        else {}
+    )
+    timeline_many = getattr(repo, "timeline_many", None)
+    timeline_by_location = (
+        await run_in_threadpool(timeline_many, location_ids, limit_per_location=500)
+        if callable(timeline_many)
         else {}
     )
     data = []
@@ -388,14 +504,163 @@ async def nearby(
             latest_rows = await run_in_threadpool(
                 repo.latest_values, location.location_id, limit=20
             )
+        all_rows = timeline_by_location.get(location.location_id, [])
+        _, forecast_rows, alert_rows = _split_weather_values(all_rows)
+        current_rows, _, current_alerts = _split_weather_values(latest_rows)
         data.append(
-            {
-                **location_out(location).model_dump(mode="json"),
-                "distance_km": distance,
-                "latest": [value_out(row).model_dump(mode="json") for row in latest_rows],
-            }
+            _weather_bundle(
+                location,
+                distance,
+                latest_rows=current_rows,
+                forecast_rows=forecast_rows,
+                alert_rows=alert_rows or current_alerts,
+            )
         )
     return envelope(request, started, data, limit=limit, returned=len(data))
+
+
+@router.get("/resolve", response_model=ResolvedWeatherResponse)
+async def resolve_weather(
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+    lat: float = Query(ge=33, le=43),
+    lon: float = Query(ge=124, le=132),
+    radius_km: float = Query(default=100, gt=0, le=500),
+) -> dict[str, Any]:
+    """Resolve a coordinate to one nearest anchor and all source projections."""
+    started = perf_counter()
+    # Prefer the nearest AirKorea measurement anchor when the catalog has one;
+    # the requested coordinate contract is specifically station-centred while
+    # the returned bundle still contains every provider fact for that anchor.
+    rows = await run_in_threadpool(
+        repo.nearest_locations, lat, lon, radius_km=radius_km, limit=10_000
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="요청 좌표 주변에 위치가 없습니다.")
+    station_rows = [
+        (location, distance)
+        for location, distance in rows
+        if measurement_point_out(location, distance_km=distance) is not None
+    ]
+    location, distance = (station_rows or rows)[0]
+    # A station anchor and a KMA/external anchor can be separate catalog rows
+    # even when they represent the same requested place.  Include nearby
+    # anchors in a small source-radius projection and merge their current,
+    # forecast, and alert facts instead of silently returning only the station
+    # row.  ``nearby`` already returns deterministic distance ordering.
+    source_radius = max(5.0, distance + 5.0)
+    source_rows = [
+        (candidate, candidate_distance)
+        for candidate, candidate_distance in rows
+        if candidate_distance <= source_radius
+    ]
+    source_ids = [candidate.location_id for candidate, _ in source_rows]
+    latest_many = getattr(repo, "latest_values_many", None)
+    timeline_many = getattr(repo, "timeline_many", None)
+    if callable(latest_many) and callable(timeline_many):
+        latest_by_location = await run_in_threadpool(
+            latest_many, source_ids, limit_per_location=500
+        )
+        timeline_by_location = await run_in_threadpool(
+            timeline_many, source_ids, limit_per_location=2000
+        )
+        latest_rows = [
+            value
+            for candidate_id in source_ids
+            for value in latest_by_location.get(candidate_id, [])
+        ]
+        timeline_rows = [
+            value
+            for candidate_id in source_ids
+            for value in timeline_by_location.get(candidate_id, [])
+        ]
+    else:
+        latest_rows = []
+        timeline_rows = []
+        for candidate_id in source_ids:
+            latest_rows.extend(
+                await run_in_threadpool(repo.latest_values, candidate_id, limit=500)
+            )
+            timeline_rows.extend(
+                await run_in_threadpool(
+                    repo.timeline, candidate_id, limit=2000, include_revisions=False
+                )
+            )
+    _, forecast_values, alert_values = _split_weather_values(timeline_rows)
+    latest_values, _, latest_alerts = _split_weather_values(latest_rows)
+    point = measurement_point_out(location, distance_km=distance)
+    data = ResolvedWeatherOut(
+        requested=CoordinateRequestOut(latitude=lat, longitude=lon),
+        location=location_out(location),
+        distance_km=distance,
+        measurement_point=point,
+        source_locations=[location_out(candidate) for candidate, _ in source_rows],
+        latest=[value_out(row) for row in latest_values],
+        forecast=[value_out(row) for row in forecast_values],
+        alerts=[value_out(row) for row in (alert_values or latest_alerts)],
+    )
+    return envelope(request, started, data.model_dump(mode="json"))
+
+
+@router.get("/markers", response_model=WeatherMarkerListResponse)
+async def marker_summaries(
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+    location_ids: Annotated[list[str] | None, Query(alias="location_id", min_length=1)] = None,
+) -> dict[str, Any]:
+    """Return current/alert marker state for a bounded visible-location batch."""
+    started = perf_counter()
+    # Keep the public marker endpoint bounded even when a client accidentally
+    # sends a whole unbounded catalog.  The UI chunks larger maps by request.
+    requested_ids = location_ids or []
+    if len(requested_ids) > 500:
+        raise HTTPException(status_code=422, detail="marker location 수는 500개 이하여야 합니다.")
+    unique_ids = list(dict.fromkeys(requested_ids))
+    locations = await run_in_threadpool(repo.list_locations, enabled_only=True, limit=None)
+    by_id = {location.location_id: location for location in locations}
+    valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
+    latest_many = getattr(repo, "latest_values_many", None)
+    timeline_many = getattr(repo, "timeline_many", None)
+    if callable(latest_many):
+        latest_by_location = await run_in_threadpool(
+            latest_many, valid_ids, limit_per_location=40
+        )
+    else:
+        latest_by_location = {
+            location_id: await run_in_threadpool(repo.latest_values, location_id, limit=40)
+            for location_id in valid_ids
+        }
+    if callable(timeline_many):
+        timeline_by_location = await run_in_threadpool(
+            timeline_many, valid_ids, limit_per_location=80
+        )
+    else:
+        timeline_by_location = {
+            location_id: await run_in_threadpool(
+                repo.timeline, location_id, limit=80, include_revisions=False
+            )
+            for location_id in valid_ids
+        }
+    data: list[dict[str, Any]] = []
+    for location_id in valid_ids:
+        _, _, timeline_alerts = _split_weather_values(
+            timeline_by_location.get(location_id, [])
+        )
+        _, _, latest_alerts = _split_weather_values(latest_by_location.get(location_id, []))
+        alerts = timeline_alerts or latest_alerts
+        data.append(
+            WeatherMarkerOut(
+                location_id=location_id,
+                measurement_point=measurement_point_out(
+                    by_id[location_id], distance_km=0.0
+                ),
+                latest=[value_out(row) for row in _split_weather_values(
+                    latest_by_location.get(location_id, [])
+                )[0]],
+                alerts=[value_out(row) for row in alerts],
+            ).model_dump(mode="json")
+        )
+    return envelope(request, started, data, limit=len(valid_ids), returned=len(data))
 
 
 @admin_router.get(

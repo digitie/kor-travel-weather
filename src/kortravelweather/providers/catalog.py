@@ -52,6 +52,29 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         ),
     ),
     ProviderSpec(
+        "python-airkorea-api",
+        "AirKorea 측정소",
+        True,
+        "airkorea_api_key",
+        "https://apis.data.go.kr/B552584",
+        (
+            DatasetSpec(
+                "airkorea_station_catalog",
+                "측정소 카탈로그",
+                "AirKorea 측정소 위치·메타데이터",
+                "/MsrstnInfoInqireSvc/getMsrstnList",
+                "시간별",
+            ),
+            DatasetSpec(
+                "airkorea_realtime_measurement",
+                "대기질 관측",
+                "AirKorea 측정소 실시간 관측",
+                "/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
+                "시간별",
+            ),
+        ),
+    ),
+    ProviderSpec(
         "weatherapi",
         "WeatherAPI",
         True,

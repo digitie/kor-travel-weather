@@ -82,6 +82,35 @@ class WeatherRepositoryResource(ConfigurableResource):
         return repository
 
 
+class AirKoreaResource(ConfigurableResource):
+    """Construct the vendored python-airkorea-api client at run time."""
+
+    def create_client(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> Any:
+        from airkorea import AirKoreaClient
+
+        runtime = settings or WeatherSettings()
+        database_key = (
+            repository.get_provider_credential(
+                "python-airkorea-api", runtime.optional_credential_encryption_key()
+            )
+            if repository
+            else None
+        )
+        key = database_key or runtime.provider_api_key("python-airkorea-api") or ""
+        if not key:
+            raise RuntimeError("KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY가 필요합니다.")
+        return AirKoreaClient(
+            service_key=key,
+            timeout=runtime.provider_http_timeout_seconds,
+            retries=runtime.provider_retries,
+        )
+
+
 class ExternalWeatherProviderResource(ConfigurableResource):
     """환경 설정으로 생성되는 Open-Meteo/유료 provider resource."""
 

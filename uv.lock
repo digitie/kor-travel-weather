@@ -934,6 +934,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyproj" },
+    { name = "python-airkorea-api" },
     { name = "python-kma-api" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
@@ -968,6 +969,7 @@ requires-dist = [
     { name = "pyproj", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "python-airkorea-api", directory = "packages/python-airkorea-api" },
     { name = "python-kma-api", git = "https://github.com/digitie/python-kma-api.git?rev=0868b76bd4b7de96b20f667e431c3f43b67cb537" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -1889,6 +1891,31 @@ sdist = { url = "https://files.pythonhosted.org/packages/43/7c/d36d04db312ecf429
 wheels = [
     { url = "https://files.pythonhosted.org/packages/03/e2/08a497ef684b88559c9cc5f4ad53a37e7b99e727094a86d6ea32536d5d3c/pytest_asyncio-1.4.0-py3-none-any.whl", hash = "sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1", size = 16930, upload-time = "2026-05-26T09:56:02.576Z" },
 ]
+
+[[package]]
+name = "python-airkorea-api"
+version = "0.4.0"
+source = { directory = "packages/python-airkorea-api" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyproj" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "pandas", marker = "extra == 'debug-ui'", specifier = ">=2" },
+    { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyproj", specifier = ">=3.5" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
+    { name = "streamlit", marker = "extra == 'debug-ui'", specifier = ">=1.36" },
+]
+provides-extras = ["dev", "debug-ui"]
 
 [[package]]
 name = "python-dateutil"
