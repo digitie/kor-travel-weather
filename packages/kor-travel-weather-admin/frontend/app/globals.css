@@ -330,7 +330,7 @@ td code { color: var(--color-ink-muted); }
 
 /* Shared map-console primitives. Keep these last so every route resolves to
    the same visual contract even when a page has its own legacy class names. */
-.page-header h1 { font-family: var(--font-display); font-weight: 750; }
+.page-header h1 { font-family: var(--font-display); font-size: 1.5rem; font-weight: 750; letter-spacing: -0.02em; line-height: 1.35; }
 .page-header .description { max-width: 65ch; }
 .page-header-actions .status { min-height: 2.25rem; }
 .main > .error { margin-bottom: var(--space-lg); }
@@ -366,8 +366,13 @@ td code { color: var(--color-ink-muted); }
 .dagster-runs table { min-width: 42rem; }
 .api-console { align-items: start; }
 .api-presets, .api-workspace { min-width: 0; }
-.api-form select { min-height: 44px; }
-.api-form button { min-height: 44px; }
+.api-form { align-items: end; grid-template-columns: 8rem minmax(0, 1fr) auto; }
+.api-field, .api-body-field { display: flex; flex-direction: column; gap: var(--space-2xs); min-width: 0; }
+.api-field span, .api-body-field > span { color: var(--color-ink-muted); font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.api-field select, .api-field input { min-height: 44px; width: 100%; }
+.api-submit { min-height: 44px; }
+.api-body-field { border-top: 1px solid var(--color-rule); padding: var(--space-lg); }
+.api-body-field .api-body { border: 1px solid var(--color-rule); min-height: 9rem; }
 .api-result pre { border: 1px solid rgb(255 255 255 / 0.08); }
 .login-shell { border-radius: var(--radius-md); box-shadow: 0 4px 12px rgb(60 63 61 / 0.08); }
 .login-intro { background: var(--color-accent-soft); color: var(--color-ink); }
@@ -395,6 +400,8 @@ td code { color: var(--color-ink-muted); }
   .page-header-actions .button, .page-header-actions button { flex: 1 1 auto; }
   .location-create-form { grid-template-columns: 1fr; padding: var(--space-md); }
   .location-create-form button { grid-column: auto; width: 100%; }
+  .api-form { align-items: stretch; grid-template-columns: 1fr; }
+  .api-submit { width: 100%; }
   .panel-head { align-items: flex-start; flex-direction: column; }
   .catalog-toolbar { align-items: stretch; width: 100%; }
   .catalog-toolbar input, .catalog-toolbar button { flex: 1 1 100%; min-width: 0; width: 100%; }

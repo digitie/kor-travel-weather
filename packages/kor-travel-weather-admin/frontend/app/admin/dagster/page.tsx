@@ -67,7 +67,7 @@ export default function DagsterPage() {
       </section>
       <section className="dagster-layout">
         <div className="panel"><div className="panel-head"><div><h2>Repository & schedules</h2><p>hourly KMA 및 external provider orchestration</p></div></div><div className="dagster-list">{snapshot?.repositories.map((repository) => <RepositoryCard key={`${repository.locationName}:${repository.name}`} repository={repository} />) ?? <div className="loading-block">Dagster 상태를 불러오는 중…</div>}</div></div>
-        <div className="panel dagster-runs"><div className="panel-head"><div><h2>최근 실행</h2><p>{snapshot ? `마지막 확인 ${new Date(snapshot.checkedAt).toLocaleTimeString("ko-KR")}` : "실행 기록을 불러오는 중…"}</p></div></div>{snapshot?.runs.length ? <table><thead><tr><th scope="col">status</th><th scope="col">job</th><th scope="col">started</th><th scope="col">finished</th><th scope="col" /></tr></thead><tbody>{snapshot.runs.map((run) => <RunRow key={run.runId} run={run} />)}</tbody></table> : <div className="empty">최근 Dagster 실행이 없습니다.</div>}</div>
+        <div className="panel dagster-runs"><div className="panel-head"><div><h2>최근 실행</h2><p>{snapshot ? `마지막 확인 ${new Date(snapshot.checkedAt).toLocaleTimeString("ko-KR")}` : "실행 기록을 불러오는 중…"}</p></div></div>{snapshot?.runs.length ? <div className="table-wrap"><table><thead><tr><th scope="col">status</th><th scope="col">job</th><th scope="col">started</th><th scope="col">finished</th><th scope="col" /></tr></thead><tbody>{snapshot.runs.map((run) => <RunRow key={run.runId} run={run} />)}</tbody></table></div> : <div className="empty">최근 Dagster 실행이 없습니다.</div>}</div>
       </section>
     </>
   );

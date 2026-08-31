@@ -68,8 +68,12 @@ export default function ApiTestPage() {
         </aside>
         <div className="api-workspace panel">
           <div className="panel-head"><div><h2>요청 작성</h2><p>브라우저에서 직접 backend를 호출하지 않고 same-origin proxy를 사용합니다.</p></div>{status !== null ? <span className={`status ${status < 400 ? "on" : "off"}`}>{status} · {duration}ms</span> : null}</div>
-          <div className="api-form"><select aria-label="HTTP method" value={method} onChange={(event) => setMethod(event.target.value as "GET" | "POST")}><option>GET</option><option>POST</option></select><input aria-label="API path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/v1/weather/locations" /><button type="button" className="button primary" onClick={runRequest} disabled={running}>{running ? "실행 중…" : "요청 실행"}</button></div>
-          {method === "POST" ? <textarea className="api-body" aria-label="JSON body" value={body} onChange={(event) => setBody(event.target.value)} placeholder={'{"location_id":"seoul"}'} /> : null}
+          <div className="api-form">
+            <label className="api-field" htmlFor="api-method"><span>Method</span><select id="api-method" aria-label="HTTP method" value={method} onChange={(event) => setMethod(event.target.value as "GET" | "POST")}><option>GET</option><option>POST</option></select></label>
+            <label className="api-field" htmlFor="api-path"><span>Path</span><input id="api-path" aria-label="API path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/v1/weather/locations" /></label>
+            <button type="button" className="button primary api-submit" onClick={runRequest} disabled={running}>{running ? "실행 중…" : "요청 실행"}</button>
+          </div>
+          {method === "POST" ? <label className="api-body-field" htmlFor="api-body"><span>JSON body</span><textarea id="api-body" className="api-body" aria-label="JSON body" value={body} onChange={(event) => setBody(event.target.value)} placeholder={'{"location_id":"seoul"}'} /></label> : null}
           {error ? <div className="error" role="alert">{error}</div> : null}
           <div className="api-result"><div className="section-label"><span>response</span><span>{result === null ? "—" : "JSON"}</span></div><pre>{result === null ? "요청 결과가 여기에 표시됩니다." : typeof result === "string" ? result : JSON.stringify(result, null, 2)}</pre></div>
         </div>
