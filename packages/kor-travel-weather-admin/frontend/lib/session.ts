@@ -1,5 +1,31 @@
 const SESSION_COOKIE = "ktw_admin_session";
 const SESSION_MAX_AGE = 60 * 60 * 8;
+const SESSION_SECRET_MIN_LENGTH = 32;
+
+const PLACEHOLDER_SESSION_SECRETS = new Set([
+  "change-me",
+  "change-this-secret",
+  "change-this-session-secret",
+  "changeme",
+  "password",
+  "placeholder",
+  "replace-me",
+  "replace-this-secret",
+  "replace-this-session-secret",
+  "secret",
+  "test-secret",
+  "your-secret",
+  "your-session-secret",
+]);
+
+function isPlaceholderSessionSecret(value: string) {
+  const normalized = value.toLowerCase().replace(/[\s_.]+/g, "-");
+  return (
+    PLACEHOLDER_SESSION_SECRETS.has(normalized) ||
+    normalized.startsWith("change-this-") ||
+    normalized.startsWith("replace-this-")
+  );
+}
 
 function toBase64Url(value: ArrayBuffer | Uint8Array): string {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -26,7 +52,19 @@ async function signature(payload: string, secret: string): Promise<string> {
 }
 
 export function sessionSecret(username: string, password: string): string {
-  return process.env.WEATHER_UI_SESSION_SECRET?.trim() || `${username}:${password}`;
+  const configured = process.env.WEATHER_UI_SESSION_SECRET?.trim();
+  if (process.env.NODE_ENV === "production") {
+    if (
+      !configured ||
+      configured.length < SESSION_SECRET_MIN_LENGTH ||
+      isPlaceholderSessionSecret(configured)
+    ) {
+      throw new Error(
+        `production에서는 WEATHER_UI_SESSION_SECRET에 ${SESSION_SECRET_MIN_LENGTH}바이트 이상의 무작위 값을 설정해야 합니다.`,
+      );
+    }
+  }
+  return configured || `${username}:${password}`;
 }
 
 export async function createSessionValue(username: string, secret: string): Promise<string> {
@@ -54,4 +92,4 @@ export async function verifySessionValue(value: string | undefined, secret: stri
   }
 }
 
-export { SESSION_COOKIE, SESSION_MAX_AGE };
+export { SESSION_COOKIE, SESSION_MAX_AGE, SESSION_SECRET_MIN_LENGTH };

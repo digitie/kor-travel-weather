@@ -25,6 +25,15 @@ export async function middleware(request: NextRequest) {
   if (!username || !password) {
     return new NextResponse("WEATHER_UI_USER/WEATHER_UI_PASSWORD 설정이 필요합니다.", { status: 503 });
   }
+  let secret: string;
+  try {
+    // Validate the production session key even when the request uses the
+    // Basic-Auth fallback. Otherwise a placeholder key would silently leave
+    // the deployment with no usable signed-session boundary.
+    secret = sessionSecret(username, password);
+  } catch {
+    return new NextResponse("WEATHER_UI_SESSION_SECRET 설정이 필요합니다.", { status: 503 });
+  }
   if (["POST", "PATCH", "PUT", "DELETE"].includes(request.method)) {
     // Basic credentials are cached by browsers, so an attacker could
     // otherwise submit a cross-site form to the server-side admin proxy.
@@ -36,7 +45,7 @@ export async function middleware(request: NextRequest) {
     if (!origin || origin !== expectedOrigin) return csrfBlocked();
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
-  if (session && username && password && (await verifySessionValue(session, sessionSecret(username, password)))) {
+  if (session && (await verifySessionValue(session, secret))) {
     return NextResponse.next();
   }
   const authorization = request.headers.get("authorization");
