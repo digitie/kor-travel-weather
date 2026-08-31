@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from airkorea.models import Station
+from kortravelweather_dagster import airkorea_weather
 
+from kortravelweather.models import WeatherLocation, WeatherValue
 from kortravelweather.providers.airkorea import (
     fetch_station_catalog,
     fetch_station_measurement,
@@ -108,3 +111,97 @@ def test_airkorea_measurement_identity_mismatch_is_rejected() -> None:
             location_id="airkorea-jongno",
             known_at=datetime.now(UTC),
         )
+
+
+def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> None:
+    locations = [
+        WeatherLocation(
+            location_id=f"airkorea-{name.lower()}",
+            name=name,
+            latitude=37.5 + index / 100,
+            longitude=127.0,
+            metadata={"measurement_point": {"station_name": name, "address": "서울"}},
+        )
+        for index, name in enumerate(("Good", "Limited"))
+    ]
+    catalog = [
+        (
+            location,
+            {
+                "source_record_key": f"catalog-{location.location_id}",
+                "provider": "python-airkorea-api",
+                "dataset_key": "airkorea_station_catalog",
+                "source_entity_type": "airkorea_station",
+                "source_entity_id": location.location_id,
+                "payload": {},
+                "fetched_at": datetime.now(UTC),
+            },
+        )
+        for location in locations
+    ]
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.runs: list[SimpleNamespace] = []
+            self.published: list[tuple[str, list[dict], list[WeatherValue], str | None]] = []
+
+        def start_sync_run(self, *, provider: str, dataset_key: str, locations_total: int):
+            run = SimpleNamespace(
+                run_id=f"run-{len(self.runs)}", status="running", locations_total=locations_total
+            )
+            self.runs.append(run)
+            return run
+
+        def get_location(self, location_id: str):
+            return next(
+                (location for location in locations if location.location_id == location_id), None
+            )
+
+        def create_location(self, location):
+            return location
+
+        def heartbeat_sync_run(self, run_id: str) -> bool:
+            return True
+
+        def publish_and_finish(self, *, run_id, source_records, values, error=None, **kwargs):
+            self.published.append((run_id, source_records, values, error))
+            return len(values), SimpleNamespace(run_id=run_id, status="success")
+
+        def finish_sync_run(self, *args, **kwargs):
+            raise AssertionError("station-level failures must not abort the run")
+
+    class FakeClient:
+        pass
+
+    values = [
+        WeatherValue(
+            location_id=locations[0].location_id,
+            provider="python-airkorea-api",
+            dataset_key="airkorea_realtime_measurement",
+            weather_domain="air_quality",
+            forecast_style="observed",
+            metric_key="PM10",
+            value_number=12,
+            target_at=datetime.now(UTC),
+            source_record_key="measurement-good",
+        )
+    ]
+
+    def fake_fetch_measurement(client, *, station_name, location_id, **kwargs):
+        if station_name == "Limited":
+            raise RuntimeError("provider rate limit")
+        return ({"source_record_key": "measurement-good"}, values)
+
+    monkeypatch.setattr(airkorea_weather, "fetch_station_catalog", lambda *args, **kwargs: catalog)
+    monkeypatch.setattr(airkorea_weather, "fetch_station_measurement", fake_fetch_measurement)
+
+    repository = FakeRepository()
+    result = airkorea_weather.run_airkorea_weather_sync(
+        repository=repository, client=FakeClient(), max_stations=2, max_values=10
+    )
+
+    assert result["status"] == "success"
+    assert result["stations_failed"] == 1
+    assert result["values_loaded"] == 1
+    assert repository.published[-1][2] == values
+    assert "1개 측정소 요청 실패" in (repository.published[-1][3] or "")

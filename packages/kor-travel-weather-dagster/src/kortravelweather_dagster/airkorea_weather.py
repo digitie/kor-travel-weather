@@ -85,24 +85,36 @@ def run_airkorea_weather_sync(
     )
     sources: list[dict[str, Any]] = []
     values = []
+    failed_stations: list[str] = []
+    failure_types: set[str] = set()
     fetched_at = datetime.now(UTC)
     try:
         for location in active_locations:
             keep_alive(measurement_run.run_id)
-            response = fetch_station_measurement(
-                client,
-                station_name=str(
-                    (location.metadata.get("measurement_point") or {}).get(
-                        "station_name", location.name
-                    )
-                ),
-                location_id=location.location_id,
-                known_at=fetched_at,
-                expected_sido=str(
-                    (location.metadata.get("measurement_point") or {}).get("address", "")
-                ).split()[0]
-                or None,
-            )
+            try:
+                response = fetch_station_measurement(
+                    client,
+                    station_name=str(
+                        (location.metadata.get("measurement_point") or {}).get(
+                            "station_name", location.name
+                        )
+                    ),
+                    location_id=location.location_id,
+                    known_at=fetched_at,
+                    expected_sido=str(
+                        (location.metadata.get("measurement_point") or {}).get("address", "")
+                    ).split()[0]
+                    or None,
+                )
+            except Exception as exc:
+                # AirKorea enforces a daily request quota and individual
+                # stations can also disappear or return malformed rows.  Do
+                # not discard already fetched stations when one request fails;
+                # retain only a bounded, non-sensitive diagnostic summary.
+                failed_stations.append(location.location_id)
+                if len(failure_types) < 8:
+                    failure_types.add(type(exc).__name__)
+                continue
             if response is None:
                 continue
             source, station_values = response
@@ -117,6 +129,12 @@ def run_airkorea_weather_sync(
             values=values,
             grids_fetched=0,
             requests_fetched=len(active_locations),
+            error=(
+                f"{len(failed_stations)}개 측정소 요청 실패"
+                f" ({', '.join(sorted(failure_types))})"
+                if failed_stations
+                else None
+            ),
         )
         if finished.status != "success":
             raise RuntimeError("AirKorea measurement run ownership을 잃었습니다.")
@@ -137,4 +155,5 @@ def run_airkorea_weather_sync(
         "run_id": measurement_run.run_id,
         "requests_fetched": 1 + len(active_locations),
         "values_loaded": loaded,
+        "stations_failed": len(failed_stations),
     }
