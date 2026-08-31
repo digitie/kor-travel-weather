@@ -1,13 +1,15 @@
 # Docker/app runbook
 
 1. Compose 환경 파일에 PostgreSQL/UI secret,
-   `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`,
+   `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`, 별도의 16자 이상
+   `KOR_TRAVEL_WEATHER_METRICS_TOKEN`,
    `KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`(Fernet URL-safe key)를 주입한다.
    API와 Dagster에 같은 encryption key를 전달해야 `/settings/providers`에서
    provider key override를 저장·복호화할 수 있다. `POSTGRES_PASSWORD`는
    `PGPASSWORD`로 전달되므로 URL-unsafe punctuation도 허용한다.
    Compose의 API/Dagster는 production profile을 강제로 사용하므로 admin token이
    없으면 기동하지 않는다.
+   metrics token은 admin token과 달라야 하며 API Prometheus scrape 전용이다.
 2. `docker compose -f compose.yaml up -d --build`를 실행한다. `migrate` one-shot
    서비스가 `alembic upgrade head`를 완료한 뒤 API/Dagster가 시작된다.
 3. migration 복구가 필요하면 `docker compose -f compose.yaml run --rm migrate`를
@@ -20,6 +22,10 @@
    `https://weather-dagster.digitie.mywire.org`, web
    `https://weather.digitie.mywire.org`를 사용한다. 로컬 loopback 포트는 각각
    `14101`, `14102`, `14105`이며 PostgreSQL은 `14100`이다.
+   Prometheus는 `14104` loopback에서만 동작한다. `curl -H
+   "Authorization: Bearer $KOR_TRAVEL_WEATHER_METRICS_TOKEN"
+   http://127.0.0.1:14101/metrics`와 `curl http://127.0.0.1:14104/-/ready`로 scrape를
+   확인하고 public gateway에는 14104를 연결하지 않는다.
 
 현재 migration head는 `0005_admin_session_revocations`다. 장시간 KMA 실행은 그룹마다
 heartbeat를 갱신하므로, 180분 동안 heartbeat가 없는 running row만 자동으로 failed

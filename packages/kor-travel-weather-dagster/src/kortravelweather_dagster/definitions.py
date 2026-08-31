@@ -1,5 +1,7 @@
 """Dagster Definitions and hourly KMA sync schedule."""
 
+import logging
+import os
 from collections.abc import Mapping
 
 from dagster import (
@@ -11,6 +13,7 @@ from dagster import (
     define_asset_job,
 )
 
+from kortravelweather.metrics import start_metrics_server
 from kortravelweather.providers import (
     PROVIDER_CATALOG,
     ProviderLocation,
@@ -28,6 +31,28 @@ from .resources import (
     KmaClientResource,
     WeatherRepositoryResource,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _start_metrics_server_from_env() -> None:
+    """Expose worker metrics on the internal compose network when enabled."""
+    raw_port = os.getenv("KOR_TRAVEL_WEATHER_METRICS_PORT", "").strip()
+    if not raw_port:
+        return
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise RuntimeError("KOR_TRAVEL_WEATHER_METRICS_PORT가 정수가 아닙니다.") from exc
+    if not start_metrics_server(port):
+        logger.warning(
+            "Dagster metrics listener port %s is already bound; "
+            "worker samples use PROMETHEUS_MULTIPROC_DIR aggregation",
+            port,
+        )
+
+
+_start_metrics_server_from_env()
 
 
 def _is_kma_target_location(location: object) -> bool:

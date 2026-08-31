@@ -1,4 +1,4 @@
-# kor-travel-weather admin UI
+# Weather Scraper Admin UI
 
 The operator console follows the current `kor-travel-map` admin shell and
 component contract. The weather domain changes only the content and primary

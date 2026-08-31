@@ -54,8 +54,8 @@ export default function LoginPage() {
         <section className="login-intro">
           <div className="login-mark" aria-hidden="true"><CloudSun size={27} /></div>
           <div>
-            <div className="eyebrow">kor-travel-weather</div>
-            <h1>관리자 로그인</h1>
+            <div className="eyebrow">Weather Scraper Admin UI</div>
+            <h1>Weather Scraper 로그인</h1>
           </div>
         </section>
         <section className="login-form-panel">

@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+import pytest
+from fastapi.testclient import TestClient
+from kortravelweather_api.app import create_app
+
+from kortravelweather.metrics import (
+    metrics_content_type,
+    metrics_payload,
+    observe_http_request,
+    observe_provider_request,
+)
+from kortravelweather.settings import WeatherSettings
+
+
+def _metrics_client() -> tuple[TestClient, str, str]:
+    admin_token = "admin-token-for-metrics-tests-1234"
+    metrics_token = "metrics-token-for-scrape-tests-5678"
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="production",
+        database_url="postgresql+psycopg://weather@127.0.0.1:15432/weather_test",
+        admin_token=admin_token,
+        metrics_token=metrics_token,
+    )
+    # Liveness and metrics do not touch the repository.  Keeping this test
+    # repository-free makes the scrape contract runnable without PostgreSQL.
+    return TestClient(create_app(settings, repository=object())), admin_token, metrics_token
+
+
+def test_metrics_endpoint_is_authenticated_and_not_cached() -> None:
+    client, admin_token, metrics_token = _metrics_client()
+
+    assert client.get("/metrics").status_code == 401
+    assert client.get("/metrics", headers={"x-admin-token": admin_token}).status_code == 401
+
+    response = client.get(
+        "/health",
+        headers={"x-request-id": "request-id-must-not-be-a-label"},
+    )
+    assert response.status_code == 200
+    scraped = client.get("/metrics", headers={"authorization": f"Bearer {metrics_token}"})
+    assert scraped.status_code == 200
+    assert scraped.headers["content-type"] == metrics_content_type()
+    assert scraped.headers["cache-control"] == "no-store, private"
+    assert scraped.headers["x-content-type-options"] == "nosniff"
+    assert "kor_travel_weather_http_requests_total" in scraped.text
+    assert 'route="/health"' in scraped.text
+    assert "request-id-must-not-be-a-label" not in scraped.text
+    # Scraping itself is deliberately excluded from the HTTP request counter.
+    assert 'route="/metrics"' not in scraped.text
+
+
+def test_metrics_labels_collapse_unregistered_provider_and_dataset() -> None:
+    observe_provider_request(
+        "attacker-controlled-provider-1234567890",
+        "attacker-controlled-dataset-1234567890",
+        outcome="success",
+        duration_seconds=0.001,
+    )
+    text = metrics_payload().decode("utf-8")
+    assert 'dataset="other",outcome="success",provider="other"' in text
+    assert "attacker-controlled-provider" not in text
+    assert "attacker-controlled-dataset" not in text
+
+
+def test_metrics_http_method_label_is_bounded() -> None:
+    observe_http_request(
+        method="x-random-method-that-must-not-be-a-series",
+        route="/health",
+        status_code=405,
+        duration_seconds=0.001,
+    )
+    text = metrics_payload().decode("utf-8")
+    assert 'method="other"' in text
+    assert "x-random-method-that-must-not-be-a-series" not in text
+
+
+def test_production_requires_a_dedicated_metrics_token() -> None:
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="production",
+        database_url="postgresql+psycopg://weather@127.0.0.1:15432/weather_test",
+        admin_token="admin-token-for-metrics-tests-1234",
+    )
+    with pytest.raises(RuntimeError, match="METRICS_TOKEN"):
+        create_app(settings, repository=object())
+
+
+def test_multiprocess_registry_aggregates_worker_samples(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    worker = (
+        "from kortravelweather.metrics import observe_provider_request; "
+        "observe_provider_request('weatherapi', 'weatherapi_current', "
+        "outcome='success', duration_seconds=0.001)"
+    )
+    for _ in range(2):
+        subprocess.run([sys.executable, "-c", worker], env=environment, check=True)
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (
+        'kor_travel_weather_provider_requests_total{dataset="weatherapi_current",'
+        'outcome="success",provider="weatherapi"} 2.0'
+    ) in scraper.stdout

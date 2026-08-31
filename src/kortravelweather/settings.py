@@ -37,6 +37,7 @@ PROVIDER_KEY_ALIASES = {
 }
 
 ADMIN_TOKEN_MIN_LENGTH = 16
+METRICS_TOKEN_MIN_LENGTH = 16
 _WEAK_ADMIN_TOKENS = {
     "admin",
     "change-me",
@@ -81,6 +82,10 @@ class WeatherSettings(BaseSettings):
     credential_encryption_key: SecretStr | None = Field(
         default=None,
         validation_alias="KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY",
+    )
+    metrics_token: SecretStr | None = Field(
+        default=None,
+        validation_alias="KOR_TRAVEL_WEATHER_METRICS_TOKEN",
     )
     data_go_kr_service_key: SecretStr | None = Field(
         default=None, validation_alias="KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY"
@@ -206,6 +211,12 @@ class WeatherSettings(BaseSettings):
         gt=0,
         le=256 * 1024 * 1024,
     )
+    metrics_port: int | None = Field(
+        default=None,
+        validation_alias="KOR_TRAVEL_WEATHER_METRICS_PORT",
+        ge=1024,
+        le=65535,
+    )
     airkorea_max_stations: int = Field(
         default=1000,
         validation_alias="KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS",
@@ -299,6 +310,7 @@ class WeatherSettings(BaseSettings):
     @field_validator(
         "admin_token",
         "credential_encryption_key",
+        "metrics_token",
         "data_go_kr_service_key",
         "airkorea_api_key",
         "weatherapi_api_key",
@@ -334,6 +346,29 @@ class WeatherSettings(BaseSettings):
                     "production에서는 KOR_TRAVEL_WEATHER_ADMIN_TOKEN에 "
                     f"{ADMIN_TOKEN_MIN_LENGTH}자 이상의 무작위 값을 설정해야 합니다."
                 )
+        return value
+
+    def require_metrics_token(self) -> str | None:
+        """Return the dedicated scrape bearer token in a production profile."""
+        value = self.metrics_token.get_secret_value().strip() if self.metrics_token else None
+        if not self.is_production:
+            return value
+        if not value:
+            raise RuntimeError(
+                "production에서는 KOR_TRAVEL_WEATHER_METRICS_TOKEN이 필요합니다."
+            )
+        normalized = value.lower().replace("_", "-").replace(" ", "-")
+        admin = self.admin_token.get_secret_value().strip() if self.admin_token else ""
+        if (
+            len(value) < METRICS_TOKEN_MIN_LENGTH
+            or normalized in _WEAK_ADMIN_TOKENS
+            or (admin and value == admin)
+        ):
+            raise RuntimeError(
+                "production에서는 KOR_TRAVEL_WEATHER_METRICS_TOKEN에 "
+                f"{METRICS_TOKEN_MIN_LENGTH}자 이상의 admin token과 다른 무작위 값을 "
+                "설정해야 합니다."
+            )
         return value
 
     def require_credential_encryption_key(self) -> str:

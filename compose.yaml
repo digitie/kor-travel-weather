@@ -39,6 +39,7 @@ services:
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:14105"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
@@ -87,6 +88,8 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
+      PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
@@ -113,8 +116,11 @@ services:
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
     expose:
       - "14102"
+      - "14103"
     volumes:
       - dagster-home:/opt/dagster/home
+    tmpfs:
+      - /var/run/kor-travel-weather-metrics
     command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "14102"]
     working_dir: /app
 
@@ -148,6 +154,32 @@ services:
     command: ["alembic", "upgrade", "head"]
     working_dir: /app
 
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      dagster:
+        condition: service_started
+    secrets:
+      - source: metrics_token
+        target: metrics.token
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:14104:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   web:
     build:
       context: .
@@ -176,3 +208,8 @@ services:
 volumes:
   weather-postgres:
   dagster-home:
+  prometheus-data:
+
+secrets:
+  metrics_token:
+    environment: KOR_TRAVEL_WEATHER_METRICS_TOKEN

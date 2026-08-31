@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Compose mounts the bearer token as the native metrics.token secret.  It
+  # never lives in the repository or the image layer.
+  - job_name: kor-travel-weather-api
+    metrics_path: /metrics
+    bearer_token_file: /run/secrets/metrics.token
+    static_configs:
+      - targets: ["api:14101"]
+
+  # Dagster's worker registry is bound only to the compose network (14103).
+  # It intentionally has no public host port or browser-facing route.
+  - job_name: kor-travel-weather-dagster
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["dagster:14103"]

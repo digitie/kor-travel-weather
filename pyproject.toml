@@ -21,6 +21,7 @@ dependencies = [
   "httpx>=0.27,<1",
   "uvicorn[standard]>=0.30",
   "cryptography>=42",
+  "prometheus-client>=0.20,<1",
   "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@0868b76bd4b7de96b20f667e431c3f43b67cb537",
   "python-airkorea-api",
   "pyproj>=3.5",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from kortravelweather.metrics import provider_request
 from kortravelweather.providers.airkorea import (
     AIRKOREA_MEASUREMENT_DATASET,
     AIRKOREA_PROVIDER,
@@ -44,7 +45,8 @@ def run_airkorea_weather_sync(
     )
     catalog_entries: list[tuple[Any, dict[str, Any]]] = []
     try:
-        catalog_entries = fetch_station_catalog(client, max_stations=max_stations)
+        with provider_request(AIRKOREA_PROVIDER, AIRKOREA_STATION_DATASET):
+            catalog_entries = fetch_station_catalog(client, max_stations=max_stations)
         active_locations = []
         for location, _ in catalog_entries:
             keep_alive(catalog_run.run_id)
@@ -92,20 +94,21 @@ def run_airkorea_weather_sync(
         for location in active_locations:
             keep_alive(measurement_run.run_id)
             try:
-                response = fetch_station_measurement(
-                    client,
-                    station_name=str(
-                        (location.metadata.get("measurement_point") or {}).get(
-                            "station_name", location.name
-                        )
-                    ),
-                    location_id=location.location_id,
-                    known_at=fetched_at,
-                    expected_sido=str(
-                        (location.metadata.get("measurement_point") or {}).get("address", "")
-                    ).split()[0]
-                    or None,
-                )
+                with provider_request(AIRKOREA_PROVIDER, AIRKOREA_MEASUREMENT_DATASET):
+                    response = fetch_station_measurement(
+                        client,
+                        station_name=str(
+                            (location.metadata.get("measurement_point") or {}).get(
+                                "station_name", location.name
+                            )
+                        ),
+                        location_id=location.location_id,
+                        known_at=fetched_at,
+                        expected_sido=str(
+                            (location.metadata.get("measurement_point") or {}).get("address", "")
+                        ).split()[0]
+                        or None,
+                    )
             except Exception as exc:
                 # AirKorea enforces a daily request quota and individual
                 # stations can also disappear or return malformed rows.  Do
