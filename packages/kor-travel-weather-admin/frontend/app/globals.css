@@ -259,6 +259,13 @@ td code { color: var(--color-ink-muted); }
 .map-list-overlay button small { color: var(--color-ink-muted); font-family: var(--font-mono); font-size: 0.64rem; margin-top: 0.2rem; }
 .list-arrow { color: var(--color-ink-muted); font-size: 1.25rem; }
 .muted-note { color: var(--color-ink-muted); font-size: 0.76rem; line-height: 1.5; margin-bottom: 0; }
+.forecast-list { display: grid; gap: 8px; }
+.forecast-row { align-items: flex-start; border-bottom: 1px solid var(--color-rule-soft); display: grid; gap: 10px; grid-template-columns: 78px 1fr; padding: 8px 0; }
+.forecast-row:last-child { border-bottom: 0; }
+.forecast-row time { color: var(--color-ink-muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; padding-top: 2px; }
+.forecast-values { display: flex; flex-wrap: wrap; gap: 5px; }
+.forecast-values span { background: var(--color-paper); border: 1px solid var(--color-rule); border-radius: 999px; color: var(--color-ink-muted); font-size: 0.7rem; padding: 4px 7px; }
+.forecast-values b { color: var(--color-ink); font-weight: 650; }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

@@ -17,6 +17,19 @@ function valueFor(values: WeatherValue[], ...keys: string[]) {
   return `${found.value_number ?? found.value_text ?? "—"}${found.unit ? ` ${found.unit}` : ""}`;
 }
 
+function forecastGroups(values: WeatherValue[]) {
+  const groups = new Map<string, WeatherValue[]>();
+  for (const value of values) {
+    const target = value.target_at;
+    const group = groups.get(target) ?? [];
+    group.push(value);
+    groups.set(target, group);
+  }
+  return [...groups.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .slice(0, 6);
+}
+
 function mapStyle() {
   return {
     version: 8 as const,
@@ -52,6 +65,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     );
   }, [locations, query]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+  const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
 
   useEffect(() => {
     if (!visibleLocations.length) {
@@ -179,7 +193,25 @@ export function WeatherMap({ locations }: WeatherMapProps) {
               {loading ? <div className="loading-block">최신 날씨를 불러오는 중…</div> : message ? <div className="empty">{message}</div> : <>
                 <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "temperature", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "wind_speed", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "precipitation")}</strong></div></div>
                 <div className="inspector-section"><div className="section-label"><span>latest metrics</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 metric이 없습니다.</div> : null}</div></div>
-                <div className="inspector-section forecast-section"><div className="section-label"><span>forecast preview</span><span>{forecast.length}개</span></div><p className="muted-note">{forecast.length ? `${new Date(forecast[0].target_at).toLocaleString("ko-KR")} 기준 예보` : "예보 데이터가 없습니다."}</p></div>
+                <div className="inspector-section forecast-section">
+                  <div className="section-label"><span>forecast preview</span><span>{forecast.length}개</span></div>
+                  {groupedForecast.length ? (
+                    <div className="forecast-list">
+                      {groupedForecast.map(([targetAt, items]) => (
+                        <div className="forecast-row" key={targetAt}>
+                          <time dateTime={targetAt}>{new Date(targetAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
+                          <div className="forecast-values">
+                            {items.slice(0, 4).map((value) => (
+                              <span key={value.value_id}>
+                                <b>{value.metric_name ?? value.metric_key}</b> {value.value_number ?? value.value_text ?? "—"}{value.unit ? ` ${value.unit}` : ""}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p className="muted-note">예보 데이터가 없습니다.</p>}
+                </div>
               </>}
             </>
           ) : <div className="empty">지도에서 위치를 선택하세요.</div>}
