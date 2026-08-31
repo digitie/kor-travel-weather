@@ -242,7 +242,7 @@ h3 {
 }
 
 /* -------------------------------------------------------------------------
- * Shared map shell: grouped rail + flush header
+ * Shared map shell: flat 17rem rail + card header
  * ------------------------------------------------------------------------- */
 .weather-shell {
   min-height: 100dvh;
@@ -255,10 +255,6 @@ h3 {
   grid-template-columns: 17rem minmax(0, 1fr);
   min-height: 100dvh;
   min-width: 0;
-}
-
-.app-grid.sidebar-collapsed {
-  grid-template-columns: 4rem minmax(0, 1fr);
 }
 
 .rail {
@@ -277,18 +273,20 @@ h3 {
   height: 100%;
   min-width: 0;
   flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.25rem;
 }
 
 .rail-header {
   display: flex;
-  height: auto;
+  height: 2.5rem;
   min-width: 0;
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   border-bottom: 0;
-  padding: 1.25rem;
+  padding: 0;
 }
 
 .brand {
@@ -300,7 +298,7 @@ h3 {
   color: var(--text-primary);
   font-family: var(--font-display);
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.02em;
 }
 
@@ -330,81 +328,16 @@ h3 {
   font-weight: 500;
 }
 
-.brand-short {
-  display: none;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.rail-header-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.rail-icon-button {
-  width: var(--control-h-sm);
-  height: var(--control-h-sm);
-  min-height: var(--control-h-sm);
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-.rail-icon-button:hover {
-  background: var(--surface-subtle);
-  color: var(--text-primary);
-}
-
-.rail-mobile-logout {
-  display: none;
-}
-
 .rail-nav {
   display: flex;
   min-height: 0;
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 0.125rem;
+  gap: 0.25rem;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0.75rem;
-}
-
-.nav-group {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.125rem;
-}
-
-.nav-section {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.75rem 0 0.125rem;
-  padding: 0 0.75rem;
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.nav-section i {
-  display: block;
-  height: 1px;
-  min-width: 0;
-  flex: 1;
-  background: var(--surface-muted);
-}
-
-.nav-group:first-child .nav-section {
-  display: none;
+  padding: 0;
 }
 
 .nav-link {
@@ -440,20 +373,13 @@ h3 {
 }
 
 .nav-link.active {
-  background: var(--brand-tint);
+  background: var(--surface-subtle);
   color: var(--text-primary);
   font-weight: 600;
 }
 
 .nav-link.active::before {
-  position: absolute;
-  top: 0.375rem;
-  bottom: 0.375rem;
-  left: -0.75rem;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--brand);
-  content: "";
+  display: none;
 }
 
 .nav-link.active svg {
@@ -463,7 +389,7 @@ h3 {
 .rail-footer {
   flex-shrink: 0;
   border-top: 1px solid var(--surface-muted);
-  padding: 0.5rem;
+  padding: 0.75rem 0 0;
 }
 
 .logout-button {
@@ -474,59 +400,6 @@ h3 {
 .logout-button:hover {
   background: var(--destructive-tint);
   color: var(--destructive);
-}
-
-.app-grid.sidebar-collapsed .brand-wordmark,
-.app-grid.sidebar-collapsed .brand-subtitle,
-.app-grid.sidebar-collapsed .nav-section,
-.app-grid.sidebar-collapsed .nav-link span,
-.app-grid.sidebar-collapsed .logout-button span {
-  display: none;
-}
-
-.app-grid.sidebar-collapsed .brand-short {
-  display: inline;
-}
-
-.app-grid.sidebar-collapsed .rail-header {
-  height: auto;
-  flex-direction: column;
-  justify-content: center;
-  padding: 0.5rem 0;
-}
-
-.app-grid.sidebar-collapsed .rail-header-actions {
-  flex-direction: column;
-}
-
-.app-grid.sidebar-collapsed .brand {
-  align-items: center;
-}
-
-.app-grid.sidebar-collapsed .rail-nav {
-  align-items: center;
-  padding-inline: 0.5rem;
-}
-
-.app-grid.sidebar-collapsed .nav-group {
-  width: 100%;
-  align-items: center;
-}
-
-.app-grid.sidebar-collapsed .nav-link {
-  width: var(--control-h);
-  justify-content: center;
-  padding: 0;
-}
-
-.app-grid.sidebar-collapsed .nav-link.active::before {
-  left: -0.5rem;
-}
-
-.app-grid.sidebar-collapsed .logout-button {
-  width: var(--control-h);
-  justify-content: center;
-  padding: 0;
 }
 
 .main {
@@ -550,9 +423,9 @@ h3 {
   min-width: 0;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 1.5rem;
+  gap: 1rem;
   border: 1px solid color-mix(in srgb, var(--surface-muted) 70%, transparent);
-  border-radius: 1rem;
+  border-radius: 1.125rem;
   background: var(--card);
   box-shadow: var(--shadow-card);
   padding: 1.5rem;
@@ -2036,8 +1909,7 @@ tbody tr:hover {
  * Responsive map breakpoints copied from kor-travel-map's rail behavior.
  * ------------------------------------------------------------------------- */
 @media (max-width: 62rem) {
-  .app-grid,
-  .app-grid.sidebar-collapsed {
+  .app-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -2051,15 +1923,7 @@ tbody tr:hover {
   }
 
   .rail-header {
-    height: 3.5rem;
-  }
-
-  .rail-collapse {
-    display: none;
-  }
-
-  .rail-mobile-logout {
-    display: inline-flex;
+    height: 2.5rem;
   }
 
   .rail-nav {
@@ -2070,40 +1934,12 @@ tbody tr:hover {
     max-width: 100%;
     overflow-x: auto;
     overflow-y: hidden;
-    padding: 0.5rem 0.75rem;
-  }
-
-  .nav-group {
-    display: contents;
-  }
-
-  .nav-section {
-    display: flex;
-    height: var(--control-h-sm);
-    min-height: var(--control-h-sm);
-    flex: 0 0 auto;
-    margin: 0;
-    border-left: 1px solid var(--surface-muted);
-    padding: 0 0.5rem 0 0.75rem;
-  }
-
-  .nav-section i {
-    display: none;
-  }
-
-  .nav-group:first-child .nav-section {
-    display: none;
+    padding: 0;
   }
 
   .nav-link {
     width: auto;
     min-width: max-content;
-  }
-
-  .nav-link.active::before {
-    left: 0.375rem;
-    top: 0.25rem;
-    bottom: 0.25rem;
   }
 
   .rail-footer {
@@ -2171,8 +2007,8 @@ tbody tr:hover {
 
 @media (max-width: 42rem) {
   .rail-header {
-    padding-right: 0.75rem;
-    padding-left: 0.75rem;
+    padding-right: 0;
+    padding-left: 0;
   }
 
   .page-header-wrap {
