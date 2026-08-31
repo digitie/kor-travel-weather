@@ -13,7 +13,10 @@ export async function POST(request: NextRequest) {
     });
     return new NextResponse(response.body, {
       status: response.status,
-      headers: { "content-type": response.headers.get("content-type") ?? "application/json" },
+      headers: {
+        "content-type": response.headers.get("content-type") ?? "application/json",
+        "cache-control": "no-store, private",
+      },
     });
   } catch (reason: unknown) {
     return NextResponse.json({ errors: [{ message: reason instanceof Error ? reason.message : "Dagster 연결 실패" }] }, { status: 502 });

@@ -2,6 +2,25 @@ const SESSION_COOKIE = "ktw_admin_session";
 const SESSION_MAX_AGE = 60 * 60 * 8;
 const SESSION_SECRET_MIN_LENGTH = 32;
 
+type RevocationStore = Map<string, number>;
+type SessionGlobal = typeof globalThis & {
+  __korTravelWeatherRevokedSessions?: RevocationStore;
+};
+
+function revocationStore(): RevocationStore {
+  const root = globalThis as SessionGlobal;
+  if (!root.__korTravelWeatherRevokedSessions) {
+    root.__korTravelWeatherRevokedSessions = new Map<string, number>();
+  }
+  return root.__korTravelWeatherRevokedSessions;
+}
+
+function pruneRevocations(now = Date.now()) {
+  for (const [key, expiresAt] of revocationStore()) {
+    if (expiresAt <= now) revocationStore().delete(key);
+  }
+}
+
 const PLACEHOLDER_SESSION_SECRETS = new Set([
   "change-me",
   "change-this-secret",
@@ -68,8 +87,27 @@ export function sessionSecret(username: string, password: string): string {
 }
 
 export async function createSessionValue(username: string, secret: string): Promise<string> {
-  const payload = `${username}.${Math.floor(Date.now() / 1000) + SESSION_MAX_AGE}`;
+  const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(18)));
+  const payload = `${username}.${Math.floor(Date.now() / 1000) + SESSION_MAX_AGE}.${nonce}`;
   return `${toBase64Url(new TextEncoder().encode(payload))}.${await signature(payload, secret)}`;
+}
+
+/** Revoke one browser session until its natural expiry. */
+export function revokeSessionValue(value: string | undefined) {
+  if (!value) return;
+  const [encodedPayload] = value.split(".");
+  if (!encodedPayload) return;
+  let expiresAt = Date.now() + SESSION_MAX_AGE * 1000;
+  try {
+    const payload = new TextDecoder().decode(fromBase64Url(encodedPayload));
+    const parsedExpiry = Number(payload.split(".")[1]);
+    if (Number.isFinite(parsedExpiry)) expiresAt = parsedExpiry * 1000;
+  } catch {
+    // An invalid cookie has no useful expiry; keep a short-lived revocation
+    // marker so a concurrent request cannot race the logout response.
+  }
+  pruneRevocations();
+  revocationStore().set(encodedPayload, Math.max(Date.now() + 1000, expiresAt));
 }
 
 export async function verifySessionValue(value: string | undefined, secret: string): Promise<string | null> {
@@ -77,6 +115,8 @@ export async function verifySessionValue(value: string | undefined, secret: stri
   const [encodedPayload, suppliedSignature] = value.split(".");
   if (!encodedPayload || !suppliedSignature) return null;
   try {
+    pruneRevocations();
+    if (revocationStore().has(encodedPayload)) return null;
     const payload = new TextDecoder().decode(fromBase64Url(encodedPayload));
     const [username, expiresAt] = payload.split(".");
     if (!username || !expiresAt || Number(expiresAt) < Math.floor(Date.now() / 1000)) return null;

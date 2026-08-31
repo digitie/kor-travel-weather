@@ -64,16 +64,16 @@ export default function LoginPage() {
           <div className="eyebrow">operator access</div>
           <h2>운영 콘솔 로그인</h2>
           <p>관리자 권한이 필요한 화면입니다. 세션은 이 브라우저에만 안전하게 저장됩니다.</p>
-          <form className="login-form" onSubmit={submit}>
+          <form aria-busy={loading} className="login-form" onSubmit={submit}>
             <div className="login-field">
               <label htmlFor="username">아이디</label>
-              <input autoComplete="username" id="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
+              <input aria-describedby={error ? "login-error" : undefined} aria-invalid={Boolean(error)} autoComplete="username" id="username" name="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
             </div>
             <div className="login-field">
               <label htmlFor="password">비밀번호</label>
-              <input autoComplete="current-password" id="password" required type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+              <input aria-describedby={error ? "login-error" : undefined} aria-invalid={Boolean(error)} autoComplete="current-password" id="password" name="password" required type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
             </div>
-            {error ? <div className="login-error" role="alert">{error}</div> : null}
+            {error ? <div className="login-error" id="login-error" role="alert">{error}</div> : null}
             <button disabled={loading} type="submit">
               {loading ? <LoaderCircle aria-hidden="true" className="spin" size={16} /> : <LockKeyhole aria-hidden="true" size={16} />}
               {loading ? "확인 중…" : "콘솔 들어가기"}

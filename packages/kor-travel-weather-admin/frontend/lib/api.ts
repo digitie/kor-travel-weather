@@ -206,6 +206,38 @@ export function getProviders(): Promise<ApiEnvelope<Provider[]>> {
   return request<Provider[]>("/v1/admin/providers");
 }
 
+export type ProviderCredential = {
+  provider: string;
+  configured: boolean;
+  source: "database" | "environment" | "none";
+  fingerprint: string | null;
+  last4: string | null;
+  updated_at: string | null;
+};
+
+export function getProviderCredentials(): Promise<ApiEnvelope<ProviderCredential[]>> {
+  return request<ProviderCredential[]>("/v1/admin/provider-credentials");
+}
+
+export function updateProviderCredential(
+  provider: string,
+  apiKey: string,
+): Promise<ApiEnvelope<ProviderCredential>> {
+  return request<ProviderCredential>(
+    `/v1/admin/provider-credentials/${encodeURIComponent(provider)}`,
+    { method: "PUT", body: { api_key: apiKey } },
+  );
+}
+
+export function deleteProviderCredential(
+  provider: string,
+): Promise<ApiEnvelope<ProviderCredential>> {
+  return request<ProviderCredential>(
+    `/v1/admin/provider-credentials/${encodeURIComponent(provider)}`,
+    { method: "DELETE" },
+  );
+}
+
 export function getHealth(): Promise<{ status: string; service: string; version: string | null }> {
   return fetch("/api/weather/health", { cache: "no-store" }).then(async (response) => {
     if (!response.ok) throw new Error(`API 연결 실패 (${response.status})`);

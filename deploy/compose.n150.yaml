@@ -13,5 +13,10 @@ services:
       - "192.168.1.14:14102:14102"
 
   web:
+    environment:
+      # HAProxy must strip any client-supplied X-Forwarded-For and append the
+      # connection address before this trusted-proxy mode is enabled.
+      WEATHER_UI_TRUST_PROXY: "true"
+      WEATHER_UI_PUBLIC_ORIGIN: "https://weather.digitie.mywire.org"
     ports: !override
       - "192.168.1.14:14105:14105"

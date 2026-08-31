@@ -1,9 +1,10 @@
 "use client";
 
-import { Crosshair, List, Map as MapIcon, Search, Thermometer, Wind, X } from "lucide-react";
+import { Crosshair, List, Map as MapIcon, RefreshCw, Search, Thermometer, Wind, X } from "lucide-react";
 import maplibregl, { type Map as MapLibreMap, type Marker } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import { getForecast, getLatest, Location, WeatherValue } from "@/lib/api";
 
@@ -56,6 +57,8 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [mode, setMode] = useState<"map" | "list">("map");
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
 
   const visibleLocations = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -66,6 +69,23 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   }, [locations, query]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
   const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
+  const latestCollectedAt = useMemo(() => {
+    const timestamps = values
+      .map((value) => Date.parse(value.collected_at))
+      .filter((timestamp) => Number.isFinite(timestamp));
+    return timestamps.length ? new Date(Math.max(...timestamps)) : null;
+  }, [values]);
+  const freshnessTimestamp = latestCollectedAt ?? lastRefreshedAt;
+  const isFresh = latestCollectedAt !== null && Date.now() - latestCollectedAt.getTime() <= 2 * 60 * 60 * 1000;
+
+  function handleTabKey(event: ReactKeyboardEvent<HTMLButtonElement>, current: "map" | "list") {
+    const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" || (event.key === "ArrowLeft" && current === "list") || (event.key === "ArrowRight" && current === "map") ? "map" : "list";
+    setMode(next);
+    requestAnimationFrame(() => document.getElementById(`weather-${next}-tab`)?.focus());
+  }
 
   useEffect(() => {
     if (!visibleLocations.length) {
@@ -106,6 +126,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
       element.className = `weather-marker${location.location_id === selectedId ? " selected" : ""}`;
       element.title = location.name;
       element.setAttribute("aria-label", `${location.name} 날씨 보기`);
+      element.setAttribute("aria-pressed", String(location.location_id === selectedId));
       element.addEventListener("click", () => setSelectedId(location.location_id));
       return new maplibregl.Marker({ element })
         .setLngLat([location.longitude, location.latitude])
@@ -117,8 +138,17 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   }, [selected, selectedId, visibleLocations]);
 
   useEffect(() => {
-    if (!selected) return;
+    if (!selected) {
+      setValues([]);
+      setForecast([]);
+      setMessage("");
+      return;
+    }
     let cancelled = false;
+    // Clear the previous location immediately. A failed request must never
+    // leave another location's metrics visible in the inspector.
+    setValues([]);
+    setForecast([]);
     setLoading(true);
     setMessage("");
     Promise.all([getLatest(selected.location_id), getForecast(selected.location_id, undefined, undefined, 100)])
@@ -126,6 +156,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         if (cancelled) return;
         setValues(latest.data);
         setForecast(next.data);
+        setLastRefreshedAt(new Date());
         if (!latest.data.length) setMessage("아직 수집된 최신 fact가 없습니다.");
       })
       .catch((reason: unknown) => {
@@ -137,7 +168,12 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     return () => {
       cancelled = true;
     };
-  }, [selected]);
+  }, [refreshToken, selected]);
+
+  useEffect(() => {
+    if (mode !== "map" || !map.current) return;
+    requestAnimationFrame(() => map.current?.resize());
+  }, [mode]);
 
   return (
     <section className="weather-workbench" aria-label="지도 기반 날씨 조회">
@@ -153,45 +189,42 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           {query ? <button type="button" aria-label="검색어 지우기" onClick={() => setQuery("")}><X size={15} /></button> : null}
         </div>
         <div className="view-switcher" role="tablist" aria-label="조회 방식">
-          <button aria-controls="weather-map-panel" aria-selected={mode === "map"} className={mode === "map" ? "active" : ""} id="weather-map-tab" onClick={() => setMode("map")} role="tab" type="button"><MapIcon aria-hidden="true" size={15} /> 지도</button>
-          <button aria-controls="weather-list-panel" aria-selected={mode === "list"} className={mode === "list" ? "active" : ""} id="weather-list-tab" onClick={() => setMode("list")} role="tab" type="button"><List aria-hidden="true" size={15} /> 목록</button>
+          <button aria-controls="weather-map-panel" aria-selected={mode === "map"} className={mode === "map" ? "active" : ""} id="weather-map-tab" onClick={() => setMode("map")} onKeyDown={(event) => handleTabKey(event, "map")} role="tab" tabIndex={mode === "map" ? 0 : -1} type="button"><MapIcon aria-hidden="true" size={15} /> 지도</button>
+          <button aria-controls="weather-list-panel" aria-selected={mode === "list"} className={mode === "list" ? "active" : ""} id="weather-list-tab" onClick={() => setMode("list")} onKeyDown={(event) => handleTabKey(event, "list")} role="tab" tabIndex={mode === "list" ? 0 : -1} type="button"><List aria-hidden="true" size={15} /> 목록</button>
         </div>
         <span className="toolbar-count">{visibleLocations.length} locations</span>
       </div>
 
       <div className={`weather-layout ${mode === "list" ? "list-mode" : ""}`}>
-        <div
-          aria-labelledby={mode === "map" ? "weather-map-tab" : "weather-list-tab"}
-          className="map-card"
-          id={mode === "map" ? "weather-map-panel" : "weather-list-panel"}
-          role="tabpanel"
-          tabIndex={0}
-        >
-          <div
-            ref={mapNode}
-            aria-hidden={mode === "list"}
-            aria-label="날씨 위치 지도"
-            className="map-canvas"
-            role="region"
-          />
-          <div className="map-legend"><span className="legend-dot" /> 활성 날씨 위치 <span className="legend-muted">{visibleLocations.length}곳</span></div>
-          {mode === "list" ? (
+        <div className="map-card">
+          <div aria-labelledby="weather-map-tab" className="map-panel" hidden={mode !== "map"} id="weather-map-panel" role="tabpanel" tabIndex={0}>
+            <div
+              ref={mapNode}
+              aria-hidden={mode !== "map"}
+              aria-label="날씨 위치 지도"
+              className="map-canvas"
+              role="region"
+            />
+            <div className="map-legend"><span className="legend-dot" /> 활성 날씨 위치 <span className="legend-muted">{visibleLocations.length}곳</span></div>
+          </div>
+          <div aria-labelledby="weather-list-tab" className="list-panel" hidden={mode !== "list"} id="weather-list-panel" role="tabpanel" tabIndex={0}>
             <div className="location-list map-list-overlay">
               {visibleLocations.map((location) => (
-                <button key={location.location_id} type="button" className={selectedId === location.location_id ? "selected" : ""} onClick={() => { setSelectedId(location.location_id); setMode("map"); }}>
+                <button aria-pressed={selectedId === location.location_id} key={location.location_id} type="button" className={selectedId === location.location_id ? "selected" : ""} onClick={() => { setSelectedId(location.location_id); setMode("map"); }}>
                   <span className="list-pin" /><span><strong>{location.name}</strong><small>{location.location_id} · {location.latitude.toFixed(3)}, {location.longitude.toFixed(3)}</small></span><span className="list-arrow">›</span>
                 </button>
               ))}
               {!visibleLocations.length ? <div className="empty">검색 결과가 없습니다.</div> : null}
             </div>
-          ) : null}
+          </div>
         </div>
         <aside className="weather-inspector" aria-live="polite">
           {selected ? (
             <>
-              <div className="inspector-heading"><div><span className="eyebrow">selected location</span><h2>{selected.name}</h2><p>{selected.location_id} · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</p></div><button type="button" className="icon-button" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button></div>
-              {loading ? <div className="loading-block">최신 날씨를 불러오는 중…</div> : message ? <div className="empty">{message}</div> : <>
-                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "temperature", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "wind_speed", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "precipitation")}</strong></div></div>
+              <div className="inspector-heading"><div><span className="eyebrow">selected location</span><h2>{selected.name}</h2><p>{selected.location_id} · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</p><div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "fresh" : "stale"}</span><small>{freshnessTimestamp ? freshnessTimestamp.toLocaleString("ko-KR") : "수집 시각 없음"}</small>{lastRefreshedAt ? <small>확인 {lastRefreshedAt.toLocaleTimeString("ko-KR")}</small> : null}<small>{values[0]?.provider ?? "provider 없음"} · {values[0]?.dataset_key ?? "dataset 없음"}</small>{values[0]?.source_record_key ? <small>source {values[0].source_record_key.slice(0, 12)}…</small> : null}</div></div><div className="inspector-actions"><button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button><button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button></div></div>
+              {loading ? <div className="loading-block" role="status" aria-live="polite">최신 날씨를 불러오는 중…</div> : <>
+                {message ? <div className="empty" role="status">{message}</div> : null}
+                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
                 <div className="inspector-section"><div className="section-label"><span>latest metrics</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 metric이 없습니다.</div> : null}</div></div>
                 <div className="inspector-section forecast-section">
                   <div className="section-label"><span>forecast preview</span><span>{forecast.length}개</span></div>

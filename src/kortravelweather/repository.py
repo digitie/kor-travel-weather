@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -29,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    delete,
     desc,
     func,
     nullslast,
@@ -252,6 +254,69 @@ class SyncRunSourceRow(Base):
         primary_key=True,
     )
     recorded_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+
+
+class ProviderCredentialRow(Base):
+    """Encrypted provider credential override managed by the admin API.
+
+    The table intentionally contains only ciphertext and non-sensitive
+    lookup metadata.  Provider keys are never persisted in plaintext and the
+    ORM row is never returned across an API boundary.
+    """
+
+    __tablename__ = "weather_provider_credentials"
+
+    provider: Mapped[str] = mapped_column(String(120), primary_key=True)
+    ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    last4: Mapped[str] = mapped_column(String(4), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+
+
+class AdminSessionRevocationRow(Base):
+    """Durable logout markers for signed admin UI sessions.
+
+    The browser session value itself is never stored.  A SHA-256 digest is
+    sufficient for an exact lookup and keeps database dumps free of bearer
+    tokens.  Expired markers are removed on lookup/write.
+    """
+
+    __tablename__ = "weather_admin_session_revocations"
+
+    session_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+
+
+def _credential_fernet(encryption_key: str | None) -> Fernet:
+    """Build a Fernet instance without exposing key material in exceptions."""
+    if not encryption_key:
+        raise RuntimeError("provider credential encryption key가 설정되지 않았습니다.")
+    try:
+        return Fernet(encryption_key.encode("ascii"))
+    except (UnicodeError, TypeError, ValueError) as exc:
+        raise RuntimeError("provider credential encryption key가 올바르지 않습니다.") from exc
+
+
+def normalize_provider_credential(api_key: str) -> str:
+    """Normalize and bound an admin-supplied credential before encryption."""
+    normalized = api_key.strip()
+    if len(normalized) < 4:
+        raise ValueError("provider api key는 4자 이상이어야 합니다.")
+    if len(normalized) > 4096:
+        raise ValueError("provider api key는 4096자를 초과할 수 없습니다.")
+    return normalized
+
+
+def provider_credential_fingerprint(api_key: str) -> str:
+    """Return a non-reversible SHA-256 fingerprint for display/auditing."""
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def provider_credential_last4(api_key: str) -> str | None:
+    """Return a safe suffix without exposing short credentials verbatim."""
+    return api_key[-4:] if len(api_key) >= 4 else None
 
 
 def _payload_hash(payload: dict[str, Any]) -> str:
@@ -1252,6 +1317,147 @@ class WeatherRepository:
                 "fetched_at": row.fetched_at,
                 "imported_at": row.imported_at,
             }
+
+    @staticmethod
+    def _provider_credential_metadata(row: ProviderCredentialRow) -> dict[str, Any]:
+        """Return only safe metadata; never include the encrypted value."""
+        return {
+            "provider": row.provider,
+            "fingerprint": row.fingerprint,
+            "last4": row.last4,
+            "updated_at": row.updated_at,
+        }
+
+    def list_provider_credential_metadata(self) -> list[dict[str, Any]]:
+        """List encrypted provider overrides without decrypting them."""
+        with self._session_factory() as session:
+            rows = session.scalars(
+                select(ProviderCredentialRow).order_by(ProviderCredentialRow.provider)
+            ).all()
+            return [self._provider_credential_metadata(row) for row in rows]
+
+    def get_provider_credential_metadata(self, provider: str) -> dict[str, Any] | None:
+        """Read one provider override's safe metadata without decrypting it."""
+        with self._session_factory() as session:
+            row = session.get(ProviderCredentialRow, provider)
+            return self._provider_credential_metadata(row) if row else None
+
+    def set_provider_credential(
+        self, provider: str, api_key: str, encryption_key: str | None
+    ) -> dict[str, Any]:
+        """Encrypt and atomically upsert one provider credential override."""
+        normalized = normalize_provider_credential(api_key)
+        fernet = _credential_fernet(encryption_key)
+        ciphertext = fernet.encrypt(normalized.encode("utf-8")).decode("ascii")
+        now = kst_now().astimezone(UTC)
+        metadata = {
+            "provider": provider,
+            "fingerprint": provider_credential_fingerprint(normalized),
+            "last4": provider_credential_last4(normalized),
+            "updated_at": now,
+        }
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:credential_scope))"),
+                {"credential_scope": f"provider-credential:{provider}"},
+            )
+            row = session.get(ProviderCredentialRow, provider)
+            if row is None:
+                session.add(
+                    ProviderCredentialRow(
+                        provider=provider,
+                        ciphertext=ciphertext,
+                        fingerprint=metadata["fingerprint"],
+                        last4=metadata["last4"],
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                row.ciphertext = ciphertext
+                row.fingerprint = metadata["fingerprint"]
+                row.last4 = metadata["last4"]
+                row.updated_at = now
+        return metadata
+
+    def delete_provider_credential(self, provider: str) -> bool:
+        """Delete only a database override; environment settings are untouched."""
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:credential_scope))"),
+                {"credential_scope": f"provider-credential:{provider}"},
+            )
+            row = session.get(ProviderCredentialRow, provider)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    def get_provider_credential(
+        self, provider: str, encryption_key: str | None
+    ) -> str | None:
+        """Decrypt one override for the provider-construction boundary only.
+
+        Callers must use the returned value immediately to construct a client;
+        this method is intentionally not used by API response code.
+        """
+        with self._session_factory() as session:
+            row = session.get(ProviderCredentialRow, provider)
+            if row is None:
+                return None
+            fernet = _credential_fernet(encryption_key)
+            try:
+                return fernet.decrypt(row.ciphertext.encode("ascii")).decode("utf-8")
+            except (InvalidToken, UnicodeError, ValueError) as exc:
+                raise RuntimeError(
+                    "provider credential을 복호화할 수 없습니다. encryption key를 확인하세요."
+                ) from exc
+
+    @staticmethod
+    def _session_digest(session_value: str) -> str:
+        if not session_value or len(session_value) > 4096:
+            raise ValueError("admin session 값이 올바르지 않습니다.")
+        return hashlib.sha256(session_value.encode("utf-8")).hexdigest()
+
+    def revoke_admin_session(self, session_value: str, *, ttl_seconds: int = 8 * 60 * 60) -> None:
+        """Persist a logout marker without storing the signed bearer token."""
+        digest = self._session_digest(session_value)
+        now = kst_now().astimezone(UTC)
+        expires_at = now + timedelta(seconds=max(1, min(ttl_seconds, 24 * 60 * 60)))
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:scope))"),
+                {"scope": f"admin-session-revocation:{digest}"},
+            )
+            session.execute(
+                delete(AdminSessionRevocationRow).where(
+                    AdminSessionRevocationRow.expires_at <= now
+                )
+            )
+            row = session.get(AdminSessionRevocationRow, digest)
+            if row is None:
+                session.add(
+                    AdminSessionRevocationRow(
+                        session_digest=digest,
+                        expires_at=expires_at,
+                        created_at=now,
+                    )
+                )
+            elif row.expires_at < expires_at:
+                row.expires_at = expires_at
+
+    def is_admin_session_revoked(self, session_value: str) -> bool:
+        """Check and lazily remove one durable logout marker."""
+        digest = self._session_digest(session_value)
+        now = kst_now().astimezone(UTC)
+        with self._session_factory.begin() as session:
+            row = session.get(AdminSessionRevocationRow, digest)
+            if row is None:
+                return False
+            if row.expires_at <= now:
+                session.delete(row)
+                return False
+            return True
 
 
 def repository_from_settings(settings: WeatherSettings | None = None) -> WeatherRepository:

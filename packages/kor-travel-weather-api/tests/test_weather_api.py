@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
+from sqlalchemy import text
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.repository import WeatherRepository
@@ -188,6 +191,133 @@ def test_production_requires_admin_token(tmp_path) -> None:
         assert "ADMIN_TOKEN" in str(exc)
     else:
         raise AssertionError("production app must fail closed without admin token")
+
+
+def test_provider_credential_admin_api_encrypts_and_redacts() -> None:
+    encryption_key = Fernet.generate_key().decode("ascii")
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+        credential_encryption_key=encryption_key,
+    )
+    repository = WeatherRepository(settings.database_url)
+    repository.create_schema()
+    repository.delete_provider_credential("weatherapi")
+    client = TestClient(create_app(settings, repository))
+    secret = "weatherapi-admin-secret-1234"
+
+    stored = client.put("/v1/admin/provider-credentials/weatherapi", json={"api_key": secret})
+    assert stored.status_code == 200
+    assert secret not in stored.text
+    metadata = stored.json()["data"]
+    assert metadata["provider"] == "weatherapi"
+    assert metadata["configured"] is True
+    assert metadata["source"] == "database"
+    assert metadata["last4"] == "1234"
+    assert metadata["fingerprint"] == f"sha256:{hashlib.sha256(secret.encode()).hexdigest()}"
+
+    with repository.engine.connect() as connection:
+        ciphertext = connection.execute(
+            text(
+                "SELECT ciphertext FROM weather_provider_credentials "
+                "WHERE provider = 'weatherapi'"
+            )
+        ).scalar_one()
+    assert secret not in ciphertext
+    assert repository.get_provider_credential("weatherapi", encryption_key) == secret
+
+    listed = client.get("/v1/admin/provider-credentials")
+    assert listed.status_code == 200
+    listed_metadata = next(
+        item for item in listed.json()["data"] if item["provider"] == "weatherapi"
+    )
+    assert listed_metadata == metadata
+    assert secret not in listed.text
+
+    deleted = client.delete("/v1/admin/provider-credentials/weatherapi")
+    assert deleted.status_code == 200
+    assert deleted.json()["data"] == {
+        "provider": "weatherapi",
+        "configured": False,
+        "source": "none",
+        "fingerprint": None,
+        "last4": None,
+        "updated_at": None,
+    }
+
+
+def test_provider_credential_environment_fallback_and_missing_encryption_key() -> None:
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+        weatherapi_api_key="environment-secret",
+    )
+    repository = WeatherRepository(settings.database_url)
+    repository.create_schema()
+    repository.delete_provider_credential("weatherapi")
+    client = TestClient(create_app(settings, repository))
+
+    listed = client.get("/v1/admin/provider-credentials")
+    assert listed.status_code == 200
+    metadata = next(item for item in listed.json()["data"] if item["provider"] == "weatherapi")
+    assert metadata["configured"] is True
+    assert metadata["source"] == "environment"
+    assert metadata["last4"] == "cret"
+    assert "environment-secret" not in listed.text
+
+    short_settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+        weatherapi_api_key="abc",
+    )
+    short_client = TestClient(create_app(short_settings, repository))
+    short_metadata = next(
+        item
+        for item in short_client.get("/v1/admin/provider-credentials").json()["data"]
+        if item["provider"] == "weatherapi"
+    )
+    assert short_metadata["configured"] is True
+    assert short_metadata["last4"] is None
+
+    missing_key_settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+    )
+    missing_key_client = TestClient(create_app(missing_key_settings, repository))
+    response = missing_key_client.put(
+        "/v1/admin/provider-credentials/weatherapi", json={"api_key": "must-not-persist"}
+    )
+    assert response.status_code == 503
+    assert "must-not-persist" not in response.text
+    assert repository.get_provider_credential_metadata("weatherapi") is None
+
+
+def test_admin_session_revocation_is_durable_and_token_free() -> None:
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+    )
+    repository = WeatherRepository(settings.database_url)
+    repository.create_schema()
+    client = TestClient(create_app(settings, repository))
+    session = "opaque-session-value.for-test"
+
+    revoked = client.post("/v1/admin/session-revocations/revoke", json={"session": session})
+    assert revoked.status_code == 200
+    assert session not in revoked.text
+    checked = client.post("/v1/admin/session-revocations/check", json={"session": session})
+    assert checked.status_code == 200
+    assert checked.json() == {"revoked": True}
+    other = client.post(
+        "/v1/admin/session-revocations/check", json={"session": "another-session"}
+    )
+    assert other.status_code == 200
+    assert other.json() == {"revoked": False}
 
 
 def test_postgresql_repository_is_visible_to_testclient() -> None:
