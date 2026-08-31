@@ -37,4 +37,7 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
 `DAGSTER_UI_INTERNAL_URL`, `WEATHER_ADMIN_TOKEN`, `WEATHER_UI_USER`,
 `WEATHER_UI_PASSWORD`, `WEATHER_UI_SESSION_SECRET`를 설정한다. Compose에서는
 `DAGSTER_UI_INTERNAL_URL=http://dagster:14102`를 web 컨테이너에 주입한다. 세션
-서명키와 backend token은 저장소/브라우저 로그에 기록하지 않는다.
+서명키와 backend token은 저장소/브라우저 로그에 기록하지 않는다. production 세션
+서명키는 최소 32바이트의 무작위 값이어야 하며, 예제의 placeholder는 거부된다.
+`WEATHER_UI_TRUST_PROXY=true`는 reverse proxy가 `X-Forwarded-For`를 삭제 후 다시
+쓰는 경우에만 설정한다(기본값은 신뢰하지 않음).
