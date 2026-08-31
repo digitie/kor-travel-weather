@@ -1,4 +1,5 @@
 :root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --color-ink: #3c3f3d;
   --color-ink-muted: #68706b;
   --color-paper: #f7f8f6;
