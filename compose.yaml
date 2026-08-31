@@ -137,9 +137,12 @@ services:
         condition: service_healthy
     environment:
       WEATHER_API_INTERNAL_URL: http://api:14101
+      DAGSTER_UI_INTERNAL_URL: http://dagster:14102
+      NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
       WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       WEATHER_UI_USER: ${WEATHER_UI_USER:-admin}
       WEATHER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
+      WEATHER_UI_SESSION_SECRET: ${WEATHER_UI_SESSION_SECRET:?set WEATHER_UI_SESSION_SECRET in .env}
     ports:
       - "127.0.0.1:14105:14105"
 

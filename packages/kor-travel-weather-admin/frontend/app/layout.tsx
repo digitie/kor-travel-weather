@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
+import { Geist } from "next/font/google";
 
 import { AdminShell } from "@/components/admin-shell";
 import "./globals.css";
+
+const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
   title: "kor-travel-weather 운영",
@@ -10,7 +13,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="ko">
+    <html className={geist.variable} lang="ko">
       <body>
         <AdminShell>{children}</AdminShell>
       </body>
