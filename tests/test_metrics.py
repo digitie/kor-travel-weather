@@ -245,6 +245,31 @@ def test_corrupt_multiprocess_gauge_filename_does_not_break_scrape(tmp_path) -> 
     assert not corrupt_file.exists()
 
 
+def test_malformed_multiprocess_gauge_file_does_not_break_scrape(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    for name in ("gauge_livesum_bad.db", "gauge_livesum_-1.db", "gauge_livesum_999999999.db"):
+        (tmp_path / name).touch()
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert scraper.stdout
+    assert not list(tmp_path.glob("gauge_livesum_*.db"))
+
+
 def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> None:
     environment = os.environ.copy()
     environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)

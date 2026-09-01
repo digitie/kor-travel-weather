@@ -10,9 +10,11 @@ unbounded in-memory store.
 from __future__ import annotations
 
 import atexit
+import glob
 import os
 import re
 import signal
+import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from threading import Lock
@@ -28,11 +30,21 @@ from prometheus_client import (
     multiprocess,
     start_http_server,
 )
+from prometheus_client.mmap_dict import MmapedDict
 from prometheus_client.multiprocess import MultiProcessCollector
 
 _MULTIPROCESS_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "").strip()
 _LIVE_GAUGE_FILE = re.compile(
     r"^gauge_live(?:min|max|sum|mostrecent|all)_(?P<pid>[0-9]+)\.db$"
+)
+_LIVE_GAUGE_CANDIDATE = re.compile(r"^gauge_live(?:min|max|sum|mostrecent|all)_.+\.db$")
+_MALFORMED_GAUGE_ERRORS = (
+    OSError,
+    OverflowError,
+    RuntimeError,
+    ValueError,
+    UnicodeError,
+    struct.error,
 )
 
 
@@ -83,12 +95,71 @@ def cleanup_dead_multiprocess_gauges() -> int:
     return removed
 
 
+def _readable_multiprocess_files(path: str) -> list[str]:
+    """Return collector files while isolating malformed live-gauge files.
+
+    ``prometheus_client`` raises while parsing a truncated mmap file.  A
+    worker can be killed while a gauge file is being initialized, so a single
+    bad file must not turn every scrape into a 500.  Valid files are handed to
+    the upstream merge implementation unchanged; malformed live gauges are
+    skipped for this scrape and removed when their writer is not alive.
+    """
+    files = glob.glob(os.path.join(path, "*.db"))
+    readable: list[str] = []
+    for filename in files:
+        basename = os.path.basename(filename)
+        if _LIVE_GAUGE_CANDIDATE.fullmatch(basename) is None:
+            readable.append(filename)
+            continue
+        match = _LIVE_GAUGE_FILE.fullmatch(basename)
+        if match is None:
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(filename)
+            continue
+        try:
+            # The parser is lazy, so consume it to validate every mmap entry.
+            for _ in MmapedDict.read_all_values_from_file(filename):
+                pass
+        except FileNotFoundError:
+            continue
+        except _MALFORMED_GAUGE_ERRORS:
+            try:
+                pid = int(match.group("pid"))
+            except (ValueError, OverflowError):
+                pid = -1
+            if pid < 0:
+                with suppress(FileNotFoundError, OSError):
+                    os.unlink(filename)
+            else:
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, OverflowError):
+                    with suppress(FileNotFoundError, OSError):
+                        os.unlink(filename)
+                except (PermissionError, OSError):
+                    pass
+            # Keep this scrape healthy even if a live writer is still active.
+            continue
+        readable.append(filename)
+    return readable
+
+
 class _CleaningMultiProcessCollector(MultiProcessCollector):
     """Run dead-worker cleanup before the built-in collector reads files."""
 
     def collect(self) -> Iterator[object]:
         cleanup_dead_multiprocess_gauges()
-        yield from super().collect()
+        files = _readable_multiprocess_files(self._path)
+        try:
+            yield from self.merge(files)
+        except _MALFORMED_GAUGE_ERRORS:
+            # A writer may race the validation pass.  Retry with a fresh file
+            # list; if it is still malformed, return an empty scrape rather
+            # than propagating parser errors as HTTP 500.
+            try:
+                yield from self.merge(_readable_multiprocess_files(self._path))
+            except _MALFORMED_GAUGE_ERRORS:
+                return
 
 
 def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
