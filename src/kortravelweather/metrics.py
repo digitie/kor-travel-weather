@@ -36,32 +36,6 @@ _LIVE_GAUGE_FILE = re.compile(
 )
 
 
-def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
-    """Build scrape/instrumentation registries with Dagster multiprocess support."""
-    multiprocess_dir = _MULTIPROCESS_DIR
-    if not multiprocess_dir:
-        registry = CollectorRegistry(auto_describe=True)
-        return registry, registry
-    if not os.path.isdir(multiprocess_dir):
-        raise RuntimeError(
-            "PROMETHEUS_MULTIPROC_DIR가 존재하는 디렉터리를 가리켜야 합니다."
-        )
-    scrape_registry = CollectorRegistry(auto_describe=True)
-    MultiProcessCollector(scrape_registry, path=multiprocess_dir)
-    instrumentation_registry = CollectorRegistry(auto_describe=True)
-    return scrape_registry, instrumentation_registry
-
-
-REGISTRY, _INSTRUMENTATION_REGISTRY = _registries()
-
-
-def _cleanup_multiprocess_gauges() -> None:
-    """Remove this process's live gauges during normal worker shutdown."""
-    if _MULTIPROCESS_DIR:
-        with suppress(Exception):
-            multiprocess.mark_process_dead(os.getpid())
-
-
 def cleanup_dead_multiprocess_gauges() -> int:
     """Remove live-gauge files whose writer process no longer exists.
 
@@ -81,18 +55,59 @@ def cleanup_dead_multiprocess_gauges() -> int:
         match = _LIVE_GAUGE_FILE.fullmatch(entry.name)
         if match is None:
             continue
-        pid = int(match.group("pid"))
+        try:
+            pid = int(match.group("pid"))
+        except ValueError:
+            # A corrupted filename must not make the scrape endpoint fail.
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(entry.path)
+                removed += 1
+            continue
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
             with suppress(FileNotFoundError, OSError):
                 os.unlink(entry.path)
                 removed += 1
+        except OverflowError:
+            # The value cannot be a PID on this host.  Remove the invalid
+            # file so the collector does not try to parse it below.
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(entry.path)
+                removed += 1
+            continue
         except (PermissionError, OSError):
             # A permission error means the process may still be alive.  Do
             # not delete a gauge we cannot positively identify as stale.
             continue
     return removed
+
+
+def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
+    """Build scrape/instrumentation registries with Dagster multiprocess support."""
+    multiprocess_dir = _MULTIPROCESS_DIR
+    if not multiprocess_dir:
+        registry = CollectorRegistry(auto_describe=True)
+        return registry, registry
+    if not os.path.isdir(multiprocess_dir):
+        raise RuntimeError(
+            "PROMETHEUS_MULTIPROC_DIR가 존재하는 디렉터리를 가리켜야 합니다."
+        )
+    cleanup_dead_multiprocess_gauges()
+    scrape_registry = CollectorRegistry(auto_describe=True)
+    MultiProcessCollector(scrape_registry, path=multiprocess_dir)
+    instrumentation_registry = CollectorRegistry(auto_describe=True)
+    return scrape_registry, instrumentation_registry
+
+
+REGISTRY, _INSTRUMENTATION_REGISTRY = _registries()
+
+
+def _cleanup_multiprocess_gauges() -> None:
+    """Remove this process's live gauges during normal worker shutdown."""
+    if _MULTIPROCESS_DIR:
+        with suppress(Exception):
+            multiprocess.mark_process_dead(os.getpid())
 
 
 if _MULTIPROCESS_DIR:
