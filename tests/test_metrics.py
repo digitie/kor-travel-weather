@@ -11,6 +11,7 @@ import urllib.request
 import pytest
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
+from prometheus_client.mmap_dict import MmapedDict
 
 from kortravelweather.metrics import (
     metrics_content_type,
@@ -268,6 +269,47 @@ def test_malformed_multiprocess_gauge_file_does_not_break_scrape(tmp_path) -> No
     )
     assert scraper.stdout
     assert not list(tmp_path.glob("gauge_livesum_*.db"))
+
+
+def test_malformed_multiprocess_file_does_not_hide_valid_series(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    worker = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import observe_provider_request; "
+            "observe_provider_request('weatherapi', 'weatherapi_current', "
+            "outcome='success', duration_seconds=0.001)",
+        ],
+        env=environment,
+        check=True,
+    )
+    assert worker.returncode == 0
+    corrupt_file = tmp_path / "counter_999999999.db"
+    corrupt_mmap = MmapedDict(str(corrupt_file))
+    corrupt_mmap.write_value("null", 1.0, 0.0)
+    corrupt_mmap.close()
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert 'kor_travel_weather_provider_requests_total{dataset="weatherapi_current"' in (
+        scraper.stdout
+    )
+    assert not corrupt_file.exists()
 
 
 def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> None:

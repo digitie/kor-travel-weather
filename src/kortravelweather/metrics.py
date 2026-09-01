@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import atexit
 import glob
+import json
 import os
 import re
 import signal
@@ -37,8 +38,11 @@ _MULTIPROCESS_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "").strip()
 _LIVE_GAUGE_FILE = re.compile(
     r"^gauge_live(?:min|max|sum|mostrecent|all)_(?P<pid>[0-9]+)\.db$"
 )
-_LIVE_GAUGE_CANDIDATE = re.compile(r"^gauge_live(?:min|max|sum|mostrecent|all)_.+\.db$")
-_MALFORMED_GAUGE_ERRORS = (
+_PROCESS_FILE = re.compile(
+    r"^(?:counter|histogram|summary|gauge)_(?:[^_]+_)?(?P<pid>[0-9]+)\.db$"
+)
+_KNOWN_PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary|gauge)_.+\.db$")
+_MALFORMED_FILE_ERRORS = (
     OSError,
     OverflowError,
     RuntimeError,
@@ -46,6 +50,27 @@ _MALFORMED_GAUGE_ERRORS = (
     UnicodeError,
     struct.error,
 )
+
+
+def _valid_metric_key(key: str) -> bool:
+    """Check the JSON shape expected by ``MultiProcessCollector``."""
+    try:
+        decoded = json.loads(key)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    if not isinstance(decoded, list) or len(decoded) != 4:
+        return False
+    metric_name, sample_name, labels, help_text = decoded
+    return (
+        isinstance(metric_name, str)
+        and isinstance(sample_name, str)
+        and isinstance(labels, dict)
+        and all(
+            isinstance(label, str) and isinstance(value, str)
+            for label, value in labels.items()
+        )
+        and isinstance(help_text, str)
+    )
 
 
 def cleanup_dead_multiprocess_gauges() -> int:
@@ -96,35 +121,31 @@ def cleanup_dead_multiprocess_gauges() -> int:
 
 
 def _readable_multiprocess_files(path: str) -> list[str]:
-    """Return collector files while isolating malformed live-gauge files.
+    """Return collector files while isolating malformed mmap files.
 
     ``prometheus_client`` raises while parsing a truncated mmap file.  A
-    worker can be killed while a gauge file is being initialized, so a single
-    bad file must not turn every scrape into a 500.  Valid files are handed to
-    the upstream merge implementation unchanged; malformed live gauges are
-    skipped for this scrape and removed when their writer is not alive.
+    worker can be killed while any metric file is being initialized, so a
+    single bad file must not turn every scrape into a 500.  Valid files are
+    handed to the upstream merge implementation unchanged; malformed files
+    are skipped for this scrape and removed when their writer is not alive.
     """
     files = glob.glob(os.path.join(path, "*.db"))
     readable: list[str] = []
     for filename in files:
         basename = os.path.basename(filename)
-        if _LIVE_GAUGE_CANDIDATE.fullmatch(basename) is None:
-            readable.append(filename)
-            continue
-        match = _LIVE_GAUGE_FILE.fullmatch(basename)
-        if match is None:
-            with suppress(FileNotFoundError, OSError):
-                os.unlink(filename)
-            continue
         try:
             # The parser is lazy, so consume it to validate every mmap entry.
-            for _ in MmapedDict.read_all_values_from_file(filename):
-                pass
+            for key, _, _, _ in MmapedDict.read_all_values_from_file(filename):
+                # ``MultiProcessCollector`` decodes this JSON later.  Decode
+                # it during preflight so one torn key cannot blank a scrape.
+                if not _valid_metric_key(key):
+                    raise ValueError("invalid multiprocess metric key")
         except FileNotFoundError:
             continue
-        except _MALFORMED_GAUGE_ERRORS:
+        except _MALFORMED_FILE_ERRORS:
+            match = _PROCESS_FILE.fullmatch(basename)
             try:
-                pid = int(match.group("pid"))
+                pid = int(match.group("pid")) if match else -1
             except (ValueError, OverflowError):
                 pid = -1
             if pid < 0:
@@ -138,6 +159,9 @@ def _readable_multiprocess_files(path: str) -> list[str]:
                         os.unlink(filename)
                 except (PermissionError, OSError):
                     pass
+            if _KNOWN_PROCESS_FILE.fullmatch(basename) is None:
+                with suppress(FileNotFoundError, OSError):
+                    os.unlink(filename)
             # Keep this scrape healthy even if a live writer is still active.
             continue
         readable.append(filename)
@@ -152,13 +176,13 @@ class _CleaningMultiProcessCollector(MultiProcessCollector):
         files = _readable_multiprocess_files(self._path)
         try:
             yield from self.merge(files)
-        except _MALFORMED_GAUGE_ERRORS:
+        except _MALFORMED_FILE_ERRORS:
             # A writer may race the validation pass.  Retry with a fresh file
             # list; if it is still malformed, return an empty scrape rather
             # than propagating parser errors as HTTP 500.
             try:
                 yield from self.merge(_readable_multiprocess_files(self._path))
-            except _MALFORMED_GAUGE_ERRORS:
+            except _MALFORMED_FILE_ERRORS:
                 return
 
 
