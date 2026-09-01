@@ -107,6 +107,11 @@ function classifyProviderCode(provider: string, value: WeatherValue): MarkerStat
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+// Keep repeated location_id query strings below common proxy request-line
+// limits.  The API accepts up to 500 ids, but a 500-id URL can exceed an
+// nginx/HAProxy URI limit once station ids are included.
+const MARKER_BATCH_SIZE = 50;
+const MARKER_BATCH_CONCURRENCY = 3;
 
 function markerIcon(kind: MarkerState["kind"]): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -335,19 +340,33 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     if (!locations.length) return;
     let cancelled = false;
     const chunks: string[][] = [];
-    for (let index = 0; index < locations.length; index += 500) {
-      chunks.push(locations.slice(index, index + 500).map((location) => location.location_id));
+    for (let index = 0; index < locations.length; index += MARKER_BATCH_SIZE) {
+      chunks.push(
+        locations.slice(index, index + MARKER_BATCH_SIZE).map((location) => location.location_id),
+      );
     }
-    Promise.all(chunks.map((chunk) => getMarkerSummaries(chunk)))
-      .then((responses) => {
-        if (!cancelled) {
-          const all = responses.flatMap((response) => response.data);
-          setSummaries(Object.fromEntries(all.map((item) => [item.location_id, item])));
+    setSummaries({});
+    const loadChunks = async () => {
+      const merged: Record<string, WeatherMarker> = {};
+      try {
+        for (let index = 0; index < chunks.length; index += MARKER_BATCH_CONCURRENCY) {
+          const responses = await Promise.allSettled(
+            chunks
+              .slice(index, index + MARKER_BATCH_CONCURRENCY)
+              .map((chunk) => getMarkerSummaries(chunk)),
+          );
+          if (cancelled) return;
+          for (const response of responses) {
+            if (response.status !== "fulfilled") continue;
+            for (const item of response.value.data) merged[item.location_id] = item;
+          }
+          setSummaries({ ...merged });
         }
-      })
-      .catch(() => {
-        if (!cancelled) setSummaries({});
-      });
+      } catch {
+        if (!cancelled) setSummaries({ ...merged });
+      }
+    };
+    void loadChunks();
     return () => {
       cancelled = true;
     };
