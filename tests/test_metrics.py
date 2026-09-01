@@ -178,3 +178,41 @@ def test_multiprocess_live_gauge_is_cleaned_on_sigterm(tmp_path) -> None:
     assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
         scraper.stdout
     )
+
+
+def test_multiprocess_live_gauge_is_cleaned_after_worker_is_killed(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os; "
+            "from kortravelweather.metrics import observe_sync_started; "
+            "observe_sync_started('weatherapi', 'weatherapi_current'); os._exit(0)",
+        ],
+        env=environment,
+    )
+    worker.wait(timeout=5)
+    assert any(tmp_path.glob("gauge_live*.db"))
+
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
+        scraper.stdout
+    )
+    assert not any(tmp_path.glob("gauge_live*.db"))

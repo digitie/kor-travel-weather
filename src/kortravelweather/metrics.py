@@ -31,6 +31,9 @@ from prometheus_client import (
 from prometheus_client.multiprocess import MultiProcessCollector
 
 _MULTIPROCESS_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "").strip()
+_LIVE_GAUGE_FILE = re.compile(
+    r"^gauge_live(?:min|max|sum|mostrecent|all)_(?P<pid>[0-9]+)\.db$"
+)
 
 
 def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
@@ -57,6 +60,39 @@ def _cleanup_multiprocess_gauges() -> None:
     if _MULTIPROCESS_DIR:
         with suppress(Exception):
             multiprocess.mark_process_dead(os.getpid())
+
+
+def cleanup_dead_multiprocess_gauges() -> int:
+    """Remove live-gauge files whose writer process no longer exists.
+
+    ``atexit``/signal hooks cannot run after SIGKILL or an OOM kill.  The
+    multiprocess collector would otherwise keep those samples forever.  A
+    scrape-time liveness check is safe because only the live gauge files are
+    touched and files owned by a still-running PID are left alone.
+    """
+    if not _MULTIPROCESS_DIR:
+        return 0
+    removed = 0
+    try:
+        entries = list(os.scandir(_MULTIPROCESS_DIR))
+    except OSError:
+        return 0
+    for entry in entries:
+        match = _LIVE_GAUGE_FILE.fullmatch(entry.name)
+        if match is None:
+            continue
+        pid = int(match.group("pid"))
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(entry.path)
+                removed += 1
+        except (PermissionError, OSError):
+            # A permission error means the process may still be alive.  Do
+            # not delete a gauge we cannot positively identify as stale.
+            continue
+    return removed
 
 
 if _MULTIPROCESS_DIR:
@@ -388,6 +424,7 @@ def observe_stale_recovered(count: int) -> None:
 
 def metrics_payload() -> bytes:
     """Serialize the isolated registry for an HTTP scrape."""
+    cleanup_dead_multiprocess_gauges()
     return generate_latest(REGISTRY)
 
 
