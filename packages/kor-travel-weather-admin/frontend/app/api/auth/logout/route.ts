@@ -66,13 +66,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "교차 사이트 요청이 차단되었습니다." }, { status: 403 });
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
-  if (session && (await isConfiguredSession(session)) && !(await persistRevocation(session))) {
+  const validSession = session ? await isConfiguredSession(session) : false;
+  if (validSession && !(await persistRevocation(session!))) {
     return NextResponse.json(
       { detail: "로그아웃을 완료할 수 없습니다. 잠시 후 다시 시도해 주세요." },
       { status: 503, headers: { "cache-control": "no-store" } },
     );
   }
-  revokeSessionValue(session);
+  if (validSession) revokeSessionValue(session);
   const response = NextResponse.json({ ok: true }, { headers: { "cache-control": "no-store" } });
   const forwardedProtocol = request.headers.get("x-forwarded-proto") ?? new URL(request.url).protocol.replace(":", "");
   response.cookies.set({
