@@ -294,6 +294,10 @@ def test_malformed_multiprocess_file_does_not_hide_valid_series(tmp_path) -> Non
     corrupt_mmap = MmapedDict(str(corrupt_file))
     corrupt_mmap.write_value("null", 1.0, 0.0)
     corrupt_mmap.close()
+    malformed_gauge = tmp_path / "gauge_bad.db"
+    malformed_mmap = MmapedDict(str(malformed_gauge))
+    malformed_mmap.write_value('["bad_metric", "bad_metric", {}, "help"]', 1.0, 0.0)
+    malformed_mmap.close()
     scraper = subprocess.run(
         [
             sys.executable,
@@ -310,6 +314,7 @@ def test_malformed_multiprocess_file_does_not_hide_valid_series(tmp_path) -> Non
         scraper.stdout
     )
     assert not corrupt_file.exists()
+    assert not malformed_gauge.exists()
 
 
 def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> None:

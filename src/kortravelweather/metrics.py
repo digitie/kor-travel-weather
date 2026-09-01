@@ -38,9 +38,8 @@ _MULTIPROCESS_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "").strip()
 _LIVE_GAUGE_FILE = re.compile(
     r"^gauge_live(?:min|max|sum|mostrecent|all)_(?P<pid>[0-9]+)\.db$"
 )
-_PROCESS_FILE = re.compile(
-    r"^(?:counter|histogram|summary|gauge)_(?:[^_]+_)?(?P<pid>[0-9]+)\.db$"
-)
+_PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary)_(?P<pid>[0-9]+)\.db$")
+_GAUGE_FILE = re.compile(r"^gauge_[^_]+_(?P<pid>[0-9]+)\.db$")
 _KNOWN_PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary|gauge)_.+\.db$")
 _MALFORMED_FILE_ERRORS = (
     OSError,
@@ -133,6 +132,14 @@ def _readable_multiprocess_files(path: str) -> list[str]:
     readable: list[str] = []
     for filename in files:
         basename = os.path.basename(filename)
+        gauge_match = _GAUGE_FILE.fullmatch(basename)
+        if basename.startswith("gauge_") and gauge_match is None:
+            # The upstream collector indexes gauge_<mode>_<pid>.db by
+            # position, so a valid payload with a malformed filename would
+            # otherwise raise IndexError and fail the whole scrape.
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(filename)
+            continue
         try:
             # The parser is lazy, so consume it to validate every mmap entry.
             for key, _, _, _ in MmapedDict.read_all_values_from_file(filename):
@@ -143,7 +150,7 @@ def _readable_multiprocess_files(path: str) -> list[str]:
         except FileNotFoundError:
             continue
         except _MALFORMED_FILE_ERRORS:
-            match = _PROCESS_FILE.fullmatch(basename)
+            match = gauge_match or _PROCESS_FILE.fullmatch(basename)
             try:
                 pid = int(match.group("pid")) if match else -1
             except (ValueError, OverflowError):
