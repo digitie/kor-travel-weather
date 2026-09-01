@@ -1117,7 +1117,11 @@ class WeatherRepository:
             return [self._value_model(row) for row in session.scalars(stmt).all()]
 
     def latest_values_many(
-        self, location_ids: Sequence[str], *, limit_per_location: int = 100
+        self,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int = 100,
+        weather_domain: str | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Fetch current projections for several locations in one query."""
         if not location_ids:
@@ -1132,6 +1136,8 @@ class WeatherRepository:
                 WeatherValueRow.issued_at,
             )
             base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
+            if weather_domain is not None:
+                base = base.where(WeatherValueRow.weather_domain == weather_domain)
             ranked = self._ranked_current_ids(session, base)
             limited_ids = (
                 select(

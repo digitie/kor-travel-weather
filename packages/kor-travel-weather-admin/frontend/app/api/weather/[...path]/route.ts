@@ -38,7 +38,9 @@ async function readBody(request: NextRequest): Promise<ArrayBuffer | null | unde
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
   const target = new URL(`${apiBase()}/${path.join("/")}`);
-  request.nextUrl.searchParams.forEach((value, key) => target.searchParams.set(key, value));
+  // Preserve repeated query keys such as marker batches (`location_id`);
+  // `set()` would silently forward only the last requested location.
+  request.nextUrl.searchParams.forEach((value, key) => target.searchParams.append(key, value));
   // Forward only harmless content negotiation headers. In particular, do not
   // leak the browser's Basic-Auth header/cookies to the backend; the proxy
   // supplies the server-side admin token below.
