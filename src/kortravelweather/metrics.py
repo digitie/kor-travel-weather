@@ -10,9 +10,12 @@ unbounded in-memory store.
 from __future__ import annotations
 
 import atexit
+import glob
+import json
 import os
 import re
 import signal
+import struct
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from threading import Lock
@@ -28,9 +31,166 @@ from prometheus_client import (
     multiprocess,
     start_http_server,
 )
+from prometheus_client.mmap_dict import MmapedDict
 from prometheus_client.multiprocess import MultiProcessCollector
 
 _MULTIPROCESS_DIR = os.getenv("PROMETHEUS_MULTIPROC_DIR", "").strip()
+_LIVE_GAUGE_FILE = re.compile(
+    r"^gauge_live(?:min|max|sum|mostrecent|all)_(?P<pid>[0-9]+)\.db$"
+)
+_PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary)_(?P<pid>[0-9]+)\.db$")
+_GAUGE_FILE = re.compile(r"^gauge_[^_]+_(?P<pid>[0-9]+)\.db$")
+_KNOWN_PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary|gauge)_.+\.db$")
+_MALFORMED_FILE_ERRORS = (
+    OSError,
+    OverflowError,
+    RuntimeError,
+    ValueError,
+    UnicodeError,
+    struct.error,
+)
+
+
+def _valid_metric_key(key: str) -> bool:
+    """Check the JSON shape expected by ``MultiProcessCollector``."""
+    try:
+        decoded = json.loads(key)
+    except (TypeError, ValueError, UnicodeError):
+        return False
+    if not isinstance(decoded, list) or len(decoded) != 4:
+        return False
+    metric_name, sample_name, labels, help_text = decoded
+    return (
+        isinstance(metric_name, str)
+        and isinstance(sample_name, str)
+        and isinstance(labels, dict)
+        and all(
+            isinstance(label, str) and isinstance(value, str)
+            for label, value in labels.items()
+        )
+        and isinstance(help_text, str)
+    )
+
+
+def cleanup_dead_multiprocess_gauges() -> int:
+    """Remove live-gauge files whose writer process no longer exists.
+
+    ``atexit``/signal hooks cannot run after SIGKILL or an OOM kill.  The
+    multiprocess collector would otherwise keep those samples forever.  A
+    scrape-time liveness check is safe because only the live gauge files are
+    touched and files owned by a still-running PID are left alone.
+    """
+    if not _MULTIPROCESS_DIR:
+        return 0
+    removed = 0
+    try:
+        entries = list(os.scandir(_MULTIPROCESS_DIR))
+    except OSError:
+        return 0
+    for entry in entries:
+        match = _LIVE_GAUGE_FILE.fullmatch(entry.name)
+        if match is None:
+            continue
+        try:
+            pid = int(match.group("pid"))
+        except ValueError:
+            # A corrupted filename must not make the scrape endpoint fail.
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(entry.path)
+                removed += 1
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(entry.path)
+                removed += 1
+        except OverflowError:
+            # The value cannot be a PID on this host.  Remove the invalid
+            # file so the collector does not try to parse it below.
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(entry.path)
+                removed += 1
+            continue
+        except (PermissionError, OSError):
+            # A permission error means the process may still be alive.  Do
+            # not delete a gauge we cannot positively identify as stale.
+            continue
+    return removed
+
+
+def _readable_multiprocess_files(path: str) -> list[str]:
+    """Return collector files while isolating malformed mmap files.
+
+    ``prometheus_client`` raises while parsing a truncated mmap file.  A
+    worker can be killed while any metric file is being initialized, so a
+    single bad file must not turn every scrape into a 500.  Valid files are
+    handed to the upstream merge implementation unchanged; malformed files
+    are skipped for this scrape and removed when their writer is not alive.
+    """
+    files = glob.glob(os.path.join(path, "*.db"))
+    readable: list[str] = []
+    for filename in files:
+        basename = os.path.basename(filename)
+        gauge_match = _GAUGE_FILE.fullmatch(basename)
+        if basename.startswith("gauge_") and gauge_match is None:
+            # The upstream collector indexes gauge_<mode>_<pid>.db by
+            # position, so a valid payload with a malformed filename would
+            # otherwise raise IndexError and fail the whole scrape.
+            with suppress(FileNotFoundError, OSError):
+                os.unlink(filename)
+            continue
+        try:
+            # The parser is lazy, so consume it to validate every mmap entry.
+            for key, _, _, _ in MmapedDict.read_all_values_from_file(filename):
+                # ``MultiProcessCollector`` decodes this JSON later.  Decode
+                # it during preflight so one torn key cannot blank a scrape.
+                if not _valid_metric_key(key):
+                    raise ValueError("invalid multiprocess metric key")
+        except FileNotFoundError:
+            continue
+        except _MALFORMED_FILE_ERRORS:
+            match = gauge_match or _PROCESS_FILE.fullmatch(basename)
+            try:
+                pid = int(match.group("pid")) if match else -1
+            except (ValueError, OverflowError):
+                pid = -1
+            if pid < 0:
+                with suppress(FileNotFoundError, OSError):
+                    os.unlink(filename)
+            else:
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, OverflowError):
+                    with suppress(FileNotFoundError, OSError):
+                        os.unlink(filename)
+                except (PermissionError, OSError):
+                    pass
+            if _KNOWN_PROCESS_FILE.fullmatch(basename) is None:
+                with suppress(FileNotFoundError, OSError):
+                    os.unlink(filename)
+            # Keep this scrape healthy even if a live writer is still active.
+            continue
+        readable.append(filename)
+    return readable
+
+
+class _CleaningMultiProcessCollector(MultiProcessCollector):
+    """Run dead-worker cleanup before the built-in collector reads files."""
+
+    def collect(self) -> Iterator[object]:
+        cleanup_dead_multiprocess_gauges()
+        files = _readable_multiprocess_files(self._path)
+        try:
+            yield from self.merge(files)
+        except _MALFORMED_FILE_ERRORS:
+            # A writer may race the validation pass.  Retry with a fresh file
+            # list; if it is still malformed, return an empty scrape rather
+            # than propagating parser errors as HTTP 500.
+            try:
+                yield from self.merge(_readable_multiprocess_files(self._path))
+            except _MALFORMED_FILE_ERRORS:
+                return
 
 
 def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
@@ -43,8 +203,9 @@ def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
         raise RuntimeError(
             "PROMETHEUS_MULTIPROC_DIR가 존재하는 디렉터리를 가리켜야 합니다."
         )
+    cleanup_dead_multiprocess_gauges()
     scrape_registry = CollectorRegistry(auto_describe=True)
-    MultiProcessCollector(scrape_registry, path=multiprocess_dir)
+    _CleaningMultiProcessCollector(scrape_registry, path=multiprocess_dir)
     instrumentation_registry = CollectorRegistry(auto_describe=True)
     return scrape_registry, instrumentation_registry
 
@@ -388,6 +549,7 @@ def observe_stale_recovered(count: int) -> None:
 
 def metrics_payload() -> bytes:
     """Serialize the isolated registry for an HTTP scrape."""
+    cleanup_dead_multiprocess_gauges()
     return generate_latest(REGISTRY)
 
 

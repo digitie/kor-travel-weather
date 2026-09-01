@@ -18,6 +18,18 @@ Dagster는 `/var/run/kor-travel-weather-metrics` tmpfs를
 `PROMETHEUS_MULTIPROC_DIR`로 공유해 multiprocess executor의 모든 worker 샘플을
 14103 listener에서 합산한다. listener bind 충돌은
 `kor_travel_weather_metrics_server_bind_failures_total`로 확인할 수 있다.
+정상 종료(SIGTERM/프로세스 exit)에는 worker가 자신의 live-gauge 파일을 정리하고,
+비정상 종료(SIGKILL/OOM)로 남은 live-gauge 파일은 다음 scrape 때 PID 생존 확인으로
+제거한다. 초기화 중 잘린/손상된 live-gauge 파일은 해당 scrape에서 격리하고, 죽은
+writer의 파일은 함께 제거한다. 따라서 `*_active`가 오래 남는 경우 먼저 worker/container 상태와
+`kor_travel_weather_metrics_server_bind_failures_total`을 함께 확인한다.
+
+API metrics는 기본 Compose에서 컨테이너당 단일 Uvicorn 프로세스를 전제로 한다.
+API를 여러 replica로 확장할 때는 각 replica의 `/metrics`를 별도 Prometheus target으로
+scrape하고 PromQL에서 합산하거나, 프로세스가 공유하는 전용
+`PROMETHEUS_MULTIPROC_DIR`와 수명주기 정리 정책을 별도로 구성한다. 서로 다른
+컨테이너가 임의의 로컬 multiprocess 디렉터리를 공유하면 PID 재사용으로 잘못된
+샘플을 합칠 수 있으므로 지원하지 않는다.
 
 ## Secret 경계
 

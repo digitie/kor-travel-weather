@@ -620,34 +620,34 @@ async def marker_summaries(
     by_id = {location.location_id: location for location in locations}
     valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
     latest_many = getattr(repo, "latest_values_many", None)
-    timeline_many = getattr(repo, "timeline_many", None)
     if callable(latest_many):
         latest_by_location = await run_in_threadpool(
             latest_many, valid_ids, limit_per_location=40
         )
-    else:
-        latest_by_location = {
-            location_id: await run_in_threadpool(repo.latest_values, location_id, limit=40)
-            for location_id in valid_ids
-        }
-    if callable(timeline_many):
-        timeline_by_location = await run_in_threadpool(
-            timeline_many, valid_ids, limit_per_location=80
+        alert_by_location = await run_in_threadpool(
+            latest_many,
+            valid_ids,
+            limit_per_location=80,
+            weather_domain="weather_alert",
         )
     else:
-        timeline_by_location = {
-            location_id: await run_in_threadpool(
-                repo.timeline, location_id, limit=80, include_revisions=False
-            )
+        latest_by_location = {
+            location_id: await run_in_threadpool(repo.latest_values, location_id, limit=80)
+            for location_id in valid_ids
+        }
+        alert_by_location = {
+            location_id: [
+                row
+                for row in latest_by_location.get(location_id, [])
+                if row.weather_domain == "weather_alert"
+            ]
             for location_id in valid_ids
         }
     data: list[dict[str, Any]] = []
     for location_id in valid_ids:
-        _, _, timeline_alerts = _split_weather_values(
-            timeline_by_location.get(location_id, [])
-        )
         _, _, latest_alerts = _split_weather_values(latest_by_location.get(location_id, []))
-        alerts = timeline_alerts or latest_alerts
+        _, _, filtered_alerts = _split_weather_values(alert_by_location.get(location_id, []))
+        alerts = filtered_alerts or latest_alerts
         data.append(
             WeatherMarkerOut(
                 location_id=location_id,

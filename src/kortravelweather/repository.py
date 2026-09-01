@@ -1117,11 +1117,17 @@ class WeatherRepository:
             return [self._value_model(row) for row in session.scalars(stmt).all()]
 
     def latest_values_many(
-        self, location_ids: Sequence[str], *, limit_per_location: int = 100
+        self,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int = 100,
+        weather_domain: str | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Fetch current projections for several locations in one query."""
         if not location_ids:
             return {}
+        if limit_per_location <= 0:
+            raise ValueError("limit_per_location은 양수여야 합니다.")
         with self._session_factory() as session:
             timestamp = func.coalesce(
                 WeatherValueRow.target_at,
@@ -1130,11 +1136,42 @@ class WeatherRepository:
                 WeatherValueRow.issued_at,
             )
             base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
+            if weather_domain is not None:
+                base = base.where(WeatherValueRow.weather_domain == weather_domain)
             ranked = self._ranked_current_ids(session, base)
-            current = (
-                select(WeatherValueRow)
+            limited_ids = (
+                select(
+                    WeatherValueRow.value_id.label("value_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=WeatherValueRow.location_id,
+                        order_by=(
+                            case(
+                                (
+                                    WeatherValueRow.forecast_style.in_(
+                                        ("observed", "nowcast")
+                                    ),
+                                    0,
+                                ),
+                                else_=1,
+                            ),
+                            desc(timestamp),
+                            desc(WeatherValueRow.known_at),
+                            desc(WeatherValueRow.source_record_key),
+                            desc(WeatherValueRow.value_id),
+                        ),
+                    )
+                    .label("location_rank"),
+                )
+                .select_from(WeatherValueRow)
                 .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
                 .where(ranked.c.revision_rank == 1)
+                .subquery("limited_current_values")
+            )
+            current = (
+                select(WeatherValueRow)
+                .join(limited_ids, WeatherValueRow.value_id == limited_ids.c.value_id)
+                .where(limited_ids.c.location_rank <= limit_per_location)
                 .order_by(
                     WeatherValueRow.location_id,
                     case(
@@ -1155,8 +1192,7 @@ class WeatherRepository:
             }
             for row in session.scalars(current).all():
                 values = result.setdefault(row.location_id, [])
-                if len(values) < limit_per_location:
-                    values.append(self._value_model(row))
+                values.append(self._value_model(row))
             return result
 
     def timeline_many(
@@ -1176,10 +1212,30 @@ class WeatherRepository:
             )
             base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
             ranked = self._ranked_current_ids(session, base)
-            current = (
-                select(WeatherValueRow)
+            limited_ids = (
+                select(
+                    WeatherValueRow.value_id.label("value_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=WeatherValueRow.location_id,
+                        order_by=(
+                            desc(timestamp),
+                            desc(WeatherValueRow.known_at),
+                            desc(WeatherValueRow.source_record_key),
+                            desc(WeatherValueRow.value_id),
+                        ),
+                    )
+                    .label("location_rank"),
+                )
+                .select_from(WeatherValueRow)
                 .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
                 .where(ranked.c.revision_rank == 1)
+                .subquery("limited_timeline_values")
+            )
+            current = (
+                select(WeatherValueRow)
+                .join(limited_ids, WeatherValueRow.value_id == limited_ids.c.value_id)
+                .where(limited_ids.c.location_rank <= limit_per_location)
                 .order_by(
                     WeatherValueRow.location_id,
                     desc(timestamp),
@@ -1191,8 +1247,7 @@ class WeatherRepository:
             }
             for row in session.scalars(current).all():
                 values = result.setdefault(row.location_id, [])
-                if len(values) < limit_per_location:
-                    values.append(self._value_model(row))
+                values.append(self._value_model(row))
             return result
 
     def timeline(

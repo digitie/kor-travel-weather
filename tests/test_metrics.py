@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
+import urllib.request
 
 import pytest
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
+from prometheus_client.mmap_dict import MmapedDict
 
 from kortravelweather.metrics import (
     metrics_content_type,
@@ -178,3 +181,194 @@ def test_multiprocess_live_gauge_is_cleaned_on_sigterm(tmp_path) -> None:
     assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
         scraper.stdout
     )
+
+
+def test_multiprocess_live_gauge_is_cleaned_after_worker_is_killed(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os; "
+            "from kortravelweather.metrics import observe_sync_started; "
+            "observe_sync_started('weatherapi', 'weatherapi_current'); os._exit(0)",
+        ],
+        env=environment,
+    )
+    worker.wait(timeout=5)
+    assert any(tmp_path.glob("gauge_live*.db"))
+
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
+        scraper.stdout
+    )
+    assert not any(tmp_path.glob("gauge_live*.db"))
+
+
+def test_corrupt_multiprocess_gauge_filename_does_not_break_scrape(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    corrupt_file = tmp_path / f"gauge_livesum_{'9' * 220}.db"
+    corrupt_file.touch()
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert scraper.stdout
+    assert not corrupt_file.exists()
+
+
+def test_malformed_multiprocess_gauge_file_does_not_break_scrape(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    for name in ("gauge_livesum_bad.db", "gauge_livesum_-1.db", "gauge_livesum_999999999.db"):
+        (tmp_path / name).touch()
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert scraper.stdout
+    assert not list(tmp_path.glob("gauge_livesum_*.db"))
+
+
+def test_malformed_multiprocess_file_does_not_hide_valid_series(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    worker = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import observe_provider_request; "
+            "observe_provider_request('weatherapi', 'weatherapi_current', "
+            "outcome='success', duration_seconds=0.001)",
+        ],
+        env=environment,
+        check=True,
+    )
+    assert worker.returncode == 0
+    corrupt_file = tmp_path / "counter_999999999.db"
+    corrupt_mmap = MmapedDict(str(corrupt_file))
+    corrupt_mmap.write_value("null", 1.0, 0.0)
+    corrupt_mmap.close()
+    malformed_gauge = tmp_path / "gauge_bad.db"
+    malformed_mmap = MmapedDict(str(malformed_gauge))
+    malformed_mmap.write_value('["bad_metric", "bad_metric", {}, "help"]', 1.0, 0.0)
+    malformed_mmap.close()
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert 'kor_travel_weather_provider_requests_total{dataset="weatherapi_current"' in (
+        scraper.stdout
+    )
+    assert not corrupt_file.exists()
+    assert not malformed_gauge.exists()
+
+
+def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    listener = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal; "
+            "from kortravelweather.metrics import start_metrics_server; "
+            f"start_metrics_server({port}, address='127.0.0.1'); "
+            "print('ready', flush=True); signal.pause()",
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    worker = None
+    try:
+        assert listener.stdout is not None
+        assert listener.stdout.readline().strip() == "ready"
+        worker = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal; "
+                "from kortravelweather.metrics import observe_sync_started; "
+                "observe_sync_started('weatherapi', 'weatherapi_current'); "
+                "print('ready', flush=True); signal.pause()",
+            ],
+            env=environment,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert worker.stdout is not None
+        assert worker.stdout.readline().strip() == "ready"
+        worker_gauge = tmp_path / f"gauge_livesum_{worker.pid}.db"
+        assert worker_gauge.exists()
+        worker.kill()
+        worker.wait(timeout=5)
+        body = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
+        assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in body
+        assert not worker_gauge.exists()
+    finally:
+        if worker is not None and worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=5)
+        listener.terminate()
+        listener.wait(timeout=5)
