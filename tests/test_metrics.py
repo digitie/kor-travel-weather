@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
+import urllib.request
 
 import pytest
 from fastapi.testclient import TestClient
@@ -241,3 +243,60 @@ def test_corrupt_multiprocess_gauge_filename_does_not_break_scrape(tmp_path) -> 
     )
     assert scraper.stdout
     assert not corrupt_file.exists()
+
+
+def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> None:
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    listener = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal; "
+            "from kortravelweather.metrics import start_metrics_server; "
+            f"start_metrics_server({port}, address='127.0.0.1'); "
+            "print('ready', flush=True); signal.pause()",
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    worker = None
+    try:
+        assert listener.stdout is not None
+        assert listener.stdout.readline().strip() == "ready"
+        worker = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal; "
+                "from kortravelweather.metrics import observe_sync_started; "
+                "observe_sync_started('weatherapi', 'weatherapi_current'); "
+                "print('ready', flush=True); signal.pause()",
+            ],
+            env=environment,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert worker.stdout is not None
+        assert worker.stdout.readline().strip() == "ready"
+        worker_gauge = tmp_path / f"gauge_livesum_{worker.pid}.db"
+        assert worker_gauge.exists()
+        worker.kill()
+        worker.wait(timeout=5)
+        body = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
+        assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in body
+        assert not worker_gauge.exists()
+    finally:
+        if worker is not None and worker.poll() is None:
+            worker.kill()
+            worker.wait(timeout=5)
+        listener.terminate()
+        listener.wait(timeout=5)

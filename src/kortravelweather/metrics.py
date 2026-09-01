@@ -83,6 +83,14 @@ def cleanup_dead_multiprocess_gauges() -> int:
     return removed
 
 
+class _CleaningMultiProcessCollector(MultiProcessCollector):
+    """Run dead-worker cleanup before the built-in collector reads files."""
+
+    def collect(self) -> Iterator[object]:
+        cleanup_dead_multiprocess_gauges()
+        yield from super().collect()
+
+
 def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
     """Build scrape/instrumentation registries with Dagster multiprocess support."""
     multiprocess_dir = _MULTIPROCESS_DIR
@@ -95,7 +103,7 @@ def _registries() -> tuple[CollectorRegistry, CollectorRegistry]:
         )
     cleanup_dead_multiprocess_gauges()
     scrape_registry = CollectorRegistry(auto_describe=True)
-    MultiProcessCollector(scrape_registry, path=multiprocess_dir)
+    _CleaningMultiProcessCollector(scrape_registry, path=multiprocess_dir)
     instrumentation_registry = CollectorRegistry(auto_describe=True)
     return scrape_registry, instrumentation_registry
 
