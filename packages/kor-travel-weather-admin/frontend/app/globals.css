@@ -2237,10 +2237,10 @@ tbody tr:hover {
   box-shadow: none;
 }
 
-.vworld-weather-marker.weather-marker-clear { --weather-marker-color: #ffa500; }
-.vworld-weather-marker.weather-marker-cloud { --weather-marker-color: #808080; }
-.vworld-weather-marker.weather-marker-rain { --weather-marker-color: #4169e1; }
-.vworld-weather-marker.weather-marker-snow { --weather-marker-color: #add8e6; }
+.vworld-weather-marker.weather-marker-sunny { --weather-marker-color: #ffa500; }
+.vworld-weather-marker.weather-marker-cloudy { --weather-marker-color: #808080; }
+.vworld-weather-marker.weather-marker-rainy { --weather-marker-color: #4169e1; }
+.vworld-weather-marker.weather-marker-snowy { --weather-marker-color: #add8e6; }
 .vworld-weather-marker.weather-marker-storm,
 .vworld-weather-marker.weather-marker-alert { --weather-marker-color: #b13b4a; }
 

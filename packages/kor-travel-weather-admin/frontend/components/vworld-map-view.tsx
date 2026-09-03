@@ -225,6 +225,7 @@ export function VWorldMarker({
   lngLatRef.current = lngLat;
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
+  const previousClassNameRef = useRef<string | undefined>(undefined);
   const longitude = lngLat[0];
   const latitude = lngLat[1];
   const element = useMemo<HTMLDivElement | null>(() => {
@@ -256,11 +257,22 @@ export function VWorldMarker({
 
   useEffect(() => {
     if (!element) return;
-    // MapLibre applies `maplibregl-marker` to the root and its stylesheet
-    // owns the absolute positioning used by the projection transform. Keep
-    // that class while replacing only our consumer classes; assigning
-    // `className` directly would remove MapLibre's positioning contract.
-    element.className = ["maplibregl-marker", className].filter(Boolean).join(" ");
+    // MapLibre owns the root classes (including the anchor/covered tokens)
+    // and its stylesheet owns the projection transform. Update only the
+    // consumer tokens so a state change cannot erase those classes.
+    const previousTokens = previousClassNameRef.current
+      ? previousClassNameRef.current.split(/\s+/).filter(Boolean)
+      : [];
+    const nextTokens = className ? className.split(/\s+/).filter(Boolean) : [];
+    const nextSet = new Set(nextTokens);
+    for (const token of previousTokens) {
+      if (!nextSet.has(token)) element.classList.remove(token);
+    }
+    const previousSet = new Set(previousTokens);
+    for (const token of nextTokens) {
+      if (!previousSet.has(token)) element.classList.add(token);
+    }
+    previousClassNameRef.current = className;
     element.dataset.selected = String(selected);
     if (ariaLabel) element.setAttribute("aria-label", ariaLabel);
     else element.removeAttribute("aria-label");
