@@ -421,6 +421,11 @@ async def latest(
     if location is None or not location.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     rows = await run_in_threadpool(repo.latest_values, location_id, limit=limit)
+    # ``latest_values`` includes alert facts for the location.  Apply the
+    # same active-alert projection used by markers/resolve so a named latest
+    # request cannot resurrect a released or stale notice.
+    current_rows, forecast_rows, alert_rows = _split_weather_values(rows)
+    rows = [*current_rows, *forecast_rows, *alert_rows]
     return envelope(
         request,
         started,

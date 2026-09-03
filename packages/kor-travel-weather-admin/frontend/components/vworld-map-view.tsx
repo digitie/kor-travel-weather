@@ -221,7 +221,8 @@ export function VWorldMarker({
 }: VWorldMarkerProps) {
   const map = useVWorldMap();
   const markerRef = useRef<MapLibreMarker | null>(null);
-  const initialLngLatRef = useRef(lngLat);
+  const lngLatRef = useRef(lngLat);
+  lngLatRef.current = lngLat;
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
   const longitude = lngLat[0];
@@ -234,7 +235,7 @@ export function VWorldMarker({
   useEffect(() => {
     if (!map || !element) return;
     const marker = new maplibregl.Marker({ element, anchor, offset })
-      .setLngLat(initialLngLatRef.current)
+      .setLngLat(lngLatRef.current)
       .addTo(map);
     const handleClick = (event: MouseEvent) => {
       event.stopPropagation();
@@ -255,7 +256,11 @@ export function VWorldMarker({
 
   useEffect(() => {
     if (!element) return;
-    element.className = className ?? "";
+    // MapLibre applies `maplibregl-marker` to the root and its stylesheet
+    // owns the absolute positioning used by the projection transform. Keep
+    // that class while replacing only our consumer classes; assigning
+    // `className` directly would remove MapLibre's positioning contract.
+    element.className = ["maplibregl-marker", className].filter(Boolean).join(" ");
     element.dataset.selected = String(selected);
     if (ariaLabel) element.setAttribute("aria-label", ariaLabel);
     else element.removeAttribute("aria-label");
@@ -300,7 +305,15 @@ export function VWorldWeatherMarker({
     storm: "뇌우",
   };
   return (
-    <VWorldMarker {...markerProps} anchor="bottom" className={`weather-marker weather-marker-${condition}${markerProps.selected ? " selected" : ""}`}>
+    <VWorldMarker
+      {...markerProps}
+      // The expanded weather marker is a pill, not a pointed pin. Its
+      // geographic coordinate must therefore be its visual centre. Callers
+      // can still opt into `anchor="bottom"` when providing a pointed
+      // marker shape.
+      anchor={markerProps.anchor ?? "center"}
+      className={`weather-marker vworld-weather-marker weather-marker-${condition}${markerProps.selected ? " selected" : ""}`}
+    >
       <button
         aria-label={markerProps.ariaLabel}
         aria-pressed={markerProps.selected}

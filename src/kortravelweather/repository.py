@@ -1452,10 +1452,6 @@ class WeatherRepository:
                 .join(alert_limited, WeatherValueRow.value_id == alert_limited.c.value_id)
                 .where(
                     alert_limited.c.location_rank <= min(limit_per_location, 100),
-                    or_(
-                        WeatherValueRow.valid_until.is_(None),
-                        WeatherValueRow.valid_until > datetime.now(UTC),
-                    ),
                 )
                 .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
             )

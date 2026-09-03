@@ -2202,8 +2202,11 @@ tbody tr:hover {
 }
 
 /* The WeatherMarker primitive from digitie/maplibre-vworld-react renders a
- * React-owned pill inside MapLibre's marker root. Keep the clickable child
- * transparent so the shared weather state colors stay on the marker root. */
+ * React-owned centre-anchored pill inside MapLibre's marker root. The
+ * library's weather marker uses a white chip and a condition-coloured border;
+ * keeping the same geometry means the [longitude, latitude] coordinate is
+ * the visual centre of the chip (a pointed PinMarker uses bottom anchoring).
+ */
 .vworld-weather-marker-button {
   position: relative;
   display: inline-flex;
@@ -2212,13 +2215,17 @@ tbody tr:hover {
   align-items: center;
   justify-content: center;
   gap: 0.25rem;
-  padding: 0.3rem 0.5rem;
-  border: 0;
+  padding: 0.25rem 0.625rem;
+  border: 2px solid var(--weather-marker-color, var(--brand));
   border-radius: 999px;
-  background: transparent;
-  color: inherit;
+  background: var(--card);
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 20%);
   cursor: pointer;
-  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.1;
+  transition: box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
 }
 
 .weather-marker.vworld-weather-marker {
@@ -2230,11 +2237,18 @@ tbody tr:hover {
   box-shadow: none;
 }
 
-.vworld-weather-marker.weather-marker-clear .vworld-weather-marker-button { background: #d98b20; }
-.vworld-weather-marker.weather-marker-cloud .vworld-weather-marker-button { background: #526b90; }
-.vworld-weather-marker.weather-marker-rain .vworld-weather-marker-button { background: #2563a8; }
-.vworld-weather-marker.weather-marker-snow .vworld-weather-marker-button { background: #5f82a8; }
-.vworld-weather-marker.weather-marker-storm .vworld-weather-marker-button { background: #b13b4a; }
+.vworld-weather-marker.weather-marker-clear { --weather-marker-color: #ffa500; }
+.vworld-weather-marker.weather-marker-cloud { --weather-marker-color: #808080; }
+.vworld-weather-marker.weather-marker-rain { --weather-marker-color: #4169e1; }
+.vworld-weather-marker.weather-marker-snow { --weather-marker-color: #add8e6; }
+.vworld-weather-marker.weather-marker-storm,
+.vworld-weather-marker.weather-marker-alert { --weather-marker-color: #b13b4a; }
+
+.vworld-weather-marker-button:hover,
+.vworld-weather-marker-button[aria-pressed="true"] {
+  box-shadow: 0 4px 8px rgb(0 0 0 / 30%);
+  transform: scale(1.05);
+}
 
 .vworld-weather-marker-button:focus-visible {
   outline: 3px solid var(--focus);

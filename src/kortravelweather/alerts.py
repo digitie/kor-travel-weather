@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .models import WeatherValue
@@ -28,6 +28,7 @@ _NOISE_RE = re.compile(
     r"(?:\([^)]*\))",
     re.IGNORECASE,
 )
+_DEFAULT_ALERT_MAX_AGE = timedelta(days=3)
 
 
 def _payload_value(row: WeatherValue, *names: str) -> Any:
@@ -79,20 +80,39 @@ def _is_release(row: WeatherValue) -> bool:
 
 
 def active_alert_values(
-    rows: Iterable[WeatherValue], *, now: datetime | None = None
+    rows: Iterable[WeatherValue],
+    *,
+    now: datetime | None = None,
+    max_age: timedelta | None = _DEFAULT_ALERT_MAX_AGE,
 ) -> list[WeatherValue]:
     """Return only currently active warning facts from an event projection.
 
     Rows are evaluated newest-first per issuing station and warning name.  A
     newer release therefore suppresses all older announcements while a newer
     announcement re-activates the warning.  Explicit ``valid_until`` values
-    are also honoured.  The returned list is deterministic and contains at
-    most one latest announcement for each active warning identity.
+    are also honoured.  Announcement events without an explicit end time are
+    bounded by ``max_age`` so a rolling provider feed cannot leave a warning
+    active forever.  Release events are retained during state reduction even
+    when their own validity has elapsed because they are tombstones for older
+    announcements.  Pass ``max_age=None`` only for an intentionally unbounded
+    historical projection.  The returned list is deterministic and contains
+    at most one latest announcement for each active warning identity.
     """
     instant = now or datetime.now(UTC)
     prepared: list[WeatherValue] = []
     for row in rows:
-        if row.valid_until is not None and row.valid_until <= instant:
+        release = _is_release(row)
+        event_at = row.target_at or row.issued_at or row.observed_at or row.collected_at
+        expired = row.valid_until is not None and row.valid_until <= instant
+        stale = (
+            max_age is not None
+            and event_at is not None
+            and row.valid_until is None
+            and event_at < instant - max_age
+        )
+        # Do not discard releases before reduction: an expired release still
+        # needs to suppress the older announcement it cancels.
+        if (expired or stale) and not release:
             continue
         prepared.append(row)
     def value_id(row: WeatherValue) -> str:
