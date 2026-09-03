@@ -2201,6 +2201,68 @@ tbody tr:hover {
   font-weight: 800;
 }
 
+/* The WeatherMarker primitive from digitie/maplibre-vworld-react renders a
+ * React-owned pill inside MapLibre's marker root. Keep the clickable child
+ * transparent so the shared weather state colors stay on the marker root. */
+.vworld-weather-marker-button {
+  position: relative;
+  display: inline-flex;
+  min-width: 4.25rem;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.3rem 0.5rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.weather-marker.vworld-weather-marker {
+  width: auto;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.vworld-weather-marker.weather-marker-clear .vworld-weather-marker-button { background: #d98b20; }
+.vworld-weather-marker.weather-marker-cloud .vworld-weather-marker-button { background: #526b90; }
+.vworld-weather-marker.weather-marker-rain .vworld-weather-marker-button { background: #2563a8; }
+.vworld-weather-marker.weather-marker-snow .vworld-weather-marker-button { background: #5f82a8; }
+.vworld-weather-marker.weather-marker-storm .vworld-weather-marker-button { background: #b13b4a; }
+
+.vworld-weather-marker-button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.vworld-weather-marker-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.vworld-weather-marker-copy {
+  display: grid;
+  gap: 0.05rem;
+  line-height: 1.05;
+  text-align: left;
+}
+
+.vworld-weather-marker-copy strong {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.vworld-weather-marker-copy small {
+  font-size: 0.62rem;
+  opacity: 0.88;
+}
+
 .measurement-point,
 .alert-panel {
   display: grid;

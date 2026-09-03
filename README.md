@@ -74,6 +74,13 @@ npm ci
 npm run dev                 # http://127.0.0.1:14105
 ```
 
+`/weather`는 [`digitie/maplibre-vworld-react`](https://github.com/digitie/maplibre-vworld-react)의
+`VWorldMapView`/`WeatherMarker` 패턴을 따르는 MapLibre VWorld 지도다. VWorld WMTS
+키는 브라우저 타일 요청에 포함되는 공개 식별자이므로 `NEXT_PUBLIC_VWORLD_API_KEY`로
+개발/빌드 환경에 주입한다. 키가 비어 있으면 지도는 중립 배경으로 안전하게 표시되고
+날씨 marker와 inspector는 계속 동작한다. Next.js의 `NEXT_PUBLIC_*` 값은 빌드 시
+번들에 고정되므로 Docker에서는 `docker compose build` 전에 `.env`에 값을 넣는다.
+
 운영 UI는 `kor-travel-map` admin과 같은 좌측 rail·카드형 page header·4pt spacing과
 navy design token을 사용한다.
 `/weather`는 위치 목록과 지도를 함께 보여 주며, 지도 marker를 선택하면 최신

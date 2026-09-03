@@ -184,6 +184,8 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.web
+      args:
+        NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     restart: unless-stopped
     depends_on:
       api:
@@ -192,6 +194,8 @@ services:
       WEATHER_API_INTERNAL_URL: http://api:14101
       DAGSTER_UI_INTERNAL_URL: http://dagster:14102
       NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
+      # The VWorld browser key is public and is embedded at Next build time.
+      NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
       WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       WEATHER_UI_USER: ${WEATHER_UI_USER:-admin}
       WEATHER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
