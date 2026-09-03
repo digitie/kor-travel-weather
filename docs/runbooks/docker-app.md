@@ -4,6 +4,9 @@
    `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`, 별도의 16자 이상
    `KOR_TRAVEL_WEATHER_METRICS_TOKEN`,
    `KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`(Fernet URL-safe key)를 주입한다.
+   VWorld 지도 타일을 사용하려면 공개 타일 식별자
+   `NEXT_PUBLIC_VWORLD_API_KEY`도 주입한다(Next.js 빌드 시 고정되며, 빈 값이면
+   중립 배경 fallback).
    API와 Dagster에 같은 encryption key를 전달해야 `/settings/providers`에서
    provider key override를 저장·복호화할 수 있다. `POSTGRES_PASSWORD`는
    `PGPASSWORD`로 전달되므로 URL-unsafe punctuation도 허용한다.

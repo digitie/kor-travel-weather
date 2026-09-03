@@ -30,21 +30,26 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     case,
+    column,
     create_engine,
     delete,
     desc,
     func,
+    not_,
     nullslast,
+    or_,
     select,
     text,
     true,
     update,
+    values,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
+from .alerts import active_alert_values
 from .metrics import observe_stale_recovered, observe_sync_finished, observe_sync_started
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
 from .settings import WeatherSettings, get_settings
@@ -152,6 +157,17 @@ class WeatherValueRow(Base):
         Index("ix_weather_values_location_time", "location_id", "valid_at", "observed_at"),
         Index("ix_weather_values_location_target_known", "location_id", "target_at", "known_at"),
         Index("ix_weather_values_dataset_metric", "dataset_key", "metric_key"),
+        Index(
+            "ix_weather_values_marker_lookup",
+            "location_id",
+            "metric_key",
+            "known_at",
+            "source_record_key",
+            "value_id",
+            postgresql_where=text(
+                "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+            ),
+        ),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",
             name="ck_weather_values_has_value",
@@ -198,6 +214,10 @@ class WeatherValueRow(Base):
         ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
         nullable=False,
     )
+
+
+_MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
+_MARKER_CANDIDATE_LIMIT = 4
 
 
 class SyncRunRow(Base):
@@ -1122,6 +1142,7 @@ class WeatherRepository:
         *,
         limit_per_location: int = 100,
         weather_domain: str | None = None,
+        metric_keys: Sequence[str] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Fetch current projections for several locations in one query."""
         if not location_ids:
@@ -1138,6 +1159,11 @@ class WeatherRepository:
             base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
             if weather_domain is not None:
                 base = base.where(WeatherValueRow.weather_domain == weather_domain)
+            if metric_keys is not None:
+                normalized_metric_keys = tuple(dict.fromkeys(metric_keys))
+                if not normalized_metric_keys:
+                    return {location_id: [] for location_id in location_ids}
+                base = base.where(WeatherValueRow.metric_key.in_(normalized_metric_keys))
             ranked = self._ranked_current_ids(session, base)
             limited_ids = (
                 select(
@@ -1193,6 +1219,255 @@ class WeatherRepository:
             for row in session.scalars(current).all():
                 values = result.setdefault(row.location_id, [])
                 values.append(self._value_model(row))
+            return result
+
+    def marker_values_many(
+        self,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int = 80,
+    ) -> dict[str, list[WeatherValue]]:
+        """Return the small current projection needed to render map markers.
+
+        A marker only needs a weather condition/temperature and advisories;
+        loading every air-quality and forecast metric makes a nationwide map
+        refresh scan millions of append-only revisions.  Keep this allowlist
+        in one repository boundary so the API cannot accidentally turn a
+        marker request into a full fact-history query.
+        """
+        if not location_ids:
+            return {}
+        if limit_per_location <= 0:
+            raise ValueError("limit_per_location은 양수여야 합니다.")
+        # PostgreSQL's DISTINCT ON can use the marker lookup index to read
+        # one recent row per location/metric without ranking all append-only
+        # revisions.  Keep the generic window-query fallback for SQLite and
+        # other test dialects.
+        with self._session_factory() as session:
+            if session.get_bind().dialect.name != "postgresql":
+                return self.latest_values_many(
+                    location_ids,
+                    limit_per_location=limit_per_location,
+                    metric_keys=(*_MARKER_METRIC_KEYS, "ALERT"),
+                )
+
+            # A forecast response can be ingested after the current response
+            # and therefore have a larger ``known_at``.  Selecting the newest
+            # row by that column alone would make a future forecast appear as
+            # the marker's current condition.  Keep one value per provider /
+            # metric (across current/forecast datasets), preferring
+            # A forecast response can be ingested after the current response
+            # and therefore have a larger ``known_at``.  Selecting the newest
+            # row by that column alone would make a future forecast appear as
+            # the marker's current condition.  The marker only needs one
+            # representative row per location/metric; the full all-provider
+            # bundle remains available from ``/resolve``.  Fetch a handful of
+            # observed/nowcast candidates through a LATERAL index-only lookup,
+            # then choose the newest candidate in Python.  The explicit metric
+            # predicate is intentionally repeated inside the lateral query so
+            # PostgreSQL can prove the partial marker index predicate even
+            # though the metric value is supplied by a VALUES row.
+            requested_locations = values(
+                column("location_id", String), name="marker_locations"
+            ).data([(location_id,) for location_id in location_ids]).alias(
+                "marker_locations"
+            )
+            requested_metrics = values(
+                column("metric_key", String), name="marker_metrics"
+            ).data([(metric_key,) for metric_key in _MARKER_METRIC_KEYS]).alias(
+                "marker_metrics"
+            )
+
+            def candidate_ids(*, observed_only: bool) -> Any:
+                predicates = [
+                    WeatherValueRow.location_id == requested_locations.c.location_id,
+                    WeatherValueRow.metric_key == requested_metrics.c.metric_key,
+                    WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                ]
+                if observed_only:
+                    predicates.append(
+                        WeatherValueRow.forecast_style.in_(
+                            ("observed", "nowcast")
+                        )
+                    )
+                candidates = (
+                    select(WeatherValueRow.value_id.label("value_id"))
+                    .where(*predicates)
+                    .order_by(
+                        nullslast(desc(WeatherValueRow.known_at)),
+                        desc(WeatherValueRow.source_record_key),
+                        desc(WeatherValueRow.value_id),
+                    )
+                    .limit(_MARKER_CANDIDATE_LIMIT)
+                    .lateral()
+                    .alias("marker_candidates")
+                )
+                return select(candidates.c.value_id).select_from(
+                    requested_locations.join(requested_metrics, true()).join(
+                        candidates, true()
+                    )
+                )
+
+            def fetch_candidates(candidate_query: Any) -> list[WeatherValueRow]:
+                return list(
+                    session.scalars(
+                        select(WeatherValueRow).where(
+                            WeatherValueRow.value_id.in_(candidate_query)
+                        )
+                    ).all()
+                )
+
+            observed_rows = fetch_candidates(candidate_ids(observed_only=True))
+            selected: dict[tuple[str, str], WeatherValueRow] = {}
+            for row in observed_rows:
+                pair = (row.location_id, row.metric_key)
+                previous = selected.get(pair)
+                if previous is None or (
+                    row.known_at or datetime.min.replace(tzinfo=UTC),
+                    row.source_record_key,
+                    row.value_id,
+                ) > (
+                    previous.known_at or datetime.min.replace(tzinfo=UTC),
+                    previous.source_record_key,
+                    previous.value_id,
+                ):
+                    selected[pair] = row
+
+            # Forecast-only anchors are uncommon, but still need an icon.  Do
+            # a bounded fallback only for missing location/metric pairs so the
+            # normal observed path never scans their long forecast history.
+            missing_pairs = [
+                (location_id, metric_key)
+                for location_id in location_ids
+                for metric_key in _MARKER_METRIC_KEYS
+                if (location_id, metric_key) not in selected
+            ]
+            if missing_pairs:
+                missing_locations = values(
+                    column("location_id", String),
+                    column("metric_key", String),
+                    name="marker_missing_pairs",
+                ).data(missing_pairs).alias("marker_missing_pairs")
+                fallback_candidates = (
+                    select(WeatherValueRow.value_id.label("value_id"))
+                    .where(
+                        WeatherValueRow.location_id
+                        == missing_locations.c.location_id,
+                        WeatherValueRow.metric_key == missing_locations.c.metric_key,
+                        WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                    )
+                    .order_by(
+                        nullslast(desc(WeatherValueRow.known_at)),
+                        desc(WeatherValueRow.source_record_key),
+                        desc(WeatherValueRow.value_id),
+                    )
+                    .limit(_MARKER_CANDIDATE_LIMIT)
+                    .lateral()
+                    .alias("marker_fallback_candidates")
+                )
+                fallback_query = select(
+                    fallback_candidates.c.value_id
+                ).select_from(
+                    missing_locations.join(fallback_candidates, true())
+                )
+                for row in fetch_candidates(fallback_query):
+                    pair = (row.location_id, row.metric_key)
+                    previous = selected.get(pair)
+                    if previous is None or (
+                        row.known_at or datetime.min.replace(tzinfo=UTC),
+                        row.source_record_key,
+                        row.value_id,
+                    ) > (
+                        previous.known_at or datetime.min.replace(tzinfo=UTC),
+                        previous.source_record_key,
+                        previous.value_id,
+                    ):
+                        selected[pair] = row
+
+            current_rows = list(selected.values())
+            alert_station = func.coalesce(
+                WeatherValueRow.payload["stn_id"].as_string(),
+                WeatherValueRow.payload["stnId"].as_string(),
+                WeatherValueRow.value_id,
+            )
+            alert_sequence = func.coalesce(
+                WeatherValueRow.payload["seq"].as_string(),
+                WeatherValueRow.payload["tmSeq"].as_string(),
+                WeatherValueRow.value_id,
+            )
+            alert_ranked = (
+                select(
+                    WeatherValueRow.value_id.label("value_id"),
+                    WeatherValueRow.location_id.label("location_id"),
+                    WeatherValueRow.target_at.label("target_at"),
+                    WeatherValueRow.known_at.label("known_at"),
+                    func.row_number()
+                    .over(
+                        partition_by=(
+                            WeatherValueRow.location_id,
+                            WeatherValueRow.provider,
+                            WeatherValueRow.dataset_key,
+                            WeatherValueRow.weather_domain,
+                            WeatherValueRow.metric_key,
+                            WeatherValueRow.target_at,
+                            alert_station,
+                            alert_sequence,
+                        ),
+                        order_by=(
+                            nullslast(desc(WeatherValueRow.known_at)),
+                            desc(WeatherValueRow.target_at),
+                            desc(WeatherValueRow.source_record_key),
+                            desc(WeatherValueRow.value_id),
+                        ),
+                    )
+                    .label("revision_rank"),
+                )
+                .where(
+                    WeatherValueRow.location_id.in_(location_ids),
+                    or_(
+                        WeatherValueRow.weather_domain == "weather_alert",
+                        WeatherValueRow.metric_key == "ALERT",
+                    ),
+                )
+                .subquery("marker_alert_values")
+            )
+            alert_limited = (
+                select(
+                    alert_ranked.c.value_id,
+                    func.row_number()
+                    .over(
+                        partition_by=alert_ranked.c.location_id,
+                        order_by=(
+                            desc(alert_ranked.c.target_at),
+                            nullslast(desc(alert_ranked.c.known_at)),
+                            desc(alert_ranked.c.value_id),
+                        ),
+                    )
+                    .label("location_rank"),
+                )
+                .where(alert_ranked.c.revision_rank == 1)
+                .subquery("limited_marker_alert_values")
+            )
+            alerts = (
+                select(WeatherValueRow)
+                .join(alert_limited, WeatherValueRow.value_id == alert_limited.c.value_id)
+                .where(
+                    alert_limited.c.location_rank <= min(limit_per_location, 100),
+                )
+                .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
+            )
+            result: dict[str, list[WeatherValue]] = {
+                location_id: [] for location_id in location_ids
+            }
+            for row in current_rows:
+                result.setdefault(row.location_id, []).append(self._value_model(row))
+            alert_values_by_location: dict[str, list[WeatherValue]] = {}
+            for row in session.scalars(alerts).all():
+                alert_values_by_location.setdefault(row.location_id, []).append(
+                    self._value_model(row)
+                )
+            for location_id, alert_values in alert_values_by_location.items():
+                result.setdefault(location_id, []).extend(active_alert_values(alert_values))
             return result
 
     def timeline_many(
@@ -1260,6 +1535,7 @@ class WeatherRepository:
         metric_key: str | None = None,
         limit: int = 500,
         include_revisions: bool = False,
+        exclude_alerts: bool = False,
     ) -> list[WeatherValue]:
         with self._session_factory() as session:
             timestamp = func.coalesce(
@@ -1277,6 +1553,17 @@ class WeatherRepository:
                 stmt = stmt.where(WeatherValueRow.dataset_key == dataset_key)
             if metric_key:
                 stmt = stmt.where(WeatherValueRow.metric_key == metric_key)
+            if exclude_alerts:
+                alert_filter = or_(
+                    WeatherValueRow.metric_key == "ALERT",
+                    WeatherValueRow.weather_domain.ilike("%alert%"),
+                    WeatherValueRow.weather_domain.ilike("%warning%"),
+                    WeatherValueRow.dataset_key.ilike("%alert%"),
+                    WeatherValueRow.dataset_key.ilike("%warning%"),
+                )
+                # Apply the event filter before revision ranking and LIMIT so
+                # an old alert feed cannot consume the entire forecast page.
+                stmt = stmt.where(not_(alert_filter))
             if not include_revisions:
                 ranked = self._ranked_current_ids(session, stmt)
                 stmt = stmt.join(ranked, WeatherValueRow.value_id == ranked.c.value_id).where(

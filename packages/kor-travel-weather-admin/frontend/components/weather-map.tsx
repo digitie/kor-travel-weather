@@ -1,8 +1,7 @@
 "use client";
 
 import { Crosshair, List, Map as MapIcon, RefreshCw, Search, Thermometer, Wind, X } from "lucide-react";
-import maplibregl, { type Map as MapLibreMap, type Marker } from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
+import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
@@ -14,6 +13,11 @@ import {
   WeatherMarker,
   WeatherValue,
 } from "@/lib/api";
+import {
+  VWorldMapView,
+  VWorldWeatherMarker,
+  type WeatherCondition,
+} from "@/components/vworld-map-view";
 
 type WeatherMapProps = {
   locations: Location[];
@@ -106,56 +110,11 @@ function classifyProviderCode(provider: string, value: WeatherValue): MarkerStat
   return null;
 }
 
-const SVG_NS = "http://www.w3.org/2000/svg";
 // Keep repeated location_id query strings below common proxy request-line
 // limits.  The API accepts up to 500 ids, but a 500-id URL can exceed an
 // nginx/HAProxy URI limit once station ids are included.
 const MARKER_BATCH_SIZE = 50;
 const MARKER_BATCH_CONCURRENCY = 3;
-
-function markerIcon(kind: MarkerState["kind"]): SVGSVGElement {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("focusable", "false");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.8");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  const add = (tag: string, attributes: Record<string, string>) => {
-    const node = document.createElementNS(SVG_NS, tag);
-    for (const [name, value] of Object.entries(attributes)) node.setAttribute(name, value);
-    svg.append(node);
-  };
-  if (kind === "clear") {
-    add("circle", { cx: "12", cy: "12", r: "4" });
-    for (const [x1, y1, x2, y2] of [
-      [12, 2, 12, 5], [12, 19, 12, 22], [2, 12, 5, 12], [19, 12, 22, 12],
-      [4.9, 4.9, 7, 7], [17, 17, 19.1, 19.1], [17, 7, 19.1, 4.9], [4.9, 19.1, 7, 17],
-    ]) add("line", { x1: String(x1), y1: String(y1), x2: String(x2), y2: String(y2) });
-  } else if (kind === "cloud") {
-    add("path", { d: "M6.5 18h10.7a4.3 4.3 0 0 0 .4-8.6A6 6 0 0 0 6 10.5 3.8 3.8 0 0 0 6.5 18Z" });
-  } else if (kind === "rain") {
-    add("path", { d: "M5.5 15.5h10a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 7 9a3.2 3.2 0 0 0-1.5 6.5Z" });
-    add("line", { x1: "8", y1: "18", x2: "7", y2: "21" });
-    add("line", { x1: "13", y1: "18", x2: "12", y2: "21" });
-    add("line", { x1: "18", y1: "18", x2: "17", y2: "21" });
-  } else if (kind === "snow") {
-    add("path", { d: "M6 15.5h10.5a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 7 9a3.2 3.2 0 0 0-1 6.5Z" });
-    add("path", { d: "m9 18 3 3m0-3-3 3m6-3 2 2m0-2-2 2" });
-  } else if (kind === "storm") {
-    add("path", { d: "M6 14.5h10.5a3.5 3.5 0 0 0 .3-7A5 5 0 0 0 7 8a3.2 3.2 0 0 0-1 6.5Z" });
-    add("path", { d: "m13 14-3 5h3l-1 4 4-6h-3l2-3Z", fill: "currentColor" });
-  } else if (kind === "alert") {
-    add("circle", { cx: "12", cy: "12", r: "8.5" });
-    add("line", { x1: "12", y1: "7", x2: "12", y2: "13" });
-    add("circle", { cx: "12", cy: "17", r: "0.7", fill: "currentColor", stroke: "none" });
-  } else {
-    add("circle", { cx: "12", cy: "12", r: "2.5", fill: "currentColor", stroke: "none" });
-  }
-  return svg;
-}
 
 function markerState(summary: WeatherMarker | undefined): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
@@ -184,25 +143,27 @@ function markerState(summary: WeatherMarker | undefined): MarkerState {
   return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
 }
 
-function mapStyle() {
-  return {
-    version: 8 as const,
-    sources: {
-      osm: {
-        type: "raster" as const,
-        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-        tileSize: 256,
-        attribution: "© OpenStreetMap contributors",
-      },
-    },
-    layers: [{ id: "osm", type: "raster" as const, source: "osm" }],
-  };
+function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
+  if (kind === "clear") return "sunny";
+  if (kind === "rain") return "rainy";
+  if (kind === "snow") return "snowy";
+  if (kind === "storm" || kind === "alert") return "storm";
+  return "cloudy";
+}
+
+function markerTemperature(summary: WeatherMarker | undefined): number | null {
+  if (!summary) return null;
+  const row = summary.latest.find((value) =>
+    ["TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(value.metric_key),
+  );
+  if (!row) return null;
+  const numeric = row.value_number ?? Number(row.value_text);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 export function WeatherMap({ locations }: WeatherMapProps) {
-  const mapNode = useRef<HTMLDivElement>(null);
   const map = useRef<MapLibreMap | null>(null);
-  const markers = useRef<Marker[]>([]);
+  const [mapReady, setMapReady] = useState(false);
   const [selectedId, setSelectedId] = useState(locations[0]?.location_id ?? "");
   const [values, setValues] = useState<WeatherValue[]>([]);
   const [forecast, setForecast] = useState<WeatherValue[]>([]);
@@ -252,56 +213,9 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   }, [selectedId, visibleLocations]);
 
   useEffect(() => {
-    if (!mapNode.current || map.current) return;
-    const initial = locations[0];
-    const instance = new maplibregl.Map({
-      container: mapNode.current,
-      style: mapStyle(),
-      center: initial ? [initial.longitude, initial.latitude] : [127.8, 36.2],
-      zoom: initial ? 7.2 : 6,
-      attributionControl: { compact: true },
-    });
-    instance.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
-    map.current = instance;
-    return () => {
-      markers.current.forEach((marker) => marker.remove());
-      markers.current = [];
-      instance.remove();
-      map.current = null;
-    };
-  }, [locations]);
-
-  useEffect(() => {
-    if (!map.current) return;
-    markers.current.forEach((marker) => marker.remove());
-    markers.current = visibleLocations.map((location) => {
-      const state = markerState(summaries[location.location_id]);
-      const element = document.createElement("button");
-      element.type = "button";
-      element.className = `weather-marker weather-marker-${state.kind}${location.location_id === selectedId ? " selected" : ""}`;
-      element.title = location.name;
-      element.setAttribute("aria-label", `${location.name}: ${state.label} 날씨 보기`);
-      element.setAttribute("aria-pressed", String(location.location_id === selectedId));
-      const glyph = document.createElement("span");
-      glyph.className = "weather-marker-glyph";
-      glyph.append(markerIcon(state.kind));
-      element.append(glyph);
-      if (state.kind === "alert") {
-        const alert = document.createElement("span");
-        alert.className = "weather-marker-badge";
-        alert.setAttribute("aria-hidden", "true");
-        alert.textContent = String(summaries[location.location_id]?.alerts.length ?? "!");
-        element.append(alert);
-      }
-      element.addEventListener("click", () => setSelectedId(location.location_id));
-      return new maplibregl.Marker({ element })
-        .setLngLat([location.longitude, location.latitude])
-        .addTo(map.current!);
-    });
-    if (selected) {
-      map.current.easeTo({ center: [selected.longitude, selected.latitude], duration: 500 });
-    }
-  }, [selected, selectedId, summaries, visibleLocations]);
+    if (!map.current || !mapReady || !selected) return;
+    map.current.easeTo({ center: [selected.longitude, selected.latitude], duration: 500 });
+  }, [mapReady, selected]);
 
   useEffect(() => {
     if (!selected) {
@@ -400,13 +314,36 @@ export function WeatherMap({ locations }: WeatherMapProps) {
       <div className={`weather-layout ${mode === "list" ? "list-mode" : ""}`}>
         <div className="map-card">
           <div aria-labelledby="weather-map-tab" className="map-panel" hidden={mode !== "map"} id="weather-map-panel" role="tabpanel" tabIndex={0}>
-            <div
-              ref={mapNode}
-              aria-hidden={mode !== "map"}
-              aria-label="날씨 위치 지도"
+            <VWorldMapView
+              apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
+              center={selected ? [selected.longitude, selected.latitude] : [127.8, 36.2]}
               className="map-canvas"
-              role="region"
-            />
+              layerType="Base"
+              onLoad={(instance) => {
+                map.current = instance;
+                setMapReady(true);
+              }}
+              onError={() => setMessage("VWorld 지도를 불러오지 못했습니다. 날씨 데이터는 계속 확인할 수 있습니다.")}
+              zoom={selected ? 7.2 : 6}
+            >
+              {visibleLocations.map((location) => {
+                const summary = summaries[location.location_id];
+                const state = markerState(summary);
+                return (
+                  <VWorldWeatherMarker
+                    alertCount={summary?.alerts.length ?? 0}
+                    ariaLabel={`${location.name}: ${state.label} 날씨 보기`}
+                    condition={markerCondition(state.kind)}
+                    key={location.location_id}
+                    lngLat={[location.longitude, location.latitude]}
+                    onClick={() => setSelectedId(location.location_id)}
+                    selected={location.location_id === selectedId}
+                    temperature={markerTemperature(summary)}
+                    title={location.name}
+                  />
+                );
+              })}
+            </VWorldMapView>
             <div className="map-legend"><span className="legend-dot" /> 활성 날씨 위치 <span className="legend-muted">{visibleLocations.length}곳</span></div>
           </div>
           <div aria-labelledby="weather-list-tab" className="list-panel" hidden={mode !== "list"} id="weather-list-panel" role="tabpanel" tabIndex={0}>

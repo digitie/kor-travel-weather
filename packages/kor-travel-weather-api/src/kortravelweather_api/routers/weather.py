@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from kortravelweather.alerts import active_alert_values
 from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
@@ -347,7 +348,7 @@ def _split_weather_values(
             forecast.append(row)
         else:
             latest.append(row)
-    return latest, forecast, alerts
+    return latest, forecast, active_alert_values(alerts)
 
 
 def _weather_bundle(
@@ -420,6 +421,11 @@ async def latest(
     if location is None or not location.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     rows = await run_in_threadpool(repo.latest_values, location_id, limit=limit)
+    # ``latest_values`` includes alert facts for the location.  Apply the
+    # same active-alert projection used by markers/resolve so a named latest
+    # request cannot resurrect a released or stale notice.
+    current_rows, forecast_rows, alert_rows = _split_weather_values(rows)
+    rows = [*current_rows, *forecast_rows, *alert_rows]
     return envelope(
         request,
         started,
@@ -461,6 +467,7 @@ async def forecast(
         metric_key=metric_key,
         limit=limit,
         include_revisions=history,
+        exclude_alerts=True,
     )
     return envelope(
         request,
@@ -549,11 +556,20 @@ async def resolve_weather(
     # forecast, and alert facts instead of silently returning only the station
     # row.  ``nearby`` already returns deterministic distance ordering.
     source_radius = max(5.0, distance + 5.0)
-    source_rows = [
+    # External providers are anchored to the selected AirKorea station.  Do
+    # not fan a coordinate resolve out to every other station in a 5 km
+    # circle: a dense catalog can turn one request into hundreds of thousands
+    # of historical rows and exceed the gateway timeout.  Keep the selected
+    # station plus nearby non-station anchors (for example a KMA grid anchor)
+    # that can actually represent an additional source for that station.
+    source_rows = [(location, distance)]
+    source_rows.extend(
         (candidate, candidate_distance)
         for candidate, candidate_distance in rows
-        if candidate_distance <= source_radius
-    ]
+        if candidate.location_id != location.location_id
+        and candidate_distance <= source_radius
+        and measurement_point_out(candidate, distance_km=candidate_distance) is None
+    )
     source_ids = [candidate.location_id for candidate, _ in source_rows]
     latest_many = getattr(repo, "latest_values_many", None)
     timeline_many = getattr(repo, "timeline_many", None)
@@ -619,8 +635,22 @@ async def marker_summaries(
     locations = await run_in_threadpool(repo.list_locations, enabled_only=True, limit=None)
     by_id = {location.location_id: location for location in locations}
     valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
+    marker_many = getattr(repo, "marker_values_many", None)
+    if callable(marker_many):
+        # The marker projection is deliberately allow-listed at the
+        # repository boundary.  It avoids a second full current-row scan for
+        # alerts while retaining the weather-code/temperature rows needed by
+        # the map.
+        marker_by_location = await run_in_threadpool(
+            marker_many, valid_ids, limit_per_location=80
+        )
+        latest_by_location = marker_by_location
+        alert_by_location = marker_by_location
+    else:
+        latest_by_location = None
+        alert_by_location = None
     latest_many = getattr(repo, "latest_values_many", None)
-    if callable(latest_many):
+    if latest_by_location is None and callable(latest_many):
         latest_by_location = await run_in_threadpool(
             latest_many, valid_ids, limit_per_location=40
         )
@@ -630,7 +660,7 @@ async def marker_summaries(
             limit_per_location=80,
             weather_domain="weather_alert",
         )
-    else:
+    elif latest_by_location is None:
         latest_by_location = {
             location_id: await run_in_threadpool(repo.latest_values, location_id, limit=80)
             for location_id in valid_ids

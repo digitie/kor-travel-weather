@@ -6,6 +6,11 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 
 FROM dependencies AS builder
 COPY packages/kor-travel-weather-admin/frontend ./
+# VWorld browser keys are public tile-service identifiers.  Next inlines
+# NEXT_PUBLIC_* values at build time, so pass the key as a build argument
+# rather than relying on a runtime-only container environment.
+ARG NEXT_PUBLIC_VWORLD_API_KEY=
+ENV NEXT_PUBLIC_VWORLD_API_KEY=$NEXT_PUBLIC_VWORLD_API_KEY
 RUN npm run build
 
 FROM node:22-alpine AS runner

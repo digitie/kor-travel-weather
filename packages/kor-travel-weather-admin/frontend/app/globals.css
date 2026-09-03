@@ -2201,6 +2201,82 @@ tbody tr:hover {
   font-weight: 800;
 }
 
+/* The WeatherMarker primitive from digitie/maplibre-vworld-react renders a
+ * React-owned centre-anchored pill inside MapLibre's marker root. The
+ * library's weather marker uses a white chip and a condition-coloured border;
+ * keeping the same geometry means the [longitude, latitude] coordinate is
+ * the visual centre of the chip (a pointed PinMarker uses bottom anchoring).
+ */
+.vworld-weather-marker-button {
+  position: relative;
+  display: inline-flex;
+  min-width: 4.25rem;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.625rem;
+  border: 2px solid var(--weather-marker-color, var(--brand));
+  border-radius: 999px;
+  background: var(--card);
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 20%);
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.1;
+  transition: box-shadow var(--duration-fast) var(--ease-out), transform var(--duration-fast) var(--ease-out);
+}
+
+.weather-marker.vworld-weather-marker {
+  width: auto;
+  height: auto;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.vworld-weather-marker.weather-marker-sunny { --weather-marker-color: #ffa500; }
+.vworld-weather-marker.weather-marker-cloudy { --weather-marker-color: #808080; }
+.vworld-weather-marker.weather-marker-rainy { --weather-marker-color: #4169e1; }
+.vworld-weather-marker.weather-marker-snowy { --weather-marker-color: #add8e6; }
+.vworld-weather-marker.weather-marker-storm,
+.vworld-weather-marker.weather-marker-alert { --weather-marker-color: #b13b4a; }
+
+.vworld-weather-marker-button:hover,
+.vworld-weather-marker-button[aria-pressed="true"] {
+  box-shadow: 0 4px 8px rgb(0 0 0 / 30%);
+  transform: scale(1.05);
+}
+
+.vworld-weather-marker-button:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.vworld-weather-marker-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.vworld-weather-marker-copy {
+  display: grid;
+  gap: 0.05rem;
+  line-height: 1.05;
+  text-align: left;
+}
+
+.vworld-weather-marker-copy strong {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.vworld-weather-marker-copy small {
+  font-size: 0.62rem;
+  opacity: 0.88;
+}
+
 .measurement-point,
 .alert-panel {
   display: grid;

@@ -25,6 +25,10 @@ Compose의 API/Dagster 컨테이너는 `KOR_TRAVEL_WEATHER_ENV=production`을 �
 없으면 환경변수 credential만 사용할 수 있고 설정 화면 저장은 503으로 거부된다.
 metrics token은 admin token과 달라야 하며 Prometheus API scrape에만 사용한다. 비어
 있으면 Compose interpolation 단계에서 실패한다.
+지도 타일은 VWorld WMTS를 사용하므로 `NEXT_PUBLIC_VWORLD_API_KEY`를 함께 설정한다.
+이 값은 브라우저 요청에 포함되는 공개 타일 식별자이며 Next.js 빌드 시 번들에
+고정된다. 비어 있으면 `/weather`가 중립 배경으로 동작하고 marker/날씨 조회는
+계속 사용할 수 있다.
 KMA live
 수집을 사용할 때만 `KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY`와 JSON target을
 추가한다. PostgreSQL 비밀번호는 `PGPASSWORD`로 컨테이너에 전달하므로 `@`, `:` 같은

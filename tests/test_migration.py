@@ -45,7 +45,10 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0005_admin_session_revocations"
+            assert version == "0006_marker_lookup_index"
+            assert "ix_weather_values_marker_lookup" in {
+                item["name"] for item in inspect(engine).get_indexes("weather_values")
+            }
             assert "weather_provider_credentials" in inspect(engine).get_table_names()
             assert "weather_admin_session_revocations" in inspect(engine).get_table_names()
         with engine.begin() as connection:

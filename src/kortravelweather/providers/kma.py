@@ -609,6 +609,30 @@ def _warning_issued_at(item: Any, fallback: datetime) -> datetime:
     return fallback
 
 
+def _warning_valid_until(item: Any, issued: datetime) -> datetime | None:
+    """Read optional end/validity timestamps exposed by service revisions."""
+    value = _field(
+        item,
+        "valid_until",
+        "validUntil",
+        "end_time",
+        "endTime",
+        "tm_ed",
+        "tmEd",
+        "ed_tm",
+        "edTm",
+    )
+    text = str(value or "").strip()
+    for fmt in ("%Y%m%d%H%M", "%Y%m%d%H", "%Y-%m-%d %H:%M"):
+        try:
+            parsed = datetime.strptime(text, fmt).replace(tzinfo=KST)
+        except ValueError:
+            continue
+        if parsed >= issued:
+            return parsed
+    return None
+
+
 def _warning_severity(text: str) -> str:
     normalized = text.lower()
     if "경보" in normalized or "warning" in normalized:
@@ -633,11 +657,16 @@ def weather_warning_to_weather_values(
         issued = _warning_issued_at(item, fetched)
         title = _field(item, "title", "msg", "warning", "content", "tm_fc", "tmFc")
         text = str(title or "기상특보").strip()
+        released = any(
+            token in text.lower()
+            for token in ("해제", "취소", "종료", "cancel", "expired")
+        )
         payload = {
             "stn_id": _field(item, "stn_id", "stnId"),
             "tm_fc": _field(item, "tm_fc", "tmFc"),
             "seq": _field(item, "seq", "tmSeq") or str(index),
             "title": text,
+            "alert_action": "release" if released else "active",
             "raw": dict(raw),
         }
         # A warning response can contain several notices with the same issue
@@ -660,6 +689,7 @@ def weather_warning_to_weather_values(
                 value_text=text,
                 severity=_warning_severity(text),
                 issued_at=issued,
+                valid_until=_warning_valid_until(item, issued),
                 observed_at=issued,
                 target_at=issued,
                 known_at=fetched,
