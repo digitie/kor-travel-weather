@@ -1122,6 +1122,7 @@ class WeatherRepository:
         *,
         limit_per_location: int = 100,
         weather_domain: str | None = None,
+        metric_keys: Sequence[str] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Fetch current projections for several locations in one query."""
         if not location_ids:
@@ -1138,6 +1139,11 @@ class WeatherRepository:
             base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
             if weather_domain is not None:
                 base = base.where(WeatherValueRow.weather_domain == weather_domain)
+            if metric_keys is not None:
+                normalized_metric_keys = tuple(dict.fromkeys(metric_keys))
+                if not normalized_metric_keys:
+                    return {location_id: [] for location_id in location_ids}
+                base = base.where(WeatherValueRow.metric_key.in_(normalized_metric_keys))
             ranked = self._ranked_current_ids(session, base)
             limited_ids = (
                 select(
@@ -1194,6 +1200,26 @@ class WeatherRepository:
                 values = result.setdefault(row.location_id, [])
                 values.append(self._value_model(row))
             return result
+
+    def marker_values_many(
+        self,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int = 80,
+    ) -> dict[str, list[WeatherValue]]:
+        """Return the small current projection needed to render map markers.
+
+        A marker only needs a weather condition/temperature and advisories;
+        loading every air-quality and forecast metric makes a nationwide map
+        refresh scan millions of append-only revisions.  Keep this allowlist
+        in one repository boundary so the API cannot accidentally turn a
+        marker request into a full fact-history query.
+        """
+        return self.latest_values_many(
+            location_ids,
+            limit_per_location=limit_per_location,
+            metric_keys=("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY", "ALERT"),
+        )
 
     def timeline_many(
         self, location_ids: Sequence[str], *, limit_per_location: int = 500

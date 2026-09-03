@@ -619,8 +619,22 @@ async def marker_summaries(
     locations = await run_in_threadpool(repo.list_locations, enabled_only=True, limit=None)
     by_id = {location.location_id: location for location in locations}
     valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
+    marker_many = getattr(repo, "marker_values_many", None)
+    if callable(marker_many):
+        # The marker projection is deliberately allow-listed at the
+        # repository boundary.  It avoids a second full current-row scan for
+        # alerts while retaining the weather-code/temperature rows needed by
+        # the map.
+        marker_by_location = await run_in_threadpool(
+            marker_many, valid_ids, limit_per_location=80
+        )
+        latest_by_location = marker_by_location
+        alert_by_location = marker_by_location
+    else:
+        latest_by_location = None
+        alert_by_location = None
     latest_many = getattr(repo, "latest_values_many", None)
-    if callable(latest_many):
+    if latest_by_location is None and callable(latest_many):
         latest_by_location = await run_in_threadpool(
             latest_many, valid_ids, limit_per_location=40
         )
@@ -630,7 +644,7 @@ async def marker_summaries(
             limit_per_location=80,
             weather_domain="weather_alert",
         )
-    else:
+    elif latest_by_location is None:
         latest_by_location = {
             location_id: await run_in_threadpool(repo.latest_values, location_id, limit=80)
             for location_id in valid_ids
