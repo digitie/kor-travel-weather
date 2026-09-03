@@ -160,6 +160,9 @@ class WeatherValueRow(Base):
             "known_at",
             "source_record_key",
             "value_id",
+            postgresql_where=text(
+                "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+            ),
         ),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",

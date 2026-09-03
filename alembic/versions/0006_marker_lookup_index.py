@@ -10,6 +10,7 @@ branch_labels = None
 depends_on = None
 
 _INDEX_NAME = "ix_weather_values_marker_lookup"
+_MARKER_METRIC_PREDICATE = "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
 
 
 def upgrade() -> None:
@@ -23,7 +24,8 @@ def upgrade() -> None:
                     "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
                     f"{_INDEX_NAME} ON weather_values "
                     "(location_id, metric_key, known_at DESC NULLS LAST, "
-                    "source_record_key DESC NULLS LAST, value_id DESC)"
+                    "source_record_key DESC NULLS LAST, value_id DESC) "
+                    f"WHERE {_MARKER_METRIC_PREDICATE}"
                 )
             )
     else:
