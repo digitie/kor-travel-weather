@@ -30,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     case,
+    column,
     create_engine,
     delete,
     desc,
@@ -40,6 +41,7 @@ from sqlalchemy import (
     text,
     true,
     update,
+    values,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
@@ -213,6 +215,7 @@ class WeatherValueRow(Base):
 
 
 _MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
+_MARKER_CANDIDATE_LIMIT = 4
 
 
 class SyncRunRow(Base):
@@ -1251,47 +1254,135 @@ class WeatherRepository:
             # row by that column alone would make a future forecast appear as
             # the marker's current condition.  Keep one value per provider /
             # metric (across current/forecast datasets), preferring
-            # observed/nowcast rows and then the most recent target at or
-            # before now (or the nearest future target when no current sample
-            # exists).
-            now = datetime.now(UTC)
-            timestamp = func.coalesce(
-                WeatherValueRow.target_at,
-                WeatherValueRow.valid_at,
-                WeatherValueRow.observed_at,
-                WeatherValueRow.issued_at,
+            # A forecast response can be ingested after the current response
+            # and therefore have a larger ``known_at``.  Selecting the newest
+            # row by that column alone would make a future forecast appear as
+            # the marker's current condition.  The marker only needs one
+            # representative row per location/metric; the full all-provider
+            # bundle remains available from ``/resolve``.  Fetch a handful of
+            # observed/nowcast candidates through a LATERAL index-only lookup,
+            # then choose the newest candidate in Python.  The explicit metric
+            # predicate is intentionally repeated inside the lateral query so
+            # PostgreSQL can prove the partial marker index predicate even
+            # though the metric value is supplied by a VALUES row.
+            requested_locations = values(
+                column("location_id", String), name="marker_locations"
+            ).data([(location_id,) for location_id in location_ids]).alias(
+                "marker_locations"
             )
-            style_priority = case(
-                (WeatherValueRow.forecast_style.in_(("observed", "nowcast")), 0),
-                else_=1,
+            requested_metrics = values(
+                column("metric_key", String), name="marker_metrics"
+            ).data([(metric_key,) for metric_key in _MARKER_METRIC_KEYS]).alias(
+                "marker_metrics"
             )
-            past_priority = case((timestamp <= now, 0), else_=1)
-            past_timestamp = case((timestamp <= now, timestamp), else_=None)
-            future_timestamp = case((timestamp > now, timestamp), else_=None)
-            current = (
-                select(WeatherValueRow)
-                .where(
-                    WeatherValueRow.location_id.in_(location_ids),
+
+            def candidate_ids(*, observed_only: bool) -> Any:
+                predicates = [
+                    WeatherValueRow.location_id == requested_locations.c.location_id,
+                    WeatherValueRow.metric_key == requested_metrics.c.metric_key,
                     WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                ]
+                if observed_only:
+                    predicates.append(
+                        WeatherValueRow.forecast_style.in_(
+                            ("observed", "nowcast")
+                        )
+                    )
+                candidates = (
+                    select(WeatherValueRow.value_id.label("value_id"))
+                    .where(*predicates)
+                    .order_by(
+                        nullslast(desc(WeatherValueRow.known_at)),
+                        desc(WeatherValueRow.source_record_key),
+                        desc(WeatherValueRow.value_id),
+                    )
+                    .limit(_MARKER_CANDIDATE_LIMIT)
+                    .lateral()
+                    .alias("marker_candidates")
                 )
-                .distinct(
-                    WeatherValueRow.location_id,
-                    WeatherValueRow.provider,
-                    WeatherValueRow.metric_key,
+                return select(candidates.c.value_id).select_from(
+                    requested_locations.join(requested_metrics, true()).join(
+                        candidates, true()
+                    )
                 )
-                .order_by(
-                    WeatherValueRow.location_id,
-                    WeatherValueRow.provider,
-                    WeatherValueRow.metric_key,
-                    style_priority,
-                    past_priority,
-                    nullslast(desc(past_timestamp)),
-                    nullslast(future_timestamp),
-                    nullslast(desc(WeatherValueRow.known_at)),
-                    desc(WeatherValueRow.source_record_key),
-                    desc(WeatherValueRow.value_id),
+
+            def fetch_candidates(candidate_query: Any) -> list[WeatherValueRow]:
+                return list(
+                    session.scalars(
+                        select(WeatherValueRow).where(
+                            WeatherValueRow.value_id.in_(candidate_query)
+                        )
+                    ).all()
                 )
-            )
+
+            observed_rows = fetch_candidates(candidate_ids(observed_only=True))
+            selected: dict[tuple[str, str], WeatherValueRow] = {}
+            for row in observed_rows:
+                pair = (row.location_id, row.metric_key)
+                previous = selected.get(pair)
+                if previous is None or (
+                    row.known_at or datetime.min.replace(tzinfo=UTC),
+                    row.source_record_key,
+                    row.value_id,
+                ) > (
+                    previous.known_at or datetime.min.replace(tzinfo=UTC),
+                    previous.source_record_key,
+                    previous.value_id,
+                ):
+                    selected[pair] = row
+
+            # Forecast-only anchors are uncommon, but still need an icon.  Do
+            # a bounded fallback only for missing location/metric pairs so the
+            # normal observed path never scans their long forecast history.
+            missing_pairs = [
+                (location_id, metric_key)
+                for location_id in location_ids
+                for metric_key in _MARKER_METRIC_KEYS
+                if (location_id, metric_key) not in selected
+            ]
+            if missing_pairs:
+                missing_locations = values(
+                    column("location_id", String),
+                    column("metric_key", String),
+                    name="marker_missing_pairs",
+                ).data(missing_pairs).alias("marker_missing_pairs")
+                fallback_candidates = (
+                    select(WeatherValueRow.value_id.label("value_id"))
+                    .where(
+                        WeatherValueRow.location_id
+                        == missing_locations.c.location_id,
+                        WeatherValueRow.metric_key == missing_locations.c.metric_key,
+                        WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                    )
+                    .order_by(
+                        nullslast(desc(WeatherValueRow.known_at)),
+                        desc(WeatherValueRow.source_record_key),
+                        desc(WeatherValueRow.value_id),
+                    )
+                    .limit(_MARKER_CANDIDATE_LIMIT)
+                    .lateral()
+                    .alias("marker_fallback_candidates")
+                )
+                fallback_query = select(
+                    fallback_candidates.c.value_id
+                ).select_from(
+                    missing_locations.join(fallback_candidates, true())
+                )
+                for row in fetch_candidates(fallback_query):
+                    pair = (row.location_id, row.metric_key)
+                    previous = selected.get(pair)
+                    if previous is None or (
+                        row.known_at or datetime.min.replace(tzinfo=UTC),
+                        row.source_record_key,
+                        row.value_id,
+                    ) > (
+                        previous.known_at or datetime.min.replace(tzinfo=UTC),
+                        previous.source_record_key,
+                        previous.value_id,
+                    ):
+                        selected[pair] = row
+
+            current_rows = list(selected.values())
             alert_station = func.coalesce(
                 WeatherValueRow.payload["stn_id"].as_string(),
                 WeatherValueRow.payload["stnId"].as_string(),
@@ -1364,7 +1455,7 @@ class WeatherRepository:
             result: dict[str, list[WeatherValue]] = {
                 location_id: [] for location_id in location_ids
             }
-            for row in session.scalars(current).all():
+            for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
             for row in session.scalars(alerts).all():
                 result.setdefault(row.location_id, []).append(self._value_model(row))
