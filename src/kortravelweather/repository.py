@@ -35,6 +35,7 @@ from sqlalchemy import (
     desc,
     func,
     nullslast,
+    or_,
     select,
     text,
     true,
@@ -152,6 +153,14 @@ class WeatherValueRow(Base):
         Index("ix_weather_values_location_time", "location_id", "valid_at", "observed_at"),
         Index("ix_weather_values_location_target_known", "location_id", "target_at", "known_at"),
         Index("ix_weather_values_dataset_metric", "dataset_key", "metric_key"),
+        Index(
+            "ix_weather_values_marker_lookup",
+            "location_id",
+            "metric_key",
+            "known_at",
+            "source_record_key",
+            "value_id",
+        ),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",
             name="ck_weather_values_has_value",
@@ -198,6 +207,9 @@ class WeatherValueRow(Base):
         ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
         nullable=False,
     )
+
+
+_MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
 
 
 class SyncRunRow(Base):
@@ -1215,11 +1227,74 @@ class WeatherRepository:
         in one repository boundary so the API cannot accidentally turn a
         marker request into a full fact-history query.
         """
-        return self.latest_values_many(
-            location_ids,
-            limit_per_location=limit_per_location,
-            metric_keys=("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY", "ALERT"),
-        )
+        if not location_ids:
+            return {}
+        if limit_per_location <= 0:
+            raise ValueError("limit_per_location은 양수여야 합니다.")
+        # PostgreSQL's DISTINCT ON can use the marker lookup index to read
+        # one recent row per location/metric without ranking all append-only
+        # revisions.  Keep the generic window-query fallback for SQLite and
+        # other test dialects.
+        with self._session_factory() as session:
+            if session.get_bind().dialect.name != "postgresql":
+                return self.latest_values_many(
+                    location_ids,
+                    limit_per_location=limit_per_location,
+                    metric_keys=(*_MARKER_METRIC_KEYS, "ALERT"),
+                )
+
+            current = (
+                select(WeatherValueRow)
+                .where(
+                    WeatherValueRow.location_id.in_(location_ids),
+                    WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                )
+                .distinct(WeatherValueRow.location_id, WeatherValueRow.metric_key)
+                .order_by(
+                    WeatherValueRow.location_id,
+                    WeatherValueRow.metric_key,
+                    nullslast(desc(WeatherValueRow.known_at)),
+                    desc(WeatherValueRow.source_record_key),
+                    desc(WeatherValueRow.value_id),
+                )
+            )
+            alert_ranked = (
+                select(
+                    WeatherValueRow.value_id.label("value_id"),
+                    func.row_number()
+                    .over(
+                        partition_by=WeatherValueRow.location_id,
+                        order_by=(
+                            nullslast(desc(WeatherValueRow.known_at)),
+                            desc(WeatherValueRow.target_at),
+                            desc(WeatherValueRow.value_id),
+                        ),
+                    )
+                    .label("location_rank"),
+                )
+                .where(
+                    WeatherValueRow.location_id.in_(location_ids),
+                    or_(
+                        WeatherValueRow.weather_domain == "weather_alert",
+                        WeatherValueRow.metric_key == "ALERT",
+                    ),
+                )
+                .subquery("marker_alert_values")
+            )
+            alerts = (
+                select(WeatherValueRow)
+                .join(alert_ranked, WeatherValueRow.value_id == alert_ranked.c.value_id)
+                .where(alert_ranked.c.location_rank <= min(limit_per_location, 20))
+                .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
+            )
+            result: dict[str, list[WeatherValue]] = {
+                location_id: [] for location_id in location_ids
+            }
+            for row in session.scalars(current).all():
+                result.setdefault(row.location_id, []).append(self._value_model(row))
+            for row in session.scalars(alerts).all():
+                result.setdefault(row.location_id, []).append(self._value_model(row))
+            return result
 
     def timeline_many(
         self, location_ids: Sequence[str], *, limit_per_location: int = 500
