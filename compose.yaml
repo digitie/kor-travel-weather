@@ -2,6 +2,11 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Marker/resolve queries use PostgreSQL window functions.  The Docker
+    # default /dev/shm is only 64 MiB and can make parallel plans fail with
+    # ``could not resize shared memory segment`` under concurrent scrapes.
+    # Keep the limit explicit so production behaviour is not host-dependent.
+    shm_size: 1gb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-weather}
       POSTGRES_USER: ${POSTGRES_USER:-weather}
