@@ -1243,34 +1243,88 @@ class WeatherRepository:
                     metric_keys=(*_MARKER_METRIC_KEYS, "ALERT"),
                 )
 
+            # A forecast response can be ingested after the current response
+            # and therefore have a larger ``known_at``.  Selecting the newest
+            # row by that column alone would make a future forecast appear as
+            # the marker's current condition.  Keep one value per provider /
+            # metric (across current/forecast datasets), preferring
+            # observed/nowcast rows and then the most recent target at or
+            # before now (or the nearest future target when no current sample
+            # exists).
+            now = datetime.now(UTC)
+            timestamp = func.coalesce(
+                WeatherValueRow.target_at,
+                WeatherValueRow.valid_at,
+                WeatherValueRow.observed_at,
+                WeatherValueRow.issued_at,
+            )
+            style_priority = case(
+                (WeatherValueRow.forecast_style.in_(("observed", "nowcast")), 0),
+                else_=1,
+            )
+            past_priority = case((timestamp <= now, 0), else_=1)
+            past_timestamp = case((timestamp <= now, timestamp), else_=None)
+            future_timestamp = case((timestamp > now, timestamp), else_=None)
             current = (
                 select(WeatherValueRow)
                 .where(
                     WeatherValueRow.location_id.in_(location_ids),
                     WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
                 )
-                .distinct(WeatherValueRow.location_id, WeatherValueRow.metric_key)
+                .distinct(
+                    WeatherValueRow.location_id,
+                    WeatherValueRow.provider,
+                    WeatherValueRow.metric_key,
+                )
                 .order_by(
                     WeatherValueRow.location_id,
+                    WeatherValueRow.provider,
                     WeatherValueRow.metric_key,
+                    style_priority,
+                    past_priority,
+                    nullslast(desc(past_timestamp)),
+                    nullslast(future_timestamp),
                     nullslast(desc(WeatherValueRow.known_at)),
                     desc(WeatherValueRow.source_record_key),
                     desc(WeatherValueRow.value_id),
                 )
             )
+            alert_station = func.coalesce(
+                WeatherValueRow.payload["stn_id"].as_string(),
+                WeatherValueRow.payload["stnId"].as_string(),
+                WeatherValueRow.value_id,
+            )
+            alert_sequence = func.coalesce(
+                WeatherValueRow.payload["seq"].as_string(),
+                WeatherValueRow.payload["tmSeq"].as_string(),
+                WeatherValueRow.value_id,
+            )
             alert_ranked = (
                 select(
                     WeatherValueRow.value_id.label("value_id"),
+                    WeatherValueRow.location_id.label("location_id"),
+                    WeatherValueRow.target_at.label("target_at"),
+                    WeatherValueRow.known_at.label("known_at"),
                     func.row_number()
                     .over(
-                        partition_by=WeatherValueRow.location_id,
+                        partition_by=(
+                            WeatherValueRow.location_id,
+                            WeatherValueRow.provider,
+                            WeatherValueRow.dataset_key,
+                            WeatherValueRow.weather_domain,
+                            WeatherValueRow.metric_key,
+                            WeatherValueRow.target_at,
+                            alert_station,
+                            alert_sequence,
+                        ),
                         order_by=(
                             nullslast(desc(WeatherValueRow.known_at)),
                             desc(WeatherValueRow.target_at),
+                            desc(WeatherValueRow.source_record_key),
                             desc(WeatherValueRow.value_id),
                         ),
                     )
-                    .label("location_rank"),
+                    .label("revision_rank"),
                 )
                 .where(
                     WeatherValueRow.location_id.in_(location_ids),
@@ -1281,10 +1335,27 @@ class WeatherRepository:
                 )
                 .subquery("marker_alert_values")
             )
+            alert_limited = (
+                select(
+                    alert_ranked.c.value_id,
+                    func.row_number()
+                    .over(
+                        partition_by=alert_ranked.c.location_id,
+                        order_by=(
+                            desc(alert_ranked.c.target_at),
+                            nullslast(desc(alert_ranked.c.known_at)),
+                            desc(alert_ranked.c.value_id),
+                        ),
+                    )
+                    .label("location_rank"),
+                )
+                .where(alert_ranked.c.revision_rank == 1)
+                .subquery("limited_marker_alert_values")
+            )
             alerts = (
                 select(WeatherValueRow)
-                .join(alert_ranked, WeatherValueRow.value_id == alert_ranked.c.value_id)
-                .where(alert_ranked.c.location_rank <= min(limit_per_location, 20))
+                .join(alert_limited, WeatherValueRow.value_id == alert_limited.c.value_id)
+                .where(alert_limited.c.location_rank <= min(limit_per_location, 20))
                 .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
             )
             result: dict[str, list[WeatherValue]] = {

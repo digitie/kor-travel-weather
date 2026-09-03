@@ -3,7 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -262,6 +263,127 @@ def test_marker_batch_returns_weather_and_alert_state(api_client: TestClient) ->
     response = api_client.get("/v1/weather/markers", params={"location_id": location.location_id})
     assert response.status_code == 200
     assert response.json()["data"][0]["latest"][0]["metric_key"] == "PTY"
+
+
+def test_marker_projection_prefers_current_over_newer_forecast(api_client: TestClient) -> None:
+    """A newly ingested forecast must not replace the marker's current value."""
+    repository = api_client.app.state.repository
+    suffix = uuid.uuid4().hex[:8]
+    location_id = f"marker-current-preference-{suffix}"
+    observed_source = f"marker-observed-source-{suffix}"
+    forecast_source = f"marker-forecast-source-{suffix}"
+    alert_old_source = f"marker-alert-old-source-{suffix}"
+    alert_new_source = f"marker-alert-new-source-{suffix}"
+    location = WeatherLocation(
+        location_id=location_id,
+        name="현재 우선 마커",
+        latitude=37.51,
+        longitude=127.01,
+    )
+    repository.create_location(location)
+    repository.record_source(
+        source_record_key=observed_source,
+        provider="open_meteo",
+        dataset_key="open_meteo_current",
+        source_entity_type="weather_response",
+        source_entity_id=location.location_id,
+        payload={"rows": [{"kind": "observed"}]},
+    )
+    repository.record_source(
+        source_record_key=forecast_source,
+        provider="open_meteo",
+        dataset_key="open_meteo_forecast",
+        source_entity_type="weather_response",
+        source_entity_id=location.location_id,
+        payload={"rows": [{"kind": "forecast"}]},
+    )
+    repository.record_source(
+        source_record_key=alert_old_source,
+        provider="python-kma-api",
+        dataset_key="kma_weather_alerts",
+        source_entity_type="weather_response",
+        source_entity_id=location.location_id,
+        payload={"rows": [{"kind": "alert-old"}]},
+    )
+    repository.record_source(
+        source_record_key=alert_new_source,
+        provider="python-kma-api",
+        dataset_key="kma_weather_alerts",
+        source_entity_type="weather_response",
+        source_entity_id=location.location_id,
+        payload={"rows": [{"kind": "alert-new"}]},
+    )
+    now = datetime.now(UTC)
+    alert_target = now - timedelta(hours=1)
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id=location.location_id,
+                provider="open_meteo",
+                dataset_key="open_meteo_current",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="TEMP",
+                target_at=now - timedelta(minutes=10),
+                known_at=now,
+                value_number=Decimal("20"),
+                source_record_key=observed_source,
+            ),
+            WeatherValue(
+                location_id=location.location_id,
+                provider="open_meteo",
+                dataset_key="open_meteo_forecast",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.SHORT,
+                metric_key="TEMP",
+                target_at=now + timedelta(hours=1),
+                known_at=now + timedelta(seconds=1),
+                value_number=Decimal("30"),
+                source_record_key=forecast_source,
+            ),
+            WeatherValue(
+                location_id=location.location_id,
+                provider="python-kma-api",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=alert_target,
+                known_at=now - timedelta(minutes=10),
+                value_text="이전 특보",
+                severity="watch",
+                payload={"stn_id": "108", "seq": "1"},
+                source_record_key=alert_old_source,
+            ),
+            WeatherValue(
+                location_id=location.location_id,
+                provider="python-kma-api",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=alert_target,
+                known_at=now - timedelta(minutes=1),
+                value_text="최신 특보",
+                severity="warning",
+                payload={"stn_id": "108", "seq": "1"},
+                source_record_key=alert_new_source,
+            ),
+        ]
+    )
+
+    response = api_client.get(
+        "/v1/weather/markers", params={"location_id": location.location_id}
+    )
+    assert response.status_code == 200
+    temperature_rows = [
+        row for row in response.json()["data"][0]["latest"] if row["metric_key"] == "TEMP"
+    ]
+    assert len(temperature_rows) == 1
+    assert temperature_rows[0]["dataset_key"] == "open_meteo_current"
+    assert temperature_rows[0]["forecast_style"] == "observed"
+    assert temperature_rows[0]["value_number"] == 20.0
+    assert [row["value_text"] for row in response.json()["data"][0]["alerts"]] == ["최신 특보"]
 
 
 def test_openapi_error_contract_matches_problem_handler(api_client: TestClient) -> None:
