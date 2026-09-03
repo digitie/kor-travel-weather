@@ -35,6 +35,7 @@ from sqlalchemy import (
     delete,
     desc,
     func,
+    not_,
     nullslast,
     or_,
     select,
@@ -1534,6 +1535,7 @@ class WeatherRepository:
         metric_key: str | None = None,
         limit: int = 500,
         include_revisions: bool = False,
+        exclude_alerts: bool = False,
     ) -> list[WeatherValue]:
         with self._session_factory() as session:
             timestamp = func.coalesce(
@@ -1551,6 +1553,17 @@ class WeatherRepository:
                 stmt = stmt.where(WeatherValueRow.dataset_key == dataset_key)
             if metric_key:
                 stmt = stmt.where(WeatherValueRow.metric_key == metric_key)
+            if exclude_alerts:
+                alert_filter = or_(
+                    WeatherValueRow.metric_key == "ALERT",
+                    WeatherValueRow.weather_domain.ilike("%alert%"),
+                    WeatherValueRow.weather_domain.ilike("%warning%"),
+                    WeatherValueRow.dataset_key.ilike("%alert%"),
+                    WeatherValueRow.dataset_key.ilike("%warning%"),
+                )
+                # Apply the event filter before revision ranking and LIMIT so
+                # an old alert feed cannot consume the entire forecast page.
+                stmt = stmt.where(not_(alert_filter))
             if not include_revisions:
                 ranked = self._ranked_current_ids(session, stmt)
                 stmt = stmt.join(ranked, WeatherValueRow.value_id == ranked.c.value_id).where(

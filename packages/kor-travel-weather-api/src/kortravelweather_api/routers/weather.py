@@ -467,20 +467,8 @@ async def forecast(
         metric_key=metric_key,
         limit=limit,
         include_revisions=history,
+        exclude_alerts=True,
     )
-    # Alert events are an append-only event stream, not forecast values.  The
-    # forecast route must never leak announcement/release rows into a
-    # consumer's timeline; callers use ``latest``/``markers``/``resolve`` for
-    # the active alert projection.  Keep ordinary observed values in this
-    # backwards-compatible timeline response (the documented default is a
-    # current projection) while excluding every alert-shaped fact.
-    rows = [
-        row
-        for row in rows
-        if "alert" not in f"{row.dataset_key} {row.weather_domain}".lower()
-        and "warning" not in f"{row.dataset_key} {row.weather_domain}".lower()
-        and row.metric_key != "ALERT"
-    ]
     return envelope(
         request,
         started,
