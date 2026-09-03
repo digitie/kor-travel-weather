@@ -468,6 +468,19 @@ async def forecast(
         limit=limit,
         include_revisions=history,
     )
+    # Alert events are an append-only event stream, not forecast values.  The
+    # forecast route must never leak announcement/release rows into a
+    # consumer's timeline; callers use ``latest``/``markers``/``resolve`` for
+    # the active alert projection.  Keep ordinary observed values in this
+    # backwards-compatible timeline response (the documented default is a
+    # current projection) while excluding every alert-shaped fact.
+    rows = [
+        row
+        for row in rows
+        if "alert" not in f"{row.dataset_key} {row.weather_domain}".lower()
+        and "warning" not in f"{row.dataset_key} {row.weather_domain}".lower()
+        and row.metric_key != "ALERT"
+    ]
     return envelope(
         request,
         started,
@@ -555,11 +568,20 @@ async def resolve_weather(
     # forecast, and alert facts instead of silently returning only the station
     # row.  ``nearby`` already returns deterministic distance ordering.
     source_radius = max(5.0, distance + 5.0)
-    source_rows = [
+    # External providers are anchored to the selected AirKorea station.  Do
+    # not fan a coordinate resolve out to every other station in a 5 km
+    # circle: a dense catalog can turn one request into hundreds of thousands
+    # of historical rows and exceed the gateway timeout.  Keep the selected
+    # station plus nearby non-station anchors (for example a KMA grid anchor)
+    # that can actually represent an additional source for that station.
+    source_rows = [(location, distance)]
+    source_rows.extend(
         (candidate, candidate_distance)
         for candidate, candidate_distance in rows
-        if candidate_distance <= source_radius
-    ]
+        if candidate.location_id != location.location_id
+        and candidate_distance <= source_radius
+        and measurement_point_out(candidate, distance_km=candidate_distance) is None
+    )
     source_ids = [candidate.location_id for candidate, _ in source_rows]
     latest_many = getattr(repo, "latest_values_many", None)
     timeline_many = getattr(repo, "timeline_many", None)

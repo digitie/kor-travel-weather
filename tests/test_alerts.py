@@ -87,3 +87,15 @@ def test_future_validity_overrides_default_age_cutoff() -> None:
     )
 
     assert active_alert_values([still_valid], now=now) == [still_valid]
+
+
+def test_multi_name_announcement_is_returned_once() -> None:
+    now = datetime(2026, 9, 4, 12, tzinfo=UTC)
+    announcement = _alert(
+        now=now,
+        title="강풍주의보·풍랑주의보 발표",
+        source_record_key="multi-name-announcement",
+        target_offset=-timedelta(hours=1),
+    )
+
+    assert active_alert_values([announcement], now=now) == [announcement]

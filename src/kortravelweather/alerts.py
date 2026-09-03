@@ -140,8 +140,13 @@ def active_alert_values(
             if not action_release:
                 selected[identity] = row
 
+    # A provider may put several warning names in one announcement title
+    # (for example ``강풍주의보·풍랑주의보 발표``).  That single immutable fact
+    # must produce one API/marker row, even though it updates multiple warning
+    # identities during state reduction.
+    unique_selected = {value_id(row): row for row in selected.values()}
     return sorted(
-        selected.values(),
+        unique_selected.values(),
         key=lambda row: (
             row.target_at or row.issued_at or row.observed_at or row.collected_at,
             row.known_at or datetime.min.replace(tzinfo=UTC),

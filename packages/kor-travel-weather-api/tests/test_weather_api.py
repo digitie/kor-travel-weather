@@ -522,6 +522,84 @@ def test_latest_projection_hides_released_alerts(api_client: TestClient) -> None
     assert [row for row in response.json()["data"] if row["metric_key"] == "ALERT"] == []
 
 
+def test_forecast_route_excludes_alert_event_facts(api_client: TestClient) -> None:
+    """Forecast consumers must receive weather values, not warning events."""
+    repository = api_client.app.state.repository
+    suffix = uuid.uuid4().hex[:8]
+    location_id = f"forecast-alert-filter-{suffix}"
+    repository.create_location(
+        WeatherLocation(
+            location_id=location_id,
+            name="예보 특보 필터",
+            latitude=37.54,
+            longitude=127.04,
+        )
+    )
+    now = datetime.now(UTC)
+    weather_source = f"forecast-weather-{suffix}"
+    alert_source = f"forecast-alert-{suffix}"
+    for source_key, provider, dataset_key, payload in (
+        (
+            weather_source,
+            "open_meteo",
+            "open_meteo_forecast",
+            {"rows": [{"metric": "TEMP"}]},
+        ),
+        (
+            alert_source,
+            "python-kma-api",
+            "kma_weather_alerts",
+            {"rows": [{"metric": "ALERT"}]},
+        ),
+    ):
+        repository.record_source(
+            source_record_key=source_key,
+            provider=provider,
+            dataset_key=dataset_key,
+            source_entity_type="weather_response",
+            source_entity_id=location_id,
+            payload=payload,
+        )
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id=location_id,
+                provider="open_meteo",
+                dataset_key="open_meteo_forecast",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.SHORT,
+                metric_key="TEMP",
+                target_at=now + timedelta(hours=1),
+                value_number=Decimal("24"),
+                source_record_key=weather_source,
+            ),
+            WeatherValue(
+                location_id=location_id,
+                provider="python-kma-api",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=now,
+                value_text="호우주의보 발표",
+                payload={"stn_id": "108", "title": "호우주의보 발표"},
+                source_record_key=alert_source,
+            ),
+        ]
+    )
+
+    response = api_client.get(f"/v1/weather/locations/{location_id}/forecast")
+
+    assert response.status_code == 200
+    rows = response.json()["data"]
+    assert any(row["metric_key"] == "TEMP" for row in rows)
+    assert all(row["metric_key"] != "ALERT" for row in rows)
+    assert all(
+        "alert" not in f"{row['dataset_key']} {row['weather_domain']}".lower()
+        for row in rows
+    )
+
+
 def test_openapi_error_contract_matches_problem_handler(api_client: TestClient) -> None:
     schema = api_client.app.openapi()
     forecast_errors = schema["paths"]["/v1/weather/locations/{location_id}/forecast"]["get"][
