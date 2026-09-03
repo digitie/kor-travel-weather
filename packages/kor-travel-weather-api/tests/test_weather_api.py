@@ -386,6 +386,80 @@ def test_marker_projection_prefers_current_over_newer_forecast(api_client: TestC
     assert [row["value_text"] for row in response.json()["data"][0]["alerts"]] == ["최신 특보"]
 
 
+def test_marker_projection_hides_released_and_expired_alerts(api_client: TestClient) -> None:
+    repository = api_client.app.state.repository
+    suffix = uuid.uuid4().hex[:8]
+    location_id = f"marker-alert-state-{suffix}"
+    location = WeatherLocation(
+        location_id=location_id,
+        name="특보 상태 마커",
+        latitude=37.52,
+        longitude=127.02,
+    )
+    repository.create_location(location)
+    now = datetime.now(UTC)
+    source_keys = [f"marker-alert-state-{suffix}-{index}" for index in range(3)]
+    for source_key in source_keys:
+        repository.record_source(
+            source_record_key=source_key,
+            provider="python-kma-api",
+            dataset_key="kma_weather_alerts",
+            source_entity_type="weather_response",
+            source_entity_id=location_id,
+            payload={"rows": [{"source": source_key}]},
+        )
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id=location_id,
+                provider="python-kma-api",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=now - timedelta(hours=2),
+                known_at=now - timedelta(hours=2),
+                value_text="호우주의보 발표",
+                severity="watch",
+                payload={"stn_id": "108", "seq": "1", "title": "호우주의보 발표"},
+                source_record_key=source_keys[0],
+            ),
+            WeatherValue(
+                location_id=location_id,
+                provider="python-kma-api",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=now - timedelta(hours=1),
+                known_at=now - timedelta(hours=1),
+                value_text="호우주의보 해제",
+                severity="watch",
+                payload={"stn_id": "108", "seq": "2", "title": "호우주의보 해제"},
+                source_record_key=source_keys[1],
+            ),
+            WeatherValue(
+                location_id=location_id,
+                provider="python-kma-api",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=now - timedelta(hours=3),
+                known_at=now - timedelta(hours=3),
+                valid_until=now - timedelta(minutes=1),
+                value_text="강풍주의보 발표",
+                severity="watch",
+                payload={"stn_id": "108", "seq": "3", "title": "강풍주의보 발표"},
+                source_record_key=source_keys[2],
+            ),
+        ]
+    )
+    response = api_client.get("/v1/weather/markers", params={"location_id": location_id})
+    assert response.status_code == 200
+    assert response.json()["data"][0]["alerts"] == []
+
+
 def test_openapi_error_contract_matches_problem_handler(api_client: TestClient) -> None:
     schema = api_client.app.openapi()
     forecast_errors = schema["paths"]["/v1/weather/locations/{location_id}/forecast"]["get"][

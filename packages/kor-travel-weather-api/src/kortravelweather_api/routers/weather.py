@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
+from kortravelweather.alerts import active_alert_values
 from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
@@ -347,7 +348,7 @@ def _split_weather_values(
             forecast.append(row)
         else:
             latest.append(row)
-    return latest, forecast, alerts
+    return latest, forecast, active_alert_values(alerts)
 
 
 def _weather_bundle(

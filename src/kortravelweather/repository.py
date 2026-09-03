@@ -48,6 +48,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
+from .alerts import active_alert_values
 from .metrics import observe_stale_recovered, observe_sync_finished, observe_sync_started
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
 from .settings import WeatherSettings, get_settings
@@ -1449,7 +1450,13 @@ class WeatherRepository:
             alerts = (
                 select(WeatherValueRow)
                 .join(alert_limited, WeatherValueRow.value_id == alert_limited.c.value_id)
-                .where(alert_limited.c.location_rank <= min(limit_per_location, 20))
+                .where(
+                    alert_limited.c.location_rank <= min(limit_per_location, 100),
+                    or_(
+                        WeatherValueRow.valid_until.is_(None),
+                        WeatherValueRow.valid_until > datetime.now(UTC),
+                    ),
+                )
                 .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
             )
             result: dict[str, list[WeatherValue]] = {
@@ -1457,8 +1464,13 @@ class WeatherRepository:
             }
             for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
+            alert_values_by_location: dict[str, list[WeatherValue]] = {}
             for row in session.scalars(alerts).all():
-                result.setdefault(row.location_id, []).append(self._value_model(row))
+                alert_values_by_location.setdefault(row.location_id, []).append(
+                    self._value_model(row)
+                )
+            for location_id, alert_values in alert_values_by_location.items():
+                result.setdefault(location_id, []).extend(active_alert_values(alert_values))
             return result
 
     def timeline_many(
