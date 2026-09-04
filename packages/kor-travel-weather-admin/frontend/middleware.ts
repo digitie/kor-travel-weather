@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { SESSION_COOKIE, sessionSecret, verifySessionValue } from "@/lib/session";
+import { isAllowedOrigin } from "@/lib/origin";
+import { sanitizeLocalPath } from "@/lib/navigation";
+import {
+  adminUsername,
+  durableSessionRevoked,
+  SESSION_COOKIE,
+  sessionSecret,
+  verifySessionValue,
+} from "@/lib/session";
 
 function unauthorized() {
   return new NextResponse("관리자 UI 인증이 필요합니다.", {
@@ -12,77 +20,20 @@ function csrfBlocked() {
   return new NextResponse("교차 사이트 요청이 차단되었습니다.", { status: 403 });
 }
 
-function configuredPublicOrigins() {
-  return (process.env.WEATHER_UI_PUBLIC_ORIGINS ?? process.env.WEATHER_UI_PUBLIC_ORIGIN ?? "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-    .flatMap((origin) => {
-      try {
-        const parsed = new URL(origin);
-        return parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash
-          ? []
-          : [parsed.origin];
-      } catch {
-        return [];
-      }
-    });
-}
-
-function normalizeOrigin(origin: string) {
-  try {
-    const parsed = new URL(origin);
-    return parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash
-      ? null
-      : parsed.origin;
-  } catch {
-    return null;
-  }
-}
-
-function sameOriginForMutation(request: NextRequest) {
-  const origin = normalizeOrigin(request.headers.get("origin") ?? "");
-  if (!origin) return false;
-  const allowlist = configuredPublicOrigins();
-  if (allowlist.length) return allowlist.includes(origin);
-  // A production deployment without an explicit public origin must fail
-  // closed. Development keeps the local-origin convenience because its
-  // authentication middleware is disabled.
-  return process.env.NODE_ENV !== "production" && origin === request.nextUrl.origin;
-}
-
-async function durableSessionRevoked(session: string): Promise<boolean> {
-  if (process.env.NODE_ENV !== "production") return false;
-  const apiBase = process.env.WEATHER_API_INTERNAL_URL?.trim();
-  const adminToken = process.env.WEATHER_ADMIN_TOKEN?.trim();
-  // A production web container must have the internal API/token pair. Treat
-  // a missing pair or an unavailable API as revoked rather than accepting a
-  // stateless cookie after a restart.
-  if (!apiBase || !adminToken) return true;
-  try {
-    const response = await fetch(`${apiBase.replace(/\/$/, "")}/v1/admin/session-revocations/check`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-admin-token": adminToken },
-      body: JSON.stringify({ session }),
-      cache: "no-store",
-    });
-    if (!response.ok) return true;
-    const payload = (await response.json()) as { revoked?: unknown };
-    return payload.revoked === true;
-  } catch {
-    return true;
-  }
-}
-
 async function redirectAuthenticatedLogin(request: NextRequest) {
-  const username = process.env.WEATHER_UI_USER;
-  const password = process.env.WEATHER_UI_PASSWORD;
+  const username = adminUsername();
+  const password = process.env.WEATHER_UI_PASSWORD ?? "";
+  const passwordHash = process.env.WEATHER_UI_PASSWORD_HASH?.trim();
   const session = request.cookies.get(SESSION_COOKIE)?.value;
-  if (!username || !password || !session) return null;
+  if ((!password && !passwordHash) || !session) return null;
   try {
     const secret = sessionSecret(username, password);
-    if ((await verifySessionValue(session, secret)) === username && !(await durableSessionRevoked(session))) {
-      return NextResponse.redirect(new URL("/", request.url));
+    if (
+      (await verifySessionValue(session, secret, request, username)) === username &&
+      !(await durableSessionRevoked(session))
+    ) {
+      const nextPath = sanitizeLocalPath(request.nextUrl.searchParams.get("next"));
+      return NextResponse.redirect(new URL(nextPath, request.url));
     }
   } catch {
     // The login page remains visible so the API can return a useful 503.
@@ -101,10 +52,14 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
   if (process.env.NODE_ENV !== "production") return NextResponse.next();
-  const username = process.env.WEATHER_UI_USER;
-  const password = process.env.WEATHER_UI_PASSWORD;
-  if (!username || !password) {
-    return new NextResponse("WEATHER_UI_USER/WEATHER_UI_PASSWORD 설정이 필요합니다.", { status: 503 });
+  const username = adminUsername();
+  const password = process.env.WEATHER_UI_PASSWORD ?? "";
+  const passwordHash = process.env.WEATHER_UI_PASSWORD_HASH?.trim();
+  if ((!password && !passwordHash) || !username) {
+    return new NextResponse(
+      "WEATHER_UI_USER와 WEATHER_UI_PASSWORD 또는 WEATHER_UI_PASSWORD_HASH 설정이 필요합니다.",
+      { status: 503 },
+    );
   }
   let secret: string;
   try {
@@ -119,12 +74,19 @@ export async function middleware(request: NextRequest) {
     // Basic credentials are cached by browsers, so an attacker could
     // otherwise submit a cross-site form to the server-side admin proxy.
     // Require an exact same-origin Origin on every state-changing request.
-    if (!sameOriginForMutation(request)) return csrfBlocked();
+    if (!isAllowedOrigin(request)) return csrfBlocked();
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
-  if (session && (await verifySessionValue(session, secret)) === username) {
+  if (session && (await verifySessionValue(session, secret, request, username)) === username) {
     if (!(await durableSessionRevoked(session))) return NextResponse.next();
   }
+  // A PBKDF2-only deployment has no cleartext value with which to support the
+  // reverse-proxy Basic fallback; it must use the signed session established by
+  // the login endpoint instead.
+  // When both values are present, the hash is authoritative as well: keeping
+  // Basic enabled would leave the old cleartext credential valid after a hash
+  // rotation and would no longer match the Geo auth contract.
+  if (!password || passwordHash) return unauthorized();
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Basic ")) {
     if (request.headers.get("accept")?.includes("text/html")) {

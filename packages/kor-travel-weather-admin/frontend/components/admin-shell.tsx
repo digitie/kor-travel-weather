@@ -41,29 +41,34 @@ function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function logout() {
-  return fetch("/api/auth/logout", { method: "POST" }).finally(() => {
-    window.location.assign("/login");
-  });
-}
-
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
   const activeItem = [...NAV_ITEMS]
     .filter((item) => isActive(pathname, item.href))
     .sort((left, right) => right.href.length - left.href.length)[0];
 
   async function handleLogout() {
     setLoggingOut(true);
+    setLogoutError(null);
     try {
-      await logout();
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) {
+        setLogoutError("로그아웃을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
+      window.location.assign("/login");
+    } catch {
+      setLogoutError("로그아웃 요청에 실패했습니다. 네트워크를 확인해 주세요.");
     } finally {
       setLoggingOut(false);
     }
   }
 
-  if (pathname === "/login") return <>{children}</>;
+  // Keep login visually standalone, as in kor-travel-geo: no rail/header chrome
+  // leaks into the credential screen, while the page itself owns the card/form.
+  if (pathname === "/login") return <main className="login-content">{children}</main>;
 
   return (
     <div className="weather-shell">
@@ -97,6 +102,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
             </nav>
             <div className="rail-footer">
               <button
+                aria-busy={loggingOut}
                 className="nav-link logout-button"
                 disabled={loggingOut}
                 onClick={() => void handleLogout()}
@@ -105,6 +111,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 <LogOut aria-hidden="true" size={16} strokeWidth={1.8} />
                 <span>로그아웃</span>
               </button>
+              {logoutError ? <p className="logout-error" role="alert">{logoutError}</p> : null}
             </div>
           </div>
         </aside>

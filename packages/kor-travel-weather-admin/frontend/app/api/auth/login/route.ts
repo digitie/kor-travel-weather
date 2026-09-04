@@ -2,7 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { isAllowedOrigin } from "@/lib/origin";
 import { sanitizeLocalPath } from "@/lib/navigation";
-import { createSessionValue, SESSION_COOKIE, SESSION_MAX_AGE, sessionSecret } from "@/lib/session";
+import {
+  adminUsername,
+  checkDurableLoginRateLimit,
+  clearDurableLoginFailures,
+  createSessionValue,
+  durableRevokeSession,
+  hashLoginBucket,
+  recordDurableLoginFailure,
+  revokeSessionValue,
+  SESSION_COOKIE,
+  SESSION_MAX_AGE,
+  sessionSecret,
+  verifyAdminLogin,
+  verifySessionValue,
+} from "@/lib/session";
 
 const WINDOW_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
@@ -27,20 +41,24 @@ function trustedForwardedIp(request: NextRequest) {
   // Proxies commonly append the client address to an existing chain. The
   // right-most value is the address added by the trusted last hop, while a
   // caller-supplied left-most value may be spoofed.
-  const candidate = (request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip"))
-    ?.split(",")
-    .at(-1)
-    ?.trim();
+  const candidate = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim();
   return candidate && candidate.length <= 64 ? candidate : null;
 }
 
 function clientKey(request: NextRequest) {
   const address = trustedForwardedIp(request) ?? socketIp(request);
-  // NextRequest does not expose a socket address in every adapter/runtime.
-  // Never put all such callers in one global bucket: a single attacker must
-  // not be able to lock out every operator. The deployment proxy must supply
-  // a trusted address (or configure an adapter that exposes request.ip).
-  return address ? `ip:${address.slice(0, 64)}` : null;
+  if (address) return `ip:${address.slice(0, 64)}`;
+  // NextRequest.ip is not populated by every self-hosted adapter.  Do not
+  // silently collapse all public production operators into one bucket (or
+  // disable throttling). The documented loopback Compose profile is not a
+  // public surface, so it keeps a bounded local bucket for smoke tests; any
+  // non-loopback production origin must expose a trusted proxy/socket IP.
+  const origin =
+    process.env.WEATHER_UI_PUBLIC_ORIGIN?.trim() ||
+    process.env.WEATHER_UI_PUBLIC_ORIGINS?.split(",")[0]?.trim() ||
+    "";
+  const loopback = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/?$/i.test(origin);
+  return process.env.NODE_ENV === "production" && !loopback ? null : "ip:untrusted";
 }
 
 function evictOneKey() {
@@ -108,9 +126,10 @@ export async function POST(request: NextRequest) {
       { status: 403, headers: { "cache-control": "no-store" } },
     );
   }
-  const username = process.env.WEATHER_UI_USER;
-  const password = process.env.WEATHER_UI_PASSWORD;
-  if (!username || !password) {
+  const configuredUsername = adminUsername();
+  const configuredPassword = process.env.WEATHER_UI_PASSWORD ?? "";
+  const passwordHash = process.env.WEATHER_UI_PASSWORD_HASH?.trim();
+  if ((!configuredPassword && !passwordHash) || !configuredUsername) {
     return NextResponse.json(
       { detail: "관리자 UI 인증 설정이 없습니다." },
       { status: 503, headers: { "cache-control": "no-store" } },
@@ -118,7 +137,7 @@ export async function POST(request: NextRequest) {
   }
   let secret: string;
   try {
-    secret = sessionSecret(username, password);
+    secret = sessionSecret(configuredUsername, configuredPassword);
   } catch {
     return NextResponse.json(
       { detail: "관리자 UI 세션 설정이 올바르지 않습니다." },
@@ -126,6 +145,21 @@ export async function POST(request: NextRequest) {
     );
   }
   const key = clientKey(request);
+  if (!key) {
+    return NextResponse.json(
+      { detail: "로그인 rate-limit을 위해 trusted proxy client IP 설정이 필요합니다." },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
+  const bucketHash = await hashLoginBucket(key);
+  const durableLimit = await checkDurableLoginRateLimit(bucketHash);
+  if (!durableLimit.available) {
+    return NextResponse.json(
+      { detail: "로그인 rate-limit 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요." },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
+  if (durableLimit.retryAfter !== null) return tooManyRequests(durableLimit.retryAfter);
   const retryAfter = rateLimit(key);
   if (retryAfter !== null) return tooManyRequests(retryAfter);
   const declaredLength = Number(request.headers.get("content-length") ?? 0);
@@ -153,27 +187,74 @@ export async function POST(request: NextRequest) {
       { status: 400, headers: { "cache-control": "no-store" } },
     );
   }
-  if (body.username !== username || body.password !== password) {
+  const result = await verifyAdminLogin({
+    username: typeof body.username === "string" ? body.username : "",
+    password: typeof body.password === "string" ? body.password : "",
+  });
+  if (result === "misconfigured") {
+    const recorded = await recordDurableLoginFailure(bucketHash);
+    if (!recorded.available) {
+      return NextResponse.json(
+        { detail: "로그인 rate-limit 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요." },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      );
+    }
+    return NextResponse.json(
+      { detail: "관리자 UI 인증 설정이 없습니다." },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
+  if (result !== "ok") {
+    const recorded = await recordDurableLoginFailure(bucketHash);
+    if (!recorded.available) {
+      return NextResponse.json(
+        { detail: "로그인 rate-limit 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요." },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      );
+    }
     return NextResponse.json(
       { detail: "아이디 또는 비밀번호가 올바르지 않습니다." },
       { status: 401, headers: { "cache-control": "no-store" } },
     );
   }
+  const cleared = await clearDurableLoginFailures(bucketHash);
+  if (!cleared.available) {
+    return NextResponse.json(
+      { detail: "로그인 rate-limit 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요." },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
   const nextPath = sanitizeLocalPath(body.next);
-  if (key) attempts.delete(key);
+  const previousSession = request.cookies.get(SESSION_COOKIE)?.value;
+  if (
+    previousSession &&
+    (await verifySessionValue(previousSession, secret, request, configuredUsername)) ===
+      configuredUsername
+  ) {
+    // Rotate/revoke a prior valid cookie before issuing a new one. This keeps
+    // copied cookies from surviving a normal re-login on another replica.
+    if (!(await durableRevokeSession(previousSession))) {
+      return NextResponse.json(
+        { detail: "기존 세션을 폐기할 수 없습니다. 잠시 후 다시 시도해 주세요." },
+        { status: 503, headers: { "cache-control": "no-store" } },
+      );
+    }
+    revokeSessionValue(previousSession);
+  }
+  attempts.delete(key);
   const response = NextResponse.json(
-    { ok: true, username, next: nextPath },
+    { ok: true, username: configuredUsername, next: nextPath },
     { headers: { "cache-control": "no-store" } },
   );
   const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ?? new URL(request.url).protocol.replace(":", "");
   response.cookies.set({
     name: SESSION_COOKIE,
-    value: await createSessionValue(username, secret),
+    value: await createSessionValue(configuredUsername, secret, request),
     httpOnly: true,
     maxAge: SESSION_MAX_AGE,
     path: "/",
     sameSite: "strict",
-    secure: process.env.NODE_ENV === "production" && forwardedProtocol === "https",
+    secure: process.env.NODE_ENV === "production" || forwardedProtocol === "https",
   });
   return response;
 }
