@@ -28,7 +28,8 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
   등록된 same-origin Origin 검증과 HttpOnly signed session을 거친다. 로그인 응답은
   검증된 `username`과 안전한 local `next`를 반환하고 세션 cookie는 `SameSite=Strict`다.
   Next server proxy가 `x-admin-token`을 주입하며 browser/client bundle에는 token을
-  포함하지 않는다. Basic Auth는 reverse proxy 호환 fallback이다.
+  포함하지 않는다. Web UI는 Geo와 같이 signed session만 사용하고 Basic Auth는
+  별도 Dagster gateway 경계에서만 사용한다.
 - `/admin/dagster`의 GraphQL은 server-side internal URL로만 전달한다. 운영 외부
   링크는 `NEXT_PUBLIC_DAGSTER_URL`로 명시하고, 상태 확인 실패도 UI에 error
   banner로 남긴다.
@@ -40,8 +41,8 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
 `WEATHER_UI_PASSWORD`, `WEATHER_UI_SESSION_SECRET`를 설정한다. 필요하면
 `WEATHER_UI_PASSWORD_HASH`에 `pbkdf2_sha256$iterations$salt$hash` 형식의
 kor-travel-geo 호환 해시를 설정하며, 이 값이 평문 비밀번호보다 우선한다. hash가
-설정된 경우 UI의 Basic fallback은 비활성화되므로 평문 값은 Dagster gateway 등
-별도 호환 경계에서만 사용한다.
+설정된 경우에도 Web UI는 Basic fallback을 사용하지 않으며, 평문 값은 로그인
+검증과 Dagster gateway 등 별도 호환 경계에서만 사용한다.
 Compose에서는
 `DAGSTER_UI_INTERNAL_URL=http://dagster:14102`를 web 컨테이너에 주입한다. 세션
 서명키와 backend token은 저장소/브라우저 로그에 기록하지 않는다. production 세션

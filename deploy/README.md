@@ -52,7 +52,8 @@ docker compose --env-file .env \
   -f compose.yaml -f deploy/compose.n150.yaml ps
 curl http://192.168.1.14:14101/health
 curl -u admin:'<WEATHER_UI_PASSWORD>' http://192.168.1.14:14102/server_info
-curl -u admin:'<WEATHER_UI_PASSWORD>' http://192.168.1.14:14105/
+# Web UI는 /login에서 세션을 발급한다(웹 Basic Auth는 사용하지 않음).
+open http://192.168.1.14:14105/login
 ```
 
 n150 운영에서는 다음 HTTPS 도메인을 reverse proxy의 정본으로 사용한다.
@@ -63,8 +64,9 @@ n150 운영에서는 다음 HTTPS 도메인을 reverse proxy의 정본으로 사
 | Dagster | `https://weather-dagster.digitie.mywire.org` |
 | admin web | `https://weather.digitie.mywire.org` |
 
-admin web Basic Auth 운영 계정 아이디는 `admin`이며 비밀번호는 배포 secret 파일로만
-주입한다. 비밀번호를 저장소나 로그에 기록하지 않는다.
+admin web 로그인 아이디는 `admin`이며 비밀번호는 배포 secret 파일로만 주입한다.
+웹은 kor-travel-geo와 동일한 signed session 로그인 form을 사용하고, Basic Auth는
+Dagster gateway에만 적용한다. 비밀번호를 저장소나 로그에 기록하지 않는다.
 Dagster 도메인도 같은 gateway Basic Auth로 보호하며, web의 `/admin/dagster` 화면은
 인증된 Next server-side proxy를 통해 내부 Dagster service를 조회한다.
 
