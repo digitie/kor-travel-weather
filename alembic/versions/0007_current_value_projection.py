@@ -69,14 +69,14 @@ def upgrade() -> None:
     # single DISTINCT ON over a nationwide append-only table can spill many GB
     # of temp files and hold the FK validation locks for an entire maintenance
     # window.  Lock the source table once, then process location batches.  The
-    # location-leading index already present on ``weather_values`` keeps each
-    # sort bounded while the stable revision ordering remains identical to the
-    # repository selector.
+    # temporary projection-order index keeps each batch index ordered while
+    # the stable revision ordering remains identical to the repository
+    # selector.
     bind.execute(sa.text("LOCK TABLE weather_values IN SHARE MODE"))
     location_ids = [
         row[0]
         for row in bind.execute(
-            sa.text("SELECT DISTINCT location_id FROM weather_values ORDER BY location_id")
+            sa.text("SELECT location_id FROM weather_locations ORDER BY location_id")
         )
     ]
     insert_sql = sa.text(
