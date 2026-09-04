@@ -68,17 +68,11 @@ def upgrade() -> None:
     # Backfill is intentionally done before the read indexes are built.  A
     # single DISTINCT ON over a nationwide append-only table can spill many GB
     # of temp files and hold the FK validation locks for an entire maintenance
-    # window.  Lock the source table once, then process location batches.  The
-    # temporary projection-order index keeps each batch index ordered while
-    # the stable revision ordering remains identical to the repository
-    # selector.
+    # window.  Lock the source table once, then stream the source-order index
+    # into the projection.  The temporary projection-order index keeps the
+    # DISTINCT ON input ordered, so PostgreSQL does not need to sort the full
+    # append-only history in work_mem/temp files.
     bind.execute(sa.text("LOCK TABLE weather_values IN SHARE MODE"))
-    location_ids = [
-        row[0]
-        for row in bind.execute(
-            sa.text("SELECT location_id FROM weather_locations ORDER BY location_id")
-        )
-    ]
     insert_sql = sa.text(
         """
         INSERT INTO weather_current_values (
@@ -92,19 +86,15 @@ def upgrade() -> None:
             value_id, location_id, provider, dataset_key, weather_domain,
             forecast_style, metric_key, target_at
         FROM weather_values
-        WHERE location_id IN :location_ids
         ORDER BY
             location_id, provider, dataset_key, weather_domain,
             forecast_style, metric_key, target_at,
             known_at DESC NULLS LAST,
-            source_record_key DESC,
+            source_record_key DESC NULLS LAST,
             value_id DESC
         """
-    ).bindparams(sa.bindparam("location_ids", expanding=True))
-    batch_size = 8
-    for offset in range(0, len(location_ids), batch_size):
-        batch = location_ids[offset : offset + batch_size]
-        bind.execute(insert_sql, {"location_ids": batch})
+    )
+    bind.execute(insert_sql)
 
     # The table is bounded by logical points, but can still be large for a
     # nationwide forecast catalog.  Build indexes concurrently so the API and
