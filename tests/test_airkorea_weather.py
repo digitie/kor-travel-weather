@@ -9,8 +9,10 @@ from kortravelweather_dagster import airkorea_weather
 
 from kortravelweather.models import WeatherLocation, WeatherValue
 from kortravelweather.providers.airkorea import (
+    fetch_sido_measurements,
     fetch_station_catalog,
     fetch_station_measurement,
+    normalize_sido_name,
     station_location,
 )
 from kortravelweather.providers.kma import weather_warning_to_weather_values
@@ -43,6 +45,29 @@ def test_airkorea_long_station_address_stays_in_metadata() -> None:
     assert location is not None
     assert len(location.region_code or "") <= 32
     assert location.metadata["measurement_point"]["address"] == address
+
+
+def test_airkorea_normalizes_sido_aliases_for_bulk_measurements() -> None:
+    assert normalize_sido_name("경상북도 경산시") == "경북"
+    assert normalize_sido_name("서울특별시 중구") == "서울"
+    assert normalize_sido_name("unknown province") is None
+
+
+def test_airkorea_bulk_measurements_walk_pages_and_stop_on_repeat() -> None:
+    class _BulkClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, int]] = []
+
+        def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
+            self.calls.append((sido_name, page_no, num_of_rows))
+            row = SimpleNamespace(station_name=f"Station {page_no}")
+            return [row] if page_no < 3 else [row]
+
+    client = _BulkClient()
+    rows = fetch_sido_measurements(client, sido_name="서울", max_stations=3, page_size=1)
+
+    assert [row.station_name for row in rows] == ["Station 1", "Station 2", "Station 3"]
+    assert client.calls == [("서울", 1, 1), ("서울", 2, 1), ("서울", 3, 1)]
 
 
 def test_kma_warning_rows_have_distinct_fact_keys() -> None:
@@ -219,3 +244,99 @@ def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> 
     assert result["values_loaded"] == 1
     assert repository.published[-1][2] == values
     assert "1개 측정소 요청 실패" in (repository.published[-1][3] or "")
+
+
+def test_airkorea_sync_uses_sido_bulk_endpoint(monkeypatch) -> None:
+    locations = [
+        WeatherLocation(
+            location_id=f"airkorea-{name.lower()}",
+            name=name,
+            latitude=37.5 + index / 100,
+            longitude=127.0,
+            metadata={"measurement_point": {"station_name": name, "address": "서울"}},
+        )
+        for index, name in enumerate(("Good", "Missing"))
+    ]
+    catalog = [
+        (
+            location,
+            {
+                "source_record_key": f"catalog-{location.location_id}",
+                "provider": "python-airkorea-api",
+                "dataset_key": "airkorea_station_catalog",
+                "source_entity_type": "airkorea_station",
+                "source_entity_id": location.location_id,
+                "payload": {},
+                "fetched_at": datetime.now(UTC),
+            },
+        )
+        for location in locations
+    ]
+
+    class FakeRepository:
+        def __init__(self) -> None:
+            self.runs: list[SimpleNamespace] = []
+            self.published: list[tuple[str, list[dict], list[WeatherValue], str | None]] = []
+
+        def start_sync_run(self, *, provider: str, dataset_key: str, locations_total: int):
+            run = SimpleNamespace(
+                run_id=f"run-{len(self.runs)}", status="running", locations_total=locations_total
+            )
+            self.runs.append(run)
+            return run
+
+        def get_location(self, location_id: str):
+            return next(
+                (location for location in locations if location.location_id == location_id), None
+            )
+
+        def create_location(self, location):
+            return location
+
+        def heartbeat_sync_run(self, run_id: str) -> bool:
+            return True
+
+        def publish_and_finish(self, *, run_id, source_records, values, error=None, **kwargs):
+            self.published.append((run_id, source_records, values, error))
+            return len(values), SimpleNamespace(run_id=run_id, status="success")
+
+        def finish_sync_run(self, *args, **kwargs):
+            raise AssertionError("bulk run should not need terminal error handling")
+
+    def _measurement() -> SimpleNamespace:
+        return SimpleNamespace(
+            station_name="Good",
+            data_time=None,
+            raw={"stationName": "Good", "sidoName": "서울"},
+            pm10_value=12.0,
+            pm25_value=None,
+            o3_value=None,
+            no2_value=None,
+            so2_value=None,
+            co_value=None,
+            khai_value=None,
+        )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, int, int]] = []
+
+        def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
+            self.calls.append((sido_name, page_no, num_of_rows))
+            return [_measurement()]
+
+        def latest_station_measurement(self, station_name: str):
+            raise AssertionError("bulk-capable client must not issue station requests")
+
+    monkeypatch.setattr(airkorea_weather, "fetch_station_catalog", lambda *args, **kwargs: catalog)
+    client = FakeClient()
+    repository = FakeRepository()
+
+    result = airkorea_weather.run_airkorea_weather_sync(
+        repository=repository, client=client, max_stations=2, max_values=10
+    )
+
+    assert client.calls == [("서울", 1, 2)]
+    assert result["requests_fetched"] == 2  # catalog + one SIDO request
+    assert result["values_loaded"] == 1
+    assert result["stations_failed"] == 1

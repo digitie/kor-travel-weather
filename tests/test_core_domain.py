@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -344,26 +344,105 @@ def test_get_locations_by_ids_uses_primary_key_and_filters_disabled(tmp_path) ->
     assert repo.get_locations_by_ids(["disabled"], enabled_only=False)[0].location_id == "disabled"
 
 
-def test_nearest_locations_scans_full_enabled_catalog(tmp_path, monkeypatch) -> None:
+def test_nearest_locations_uses_sql_bbox_exact_distance_and_limit(tmp_path, monkeypatch) -> None:
     repo = WeatherRepository(TEST_DATABASE_URL)
-    observed: dict[str, object] = {}
+    repo.create_schema()
+    for location in (
+        WeatherLocation(
+            location_id="nearest-1",
+            name="Nearest 1",
+            latitude=37.01,
+            longitude=127.01,
+        ),
+        WeatherLocation(
+            location_id="nearest-2",
+            name="Nearest 2",
+            latitude=37.02,
+            longitude=127.01,
+        ),
+        # This point is inside the rectangular prefilter but outside the
+        # requested circle; the SQL Haversine predicate must remove it.
+        WeatherLocation(
+            location_id="bbox-only",
+            name="Bbox only",
+            latitude=37.04,
+            longitude=127.05,
+        ),
+        WeatherLocation(
+            location_id="nearest-disabled",
+            name="Disabled",
+            latitude=37.001,
+            longitude=127.001,
+            enabled=False,
+        ),
+    ):
+        repo.upsert_location(location)
 
-    def all_locations(*, enabled_only: bool, limit: int | None) -> list[WeatherLocation]:
-        observed.update(enabled_only=enabled_only, limit=limit)
-        return [
-            WeatherLocation(
-                location_id="far",
-                name="Far",
-                latitude=37.5,
-                longitude=127.5,
-                nx=1,
-                ny=1,
+    def unexpected_catalog_scan(*args, **kwargs):
+        raise AssertionError("nearest query must not materialize the location catalog")
+
+    monkeypatch.setattr(repo, "list_locations", unexpected_catalog_scan)
+    rows = repo.nearest_locations(37.0, 127.0, radius_km=5, limit=2)
+
+    assert [location.location_id for location, _ in rows] == ["nearest-1", "nearest-2"]
+    assert rows[0][1] == pytest.approx(1.423, abs=0.02)
+    assert all(distance <= 5 for _, distance in rows)
+
+
+def test_current_projection_hides_append_only_revisions_from_bundles(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    target = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    source_records = []
+    facts = []
+    for revision in range(64):
+        source_key = f"projection-revision-{revision}"
+        source_records.append(
+            {
+                "source_record_key": source_key,
+                "provider": "p",
+                "dataset_key": "d",
+                "source_entity_type": "weather_response",
+                "source_entity_id": "x",
+                "payload": {"revision": revision},
+                "fetched_at": datetime(2026, 9, 1, tzinfo=UTC) + timedelta(minutes=revision),
+            }
+        )
+        facts.append(
+            WeatherValue(
+                location_id="x",
+                provider="p",
+                dataset_key="d",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.SHORT,
+                metric_key="TMP",
+                target_at=target,
+                value_number=Decimal(revision),
+                payload={"revision": revision},
+                source_record_key=source_key,
             )
-        ]
+        )
 
-    monkeypatch.setattr(repo, "list_locations", all_locations)
-    repo.nearest_locations(37.0, 127.0, radius_km=100)
-    assert observed == {"enabled_only": True, "limit": None}
+    assert repo.ingest_batch(source_records=source_records, values=facts) == 64
+    latest = repo.latest_values_many(["x"], limit_per_location=100)["x"]
+    timeline = repo.timeline_many(["x"], limit_per_location=100)["x"]
+    forecast = repo.timeline("x", limit=100)
+
+    assert len(latest) == len(timeline) == len(forecast) == 1
+    assert latest[0].value_number == Decimal("63.0000")
+    assert timeline[0].value_number == Decimal("63.0000")
+    assert forecast[0].value_number == Decimal("63.0000")
+    with repo.engine.connect() as connection:
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM weather_current_values "
+                "WHERE location_id = 'x'"
+            )
+        ).scalar_one() == 1
+        assert connection.execute(
+            text("SELECT count(*) FROM weather_values WHERE location_id = 'x'")
+        ).scalar_one() == 64
 
 
 def test_location_coordinates_match_numeric_storage_precision(tmp_path) -> None:

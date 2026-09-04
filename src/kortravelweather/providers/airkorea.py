@@ -19,6 +19,48 @@ AIRKOREA_PROVIDER = "python-airkorea-api"
 AIRKOREA_STATION_DATASET = "airkorea_station_catalog"
 AIRKOREA_MEASUREMENT_DATASET = "airkorea_realtime_measurement"
 
+# ``python-airkorea-api`` validates these exact short SIDO names.  Keep the
+# aliases here instead of depending on the vendored enum so persisted station
+# metadata remains stable if the library is upgraded.
+_SIDO_ALIASES: tuple[tuple[str, str], ...] = (
+    ("서울특별시", "서울"),
+    ("부산광역시", "부산"),
+    ("대구광역시", "대구"),
+    ("인천광역시", "인천"),
+    ("광주광역시", "광주"),
+    ("대전광역시", "대전"),
+    ("울산광역시", "울산"),
+    ("세종특별자치시", "세종"),
+    ("경기도", "경기"),
+    ("강원특별자치도", "강원"),
+    ("강원도", "강원"),
+    ("충청북도", "충북"),
+    ("충청남도", "충남"),
+    ("전라북도", "전북"),
+    ("전북특별자치도", "전북"),
+    ("전라남도", "전남"),
+    ("경상북도", "경북"),
+    ("경상남도", "경남"),
+    ("제주특별자치도", "제주"),
+    ("서울", "서울"),
+    ("부산", "부산"),
+    ("대구", "대구"),
+    ("인천", "인천"),
+    ("광주", "광주"),
+    ("대전", "대전"),
+    ("울산", "울산"),
+    ("세종", "세종"),
+    ("경기", "경기"),
+    ("강원", "강원"),
+    ("충북", "충북"),
+    ("충남", "충남"),
+    ("전북", "전북"),
+    ("전남", "전남"),
+    ("경북", "경북"),
+    ("경남", "경남"),
+    ("제주", "제주"),
+)
+
 
 def _slug(value: str) -> str:
     """Return an ASCII-safe, deterministic station suffix.
@@ -31,6 +73,17 @@ def _slug(value: str) -> str:
     """
     normalized = re.sub(r"[^0-9A-Za-z]+", "-", value.strip().lower()).strip("-")
     return normalized or "station"
+
+
+def normalize_sido_name(value: str | None) -> str | None:
+    """Normalize an AirKorea address/SIDO token to the API's short name."""
+    if not value:
+        return None
+    token = value.strip().split()[0] if value.strip() else ""
+    for alias, canonical in _SIDO_ALIASES:
+        if token == alias or token.startswith(alias):
+            return canonical
+    return None
 
 
 def station_code(station: Station) -> str | None:
@@ -58,6 +111,7 @@ def station_location(station: Station) -> WeatherLocation | None:
             "station_id": code,
             "station_name": station.station_name,
             "address": station.addr,
+            "sido_name": normalize_sido_name(station.addr),
             "network": station.mang_name,
         }
     }
@@ -211,6 +265,60 @@ def fetch_station_catalog(
             continue
         result.append((location, station_source_record(station, fetched_at=fetched_at)))
     return result
+
+
+def fetch_sido_measurements(
+    client: AirKoreaClient,
+    *,
+    sido_name: str,
+    max_stations: int = 1000,
+    page_size: int = 100,
+) -> list[AirQualityMeasurement]:
+    """Fetch a bounded SIDO measurement catalog using the bulk API.
+
+    AirKorea's station endpoint is request-quota expensive when called once
+    per station.  ``getCtprvnRltmMesureDnsty`` returns the latest row for all
+    stations in a SIDO, so one hourly run needs roughly one request per page
+    instead of hundreds.  The client exposes rows rather than page metadata;
+    stop on a short page or when a provider repeats a page to avoid an
+    accidental infinite loop.
+    """
+    if max_stations <= 0 or page_size <= 0:
+        raise ValueError("AirKorea measurement budget은 양수여야 합니다.")
+    bulk = getattr(client, "sido_measurements", None)
+    if not callable(bulk):
+        return []
+    requested_page_size = min(page_size, max_stations)
+    measurements: list[AirQualityMeasurement] = []
+    seen_names: set[str] = set()
+    page_no = 1
+    # max_stations/page_size is the normal bound; add one page to tolerate a
+    # provider that returns fewer rows than requested without metadata.
+    max_pages = (max_stations + requested_page_size - 1) // requested_page_size + 1
+    while len(measurements) < max_stations and page_no <= max_pages:
+        page = list(
+            bulk(
+                sido_name,
+                page_no=page_no,
+                num_of_rows=requested_page_size,
+            )
+        )
+        if not page:
+            break
+        new_rows = [
+            measurement
+            for measurement in page
+            if measurement.station_name.strip() not in seen_names
+        ]
+        if not new_rows:
+            break
+        remaining = max_stations - len(measurements)
+        measurements.extend(new_rows[:remaining])
+        seen_names.update(measurement.station_name.strip() for measurement in new_rows)
+        if len(page) < requested_page_size:
+            break
+        page_no += 1
+    return measurements[:max_stations]
 
 
 def fetch_station_measurement(
