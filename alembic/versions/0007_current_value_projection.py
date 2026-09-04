@@ -73,6 +73,12 @@ def upgrade() -> None:
     # DISTINCT ON input ordered, so PostgreSQL does not need to sort the full
     # append-only history in work_mem/temp files.
     bind.execute(sa.text("LOCK TABLE weather_values IN SHARE MODE"))
+    # The planner prefers a parallel sequential scan for this large table,
+    # followed by a multi-GB sort, even though the temporary index already
+    # provides the exact DISTINCT ON ordering.  Force the ordered index scan
+    # for this maintenance query so the backfill remains streaming.
+    bind.execute(sa.text("SET LOCAL enable_seqscan = off"))
+    bind.execute(sa.text("SET LOCAL enable_bitmapscan = off"))
     insert_sql = sa.text(
         """
         INSERT INTO weather_current_values (
