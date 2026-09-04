@@ -30,7 +30,7 @@
    http://127.0.0.1:14101/metrics`와 `curl http://127.0.0.1:14104/-/ready`로 scrape를
    확인하고 public gateway에는 14104를 연결하지 않는다.
 
-현재 migration head는 `0005_admin_session_revocations`다. 장시간 KMA 실행은 그룹마다
+현재 migration head는 `0007_current_value_projection`다. 장시간 KMA 실행은 그룹마다
 heartbeat를 갱신하므로, 180분 동안 heartbeat가 없는 running row만 자동으로 failed
 회수된다.
 

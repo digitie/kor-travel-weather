@@ -41,6 +41,7 @@ from sqlalchemy import (
     select,
     text,
     true,
+    tuple_,
     update,
     values,
 )
@@ -214,6 +215,61 @@ class WeatherValueRow(Base):
         ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
         nullable=False,
     )
+
+
+class WeatherCurrentValueRow(Base):
+    """Mutable pointer to the newest revision of one logical weather point.
+
+    ``weather_values`` is intentionally append-only.  Ranking every revision
+    in that table for a map bundle is therefore the wrong read path once a
+    location has months of observations.  This table contains one pointer per
+    logical point and is updated in the same transaction as a fact insert;
+    the immutable fact remains the source of truth for the response payload.
+    """
+
+    __tablename__ = "weather_current_values"
+    __table_args__ = (
+        UniqueConstraint(
+            "location_id",
+            "provider",
+            "dataset_key",
+            "weather_domain",
+            "forecast_style",
+            "metric_key",
+            "target_at",
+            name="uq_weather_current_values_logical_point",
+        ),
+        Index(
+            "ix_weather_current_values_location_target",
+            "location_id",
+            "target_at",
+            "value_id",
+        ),
+        Index(
+            "ix_weather_current_values_location_style_target",
+            "location_id",
+            "forecast_style",
+            "target_at",
+            "value_id",
+        ),
+    )
+
+    value_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("weather_values.value_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    location_id: Mapped[str] = mapped_column(
+        String(120),
+        ForeignKey("weather_locations.location_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(120), nullable=False)
+    dataset_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    weather_domain: Mapped[str] = mapped_column(String(120), nullable=False)
+    forecast_style: Mapped[str] = mapped_column(String(40), nullable=False)
+    metric_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    target_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
 _MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
@@ -1114,7 +1170,7 @@ class WeatherRepository:
         # taking the same advisory/row locks in opposite orders.
         for location_id in sorted({value.location_id for value in facts}):
             self._lock_location_session(session, location_id)
-        return sum(
+        loaded = sum(
             self._insert_value_session(
                 session,
                 value,
@@ -1122,6 +1178,12 @@ class WeatherRepository:
             )
             for value in facts
         )
+        # Keep the mutable current projection in the same transaction as the
+        # append-only facts.  A batch may contain several revisions of one
+        # logical point, so refresh after all inserts and keep only its newest
+        # candidate.
+        self._refresh_current_projection_session(session, facts)
+        return loaded
 
     def ingest_batch(
         self,
@@ -1219,6 +1281,246 @@ class WeatherRepository:
         )
 
     @staticmethod
+    def _current_logical_key(row: Any) -> tuple[Any, ...]:
+        """Return the revision-independent identity used by the projection."""
+        return (
+            row.location_id,
+            row.provider,
+            row.dataset_key,
+            row.weather_domain,
+            row.forecast_style,
+            row.metric_key,
+            _canonical_row_datetime(row.target_at),
+        )
+
+    @staticmethod
+    def _revision_order(row: Any) -> tuple[datetime, str, str]:
+        """Match ``_ranked_current_ids``' deterministic revision ordering."""
+        return (
+            _canonical_row_datetime(row.known_at)
+            or datetime.min.replace(tzinfo=UTC),
+            str(row.source_record_key),
+            str(row.value_id),
+        )
+
+    def _refresh_current_projection_session(
+        self, session: Session, facts: Sequence[WeatherValue]
+    ) -> None:
+        """Publish newest fact pointers without scanning historical revisions.
+
+        The projection is deliberately maintained in Python rather than with
+        a PostgreSQL-specific ``ON CONFLICT`` expression.  Candidate facts and
+        existing pointers are fetched in bounded set-based queries, while the
+        location advisory locks acquired by ``_ingest_batch_session`` make the
+        compare-and-set update serializable for repository writers.
+        """
+        if not facts:
+            return
+        session.flush()
+
+        value_ids = [
+            fact.identity_key(
+                fact.source_record_key or _metric_source_key(fact),
+                target_at=_canonical_datetime(
+                    fact.target_at
+                    or fact.valid_at
+                    or fact.observed_at
+                    or fact.issued_at
+                    or fact.collected_at
+                ),
+            )
+            for fact in facts
+        ]
+        candidate_rows: list[WeatherValueRow] = []
+        for offset in range(0, len(value_ids), 1000):
+            candidate_rows.extend(
+                session.scalars(
+                    select(WeatherValueRow).where(
+                        WeatherValueRow.value_id.in_(value_ids[offset : offset + 1000])
+                    )
+                ).all()
+            )
+
+        # Several source revisions for one target can occur in a single KMA
+        # response batch.  Only the winner needs to touch the projection.
+        newest_by_key: dict[tuple[Any, ...], WeatherValueRow] = {}
+        for row in candidate_rows:
+            key = self._current_logical_key(row)
+            previous = newest_by_key.get(key)
+            if previous is None or self._revision_order(row) > self._revision_order(previous):
+                newest_by_key[key] = row
+        if not newest_by_key:
+            return
+
+        logical_columns = (
+            WeatherCurrentValueRow.location_id,
+            WeatherCurrentValueRow.provider,
+            WeatherCurrentValueRow.dataset_key,
+            WeatherCurrentValueRow.weather_domain,
+            WeatherCurrentValueRow.forecast_style,
+            WeatherCurrentValueRow.metric_key,
+            WeatherCurrentValueRow.target_at,
+        )
+        logical_keys = list(newest_by_key)
+        projection_by_key: dict[tuple[Any, ...], WeatherCurrentValueRow] = {}
+        for offset in range(0, len(logical_keys), 1000):
+            rows = session.scalars(
+                select(WeatherCurrentValueRow).where(
+                    tuple_(*logical_columns).in_(logical_keys[offset : offset + 1000])
+                )
+            ).all()
+            projection_by_key.update({self._current_logical_key(row): row for row in rows})
+
+        existing_ids = [row.value_id for row in projection_by_key.values()]
+        existing_values: dict[str, WeatherValueRow] = {}
+        for offset in range(0, len(existing_ids), 1000):
+            rows = session.scalars(
+                select(WeatherValueRow).where(
+                    WeatherValueRow.value_id.in_(existing_ids[offset : offset + 1000])
+                )
+            ).all()
+            existing_values.update({row.value_id: row for row in rows})
+
+        for key, candidate in newest_by_key.items():
+            projection = projection_by_key.get(key)
+            if projection is None:
+                session.add(
+                    WeatherCurrentValueRow(
+                        value_id=candidate.value_id,
+                        location_id=candidate.location_id,
+                        provider=candidate.provider,
+                        dataset_key=candidate.dataset_key,
+                        weather_domain=candidate.weather_domain,
+                        forecast_style=candidate.forecast_style,
+                        metric_key=candidate.metric_key,
+                        target_at=candidate.target_at,
+                    )
+                )
+                continue
+            current = existing_values.get(projection.value_id)
+            if current is None:
+                raise RuntimeError(
+                    "current weather projection이 존재하지 않는 fact를 가리킵니다: "
+                    f"{projection.value_id}"
+                )
+            if self._revision_order(candidate) > self._revision_order(current):
+                projection.value_id = candidate.value_id
+        session.flush()
+
+    def _current_value_models_many(
+        self,
+        session: Session,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int,
+        prefer_current: bool,
+        newest_first: bool = True,
+        from_at: datetime | None = None,
+        to_at: datetime | None = None,
+        dataset_key: str | None = None,
+        metric_key: str | None = None,
+        weather_domain: str | None = None,
+        metric_keys: Sequence[str] | None = None,
+        exclude_alerts: bool = False,
+    ) -> dict[str, list[WeatherValue]]:
+        """Read bounded per-location rows from the current-value projection."""
+        unique_ids = tuple(dict.fromkeys(location_ids))
+        result: dict[str, list[WeatherValue]] = {location_id: [] for location_id in unique_ids}
+        if not unique_ids:
+            return result
+
+        requested_locations = values(
+            column("location_id", String), name="current_value_locations"
+        ).data([(location_id,) for location_id in unique_ids]).alias("current_value_locations")
+        timestamp = WeatherCurrentValueRow.target_at
+        order: list[Any] = []
+        if prefer_current:
+            order.append(
+                case(
+                    (
+                        WeatherCurrentValueRow.forecast_style.in_(
+                            ("observed", "nowcast")
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                )
+            )
+        if newest_first:
+            order.extend(
+                [
+                    desc(timestamp),
+                    nullslast(desc(WeatherValueRow.known_at)),
+                    desc(WeatherValueRow.source_record_key),
+                    desc(WeatherValueRow.value_id),
+                ]
+            )
+        else:
+            # ``timeline`` historically exposes chronological rows with the
+            # metric key as the tie-breaker.  Keep that public ordering while
+            # reading through the projection.
+            order.extend(
+                [
+                    timestamp,
+                    WeatherCurrentValueRow.metric_key,
+                    nullslast(desc(WeatherValueRow.known_at)),
+                    desc(WeatherValueRow.source_record_key),
+                    desc(WeatherValueRow.value_id),
+                ]
+            )
+        candidate = (
+            select(WeatherCurrentValueRow.value_id.label("value_id"))
+            .join(WeatherValueRow, WeatherValueRow.value_id == WeatherCurrentValueRow.value_id)
+            .where(WeatherCurrentValueRow.location_id == requested_locations.c.location_id)
+            .order_by(*order)
+            .limit(limit_per_location)
+        )
+        if from_at is not None:
+            candidate = candidate.where(WeatherCurrentValueRow.target_at >= from_at)
+        if to_at is not None:
+            candidate = candidate.where(WeatherCurrentValueRow.target_at <= to_at)
+        if dataset_key is not None:
+            candidate = candidate.where(WeatherCurrentValueRow.dataset_key == dataset_key)
+        if metric_key is not None:
+            candidate = candidate.where(WeatherCurrentValueRow.metric_key == metric_key)
+        if weather_domain is not None:
+            candidate = candidate.where(WeatherCurrentValueRow.weather_domain == weather_domain)
+        if metric_keys is not None:
+            normalized_metric_keys = tuple(dict.fromkeys(metric_keys))
+            if not normalized_metric_keys:
+                return result
+            candidate = candidate.where(
+                WeatherCurrentValueRow.metric_key.in_(normalized_metric_keys)
+            )
+        if exclude_alerts:
+            alert_filter = or_(
+                WeatherCurrentValueRow.metric_key == "ALERT",
+                WeatherCurrentValueRow.weather_domain.ilike("%alert%"),
+                WeatherCurrentValueRow.weather_domain.ilike("%warning%"),
+                WeatherCurrentValueRow.dataset_key.ilike("%alert%"),
+                WeatherCurrentValueRow.dataset_key.ilike("%warning%"),
+            )
+            candidate = candidate.where(not_(alert_filter))
+        candidate = candidate.lateral().alias("current_value_candidates")
+        pairs = session.execute(
+            select(requested_locations.c.location_id, candidate.c.value_id).select_from(
+                requested_locations.join(candidate, true())
+            )
+        ).all()
+        value_ids = [value_id for _, value_id in pairs]
+        if not value_ids:
+            return result
+        rows = session.scalars(
+            select(WeatherValueRow).where(WeatherValueRow.value_id.in_(value_ids))
+        ).all()
+        by_id = {row.value_id: row for row in rows}
+        for location_id, value_id in pairs:
+            row = by_id.get(value_id)
+            if row is not None:
+                result[location_id].append(self._value_model(row))
+        return result
+
+    @staticmethod
     def _ranked_current_ids(session: Session, stmt: Any) -> Any:
         """logical weather point별 최신 known/source revision id를 반환한다."""
         ranked = select(
@@ -1247,34 +1549,12 @@ class WeatherRepository:
 
     def latest_values(self, location_id: str, *, limit: int = 100) -> list[WeatherValue]:
         with self._session_factory() as session:
-            timestamp = func.coalesce(
-                WeatherValueRow.target_at,
-                WeatherValueRow.valid_at,
-                WeatherValueRow.observed_at,
-                WeatherValueRow.issued_at,
-            )
-            base = select(WeatherValueRow).where(WeatherValueRow.location_id == location_id)
-            ranked = self._ranked_current_ids(session, base)
-            stmt = (
-                select(WeatherValueRow)
-                .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
-                .where(ranked.c.revision_rank == 1)
-                .order_by(
-                    case(
-                        (
-                            WeatherValueRow.forecast_style.in_(
-                                ("observed", "nowcast")
-                            ),
-                            0,
-                        ),
-                        else_=1,
-                    ),
-                    desc(timestamp),
-                    desc(WeatherValueRow.known_at),
-                )
-                .limit(limit)
-            )
-            return [self._value_model(row) for row in session.scalars(stmt).all()]
+            return self._current_value_models_many(
+                session,
+                [location_id],
+                limit_per_location=limit,
+                prefer_current=True,
+            ).get(location_id, [])
 
     def latest_values_many(
         self,
@@ -1285,81 +1565,17 @@ class WeatherRepository:
         metric_keys: Sequence[str] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Fetch current projections for several locations in one query."""
-        if not location_ids:
-            return {}
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
         with self._session_factory() as session:
-            timestamp = func.coalesce(
-                WeatherValueRow.target_at,
-                WeatherValueRow.valid_at,
-                WeatherValueRow.observed_at,
-                WeatherValueRow.issued_at,
+            return self._current_value_models_many(
+                session,
+                location_ids,
+                limit_per_location=limit_per_location,
+                prefer_current=True,
+                weather_domain=weather_domain,
+                metric_keys=metric_keys,
             )
-            base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
-            if weather_domain is not None:
-                base = base.where(WeatherValueRow.weather_domain == weather_domain)
-            if metric_keys is not None:
-                normalized_metric_keys = tuple(dict.fromkeys(metric_keys))
-                if not normalized_metric_keys:
-                    return {location_id: [] for location_id in location_ids}
-                base = base.where(WeatherValueRow.metric_key.in_(normalized_metric_keys))
-            ranked = self._ranked_current_ids(session, base)
-            limited_ids = (
-                select(
-                    WeatherValueRow.value_id.label("value_id"),
-                    func.row_number()
-                    .over(
-                        partition_by=WeatherValueRow.location_id,
-                        order_by=(
-                            case(
-                                (
-                                    WeatherValueRow.forecast_style.in_(
-                                        ("observed", "nowcast")
-                                    ),
-                                    0,
-                                ),
-                                else_=1,
-                            ),
-                            desc(timestamp),
-                            desc(WeatherValueRow.known_at),
-                            desc(WeatherValueRow.source_record_key),
-                            desc(WeatherValueRow.value_id),
-                        ),
-                    )
-                    .label("location_rank"),
-                )
-                .select_from(WeatherValueRow)
-                .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
-                .where(ranked.c.revision_rank == 1)
-                .subquery("limited_current_values")
-            )
-            current = (
-                select(WeatherValueRow)
-                .join(limited_ids, WeatherValueRow.value_id == limited_ids.c.value_id)
-                .where(limited_ids.c.location_rank <= limit_per_location)
-                .order_by(
-                    WeatherValueRow.location_id,
-                    case(
-                        (
-                            WeatherValueRow.forecast_style.in_(
-                                ("observed", "nowcast")
-                            ),
-                            0,
-                        ),
-                        else_=1,
-                    ),
-                    desc(timestamp),
-                    desc(WeatherValueRow.known_at),
-                )
-            )
-            result: dict[str, list[WeatherValue]] = {
-                location_id: [] for location_id in location_ids
-            }
-            for row in session.scalars(current).all():
-                values = result.setdefault(row.location_id, [])
-                values.append(self._value_model(row))
-            return result
 
     def marker_values_many(
         self,
@@ -1614,56 +1830,15 @@ class WeatherRepository:
         self, location_ids: Sequence[str], *, limit_per_location: int = 500
     ) -> dict[str, list[WeatherValue]]:
         """Return current projections for forecast/alert bundle queries in one SQL read."""
-        if not location_ids:
-            return {}
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
         with self._session_factory() as session:
-            timestamp = func.coalesce(
-                WeatherValueRow.target_at,
-                WeatherValueRow.valid_at,
-                WeatherValueRow.observed_at,
-                WeatherValueRow.issued_at,
+            return self._current_value_models_many(
+                session,
+                location_ids,
+                limit_per_location=limit_per_location,
+                prefer_current=False,
             )
-            base = select(WeatherValueRow).where(WeatherValueRow.location_id.in_(location_ids))
-            ranked = self._ranked_current_ids(session, base)
-            limited_ids = (
-                select(
-                    WeatherValueRow.value_id.label("value_id"),
-                    func.row_number()
-                    .over(
-                        partition_by=WeatherValueRow.location_id,
-                        order_by=(
-                            desc(timestamp),
-                            desc(WeatherValueRow.known_at),
-                            desc(WeatherValueRow.source_record_key),
-                            desc(WeatherValueRow.value_id),
-                        ),
-                    )
-                    .label("location_rank"),
-                )
-                .select_from(WeatherValueRow)
-                .join(ranked, WeatherValueRow.value_id == ranked.c.value_id)
-                .where(ranked.c.revision_rank == 1)
-                .subquery("limited_timeline_values")
-            )
-            current = (
-                select(WeatherValueRow)
-                .join(limited_ids, WeatherValueRow.value_id == limited_ids.c.value_id)
-                .where(limited_ids.c.location_rank <= limit_per_location)
-                .order_by(
-                    WeatherValueRow.location_id,
-                    desc(timestamp),
-                    desc(WeatherValueRow.known_at),
-                )
-            )
-            result: dict[str, list[WeatherValue]] = {
-                location_id: [] for location_id in location_ids
-            }
-            for row in session.scalars(current).all():
-                values = result.setdefault(row.location_id, [])
-                values.append(self._value_model(row))
-            return result
 
     def timeline(
         self,
@@ -1677,6 +1852,20 @@ class WeatherRepository:
         include_revisions: bool = False,
         exclude_alerts: bool = False,
     ) -> list[WeatherValue]:
+        if not include_revisions:
+            with self._session_factory() as session:
+                return self._current_value_models_many(
+                    session,
+                    [location_id],
+                    limit_per_location=limit,
+                    prefer_current=False,
+                    newest_first=False,
+                    from_at=from_at,
+                    to_at=to_at,
+                    dataset_key=dataset_key,
+                    metric_key=metric_key,
+                    exclude_alerts=exclude_alerts,
+                ).get(location_id, [])
         with self._session_factory() as session:
             timestamp = func.coalesce(
                 WeatherValueRow.target_at,
@@ -1715,29 +1904,71 @@ class WeatherRepository:
     def nearest_locations(
         self, latitude: float, longitude: float, *, radius_km: float, limit: int = 20
     ) -> list[tuple[WeatherLocation, float]]:
-        """활성 위치를 읽어 Haversine 거리로 정렬한다.
+        """Return nearest enabled anchors using a bounded PostgreSQL query.
 
-        운영 PostgreSQL에서는 latitude/longitude 인덱스 또는 PostGIS projection을
-        추가할 수 있다. API 계약과 저장 포맷은 좌표계를 고정하므로 소비자 영향 없이
-        query plan을 교체할 수 있다.
+        The latitude/longitude index removes the overwhelming majority of the
+        catalog before PostgreSQL evaluates the exact Haversine distance.  The
+        exact distance and ordering stay in SQL, so a nationwide catalog is
+        never materialized and sorted by Python.
         """
-        candidates = self.list_locations(enabled_only=True, limit=None)
+        if not all(math.isfinite(value) for value in (latitude, longitude, radius_km)):
+            raise ValueError("좌표와 반경은 유한한 숫자여야 합니다.")
+        if radius_km <= 0:
+            raise ValueError("radius_km은 양수여야 합니다.")
+        if limit <= 0:
+            raise ValueError("limit은 양수여야 합니다.")
+
         earth_km = 6371.0088
-        lat1 = math.radians(latitude)
-        result: list[tuple[WeatherLocation, float]] = []
-        for candidate in candidates:
-            d_lat = math.radians(candidate.latitude - latitude)
-            d_lon = math.radians(candidate.longitude - longitude)
-            lat2 = math.radians(candidate.latitude)
-            a = (
-                math.sin(d_lat / 2) ** 2
-                + math.cos(lat1) * math.cos(lat2) * math.sin(d_lon / 2) ** 2
+        # Haversine uses radians while the catalog stores degrees.
+        degrees_per_radian = 180.0 / math.pi
+        latitude_delta = radius_km / earth_km * degrees_per_radian
+        cosine = abs(math.cos(math.radians(latitude)))
+        longitude_delta = (
+            radius_km / (earth_km * max(cosine, 1e-12)) * degrees_per_radian
+        )
+        # Catalog constraints are Korea-specific.  Clamping the box to those
+        # bounds keeps the composite coordinate index selective at edge
+        # coordinates and avoids an unnecessary antimeridian branch.
+        min_latitude = max(33.0, latitude - latitude_delta)
+        max_latitude = min(43.0, latitude + latitude_delta)
+        min_longitude = max(124.0, longitude - longitude_delta)
+        max_longitude = min(132.0, longitude + longitude_delta)
+        if min_latitude > max_latitude or min_longitude > max_longitude:
+            return []
+
+        lat1 = func.radians(latitude)
+        lat2 = func.radians(WeatherLocationRow.latitude)
+        delta_lat = func.radians(WeatherLocationRow.latitude - latitude)
+        delta_lon = func.radians(WeatherLocationRow.longitude - longitude)
+        haversine_a = (
+            func.pow(func.sin(delta_lat / 2), 2)
+            + func.cos(lat1)
+            * func.cos(lat2)
+            * func.pow(func.sin(delta_lon / 2), 2)
+        )
+        distance_km = (
+            2
+            * earth_km
+            * func.asin(func.sqrt(func.least(haversine_a, 1.0)))
+        )
+        with self._session_factory() as session:
+            stmt = (
+                select(WeatherLocationRow, distance_km.label("distance_km"))
+                .where(
+                    WeatherLocationRow.enabled.is_(True),
+                    WeatherLocationRow.latitude >= min_latitude,
+                    WeatherLocationRow.latitude <= max_latitude,
+                    WeatherLocationRow.longitude >= min_longitude,
+                    WeatherLocationRow.longitude <= max_longitude,
+                    distance_km <= radius_km,
+                )
+                .order_by(distance_km, WeatherLocationRow.location_id)
+                .limit(limit)
             )
-            distance = earth_km * 2 * math.asin(math.sqrt(a))
-            if distance <= radius_km:
-                result.append((candidate, distance))
-        result.sort(key=lambda item: item[1])
-        return result[:limit]
+            return [
+                (self._location_model(row), float(distance))
+                for row, distance in session.execute(stmt).all()
+            ]
 
     def start_sync_run(
         self, *, provider: str, dataset_key: str, locations_total: int = 0
