@@ -9,8 +9,30 @@ down_revision = "0006_marker_lookup_index"
 branch_labels = None
 depends_on = None
 
+_BACKFILL_INDEX_NAME = "ix_weather_values_projection_backfill_order"
+
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        raise RuntimeError("kor-travel-weather schema는 PostgreSQL만 지원합니다.")
+
+    # Build the source-order index before the projection table is created.
+    # The backfill is otherwise forced to bitmap-scan and sort every location
+    # batch over the append-only history.  CONCURRENTLY keeps this preparatory
+    # step safe for a rolling deploy; the index is dropped after backfill.
+    with op.get_context().autocommit_block():
+        op.execute(
+            sa.text(
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+                f"{_BACKFILL_INDEX_NAME} ON weather_values ("
+                "location_id, provider, dataset_key, weather_domain, "
+                "forecast_style, metric_key, target_at, "
+                "known_at DESC NULLS LAST, source_record_key DESC NULLS LAST, "
+                "value_id DESC)"
+            )
+        )
+
     op.create_table(
         "weather_current_values",
         sa.Column(
@@ -42,10 +64,6 @@ def upgrade() -> None:
             name="uq_weather_current_values_logical_point",
         ),
     )
-
-    bind = op.get_bind()
-    if bind.dialect.name != "postgresql":
-        raise RuntimeError("kor-travel-weather schema는 PostgreSQL만 지원합니다.")
 
     # Backfill is intentionally done before the read indexes are built.  A
     # single DISTINCT ON over a nationwide append-only table can spill many GB
@@ -100,6 +118,7 @@ def upgrade() -> None:
                 "ON weather_current_values (location_id, target_at, value_id)"
             )
         )
+        op.execute(sa.text(f"DROP INDEX CONCURRENTLY IF EXISTS {_BACKFILL_INDEX_NAME}"))
         op.execute(
             sa.text(
                 "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
@@ -114,6 +133,7 @@ def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
         with op.get_context().autocommit_block():
+            op.execute(sa.text(f"DROP INDEX CONCURRENTLY IF EXISTS {_BACKFILL_INDEX_NAME}"))
             op.execute(
                 sa.text(
                     "DROP INDEX CONCURRENTLY IF EXISTS "
