@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
@@ -263,6 +264,58 @@ def test_marker_batch_returns_weather_and_alert_state(api_client: TestClient) ->
     response = api_client.get("/v1/weather/markers", params={"location_id": location.location_id})
     assert response.status_code == 200
     assert response.json()["data"][0]["latest"][0]["metric_key"] == "PTY"
+
+
+def test_marker_batch_does_not_scan_the_full_location_catalog(
+    api_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Marker batches resolve requested anchors through the location PK."""
+    repository = api_client.app.state.repository
+    suffix = uuid.uuid4().hex[:8]
+    location_id = f"marker-id-lookup-{suffix}"
+    source_key = f"marker-id-lookup-source-{suffix}"
+    repository.create_location(
+        WeatherLocation(
+            location_id=location_id,
+            name="ID 조회 마커",
+            latitude=37.5,
+            longitude=127.0,
+        )
+    )
+    repository.record_source(
+        source_record_key=source_key,
+        provider="open_meteo",
+        dataset_key="open_meteo_current",
+        source_entity_type="weather_response",
+        source_entity_id=location_id,
+        payload={"rows": [{"metric": "TEMP"}]},
+    )
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id=location_id,
+                provider="open_meteo",
+                dataset_key="open_meteo_current",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="TEMP",
+                target_at=datetime.now(UTC),
+                value_number=Decimal("20"),
+                source_record_key=source_key,
+            )
+        ]
+    )
+
+    def full_catalog_forbidden(*args: object, **kwargs: object) -> list[WeatherLocation]:
+        raise AssertionError("marker endpoint must not scan the full catalog")
+
+    monkeypatch.setattr(repository, "list_locations", full_catalog_forbidden)
+    response = api_client.get(
+        "/v1/weather/markers", params={"location_id": location_id}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["location_id"] == location_id
 
 
 def test_marker_projection_prefers_current_over_newer_forecast(api_client: TestClient) -> None:

@@ -420,7 +420,20 @@ class WeatherRepository:
         normalized_url = database_url
         if normalized_url.startswith("postgresql://"):
             normalized_url = "postgresql+psycopg://" + normalized_url.removeprefix("postgresql://")
-        self.engine: Engine = create_engine(normalized_url, future=True)
+        # Marker/detail requests can overlap with the three provider schedules
+        # and with one another.  The SQL itself is bounded, but the default
+        # SQLAlchemy pool (5 connections) makes the API wait behind a burst of
+        # map marker reads.  Keep a modest bounded pool so concurrent reads do
+        # not serialize while still putting an upper bound on database
+        # connections per API/Dagster process.
+        self.engine: Engine = create_engine(
+            normalized_url,
+            future=True,
+            pool_size=10,
+            max_overflow=10,
+            pool_timeout=15,
+            pool_pre_ping=True,
+        )
 
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
@@ -646,6 +659,37 @@ class WeatherRepository:
         with self._session_factory() as session:
             row = session.get(WeatherLocationRow, location_id)
             return self._location_model(row) if row else None
+
+    def get_locations_by_ids(
+        self,
+        location_ids: Sequence[str],
+        *,
+        enabled_only: bool = False,
+    ) -> list[WeatherLocation]:
+        """Load only the requested anchors using the location primary key.
+
+        The map marker endpoint receives a small batch of IDs.  Reading the
+        complete enabled catalog for every batch is needlessly expensive and
+        becomes visible as the catalog grows.  Preserve caller order so the
+        response remains deterministic while filtering disabled/missing
+        anchors at the repository boundary.
+        """
+        unique_ids = list(dict.fromkeys(location_ids))
+        if not unique_ids:
+            return []
+        with self._session_factory() as session:
+            stmt = select(WeatherLocationRow).where(
+                WeatherLocationRow.location_id.in_(unique_ids)
+            )
+            if enabled_only:
+                stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            rows = session.scalars(stmt).all()
+            by_id = {row.location_id: row for row in rows}
+            return [
+                self._location_model(by_id[location_id])
+                for location_id in unique_ids
+                if location_id in by_id
+            ]
 
     def has_values(self, location_id: str) -> bool:
         """위치 anchor를 변경해도 되는지 확인하는 최소 projection."""

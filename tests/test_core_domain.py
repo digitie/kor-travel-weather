@@ -226,6 +226,28 @@ def test_location_patch_preserves_independent_concurrent_fields(tmp_path) -> Non
     assert loaded.region_code == "11"
 
 
+def test_get_locations_by_ids_uses_primary_key_and_filters_disabled(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    repo.upsert_location(
+        WeatherLocation(
+            location_id="disabled",
+            name="Disabled",
+            latitude=37.1,
+            longitude=127.1,
+            enabled=False,
+        )
+    )
+
+    loaded = repo.get_locations_by_ids(
+        ["missing", "disabled", "x", "x"], enabled_only=True
+    )
+
+    assert [location.location_id for location in loaded] == ["x"]
+    assert repo.get_locations_by_ids(["disabled"], enabled_only=False)[0].location_id == "disabled"
+
+
 def test_nearest_locations_scans_full_enabled_catalog(tmp_path, monkeypatch) -> None:
     repo = WeatherRepository(TEST_DATABASE_URL)
     observed: dict[str, object] = {}

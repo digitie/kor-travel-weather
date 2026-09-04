@@ -632,7 +632,16 @@ async def marker_summaries(
     if len(requested_ids) > 500:
         raise HTTPException(status_code=422, detail="marker location 수는 500개 이하여야 합니다.")
     unique_ids = list(dict.fromkeys(requested_ids))
-    locations = await run_in_threadpool(repo.list_locations, enabled_only=True, limit=None)
+    get_by_ids = getattr(repo, "get_locations_by_ids", None)
+    if callable(get_by_ids):
+        locations = await run_in_threadpool(
+            get_by_ids, unique_ids, enabled_only=True
+        )
+    else:
+        # Keep compatibility with lightweight repository doubles used by
+        # downstream integrations.  The production repository takes the
+        # primary-key path above and never scans the full catalog per batch.
+        locations = await run_in_threadpool(repo.list_locations, enabled_only=True, limit=None)
     by_id = {location.location_id: location for location in locations}
     valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
     marker_many = getattr(repo, "marker_values_many", None)
