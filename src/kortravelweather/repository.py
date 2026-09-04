@@ -749,7 +749,16 @@ class WeatherRepository:
                 )
             return int(session.scalar(stmt) or 0)
 
-    def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> None:
+    def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> str:
+        """Insert a source response and return its canonical primary key.
+
+        The immutable source identity constraint is intentionally independent
+        of ``source_record_key``.  Provider adapters can change the way that
+        key is derived between releases (for example, from response-level to
+        row-level alert keys) while the raw response remains the same.  Treat
+        an existing identity as an idempotent replay and reuse its primary key
+        so a scheduled retry cannot fail with a duplicate-key error.
+        """
         source_record_key = str(record["source_record_key"])
         provider = str(record["provider"])
         dataset_key = str(record["dataset_key"])
@@ -762,7 +771,23 @@ class WeatherRepository:
             text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
             {"source_key": source_record_key},
         )
-        row = session.get(SourceRecordRow, source_record_key)
+        # A pending source row in the same batch must not be autoflushed while
+        # checking the alternate identity; otherwise PostgreSQL raises the
+        # unique constraint before we can fold the replay into that row.
+        with session.no_autoflush:
+            row = session.get(SourceRecordRow, source_record_key)
+            if row is None:
+                row = session.scalar(
+                    select(SourceRecordRow)
+                    .where(
+                        SourceRecordRow.provider == provider,
+                        SourceRecordRow.dataset_key == dataset_key,
+                        SourceRecordRow.source_entity_type == source_entity_type,
+                        SourceRecordRow.source_entity_id == source_entity_id,
+                        SourceRecordRow.raw_payload_hash == raw_hash,
+                    )
+                    .limit(1)
+                )
         if row is not None and (
             row.provider != provider
             or row.dataset_key != dataset_key
@@ -785,6 +810,8 @@ class WeatherRepository:
                     imported_at=kst_now(),
                 )
             )
+            return source_record_key
+        return row.source_record_key
 
     @staticmethod
     def _validate_source_lineage(
@@ -991,8 +1018,51 @@ class WeatherRepository:
             if run.status != "running":
                 raise ValueError(f"sync run이 이미 종료되었습니다: {run_id}")
             run_rows[run_key] = run
+        # Normalize source-key aliases before values are inserted.  This keeps
+        # foreign keys and WeatherValue identity stable when a provider emits a
+        # new deterministic key for a raw payload already stored in the DB.
+        source_aliases: dict[str, str] = {}
+        identity_aliases: dict[tuple[str, str, str, str, str], str] = {}
+        normalized_records: list[Mapping[str, Any]] = []
         for record in records:
-            self._record_source_session(session, record)
+            original_key = str(record["source_record_key"])
+            provider = str(record["provider"])
+            dataset_key = str(record["dataset_key"])
+            entity_type = str(record["source_entity_type"])
+            entity_id = str(record["source_entity_id"])
+            payload = dict(record["payload"])
+            identity = (
+                provider,
+                dataset_key,
+                entity_type,
+                entity_id,
+                _payload_hash(payload),
+            )
+            canonical_key = identity_aliases.get(identity)
+            if canonical_key is None:
+                canonical_key = self._record_source_session(session, record)
+                identity_aliases[identity] = canonical_key
+            source_aliases[original_key] = canonical_key
+            if canonical_key == original_key:
+                normalized_records.append(record)
+            else:
+                normalized = dict(record)
+                normalized["source_record_key"] = canonical_key
+                normalized_records.append(normalized)
+        records = normalized_records
+        if source_aliases:
+            facts = [
+                fact.model_copy(
+                    update={
+                        "source_record_key": source_aliases.get(
+                            fact.source_record_key or "", fact.source_record_key
+                        )
+                    }
+                )
+                if fact.source_record_key in source_aliases
+                else fact
+                for fact in facts
+            ]
         # pending source rows must be visible to FK checks/value lookup.
         session.flush()
         for record in records:

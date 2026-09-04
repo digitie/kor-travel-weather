@@ -182,6 +182,49 @@ def test_response_source_is_shared_by_metrics_without_payload_corruption(tmp_pat
     assert len(repo.timeline("x", include_revisions=True)) == 2
 
 
+def test_source_identity_replay_reuses_existing_primary_key(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    payload = {"rows": [{"TMP": "1"}]}
+    repo.record_source(
+        source_record_key="legacy-response-key",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="x",
+        payload=payload,
+    )
+    value = WeatherValue(
+        location_id="x",
+        provider="p",
+        dataset_key="d",
+        weather_domain="d",
+        forecast_style=ForecastStyle.SHORT,
+        metric_key="TMP",
+        target_at=datetime(2026, 1, 1, tzinfo=UTC),
+        value_number=Decimal("1"),
+        payload={"metric": "TMP"},
+        source_record_key="new-response-key",
+    )
+
+    assert repo.ingest_batch(
+        source_records=[
+            {
+                "source_record_key": "new-response-key",
+                "provider": "p",
+                "dataset_key": "d",
+                "source_entity_type": "weather_response",
+                "source_entity_id": "x",
+                "payload": payload,
+            }
+        ],
+        values=[value],
+    ) == 1
+    assert repo.get_source_record("new-response-key") is None
+    assert repo.timeline("x", include_revisions=True)[0].source_record_key == "legacy-response-key"
+
+
 def test_location_anchor_cannot_move_after_fact(tmp_path) -> None:
     repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
