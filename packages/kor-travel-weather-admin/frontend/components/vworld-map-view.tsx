@@ -544,6 +544,7 @@ export function VWorldWeatherClusters({
           const label = String(properties.point_count_abbreviated ?? count);
           const clusterKey = `${count}|${label}|${coordinates[0]}|${coordinates[1]}`;
           if (markerKeys.get(id) !== clusterKey) {
+            const wasOnScreen = onScreen.has(id);
             removeMarker(id);
             const element = createWeatherClusterElement(count, label, () => {
               const clusterSource = map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined;
@@ -554,8 +555,10 @@ export function VWorldWeatherClusters({
                 // The cluster can disappear between the click and expansion.
               });
             });
-            markerPool.set(id, new maplibregl.Marker({ element }).setLngLat(coordinates));
+            const nextMarker = new maplibregl.Marker({ element }).setLngLat(coordinates);
+            markerPool.set(id, nextMarker);
             markerKeys.set(id, clusterKey);
+            if (wasOnScreen) nextMarker.addTo(map);
           } else {
             markerPool.get(id)?.setLngLat(coordinates);
           }
@@ -571,12 +574,15 @@ export function VWorldWeatherClusters({
         seen.add(id);
         const key = weatherClusterMarkerKey(marker);
         if (markerKeys.get(id) !== key) {
+          const wasOnScreen = onScreen.has(id);
           removeMarker(id);
           const element = createWeatherClusterPointElement(marker, () => {
             markerByIdRef.current.get(markerId)?.onClick?.();
           });
-          markerPool.set(id, new maplibregl.Marker({ element }).setLngLat(coordinates));
+          const nextMarker = new maplibregl.Marker({ element }).setLngLat(coordinates);
+          markerPool.set(id, nextMarker);
           markerKeys.set(id, key);
+          if (wasOnScreen) nextMarker.addTo(map);
         } else {
           markerPool.get(id)?.setLngLat(coordinates);
         }
