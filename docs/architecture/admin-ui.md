@@ -24,7 +24,9 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
   데이터는 public enabled catalog만 읽는다.
 - 모든 비동기 panel은 loading, empty, error 상태를 같은 위치에 표시한다. latest
   projection과 forecast history는 서로 다른 섹션으로 구분한다.
-- 상태 변경 요청은 same-origin Origin 검증과 HttpOnly signed session을 거친다.
+- 로그인·로그아웃을 포함한 상태 변경 요청은 Docker Manager와 동일하게
+  등록된 same-origin Origin 검증과 HttpOnly signed session을 거친다. 로그인 응답은
+  검증된 `username`과 안전한 local `next`를 반환하고 세션 cookie는 `SameSite=Strict`다.
   Next server proxy가 `x-admin-token`을 주입하며 browser/client bundle에는 token을
   포함하지 않는다. Basic Auth는 reverse proxy 호환 fallback이다.
 - `/admin/dagster`의 GraphQL은 server-side internal URL로만 전달한다. 운영 외부

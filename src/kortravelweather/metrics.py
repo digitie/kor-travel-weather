@@ -247,20 +247,20 @@ if _MULTIPROCESS_DIR:
             pass
 
 HTTP_REQUESTS = Counter(
-    "kor_travel_weather_http_requests_total",
+    "ktw_http_requests_total",
     "HTTP requests observed by the weather API.",
     ("method", "route", "status_class"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 HTTP_DURATION = Histogram(
-    "kor_travel_weather_http_request_duration_seconds",
+    "ktw_http_request_duration_seconds",
     "HTTP request duration in seconds.",
     ("method", "route"),
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 HTTP_IN_FLIGHT = Gauge(
-    "kor_travel_weather_http_requests_in_flight",
+    "ktw_http_requests_in_flight",
     "HTTP requests currently being processed.",
     ("method",),
     multiprocess_mode="livesum",
@@ -268,13 +268,13 @@ HTTP_IN_FLIGHT = Gauge(
 )
 
 PROVIDER_REQUESTS = Counter(
-    "kor_travel_weather_provider_requests_total",
+    "ktw_provider_requests_total",
     "Logical provider requests performed by a sync worker.",
     ("provider", "dataset", "outcome"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 PROVIDER_DURATION = Histogram(
-    "kor_travel_weather_provider_request_duration_seconds",
+    "ktw_provider_request_duration_seconds",
     "Provider request duration in seconds.",
     ("provider", "dataset"),
     buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
@@ -282,61 +282,61 @@ PROVIDER_DURATION = Histogram(
 )
 
 SYNC_STARTED = Counter(
-    "kor_travel_weather_sync_runs_started_total",
+    "ktw_sync_runs_started_total",
     "Weather sync runs successfully opened.",
     ("provider", "dataset"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 SYNC_FINISHED = Counter(
-    "kor_travel_weather_sync_runs_finished_total",
+    "ktw_sync_runs_finished_total",
     "Weather sync runs terminalized by status.",
     ("provider", "dataset", "status"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 SYNC_ACTIVE = Gauge(
-    "kor_travel_weather_sync_runs_active",
+    "ktw_sync_runs_active",
     "Currently running weather sync runs.",
     ("provider", "dataset"),
     multiprocess_mode="livesum",
     registry=_INSTRUMENTATION_REGISTRY,
 )
 SYNC_REQUESTS = Counter(
-    "kor_travel_weather_sync_requests_total",
+    "ktw_sync_requests_total",
     "Provider requests attributed to completed sync runs.",
     ("provider", "dataset"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 SYNC_SOURCES = Counter(
-    "kor_travel_weather_sync_source_records_total",
+    "ktw_sync_source_records_total",
     "Immutable source records published by completed sync runs.",
     ("provider", "dataset"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 SYNC_VALUES = Counter(
-    "kor_travel_weather_sync_values_total",
+    "ktw_sync_values_total",
     "Normalized weather facts published by completed sync runs.",
     ("provider", "dataset"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 SYNC_STALE_RECOVERED = Counter(
-    "kor_travel_weather_sync_stale_recovered_total",
+    "ktw_sync_stale_recovered_total",
     "Running sync rows recovered after a worker interruption.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
 METRIC_ERRORS = Counter(
-    "kor_travel_weather_metrics_errors_total",
+    "ktw_metrics_errors_total",
     "Instrumentation errors swallowed to keep the data path healthy.",
     ("operation",),
     registry=_INSTRUMENTATION_REGISTRY,
 )
 METRICS_SERVER_UP = Gauge(
-    "kor_travel_weather_metrics_server_up",
+    "ktw_metrics_server_up",
     "Whether this process successfully bound its worker metrics listener.",
     multiprocess_mode="livemax",
     registry=_INSTRUMENTATION_REGISTRY,
 )
 METRICS_SERVER_BIND_FAILURES = Counter(
-    "kor_travel_weather_metrics_server_bind_failures_total",
+    "ktw_metrics_server_bind_failures_total",
     "Metrics listener bind conflicts or failures.",
     registry=_INSTRUMENTATION_REGISTRY,
 )

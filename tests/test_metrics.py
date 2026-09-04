@@ -53,7 +53,8 @@ def test_metrics_endpoint_is_authenticated_and_not_cached() -> None:
     assert scraped.headers["content-type"] == metrics_content_type()
     assert scraped.headers["cache-control"] == "no-store, private"
     assert scraped.headers["x-content-type-options"] == "nosniff"
-    assert "kor_travel_weather_http_requests_total" in scraped.text
+    assert "ktw_http_requests_total" in scraped.text
+    assert "kor_travel_weather_" not in scraped.text
     assert 'route="/health"' in scraped.text
     assert "request-id-must-not-be-a-label" not in scraped.text
     # Scraping itself is deliberately excluded from the HTTP request counter.
@@ -133,7 +134,7 @@ def test_multiprocess_registry_aggregates_worker_samples(tmp_path) -> None:
         text=True,
     )
     assert (
-        'kor_travel_weather_provider_requests_total{dataset="weatherapi_current",'
+        'ktw_provider_requests_total{dataset="weatherapi_current",'
         'outcome="success",provider="weatherapi"} 2.0'
     ) in scraper.stdout
 
@@ -178,7 +179,7 @@ def test_multiprocess_live_gauge_is_cleaned_on_sigterm(tmp_path) -> None:
         capture_output=True,
         text=True,
     )
-    assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
+    assert 'ktw_sync_runs_active{dataset="weatherapi_current"' not in (
         scraper.stdout
     )
 
@@ -215,7 +216,7 @@ def test_multiprocess_live_gauge_is_cleaned_after_worker_is_killed(tmp_path) -> 
         capture_output=True,
         text=True,
     )
-    assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in (
+    assert 'ktw_sync_runs_active{dataset="weatherapi_current"' not in (
         scraper.stdout
     )
     assert not any(tmp_path.glob("gauge_live*.db"))
@@ -310,7 +311,7 @@ def test_malformed_multiprocess_file_does_not_hide_valid_series(tmp_path) -> Non
         capture_output=True,
         text=True,
     )
-    assert 'kor_travel_weather_provider_requests_total{dataset="weatherapi_current"' in (
+    assert 'ktw_provider_requests_total{dataset="weatherapi_current"' in (
         scraper.stdout
     )
     assert not corrupt_file.exists()
@@ -364,7 +365,7 @@ def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> N
         worker.kill()
         worker.wait(timeout=5)
         body = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read().decode()
-        assert 'kor_travel_weather_sync_runs_active{dataset="weatherapi_current"' not in body
+        assert 'ktw_sync_runs_active{dataset="weatherapi_current"' not in body
         assert not worker_gauge.exists()
     finally:
         if worker is not None and worker.poll() is None:

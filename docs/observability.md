@@ -17,12 +17,12 @@ Alertmanager receiver를 별도로 연결한다(이 Compose는 Alertmanager를 �
 Dagster는 `/var/run/kor-travel-weather-metrics` tmpfs를
 `PROMETHEUS_MULTIPROC_DIR`로 공유해 multiprocess executor의 모든 worker 샘플을
 14103 listener에서 합산한다. listener bind 충돌은
-`kor_travel_weather_metrics_server_bind_failures_total`로 확인할 수 있다.
+`ktw_metrics_server_bind_failures_total`로 확인할 수 있다.
 정상 종료(SIGTERM/프로세스 exit)에는 worker가 자신의 live-gauge 파일을 정리하고,
 비정상 종료(SIGKILL/OOM)로 남은 live-gauge 파일은 다음 scrape 때 PID 생존 확인으로
 제거한다. 초기화 중 잘린/손상된 live-gauge 파일은 해당 scrape에서 격리하고, 죽은
 writer의 파일은 함께 제거한다. 따라서 `*_active`가 오래 남는 경우 먼저 worker/container 상태와
-`kor_travel_weather_metrics_server_bind_failures_total`을 함께 확인한다.
+`ktw_metrics_server_bind_failures_total`을 함께 확인한다.
 
 API metrics는 기본 Compose에서 컨테이너당 단일 Uvicorn 프로세스를 전제로 한다.
 API를 여러 replica로 확장할 때는 각 replica의 `/metrics`를 별도 Prometheus target으로
@@ -41,14 +41,21 @@ scrape하고 PromQL에서 합산하거나, 프로세스가 공유하는 전용
 
 ## 지표 계약
 
-- `kor_travel_weather_http_requests_total{method,route,status_class}`
-- `kor_travel_weather_http_request_duration_seconds{method,route}`
-- `kor_travel_weather_http_requests_in_flight{method}`
-- `kor_travel_weather_provider_requests_total{provider,dataset,outcome}`
-- `kor_travel_weather_provider_request_duration_seconds{provider,dataset}`
-- `kor_travel_weather_sync_runs_{started,finished,active}`
-- `kor_travel_weather_sync_{requests,source_records,values}_total`
-- `kor_travel_weather_sync_stale_recovered_total`
+모든 날씨 서비스 지표는 `ktw_` 네임스페이스를 사용한다. 기존
+`kor_travel_weather_` 이름은 더 이상 emit하지 않으므로 Grafana 패널·recording
+rule·알람을 새 이름으로 함께 전환한다.
+
+- `ktw_http_requests_total{method,route,status_class}`
+- `ktw_http_request_duration_seconds{method,route}`
+- `ktw_http_requests_in_flight{method}`
+- `ktw_provider_requests_total{provider,dataset,outcome}`
+- `ktw_provider_request_duration_seconds{provider,dataset}`
+- `ktw_sync_runs_{started,finished,active}`
+- `ktw_sync_{requests,source_records,values}_total`
+- `ktw_sync_stale_recovered_total`
+- `ktw_metrics_errors_total{operation}`
+- `ktw_metrics_server_up`
+- `ktw_metrics_server_bind_failures_total`
 
 라벨에는 location id, run/source key, 좌표, URL, credential이 들어가지 않는다. provider와
 dataset은 현재 catalog allow-list 밖의 값이 `other`로 축약된다. `/metrics` 자체 요청은
@@ -73,8 +80,8 @@ curl -fsS http://127.0.0.1:14104/api/v1/targets \
   | jq '[.data.activeTargets[] | {job,health,lastError}]'
 ```
 
-`up` 이후 `kor_travel_weather_sync_runs_started_total`과
-`kor_travel_weather_provider_requests_total`의 증가를 확인하고, scrape 실패 시
+`up` 이후 `ktw_sync_runs_started_total`과
+`ktw_provider_requests_total`의 증가를 확인하고, scrape 실패 시
 API health와 weather ingest 자체가 계속 동작하는지 별도로 점검한다. Prometheus
 container를 되돌릴 때는 API/Dagster를 중단하지 않고 `docker compose stop prometheus`
 후 원인을 조사할 수 있다.
