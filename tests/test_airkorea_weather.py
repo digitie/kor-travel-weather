@@ -58,6 +58,20 @@ def test_kma_warning_rows_have_distinct_fact_keys() -> None:
     assert {value.severity for value in values} == {"watch"}
 
 
+def test_kma_warning_identifier_types_are_canonicalized() -> None:
+    numeric = weather_warning_to_weather_values(
+        [{"stnId": 108, "tmFc": 202609040300, "tmSeq": 22, "title": "강풍주의보 발표"}],
+        location_id="kma-alert:108",
+    )[0]
+    textual = weather_warning_to_weather_values(
+        [{"stnId": "108", "tmFc": "202609040300", "tmSeq": "22", "title": "강풍주의보 발표"}],
+        location_id="kma-alert:108",
+    )[0]
+
+    assert numeric.source_record_key == textual.source_record_key
+    assert numeric.payload == textual.payload
+
+
 class _PagedStationsClient:
     def __init__(self, pages: dict[int, list[Station]]) -> None:
         self.pages = pages

@@ -654,6 +654,30 @@ def weather_warning_to_weather_values(
     values: list[WeatherValue] = []
     for index, item in enumerate(items):
         raw = _mapping_for(item)
+        # KMA's JSON/XML adapters are allowed to expose identifiers as either
+        # numbers or strings.  The normalized fact payload is immutable, so
+        # keep the identity fields in one representation across re-fetches;
+        # otherwise the same warning can collide with an older row merely
+        # because ``tmSeq`` changed from ``22`` to ``"22"``.
+        station_id = _field(item, "stn_id", "stnId")
+        issue_value = _field(item, "tm_fc", "tmFc")
+        sequence_value = _field(item, "seq", "tmSeq")
+        canonical_station = None if station_id in (None, "") else str(station_id).strip()
+        canonical_issue = None if issue_value in (None, "") else str(issue_value).strip()
+        canonical_sequence = (
+            str(sequence_value).strip() if sequence_value not in (None, "") else str(index)
+        )
+        canonical_raw = dict(raw)
+        for raw_name in (
+            "stn_id",
+            "stnId",
+            "tm_fc",
+            "tmFc",
+            "seq",
+            "tmSeq",
+        ):
+            if raw_name in canonical_raw and canonical_raw[raw_name] not in (None, ""):
+                canonical_raw[raw_name] = str(canonical_raw[raw_name]).strip()
         issued = _warning_issued_at(item, fetched)
         title = _field(item, "title", "msg", "warning", "content", "tm_fc", "tmFc")
         text = str(title or "기상특보").strip()
@@ -662,12 +686,12 @@ def weather_warning_to_weather_values(
             for token in ("해제", "취소", "종료", "cancel", "expired")
         )
         payload = {
-            "stn_id": _field(item, "stn_id", "stnId"),
-            "tm_fc": _field(item, "tm_fc", "tmFc"),
-            "seq": _field(item, "seq", "tmSeq") or str(index),
+            "stn_id": canonical_station,
+            "tm_fc": canonical_issue,
+            "seq": canonical_sequence,
             "title": text,
             "alert_action": "release" if released else "active",
-            "raw": dict(raw),
+            "raw": canonical_raw,
         }
         # A warning response can contain several notices with the same issue
         # minute.  Facts therefore need a row-level revision key; callers can
