@@ -112,9 +112,46 @@ function classifyProviderCode(provider: string, value: WeatherValue): MarkerStat
 
 // Keep repeated location_id query strings below common proxy request-line
 // limits.  The API accepts up to 500 ids, but a 500-id URL can exceed an
-// nginx/HAProxy URI limit once station ids are included.
-const MARKER_BATCH_SIZE = 50;
+// nginx/HAProxy URI limit once station ids are included.  Sixty IDs keeps the
+// URL small while avoiding unnecessary request waves on a nationwide catalog.
+const MARKER_BATCH_SIZE = 60;
 const MARKER_BATCH_CONCURRENCY = 3;
+
+type MapViewport = {
+  west: number;
+  east: number;
+  south: number;
+  north: number;
+};
+
+function viewportFromMap(instance: MapLibreMap): MapViewport | null {
+  try {
+    const bounds = instance.getBounds();
+    return {
+      west: bounds.getWest(),
+      east: bounds.getEast(),
+      south: bounds.getSouth(),
+      north: bounds.getNorth(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isInViewport(location: Location, viewport: MapViewport) {
+  // Korea does not cross the antimeridian, so the ordinary longitude
+  // comparison is sufficient and avoids allocating MapLibre bounds for every
+  // render.  A small margin prevents markers flickering at the edge while a
+  // user pans the map.
+  const longitudeMargin = Math.max(0.15, (viewport.east - viewport.west) * 0.08);
+  const latitudeMargin = Math.max(0.1, (viewport.north - viewport.south) * 0.08);
+  return (
+    location.longitude >= viewport.west - longitudeMargin &&
+    location.longitude <= viewport.east + longitudeMargin &&
+    location.latitude >= viewport.south - latitudeMargin &&
+    location.latitude <= viewport.north + latitudeMargin
+  );
+}
 
 function markerState(summary: WeatherMarker | undefined): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
@@ -174,6 +211,9 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [refreshToken, setRefreshToken] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const [summaries, setSummaries] = useState<Record<string, WeatherMarker>>({});
+  const summariesRef = useRef<Record<string, WeatherMarker>>({});
+  const markerRefreshRef = useRef(-1);
+  const [viewport, setViewport] = useState<MapViewport | null>(null);
 
   const visibleLocations = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -183,6 +223,25 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     );
   }, [locations, query]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+  // Keep the controlled map center referentially stable while the user pans.
+  // VWorldMapView treats a changed center prop as an explicit recenter
+  // request; creating a new array on every viewport update would therefore
+  // undo a user's pan on the next render.  The selected-location effect below
+  // remains the only implicit recenter trigger.
+  const selectedLongitude = selected?.longitude ?? 127.8;
+  const selectedLatitude = selected?.latitude ?? 36.2;
+  const selectedCenter = useMemo<[number, number]>(
+    () => [selectedLongitude, selectedLatitude],
+    [selectedLatitude, selectedLongitude],
+  );
+  const mapLocations = useMemo(() => {
+    if (!viewport) return selected ? [selected] : [];
+    const inViewport = visibleLocations.filter((location) => isInViewport(location, viewport));
+    if (!selected || inViewport.some((location) => location.location_id === selected.location_id)) {
+      return inViewport;
+    }
+    return [selected, ...inViewport];
+  }, [selected, viewport, visibleLocations]);
   const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
   const latestCollectedAt = useMemo(() => {
     const timestamps = values
@@ -216,6 +275,23 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     if (!map.current || !mapReady || !selected) return;
     map.current.easeTo({ center: [selected.longitude, selected.latitude], duration: 500 });
   }, [mapReady, selected]);
+
+  function syncViewport(instance: MapLibreMap) {
+    const next = viewportFromMap(instance);
+    if (!next) return;
+    setViewport((previous) => {
+      if (
+        previous &&
+        Math.abs(previous.west - next.west) < 0.00001 &&
+        Math.abs(previous.east - next.east) < 0.00001 &&
+        Math.abs(previous.south - next.south) < 0.00001 &&
+        Math.abs(previous.north - next.north) < 0.00001
+      ) {
+        return previous;
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!selected) {
@@ -251,17 +327,26 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   }, [refreshToken, selected]);
 
   useEffect(() => {
-    if (!locations.length) return;
+    if (!mapLocations.length || mode !== "map") return;
     let cancelled = false;
+    if (markerRefreshRef.current !== refreshToken) {
+      markerRefreshRef.current = refreshToken;
+      summariesRef.current = {};
+      setSummaries({});
+    }
+    const pendingLocations = mapLocations.filter(
+      (location) => !summariesRef.current[location.location_id],
+    );
+    if (!pendingLocations.length) return;
     const chunks: string[][] = [];
-    for (let index = 0; index < locations.length; index += MARKER_BATCH_SIZE) {
+    for (let index = 0; index < pendingLocations.length; index += MARKER_BATCH_SIZE) {
       chunks.push(
-        locations.slice(index, index + MARKER_BATCH_SIZE).map((location) => location.location_id),
+        pendingLocations
+          .slice(index, index + MARKER_BATCH_SIZE)
+          .map((location) => location.location_id),
       );
     }
-    setSummaries({});
     const loadChunks = async () => {
-      const merged: Record<string, WeatherMarker> = {};
       try {
         for (let index = 0; index < chunks.length; index += MARKER_BATCH_CONCURRENCY) {
           const responses = await Promise.allSettled(
@@ -272,19 +357,19 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           if (cancelled) return;
           for (const response of responses) {
             if (response.status !== "fulfilled") continue;
-            for (const item of response.value.data) merged[item.location_id] = item;
+            for (const item of response.value.data) summariesRef.current[item.location_id] = item;
           }
-          setSummaries({ ...merged });
+          setSummaries({ ...summariesRef.current });
         }
       } catch {
-        if (!cancelled) setSummaries({ ...merged });
+        if (!cancelled) setSummaries({ ...summariesRef.current });
       }
     };
     void loadChunks();
     return () => {
       cancelled = true;
     };
-  }, [locations, refreshToken]);
+  }, [mapLocations, mode, refreshToken]);
 
   useEffect(() => {
     if (mode !== "map" || !map.current) return;
@@ -316,17 +401,19 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           <div aria-labelledby="weather-map-tab" className="map-panel" hidden={mode !== "map"} id="weather-map-panel" role="tabpanel" tabIndex={0}>
             <VWorldMapView
               apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
-              center={selected ? [selected.longitude, selected.latitude] : [127.8, 36.2]}
+              center={selectedCenter}
               className="map-canvas"
               layerType="Base"
               onLoad={(instance) => {
                 map.current = instance;
                 setMapReady(true);
+                syncViewport(instance);
               }}
+              onMoveEnd={(instance) => syncViewport(instance)}
               onError={() => setMessage("VWorld 지도를 불러오지 못했습니다. 날씨 데이터는 계속 확인할 수 있습니다.")}
               zoom={selected ? 7.2 : 6}
             >
-              {visibleLocations.map((location) => {
+              {mapLocations.map((location) => {
                 const summary = summaries[location.location_id];
                 const state = markerState(summary);
                 return (
@@ -344,7 +431,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                 );
               })}
             </VWorldMapView>
-            <div className="map-legend"><span className="legend-dot" /> 활성 날씨 위치 <span className="legend-muted">{visibleLocations.length}곳</span></div>
+            <div className="map-legend"><span className="legend-dot" /> 지도 표시 위치 <span className="legend-muted">{mapLocations.length}/{visibleLocations.length}곳</span></div>
           </div>
           <div aria-labelledby="weather-list-tab" className="list-panel" hidden={mode !== "list"} id="weather-list-panel" role="tabpanel" tabIndex={0}>
             <div className="location-list map-list-overlay">

@@ -420,7 +420,20 @@ class WeatherRepository:
         normalized_url = database_url
         if normalized_url.startswith("postgresql://"):
             normalized_url = "postgresql+psycopg://" + normalized_url.removeprefix("postgresql://")
-        self.engine: Engine = create_engine(normalized_url, future=True)
+        # Marker/detail requests can overlap with the three provider schedules
+        # and with one another.  The SQL itself is bounded, but the default
+        # SQLAlchemy pool (5 connections) makes the API wait behind a burst of
+        # map marker reads.  Keep a modest bounded pool so concurrent reads do
+        # not serialize while still putting an upper bound on database
+        # connections per API/Dagster process.
+        self.engine: Engine = create_engine(
+            normalized_url,
+            future=True,
+            pool_size=10,
+            max_overflow=10,
+            pool_timeout=15,
+            pool_pre_ping=True,
+        )
 
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
@@ -647,6 +660,37 @@ class WeatherRepository:
             row = session.get(WeatherLocationRow, location_id)
             return self._location_model(row) if row else None
 
+    def get_locations_by_ids(
+        self,
+        location_ids: Sequence[str],
+        *,
+        enabled_only: bool = False,
+    ) -> list[WeatherLocation]:
+        """Load only the requested anchors using the location primary key.
+
+        The map marker endpoint receives a small batch of IDs.  Reading the
+        complete enabled catalog for every batch is needlessly expensive and
+        becomes visible as the catalog grows.  Preserve caller order so the
+        response remains deterministic while filtering disabled/missing
+        anchors at the repository boundary.
+        """
+        unique_ids = list(dict.fromkeys(location_ids))
+        if not unique_ids:
+            return []
+        with self._session_factory() as session:
+            stmt = select(WeatherLocationRow).where(
+                WeatherLocationRow.location_id.in_(unique_ids)
+            )
+            if enabled_only:
+                stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            rows = session.scalars(stmt).all()
+            by_id = {row.location_id: row for row in rows}
+            return [
+                self._location_model(by_id[location_id])
+                for location_id in unique_ids
+                if location_id in by_id
+            ]
+
     def has_values(self, location_id: str) -> bool:
         """위치 anchor를 변경해도 되는지 확인하는 최소 projection."""
         with self._session_factory() as session:
@@ -705,7 +749,16 @@ class WeatherRepository:
                 )
             return int(session.scalar(stmt) or 0)
 
-    def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> None:
+    def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> str:
+        """Insert a source response and return its canonical primary key.
+
+        The immutable source identity constraint is intentionally independent
+        of ``source_record_key``.  Provider adapters can change the way that
+        key is derived between releases (for example, from response-level to
+        row-level alert keys) while the raw response remains the same.  Treat
+        an existing identity as an idempotent replay and reuse its primary key
+        so a scheduled retry cannot fail with a duplicate-key error.
+        """
         source_record_key = str(record["source_record_key"])
         provider = str(record["provider"])
         dataset_key = str(record["dataset_key"])
@@ -718,7 +771,23 @@ class WeatherRepository:
             text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
             {"source_key": source_record_key},
         )
-        row = session.get(SourceRecordRow, source_record_key)
+        # A pending source row in the same batch must not be autoflushed while
+        # checking the alternate identity; otherwise PostgreSQL raises the
+        # unique constraint before we can fold the replay into that row.
+        with session.no_autoflush:
+            row = session.get(SourceRecordRow, source_record_key)
+            if row is None:
+                row = session.scalar(
+                    select(SourceRecordRow)
+                    .where(
+                        SourceRecordRow.provider == provider,
+                        SourceRecordRow.dataset_key == dataset_key,
+                        SourceRecordRow.source_entity_type == source_entity_type,
+                        SourceRecordRow.source_entity_id == source_entity_id,
+                        SourceRecordRow.raw_payload_hash == raw_hash,
+                    )
+                    .limit(1)
+                )
         if row is not None and (
             row.provider != provider
             or row.dataset_key != dataset_key
@@ -741,6 +810,8 @@ class WeatherRepository:
                     imported_at=kst_now(),
                 )
             )
+            return source_record_key
+        return row.source_record_key
 
     @staticmethod
     def _validate_source_lineage(
@@ -794,7 +865,13 @@ class WeatherRepository:
             f"{source.source_entity_id} -> {value.location_id}"
         )
 
-    def _insert_value_session(self, session: Session, value: WeatherValue) -> bool:
+    def _insert_value_session(
+        self,
+        session: Session,
+        value: WeatherValue,
+        *,
+        allow_replay_payload_mismatch: bool = False,
+    ) -> bool:
         self._lock_location_session(session, value.location_id)
         source_key = value.source_record_key or _metric_source_key(value)
         canonical_target = _canonical_datetime(
@@ -889,6 +966,14 @@ class WeatherRepository:
             }
             if actual != expected:
                 changed = sorted(key for key in expected if actual[key] != expected[key])
+                # A provider may normalize the same immutable response into a
+                # richer payload after a deploy (for example, adding the
+                # explicit ``alert_action`` field).  When source identity was
+                # folded to an existing legacy key, retain the first stored
+                # representation rather than turning a harmless replay into a
+                # failed sync.  All typed identity/value fields remain strict.
+                if allow_replay_payload_mismatch and changed == ["payload"]:
+                    return False
                 raise ValueError(f"immutable weather fact 충돌: {value_id} ({', '.join(changed)})")
             return False
         row = WeatherValueRow(value_id=value_id)
@@ -947,8 +1032,56 @@ class WeatherRepository:
             if run.status != "running":
                 raise ValueError(f"sync run이 이미 종료되었습니다: {run_id}")
             run_rows[run_key] = run
+        # Normalize source-key aliases before values are inserted.  This keeps
+        # foreign keys and WeatherValue identity stable when a provider emits a
+        # new deterministic key for a raw payload already stored in the DB.
+        source_aliases: dict[str, str] = {}
+        identity_aliases: dict[tuple[str, str, str, str, str], str] = {}
+        normalized_records: list[Mapping[str, Any]] = []
         for record in records:
-            self._record_source_session(session, record)
+            original_key = str(record["source_record_key"])
+            provider = str(record["provider"])
+            dataset_key = str(record["dataset_key"])
+            entity_type = str(record["source_entity_type"])
+            entity_id = str(record["source_entity_id"])
+            payload = dict(record["payload"])
+            identity = (
+                provider,
+                dataset_key,
+                entity_type,
+                entity_id,
+                _payload_hash(payload),
+            )
+            canonical_key = identity_aliases.get(identity)
+            if canonical_key is None:
+                canonical_key = self._record_source_session(session, record)
+                identity_aliases[identity] = canonical_key
+            source_aliases[original_key] = canonical_key
+            if canonical_key == original_key:
+                normalized_records.append(record)
+            else:
+                normalized = dict(record)
+                normalized["source_record_key"] = canonical_key
+                normalized_records.append(normalized)
+        records = normalized_records
+        replay_source_keys = {
+            canonical_key
+            for original_key, canonical_key in source_aliases.items()
+            if original_key != canonical_key
+        }
+        if source_aliases:
+            facts = [
+                fact.model_copy(
+                    update={
+                        "source_record_key": source_aliases.get(
+                            fact.source_record_key or "", fact.source_record_key
+                        )
+                    }
+                )
+                if fact.source_record_key in source_aliases
+                else fact
+                for fact in facts
+            ]
         # pending source rows must be visible to FK checks/value lookup.
         session.flush()
         for record in records:
@@ -981,7 +1114,14 @@ class WeatherRepository:
         # taking the same advisory/row locks in opposite orders.
         for location_id in sorted({value.location_id for value in facts}):
             self._lock_location_session(session, location_id)
-        return sum(self._insert_value_session(session, value) for value in facts)
+        return sum(
+            self._insert_value_session(
+                session,
+                value,
+                allow_replay_payload_mismatch=value.source_record_key in replay_source_keys,
+            )
+            for value in facts
+        )
 
     def ingest_batch(
         self,

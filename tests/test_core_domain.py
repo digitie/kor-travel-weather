@@ -182,6 +182,102 @@ def test_response_source_is_shared_by_metrics_without_payload_corruption(tmp_pat
     assert len(repo.timeline("x", include_revisions=True)) == 2
 
 
+def test_source_identity_replay_reuses_existing_primary_key(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    payload = {"rows": [{"TMP": "1"}]}
+    repo.record_source(
+        source_record_key="legacy-response-key",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="x",
+        payload=payload,
+    )
+    value = WeatherValue(
+        location_id="x",
+        provider="p",
+        dataset_key="d",
+        weather_domain="d",
+        forecast_style=ForecastStyle.SHORT,
+        metric_key="TMP",
+        target_at=datetime(2026, 1, 1, tzinfo=UTC),
+        value_number=Decimal("1"),
+        payload={"metric": "TMP"},
+        source_record_key="new-response-key",
+    )
+
+    assert repo.ingest_batch(
+        source_records=[
+            {
+                "source_record_key": "new-response-key",
+                "provider": "p",
+                "dataset_key": "d",
+                "source_entity_type": "weather_response",
+                "source_entity_id": "x",
+                "payload": payload,
+            }
+        ],
+        values=[value],
+    ) == 1
+    assert repo.get_source_record("new-response-key") is None
+    assert repo.timeline("x", include_revisions=True)[0].source_record_key == "legacy-response-key"
+
+
+def test_source_identity_replay_keeps_legacy_fact_payload(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    source_payload = {"rows": [{"ALERT": "호우주의보 발표"}]}
+    repo.record_source(
+        source_record_key="legacy-alert-source",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="x",
+        payload=source_payload,
+    )
+    target = datetime(2026, 1, 1, tzinfo=UTC)
+    legacy = WeatherValue(
+        location_id="x",
+        provider="p",
+        dataset_key="d",
+        weather_domain="d",
+        forecast_style=ForecastStyle.SHORT,
+        metric_key="ALERT",
+        target_at=target,
+        value_text="호우주의보 발표",
+        payload={"legacy": True},
+        source_record_key="legacy-alert-source",
+    )
+    assert repo.upsert_values([legacy]) == 1
+
+    replay = legacy.model_copy(
+        update={
+            "source_record_key": "new-alert-source",
+            "payload": {"alert_action": "active", "legacy": True},
+        }
+    )
+    assert (
+        repo.ingest_batch(
+            source_records=[
+                {
+                    "source_record_key": "new-alert-source",
+                    "provider": "p",
+                    "dataset_key": "d",
+                    "source_entity_type": "weather_response",
+                    "source_entity_id": "x",
+                    "payload": source_payload,
+                }
+            ],
+            values=[replay],
+        )
+        == 0
+    )
+    assert repo.timeline("x", include_revisions=True)[0].payload == {"legacy": True}
+
+
 def test_location_anchor_cannot_move_after_fact(tmp_path) -> None:
     repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
@@ -224,6 +320,28 @@ def test_location_patch_preserves_independent_concurrent_fields(tmp_path) -> Non
     assert loaded is not None
     assert loaded.name == "renamed"
     assert loaded.region_code == "11"
+
+
+def test_get_locations_by_ids_uses_primary_key_and_filters_disabled(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    repo.upsert_location(
+        WeatherLocation(
+            location_id="disabled",
+            name="Disabled",
+            latitude=37.1,
+            longitude=127.1,
+            enabled=False,
+        )
+    )
+
+    loaded = repo.get_locations_by_ids(
+        ["missing", "disabled", "x", "x"], enabled_only=True
+    )
+
+    assert [location.location_id for location in loaded] == ["x"]
+    assert repo.get_locations_by_ids(["disabled"], enabled_only=False)[0].location_id == "disabled"
 
 
 def test_nearest_locations_scans_full_enabled_catalog(tmp_path, monkeypatch) -> None:
