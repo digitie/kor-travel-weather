@@ -1,30 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { isAllowedOrigin } from "@/lib/origin";
 import {
   revokeSessionValue,
   SESSION_COOKIE,
   sessionSecret,
   verifySessionValue,
 } from "@/lib/session";
-
-function isAllowedOrigin(request: NextRequest) {
-  const origin = request.headers.get("origin");
-  if (!origin) return process.env.NODE_ENV !== "production";
-  try {
-    const parsed = new URL(origin);
-    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) return false;
-    const configured = (process.env.WEATHER_UI_PUBLIC_ORIGINS ?? process.env.WEATHER_UI_PUBLIC_ORIGIN ?? "")
-      .split(",")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (configured.length) return configured.some((value) => {
-      try { return new URL(value).origin === parsed.origin; } catch { return false; }
-    });
-    return process.env.NODE_ENV !== "production" && parsed.origin === request.nextUrl.origin;
-  } catch {
-    return false;
-  }
-}
 
 async function persistRevocation(session: string) {
   if (process.env.NODE_ENV !== "production") return true;
@@ -83,7 +65,7 @@ export async function POST(request: NextRequest) {
     httpOnly: true,
     maxAge: 0,
     path: "/",
-    sameSite: "lax",
+    sameSite: "strict",
     secure: process.env.NODE_ENV === "production" && forwardedProtocol === "https",
   });
   return response;

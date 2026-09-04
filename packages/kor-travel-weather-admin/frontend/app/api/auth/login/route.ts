@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { isAllowedOrigin } from "@/lib/origin";
+import { sanitizeLocalPath } from "@/lib/navigation";
 import { createSessionValue, SESSION_COOKIE, SESSION_MAX_AGE, sessionSecret } from "@/lib/session";
 
 const WINDOW_MS = 10 * 60 * 1000;
@@ -100,6 +102,12 @@ async function readBoundedText(request: NextRequest, maxBytes: number): Promise<
 }
 
 export async function POST(request: NextRequest) {
+  if (!isAllowedOrigin(request)) {
+    return NextResponse.json(
+      { detail: "교차 사이트 요청이 차단되었습니다." },
+      { status: 403, headers: { "cache-control": "no-store" } },
+    );
+  }
   const username = process.env.WEATHER_UI_USER;
   const password = process.env.WEATHER_UI_PASSWORD;
   if (!username || !password) {
@@ -127,7 +135,7 @@ export async function POST(request: NextRequest) {
       { status: 413, headers: { "cache-control": "no-store" } },
     );
   }
-  let body: { username?: unknown; password?: unknown };
+  let body: { username?: unknown; password?: unknown; next?: unknown };
   try {
     const raw = await readBoundedText(request, MAX_BODY_BYTES);
     if (raw === null) {
@@ -138,7 +146,7 @@ export async function POST(request: NextRequest) {
     }
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object expected");
-    body = parsed as { username?: unknown; password?: unknown };
+    body = parsed as { username?: unknown; password?: unknown; next?: unknown };
   } catch {
     return NextResponse.json(
       { detail: "로그인 요청 형식이 올바르지 않습니다." },
@@ -151,8 +159,12 @@ export async function POST(request: NextRequest) {
       { status: 401, headers: { "cache-control": "no-store" } },
     );
   }
+  const nextPath = sanitizeLocalPath(body.next);
   if (key) attempts.delete(key);
-  const response = NextResponse.json({ ok: true }, { headers: { "cache-control": "no-store" } });
+  const response = NextResponse.json(
+    { ok: true, username, next: nextPath },
+    { headers: { "cache-control": "no-store" } },
+  );
   const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim() ?? new URL(request.url).protocol.replace(":", "");
   response.cookies.set({
     name: SESSION_COOKIE,
@@ -160,7 +172,7 @@ export async function POST(request: NextRequest) {
     httpOnly: true,
     maxAge: SESSION_MAX_AGE,
     path: "/",
-    sameSite: "lax",
+    sameSite: "strict",
     secure: process.env.NODE_ENV === "production" && forwardedProtocol === "https",
   });
   return response;

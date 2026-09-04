@@ -4,15 +4,7 @@ import { CloudSun, LoaderCircle, LockKeyhole } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
-function sanitizeLocalPath(value: string | null) {
-  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return "/";
-  try {
-    const parsed = new URL(value, window.location.origin);
-    return parsed.origin === window.location.origin ? `${parsed.pathname}${parsed.search}${parsed.hash}` : "/";
-  } catch {
-    return "/";
-  }
-}
+import { sanitizeLocalPath } from "@/lib/navigation";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -35,11 +27,11 @@ export default function LoginPage() {
       const response = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, next: nextPath }),
       });
-      const payload = (await response.json().catch(() => ({}))) as { detail?: string };
+      const payload = (await response.json().catch(() => ({}))) as { detail?: string; next?: unknown };
       if (!response.ok) throw new Error(payload.detail ?? "로그인에 실패했습니다.");
-      router.replace(nextPath);
+      router.replace(sanitizeLocalPath(payload.next ?? nextPath));
       router.refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "로그인에 실패했습니다.");
@@ -71,7 +63,7 @@ export default function LoginPage() {
             {error ? <div className="login-error" id="login-error" role="alert">{error}</div> : null}
             <button disabled={loading} type="submit">
               {loading ? <LoaderCircle aria-hidden="true" className="spin" size={16} /> : <LockKeyhole aria-hidden="true" size={16} />}
-              {loading ? "확인 중…" : "콘솔 들어가기"}
+              {loading ? "확인 중…" : "로그인"}
             </button>
           </form>
         </section>

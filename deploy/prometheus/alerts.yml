@@ -12,7 +12,7 @@ groups:
 
       - alert: KorTravelWeatherApiErrors
         expr: |
-          sum(rate(kor_travel_weather_http_requests_total{status_class="5xx"}[5m])) > 0
+          sum(rate(ktw_http_requests_total{status_class="5xx"}[5m])) > 0
         for: 10m
         labels:
           severity: warning
@@ -22,7 +22,7 @@ groups:
 
       - alert: KorTravelWeatherProviderErrors
         expr: |
-          sum(rate(kor_travel_weather_provider_requests_total{outcome="error"}[10m])) > 0
+          sum(rate(ktw_provider_requests_total{outcome="error"}[10m])) > 0
         for: 10m
         labels:
           severity: warning
@@ -32,7 +32,7 @@ groups:
 
       - alert: KorTravelWeatherSyncFailed
         expr: |
-          sum(increase(kor_travel_weather_sync_runs_finished_total{status=~"failed|partial"}[15m])) > 0
+          sum(increase(ktw_sync_runs_finished_total{status=~"failed|partial"}[15m])) > 0
         for: 5m
         labels:
           severity: warning
