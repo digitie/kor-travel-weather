@@ -205,9 +205,8 @@ services:
       WEATHER_UI_USER: ${WEATHER_UI_USER:-admin}
       WEATHER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
       # Optional Geo-compatible PBKDF2 password hash. When set, the login
-      # route verifies this hash instead of WEATHER_UI_PASSWORD; keep the
-      # cleartext value for the reverse-proxy Basic fallback until that path
-      # is intentionally disabled.
+      # route verifies this hash instead of WEATHER_UI_PASSWORD. The web UI is
+      # session-only; Basic Auth is reserved for the Dagster gateway.
       WEATHER_UI_PASSWORD_HASH: ${WEATHER_UI_PASSWORD_HASH:-}
       WEATHER_UI_SESSION_SECRET: ${WEATHER_UI_SESSION_SECRET:?set WEATHER_UI_SESSION_SECRET in .env}
       # Enable only when the front proxy strips and rewrites forwarding headers.

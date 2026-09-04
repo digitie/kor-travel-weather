@@ -12,7 +12,6 @@ import {
 function unauthorized() {
   return new NextResponse("관리자 UI 인증이 필요합니다.", {
     status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="kor-travel-weather admin"' },
   });
 }
 
@@ -80,31 +79,16 @@ export async function middleware(request: NextRequest) {
   if (session && (await verifySessionValue(session, secret, request, username)) === username) {
     if (!(await durableSessionRevoked(session))) return NextResponse.next();
   }
-  // A PBKDF2-only deployment has no cleartext value with which to support the
-  // reverse-proxy Basic fallback; it must use the signed session established by
-  // the login endpoint instead.
-  // When both values are present, the hash is authoritative as well: keeping
-  // Basic enabled would leave the old cleartext credential valid after a hash
-  // rotation and would no longer match the Geo auth contract.
-  if (!password || passwordHash) return unauthorized();
-  const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Basic ")) {
-    if (request.headers.get("accept")?.includes("text/html")) {
-      const login = new URL("/login", request.url);
-      login.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
-      return NextResponse.redirect(login);
-    }
-    return unauthorized();
+  // Keep the web surface session-only, matching kor-travel-geo. Basic Auth is
+  // reserved for the separately protected Dagster gateway; accepting it here
+  // would let browsers silently bypass logout because they resend cached
+  // Authorization headers after the session cookie has been revoked.
+  if (request.headers.get("accept")?.includes("text/html")) {
+    const login = new URL("/login", request.url);
+    login.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
+    return NextResponse.redirect(login);
   }
-  const encoded = authorization.slice("Basic ".length);
-  let supplied: string;
-  try {
-    supplied = atob(encoded);
-  } catch {
-    return unauthorized();
-  }
-  if (supplied !== `${username}:${password}`) return unauthorized();
-  return NextResponse.next();
+  return unauthorized();
 }
 
 export const config = {

@@ -34,13 +34,12 @@
 heartbeat를 갱신하므로, 180분 동안 heartbeat가 없는 running row만 자동으로 failed
 회수된다.
 
-Next.js admin은 내부 네트워크에서만 노출한다. Dagster 14102도
+Next.js admin은 내부 네트워크에서만 노출한다. Dagster 14102는
 `dagster-gateway` Basic Auth 뒤에 있으며, web의 server-side GraphQL proxy만
-내부 `dagster:14102`에 직접 접근한다. n150 reverse proxy에서 외부 접근을
-허용할 때는 `admin` Basic Auth(비밀번호는 secret 파일) 또는
-조직 SSO를 사용한다. 외부 접근이 필요하면
-`WEATHER_UI_USER`/`WEATHER_UI_PASSWORD` Basic Auth(또는 조직 SSO)를 reverse
-proxy 앞에 두고, `WEATHER_API_INTERNAL_URL`과 `WEATHER_ADMIN_TOKEN`은
+내부 `dagster:14102`에 직접 접근한다. Web UI 자체는 kor-travel-geo와 같이
+로그인 form에서 발급한 signed session만 사용하고 Basic Auth를 허용하지 않는다.
+n150 reverse proxy에서 외부 접근을 허용할 때는 조직 SSO 또는 TLS로 보호된
+세션 로그인 경계를 사용한다. `WEATHER_API_INTERNAL_URL`과 `WEATHER_ADMIN_TOKEN`은
 server-side 환경변수로만 주입한다. Next proxy가 브라우저에 backend token을
 전달하지 않도록 한다. web middleware는 로그아웃 marker를 API의 PostgreSQL에
 기록하므로 web replica가 늘어나도 세션 폐기가 공유된다. 이를 위해 web 컨테이너의

@@ -95,11 +95,12 @@ Compose의 Prometheus는 `127.0.0.1:14104`에만 노출하며 API scrape에는 �
 `KOR_TRAVEL_WEATHER_METRICS_TOKEN` bearer token을 사용한다. API와 Dagster의
 집계 지표에는 위치/실행 ID·URL·credential이 label로 들어가지 않는다.
 
-운영에서 frontend를 외부에 노출하지 말고 reverse proxy/SSO 또는
-`WEATHER_UI_USER`·`WEATHER_UI_PASSWORD` Basic Auth를 설정한다. Next proxy는
-서버에서만 backend admin token을 주입하며 브라우저에 token을 전달하지 않는다.
-Dagster 원본 UI 도메인은 gateway Basic Auth로 보호되며, UI의 Dagster 상태 화면은
-인증된 Next server-side proxy를 사용한다.
+운영에서 frontend를 외부에 직접 노출하지 말고 TLS reverse proxy/SSO를 사용한다.
+Web UI 로그인은 `WEATHER_UI_USER`·`WEATHER_UI_PASSWORD`(또는 Geo 호환 hash)로
+서명된 session을 발급하며 Basic Auth를 사용하지 않는다. Next proxy는 서버에서만
+backend admin token을 주입하며 브라우저에 token을 전달하지 않는다. Dagster 원본
+UI 도메인은 별도 gateway Basic Auth로 보호되며, UI의 Dagster 상태 화면은 인증된
+Next server-side proxy를 사용한다.
 
 `ktwctl init-db`는 비어 있는 catalog를 위한 insert-only bootstrap이다. 기존
 location의 enabled/좌표/metadata는 admin 소유이므로 재실행해도 덮어쓰지 않는다.
