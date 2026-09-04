@@ -392,13 +392,19 @@ function weatherConditionLabel(condition: WeatherCondition): string {
 function createWeatherClusterPointElement(
   marker: WeatherClusterMarker,
   onClick: () => void,
-): HTMLButtonElement {
-  const element = document.createElement("button");
-  element.type = "button";
-  element.className = `weather-marker vworld-weather-marker vworld-weather-marker-button weather-marker-${marker.condition}${marker.selected ? " selected" : ""}`;
-  element.setAttribute("aria-label", marker.ariaLabel);
-  element.setAttribute("aria-pressed", String(marker.selected === true));
-  if (marker.title) element.title = marker.title;
+): HTMLDivElement {
+  // Keep the MapLibre root as the transparent, centre-anchored wrapper used
+  // by VWorldWeatherMarker. The styled control must be a child; applying both
+  // wrapper and button classes to one element would let the wrapper's reset
+  // styles hide the weather chip.
+  const element = document.createElement("div");
+  element.className = `weather-marker vworld-weather-marker weather-marker-${marker.condition}${marker.selected ? " selected" : ""}`;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "vworld-weather-marker-button";
+  button.setAttribute("aria-label", marker.ariaLabel);
+  button.setAttribute("aria-pressed", String(marker.selected === true));
+  if (marker.title) button.title = marker.title;
   const icon = document.createElement("span");
   icon.className = "vworld-weather-marker-icon";
   icon.setAttribute("aria-hidden", "true");
@@ -410,18 +416,19 @@ function createWeatherClusterPointElement(
   const label = document.createElement("small");
   label.textContent = weatherConditionLabel(marker.condition);
   copy.append(temperature, label);
-  element.append(icon, copy);
+  button.append(icon, copy);
   if ((marker.alertCount ?? 0) > 0) {
     const badge = document.createElement("span");
     badge.className = "weather-marker-badge";
     badge.textContent = String(marker.alertCount);
     badge.setAttribute("aria-label", `특보 ${marker.alertCount}건`);
-    element.append(badge);
+    button.append(badge);
   }
-  element.addEventListener("click", (event) => {
+  button.addEventListener("click", (event) => {
     event.stopPropagation();
     onClick();
   });
+  element.append(button);
   return element;
 }
 
