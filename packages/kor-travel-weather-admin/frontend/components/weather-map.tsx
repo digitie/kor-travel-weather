@@ -15,9 +15,9 @@ import {
 } from "@/lib/api";
 import {
   VWorldMapView,
-  VWorldWeatherMarker,
-  type WeatherCondition,
+  VWorldWeatherClusters,
 } from "@/components/vworld-map-view";
+import type { WeatherCondition } from "@/lib/weather-clusters";
 
 type WeatherMapProps = {
   locations: Location[];
@@ -413,23 +413,23 @@ export function WeatherMap({ locations }: WeatherMapProps) {
               onError={() => setMessage("VWorld 지도를 불러오지 못했습니다. 날씨 데이터는 계속 확인할 수 있습니다.")}
               zoom={selected ? 7.2 : 6}
             >
-              {mapLocations.map((location) => {
-                const summary = summaries[location.location_id];
-                const state = markerState(summary);
-                return (
-                  <VWorldWeatherMarker
-                    alertCount={summary?.alerts.length ?? 0}
-                    ariaLabel={`${location.name}: ${state.label} 날씨 보기`}
-                    condition={markerCondition(state.kind)}
-                    key={location.location_id}
-                    lngLat={[location.longitude, location.latitude]}
-                    onClick={() => setSelectedId(location.location_id)}
-                    selected={location.location_id === selectedId}
-                    temperature={markerTemperature(summary)}
-                    title={location.name}
-                  />
-                );
-              })}
+              <VWorldWeatherClusters
+                markers={mapLocations.map((location) => {
+                  const summary = summaries[location.location_id];
+                  const state = markerState(summary);
+                  return {
+                    id: location.location_id,
+                    lngLat: [location.longitude, location.latitude] as [number, number],
+                    temperature: markerTemperature(summary),
+                    condition: markerCondition(state.kind),
+                    alertCount: summary?.alerts.length ?? 0,
+                    selected: location.location_id === selectedId,
+                    ariaLabel: `${location.name}: ${state.label} 날씨 보기`,
+                    title: location.name,
+                    onClick: () => setSelectedId(location.location_id),
+                  };
+                })}
+              />
             </VWorldMapView>
             <div className="map-legend"><span className="legend-dot" /> 지도 표시 위치 <span className="legend-muted">{mapLocations.length}/{visibleLocations.length}곳</span></div>
           </div>
