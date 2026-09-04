@@ -865,7 +865,13 @@ class WeatherRepository:
             f"{source.source_entity_id} -> {value.location_id}"
         )
 
-    def _insert_value_session(self, session: Session, value: WeatherValue) -> bool:
+    def _insert_value_session(
+        self,
+        session: Session,
+        value: WeatherValue,
+        *,
+        allow_replay_payload_mismatch: bool = False,
+    ) -> bool:
         self._lock_location_session(session, value.location_id)
         source_key = value.source_record_key or _metric_source_key(value)
         canonical_target = _canonical_datetime(
@@ -960,6 +966,14 @@ class WeatherRepository:
             }
             if actual != expected:
                 changed = sorted(key for key in expected if actual[key] != expected[key])
+                # A provider may normalize the same immutable response into a
+                # richer payload after a deploy (for example, adding the
+                # explicit ``alert_action`` field).  When source identity was
+                # folded to an existing legacy key, retain the first stored
+                # representation rather than turning a harmless replay into a
+                # failed sync.  All typed identity/value fields remain strict.
+                if allow_replay_payload_mismatch and changed == ["payload"]:
+                    return False
                 raise ValueError(f"immutable weather fact 충돌: {value_id} ({', '.join(changed)})")
             return False
         row = WeatherValueRow(value_id=value_id)
@@ -1050,6 +1064,11 @@ class WeatherRepository:
                 normalized["source_record_key"] = canonical_key
                 normalized_records.append(normalized)
         records = normalized_records
+        replay_source_keys = {
+            canonical_key
+            for original_key, canonical_key in source_aliases.items()
+            if original_key != canonical_key
+        }
         if source_aliases:
             facts = [
                 fact.model_copy(
@@ -1095,7 +1114,14 @@ class WeatherRepository:
         # taking the same advisory/row locks in opposite orders.
         for location_id in sorted({value.location_id for value in facts}):
             self._lock_location_session(session, location_id)
-        return sum(self._insert_value_session(session, value) for value in facts)
+        return sum(
+            self._insert_value_session(
+                session,
+                value,
+                allow_replay_payload_mismatch=value.source_record_key in replay_source_keys,
+            )
+            for value in facts
+        )
 
     def ingest_batch(
         self,

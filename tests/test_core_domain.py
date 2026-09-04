@@ -225,6 +225,59 @@ def test_source_identity_replay_reuses_existing_primary_key(tmp_path) -> None:
     assert repo.timeline("x", include_revisions=True)[0].source_record_key == "legacy-response-key"
 
 
+def test_source_identity_replay_keeps_legacy_fact_payload(tmp_path) -> None:
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    source_payload = {"rows": [{"ALERT": "호우주의보 발표"}]}
+    repo.record_source(
+        source_record_key="legacy-alert-source",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="x",
+        payload=source_payload,
+    )
+    target = datetime(2026, 1, 1, tzinfo=UTC)
+    legacy = WeatherValue(
+        location_id="x",
+        provider="p",
+        dataset_key="d",
+        weather_domain="d",
+        forecast_style=ForecastStyle.SHORT,
+        metric_key="ALERT",
+        target_at=target,
+        value_text="호우주의보 발표",
+        payload={"legacy": True},
+        source_record_key="legacy-alert-source",
+    )
+    assert repo.upsert_values([legacy]) == 1
+
+    replay = legacy.model_copy(
+        update={
+            "source_record_key": "new-alert-source",
+            "payload": {"alert_action": "active", "legacy": True},
+        }
+    )
+    assert (
+        repo.ingest_batch(
+            source_records=[
+                {
+                    "source_record_key": "new-alert-source",
+                    "provider": "p",
+                    "dataset_key": "d",
+                    "source_entity_type": "weather_response",
+                    "source_entity_id": "x",
+                    "payload": source_payload,
+                }
+            ],
+            values=[replay],
+        )
+        == 0
+    )
+    assert repo.timeline("x", include_revisions=True)[0].payload == {"legacy": True}
+
+
 def test_location_anchor_cannot_move_after_fact(tmp_path) -> None:
     repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
