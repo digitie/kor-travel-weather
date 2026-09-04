@@ -223,6 +223,17 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     );
   }, [locations, query]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+  // Keep the controlled map center referentially stable while the user pans.
+  // VWorldMapView treats a changed center prop as an explicit recenter
+  // request; creating a new array on every viewport update would therefore
+  // undo a user's pan on the next render.  The selected-location effect below
+  // remains the only implicit recenter trigger.
+  const selectedLongitude = selected?.longitude ?? 127.8;
+  const selectedLatitude = selected?.latitude ?? 36.2;
+  const selectedCenter = useMemo<[number, number]>(
+    () => [selectedLongitude, selectedLatitude],
+    [selectedLatitude, selectedLongitude],
+  );
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
     const inViewport = visibleLocations.filter((location) => isInViewport(location, viewport));
@@ -390,7 +401,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           <div aria-labelledby="weather-map-tab" className="map-panel" hidden={mode !== "map"} id="weather-map-panel" role="tabpanel" tabIndex={0}>
             <VWorldMapView
               apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
-              center={selected ? [selected.longitude, selected.latitude] : [127.8, 36.2]}
+              center={selectedCenter}
               className="map-canvas"
               layerType="Base"
               onLoad={(instance) => {
