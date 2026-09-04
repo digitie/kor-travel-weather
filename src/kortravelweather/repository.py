@@ -367,6 +367,23 @@ class AdminSessionRevocationRow(Base):
     created_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
+class AdminLoginRateLimitRow(Base):
+    """Shared login-failure bucket for every web replica.
+
+    Only a SHA-256 bucket identifier is retained.  The source IP and attempted
+    username never cross the API boundary, while the row makes the five-failure
+    window survive a Next.js restart or a request landing on another replica.
+    """
+
+    __tablename__ = "weather_admin_login_rate_limits"
+    __table_args__ = (Index("ix_weather_admin_login_rate_limits_updated", "updated_at"),)
+
+    bucket_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+
+
 def _credential_fernet(encryption_key: str | None) -> Fernet:
     """Build a Fernet instance without exposing key material in exceptions."""
     if not encryption_key:
@@ -2279,6 +2296,101 @@ class WeatherRepository:
                 session.delete(row)
                 return False
             return True
+
+    @staticmethod
+    def _login_bucket_hash(bucket_hash: str) -> str:
+        """Validate the already-hashed login bucket supplied by the web tier."""
+        normalized = bucket_hash.strip().lower()
+        if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+            raise ValueError("login rate-limit bucket이 올바르지 않습니다.")
+        return normalized
+
+    @staticmethod
+    def _login_rate_limit_retry_after(
+        row: AdminLoginRateLimitRow | None,
+        now: datetime,
+        *,
+        max_attempts: int,
+        window_seconds: int,
+    ) -> int | None:
+        if row is None or row.window_started_at + timedelta(seconds=window_seconds) <= now:
+            return None
+        if row.failure_count < max_attempts:
+            return None
+        return max(
+            1,
+            int(
+                (row.window_started_at + timedelta(seconds=window_seconds) - now).total_seconds()
+            ),
+        )
+
+    def check_admin_login_rate_limit(
+        self,
+        bucket_hash: str,
+        *,
+        max_attempts: int = 5,
+        window_seconds: int = 10 * 60,
+    ) -> int | None:
+        """Return retry-after seconds when a shared failure bucket is blocked."""
+        bucket = self._login_bucket_hash(bucket_hash)
+        now = kst_now().astimezone(UTC)
+        with self._session_factory.begin() as session:
+            row = session.get(AdminLoginRateLimitRow, bucket, with_for_update=True)
+            if row is not None and row.window_started_at + timedelta(seconds=window_seconds) <= now:
+                session.delete(row)
+                row = None
+            return self._login_rate_limit_retry_after(
+                row,
+                now,
+                max_attempts=max_attempts,
+                window_seconds=window_seconds,
+            )
+
+    def record_admin_login_failure(
+        self,
+        bucket_hash: str,
+        *,
+        max_attempts: int = 5,
+        window_seconds: int = 10 * 60,
+    ) -> int | None:
+        """Atomically add one failed attempt and return a resulting retry delay."""
+        bucket = self._login_bucket_hash(bucket_hash)
+        now = kst_now().astimezone(UTC)
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:scope))"),
+                {"scope": f"admin-login-rate-limit:{bucket}"},
+            )
+            row = session.get(AdminLoginRateLimitRow, bucket, with_for_update=True)
+            if row is None or row.window_started_at + timedelta(seconds=window_seconds) <= now:
+                row = AdminLoginRateLimitRow(
+                    bucket_hash=bucket,
+                    failure_count=1,
+                    window_started_at=now,
+                    updated_at=now,
+                )
+                session.merge(row)
+            else:
+                row.failure_count += 1
+                row.updated_at = now
+            return self._login_rate_limit_retry_after(
+                row,
+                now,
+                max_attempts=max_attempts,
+                window_seconds=window_seconds,
+            )
+
+    def clear_admin_login_rate_limit(self, bucket_hash: str) -> None:
+        """Clear failures after a successful login."""
+        bucket = self._login_bucket_hash(bucket_hash)
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:scope))"),
+                {"scope": f"admin-login-rate-limit:{bucket}"},
+            )
+            session.execute(
+                delete(AdminLoginRateLimitRow).where(AdminLoginRateLimitRow.bucket_hash == bucket)
+            )
 
 
 def repository_from_settings(settings: WeatherSettings | None = None) -> WeatherRepository:

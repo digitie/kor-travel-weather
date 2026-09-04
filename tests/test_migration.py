@@ -92,7 +92,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0007_current_value_projection"
+            assert version == "0008_admin_login_rate_limits"
             assert "ix_weather_values_marker_lookup" in {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -105,6 +105,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             )
             assert "weather_provider_credentials" in inspect(engine).get_table_names()
             assert "weather_admin_session_revocations" in inspect(engine).get_table_names()
+            assert "weather_admin_login_rate_limits" in inspect(engine).get_table_names()
             current_value = connection.execute(
                 text(
                     "SELECT value_id FROM weather_current_values "

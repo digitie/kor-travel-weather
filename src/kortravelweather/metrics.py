@@ -401,6 +401,9 @@ _FIXED_ROUTES = frozenset(
         "/v1/admin/provider-credentials",
         "/v1/admin/session-revocations/revoke",
         "/v1/admin/session-revocations/check",
+        "/v1/admin/login-rate-limit/check",
+        "/v1/admin/login-rate-limit/failure",
+        "/v1/admin/login-rate-limit/success",
         "/v1/admin/sync-runs",
     }
 )

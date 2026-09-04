@@ -212,6 +212,14 @@ class AdminSessionAction(BaseModel):
     session: str = Field(min_length=1, max_length=4096)
 
 
+class AdminLoginRateLimitAction(BaseModel):
+    """Hashed web-login bucket used by the internal Next.js auth boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bucket_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$")
+
+
 class LocationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -907,6 +915,67 @@ async def check_admin_session(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="session 값이 올바르지 않습니다.") from exc
     return {"revoked": revoked}
+
+
+@admin_router.post(
+    "/login-rate-limit/check",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+async def check_admin_login_rate_limit(
+    body: AdminLoginRateLimitAction,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, bool | int | None]:
+    """Check the shared web login-failure bucket without exposing its key."""
+    try:
+        retry_after = await run_in_threadpool(
+            repo.check_admin_login_rate_limit, body.bucket_hash
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="login rate-limit bucket이 올바르지 않습니다."
+        ) from exc
+    return {"allowed": retry_after is None, "retry_after": retry_after}
+
+
+@admin_router.post(
+    "/login-rate-limit/failure",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+async def record_admin_login_failure(
+    body: AdminLoginRateLimitAction,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, bool | int | None]:
+    """Atomically record one failed web login attempt."""
+    try:
+        retry_after = await run_in_threadpool(
+            repo.record_admin_login_failure, body.bucket_hash
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="login rate-limit bucket이 올바르지 않습니다."
+        ) from exc
+    return {"allowed": retry_after is None, "retry_after": retry_after}
+
+
+@admin_router.post(
+    "/login-rate-limit/success",
+    include_in_schema=False,
+    dependencies=[Depends(require_admin)],
+)
+async def clear_admin_login_rate_limit(
+    body: AdminLoginRateLimitAction,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, bool]:
+    """Clear the shared failed-attempt bucket after successful authentication."""
+    try:
+        await run_in_threadpool(repo.clear_admin_login_rate_limit, body.bucket_hash)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="login rate-limit bucket이 올바르지 않습니다."
+        ) from exc
+    return {"cleared": True}
 
 
 @admin_router.post(

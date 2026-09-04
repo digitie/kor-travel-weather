@@ -854,6 +854,36 @@ def test_admin_session_revocation_is_durable_and_token_free() -> None:
     assert other.json() == {"revoked": False}
 
 
+def test_admin_login_rate_limit_bucket_is_shared_and_resettable() -> None:
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="development",
+        database_url=TEST_DATABASE_URL,
+    )
+    repository = WeatherRepository(settings.database_url)
+    repository.create_schema()
+    client = TestClient(create_app(settings, repository))
+    bucket = "a" * 64
+    payload = {"bucket_hash": bucket}
+    assert client.post("/v1/admin/login-rate-limit/success", json=payload).status_code == 200
+    for _ in range(4):
+        response = client.post("/v1/admin/login-rate-limit/failure", json=payload)
+        assert response.status_code == 200
+        assert response.json()["allowed"] is True
+    fifth = client.post("/v1/admin/login-rate-limit/failure", json=payload)
+    assert fifth.status_code == 200
+    assert fifth.json()["allowed"] is False
+    blocked = client.post("/v1/admin/login-rate-limit/check", json=payload)
+    assert blocked.status_code == 200
+    assert blocked.json()["allowed"] is False
+    assert client.post(
+        "/v1/admin/login-rate-limit/success", json=payload
+    ).json() == {"cleared": True}
+    allowed = client.post("/v1/admin/login-rate-limit/check", json=payload)
+    assert allowed.status_code == 200
+    assert allowed.json() == {"allowed": True, "retry_after": None}
+
+
 def test_postgresql_repository_is_visible_to_testclient() -> None:
     settings = WeatherSettings(environment="development", database_url=TEST_DATABASE_URL)
     repository = WeatherRepository(settings.database_url)

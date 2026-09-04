@@ -1,73 +1,51 @@
-"use client";
+import type { Metadata } from "next";
+import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
 
-import { CloudSun, LoaderCircle, LockKeyhole } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
-
+import { LoginForm } from "@/components/auth/LoginForm";
 import { sanitizeLocalPath } from "@/lib/navigation";
+import {
+  adminUsername,
+  SESSION_COOKIE,
+  durableSessionRevoked,
+  sessionSecret,
+  verifySessionValue,
+} from "@/lib/session";
 
-export default function LoginPage() {
-  const router = useRouter();
-  const [nextPath, setNextPath] = useState("/");
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+export const metadata: Metadata = {
+  title: "로그인",
+};
 
-  useEffect(() => {
-    const next = new URLSearchParams(window.location.search).get("next");
-    setNextPath(sanitizeLocalPath(next));
-  }, []);
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError(null);
-    setLoading(true);
+/**
+ * Keep the login route server-authoritative, like kor-travel-geo.  A valid session is redirected
+ * before the form is streamed, while the client form only handles credential submission and UX.
+ */
+export default async function LoginPage({ searchParams }: { searchParams?: SearchParams }) {
+  const params = (await searchParams) ?? {};
+  const nextPath = sanitizeLocalPath(
+    typeof params.next === "string" ? params.next : undefined,
+  );
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  const session = cookieStore.get(SESSION_COOKIE)?.value;
+  const username = adminUsername();
+  const password = process.env.WEATHER_UI_PASSWORD ?? "";
+
+  if (session) {
+    let validSession = false;
     try {
-      const response = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username, password, next: nextPath }),
-      });
-      const payload = (await response.json().catch(() => ({}))) as { detail?: string; next?: unknown };
-      if (!response.ok) throw new Error(payload.detail ?? "로그인에 실패했습니다.");
-      router.replace(sanitizeLocalPath(payload.next ?? nextPath));
-      router.refresh();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "로그인에 실패했습니다.");
-    } finally {
-      setLoading(false);
+      const secret = sessionSecret(username, password);
+      validSession =
+        (await verifySessionValue(session, secret, headerStore, username)) === username &&
+        !(await durableSessionRevoked(session));
+    } catch {
+      // Keep the form available so the login endpoint can report a useful configuration error.
     }
+    // Next's redirect() throws an internal control-flow signal. Keep it outside
+    // the verification catch so a valid session cannot be swallowed as an error.
+    if (validSession) redirect(nextPath);
   }
 
-  return (
-    <main className="login-page">
-      <div className="login-shell panel">
-        <section className="login-intro">
-          <div className="login-mark" aria-hidden="true"><CloudSun size={27} /></div>
-          <div>
-            <div className="eyebrow">Weather Scraper Admin UI</div>
-            <h1>Weather Scraper 로그인</h1>
-          </div>
-        </section>
-        <section className="login-form-panel">
-          <form aria-busy={loading} className="login-form" onSubmit={submit}>
-            <div className="login-field">
-              <label htmlFor="username">아이디</label>
-              <input aria-describedby={error ? "login-error" : undefined} aria-invalid={Boolean(error)} autoComplete="username" id="username" name="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
-            </div>
-            <div className="login-field">
-              <label htmlFor="password">비밀번호</label>
-              <input aria-describedby={error ? "login-error" : undefined} aria-invalid={Boolean(error)} autoComplete="current-password" id="password" name="password" required type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-            </div>
-            {error ? <div className="login-error" id="login-error" role="alert">{error}</div> : null}
-            <button disabled={loading} type="submit">
-              {loading ? <LoaderCircle aria-hidden="true" className="spin" size={16} /> : <LockKeyhole aria-hidden="true" size={16} />}
-              {loading ? "확인 중…" : "로그인"}
-            </button>
-          </form>
-        </section>
-      </div>
-    </main>
-  );
+  return <LoginForm nextPath={nextPath} />;
 }

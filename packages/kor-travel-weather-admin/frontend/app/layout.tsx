@@ -4,7 +4,10 @@ import { AdminShell } from "@/components/admin-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Weather Scraper Admin UI",
+  title: {
+    default: "Weather Scraper Admin UI",
+    template: "%s · Weather Scraper Admin UI",
+  },
   description: "Weather Scraper 운영·수집 관리 화면",
 };
 

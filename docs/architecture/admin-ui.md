@@ -37,15 +37,25 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
 
 로컬 frontend `.env.local`에는 `WEATHER_API_INTERNAL_URL`,
 `DAGSTER_UI_INTERNAL_URL`, `WEATHER_ADMIN_TOKEN`, `WEATHER_UI_USER`,
-`WEATHER_UI_PASSWORD`, `WEATHER_UI_SESSION_SECRET`를 설정한다. Compose에서는
+`WEATHER_UI_PASSWORD`, `WEATHER_UI_SESSION_SECRET`를 설정한다. 필요하면
+`WEATHER_UI_PASSWORD_HASH`에 `pbkdf2_sha256$iterations$salt$hash` 형식의
+kor-travel-geo 호환 해시를 설정하며, 이 값이 평문 비밀번호보다 우선한다. hash가
+설정된 경우 UI의 Basic fallback은 비활성화되므로 평문 값은 Dagster gateway 등
+별도 호환 경계에서만 사용한다.
+Compose에서는
 `DAGSTER_UI_INTERNAL_URL=http://dagster:14102`를 web 컨테이너에 주입한다. 세션
 서명키와 backend token은 저장소/브라우저 로그에 기록하지 않는다. production 세션
 서명키는 최소 32바이트의 무작위 값이어야 하며, 예제의 placeholder는 거부된다.
 `WEATHER_UI_TRUST_PROXY=true`는 reverse proxy가 `X-Forwarded-For`를 신뢰된 마지막
-hop으로 다시 쓰거나 append하는 경우에만 설정한다(기본값은 신뢰하지 않음). Next.js 실행 환경에서 소켓 IP가
-제공되지 않고 이 옵션도 꺼져 있으면 로그인 제한은 전역 `unknown` 버킷을 만들지
-않는다. 운영에서는 HAProxy 등 신뢰된 경계에서 클라이언트 IP를 덮어써 전달하고
-이 옵션을 켜며, gateway 자체에도 로그인 rate-limit을 둔다.
+hop으로 다시 쓰거나 append하는 경우에만 설정한다(기본값은 신뢰하지 않음). 문서화된
+loopback Compose 프로필은 외부에 노출되지 않으므로 IP를 제공하지 않는 경우에도 제한된
+`untrusted` bucket으로 로그인 smoke를 허용한다. 비-loopback production origin에서
+신뢰된 IP가 없으면 login endpoint는 rate-limit 우회를 막기 위해 503으로 닫힌다.
+운영에서는 HAProxy 등 신뢰된 경계에서 클라이언트 IP를 덮어써 전달하고 이 옵션을 켠다.
+실패 bucket은 API의 PostgreSQL 공유 저장소에도 SHA-256으로
+기록하므로 web 재시작·다중 replica에서도 5회/10분 제한이 유지된다. 내부 API가
+응답하지 않으면 production 로그인은 fail-closed(503)하며, gateway/WAF에도 보조
+rate-limit을 둘 수 있다.
 production 상태 변경 요청은 `WEATHER_UI_PUBLIC_ORIGIN` 또는
 `WEATHER_UI_PUBLIC_ORIGINS`에 등록된 Origin만 허용한다. 이 값을 비워 두면
 CSRF 검사는 fail-closed로 동작하며, 요청자가 보낸 `X-Forwarded-Host`/`X-Forwarded-Proto`는
