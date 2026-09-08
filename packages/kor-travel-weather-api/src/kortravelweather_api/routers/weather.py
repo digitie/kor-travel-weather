@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
-from kortravelweather.alerts import ALERT_MAX_AGE, active_alert_values
-from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue, kst_now
+from kortravelweather.alerts import active_alert_values
+from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
     WeatherRepository,
@@ -41,14 +41,6 @@ _NEARBY_FORECAST_BUDGET = 2500
 # generous current-value floor: squeezing it would silently drop advisories.
 _NEARBY_LATEST_FLOOR = 60
 _NEARBY_FORECAST_FLOOR = 25
-# ``timeline_many`` returns rows chronologically, so the row limit cuts the far
-# end of the window.  Anchored at the oldest row the projection holds, that cut
-# fell on the future: production answered a ``forecast`` whose newest target was
-# ~9 hours out while most entries were already in the past.  Start the window
-# one alert max-age behind now instead.  The limit then keeps the near-term
-# forecast, and announcements the alert reducer still treats as active stay in
-# the same batch, so the bundle's alert split is unaffected.
-_NEARBY_TIMELINE_LOOKBACK = ALERT_MAX_AGE
 
 
 def _per_location_rows(count: int, *, budget: int, ceiling: int, floor: int) -> int:
@@ -554,10 +546,7 @@ async def nearby(
     timeline_many = getattr(repo, "timeline_many", None)
     timeline_by_location = (
         await run_in_threadpool(
-            timeline_many,
-            location_ids,
-            limit_per_location=forecast_per_location,
-            from_at=kst_now() - _NEARBY_TIMELINE_LOOKBACK,
+            timeline_many, location_ids, limit_per_location=forecast_per_location
         )
         if callable(timeline_many)
         else {}
