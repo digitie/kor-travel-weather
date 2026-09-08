@@ -239,6 +239,24 @@ export function getLatest(locationId: string, limit = 200): Promise<ApiEnvelope<
   );
 }
 
+/**
+ * Earliest `from` a forecast preview should ask for.
+ *
+ * `/v1/weather/locations/{id}/forecast` is a timeline query, not an
+ * upcoming-only route: called without `from` it answers from the oldest row the
+ * projection still holds. Anchor at the top of the current hour, which is the
+ * earliest target a reader would call a forecast.
+ *
+ * The boundary is taken in UTC so the result does not depend on the viewer's
+ * offset; a local-time boundary would shift on half-hour offsets such as
+ * UTC+05:30. Either way the anchor is at most an hour behind `now`.
+ */
+export function forecastWindowStart(now: Date = new Date()): string {
+  const start = new Date(now);
+  start.setUTCMinutes(0, 0, 0);
+  return start.toISOString();
+}
+
 export function getForecast(
   locationId: string,
   from?: string,

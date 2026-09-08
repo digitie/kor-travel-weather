@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import {
+  forecastWindowStart,
   getForecast,
   getLatest,
   getMarkerSummaries,
@@ -307,7 +308,13 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     setForecast([]);
     setLoading(true);
     setMessage("");
-    Promise.all([getLatest(selected.location_id), getForecast(selected.location_id, undefined, undefined, 100)])
+    // The forecast route is a timeline query. Without a window it answers from
+    // the oldest row the projection holds, and `forecastGroups` then keeps the
+    // six earliest target times -- so the preview showed values days old.
+    Promise.all([
+      getLatest(selected.location_id),
+      getForecast(selected.location_id, forecastWindowStart(), undefined, 100),
+    ])
       .then(([latest, next]) => {
         if (cancelled) return;
         setValues(latest.data);

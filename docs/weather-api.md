@@ -70,7 +70,10 @@ and severity badge. It is safe to refresh on every map viewport update.
   deduplicated to the newest immutable revision per logical metric.
 - `GET /v1/weather/locations/{location_id}/forecast` — forecast/history query;
   supports `from`, `to`, `dataset_key`, `metric_key`, and `history=true` for
-  explicit revision history.
+  explicit revision history. This is a timeline read, so rows come back
+  chronologically and `limit` truncates the far end. Callers that want upcoming
+  values must pass `from`; without it the window opens at the oldest row the
+  projection still holds and the response can be entirely in the past.
 - `GET /v1/weather/resolve` — nearest-anchor all-source bundle described above.
 
 ## Hourly ingestion and providers

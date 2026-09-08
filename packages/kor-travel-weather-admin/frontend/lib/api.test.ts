@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getPublicLocations } from "./api";
+import { forecastWindowStart, getPublicLocations } from "./api";
 
 function respond(body: string, init: ResponseInit) {
   const fetchMock = vi.fn(async () => new Response(body, init));
@@ -64,5 +64,25 @@ describe("request error handling", () => {
   it("does not silently succeed on an empty 200 body", async () => {
     respond("", { status: 200, headers: { "content-type": "application/json" } });
     await expect(getPublicLocations()).rejects.toThrow("응답을 해석하지 못했습니다 (200)");
+  });
+});
+
+describe("forecastWindowStart", () => {
+  it("anchors at the top of the current hour", () => {
+    expect(forecastWindowStart(new Date("2026-09-08T05:37:42.514Z"))).toBe(
+      "2026-09-08T05:00:00.000Z",
+    );
+  });
+
+  it("returns a timezone-aware ISO-8601 string the API accepts", () => {
+    // `from` without a timezone is a 422 on the forecast route.
+    expect(forecastWindowStart(new Date("2026-01-01T00:00:00Z"))).toMatch(/Z$/);
+  });
+
+  it("does not reach into the past", () => {
+    const now = new Date("2026-09-08T05:37:42.514Z");
+    expect(new Date(forecastWindowStart(now)).getTime()).toBeGreaterThan(
+      now.getTime() - 60 * 60 * 1000,
+    );
   });
 });
