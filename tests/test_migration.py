@@ -92,7 +92,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0011_current_value_alert_index"
+            assert version == "0012_current_value_sort_keys"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -105,10 +105,20 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             assert "ix_weather_values_alert_lookup" in weather_value_indexes
             # The nearby bundle reads warnings from the projection on their own
             # budget; without this index that read walks the whole slice.
-            assert "ix_weather_current_values_alert_lookup" in {
+            projection_indexes = {
                 item["name"]
                 for item in inspect(engine).get_indexes("weather_current_values")
             }
+            assert "ix_weather_current_values_alert_lookup" in projection_indexes
+            # Without this the bundle read ranks a location's whole slice.
+            assert "ix_weather_current_values_location_current" in projection_indexes
+            projection_columns = {
+                item["name"]
+                for item in inspect(engine).get_columns("weather_current_values")
+            }
+            # The bundle sort keys must live on the pointer table, or the
+            # per-location limit cannot be applied before the fact join.
+            assert {"known_at", "source_record_key"} <= projection_columns
             assert "weather_current_values" in inspect(engine).get_table_names()
             assert {
                 "ix_weather_current_values_location_target",
@@ -192,7 +202,10 @@ _MARKER_INDEXES = (
     "ix_weather_values_marker_observed",
     "ix_weather_values_alert_lookup",
 )
-_PROJECTION_INDEXES = ("ix_weather_current_values_alert_lookup",)
+_PROJECTION_INDEXES = (
+    "ix_weather_current_values_alert_lookup",
+    "ix_weather_current_values_location_current",
+)
 
 
 def _index_definitions(connection, table: str = "weather_values") -> dict[str, str]:
