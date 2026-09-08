@@ -92,10 +92,14 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0008_admin_login_rate_limits"
-            assert "ix_weather_values_marker_lookup" in {
+            assert version == "0009_marker_observed_index"
+            weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
+            assert "ix_weather_values_marker_lookup" in weather_value_indexes
+            # The marker observed pass filters ``forecast_style``; without this
+            # index it scans past every newer forecast revision per location.
+            assert "ix_weather_values_marker_observed" in weather_value_indexes
             assert "weather_current_values" in inspect(engine).get_table_names()
             assert {
                 "ix_weather_current_values_location_target",

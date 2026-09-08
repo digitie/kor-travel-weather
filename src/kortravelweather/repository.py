@@ -169,6 +169,23 @@ class WeatherValueRow(Base):
                 "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
             ),
         ),
+        # The marker observed pass also filters ``forecast_style``.  Leaving
+        # that column out of the index above forces a heap lookup and a
+        # per-candidate filter: a location with months of forecast revisions
+        # discards hundreds of newer rows before reaching an observation.
+        # Repeating the predicate here keeps the observed lookup index-only.
+        Index(
+            "ix_weather_values_marker_observed",
+            "location_id",
+            "metric_key",
+            "known_at",
+            "source_record_key",
+            "value_id",
+            postgresql_where=text(
+                "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+                " AND forecast_style IN ('observed', 'nowcast')"
+            ),
+        ),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",
             name="ck_weather_values_has_value",
