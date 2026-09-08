@@ -34,6 +34,9 @@ dev = [
   "httpx>=0.27,<1",
   "ruff>=0.9",
   "mypy>=1.13",
+  # tests/test_deployment_contract.py parses the compose files; do not rely on
+  # this arriving transitively through a server dependency.
+  "pyyaml>=6",
 ]
 dagster = [
   "dagster>=1.9,<2",
