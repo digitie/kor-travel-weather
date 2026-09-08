@@ -1861,9 +1861,19 @@ class WeatherRepository:
             return result
 
     def timeline_many(
-        self, location_ids: Sequence[str], *, limit_per_location: int = 500
+        self,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int = 500,
+        from_at: datetime | None = None,
     ) -> dict[str, list[WeatherValue]]:
-        """Return current projections for forecast/alert bundle queries in one SQL read."""
+        """Return current projections for forecast/alert bundle queries in one SQL read.
+
+        Rows come back chronologically, so ``limit_per_location`` truncates the
+        far end of the window.  Callers that want upcoming values must pass
+        ``from_at``; without it the window starts at the oldest row the
+        projection still holds and the limit discards the future.
+        """
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
         with self._session_factory() as session:
@@ -1872,6 +1882,7 @@ class WeatherRepository:
                 location_ids,
                 limit_per_location=limit_per_location,
                 prefer_current=False,
+                from_at=from_at,
             )
 
     def timeline(

@@ -28,7 +28,15 @@ _NOISE_RE = re.compile(
     r"(?:\([^)]*\))",
     re.IGNORECASE,
 )
-_DEFAULT_ALERT_MAX_AGE = timedelta(days=3)
+ALERT_MAX_AGE = timedelta(days=3)
+"""How long an announcement without an explicit ``valid_until`` stays active.
+
+Readers that pre-filter rows by time before handing them to
+``active_alert_values`` must look at least this far back, or they drop
+announcements this module would still report as active.
+"""
+
+_DEFAULT_ALERT_MAX_AGE = ALERT_MAX_AGE
 
 
 def _payload_value(row: WeatherValue, *names: str) -> Any:

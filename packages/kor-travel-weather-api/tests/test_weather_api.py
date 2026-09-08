@@ -1064,3 +1064,108 @@ def test_nearby_row_budget_math_is_clamped() -> None:
     assert _per_location_rows(100, budget=1500, ceiling=200, floor=60) == 60
     assert _per_location_rows(100, budget=2500, ceiling=500, floor=25) == 25
     assert _per_location_rows(10, budget=2500, ceiling=500, floor=25) == 250
+
+
+def test_nearby_forecast_window_starts_near_now(api_client: TestClient) -> None:
+    """The nearby bundle must answer with upcoming values, not the oldest ones.
+
+    ``timeline_many`` returns rows chronologically, so the per-location row
+    limit cuts the far end.  Anchored at the oldest row the projection holds,
+    that cut landed on the future: production returned a ``forecast`` whose
+    newest target was ~9 hours out while most entries were already past.
+    """
+    repository = api_client.app.state.repository
+    repository.upsert_location(
+        WeatherLocation(
+            location_id="window",
+            name="예보 창",
+            latitude=37.5,
+            longitude=127.0,
+            nx=60,
+            ny=127,
+        )
+    )
+    repository.record_source(
+        source_record_key="window-source",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="window",
+        payload={"rows": []},
+    )
+    now = datetime.now(UTC)
+    stale = now - timedelta(days=30)
+    upcoming = now + timedelta(hours=6)
+
+    def value(target_at: datetime, number: str) -> WeatherValue:
+        return WeatherValue(
+            location_id="window",
+            provider="p",
+            dataset_key="d",
+            weather_domain="weather",
+            forecast_style=ForecastStyle.SHORT,
+            metric_key="TMP",
+            target_at=target_at,
+            value_number=Decimal(number),
+            source_record_key="window-source",
+        )
+
+    repository.upsert_values([value(stale, "1"), value(upcoming, "2")])
+
+    response = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 1},
+    )
+    assert response.status_code == 200
+    forecast = response.json()["data"][0]["forecast"]
+    targets = [
+        datetime.fromisoformat(row["target_at"].replace("Z", "+00:00")) for row in forecast
+    ]
+    assert targets, "forecast가 비어 있으면 안 된다"
+    # The 30-day-old row is outside the alert-max-age lookback window.
+    assert all(target > stale for target in targets)
+    assert any(abs((target - upcoming).total_seconds()) < 60 for target in targets)
+
+
+def test_timeline_many_window_is_opt_in(api_client: TestClient) -> None:
+    """Without ``from_at`` the batch read keeps its historical whole-window shape."""
+    repository = api_client.app.state.repository
+    repository.upsert_location(
+        WeatherLocation(
+            location_id="optin",
+            name="옵트인",
+            latitude=37.5,
+            longitude=127.0,
+            nx=60,
+            ny=127,
+        )
+    )
+    repository.record_source(
+        source_record_key="optin-source",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="optin",
+        payload={"rows": []},
+    )
+    stale = datetime.now(UTC) - timedelta(days=30)
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id="optin",
+                provider="p",
+                dataset_key="d",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.SHORT,
+                metric_key="TMP",
+                target_at=stale,
+                value_number=Decimal("1"),
+                source_record_key="optin-source",
+            )
+        ]
+    )
+    assert repository.timeline_many(["optin"])["optin"], "필터 없이는 과거 행도 그대로 나와야 한다"
+    windowed = repository.timeline_many(
+        ["optin"], from_at=datetime.now(UTC) - timedelta(days=3)
+    )
+    assert windowed["optin"] == []

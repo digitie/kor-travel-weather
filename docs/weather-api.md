@@ -53,6 +53,11 @@ are published in `meta.bundle` (`latest_per_location`, `forecast_per_location`),
 and a single-location request keeps the full depth. Follow up on `/resolve` or
 `/v1/weather/locations/{id}/forecast` when one location needs everything.
 
+The bundle's `forecast` is read chronologically from a window that opens one
+alert max-age (3 days) before now, so the row cap drops the far end of the
+forecast rather than the near end. Announcements the alert reducer still treats
+as active stay inside that window, which is what keeps `alerts` populated.
+
 `GET /v1/weather/markers?location_id=...` is a bounded marker projection. Pass
 up to 500 enabled location IDs (the admin map sends batches of 500); each item
 contains only the current metrics and KMA alert facts needed to choose an icon
