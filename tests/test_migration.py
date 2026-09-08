@@ -92,7 +92,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0010_marker_alert_index"
+            assert version == "0011_current_value_alert_index"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -103,6 +103,12 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             # The marker alert pass had no index at all and fell back to a
             # sequential scan of the whole append-only table.
             assert "ix_weather_values_alert_lookup" in weather_value_indexes
+            # The nearby bundle reads warnings from the projection on their own
+            # budget; without this index that read walks the whole slice.
+            assert "ix_weather_current_values_alert_lookup" in {
+                item["name"]
+                for item in inspect(engine).get_indexes("weather_current_values")
+            }
             assert "weather_current_values" in inspect(engine).get_table_names()
             assert {
                 "ix_weather_current_values_location_target",
@@ -186,14 +192,13 @@ _MARKER_INDEXES = (
     "ix_weather_values_marker_observed",
     "ix_weather_values_alert_lookup",
 )
+_PROJECTION_INDEXES = ("ix_weather_current_values_alert_lookup",)
 
 
-def _index_definitions(connection) -> dict[str, str]:
+def _index_definitions(connection, table: str = "weather_values") -> dict[str, str]:
     rows = connection.execute(
-        text(
-            "SELECT indexname, indexdef FROM pg_indexes "
-            "WHERE tablename = 'weather_values'"
-        )
+        text("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = :table"),
+        {"table": table},
     ).all()
     return {name: definition for name, definition in rows}
 
@@ -222,6 +227,9 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
         repository.create_schema()
         with engine.connect() as connection:
             from_create_all = _index_definitions(connection)
+            from_create_all.update(
+                _index_definitions(connection, "weather_current_values")
+            )
 
         # 2) schema built by the migration chain
         with engine.begin() as connection:
@@ -230,8 +238,11 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
         command.upgrade(Config("alembic.ini"), "head")
         with engine.connect() as connection:
             from_alembic = _index_definitions(connection)
+            from_alembic.update(
+                _index_definitions(connection, "weather_current_values")
+            )
 
-        for name in _MARKER_INDEXES:
+        for name in _MARKER_INDEXES + _PROJECTION_INDEXES:
             assert name in from_create_all, f"{name} missing from create_all schema"
             assert name in from_alembic, f"{name} missing from alembic schema"
             assert from_create_all[name] == from_alembic[name], (

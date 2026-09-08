@@ -36,10 +36,21 @@ anchor within the requested radius and returns:
 }
 ```
 
-`latest` contains current/observed values from every enabled source,
-`forecast` contains future values (including KMA ultra-short, short, and mid
-forecasts), and `alerts` contains KMA weather-warning facts. The point metadata
-is an explicit allow-list; private catalog metadata is never exposed.
+`latest` contains current/observed values from every enabled source, and
+`alerts` contains the active KMA weather-warning facts. The point metadata is
+an explicit allow-list; private catalog metadata is never exposed.
+
+`forecast` means different things on the two bundle routes, so parse them
+separately:
+
+- `/resolve` returns this point's newest 2000 projected rows per source,
+  newest first, which includes recent past targets as well as future ones. It
+  is the full-history bundle for one coordinate.
+- `/nearby` returns upcoming values only, read forward from the current hour
+  (see below).
+
+`alerts` is read on its own budget on both routes, so the two never disagree
+about the warning state of the same coordinate.
 
 `GET /v1/weather/nearby` remains the batch form for map views. It returns the
 same `latest`, `forecast`, `alerts`, and `measurement_point` fields for each
@@ -50,11 +61,13 @@ Every nearby row carries a whole bundle, so the response shares one row budget
 across the locations it returns instead of giving each a fixed cap: a wide
 request gets a shorter forecast horizon per location in exchange for a bounded
 body. The forecast is read forward from the current hour, so the cap shortens
-the horizon from its far end and the next few hours are always present. The
-caps actually applied are published in `meta.bundle` (`latest_per_location`,
-`forecast_per_location`), and a single-location request keeps the full depth.
-Follow up on `/resolve` or `/v1/weather/locations/{id}/forecast` when one
-location needs everything.
+the horizon from its far end rather than from the near end. How far it reaches
+depends on how densely a location is forecast: at `limit=100` the cap is 25
+rows per location, which for a multi-metric provider is only the next few
+target hours. The caps actually applied are published in `meta.bundle`
+(`latest_per_location`, `forecast_per_location`), and a single-location request
+keeps the full depth. Follow up on `/resolve` or
+`/v1/weather/locations/{id}/forecast` when one location needs everything.
 
 `alerts` is read on its own budget and is never shortened by `limit`. A warning
 is announced once and stays active for as long as its validity window says,

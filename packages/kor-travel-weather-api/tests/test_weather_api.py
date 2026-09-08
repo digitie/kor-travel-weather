@@ -1137,8 +1137,16 @@ def test_nearby_forecast_keeps_the_near_term_when_the_budget_shrinks(
     repository = api_client.app.state.repository
     now = datetime.now(UTC)
     for index in range(20):
+        # Past rows (200 h x 4 metrics = 800) must exceed the forecast cap of
+        # 125, or an ascending read without the ``from_at`` anchor still lands
+        # on the future and the assertion below cannot see the difference.
         _seed_bundle_location(
-            repository, f"horizon-{index:02d}", now=now, forecast_metrics=8
+            repository,
+            f"horizon-{index:02d}",
+            now=now,
+            observation_hours=200,
+            observed_metrics=4,
+            forecast_metrics=8,
         )
 
     def earliest_forecast(limit: int) -> datetime:
@@ -1156,10 +1164,16 @@ def test_nearby_forecast_keeps_the_near_term_when_the_budget_shrinks(
 
     wide = earliest_forecast(20)
     narrow = earliest_forecast(1)
-    # Both must start within a couple of hours of now; a newest-first cap would
-    # push the wide request's earliest row days into the future.
-    assert wide - now < timedelta(hours=3), f"wide request starts at {wide}, now={now}"
-    assert narrow - now < timedelta(hours=3)
+    # A newest-first cap pushes the earliest row days into the future; dropping
+    # the window anchor fills the cap with months-old observations instead, so
+    # bound the answer on both sides.
+    for label, earliest in (("wide", wide), ("narrow", narrow)):
+        assert earliest >= now - timedelta(hours=1), (
+            f"{label} request reaches back to {earliest}, now={now}"
+        )
+        assert earliest - now < timedelta(hours=3), (
+            f"{label} request starts at {earliest}, now={now}"
+        )
 
 
 def test_nearby_row_budget_actually_shrinks_the_body(api_client: TestClient) -> None:
@@ -1210,3 +1224,76 @@ def test_nearby_row_budget_math_is_clamped() -> None:
     assert _per_location_rows(100, budget=1500, ceiling=200, floor=60) == 60
     assert _per_location_rows(100, budget=2500, ceiling=500, floor=25) == 25
     assert _per_location_rows(10, budget=2500, ceiling=500, floor=25) == 250
+
+
+def test_alert_values_many_reads_only_warnings_within_the_active_window(
+    api_client: TestClient,
+) -> None:
+    """The dedicated read must be selective, not just "the newest 20 rows".
+
+    Dropping the ``alerts_only`` predicate makes it return temperature rows,
+    and dropping the window makes it walk a location's whole projection slice
+    to answer nothing -- the scan this index exists to prevent.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    _seed_bundle_location(
+        repository, "alerting", now=now, observed_metrics=4, alert_age_hours=24
+    )
+    _seed_bundle_location(repository, "quiet", now=now, observed_metrics=4)
+    _seed_bundle_location(
+        repository, "stale-alert", now=now, observed_metrics=4, alert_age_hours=24 * 10
+    )
+
+    result = repository.alert_values_many(
+        ["alerting", "quiet", "stale-alert"], limit_per_location=20, now=now
+    )
+
+    assert [row.metric_key for row in result["alerting"]] == ["ALERT"]
+    # A location with no warning must come back empty, not with its newest rows.
+    assert result["quiet"] == []
+    # ``active_alert_values`` discards anything older than the max age anyway,
+    # so the read must not walk that far back looking for it.
+    assert result["stale-alert"] == []
+
+
+def test_current_value_read_rejects_contradictory_alert_flags(
+    api_client: TestClient,
+) -> None:
+    """Asking to exclude and to isolate warnings at once must not pick one.
+
+    The branch answers ``alerts_only`` when both are set, so a caller that
+    asked for "no warnings" would silently receive nothing but warnings.
+    """
+    repository = api_client.app.state.repository
+    with (
+        repository._session_factory() as session,  # noqa: SLF001
+        pytest.raises(ValueError, match="함께 쓸 수 없습니다"),
+    ):
+        repository._current_value_models_many(  # noqa: SLF001
+            session,
+            ["anything"],
+            limit_per_location=1,
+            prefer_current=False,
+            exclude_alerts=True,
+            alerts_only=True,
+        )
+
+
+def test_nearby_does_not_promote_ordinary_rows_to_warnings(
+    api_client: TestClient,
+) -> None:
+    """A location without a warning must report none, whatever the read returns."""
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        _seed_bundle_location(
+            repository, f"quiet-{index:02d}", now=now, observed_metrics=4
+        )
+    response = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    )
+    assert response.status_code == 200
+    for row in response.json()["data"]:
+        assert row["alerts"] == [], f"{row['location_id']} invented a warning"

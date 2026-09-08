@@ -50,7 +50,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
-from .alerts import active_alert_values
+from .alerts import ALERT_MAX_AGE, active_alert_values
 from .metrics import observe_stale_recovered, observe_sync_finished, observe_sync_started
 from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
 from .settings import WeatherSettings, get_settings
@@ -139,6 +139,19 @@ class SourceRecordRow(Base):
     )
     fetched_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     imported_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+
+
+#: The one definition of "this row is a warning" used by the current-value
+#: projection.  The alert read and the partial index that serves it must apply
+#: the same expression, or PostgreSQL cannot prove the index covers the query
+#: and falls back to walking the whole per-location slice.
+_ALERT_PROJECTION_PREDICATE = (
+    "metric_key = 'ALERT'"
+    " OR weather_domain ILIKE '%alert%'"
+    " OR weather_domain ILIKE '%warning%'"
+    " OR dataset_key ILIKE '%alert%'"
+    " OR dataset_key ILIKE '%warning%'"
+)
 
 
 class WeatherValueRow(Base):
@@ -290,6 +303,20 @@ class WeatherCurrentValueRow(Base):
             "forecast_style",
             "target_at",
             "value_id",
+        ),
+        # Warnings are read on their own budget, and their ``target_at`` is the
+        # announcement time -- older than the forecast rows that sit at the top
+        # of a location's slice.  Without this index the alert read walks the
+        # whole slice backwards and returns nothing for a location that has
+        # never carried a warning, at a cost that grows with retention
+        # (measured 913 ms / 229,918 buffers for 60 alert-free locations).
+        # The predicate is written to match ``_ALERT_PROJECTION_PREDICATE``
+        # exactly so the planner can prove it applies.
+        Index(
+            "ix_weather_current_values_alert_lookup",
+            text("location_id"),
+            text("target_at DESC"),
+            postgresql_where=text(_ALERT_PROJECTION_PREDICATE),
         ),
     )
 
@@ -1481,6 +1508,10 @@ class WeatherRepository:
         alerts_only: bool = False,
     ) -> dict[str, list[WeatherValue]]:
         """Read bounded per-location rows from the current-value projection."""
+        if exclude_alerts and alerts_only:
+            # Otherwise the branch below silently answers the opposite of what
+            # ``exclude_alerts`` asked for.
+            raise ValueError("exclude_alerts와 alerts_only는 함께 쓸 수 없습니다.")
         unique_ids = tuple(dict.fromkeys(location_ids))
         result: dict[str, list[WeatherValue]] = {location_id: [] for location_id in unique_ids}
         if not unique_ids:
@@ -1508,7 +1539,7 @@ class WeatherRepository:
                 [
                     desc(timestamp),
                     nullslast(desc(WeatherValueRow.known_at)),
-                    desc(WeatherValueRow.source_record_key),
+                    nullslast(desc(WeatherValueRow.source_record_key)),
                     desc(WeatherValueRow.value_id),
                 ]
             )
@@ -1521,7 +1552,7 @@ class WeatherRepository:
                     timestamp,
                     WeatherCurrentValueRow.metric_key,
                     nullslast(desc(WeatherValueRow.known_at)),
-                    desc(WeatherValueRow.source_record_key),
+                    nullslast(desc(WeatherValueRow.source_record_key)),
                     desc(WeatherValueRow.value_id),
                 ]
             )
@@ -1710,7 +1741,7 @@ class WeatherRepository:
                     .where(*predicates)
                     .order_by(
                         nullslast(desc(WeatherValueRow.known_at)),
-                        desc(WeatherValueRow.source_record_key),
+                        nullslast(desc(WeatherValueRow.source_record_key)),
                         desc(WeatherValueRow.value_id),
                     )
                     .limit(_MARKER_CANDIDATE_LIMIT)
@@ -1773,7 +1804,7 @@ class WeatherRepository:
                     )
                     .order_by(
                         nullslast(desc(WeatherValueRow.known_at)),
-                        desc(WeatherValueRow.source_record_key),
+                        nullslast(desc(WeatherValueRow.source_record_key)),
                         desc(WeatherValueRow.value_id),
                     )
                     .limit(_MARKER_CANDIDATE_LIMIT)
@@ -1831,7 +1862,7 @@ class WeatherRepository:
                         order_by=(
                             nullslast(desc(WeatherValueRow.known_at)),
                             desc(WeatherValueRow.target_at),
-                            desc(WeatherValueRow.source_record_key),
+                            nullslast(desc(WeatherValueRow.source_record_key)),
                             desc(WeatherValueRow.value_id),
                         ),
                     )
@@ -1938,6 +1969,7 @@ class WeatherRepository:
         location_ids: Sequence[str],
         *,
         limit_per_location: int = 20,
+        now: datetime | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the newest alert rows per location, independent of any bundle budget.
 
@@ -1945,15 +1977,24 @@ class WeatherRepository:
         validity window says.  Sharing a row budget with current values
         therefore drops warnings as soon as enough observations arrive after
         the announcement, which is the opposite of what a map needs.
+
+        The window is bounded at one alert max-age.  Without it a location that
+        has never carried a warning walks its whole projection slice backwards
+        and returns nothing, at a cost that grows with retention -- and
+        ``active_alert_values`` would discard anything older anyway.
+        ``ix_weather_current_values_alert_lookup`` keeps that walk on the alert
+        rows alone.
         """
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
+        instant = now or kst_now()
         with self._session_factory() as session:
             return self._current_value_models_many(
                 session,
                 location_ids,
                 limit_per_location=limit_per_location,
                 prefer_current=False,
+                from_at=instant - ALERT_MAX_AGE,
                 alerts_only=True,
             )
 
