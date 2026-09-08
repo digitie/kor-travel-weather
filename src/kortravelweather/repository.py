@@ -1506,6 +1506,7 @@ class WeatherRepository:
         metric_keys: Sequence[str] | None = None,
         exclude_alerts: bool = False,
         alerts_only: bool = False,
+        alert_active_at: datetime | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Read bounded per-location rows from the current-value projection."""
         if exclude_alerts and alerts_only:
@@ -1591,6 +1592,18 @@ class WeatherRepository:
             candidate = candidate.where(
                 alert_filter if alerts_only else not_(alert_filter)
             )
+        if alert_active_at is not None:
+            # Mirror ``active_alert_values``: the max-age bound applies only to
+            # announcements with no explicit end time.  A typhoon or heat
+            # advisory carries ``valid_until`` and stays active well past three
+            # days, so a plain ``target_at`` window would hide exactly the
+            # warnings that matter most.
+            candidate = candidate.where(
+                or_(
+                    WeatherCurrentValueRow.target_at >= alert_active_at - ALERT_MAX_AGE,
+                    WeatherValueRow.valid_until > alert_active_at,
+                )
+            )
         candidate = candidate.lateral().alias("current_value_candidates")
         pairs = session.execute(
             select(requested_locations.c.location_id, candidate.c.value_id).select_from(
@@ -1672,6 +1685,7 @@ class WeatherRepository:
         location_ids: Sequence[str],
         *,
         limit_per_location: int = 80,
+        now: datetime | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the small current projection needed to render map markers.
 
@@ -1685,6 +1699,7 @@ class WeatherRepository:
             return {}
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
+        marker_instant = now or kst_now()
         # PostgreSQL's DISTINCT ON can use the marker lookup index to read
         # one recent row per location/metric without ranking all append-only
         # revisions.  Keep the generic window-query fallback for SQLite and
@@ -1874,6 +1889,15 @@ class WeatherRepository:
                         WeatherValueRow.weather_domain == "weather_alert",
                         WeatherValueRow.metric_key == "ALERT",
                     ),
+                    # Rank only what could still be active. Warnings accumulate
+                    # in this append-only table, so ranking the whole history
+                    # makes every marker batch sort more rows each month. The
+                    # bound is the same one ``active_alert_values`` applies, so
+                    # /markers and /nearby cannot disagree about a coordinate.
+                    or_(
+                        WeatherValueRow.target_at >= marker_instant - ALERT_MAX_AGE,
+                        WeatherValueRow.valid_until > marker_instant,
+                    ),
                 )
                 .subquery("marker_alert_values")
             )
@@ -1978,24 +2002,23 @@ class WeatherRepository:
         therefore drops warnings as soon as enough observations arrive after
         the announcement, which is the opposite of what a map needs.
 
-        The window is bounded at one alert max-age.  Without it a location that
-        has never carried a warning walks its whole projection slice backwards
-        and returns nothing, at a cost that grows with retention -- and
-        ``active_alert_values`` would discard anything older anyway.
-        ``ix_weather_current_values_alert_lookup`` keeps that walk on the alert
-        rows alone.
+        The read is bounded by the same rule ``active_alert_values`` applies, so
+        it cannot hide a warning the reducer would still call active: recent
+        announcements, plus anything whose ``valid_until`` is still ahead.
+        ``ix_weather_current_values_alert_lookup`` keeps the walk on alert rows
+        alone; without it a location that never carried a warning reads its
+        whole projection slice to answer nothing.
         """
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
-        instant = now or kst_now()
         with self._session_factory() as session:
             return self._current_value_models_many(
                 session,
                 location_ids,
                 limit_per_location=limit_per_location,
                 prefer_current=False,
-                from_at=instant - ALERT_MAX_AGE,
                 alerts_only=True,
+                alert_active_at=now or kst_now(),
             )
 
     def timeline(

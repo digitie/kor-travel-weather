@@ -682,6 +682,7 @@ async def resolve_weather(
     timeline_many = getattr(repo, "timeline_many", None)
     alert_many = getattr(repo, "alert_values_many", None)
     alert_rows: list[WeatherValue] = []
+    dedicated_alerts_available = False
     if callable(latest_many) and callable(timeline_many):
         latest_by_location = await run_in_threadpool(
             latest_many, source_ids, limit_per_location=500
@@ -710,6 +711,7 @@ async def resolve_weather(
             # Warnings would otherwise compete with the forecast horizon for
             # the same cap, so /resolve could answer alerts=[] while /markers
             # shows a badge for the same coordinate.
+            dedicated_alerts_available = True
             alert_by_location = await run_in_threadpool(
                 alert_many, source_ids, limit_per_location=_RESOLVE_ALERT_PER_LOCATION
             )
@@ -732,7 +734,12 @@ async def resolve_weather(
             )
     _, forecast_values, timeline_alerts = _split_weather_values(timeline_rows)
     latest_values, _, latest_alerts = _split_weather_values(latest_rows)
-    if alert_rows:
+    if dedicated_alerts_available:
+        # Branch on availability, not on whether the read happened to return
+        # something. A truthiness test would quietly restore the shared-budget
+        # path for every ordinary coordinate -- the exact behaviour the
+        # dedicated read exists to replace -- and would let the two paths
+        # disagree about the same warning.
         _, _, alert_values = _split_weather_values(alert_rows)
     else:
         alert_values = timeline_alerts
@@ -745,7 +752,16 @@ async def resolve_weather(
         source_locations=[location_out(candidate) for candidate, _ in source_rows],
         latest=[value_out(row) for row in latest_values],
         forecast=[value_out(row) for row in forecast_values],
-        alerts=[value_out(row) for row in (alert_values or latest_alerts)],
+        alerts=[
+            value_out(row)
+            for row in (
+                # With a dedicated read the answer is whatever it found,
+                # including nothing. Falling back to the budget-shared batch
+                # would resurrect warnings the activity bound deliberately
+                # excluded, so the two paths would disagree.
+                alert_values if dedicated_alerts_available else (alert_values or latest_alerts)
+            )
+        ],
     )
     return envelope(request, started, data.model_dump(mode="json"))
 

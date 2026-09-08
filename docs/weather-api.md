@@ -66,7 +66,9 @@ depends on how densely a location is forecast: at `limit=100` the cap is 25
 rows per location, which for a multi-metric provider is only the next few
 target hours. The caps actually applied are published in `meta.bundle`
 (`latest_per_location`, `forecast_per_location`), and a single-location request
-keeps the full depth. Follow up on `/resolve` or
+keeps the full depth. A per-location floor keeps a wide request useful, so the
+worst-case body is larger than the row budget alone suggests: at `limit=100`
+that is 60 current + 25 forecast rows per location, about 6-8 MB. Follow up on `/resolve` or
 `/v1/weather/locations/{id}/forecast` when one location needs everything.
 
 `alerts` is read on its own budget and is never shortened by `limit`. A warning

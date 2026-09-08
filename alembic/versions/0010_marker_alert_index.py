@@ -16,7 +16,6 @@ are built with psql beforehand.
 import sqlalchemy as sa
 
 from alembic import op
-from kortravelweather.index_ddl import ensure_concurrent_index
 
 revision = "0010_marker_alert_index"
 down_revision = "0009_marker_observed_index"
@@ -28,18 +27,37 @@ _ALERT_PREDICATE = "weather_domain = 'weather_alert' OR metric_key = 'ALERT'"
 _ORDERED_COLUMNS = "(location_id, target_at DESC)"
 
 
+def _drop_if_invalid(bind: sa.engine.Connection, name: str) -> None:
+    """Reclaim an index a failed concurrent build left behind.
+
+    ``IF NOT EXISTS`` would otherwise skip the retry forever.  Only the
+    ``indisvalid`` flag is consulted -- an index that merely shares the name is
+    trusted, because comparing definitions reliably is harder than it looks and
+    getting it wrong would drop a healthy multi-gigabyte index mid-deploy.
+    """
+    if bind.execute(
+        sa.text(
+            "SELECT 1 FROM pg_class c "
+            "JOIN pg_index i ON i.indexrelid = c.oid "
+            "WHERE c.relname = :name AND NOT i.indisvalid"
+        ),
+        {"name": name},
+    ).scalar():
+        op.execute(sa.text(f"DROP INDEX CONCURRENTLY IF EXISTS {name}"))
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
     with op.get_context().autocommit_block():
-        ensure_concurrent_index(
-            op.execute,
-            bind,
-            name=_INDEX_NAME,
-            table="weather_values",
-            columns=_ORDERED_COLUMNS,
-            where=_ALERT_PREDICATE,
+        _drop_if_invalid(bind, _INDEX_NAME)
+        op.execute(
+            sa.text(
+                "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+                f"{_INDEX_NAME} ON weather_values {_ORDERED_COLUMNS} "
+                f"WHERE {_ALERT_PREDICATE}"
+            )
         )
 
 

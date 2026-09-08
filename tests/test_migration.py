@@ -257,11 +257,14 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
         get_settings.cache_clear()
 
 
-def test_marker_index_migration_repairs_a_mis_ordered_index(monkeypatch) -> None:
-    """A same-named ascending index must be rebuilt, not skipped.
+def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
+    """An index built ahead of the deploy must survive the migration untouched.
 
-    ``IF NOT EXISTS`` alone would leave a development database that ran
-    ``create_all`` before this fix permanently stuck on the slow index.
+    ``deploy/n150.md`` tells the operator to create these concurrently outside
+    the deploy window, because building them while ``migrate`` holds the API
+    down costs tens of minutes on a 28 GB table. That only saves anything if
+    ``IF NOT EXISTS`` really does leave the pre-built index in place -- the oid
+    must not change.
     """
     database_url = TEST_DATABASE_URL
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
@@ -274,23 +277,102 @@ def test_marker_index_migration_repairs_a_mis_ordered_index(monkeypatch) -> None
         config = Config("alembic.ini")
         command.upgrade(config, "0008_admin_login_rate_limits")
 
-        # Simulate the drift: replace the marker index with an ascending one.
+        # Exactly the statements deploy/n150.md tells the operator to run.
         with engine.begin() as connection:
-            connection.exec_driver_sql("DROP INDEX ix_weather_values_marker_lookup")
             connection.exec_driver_sql(
-                "CREATE INDEX ix_weather_values_marker_lookup ON weather_values "
-                "(location_id, metric_key, known_at, source_record_key, value_id) "
-                "WHERE metric_key IN "
-                "('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+                "CREATE INDEX ix_weather_values_marker_observed ON weather_values "
+                "(location_id, metric_key, known_at DESC NULLS LAST, "
+                "source_record_key DESC NULLS LAST, value_id DESC) "
+                "WHERE metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY') "
+                "AND forecast_style IN ('observed', 'nowcast')"
             )
+            connection.exec_driver_sql(
+                "CREATE INDEX ix_weather_values_alert_lookup ON weather_values "
+                "(location_id, target_at DESC) "
+                "WHERE weather_domain = 'weather_alert' OR metric_key = 'ALERT'"
+            )
+            # ``exec_driver_sql`` hands the string to psycopg, which reads
+            # ``%`` as a placeholder; go through ``text()`` for the ILIKE
+            # patterns.
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_weather_current_values_alert_lookup "
+                    "ON weather_current_values (location_id, target_at DESC) "
+                    "WHERE metric_key = 'ALERT' OR weather_domain ILIKE '%alert%' "
+                    "OR weather_domain ILIKE '%warning%' "
+                    "OR dataset_key ILIKE '%alert%' "
+                    "OR dataset_key ILIKE '%warning%'"
+                )
+            )
+
+        names = _MARKER_INDEXES + _PROJECTION_INDEXES
+
+        def oids(connection) -> dict[str, int]:
+            rows = connection.execute(
+                text(
+                    "SELECT relname, oid FROM pg_class "
+                    "WHERE relname = ANY(:names)"
+                ),
+                {"names": list(names)},
+            ).all()
+            return {name: oid for name, oid in rows}
+
         with engine.connect() as connection:
-            drifted = _index_definitions(connection)["ix_weather_values_marker_lookup"]
-        assert "DESC" not in drifted
+            before = oids(connection)
 
         command.upgrade(config, "head")
 
         with engine.connect() as connection:
-            repaired = _index_definitions(connection)["ix_weather_values_marker_lookup"]
-        assert "known_at DESC" in repaired
+            after = oids(connection)
+            definitions = _index_definitions(connection)
+            definitions.update(_index_definitions(connection, "weather_current_values"))
+
+        for name in names:
+            if name not in before:
+                # 0006 builds the marker lookup; it is not pre-created here.
+                continue
+            assert before[name] == after[name], f"{name} was rebuilt by the migration"
+        # And the migration must still have produced every index it owns.
+        for name in names:
+            assert name in definitions
+    finally:
+        get_settings.cache_clear()
+
+
+def test_migration_rebuilds_an_index_left_invalid_by_a_failed_build(
+    monkeypatch,
+) -> None:
+    """A failed concurrent build must not be skipped forever by IF NOT EXISTS."""
+    database_url = TEST_DATABASE_URL
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    try:
+        engine = WeatherRepository(database_url).engine
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        config = Config("alembic.ini")
+        command.upgrade(config, "0008_admin_login_rate_limits")
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE INDEX ix_weather_values_alert_lookup ON weather_values "
+                "(location_id, target_at DESC) "
+                "WHERE weather_domain = 'weather_alert' OR metric_key = 'ALERT'"
+            )
+            # Mark it the way an interrupted CONCURRENTLY build leaves it.
+            connection.exec_driver_sql(
+                "UPDATE pg_index SET indisvalid = false WHERE indexrelid = "
+                "'ix_weather_values_alert_lookup'::regclass"
+            )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            valid = connection.execute(
+                text(
+                    "SELECT i.indisvalid FROM pg_class c "
+                    "JOIN pg_index i ON i.indexrelid = c.oid "
+                    "WHERE c.relname = 'ix_weather_values_alert_lookup'"
+                )
+            ).scalar_one()
+        assert valid is True
     finally:
         get_settings.cache_clear()

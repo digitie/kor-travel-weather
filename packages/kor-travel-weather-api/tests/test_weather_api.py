@@ -1011,6 +1011,7 @@ def _seed_bundle_location(
     now: datetime,
     observation_hours: int = 72,
     alert_age_hours: int | None = None,
+    alert_valid_until: datetime | None = None,
     observed_metrics: int = 1,
     forecast_metrics: int = 1,
 ) -> None:
@@ -1089,6 +1090,7 @@ def _seed_bundle_location(
                 forecast_style=ForecastStyle.OBSERVED,
                 metric_key="ALERT",
                 target_at=now - timedelta(hours=alert_age_hours),
+                valid_until=alert_valid_until,
                 value_text="호우경보 발표",
                 source_record_key=f"{location_id}-alert-source",
             )
@@ -1244,17 +1246,31 @@ def test_alert_values_many_reads_only_warnings_within_the_active_window(
     _seed_bundle_location(
         repository, "stale-alert", now=now, observed_metrics=4, alert_age_hours=24 * 10
     )
+    # An announcement that carries an explicit end time stays active for as long
+    # as that end time says -- heat and typhoon advisories routinely run past
+    # the max age, which only bounds announcements with no end time at all.
+    _seed_bundle_location(
+        repository,
+        "long-alert",
+        now=now,
+        observed_metrics=4,
+        alert_age_hours=24 * 5,
+        alert_valid_until=now + timedelta(days=2),
+    )
 
     result = repository.alert_values_many(
-        ["alerting", "quiet", "stale-alert"], limit_per_location=20, now=now
+        ["alerting", "quiet", "stale-alert", "long-alert"],
+        limit_per_location=20,
+        now=now,
     )
 
     assert [row.metric_key for row in result["alerting"]] == ["ALERT"]
     # A location with no warning must come back empty, not with its newest rows.
     assert result["quiet"] == []
-    # ``active_alert_values`` discards anything older than the max age anyway,
-    # so the read must not walk that far back looking for it.
+    # No end time and older than the max age: the reducer would drop it anyway.
     assert result["stale-alert"] == []
+    # Still valid, so it must survive however old the announcement is.
+    assert [row.metric_key for row in result["long-alert"]] == ["ALERT"]
 
 
 def test_current_value_read_rejects_contradictory_alert_flags(
@@ -1297,3 +1313,52 @@ def test_nearby_does_not_promote_ordinary_rows_to_warnings(
     assert response.status_code == 200
     for row in response.json()["data"]:
         assert row["alerts"] == [], f"{row['location_id']} invented a warning"
+
+
+def test_markers_and_nearby_agree_about_a_long_lived_warning(
+    api_client: TestClient,
+) -> None:
+    """The badge and the bundle must never contradict each other.
+
+    The map draws its badge from /markers and opens the detail from /nearby.
+    When the two reads bound warnings differently, a user sees a warning badge
+    on a marker whose bundle reports no warning at all.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    _seed_bundle_location(
+        repository,
+        "typhoon",
+        now=now,
+        observed_metrics=4,
+        alert_age_hours=24 * 5,
+        alert_valid_until=now + timedelta(days=2),
+    )
+
+    markers = api_client.get("/v1/weather/markers", params={"location_id": "typhoon"})
+    assert markers.status_code == 200
+    marker_alerts = [row["metric_key"] for row in markers.json()["data"][0]["alerts"]]
+
+    nearby = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    )
+    assert nearby.status_code == 200
+    bundle = next(
+        row for row in nearby.json()["data"] if row["location_id"] == "typhoon"
+    )
+    nearby_alerts = [row["metric_key"] for row in bundle["alerts"]]
+
+    resolved = api_client.get(
+        "/v1/weather/resolve", params={"lat": 37.5, "lon": 127.0, "radius_km": 50}
+    )
+    assert resolved.status_code == 200
+    resolve_alerts = [row["metric_key"] for row in resolved.json()["data"]["alerts"]]
+
+    assert marker_alerts == ["ALERT"]
+    assert nearby_alerts == marker_alerts, (
+        f"/markers says {marker_alerts} but /nearby says {nearby_alerts}"
+    )
+    assert resolve_alerts == marker_alerts, (
+        f"/markers says {marker_alerts} but /resolve says {resolve_alerts}"
+    )
