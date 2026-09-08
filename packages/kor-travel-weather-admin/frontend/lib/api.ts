@@ -5,6 +5,16 @@ export type PageMeta = {
   total: number | null;
 };
 
+/**
+ * Per-location row caps a multi-location bundle applied. `/v1/weather/nearby`
+ * shares one whole-response row budget across the locations it returns, so a
+ * wide request carries fewer rows per location than a narrow one.
+ */
+export type BundleMeta = {
+  latest_per_location: number;
+  forecast_per_location: number;
+};
+
 export type ApiEnvelope<T> = {
   data: T;
   meta: {
@@ -12,6 +22,7 @@ export type ApiEnvelope<T> = {
     generated_at: string;
     duration_ms: number;
     page?: PageMeta | null;
+    bundle?: BundleMeta | null;
   };
 };
 

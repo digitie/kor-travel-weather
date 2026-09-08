@@ -46,6 +46,13 @@ same `latest`, `forecast`, `alerts`, and `measurement_point` fields for each
 nearby anchor, ordered by distance. Use `limit` and `radius_km` to bound a map
 viewport request.
 
+Every nearby row carries a whole bundle, so the response shares one row budget
+across the locations it returns instead of giving each a fixed cap: a wide
+request trades per-location depth for a bounded body. The caps actually applied
+are published in `meta.bundle` (`latest_per_location`, `forecast_per_location`),
+and a single-location request keeps the full depth. Follow up on `/resolve` or
+`/v1/weather/locations/{id}/forecast` when one location needs everything.
+
 `GET /v1/weather/markers?location_id=...` is a bounded marker projection. Pass
 up to 500 enabled location IDs (the admin map sends batches of 500); each item
 contains only the current metrics and KMA alert facts needed to choose an icon

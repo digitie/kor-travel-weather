@@ -21,10 +21,33 @@ from kortravelweather.repository import (
 )
 
 from ..auth import require_admin
-from ..response import Envelope, envelope
+from ..response import BundleMeta, Envelope, envelope
 
 router = APIRouter(prefix="/v1/weather", tags=["weather"])
 admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+# One ``/nearby`` row carries a whole weather bundle.  With a fixed cap per
+# location the response grew linearly with ``limit`` -- roughly 525 KB and 690
+# rows each -- so the documented ``limit=100`` produced a ~52 MB body that the
+# gateway cut off at 30 s.  Spend a fixed row budget across the requested
+# locations instead.  A single-location request still gets the original depth;
+# the per-location detail stays available from ``/resolve`` and
+# ``/locations/{id}/forecast``.
+_NEARBY_LATEST_PER_LOCATION = 200
+_NEARBY_FORECAST_PER_LOCATION = 500
+_NEARBY_LATEST_BUDGET = 1500
+_NEARBY_FORECAST_BUDGET = 2500
+# Alerts are split out of the same rows the bundle already fetched, so keep a
+# generous current-value floor: squeezing it would silently drop advisories.
+_NEARBY_LATEST_FLOOR = 60
+_NEARBY_FORECAST_FLOOR = 25
+
+
+def _per_location_rows(count: int, *, budget: int, ceiling: int, floor: int) -> int:
+    """Split a whole-response row budget across ``count`` locations."""
+    if count <= 0:
+        return ceiling
+    return max(floor, min(ceiling, budget // count))
 
 
 class LocationOut(BaseModel):
@@ -500,15 +523,31 @@ async def nearby(
         repo.nearest_locations, lat, lon, radius_km=radius_km, limit=limit
     )
     location_ids = [location.location_id for location, _ in rows]
+    latest_per_location = _per_location_rows(
+        len(location_ids),
+        budget=_NEARBY_LATEST_BUDGET,
+        ceiling=_NEARBY_LATEST_PER_LOCATION,
+        floor=_NEARBY_LATEST_FLOOR,
+    )
+    forecast_per_location = _per_location_rows(
+        len(location_ids),
+        budget=_NEARBY_FORECAST_BUDGET,
+        ceiling=_NEARBY_FORECAST_PER_LOCATION,
+        floor=_NEARBY_FORECAST_FLOOR,
+    )
     latest_many = getattr(repo, "latest_values_many", None)
     latest_by_location = (
-        await run_in_threadpool(latest_many, location_ids, limit_per_location=200)
+        await run_in_threadpool(
+            latest_many, location_ids, limit_per_location=latest_per_location
+        )
         if callable(latest_many)
         else {}
     )
     timeline_many = getattr(repo, "timeline_many", None)
     timeline_by_location = (
-        await run_in_threadpool(timeline_many, location_ids, limit_per_location=500)
+        await run_in_threadpool(
+            timeline_many, location_ids, limit_per_location=forecast_per_location
+        )
         if callable(timeline_many)
         else {}
     )
@@ -531,7 +570,17 @@ async def nearby(
                 alert_rows=alert_rows or current_alerts,
             )
         )
-    return envelope(request, started, data, limit=limit, returned=len(data))
+    return envelope(
+        request,
+        started,
+        data,
+        limit=limit,
+        returned=len(data),
+        bundle=BundleMeta(
+            latest_per_location=latest_per_location,
+            forecast_per_location=forecast_per_location,
+        ),
+    )
 
 
 @router.get("/resolve", response_model=ResolvedWeatherResponse)

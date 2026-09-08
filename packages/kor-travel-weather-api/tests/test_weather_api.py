@@ -998,3 +998,69 @@ def test_location_list_reports_total_for_pagination(api_client: TestClient) -> N
     assert first.status_code == 200 and len(first.json()["data"]) == 100
     assert first.json()["meta"]["page"]["total"] == 101
     assert len(second.json()["data"]) == 1
+
+
+def test_nearby_row_budget_shrinks_per_location_depth(api_client: TestClient) -> None:
+    """A wide /nearby fan-out must not grow the response without bound.
+
+    Each row carries a whole weather bundle, so the previous fixed caps (200
+    current + 500 forecast rows per location) made a 100-location request a
+    ~52 MB body that the gateway cut off at 30 s.
+    """
+    repository = api_client.app.state.repository
+    for index in range(40):
+        repository.upsert_location(
+            WeatherLocation(
+                location_id=f"budget-{index}",
+                name=f"Budget {index:03d}",
+                latitude=37.5 + index * 0.001,
+                longitude=127.0,
+                nx=60,
+                ny=127,
+            )
+        )
+    response = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    )
+    assert response.status_code == 200
+    bundle = response.json()["meta"]["bundle"]
+    # 1500 // 40 = 37 -> clamped up to the alert-preserving floor of 60.
+    assert bundle["latest_per_location"] == 60
+    # 2500 // 40 = 62, between the floor (25) and the ceiling (500).
+    assert bundle["forecast_per_location"] == 62
+
+
+def test_nearby_keeps_full_depth_for_a_single_location(api_client: TestClient) -> None:
+    repository = api_client.app.state.repository
+    repository.upsert_location(
+        WeatherLocation(
+            location_id="only-one",
+            name="단일 위치",
+            latitude=37.5,
+            longitude=127.0,
+            nx=60,
+            ny=127,
+        )
+    )
+    response = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    )
+    assert response.status_code == 200
+    # The budget must not penalise the narrow request the endpoint is built for.
+    assert response.json()["meta"]["bundle"] == {
+        "latest_per_location": 200,
+        "forecast_per_location": 500,
+    }
+
+
+def test_nearby_row_budget_math_is_clamped() -> None:
+    from kortravelweather_api.routers.weather import _per_location_rows
+
+    assert _per_location_rows(0, budget=1500, ceiling=200, floor=60) == 200
+    assert _per_location_rows(1, budget=1500, ceiling=200, floor=60) == 200
+    assert _per_location_rows(20, budget=1500, ceiling=200, floor=60) == 75
+    assert _per_location_rows(100, budget=1500, ceiling=200, floor=60) == 60
+    assert _per_location_rows(100, budget=2500, ceiling=500, floor=25) == 25
+    assert _per_location_rows(10, budget=2500, ceiling=500, floor=25) == 250
