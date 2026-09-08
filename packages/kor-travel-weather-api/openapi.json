@@ -1200,6 +1200,26 @@
   },
   "components": {
     "schemas": {
+      "BundleMeta": {
+        "properties": {
+          "latest_per_location": {
+            "type": "integer",
+            "title": "Latest Per Location"
+          },
+          "forecast_per_location": {
+            "type": "integer",
+            "title": "Forecast Per Location"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "latest_per_location",
+          "forecast_per_location"
+        ],
+        "title": "BundleMeta",
+        "description": "Per-location row caps a multi-location bundle actually applied.\n\nA whole-response row budget is shared across the returned locations, so a\nwide request returns fewer rows per location than a narrow one.  Publish\nthe effective caps instead of truncating silently: a client that needs the\nfull depth for one location can follow up on the per-location endpoints."
+      },
       "CoordinateRequestOut": {
         "properties": {
           "latitude": {
@@ -1802,6 +1822,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PageMeta"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bundle": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BundleMeta"
               },
               {
                 "type": "null"

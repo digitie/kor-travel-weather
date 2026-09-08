@@ -5,6 +5,16 @@ export type PageMeta = {
   total: number | null;
 };
 
+/**
+ * Per-location row caps a multi-location bundle applied. `/v1/weather/nearby`
+ * shares one whole-response row budget across the locations it returns, so a
+ * wide request carries fewer rows per location than a narrow one.
+ */
+export type BundleMeta = {
+  latest_per_location: number;
+  forecast_per_location: number;
+};
+
 export type ApiEnvelope<T> = {
   data: T;
   meta: {
@@ -12,6 +22,7 @@ export type ApiEnvelope<T> = {
     generated_at: string;
     duration_ms: number;
     page?: PageMeta | null;
+    bundle?: BundleMeta | null;
   };
 };
 
@@ -138,11 +149,26 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     cache: "no-store",
   });
-  const payload = (await response.json()) as ApiEnvelope<T> | { detail?: string };
+  // Not every failure carries a JSON body: the auth middleware answers with a
+  // plain-text 401, an unhandled backend exception yields Starlette's
+  // text/plain "Internal Server Error", and a gateway timeout returns HTML.
+  // Parsing before checking the status turned all of those into a SyntaxError
+  // that hid the real status code from the operator.
+  const raw = await response.text();
+  let payload: (ApiEnvelope<T> & { detail?: string }) | { detail?: string } | null = null;
+  try {
+    payload = raw ? JSON.parse(raw) : null;
+  } catch {
+    payload = null;
+  }
   if (!response.ok) {
-    const detail = "detail" in payload && payload.detail ? payload.detail : `요청 실패 (${response.status})`;
+    const detail =
+      payload && typeof payload === "object" && typeof payload.detail === "string" && payload.detail
+        ? payload.detail
+        : `요청 실패 (${response.status})`;
     throw new Error(detail);
   }
+  if (!payload) throw new Error(`응답을 해석하지 못했습니다 (${response.status})`);
   return payload as ApiEnvelope<T>;
 }
 
@@ -211,6 +237,24 @@ export function getLatest(locationId: string, limit = 200): Promise<ApiEnvelope<
   return request<WeatherValue[]>(
     `/v1/weather/locations/${encodeURIComponent(locationId)}/latest?limit=${limit}`,
   );
+}
+
+/**
+ * Earliest `from` a forecast preview should ask for.
+ *
+ * `/v1/weather/locations/{id}/forecast` is a timeline query, not an
+ * upcoming-only route: called without `from` it answers from the oldest row the
+ * projection still holds. Anchor at the top of the current hour, which is the
+ * earliest target a reader would call a forecast.
+ *
+ * The boundary is taken in UTC so the result does not depend on the viewer's
+ * offset; a local-time boundary would shift on half-hour offsets such as
+ * UTC+05:30. Either way the anchor is at most an hour behind `now`.
+ */
+export function forecastWindowStart(now: Date = new Date()): string {
+  const start = new Date(now);
+  start.setUTCMinutes(0, 0, 0);
+  return start.toISOString();
 }
 
 export function getForecast(

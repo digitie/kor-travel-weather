@@ -36,15 +36,45 @@ anchor within the requested radius and returns:
 }
 ```
 
-`latest` contains current/observed values from every enabled source,
-`forecast` contains future values (including KMA ultra-short, short, and mid
-forecasts), and `alerts` contains KMA weather-warning facts. The point metadata
-is an explicit allow-list; private catalog metadata is never exposed.
+`latest` contains current/observed values from every enabled source, and
+`alerts` contains the active KMA weather-warning facts. The point metadata is
+an explicit allow-list; private catalog metadata is never exposed.
+
+`forecast` means different things on the two bundle routes, so parse them
+separately:
+
+- `/resolve` returns this point's newest 2000 projected rows per source,
+  newest first, which includes recent past targets as well as future ones. It
+  is the full-history bundle for one coordinate.
+- `/nearby` returns upcoming values only, read forward from the current hour
+  (see below).
+
+`alerts` is read on its own budget on both routes, so the two never disagree
+about the warning state of the same coordinate.
 
 `GET /v1/weather/nearby` remains the batch form for map views. It returns the
 same `latest`, `forecast`, `alerts`, and `measurement_point` fields for each
 nearby anchor, ordered by distance. Use `limit` and `radius_km` to bound a map
 viewport request.
+
+Every nearby row carries a whole bundle, so the response shares one row budget
+across the locations it returns instead of giving each a fixed cap: a wide
+request gets a shorter forecast horizon per location in exchange for a bounded
+body. The forecast is read forward from the current hour, so the cap shortens
+the horizon from its far end rather than from the near end. How far it reaches
+depends on how densely a location is forecast: at `limit=100` the cap is 25
+rows per location, which for a multi-metric provider is only the next few
+target hours. The caps actually applied are published in `meta.bundle`
+(`latest_per_location`, `forecast_per_location`), and a single-location request
+keeps the full depth. A per-location floor keeps a wide request useful, so the
+worst-case body is larger than the row budget alone suggests: at `limit=100`
+that is 60 current + 25 forecast rows per location, about 6-8 MB. Follow up on `/resolve` or
+`/v1/weather/locations/{id}/forecast` when one location needs everything.
+
+`alerts` is read on its own budget and is never shortened by `limit`. A warning
+is announced once and stays active for as long as its validity window says,
+while observations keep arriving behind it, so a shared cap would hide exactly
+the warnings a map needs to show.
 
 `GET /v1/weather/markers?location_id=...` is a bounded marker projection. Pass
 up to 500 enabled location IDs (the admin map sends batches of 500); each item
@@ -58,7 +88,10 @@ and severity badge. It is safe to refresh on every map viewport update.
   deduplicated to the newest immutable revision per logical metric.
 - `GET /v1/weather/locations/{location_id}/forecast` — forecast/history query;
   supports `from`, `to`, `dataset_key`, `metric_key`, and `history=true` for
-  explicit revision history.
+  explicit revision history. This is a timeline read, so rows come back
+  chronologically and `limit` truncates the far end. Callers that want upcoming
+  values must pass `from`; without it the window opens at the oldest row the
+  projection still holds and the response can be entirely in the past.
 - `GET /v1/weather/resolve` — nearest-anchor all-source bundle described above.
 
 ## Hourly ingestion and providers

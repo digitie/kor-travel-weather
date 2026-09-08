@@ -998,3 +998,367 @@ def test_location_list_reports_total_for_pagination(api_client: TestClient) -> N
     assert first.status_code == 200 and len(first.json()["data"]) == 100
     assert first.json()["meta"]["page"]["total"] == 101
     assert len(second.json()["data"]) == 1
+
+
+_OBSERVED_METRICS = ("TMP", "REH", "WSD", "PCP")
+_FORECAST_METRICS = ("TMP", "REH", "WSD", "PCP", "SKY", "PTY", "POP", "WAV")
+
+
+def _seed_bundle_location(
+    repository,
+    location_id: str,
+    *,
+    now: datetime,
+    observation_hours: int = 72,
+    alert_age_hours: int | None = None,
+    alert_valid_until: datetime | None = None,
+    observed_metrics: int = 1,
+    forecast_metrics: int = 1,
+) -> None:
+    """Seed one location shaped like production: dense observations + a warning."""
+    repository.upsert_location(
+        WeatherLocation(
+            location_id=location_id,
+            name=location_id,
+            latitude=37.5,
+            longitude=127.0,
+            nx=60,
+            ny=127,
+        )
+    )
+    repository.record_source(
+        source_record_key=f"{location_id}-source",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id=location_id,
+        payload={"rows": []},
+    )
+    # Row counts must exceed the per-location caps, or the caps never bite and
+    # the assertions below pass whatever the implementation does.
+    observed = _OBSERVED_METRICS[:observed_metrics]
+    forecast = _FORECAST_METRICS[:forecast_metrics]
+    values: list[WeatherValue] = []
+    for hour in range(observation_hours):
+        for metric in observed:
+            values.append(
+                WeatherValue(
+                    location_id=location_id,
+                    provider="p",
+                    dataset_key="d",
+                    weather_domain="weather",
+                    forecast_style=ForecastStyle.OBSERVED,
+                    metric_key=metric,
+                    target_at=now - timedelta(hours=hour),
+                    value_number=Decimal("1"),
+                    source_record_key=f"{location_id}-source",
+                )
+            )
+    # A forecast horizon reaching three days out, one row per hour per metric.
+    for hour in range(1, 73):
+        for metric in forecast:
+            values.append(
+                WeatherValue(
+                    location_id=location_id,
+                    provider="p",
+                    dataset_key="d",
+                    weather_domain="weather",
+                    forecast_style=ForecastStyle.SHORT,
+                    metric_key=metric,
+                    target_at=now + timedelta(hours=hour),
+                    value_number=Decimal("2"),
+                    source_record_key=f"{location_id}-source",
+                )
+            )
+    if alert_age_hours is not None:
+        # A source record is immutable per (provider, dataset_key), so the
+        # warning feed needs its own key.
+        repository.record_source(
+            source_record_key=f"{location_id}-alert-source",
+            provider="p",
+            dataset_key="kma_weather_alerts",
+            source_entity_type="weather_response",
+            source_entity_id=location_id,
+            payload={"rows": []},
+        )
+        values.append(
+            WeatherValue(
+                location_id=location_id,
+                provider="p",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=now - timedelta(hours=alert_age_hours),
+                valid_until=alert_valid_until,
+                value_text="호우경보 발표",
+                source_record_key=f"{location_id}-alert-source",
+            )
+        )
+    repository.upsert_values(values)
+
+
+def test_nearby_keeps_active_warnings_at_every_limit(api_client: TestClient) -> None:
+    """A warning must not fall out of the bundle as observations pile up behind it.
+
+    KMA warnings are OBSERVED rows whose ``target_at`` is the announcement
+    time, so a shared current-value cap hides them once enough newer
+    observations exist -- which is precisely when a map still needs the badge.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        # 4 metrics x 24 h = 96 observations newer than the warning, so a
+        # shared cap of 75 (limit=20) pushes the warning out of the response.
+        _seed_bundle_location(
+            repository,
+            f"warned-{index:02d}",
+            now=now,
+            alert_age_hours=24,
+            observed_metrics=4,
+        )
+    for limit in (1, 5, 20, 100):
+        response = api_client.get(
+            "/v1/weather/nearby",
+            params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": limit},
+        )
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert payload, f"limit={limit} returned no locations"
+        for row in payload:
+            assert row["alerts"], (
+                f"limit={limit}: active warning dropped for {row['location_id']} "
+                f"(bundle={response.json()['meta']['bundle']})"
+            )
+
+
+def test_nearby_forecast_keeps_the_near_term_when_the_budget_shrinks(
+    api_client: TestClient,
+) -> None:
+    """A smaller cap must shorten the horizon from its far end, not its near end."""
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        # Past rows (200 h x 4 metrics = 800) must exceed the forecast cap of
+        # 125, or an ascending read without the ``from_at`` anchor still lands
+        # on the future and the assertion below cannot see the difference.
+        _seed_bundle_location(
+            repository,
+            f"horizon-{index:02d}",
+            now=now,
+            observation_hours=200,
+            observed_metrics=4,
+            forecast_metrics=8,
+        )
+
+    def earliest_forecast(limit: int) -> datetime:
+        response = api_client.get(
+            "/v1/weather/nearby",
+            params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": limit},
+        )
+        assert response.status_code == 200
+        forecast = response.json()["data"][0]["forecast"]
+        assert forecast, f"limit={limit} returned an empty forecast"
+        return min(
+            datetime.fromisoformat(row["target_at"].replace("Z", "+00:00"))
+            for row in forecast
+        )
+
+    wide = earliest_forecast(20)
+    narrow = earliest_forecast(1)
+    # A newest-first cap pushes the earliest row days into the future; dropping
+    # the window anchor fills the cap with months-old observations instead, so
+    # bound the answer on both sides.
+    for label, earliest in (("wide", wide), ("narrow", narrow)):
+        assert earliest >= now - timedelta(hours=1), (
+            f"{label} request reaches back to {earliest}, now={now}"
+        )
+        assert earliest - now < timedelta(hours=3), (
+            f"{label} request starts at {earliest}, now={now}"
+        )
+
+
+def test_nearby_row_budget_actually_shrinks_the_body(api_client: TestClient) -> None:
+    """The budget must bound the payload, not merely report a smaller number.
+
+    Asserting only ``meta.bundle`` passed even when the repository ignored the
+    cap entirely, which is the regression that reintroduces the 504.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        _seed_bundle_location(
+            repository,
+            f"budget-{index:02d}",
+            now=now,
+            observed_metrics=4 if index == 0 else 1,
+            forecast_metrics=8 if index == 0 else 1,
+        )
+
+    def rows_per_location(limit: int) -> tuple[int, dict]:
+        response = api_client.get(
+            "/v1/weather/nearby",
+            params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": limit},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        first = body["data"][0]
+        return len(first["latest"]) + len(first["forecast"]), body["meta"]["bundle"]
+
+    narrow_rows, narrow_bundle = rows_per_location(1)
+    wide_rows, wide_bundle = rows_per_location(20)
+
+    assert narrow_bundle == {"latest_per_location": 200, "forecast_per_location": 500}
+    assert wide_bundle == {"latest_per_location": 75, "forecast_per_location": 125}
+    # The reported caps must be visible in the body itself.
+    assert wide_rows < narrow_rows, (
+        f"budget reported but not applied: narrow={narrow_rows} wide={wide_rows}"
+    )
+    assert wide_rows <= 75 + 125
+
+
+def test_nearby_row_budget_math_is_clamped() -> None:
+    from kortravelweather_api.routers.weather import _per_location_rows
+
+    assert _per_location_rows(0, budget=1500, ceiling=200, floor=60) == 200
+    assert _per_location_rows(1, budget=1500, ceiling=200, floor=60) == 200
+    assert _per_location_rows(20, budget=1500, ceiling=200, floor=60) == 75
+    assert _per_location_rows(100, budget=1500, ceiling=200, floor=60) == 60
+    assert _per_location_rows(100, budget=2500, ceiling=500, floor=25) == 25
+    assert _per_location_rows(10, budget=2500, ceiling=500, floor=25) == 250
+
+
+def test_alert_values_many_reads_only_warnings_within_the_active_window(
+    api_client: TestClient,
+) -> None:
+    """The dedicated read must be selective, not just "the newest 20 rows".
+
+    Dropping the ``alerts_only`` predicate makes it return temperature rows,
+    and dropping the window makes it walk a location's whole projection slice
+    to answer nothing -- the scan this index exists to prevent.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    _seed_bundle_location(
+        repository, "alerting", now=now, observed_metrics=4, alert_age_hours=24
+    )
+    _seed_bundle_location(repository, "quiet", now=now, observed_metrics=4)
+    _seed_bundle_location(
+        repository, "stale-alert", now=now, observed_metrics=4, alert_age_hours=24 * 10
+    )
+    # An announcement that carries an explicit end time stays active for as long
+    # as that end time says -- heat and typhoon advisories routinely run past
+    # the max age, which only bounds announcements with no end time at all.
+    _seed_bundle_location(
+        repository,
+        "long-alert",
+        now=now,
+        observed_metrics=4,
+        alert_age_hours=24 * 5,
+        alert_valid_until=now + timedelta(days=2),
+    )
+
+    result = repository.alert_values_many(
+        ["alerting", "quiet", "stale-alert", "long-alert"],
+        limit_per_location=20,
+        now=now,
+    )
+
+    assert [row.metric_key for row in result["alerting"]] == ["ALERT"]
+    # A location with no warning must come back empty, not with its newest rows.
+    assert result["quiet"] == []
+    # No end time and older than the max age: the reducer would drop it anyway.
+    assert result["stale-alert"] == []
+    # Still valid, so it must survive however old the announcement is.
+    assert [row.metric_key for row in result["long-alert"]] == ["ALERT"]
+
+
+def test_current_value_read_rejects_contradictory_alert_flags(
+    api_client: TestClient,
+) -> None:
+    """Asking to exclude and to isolate warnings at once must not pick one.
+
+    The branch answers ``alerts_only`` when both are set, so a caller that
+    asked for "no warnings" would silently receive nothing but warnings.
+    """
+    repository = api_client.app.state.repository
+    with (
+        repository._session_factory() as session,  # noqa: SLF001
+        pytest.raises(ValueError, match="함께 쓸 수 없습니다"),
+    ):
+        repository._current_value_models_many(  # noqa: SLF001
+            session,
+            ["anything"],
+            limit_per_location=1,
+            prefer_current=False,
+            exclude_alerts=True,
+            alerts_only=True,
+        )
+
+
+def test_nearby_does_not_promote_ordinary_rows_to_warnings(
+    api_client: TestClient,
+) -> None:
+    """A location without a warning must report none, whatever the read returns."""
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        _seed_bundle_location(
+            repository, f"quiet-{index:02d}", now=now, observed_metrics=4
+        )
+    response = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    )
+    assert response.status_code == 200
+    for row in response.json()["data"]:
+        assert row["alerts"] == [], f"{row['location_id']} invented a warning"
+
+
+def test_markers_and_nearby_agree_about_a_long_lived_warning(
+    api_client: TestClient,
+) -> None:
+    """The badge and the bundle must never contradict each other.
+
+    The map draws its badge from /markers and opens the detail from /nearby.
+    When the two reads bound warnings differently, a user sees a warning badge
+    on a marker whose bundle reports no warning at all.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    _seed_bundle_location(
+        repository,
+        "typhoon",
+        now=now,
+        observed_metrics=4,
+        alert_age_hours=24 * 5,
+        alert_valid_until=now + timedelta(days=2),
+    )
+
+    markers = api_client.get("/v1/weather/markers", params={"location_id": "typhoon"})
+    assert markers.status_code == 200
+    marker_alerts = [row["metric_key"] for row in markers.json()["data"][0]["alerts"]]
+
+    nearby = api_client.get(
+        "/v1/weather/nearby",
+        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    )
+    assert nearby.status_code == 200
+    bundle = next(
+        row for row in nearby.json()["data"] if row["location_id"] == "typhoon"
+    )
+    nearby_alerts = [row["metric_key"] for row in bundle["alerts"]]
+
+    resolved = api_client.get(
+        "/v1/weather/resolve", params={"lat": 37.5, "lon": 127.0, "radius_km": 50}
+    )
+    assert resolved.status_code == 200
+    resolve_alerts = [row["metric_key"] for row in resolved.json()["data"]["alerts"]]
+
+    assert marker_alerts == ["ALERT"]
+    assert nearby_alerts == marker_alerts, (
+        f"/markers says {marker_alerts} but /nearby says {nearby_alerts}"
+    )
+    assert resolve_alerts == marker_alerts, (
+        f"/markers says {marker_alerts} but /resolve says {resolve_alerts}"
+    )

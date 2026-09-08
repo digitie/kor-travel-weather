@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.alerts import active_alert_values
-from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue
+from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue, kst_now
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
     WeatherRepository,
@@ -21,10 +21,51 @@ from kortravelweather.repository import (
 )
 
 from ..auth import require_admin
-from ..response import Envelope, envelope
+from ..response import BundleMeta, Envelope, envelope
 
 router = APIRouter(prefix="/v1/weather", tags=["weather"])
 admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+# One ``/nearby`` row carries a whole weather bundle.  With a fixed cap per
+# location the response grew linearly with ``limit`` -- roughly 525 KB and 690
+# rows each -- so the documented ``limit=100`` produced a ~52 MB body that the
+# gateway cut off at 30 s (measured server-side: 41.6 s, 52.5 MB).  Spend a
+# fixed row budget across the requested locations instead.  A single-location
+# request still gets the original depth; the per-location detail stays
+# available from ``/resolve`` and ``/locations/{id}/forecast``.
+#
+# The forecast read is anchored at the current hour and ascends, so a smaller
+# cap shortens the horizon from the far end.  Capping a newest-first read would
+# do the opposite -- keep the last few hours of a multi-day horizon and drop
+# everything between now and then.
+_NEARBY_LATEST_PER_LOCATION = 200
+_NEARBY_FORECAST_PER_LOCATION = 500
+_NEARBY_LATEST_BUDGET = 1500
+_NEARBY_FORECAST_BUDGET = 2500
+_NEARBY_LATEST_FLOOR = 60
+_NEARBY_FORECAST_FLOOR = 25
+# Warnings are read outside the row budget.  A warning is announced once and
+# stays active for as long as its validity window says, while current values
+# keep arriving behind it, so any shared cap eventually hides it.  The alert
+# reducer already collapses these to one row per warning identity.
+_NEARBY_ALERT_PER_LOCATION = 20
+# ``/resolve`` answers one anchor plus its co-located sources.  Its warnings are
+# read on their own budget for the same reason as /nearby: otherwise the two
+# endpoints can disagree about the warning state of the same coordinate.
+_RESOLVE_FORECAST_PER_LOCATION = 2000
+_RESOLVE_ALERT_PER_LOCATION = 40
+
+
+def _per_location_rows(count: int, *, budget: int, ceiling: int, floor: int) -> int:
+    """Split a whole-response row budget across ``count`` locations."""
+    if count <= 0:
+        return ceiling
+    return max(floor, min(ceiling, budget // count))
+
+
+def _forecast_window_start() -> datetime:
+    """Open the bundle's forecast window at the top of the current hour."""
+    return kst_now().replace(minute=0, second=0, microsecond=0)
 
 
 class LocationOut(BaseModel):
@@ -500,16 +541,50 @@ async def nearby(
         repo.nearest_locations, lat, lon, radius_km=radius_km, limit=limit
     )
     location_ids = [location.location_id for location, _ in rows]
+    latest_per_location = _per_location_rows(
+        len(location_ids),
+        budget=_NEARBY_LATEST_BUDGET,
+        ceiling=_NEARBY_LATEST_PER_LOCATION,
+        floor=_NEARBY_LATEST_FLOOR,
+    )
+    forecast_per_location = _per_location_rows(
+        len(location_ids),
+        budget=_NEARBY_FORECAST_BUDGET,
+        ceiling=_NEARBY_FORECAST_PER_LOCATION,
+        floor=_NEARBY_FORECAST_FLOOR,
+    )
     latest_many = getattr(repo, "latest_values_many", None)
     latest_by_location = (
-        await run_in_threadpool(latest_many, location_ids, limit_per_location=200)
+        await run_in_threadpool(
+            latest_many, location_ids, limit_per_location=latest_per_location
+        )
         if callable(latest_many)
         else {}
     )
+    forecast_many = getattr(repo, "forecast_many", None)
     timeline_many = getattr(repo, "timeline_many", None)
-    timeline_by_location = (
-        await run_in_threadpool(timeline_many, location_ids, limit_per_location=500)
-        if callable(timeline_many)
+    if callable(forecast_many):
+        forecast_by_location = await run_in_threadpool(
+            forecast_many,
+            location_ids,
+            from_at=_forecast_window_start(),
+            limit_per_location=forecast_per_location,
+        )
+    elif callable(timeline_many):
+        forecast_by_location = await run_in_threadpool(
+            timeline_many, location_ids, limit_per_location=forecast_per_location
+        )
+    else:
+        forecast_by_location = {}
+    alert_many = getattr(repo, "alert_values_many", None)
+    # Warnings are read on their own budget. Sharing the current-value cap drops
+    # them as soon as enough observations arrive after the announcement.
+    dedicated_alerts_available = callable(alert_many)
+    alert_by_location = (
+        await run_in_threadpool(
+            alert_many, location_ids, limit_per_location=_NEARBY_ALERT_PER_LOCATION
+        )
+        if dedicated_alerts_available
         else {}
     )
     data = []
@@ -519,19 +594,43 @@ async def nearby(
             latest_rows = await run_in_threadpool(
                 repo.latest_values, location.location_id, limit=20
             )
-        all_rows = timeline_by_location.get(location.location_id, [])
-        _, forecast_rows, alert_rows = _split_weather_values(all_rows)
+        _, forecast_rows, timeline_alerts = _split_weather_values(
+            forecast_by_location.get(location.location_id, [])
+        )
         current_rows, _, current_alerts = _split_weather_values(latest_rows)
+        if dedicated_alerts_available:
+            # Classify rather than trust the query: ``_split_weather_values``
+            # is what decides a row is a warning, and it also applies the
+            # active-state reduction. Feeding rows straight to the reducer
+            # would promote whatever the read returned -- a temperature row
+            # included -- into the alert list.
+            _, _, alert_rows = _split_weather_values(
+                alert_by_location.get(location.location_id, [])
+            )
+        else:
+            # No dedicated read: fall back to the shared batches, which is the
+            # behaviour this endpoint had before and is still budget-bound.
+            alert_rows = timeline_alerts or current_alerts
         data.append(
             _weather_bundle(
                 location,
                 distance,
                 latest_rows=current_rows,
                 forecast_rows=forecast_rows,
-                alert_rows=alert_rows or current_alerts,
+                alert_rows=alert_rows,
             )
         )
-    return envelope(request, started, data, limit=limit, returned=len(data))
+    return envelope(
+        request,
+        started,
+        data,
+        limit=limit,
+        returned=len(data),
+        bundle=BundleMeta(
+            latest_per_location=latest_per_location,
+            forecast_per_location=forecast_per_location,
+        ),
+    )
 
 
 @router.get("/resolve", response_model=ResolvedWeatherResponse)
@@ -581,23 +680,46 @@ async def resolve_weather(
     source_ids = [candidate.location_id for candidate, _ in source_rows]
     latest_many = getattr(repo, "latest_values_many", None)
     timeline_many = getattr(repo, "timeline_many", None)
+    alert_many = getattr(repo, "alert_values_many", None)
+    alert_rows: list[WeatherValue] = []
+    dedicated_alerts_available = False
     if callable(latest_many) and callable(timeline_many):
         latest_by_location = await run_in_threadpool(
             latest_many, source_ids, limit_per_location=500
-        )
-        timeline_by_location = await run_in_threadpool(
-            timeline_many, source_ids, limit_per_location=2000
         )
         latest_rows = [
             value
             for candidate_id in source_ids
             for value in latest_by_location.get(candidate_id, [])
         ]
+        # Unlike /nearby this keeps the whole newest-first window.  The
+        # near-term loss that forced /nearby forward needs the row cap to be
+        # small against the horizon; here one anchor gets 2000 rows -- 16x the
+        # widest /nearby cap -- and the window is dominated by past values
+        # rather than exhausted by future ones.  /resolve is also the
+        # documented full-history bundle for a point, so making it future-only
+        # would drop the recent observations its consumers render.
+        forecast_by_location = await run_in_threadpool(
+            timeline_many, source_ids, limit_per_location=_RESOLVE_FORECAST_PER_LOCATION
+        )
         timeline_rows = [
             value
             for candidate_id in source_ids
-            for value in timeline_by_location.get(candidate_id, [])
+            for value in forecast_by_location.get(candidate_id, [])
         ]
+        if callable(alert_many):
+            # Warnings would otherwise compete with the forecast horizon for
+            # the same cap, so /resolve could answer alerts=[] while /markers
+            # shows a badge for the same coordinate.
+            dedicated_alerts_available = True
+            alert_by_location = await run_in_threadpool(
+                alert_many, source_ids, limit_per_location=_RESOLVE_ALERT_PER_LOCATION
+            )
+            alert_rows = [
+                value
+                for candidate_id in source_ids
+                for value in alert_by_location.get(candidate_id, [])
+            ]
     else:
         latest_rows = []
         timeline_rows = []
@@ -610,8 +732,17 @@ async def resolve_weather(
                     repo.timeline, candidate_id, limit=2000, include_revisions=False
                 )
             )
-    _, forecast_values, alert_values = _split_weather_values(timeline_rows)
+    _, forecast_values, timeline_alerts = _split_weather_values(timeline_rows)
     latest_values, _, latest_alerts = _split_weather_values(latest_rows)
+    if dedicated_alerts_available:
+        # Branch on availability, not on whether the read happened to return
+        # something. A truthiness test would quietly restore the shared-budget
+        # path for every ordinary coordinate -- the exact behaviour the
+        # dedicated read exists to replace -- and would let the two paths
+        # disagree about the same warning.
+        _, _, alert_values = _split_weather_values(alert_rows)
+    else:
+        alert_values = timeline_alerts
     point = measurement_point_out(location, distance_km=distance)
     data = ResolvedWeatherOut(
         requested=CoordinateRequestOut(latitude=lat, longitude=lon),
@@ -621,7 +752,16 @@ async def resolve_weather(
         source_locations=[location_out(candidate) for candidate, _ in source_rows],
         latest=[value_out(row) for row in latest_values],
         forecast=[value_out(row) for row in forecast_values],
-        alerts=[value_out(row) for row in (alert_values or latest_alerts)],
+        alerts=[
+            value_out(row)
+            for row in (
+                # With a dedicated read the answer is whatever it found,
+                # including nothing. Falling back to the budget-shared batch
+                # would resurrect warnings the activity bound deliberately
+                # excluded, so the two paths would disagree.
+                alert_values if dedicated_alerts_available else (alert_values or latest_alerts)
+            )
+        ],
     )
     return envelope(request, started, data.model_dump(mode="json"))
 
