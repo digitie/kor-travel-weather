@@ -158,13 +158,20 @@ class WeatherValueRow(Base):
         Index("ix_weather_values_location_time", "location_id", "valid_at", "observed_at"),
         Index("ix_weather_values_location_target_known", "location_id", "target_at", "known_at"),
         Index("ix_weather_values_dataset_metric", "dataset_key", "metric_key"),
+        # The marker lookups read in descending revision order.  Declaring the
+        # trailing columns as plain ascending names built an index the marker
+        # query cannot walk: it had to read every revision for a location and
+        # top-N sort them (measured 3.4 ms vs 132 ms on the same data).  Keep
+        # these expressions byte-identical to the alembic definitions, because
+        # ``create_all`` and ``alembic upgrade`` both claim this index name and
+        # whichever runs first wins.
         Index(
             "ix_weather_values_marker_lookup",
-            "location_id",
-            "metric_key",
-            "known_at",
-            "source_record_key",
-            "value_id",
+            text("location_id"),
+            text("metric_key"),
+            text("known_at DESC NULLS LAST"),
+            text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"),
             postgresql_where=text(
                 "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
             ),
@@ -176,14 +183,29 @@ class WeatherValueRow(Base):
         # Repeating the predicate here keeps the observed lookup index-only.
         Index(
             "ix_weather_values_marker_observed",
-            "location_id",
-            "metric_key",
-            "known_at",
-            "source_record_key",
-            "value_id",
+            text("location_id"),
+            text("metric_key"),
+            text("known_at DESC NULLS LAST"),
+            text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"),
             postgresql_where=text(
                 "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
                 " AND forecast_style IN ('observed', 'nowcast')"
+            ),
+        ),
+        # ``marker_values_many`` ranks alert revisions on every marker batch.
+        # Nothing covered its ``weather_domain``/``metric_key`` predicate, so
+        # the planner fell back to a parallel sequential scan of the whole
+        # append-only table -- ~20 GB and 66 s cold on production -- to find
+        # the few thousand alert rows a batch needs.  That scan, not the
+        # observed lookup, is what pushed a marker batch past the gateway
+        # timeout.
+        Index(
+            "ix_weather_values_alert_lookup",
+            text("location_id"),
+            text("target_at DESC"),
+            postgresql_where=text(
+                "weather_domain = 'weather_alert' OR metric_key = 'ALERT'"
             ),
         ),
         CheckConstraint(
@@ -1456,6 +1478,7 @@ class WeatherRepository:
         weather_domain: str | None = None,
         metric_keys: Sequence[str] | None = None,
         exclude_alerts: bool = False,
+        alerts_only: bool = False,
     ) -> dict[str, list[WeatherValue]]:
         """Read bounded per-location rows from the current-value projection."""
         unique_ids = tuple(dict.fromkeys(location_ids))
@@ -1526,7 +1549,7 @@ class WeatherRepository:
             candidate = candidate.where(
                 WeatherCurrentValueRow.metric_key.in_(normalized_metric_keys)
             )
-        if exclude_alerts:
+        if exclude_alerts or alerts_only:
             alert_filter = or_(
                 WeatherCurrentValueRow.metric_key == "ALERT",
                 WeatherCurrentValueRow.weather_domain.ilike("%alert%"),
@@ -1534,7 +1557,9 @@ class WeatherRepository:
                 WeatherCurrentValueRow.dataset_key.ilike("%alert%"),
                 WeatherCurrentValueRow.dataset_key.ilike("%warning%"),
             )
-            candidate = candidate.where(not_(alert_filter))
+            candidate = candidate.where(
+                alert_filter if alerts_only else not_(alert_filter)
+            )
         candidate = candidate.lateral().alias("current_value_candidates")
         pairs = session.execute(
             select(requested_locations.c.location_id, candidate.c.value_id).select_from(
@@ -1863,7 +1888,12 @@ class WeatherRepository:
     def timeline_many(
         self, location_ids: Sequence[str], *, limit_per_location: int = 500
     ) -> dict[str, list[WeatherValue]]:
-        """Return current projections for forecast/alert bundle queries in one SQL read."""
+        """Return current projections for forecast/alert bundle queries in one SQL read.
+
+        Rows are ordered newest-first, so ``limit_per_location`` keeps the far
+        end of the horizon.  Bundles that need upcoming values should use
+        :meth:`forecast_many`, which anchors the window instead.
+        """
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
         with self._session_factory() as session:
@@ -1872,6 +1902,59 @@ class WeatherRepository:
                 location_ids,
                 limit_per_location=limit_per_location,
                 prefer_current=False,
+            )
+
+    def forecast_many(
+        self,
+        location_ids: Sequence[str],
+        *,
+        from_at: datetime,
+        limit_per_location: int = 500,
+    ) -> dict[str, list[WeatherValue]]:
+        """Return upcoming forecast rows per location, nearest target first.
+
+        ``timeline_many`` orders newest-first, so bounding it keeps the far end
+        of the horizon and drops everything between now and then.  Reading
+        ascending from ``from_at`` makes the row limit cut the distant future
+        instead, which is the half a bundle can afford to lose.  Alerts are
+        excluded because they carry past ``target_at`` values and would
+        otherwise consume the window; read them with :meth:`alert_values_many`.
+        """
+        if limit_per_location <= 0:
+            raise ValueError("limit_per_location은 양수여야 합니다.")
+        with self._session_factory() as session:
+            return self._current_value_models_many(
+                session,
+                location_ids,
+                limit_per_location=limit_per_location,
+                prefer_current=False,
+                newest_first=False,
+                from_at=from_at,
+                exclude_alerts=True,
+            )
+
+    def alert_values_many(
+        self,
+        location_ids: Sequence[str],
+        *,
+        limit_per_location: int = 20,
+    ) -> dict[str, list[WeatherValue]]:
+        """Return the newest alert rows per location, independent of any bundle budget.
+
+        A warning is announced once and stays active for as long as its
+        validity window says.  Sharing a row budget with current values
+        therefore drops warnings as soon as enough observations arrive after
+        the announcement, which is the opposite of what a map needs.
+        """
+        if limit_per_location <= 0:
+            raise ValueError("limit_per_location은 양수여야 합니다.")
+        with self._session_factory() as session:
+            return self._current_value_models_many(
+                session,
+                location_ids,
+                limit_per_location=limit_per_location,
+                prefer_current=False,
+                alerts_only=True,
             )
 
     def timeline(

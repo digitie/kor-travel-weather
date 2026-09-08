@@ -48,10 +48,18 @@ viewport request.
 
 Every nearby row carries a whole bundle, so the response shares one row budget
 across the locations it returns instead of giving each a fixed cap: a wide
-request trades per-location depth for a bounded body. The caps actually applied
-are published in `meta.bundle` (`latest_per_location`, `forecast_per_location`),
-and a single-location request keeps the full depth. Follow up on `/resolve` or
-`/v1/weather/locations/{id}/forecast` when one location needs everything.
+request gets a shorter forecast horizon per location in exchange for a bounded
+body. The forecast is read forward from the current hour, so the cap shortens
+the horizon from its far end and the next few hours are always present. The
+caps actually applied are published in `meta.bundle` (`latest_per_location`,
+`forecast_per_location`), and a single-location request keeps the full depth.
+Follow up on `/resolve` or `/v1/weather/locations/{id}/forecast` when one
+location needs everything.
+
+`alerts` is read on its own budget and is never shortened by `limit`. A warning
+is announced once and stays active for as long as its validity window says,
+while observations keep arriving behind it, so a shared cap would hide exactly
+the warnings a map needs to show.
 
 `GET /v1/weather/markers?location_id=...` is a bounded marker projection. Pass
 up to 500 enabled location IDs (the admin map sends batches of 500); each item

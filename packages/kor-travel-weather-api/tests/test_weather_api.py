@@ -1000,59 +1000,205 @@ def test_location_list_reports_total_for_pagination(api_client: TestClient) -> N
     assert len(second.json()["data"]) == 1
 
 
-def test_nearby_row_budget_shrinks_per_location_depth(api_client: TestClient) -> None:
-    """A wide /nearby fan-out must not grow the response without bound.
-
-    Each row carries a whole weather bundle, so the previous fixed caps (200
-    current + 500 forecast rows per location) made a 100-location request a
-    ~52 MB body that the gateway cut off at 30 s.
-    """
-    repository = api_client.app.state.repository
-    for index in range(40):
-        repository.upsert_location(
-            WeatherLocation(
-                location_id=f"budget-{index}",
-                name=f"Budget {index:03d}",
-                latitude=37.5 + index * 0.001,
-                longitude=127.0,
-                nx=60,
-                ny=127,
-            )
-        )
-    response = api_client.get(
-        "/v1/weather/nearby",
-        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
-    )
-    assert response.status_code == 200
-    bundle = response.json()["meta"]["bundle"]
-    # 1500 // 40 = 37 -> clamped up to the alert-preserving floor of 60.
-    assert bundle["latest_per_location"] == 60
-    # 2500 // 40 = 62, between the floor (25) and the ceiling (500).
-    assert bundle["forecast_per_location"] == 62
+_OBSERVED_METRICS = ("TMP", "REH", "WSD", "PCP")
+_FORECAST_METRICS = ("TMP", "REH", "WSD", "PCP", "SKY", "PTY", "POP", "WAV")
 
 
-def test_nearby_keeps_full_depth_for_a_single_location(api_client: TestClient) -> None:
-    repository = api_client.app.state.repository
+def _seed_bundle_location(
+    repository,
+    location_id: str,
+    *,
+    now: datetime,
+    observation_hours: int = 72,
+    alert_age_hours: int | None = None,
+    observed_metrics: int = 1,
+    forecast_metrics: int = 1,
+) -> None:
+    """Seed one location shaped like production: dense observations + a warning."""
     repository.upsert_location(
         WeatherLocation(
-            location_id="only-one",
-            name="단일 위치",
+            location_id=location_id,
+            name=location_id,
             latitude=37.5,
             longitude=127.0,
             nx=60,
             ny=127,
         )
     )
-    response = api_client.get(
-        "/v1/weather/nearby",
-        params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": 100},
+    repository.record_source(
+        source_record_key=f"{location_id}-source",
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id=location_id,
+        payload={"rows": []},
     )
-    assert response.status_code == 200
-    # The budget must not penalise the narrow request the endpoint is built for.
-    assert response.json()["meta"]["bundle"] == {
-        "latest_per_location": 200,
-        "forecast_per_location": 500,
-    }
+    # Row counts must exceed the per-location caps, or the caps never bite and
+    # the assertions below pass whatever the implementation does.
+    observed = _OBSERVED_METRICS[:observed_metrics]
+    forecast = _FORECAST_METRICS[:forecast_metrics]
+    values: list[WeatherValue] = []
+    for hour in range(observation_hours):
+        for metric in observed:
+            values.append(
+                WeatherValue(
+                    location_id=location_id,
+                    provider="p",
+                    dataset_key="d",
+                    weather_domain="weather",
+                    forecast_style=ForecastStyle.OBSERVED,
+                    metric_key=metric,
+                    target_at=now - timedelta(hours=hour),
+                    value_number=Decimal("1"),
+                    source_record_key=f"{location_id}-source",
+                )
+            )
+    # A forecast horizon reaching three days out, one row per hour per metric.
+    for hour in range(1, 73):
+        for metric in forecast:
+            values.append(
+                WeatherValue(
+                    location_id=location_id,
+                    provider="p",
+                    dataset_key="d",
+                    weather_domain="weather",
+                    forecast_style=ForecastStyle.SHORT,
+                    metric_key=metric,
+                    target_at=now + timedelta(hours=hour),
+                    value_number=Decimal("2"),
+                    source_record_key=f"{location_id}-source",
+                )
+            )
+    if alert_age_hours is not None:
+        # A source record is immutable per (provider, dataset_key), so the
+        # warning feed needs its own key.
+        repository.record_source(
+            source_record_key=f"{location_id}-alert-source",
+            provider="p",
+            dataset_key="kma_weather_alerts",
+            source_entity_type="weather_response",
+            source_entity_id=location_id,
+            payload={"rows": []},
+        )
+        values.append(
+            WeatherValue(
+                location_id=location_id,
+                provider="p",
+                dataset_key="kma_weather_alerts",
+                weather_domain="weather_alert",
+                forecast_style=ForecastStyle.OBSERVED,
+                metric_key="ALERT",
+                target_at=now - timedelta(hours=alert_age_hours),
+                value_text="호우경보 발표",
+                source_record_key=f"{location_id}-alert-source",
+            )
+        )
+    repository.upsert_values(values)
+
+
+def test_nearby_keeps_active_warnings_at_every_limit(api_client: TestClient) -> None:
+    """A warning must not fall out of the bundle as observations pile up behind it.
+
+    KMA warnings are OBSERVED rows whose ``target_at`` is the announcement
+    time, so a shared current-value cap hides them once enough newer
+    observations exist -- which is precisely when a map still needs the badge.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        # 4 metrics x 24 h = 96 observations newer than the warning, so a
+        # shared cap of 75 (limit=20) pushes the warning out of the response.
+        _seed_bundle_location(
+            repository,
+            f"warned-{index:02d}",
+            now=now,
+            alert_age_hours=24,
+            observed_metrics=4,
+        )
+    for limit in (1, 5, 20, 100):
+        response = api_client.get(
+            "/v1/weather/nearby",
+            params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": limit},
+        )
+        assert response.status_code == 200
+        payload = response.json()["data"]
+        assert payload, f"limit={limit} returned no locations"
+        for row in payload:
+            assert row["alerts"], (
+                f"limit={limit}: active warning dropped for {row['location_id']} "
+                f"(bundle={response.json()['meta']['bundle']})"
+            )
+
+
+def test_nearby_forecast_keeps_the_near_term_when_the_budget_shrinks(
+    api_client: TestClient,
+) -> None:
+    """A smaller cap must shorten the horizon from its far end, not its near end."""
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        _seed_bundle_location(
+            repository, f"horizon-{index:02d}", now=now, forecast_metrics=8
+        )
+
+    def earliest_forecast(limit: int) -> datetime:
+        response = api_client.get(
+            "/v1/weather/nearby",
+            params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": limit},
+        )
+        assert response.status_code == 200
+        forecast = response.json()["data"][0]["forecast"]
+        assert forecast, f"limit={limit} returned an empty forecast"
+        return min(
+            datetime.fromisoformat(row["target_at"].replace("Z", "+00:00"))
+            for row in forecast
+        )
+
+    wide = earliest_forecast(20)
+    narrow = earliest_forecast(1)
+    # Both must start within a couple of hours of now; a newest-first cap would
+    # push the wide request's earliest row days into the future.
+    assert wide - now < timedelta(hours=3), f"wide request starts at {wide}, now={now}"
+    assert narrow - now < timedelta(hours=3)
+
+
+def test_nearby_row_budget_actually_shrinks_the_body(api_client: TestClient) -> None:
+    """The budget must bound the payload, not merely report a smaller number.
+
+    Asserting only ``meta.bundle`` passed even when the repository ignored the
+    cap entirely, which is the regression that reintroduces the 504.
+    """
+    repository = api_client.app.state.repository
+    now = datetime.now(UTC)
+    for index in range(20):
+        _seed_bundle_location(
+            repository,
+            f"budget-{index:02d}",
+            now=now,
+            observed_metrics=4 if index == 0 else 1,
+            forecast_metrics=8 if index == 0 else 1,
+        )
+
+    def rows_per_location(limit: int) -> tuple[int, dict]:
+        response = api_client.get(
+            "/v1/weather/nearby",
+            params={"lat": 37.5, "lon": 127.0, "radius_km": 50, "limit": limit},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        first = body["data"][0]
+        return len(first["latest"]) + len(first["forecast"]), body["meta"]["bundle"]
+
+    narrow_rows, narrow_bundle = rows_per_location(1)
+    wide_rows, wide_bundle = rows_per_location(20)
+
+    assert narrow_bundle == {"latest_per_location": 200, "forecast_per_location": 500}
+    assert wide_bundle == {"latest_per_location": 75, "forecast_per_location": 125}
+    # The reported caps must be visible in the body itself.
+    assert wide_rows < narrow_rows, (
+        f"budget reported but not applied: narrow={narrow_rows} wide={wide_rows}"
+    )
+    assert wide_rows <= 75 + 125
 
 
 def test_nearby_row_budget_math_is_clamped() -> None:

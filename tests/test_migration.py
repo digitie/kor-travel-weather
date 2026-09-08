@@ -92,7 +92,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0009_marker_observed_index"
+            assert version == "0010_marker_alert_index"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -100,6 +100,9 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             # The marker observed pass filters ``forecast_style``; without this
             # index it scans past every newer forecast revision per location.
             assert "ix_weather_values_marker_observed" in weather_value_indexes
+            # The marker alert pass had no index at all and fell back to a
+            # sequential scan of the whole append-only table.
+            assert "ix_weather_values_alert_lookup" in weather_value_indexes
             assert "weather_current_values" in inspect(engine).get_table_names()
             assert {
                 "ix_weather_current_values_location_target",
@@ -174,5 +177,109 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
                     "DELETE FROM weather_values WHERE value_id='immutable-value'"
                 )
             )
+    finally:
+        get_settings.cache_clear()
+
+
+_MARKER_INDEXES = (
+    "ix_weather_values_marker_lookup",
+    "ix_weather_values_marker_observed",
+    "ix_weather_values_alert_lookup",
+)
+
+
+def _index_definitions(connection) -> dict[str, str]:
+    rows = connection.execute(
+        text(
+            "SELECT indexname, indexdef FROM pg_indexes "
+            "WHERE tablename = 'weather_values'"
+        )
+    ).all()
+    return {name: definition for name, definition in rows}
+
+
+def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> None:
+    """Both schema paths must produce byte-identical marker index definitions.
+
+    ``create_all`` and ``alembic upgrade`` each claim these index names, and
+    ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` silently accepts whatever is
+    already there. A definition that merely shares the name is therefore
+    permanent: an ascending index cannot serve the marker ORDER BY, so the
+    query degrades to a per-location top-N sort and nothing reports it.
+    Comparing names alone -- as this suite used to -- cannot catch that.
+    """
+    database_url = TEST_DATABASE_URL
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    try:
+        repository = WeatherRepository(database_url)
+        engine = repository.engine
+
+        # 1) schema built by the ORM metadata
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        repository.create_schema()
+        with engine.connect() as connection:
+            from_create_all = _index_definitions(connection)
+
+        # 2) schema built by the migration chain
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        command.upgrade(Config("alembic.ini"), "head")
+        with engine.connect() as connection:
+            from_alembic = _index_definitions(connection)
+
+        for name in _MARKER_INDEXES:
+            assert name in from_create_all, f"{name} missing from create_all schema"
+            assert name in from_alembic, f"{name} missing from alembic schema"
+            assert from_create_all[name] == from_alembic[name], (
+                f"{name} differs between schema paths:\n"
+                f"  create_all: {from_create_all[name]}\n"
+                f"  alembic   : {from_alembic[name]}"
+            )
+            # The marker queries read revisions descending; an ascending index
+            # cannot serve that ordering.
+            assert "DESC" in from_alembic[name]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_marker_index_migration_repairs_a_mis_ordered_index(monkeypatch) -> None:
+    """A same-named ascending index must be rebuilt, not skipped.
+
+    ``IF NOT EXISTS`` alone would leave a development database that ran
+    ``create_all`` before this fix permanently stuck on the slow index.
+    """
+    database_url = TEST_DATABASE_URL
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    try:
+        engine = WeatherRepository(database_url).engine
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        config = Config("alembic.ini")
+        command.upgrade(config, "0008_admin_login_rate_limits")
+
+        # Simulate the drift: replace the marker index with an ascending one.
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP INDEX ix_weather_values_marker_lookup")
+            connection.exec_driver_sql(
+                "CREATE INDEX ix_weather_values_marker_lookup ON weather_values "
+                "(location_id, metric_key, known_at, source_record_key, value_id) "
+                "WHERE metric_key IN "
+                "('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+            )
+        with engine.connect() as connection:
+            drifted = _index_definitions(connection)["ix_weather_values_marker_lookup"]
+        assert "DESC" not in drifted
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            repaired = _index_definitions(connection)["ix_weather_values_marker_lookup"]
+        assert "known_at DESC" in repaired
     finally:
         get_settings.cache_clear()
