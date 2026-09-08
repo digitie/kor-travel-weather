@@ -35,4 +35,12 @@ RUN if [ "${INSTALL_DAGSTER}" = "1" ]; then \
 COPY packages/kor-travel-weather-api/src ./packages/kor-travel-weather-api/src
 COPY packages/kor-travel-weather-dagster/src ./packages/kor-travel-weather-dagster/src
 
+# Bake the deployed revision into the image rather than injecting it at run
+# time.  `.dockerignore` keeps `.git` out of the build context, so the value has
+# to come from the caller -- but baking it means a restart cannot drift from the
+# code, and a stale entry in a deployment env file cannot override it.  Last so
+# a new revision does not invalidate the dependency layers above.
+ARG GIT_COMMIT=unknown
+ENV KOR_TRAVEL_WEATHER_GIT_COMMIT=${GIT_COMMIT}
+
 EXPOSE 14101 14102 14103
