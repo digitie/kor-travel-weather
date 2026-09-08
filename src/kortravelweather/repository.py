@@ -365,8 +365,14 @@ class WeatherCurrentValueRow(Base):
     # location (measured on production, 4,284 rows per location and 425,263 PK
     # lookups into a 28 GB table for a 100-location bundle).  These are written
     # from the fact the pointer names and move with it.
+    # Nullable on purpose.  The migration adds these to a live table, and the
+    # previous release keeps writing pointer rows until it is replaced, so rows
+    # created during a deploy carry no sort keys.  ``nullslast`` orders those
+    # last within their group, and the next revision of that logical point
+    # fills them in.  Promoting NOT NULL here would break the outgoing release's
+    # inserts mid-deploy.
     known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
-    source_record_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_record_key: Mapped[str | None] = mapped_column(String(255))
 
 
 _MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
@@ -1604,12 +1610,6 @@ class WeatherRepository:
             .order_by(*order)
             .limit(limit_per_location)
         )
-        if alert_active_at is not None:
-            # ``valid_until`` lives on the fact, so this is the one read that
-            # still needs the join. It runs against the alert slice alone.
-            candidate = candidate.join(
-                WeatherValueRow, WeatherValueRow.value_id == WeatherCurrentValueRow.value_id
-            )
         if from_at is not None:
             candidate = candidate.where(WeatherCurrentValueRow.target_at >= from_at)
         if to_at is not None:
@@ -1644,7 +1644,14 @@ class WeatherRepository:
             # advisory carries ``valid_until`` and stays active well past three
             # days, so a plain ``target_at`` window would hide exactly the
             # warnings that matter most.
-            candidate = candidate.where(
+            #
+            # ``valid_until`` is the one sort/filter column still on the fact,
+            # so the join belongs here rather than beside the other options: a
+            # predicate added without it compiles to a silent cross join.
+            candidate = candidate.join(
+                WeatherValueRow,
+                WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
+            ).where(
                 or_(
                     WeatherCurrentValueRow.target_at >= alert_active_at - ALERT_MAX_AGE,
                     WeatherValueRow.valid_until > alert_active_at,

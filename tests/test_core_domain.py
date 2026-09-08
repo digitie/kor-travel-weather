@@ -595,3 +595,58 @@ def test_sync_run_source_provider_and_dataset_must_match(tmp_path) -> None:
             ]
         )
     assert repo.list_sync_run_sources(run.run_id) == []
+
+
+def test_bundle_read_joins_the_fact_table_only_for_the_alert_window() -> None:
+    """The join exists for one predicate; losing it compiles to a cross join.
+
+    ``valid_until`` is the only sort or filter column still on the fact table.
+    A future predicate added to the alert branch without the join would pair
+    every projected row with every fact before the limit -- unbounded and wrong,
+    with no exception to notice.
+    """
+    import contextlib
+    from datetime import UTC, datetime
+
+    from sqlalchemy.dialects import postgresql
+
+    from kortravelweather.repository import WeatherRepository
+
+    repository = WeatherRepository.__new__(WeatherRepository)
+    captured: list[str] = []
+
+    class _Recorder:
+        def execute(self, statement, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            captured.append(
+                str(statement.compile(dialect=postgresql.dialect()))
+            )
+            raise _Stop
+
+        def scalars(self, statement, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+            raise _Stop
+
+    class _Stop(Exception):
+        pass
+
+    def compiled(**kwargs) -> str:
+        captured.clear()
+        with contextlib.suppress(_Stop):
+            WeatherRepository._current_value_models_many(
+                repository,
+                _Recorder(),
+                ["anywhere"],
+                limit_per_location=5,
+                prefer_current=True,
+                **kwargs,
+            )
+        assert captured, "no statement was compiled"
+        return captured[0]
+
+    without_alerts = compiled()
+    assert "weather_values" not in without_alerts, (
+        "the ordinary bundle read must not touch the fact table before its limit"
+    )
+
+    with_alerts = compiled(alerts_only=True, alert_active_at=datetime.now(UTC))
+    assert "JOIN weather_values" in with_alerts
+    assert "valid_until" in with_alerts
