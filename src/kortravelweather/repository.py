@@ -141,17 +141,20 @@ class SourceRecordRow(Base):
     imported_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
-#: The one definition of "this row is a warning" used by the current-value
-#: projection.  The alert read and the partial index that serves it must apply
-#: the same expression, or PostgreSQL cannot prove the index covers the query
-#: and falls back to walking the whole per-location slice.
 #: Observed and nowcast rows describe now; forecast rows describe later.  A
 #: bundle's ``latest`` wants the former first, and the index that serves that
-#: ordering must spell the expression exactly as the query does.
+#: ordering must spell the expression exactly as the query does.  The query
+#: builds it with SQLAlchemy's ``case()`` rather than this string, so the two
+#: are held together by ``test_the_bundle_ordering_is_served_by_its_index``,
+#: which plans the real statement and fails if PostgreSQL has to sort.
 _CURRENT_PREFERENCE_EXPRESSION = (
     "(CASE WHEN forecast_style IN ('observed', 'nowcast') THEN 0 ELSE 1 END)"
 )
 
+#: The one definition of "this row is a warning" used by the current-value
+#: projection.  The alert read and the partial index that serves it must apply
+#: the same expression, or PostgreSQL cannot prove the index covers the query
+#: and falls back to walking the whole per-location slice.
 _ALERT_PROJECTION_PREDICATE = (
     "metric_key = 'ALERT'"
     " OR weather_domain ILIKE '%alert%'"

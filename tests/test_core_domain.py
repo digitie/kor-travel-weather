@@ -650,3 +650,79 @@ def test_bundle_read_joins_the_fact_table_only_for_the_alert_window() -> None:
     with_alerts = compiled(alerts_only=True, alert_active_at=datetime.now(UTC))
     assert "JOIN weather_values" in with_alerts
     assert "valid_until" in with_alerts
+
+
+def test_projection_sort_keys_move_with_the_pointer() -> None:
+    """The one invariant this denormalisation introduces.
+
+    ``weather_current_values`` carries a copy of the fact's ``known_at`` and
+    ``source_record_key`` so a bundle read can order a location's slice without
+    joining.  If the pointer moves to a newer revision and the copies stay
+    behind, every read orders on a fact that is no longer there -- silently, and
+    the LIMIT then drops the wrong rows.
+    """
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from sqlalchemy import text
+
+    from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
+    from kortravelweather.repository import WeatherRepository
+
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    repository.upsert_location(
+        WeatherLocation(
+            location_id="pointer", name="포인터", latitude=37.5, longitude=127.0
+        )
+    )
+
+    def publish(suffix: str, known_at: datetime, value: str) -> None:
+        repository.record_source(
+            source_record_key=f"pointer-{suffix}",
+            provider="p",
+            dataset_key="d",
+            source_entity_type="weather_response",
+            source_entity_id="pointer",
+            # A replayed identical payload reuses the existing key, so each
+            # revision needs a distinguishable response body.
+            payload={"rows": [], "revision": suffix},
+        )
+        repository.upsert_values(
+            [
+                WeatherValue(
+                    location_id="pointer",
+                    provider="p",
+                    dataset_key="d",
+                    weather_domain="weather",
+                    forecast_style=ForecastStyle.OBSERVED,
+                    metric_key="TMP",
+                    target_at=datetime(2026, 1, 1, tzinfo=UTC),
+                    known_at=known_at,
+                    value_number=Decimal(value),
+                    source_record_key=f"pointer-{suffix}",
+                )
+            ]
+        )
+
+    def stored() -> tuple:
+        with repository.engine.connect() as connection:
+            return connection.execute(
+                text(
+                    "SELECT cv.value_id = wv.value_id, "
+                    "       cv.known_at = wv.known_at, "
+                    "       cv.source_record_key = wv.source_record_key "
+                    "FROM weather_current_values cv "
+                    "JOIN weather_values wv ON wv.value_id = cv.value_id "
+                    "WHERE cv.location_id = 'pointer'"
+                )
+            ).one()
+
+    publish("old", datetime(2026, 1, 1, tzinfo=UTC), "1")
+    assert stored() == (True, True, True)
+
+    # A later revision of the same logical point moves the pointer.
+    publish("new", datetime(2026, 1, 2, tzinfo=UTC), "2")
+    assert stored() == (True, True, True), (
+        "the pointer moved but its denormalised sort keys did not follow"
+    )

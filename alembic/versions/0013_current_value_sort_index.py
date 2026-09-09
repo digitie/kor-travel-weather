@@ -11,10 +11,18 @@ transaction.  Sharing a revision with 0012's column adds would commit those
 before the build and leave the database half-applied -- with ``alembic_version``
 still behind -- if the build were interrupted.
 
-The expression must match ``_CURRENT_PREFERENCE_EXPRESSION`` in
-``kortravelweather.repository`` exactly, or PostgreSQL cannot use the index for
-the query's ORDER BY.  The two copies are kept in step by
-``test_create_all_and_alembic_build_identical_marker_indexes``.
+``_PREFERENCE`` below must express the same thing as the query's ORDER BY, or
+PostgreSQL cannot use the index for it and the read goes back to ranking each
+location's whole slice -- silently, with no error to notice.  Two tests hold
+that together, and neither alone is enough:
+``test_create_all_and_alembic_build_identical_marker_indexes`` compares the
+index this revision builds against the one ``create_all`` builds from
+``_CURRENT_PREFERENCE_EXPRESSION``, and
+``test_the_bundle_ordering_is_served_by_its_index`` plans the real statement
+against that index and fails if PostgreSQL has to sort.  The first binds this
+string to the ORM's; the second binds the ORM's to the SQLAlchemy ``case()``
+the query is actually built from, which is not a string and cannot be compared
+to one.
 """
 
 import sqlalchemy as sa
