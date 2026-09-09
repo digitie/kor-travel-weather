@@ -181,6 +181,28 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
 
 
+#: ``WeatherLocation.location_id`` accepts this and nothing else.
+_LOCATION_ID_BODY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+
+
+def safe_location_suffix(code: str | None, *, discriminator: str) -> str:
+    """Turn a provider's station id into something a location_id may contain.
+
+    A station "code" is only a code until it is not.  KHOA's beach index returns
+    the Korean beach name in the id field even though its published catalog uses
+    ``BCH###``, and that reached production as a validation error on the first
+    live run.  So a code is used when it is actually usable and otherwise
+    replaced by a slug plus a digest of the fields that distinguish the station
+    -- names alone collide, and a bare digest is unreadable.
+    """
+    candidate = (code or "").strip()
+    if candidate and _LOCATION_ID_BODY.match(candidate):
+        return candidate
+    slug = re.sub(r"[^0-9A-Za-z]+", "-", candidate.lower()).strip("-")
+    digest = hashlib.sha256(discriminator.encode("utf-8")).hexdigest()[:12]
+    return f"{slug}-{digest}" if slug else digest
+
+
 def jsonable(value: Any) -> Any:
     """Coerce a provider row into values a JSON column can actually hold.
 

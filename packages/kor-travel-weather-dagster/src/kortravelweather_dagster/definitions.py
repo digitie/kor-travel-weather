@@ -20,6 +20,9 @@ from kortravelweather.providers import (
     create_configured_provider,
     redact_secrets,
 )
+from kortravelweather.providers.khoa import KHOA_PROVIDER
+from kortravelweather.providers.krex import KREX_PROVIDER
+from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.settings import WeatherSettings
 
 from .airkorea_weather import run_airkorea_weather_sync
@@ -29,6 +32,7 @@ from .regional_sources import (
     run_khoa_beach_index_sync,
     run_krex_restarea_sync,
     run_krforest_mountain_sync,
+    skipped_when_disabled,
 )
 from .resources import (
     AirKoreaResource,
@@ -369,6 +373,13 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
 )
 def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
+    skipped = skipped_when_disabled(KHOA_PROVIDER, runtime)
+    if skipped is not None:
+        # Before the resource is built: constructing the client is
+        # what demands the credential, and a provider switched off
+        # on purpose must not need one.
+        context.add_output_metadata(skipped)
+        return skipped
     repository = context.resources.weather_repository.create_repository()
     client = context.resources.khoa_client.create_client(
         settings=runtime, repository=repository
@@ -396,6 +407,10 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
 )
 def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
+    skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
+    if skipped is not None:
+        context.add_output_metadata(skipped)
+        return skipped
     repository = context.resources.weather_repository.create_repository()
     result = run_krforest_mountain_sync(
         repository=repository,
@@ -418,6 +433,13 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
 )
 def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
+    skipped = skipped_when_disabled(KREX_PROVIDER, runtime)
+    if skipped is not None:
+        # Before the resource is built: constructing the client is
+        # what demands the credential, and a provider switched off
+        # on purpose must not need one.
+        context.add_output_metadata(skipped)
+        return skipped
     repository = context.resources.weather_repository.create_repository()
     client = context.resources.krex_client.create_client(
         settings=runtime, repository=repository
