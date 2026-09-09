@@ -134,9 +134,27 @@ times a day at most. `KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS` bounds one run;
 a run that hits the value budget cuts between stations, never inside one, and
 reports `values_truncated`.
 
-KHOA and 산림청 authenticate with the shared data.go.kr service key. 한국도로공사
-does not — it needs `KOR_TRAVEL_WEATHER_KREX_API_KEY` (a data.ex.co.kr key), and
-without it that one asset fails while the other two still run.
+Only `python-khoa-api` is enabled by default, and the first live run is why:
+
+- `python-krforest-api`'s single wired endpoint (`mountListSearch`) returns no
+  coordinates at all — the fields are absent from the response, not null — and
+  every reading came back as `"-"`. Nothing can be anchored, so it publishes
+  nothing. The adapter is written and tested and will work the moment the
+  upstream carries coordinates.
+- `python-krex-api` needs a data.ex.co.kr key (`KOR_TRAVEL_WEATHER_KREX_API_KEY`),
+  which is a different key from the shared data.go.kr one and is not a fallback.
+
+Add either to `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS` to turn it on; a provider
+that is not in that list is skipped before its credential is even requested.
+
+KHOA issues a morning and an afternoon outlook for the same date, and they carry
+different values. They are separate facts with target times of 09:00 and 15:00
+KST — dating both at midnight made them one fact with two values, which the
+append-only table refuses.
+
+A run that fetches rows and publishes none reports `produced_nothing` and logs a
+warning. Without it, a source that anchors nothing is indistinguishable from a
+quiet upstream, which is how the krforest problem went unnoticed for three runs.
 
 ## Retention
 

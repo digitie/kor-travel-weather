@@ -437,3 +437,81 @@ def test_a_disabled_asset_skips_before_its_credential_is_needed(monkeypatch) -> 
     )
     result = krex_restarea_sync(context)
     assert result["skipped"] is True
+
+
+def test_the_two_daily_outlooks_are_separate_facts() -> None:
+    """KHOA issues a morning and an afternoon outlook for the same day.
+
+    Both were dated at midnight, which made them one fact with two different
+    wave heights.  The append-only table refused it -- "immutable weather fact
+    충돌" -- and the first live run died there.  Observed values:
+
+        predicted_on=2026-09-09 period='오전' wave=0.2 air=23.1
+        predicted_on=2026-09-09 period='오후' wave=0.1 air=25.3
+    """
+    from datetime import date
+
+    place = _beach(
+        forecasts=(
+            _Forecast(
+                predicted_on=date(2026, 9, 9),
+                forecast_period="오전",
+                max_wave_height_m=0.2,
+                average_water_temperature_c=25.8,
+                average_air_temperature_c=23.1,
+                max_wind_speed_m_s=6.1,
+                open_status="폐장",
+                total_index=None,
+            ),
+            _Forecast(
+                predicted_on=date(2026, 9, 9),
+                forecast_period="오후",
+                max_wave_height_m=0.1,
+                average_water_temperature_c=25.8,
+                average_air_temperature_c=25.3,
+                max_wind_speed_m_s=6.6,
+                open_status="폐장",
+                total_index=None,
+            ),
+        )
+    )
+    values = khoa.beach_index_to_weather_values(
+        place, location_id="khoa-BCH014", source_record_key="s", known_at=KNOWN_AT
+    )
+    waves = [v for v in values if v.metric_key == "WAVE_HEIGHT"]
+    assert len(waves) == 2
+    assert len({v.target_at for v in waves}) == 2, (
+        "morning and afternoon share a target time, so they are the same fact "
+        "with two different values -- which the fact table rejects"
+    )
+    assert sorted(v.target_at.hour for v in waves) == [9, 15]
+    # The identity the repository derives must differ, which is the real claim.
+    assert len({v.identity_key() for v in waves}) == 2
+
+
+def test_a_run_that_publishes_nothing_says_so() -> None:
+    """Silence here is what let a broken source look healthy three times.
+
+    krforest returned 513 stations with no coordinates; every one was dropped,
+    nothing was published, and the run reported success with no signal that
+    distinguished it from a quiet upstream.
+    """
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+
+    empty = publish_regional_records(
+        repository=repository,
+        provider=krforest.KRFOREST_PROVIDER,
+        dataset_key=krforest.KRFOREST_MOUNTAIN_DATASET,
+        records=[_mountain(latitude=None), _mountain(obs_id="M9", longitude=None)],
+        to_location=krforest.station_location,
+        to_values=krforest.mountain_weather_to_weather_values,
+        build_source_record=krforest.mountain_source_record,
+        max_values=1000,
+    )
+    assert empty["records_fetched"] == 2
+    assert empty["values_loaded"] == 0
+    assert empty["produced_nothing"] is True
+
+    healthy = _publish_mountains([_mountain()], max_values=1000)
+    assert healthy["produced_nothing"] is False

@@ -177,8 +177,14 @@ class WeatherSettings(BaseSettings):
             "python-kma-api",
             "python-airkorea-api",
             "python-khoa-api",
-            "python-krforest-api",
-            "python-krex-api",
+            # Off by default, for reasons the first live run established rather
+            # than guesses.  python-krforest-api's only wired endpoint
+            # (mountListSearch) returns no coordinates at all and, at the time
+            # of writing, "-" for every reading, so nothing can be anchored.
+            # python-krex-api authenticates with a data.ex.co.kr key that most
+            # deployments will not have; enabling it by default buys a failing
+            # schedule twice a day.  Both adapters are tested and ready; add the
+            # key to KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS to turn one on.
             "open_meteo",
             "weatherapi",
             "openweathermap",
