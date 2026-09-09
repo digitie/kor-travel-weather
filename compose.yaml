@@ -29,6 +29,7 @@ services:
       dockerfile: deploy/Dockerfile.python
       args:
         INSTALL_DAGSTER: "0"
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
     depends_on:
       db:
@@ -48,7 +49,6 @@ services:
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:14105"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
-      KOR_TRAVEL_WEATHER_GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-container}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
@@ -80,6 +80,7 @@ services:
       dockerfile: deploy/Dockerfile.python
       args:
         INSTALL_DAGSTER: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
     depends_on:
       db:
@@ -149,6 +150,7 @@ services:
       dockerfile: deploy/Dockerfile.python
       args:
         INSTALL_DAGSTER: "0"
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: "no"
     depends_on:
       db:

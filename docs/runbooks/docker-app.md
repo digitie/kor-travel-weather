@@ -13,7 +13,9 @@
    Compose의 API/Dagster는 production profile을 강제로 사용하므로 admin token이
    없으면 기동하지 않는다.
    metrics token은 admin token과 달라야 하며 API Prometheus scrape 전용이다.
-2. `docker compose -f compose.yaml up -d --build`를 실행한다. `migrate` one-shot
+2. `GIT_COMMIT=$(git describe --always --dirty --abbrev=7) docker compose -f compose.yaml up -d --build`를 실행한다.
+   `GIT_COMMIT`은 이미지에 구워져 `/version`이 답하는 값이 된다. 빼먹으면
+   `unknown`이 구워져 아래 스모크 확인이 아무것도 확인하지 못한다. `migrate` one-shot
    서비스가 `alembic upgrade head`를 완료한 뒤 API/Dagster가 시작된다.
 3. migration 복구가 필요하면 `docker compose -f compose.yaml run --rm migrate`를
    별도로 실행하고, `docker compose ... ps`에서 완료 상태를 확인한다.

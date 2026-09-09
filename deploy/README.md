@@ -35,7 +35,7 @@ KMA live
 문자가 포함되어도 DSN URL 파싱을 깨뜨리지 않는다.
 
 ```bash
-docker compose -f compose.yaml up -d --build
+GIT_COMMIT=$(git describe --always --dirty --abbrev=7) docker compose -f compose.yaml up -d --build
 docker compose -f compose.yaml ps
 curl http://127.0.0.1:14101/health
 open http://127.0.0.1:14105
@@ -46,7 +46,7 @@ n150 배포는 다음처럼 gateway가 접근할 LAN 주소를 명시한다. LAN
 HAProxy 호스트에서 오는 `14101`, `14102`, `14105`만 허용한다.
 
 ```bash
-docker compose --env-file .env \
+GIT_COMMIT=$(git describe --always --dirty --abbrev=7) docker compose --env-file .env \
   -f compose.yaml -f deploy/compose.n150.yaml up -d --build
 docker compose --env-file .env \
   -f compose.yaml -f deploy/compose.n150.yaml ps
