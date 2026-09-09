@@ -237,5 +237,20 @@ class SyncRun(BaseModel):
     error: str | None = None
 
 
+class PurgeReport(BaseModel):
+    """What one retention run removed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cutoff: datetime
+    values_deleted: int = 0
+    run_sources_deleted: int = 0
+    sources_deleted: int = 0
+    #: The run stopped at its batch cap with work still to do.  Not an error --
+    #: the next run continues -- but a run that reports this every day is not
+    #: keeping up, and that is invisible from the deleted counts alone.
+    truncated: bool = False
+
+
 def kst_now() -> datetime:
     return datetime.now(KST)

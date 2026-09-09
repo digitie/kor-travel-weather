@@ -107,6 +107,26 @@ with no configured key (for example Open-Meteo and wttr.in) remain keyless;
 keyed providers are skipped with an auditable run result until their admin
 credential is configured.
 
+## Retention
+
+`weather_values` and `weather_source_records` are append-only, which is why a
+published fact can be trusted and also why, left alone, they only grow. The
+Dagster `daily_weather_retention` schedule (03:20 Asia/Seoul, after the hourly
+ingests) deletes history older than `KOR_TRAVEL_WEATHER_RETENTION_DAYS`
+(default 7).
+
+Two things it deliberately does not do. It never deletes a fact the
+current-value projection still points at, so a location that stops reporting
+keeps its last reading however old it is. And it never updates a row — the
+immutability trigger still refuses that, including inside the purge's own
+transaction; the purge opens a `SET LOCAL` permission that applies to `DELETE`
+only and expires with the transaction.
+
+A run stops at `KOR_TRAVEL_WEATHER_RETENTION_MAX_BATCHES` and leaves the rest to
+the next one, reporting `truncated: true` and logging a warning. A run that
+reports it every night means the ingest rate exceeds what the window can hold,
+and the table will keep growing no matter how often the job runs.
+
 The provider catalog currently includes WeatherAPI, OpenWeatherMap, Open-Meteo,
 Visual Crossing, Tomorrow.io, Weatherbit, Weatherstack, AccuWeather, and
 wttr.in. KMA weather warnings are stored as `kma_weather_alerts` facts and are

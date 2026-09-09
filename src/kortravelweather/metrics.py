@@ -323,6 +323,16 @@ SYNC_STALE_RECOVERED = Counter(
     "Running sync rows recovered after a worker interruption.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
+HISTORY_PURGED_VALUES = Counter(
+    "ktw_history_purged_values_total",
+    "Weather facts deleted by the retention purge.",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+HISTORY_PURGED_SOURCES = Counter(
+    "ktw_history_purged_sources_total",
+    "Source records deleted by the retention purge.",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 METRIC_ERRORS = Counter(
     "ktw_metrics_errors_total",
     "Instrumentation errors swallowed to keep the data path healthy.",
@@ -548,6 +558,17 @@ def observe_sync_finished(
 def observe_stale_recovered(count: int) -> None:
     if count > 0:
         _safe("sync_stale", lambda: SYNC_STALE_RECOVERED.inc(max(0, count)))
+
+
+def observe_history_purged(values: int, sources: int) -> None:
+    def update() -> None:
+        if values > 0:
+            HISTORY_PURGED_VALUES.inc(values)
+        if sources > 0:
+            HISTORY_PURGED_SOURCES.inc(sources)
+
+    if values > 0 or sources > 0:
+        _safe("history_purged", update)
 
 
 def metrics_payload() -> bytes:

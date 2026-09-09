@@ -51,8 +51,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from sqlalchemy.types import TypeDecorator
 
 from .alerts import ALERT_MAX_AGE, active_alert_values
-from .metrics import observe_stale_recovered, observe_sync_finished, observe_sync_started
-from .models import SyncRun, WeatherLocation, WeatherValue, kst_now
+from .metrics import (
+    observe_history_purged,
+    observe_stale_recovered,
+    observe_sync_finished,
+    observe_sync_started,
+)
+from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .settings import WeatherSettings, get_settings
 
 
@@ -565,19 +570,43 @@ def _metric_source_key(value: WeatherValue) -> str:
     return "sr_local_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
 
 
+#: Transaction-local opt-in that lets retention delete expired history.
+#:
+#: History is append-only because a fact must never be quietly rewritten, and
+#: that is why the trigger exists.  Ageing rows out is a different operation: it
+#: removes whole rows that are past the retention window, and it never alters a
+#: row that stays.  Rather than dropping the trigger for the duration -- which
+#: would open UPDATE as well, on every session, for as long as the purge runs --
+#: the guard reads a setting that only the purge sets, only for DELETE, and only
+#: inside its own transaction.  ``SET LOCAL`` means an error or a rollback takes
+#: the permission with it.
+PURGE_GUC = "kortravelweather.purge"
+
+#: Kept as one string because both schema paths must install it byte-identically
+#: -- ``create_schema`` here and the alembic revision -- and
+#: ``test_alembic_postgresql_schema_has_shared_safety_contract`` compares them.
+IMMUTABLE_ROW_FUNCTION_SQL = f"""
+CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
+LANGUAGE plpgsql AS $$ BEGIN
+  IF TG_OP = 'DELETE'
+     AND current_setting('{PURGE_GUC}', true) = 'on' THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION '% is immutable', TG_TABLE_NAME;
+END; $$;
+"""
+
+
 def install_immutability_triggers(engine: Engine) -> None:
     """Block direct UPDATE/DELETE of source and weather fact history."""
     if engine.dialect.name != "postgresql":
         raise RuntimeError("weather repository는 PostgreSQL만 지원합니다.")
     with engine.begin() as connection:
-        connection.exec_driver_sql(
-            """
-            CREATE OR REPLACE FUNCTION weather_immutable_row() RETURNS trigger
-            LANGUAGE plpgsql AS $$ BEGIN
-              RAISE EXCEPTION '%% is immutable', TG_TABLE_NAME;
-            END; $$;
-            """
-        )
+        # Not ``exec_driver_sql``: psycopg reads ``%`` in a driver-level string
+        # as a placeholder, and the function body needs a literal one for
+        # ``RAISE``.  Going through ``text()`` with no parameters keeps the body
+        # byte-identical to the alembic revision's, which a test asserts.
+        connection.execute(text(IMMUTABLE_ROW_FUNCTION_SQL))
         for table in ("weather_source_records", "weather_values"):
             connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
             connection.exec_driver_sql(
@@ -2285,6 +2314,109 @@ class WeatherRepository:
         for row in stale_rows[:recovered]:
             observe_sync_finished(row.provider, row.dataset_key, status="failed")
         return recovered
+
+    def purge_expired_history(
+        self, *, retention_days: int, batch_rows: int = 20_000, max_batches: int = 500
+    ) -> PurgeReport:
+        """Delete fact and source history older than ``retention_days``.
+
+        Deletes in batches inside one advisory-locked scope so two schedules --
+        or a schedule and an operator -- cannot interleave.  The batching is not
+        for speed; it is so a run that cannot keep up stops at a known point
+        instead of holding locks on the whole table until it is killed.
+
+        A fact the current-value projection still points at is never deleted,
+        however old it is.  That is what keeps a location that stopped
+        reporting from losing its last reading, and it is also why the
+        projection's ``ON DELETE RESTRICT`` never fires here.
+        """
+        if retention_days <= 0:
+            raise ValueError("retention_days는 1 이상이어야 합니다.")
+        cutoff = kst_now() - timedelta(days=retention_days)
+        truncated = False
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
+            )
+            # Only for this transaction, and only DELETE: see PURGE_GUC.
+            session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+            values_deleted, values_capped = self._purge_in_batches(
+                session,
+                "DELETE FROM weather_values WHERE value_id IN ("
+                "  SELECT wv.value_id FROM weather_values wv"
+                "  WHERE wv.known_at < :cutoff"
+                "    AND NOT EXISTS ("
+                "      SELECT 1 FROM weather_current_values cv"
+                "      WHERE cv.value_id = wv.value_id)"
+                "  LIMIT :batch)",
+                cutoff=cutoff,
+                batch_rows=batch_rows,
+                max_batches=max_batches,
+            )
+            # Run links first: they hold a RESTRICT reference to the source
+            # records the next statement removes.
+            run_sources_deleted, links_capped = self._purge_in_batches(
+                session,
+                "DELETE FROM weather_sync_run_sources WHERE source_record_key IN ("
+                "  SELECT sr.source_record_key FROM weather_source_records sr"
+                "  WHERE sr.fetched_at < :cutoff"
+                "    AND NOT EXISTS ("
+                "      SELECT 1 FROM weather_values wv"
+                "      WHERE wv.source_record_key = sr.source_record_key)"
+                "  LIMIT :batch)",
+                cutoff=cutoff,
+                batch_rows=batch_rows,
+                max_batches=max_batches,
+            )
+            sources_deleted, sources_capped = self._purge_in_batches(
+                session,
+                "DELETE FROM weather_source_records WHERE source_record_key IN ("
+                "  SELECT sr.source_record_key FROM weather_source_records sr"
+                "  WHERE sr.fetched_at < :cutoff"
+                "    AND NOT EXISTS ("
+                "      SELECT 1 FROM weather_values wv"
+                "      WHERE wv.source_record_key = sr.source_record_key)"
+                "    AND NOT EXISTS ("
+                "      SELECT 1 FROM weather_sync_run_sources rs"
+                "      WHERE rs.source_record_key = sr.source_record_key)"
+                "  LIMIT :batch)",
+                cutoff=cutoff,
+                batch_rows=batch_rows,
+                max_batches=max_batches,
+            )
+            truncated = values_capped or links_capped or sources_capped
+        report = PurgeReport(
+            cutoff=cutoff,
+            values_deleted=values_deleted,
+            run_sources_deleted=run_sources_deleted,
+            sources_deleted=sources_deleted,
+            truncated=truncated,
+        )
+        observe_history_purged(report.values_deleted, report.sources_deleted)
+        return report
+
+    @staticmethod
+    def _purge_in_batches(
+        session: Session,
+        statement: str,
+        *,
+        cutoff: datetime,
+        batch_rows: int,
+        max_batches: int,
+    ) -> tuple[int, bool]:
+        deleted = 0
+        for _ in range(max_batches):
+            result = session.execute(
+                text(statement), {"cutoff": cutoff, "batch": batch_rows}
+            )
+            rows = int(result.rowcount or 0)
+            deleted += rows
+            if rows == 0:
+                return deleted, False
+        # Hitting the cap is not an error -- the next run continues where this
+        # one stopped -- but it has to be reported, or a purge that never
+        # catches up is indistinguishable from one with nothing left to do.
+        return deleted, True
 
     def heartbeat_sync_run(self, run_id: str) -> bool:
         """Refresh a running sync lease using an atomic status check."""

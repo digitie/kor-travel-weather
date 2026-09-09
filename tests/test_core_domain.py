@@ -726,3 +726,202 @@ def test_projection_sort_keys_move_with_the_pointer() -> None:
     assert stored() == (True, True, True), (
         "the pointer moved but its denormalised sort keys did not follow"
     )
+
+
+def _seed_history(repository: WeatherRepository, suffix: str, known_at: datetime) -> str:
+    """Publish one fact as its own logical point and return its source key."""
+    source_key = f"retention-{suffix}"
+    repository.record_source(
+        source_record_key=source_key,
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id="retention",
+        payload={"rows": [], "revision": suffix},
+    )
+    repository.upsert_values(
+        [
+            WeatherValue(
+                location_id="retention",
+                provider="p",
+                dataset_key="d",
+                weather_domain="weather",
+                forecast_style=ForecastStyle.OBSERVED,
+                # A distinct metric per revision keeps these separate logical
+                # points, so the projection pins each one rather than only the
+                # newest.
+                metric_key=f"M{suffix}",
+                target_at=datetime(2026, 1, 1, tzinfo=UTC),
+                known_at=known_at,
+                value_number=Decimal(1),
+                source_record_key=source_key,
+            )
+        ]
+    )
+    return source_key
+
+
+def _age_history(repository: WeatherRepository, source_key: str, known_at: datetime) -> None:
+    """Move a published fact into the past.
+
+    The immutability trigger refuses UPDATE, so the ageing has to disable it --
+    which is also a small proof that the trigger still refuses everything except
+    the purge's own DELETE.
+    """
+    with repository.engine.begin() as connection:
+        for table, column in (
+            ("weather_values", "known_at"),
+            ("weather_source_records", "fetched_at"),
+        ):
+            connection.execute(text(f"ALTER TABLE {table} DISABLE TRIGGER USER"))
+            connection.execute(
+                text(
+                    f"UPDATE {table} SET {column} = :at WHERE source_record_key = :key"
+                ),
+                {"at": known_at, "key": source_key},
+            )
+            connection.execute(text(f"ALTER TABLE {table} ENABLE TRIGGER USER"))
+
+
+def _retention_repository() -> WeatherRepository:
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    repository.upsert_location(
+        WeatherLocation(location_id="retention", name="보존", latitude=37.5, longitude=127.0)
+    )
+    return repository
+
+
+def test_history_older_than_the_retention_window_is_purged() -> None:
+    """Age decides, and only age.
+
+    ``recent`` is the row that makes the cutoff load-bearing.  Without it every
+    surviving fact is one the projection pins, so the purge would pass this test
+    just as well with no date predicate at all -- a mutation that widened the
+    window by 400 days did exactly that and went unnoticed.
+    """
+    repository = _retention_repository()
+    now = datetime.now(KST)
+    pinned = _seed_history(repository, "pinned", now)
+    recent = _seed_history(repository, "recent", now)
+    stale = _seed_history(repository, "stale", now)
+    _age_history(repository, stale, now - timedelta(days=30))
+    # The projection pins the newest fact of every logical point and a pinned
+    # fact is never deleted, so drop two pointers: that is what those rows look
+    # like once a newer revision of the same logical point exists.  ``recent``
+    # is then inside the window and unpinned; only the cutoff can spare it.
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text(
+                "DELETE FROM weather_current_values "
+                "WHERE metric_key IN ('Mstale', 'Mrecent')"
+            )
+        )
+
+    report = repository.purge_expired_history(retention_days=7)
+
+    assert report.values_deleted == 1
+    assert report.sources_deleted == 1
+    assert report.truncated is False
+    with repository.engine.connect() as connection:
+        remaining = sorted(
+            connection.execute(
+                text("SELECT source_record_key FROM weather_values")
+            ).scalars()
+        )
+        sources = sorted(
+            connection.execute(
+                text("SELECT source_record_key FROM weather_source_records")
+            ).scalars()
+        )
+    assert remaining == sorted([pinned, recent]), (
+        f"expected only {stale} to go; the cutoff is not deciding what survives"
+    )
+    assert sources == sorted([pinned, recent])
+
+
+def test_purge_never_deletes_a_fact_the_projection_still_points_at() -> None:
+    """A location that stopped reporting must keep its last reading.
+
+    The projection's foreign key is ON DELETE RESTRICT, so deleting a pinned
+    fact would not corrupt anything -- it would raise, and the nightly job would
+    then fail every night for as long as any location stayed quiet past the
+    window.  Age alone makes this reachable; no operator action is involved.
+    """
+    repository = _retention_repository()
+    source_key = _seed_history(repository, "quiet", datetime.now(KST))
+    _age_history(repository, source_key, datetime.now(KST) - timedelta(days=400))
+
+    report = repository.purge_expired_history(retention_days=7)
+
+    assert report.values_deleted == 0, (
+        "the purge deleted the fact its own projection pointer names"
+    )
+    with repository.engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT count(*) FROM weather_values")).scalar_one() == 1
+        )
+
+
+def test_history_stays_immutable_outside_the_purge() -> None:
+    """The escape hatch opens for one transaction, for DELETE, and no further."""
+    repository = _retention_repository()
+    _seed_history(repository, "kept", datetime.now(KST))
+
+    with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
+        connection.execute(text("DELETE FROM weather_values"))
+    with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
+        connection.execute(text("UPDATE weather_values SET value_number = 2"))
+    # Asking for the purge permission must not also open UPDATE.
+    with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
+        connection.execute(text("SET LOCAL kortravelweather.purge = 'on'"))
+        connection.execute(text("UPDATE weather_values SET value_number = 2"))
+    with repository.engine.connect() as connection:
+        assert (
+            connection.execute(text("SELECT count(*) FROM weather_values")).scalar_one() == 1
+        )
+
+
+def test_the_purge_permission_does_not_outlive_the_purge() -> None:
+    """A real purge must leave the tables as locked as it found them.
+
+    The permission is granted with ``SET LOCAL``, which expires with the
+    transaction.  Plain ``SET`` would look identical here -- same purge, same
+    result -- while quietly leaving DELETE open on a pooled connection for
+    everything that borrowed it afterwards, which on a long-lived API process is
+    every request.  So the check has to come *after* a purge that really ran,
+    on the same engine, not after a transaction that merely set the flag.
+    """
+    repository = _retention_repository()
+    old = datetime.now(KST) - timedelta(days=30)
+    _age_history(repository, _seed_history(repository, "gone", datetime.now(KST)), old)
+    with repository.engine.begin() as connection:
+        connection.execute(text("DELETE FROM weather_current_values"))
+
+    assert repository.purge_expired_history(retention_days=7).values_deleted == 1
+
+    _seed_history(repository, "after", datetime.now(KST))
+    with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
+        connection.execute(text("DELETE FROM weather_values"))
+
+
+def test_purge_reports_when_it_stops_short_of_the_backlog() -> None:
+    """Hitting the cap has to be visible; the deleted count cannot say it."""
+    repository = _retention_repository()
+    old = datetime.now(KST) - timedelta(days=30)
+    for index in range(3):
+        _age_history(
+            repository, _seed_history(repository, f"old{index}", datetime.now(KST)), old
+        )
+    with repository.engine.begin() as connection:
+        connection.execute(text("DELETE FROM weather_current_values"))
+
+    report = repository.purge_expired_history(
+        retention_days=7, batch_rows=1, max_batches=2
+    )
+
+    assert report.values_deleted == 2, "the cap should bound the run, not end it"
+    assert report.truncated is True, (
+        "the run stopped with a backlog and said nothing; a purge that never "
+        "catches up then looks exactly like one with no work to do"
+    )
