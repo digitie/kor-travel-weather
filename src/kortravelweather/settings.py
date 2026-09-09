@@ -211,6 +211,21 @@ class WeatherSettings(BaseSettings):
         gt=0,
         le=256 * 1024 * 1024,
     )
+    retention_days: int = Field(
+        default=7,
+        validation_alias="KOR_TRAVEL_WEATHER_RETENTION_DAYS",
+        gt=0,
+        le=3650,
+    )
+    #: A run that would delete more than this stops and leaves the rest to the
+    #: next one.  The daily job is not the place to discover that the disk
+    #: cannot take a month of accumulated history in one transaction.
+    retention_max_batches: int = Field(
+        default=500,
+        validation_alias="KOR_TRAVEL_WEATHER_RETENTION_MAX_BATCHES",
+        gt=0,
+        le=100_000,
+    )
     metrics_port: int | None = Field(
         default=None,
         validation_alias="KOR_TRAVEL_WEATHER_METRICS_PORT",

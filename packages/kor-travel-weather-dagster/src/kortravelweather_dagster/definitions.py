@@ -31,6 +31,7 @@ from .resources import (
     KmaClientResource,
     WeatherRepositoryResource,
 )
+from .retention import run_weather_retention_purge
 
 logger = logging.getLogger(__name__)
 
@@ -353,12 +354,51 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     return result
 
 
+@asset(
+    name="weather_retention_purge",
+    required_resource_keys={"weather_repository"},
+    description="보존 기간이 지난 fact/source 이력을 매일 정리한다.",
+)
+def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]:
+    runtime = WeatherSettings()
+    repository = context.resources.weather_repository.create_repository()
+    result = run_weather_retention_purge(
+        repository=repository,
+        retention_days=runtime.retention_days,
+        max_batches=runtime.retention_max_batches,
+    )
+    if result["truncated"]:
+        # Deleted counts alone cannot tell "nothing was due" from "gave up with
+        # a backlog", and only the second one means the table keeps growing.
+        context.log.warning(
+            "retention purge stopped at its batch cap with work remaining; "
+            "the ingest rate may exceed what a %s-day window can hold",
+            result["retention_days"],
+        )
+    context.add_output_metadata(result)
+    return result
+
+
+#: Every asset, named once.  Each ``_resolve_*`` below builds a throwaway
+#: ``Definitions`` to resolve its job against, and each needs the *whole* graph.
+#: When this was four hand-copied lists, adding an asset meant remembering all
+#: four -- and a resolution site that missed one still worked, silently.
+_ASSETS = [
+    kma_weather_sync,
+    airkorea_weather_sync,
+    external_weather_sync,
+    weather_retention_purge,
+]
+
 _unresolved_weather_job = define_asset_job("kma_weather_job", selection=[kma_weather_sync])
 _unresolved_airkorea_job = define_asset_job(
     "airkorea_weather_job", selection=[airkorea_weather_sync]
 )
 _unresolved_external_job = define_asset_job(
     "external_weather_job", selection=[external_weather_sync]
+)
+_unresolved_retention_job = define_asset_job(
+    "weather_retention_job", selection=[weather_retention_purge]
 )
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
@@ -375,7 +415,7 @@ _resources = {
 def _resolve_weather_job():
     """Resolve the asset job without exposing a second module-level Definitions."""
     asset_defs = Definitions(
-        assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+        assets=_ASSETS,
         resources=_resources,
     )
     return _unresolved_weather_job.resolve(
@@ -389,7 +429,7 @@ weather_job = _resolve_weather_job()
 
 def _resolve_airkorea_job():
     asset_defs = Definitions(
-        assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+        assets=_ASSETS,
         resources=_resources,
     )
     return _unresolved_airkorea_job.resolve(
@@ -403,7 +443,7 @@ airkorea_job = _resolve_airkorea_job()
 
 def _resolve_external_job():
     asset_defs = Definitions(
-        assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
+        assets=_ASSETS,
         resources=_resources,
     )
     return _unresolved_external_job.resolve(
@@ -413,6 +453,20 @@ def _resolve_external_job():
 
 
 external_weather_job = _resolve_external_job()
+
+
+def _resolve_retention_job():
+    asset_defs = Definitions(
+        assets=_ASSETS,
+        resources=_resources,
+    )
+    return _unresolved_retention_job.resolve(
+        asset_defs.resolve_asset_graph(),
+        resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
+    )
+
+
+weather_retention_job = _resolve_retention_job()
 
 hourly_kma_weather_schedule = ScheduleDefinition(
     name="hourly_kma_weather",
@@ -439,13 +493,25 @@ hourly_external_weather_schedule = ScheduleDefinition(
 )
 
 
+# 03:20 KST: the ingest schedules fire at :00, :10 and :15 of every hour, and
+# the purge holds row locks on what it deletes, so it must not land on one.
+daily_weather_retention_schedule = ScheduleDefinition(
+    name="daily_weather_retention",
+    cron_schedule="20 3 * * *",
+    job=weather_retention_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+
 defs = Definitions(
-    assets=[kma_weather_sync, airkorea_weather_sync, external_weather_sync],
-    jobs=[weather_job, airkorea_job, external_weather_job],
+    assets=_ASSETS,
+    jobs=[weather_job, airkorea_job, external_weather_job, weather_retention_job],
     schedules=[
         hourly_kma_weather_schedule,
         hourly_airkorea_weather_schedule,
         hourly_external_weather_schedule,
+        daily_weather_retention_schedule,
     ],
     resources=_resources,
 )
