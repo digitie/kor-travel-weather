@@ -318,3 +318,48 @@ def test_publish_cuts_between_stations_and_reports_the_cut() -> None:
     assert too_small["values_loaded"] == 0
     assert too_small["source_records"] == 0
     assert too_small["values_truncated"] is True
+
+
+def test_a_provider_removed_from_the_enabled_list_is_not_collected() -> None:
+    """The operator's list has to actually disable something.
+
+    These assets run on a schedule rather than through the external-provider
+    factory, so nothing consulted `enabled_providers` for them.  A list named
+    "enabled providers" that silently keeps collecting is worse than no list --
+    an operator who removes a source and sees data keep arriving has no way to
+    tell the switch from a no-op.
+    """
+    from kortravelweather_dagster.regional_sources import skipped_when_disabled
+
+    from kortravelweather.settings import WeatherSettings
+
+    off = WeatherSettings.model_construct(enabled_providers=["python-kma-api"])
+    result = skipped_when_disabled(krforest.KRFOREST_PROVIDER, off)
+    assert result is not None
+    assert result["skipped"] is True
+    assert result["values_loaded"] == 0
+
+    on = WeatherSettings.model_construct(
+        enabled_providers=["python-kma-api", krforest.KRFOREST_PROVIDER]
+    )
+    assert skipped_when_disabled(krforest.KRFOREST_PROVIDER, on) is None
+
+
+def test_a_disabled_provider_is_skipped_before_any_request_is_made() -> None:
+    """Skipping after the fetch would still spend the quota it was meant to save."""
+    from kortravelweather_dagster.regional_sources import run_khoa_beach_index_sync
+
+    from kortravelweather.settings import WeatherSettings
+
+    class _ExplodingClient:
+        def beach_index(self, **_: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("the provider was called despite being disabled")
+
+    result = run_khoa_beach_index_sync(
+        repository=None,  # type: ignore[arg-type]
+        client=_ExplodingClient(),
+        max_places=10,
+        max_values=10,
+        settings=WeatherSettings.model_construct(enabled_providers=[]),
+    )
+    assert result["skipped"] is True

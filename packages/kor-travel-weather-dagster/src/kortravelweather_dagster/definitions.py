@@ -379,6 +379,7 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
             client=client,
             max_places=runtime.regional_max_records,
             max_values=runtime.max_values_per_run,
+            settings=runtime,
         )
         context.add_output_metadata(result)
         return result
@@ -403,6 +404,7 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
         ),
         max_records=runtime.regional_max_records,
         max_values=runtime.max_values_per_run,
+        settings=runtime,
         timeout=runtime.provider_http_timeout_seconds,
     )
     context.add_output_metadata(result)
@@ -426,6 +428,7 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
             client=client,
             max_records=runtime.regional_max_records,
             max_values=runtime.max_values_per_run,
+            settings=runtime,
         )
         context.add_output_metadata(result)
         return result
