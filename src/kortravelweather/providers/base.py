@@ -14,7 +14,11 @@ import time
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
+
+# ``time`` the module is already imported above; alias the class so the two
+# never collide.
+from datetime import UTC, date, datetime, tzinfo
+from datetime import time as time_of_day
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
@@ -175,6 +179,27 @@ def decimal_value(value: Any) -> Decimal | None:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def jsonable(value: Any) -> Any:
+    """Coerce a provider row into values a JSON column can actually hold.
+
+    Library models hand back ``datetime`` and ``Decimal`` inside ``raw``.  The
+    lineage digest tolerates them -- ``_canonical_json`` falls back to ``str``
+    -- but the payload column does not, and finding that out at publish time is
+    one statement into a run that has already fetched everything.
+    """
+    if isinstance(value, Mapping):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(item) for item in value]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime, date, time_of_day)):
+        return value.isoformat()
+    return str(value)
 
 
 def source_record_key(

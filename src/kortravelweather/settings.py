@@ -16,9 +16,16 @@ from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+#: Duplicates the keys in ``providers.catalog.PROVIDER_CATALOG``, which cannot
+#: be imported here: ``providers/__init__`` pulls in the factory, and the
+#: factory imports this module.  ``test_provider_registries_agree`` fails if the
+#: two ever drift, along with the credential map in ``provider_api_key``.
 SUPPORTED_PROVIDER_KEYS = {
     "python-kma-api",
     "python-airkorea-api",
+    "python-khoa-api",
+    "python-krforest-api",
+    "python-krex-api",
     "weatherapi",
     "openweathermap",
     "open_meteo",
@@ -98,6 +105,15 @@ class WeatherSettings(BaseSettings):
             "KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY",
         ),
     )
+    # 한국도로공사만 data.ex.co.kr 키를 쓴다. data.go.kr 키로는 인증되지 않으므로
+    # 공유 키로 fallback 하지 않는다 -- 그랬다면 매 실행이 401로 실패한다.
+    krex_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "KOR_TRAVEL_WEATHER_KREX_API_KEY",
+            "KEX_EX_API_KEY",
+        ),
+    )
     weatherapi_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -160,6 +176,9 @@ class WeatherSettings(BaseSettings):
         default_factory=lambda: [
             "python-kma-api",
             "python-airkorea-api",
+            "python-khoa-api",
+            "python-krforest-api",
+            "python-krex-api",
             "open_meteo",
             "weatherapi",
             "openweathermap",
@@ -210,6 +229,14 @@ class WeatherSettings(BaseSettings):
         validation_alias="KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN",
         gt=0,
         le=256 * 1024 * 1024,
+    )
+    # 전국 관측망(해양·산악·고속도로)은 한 번의 호출이 전국을 돌려주므로
+    # location 예산이 아니라 record 예산으로 제한한다.
+    regional_max_records: int = Field(
+        default=1000,
+        validation_alias="KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS",
+        gt=0,
+        le=20_000,
     )
     retention_days: int = Field(
         default=7,
@@ -328,6 +355,7 @@ class WeatherSettings(BaseSettings):
         "metrics_token",
         "data_go_kr_service_key",
         "airkorea_api_key",
+        "krex_api_key",
         "weatherapi_api_key",
         "openweathermap_api_key",
         "visual_crossing_api_key",
@@ -426,6 +454,9 @@ class WeatherSettings(BaseSettings):
         fields = {
             "python-kma-api": "data_go_kr_service_key",
             "python-airkorea-api": "airkorea_api_key",
+            "python-khoa-api": "data_go_kr_service_key",
+            "python-krforest-api": "data_go_kr_service_key",
+            "python-krex-api": "krex_api_key",
             "weatherapi": "weatherapi_api_key",
             "openweathermap": "openweathermap_api_key",
             "visual_crossing": "visual_crossing_api_key",

@@ -107,6 +107,37 @@ with no configured key (for example Open-Meteo and wttr.in) remain keyless;
 keyed providers are skipped with an auditable run result until their admin
 credential is configured.
 
+## Regional observation networks
+
+Three sources are collected on their own schedule, `twice_daily_regional_weather`
+(05:30 and 17:30 Asia/Seoul):
+
+| Provider | Dataset | What |
+| --- | --- | --- |
+| `python-khoa-api` | `khoa_beach_index` | 해수욕장별 파고·수온·기온·풍속 일별 **예보** |
+| `python-krforest-api` | `krforest_mountain_weather` | 산악관측소 기온·습도·기압·강수·지면온도·풍향풍속 관측 |
+| `python-krex-api` | `krex_restarea_weather` | 고속도로 휴게소 기온·습도·풍속·강수·적설·이슬점 관측 |
+
+They differ from the hourly providers in shape: one call returns every station
+in the country and each row carries its own coordinates, so there is no station
+catalog to refresh and no per-location fan-out. Anchors are created insert-only
+under the `khoa-`, `krforest-` and `krex-` id prefixes, so an administrator can
+disable one without the next run restoring it.
+
+The KHOA rows are recorded as forecasts (`forecast_style=short`), not
+observations — they are next-day outlooks, and filing them as current readings
+would make a bundle present tomorrow's wave height as the present sea state.
+
+They run twice a day rather than hourly because the hourly path already
+produces roughly three million facts a day and these sources publish a few
+times a day at most. `KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS` bounds one run;
+a run that hits the value budget cuts between stations, never inside one, and
+reports `values_truncated`.
+
+KHOA and 산림청 authenticate with the shared data.go.kr service key. 한국도로공사
+does not — it needs `KOR_TRAVEL_WEATHER_KREX_API_KEY` (a data.ex.co.kr key), and
+without it that one asset fails while the other two still run.
+
 ## Retention
 
 `weather_values` and `weather_source_records` are append-only, which is why a

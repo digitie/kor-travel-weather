@@ -52,6 +52,55 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         ),
     ),
     ProviderSpec(
+        "python-khoa-api",
+        "국립해양조사원 해수욕장",
+        True,
+        "data_go_kr_service_key",
+        "https://apis.data.go.kr/1192136",
+        (
+            DatasetSpec(
+                "khoa_beach_index",
+                "해수욕장 해양지수",
+                "해수욕장별 파고·수온·기온·풍속 일별 예보",
+                "/beachIndex",
+                "일별",
+                True,
+            ),
+        ),
+    ),
+    ProviderSpec(
+        "python-krforest-api",
+        "산림청 산악기상",
+        True,
+        "data_go_kr_service_key",
+        "https://apis.data.go.kr/1400377",
+        (
+            DatasetSpec(
+                "krforest_mountain_weather",
+                "산악기상관측",
+                "산악관측소 기온·습도·기압·강수·풍향풍속 관측값",
+                "/mtweather/mountListSearch",
+                "시간별",
+            ),
+        ),
+    ),
+    ProviderSpec(
+        "python-krex-api",
+        "한국도로공사 휴게소",
+        True,
+        "krex_api_key",
+        "https://data.ex.co.kr",
+        (
+            DatasetSpec(
+                "krex_restarea_weather",
+                "휴게소 기상",
+                "고속도로 휴게소 기온·습도·풍속·강수·적설 관측값",
+                "/openapi/restinfo/restWeatherList",
+                "시간별",
+            ),
+        ),
+    ),
+    ProviderSpec(
         "python-airkorea-api",
         "AirKorea 측정소",
         True,
