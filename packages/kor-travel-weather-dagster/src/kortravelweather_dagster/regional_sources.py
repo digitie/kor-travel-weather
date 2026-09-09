@@ -49,6 +49,31 @@ from kortravelweather.providers.krforest import (
     station_location as mountain_station_location,
 )
 from kortravelweather.repository import WeatherRepository
+from kortravelweather.settings import WeatherSettings
+
+
+def skipped_when_disabled(provider: str, settings: WeatherSettings) -> dict[str, Any] | None:
+    """Return a skip result when the operator has not enabled this provider.
+
+    The dedicated Korean-source assets historically ran on their schedule alone
+    and ignored ``enabled_providers``, which only gated the external HTTP
+    adapters.  These three appear in that list, so an operator who removes one
+    expects collection to stop -- a list called "enabled providers" that does
+    not disable anything is worse than no list.
+
+    Skipping is reported rather than raising: a provider that is off on purpose
+    is not a failed run, and a red schedule every twelve hours trains people to
+    ignore it.
+    """
+    if provider in settings.enabled_providers:
+        return None
+    return {
+        "provider": provider,
+        "skipped": True,
+        "reason": "provider가 KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS에 없습니다.",
+        "records_fetched": 0,
+        "values_loaded": 0,
+    }
 
 
 def publish_regional_records(
@@ -158,8 +183,16 @@ def publish_regional_records(
 
 
 def run_khoa_beach_index_sync(
-    *, repository: WeatherRepository, client: Any, max_places: int, max_values: int
+    *,
+    repository: WeatherRepository,
+    client: Any,
+    max_places: int,
+    max_values: int,
+    settings: WeatherSettings | None = None,
 ) -> dict[str, Any]:
+    skipped = skipped_when_disabled(KHOA_PROVIDER, settings or WeatherSettings())
+    if skipped is not None:
+        return skipped
     with provider_request(KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET):
         places = fetch_beach_index(client, max_places=max_places)
     return publish_regional_records(
@@ -181,7 +214,11 @@ def run_krforest_mountain_sync(
     max_records: int,
     max_values: int,
     timeout: float | None = None,
+    settings: WeatherSettings | None = None,
 ) -> dict[str, Any]:
+    skipped = skipped_when_disabled(KRFOREST_PROVIDER, settings or WeatherSettings())
+    if skipped is not None:
+        return skipped
     with provider_request(KRFOREST_PROVIDER, KRFOREST_MOUNTAIN_DATASET):
         records = fetch_mountain_weather(
             api_key=api_key, max_records=max_records, timeout=timeout
@@ -205,7 +242,11 @@ def run_krex_restarea_sync(
     max_records: int,
     max_values: int,
     lookback_hours: int = 24,
+    settings: WeatherSettings | None = None,
 ) -> dict[str, Any]:
+    skipped = skipped_when_disabled(KREX_PROVIDER, settings or WeatherSettings())
+    if skipped is not None:
+        return skipped
     with provider_request(KREX_PROVIDER, KREX_RESTAREA_DATASET):
         records = fetch_restarea_weather(
             client, max_records=max_records, lookback_hours=lookback_hours
