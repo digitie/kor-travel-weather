@@ -144,7 +144,7 @@ without it that one asset fails while the other two still run.
 published fact can be trusted and also why, left alone, they only grow. The
 Dagster `daily_weather_retention` schedule (03:20 Asia/Seoul, after the hourly
 ingests) deletes history older than `KOR_TRAVEL_WEATHER_RETENTION_DAYS`
-(default 7).
+(default 2).
 
 Two things it deliberately does not do. It never deletes a fact the
 current-value projection still points at, so a location that stops reporting
