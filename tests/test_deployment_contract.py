@@ -352,3 +352,37 @@ def test_the_application_reads_the_name_the_image_bakes(monkeypatch) -> None:
 
     monkeypatch.delenv(COMMIT_ENV, raising=False)
     assert WeatherSettings(_env_file=None).git_commit is None
+
+
+def test_every_provider_credential_reaches_the_containers() -> None:
+    """A setting the app reads is useless if compose does not pass it in.
+
+    Compose forwards only what a service names in ``environment``, so adding a
+    credential field to settings is two changes, in two files, and nothing
+    connected them. The gap is silent in exactly the wrong way: the deployment
+    has the key in ``.env``, the container does not, and the run fails with
+    "credential이 설정되지 않았습니다" -- which reads like a missing key rather
+    than a missing wire. That is what happened to `python-krex-api` on its
+    first enabled run.
+    """
+    from kortravelweather.providers import PROVIDER_CATALOG
+
+    required = {
+        f"KOR_TRAVEL_WEATHER_{spec.credential_field.upper()}"
+        for spec in PROVIDER_CATALOG
+        if spec.auth_required and spec.credential_field
+    }
+    # KMA is built by the Dagster resource from the shared data.go.kr key, and
+    # the two run in these services; anything else that authenticates has to be
+    # reachable from both.
+    for service_name in ("api", "dagster"):
+        names: set[str] = set()
+        for path in COMPOSE_FILES:
+            service = (_load(path).get("services") or {}).get(service_name)
+            if service:
+                names |= _environment_names(service)
+        missing = sorted(required - names)
+        assert not missing, (
+            f"{service_name} does not receive {missing}; the setting exists and "
+            "the deployment can set it, but the container never sees it"
+        )

@@ -41,7 +41,7 @@ import sqlalchemy as sa
 
 from alembic import op
 from kortravelweather.partitions import (
-    DEFAULT_PARTITION,
+    VALUES_TABLE,
     ensure_default_partition,
     ensure_partitions,
 )
@@ -290,4 +290,8 @@ def _install_triggers(bind: sa.engine.Connection) -> None:
             "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
         )
     )
-    op.execute(sa.text(f"ANALYZE {DEFAULT_PARTITION}"))
+    # The whole table, not just DEFAULT.  A rebuilt table has no statistics,
+    # and the planner's defaults for a 3.8M-row partition are wrong enough that
+    # the bundle read timed out for minutes after the first production run
+    # committed.  ANALYZE on the parent covers every partition.
+    op.execute(sa.text(f"ANALYZE {VALUES_TABLE}"))
