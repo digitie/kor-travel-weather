@@ -239,7 +239,7 @@ class WeatherSettings(BaseSettings):
         le=20_000,
     )
     retention_days: int = Field(
-        default=7,
+        default=2,
         validation_alias="KOR_TRAVEL_WEATHER_RETENTION_DAYS",
         gt=0,
         le=3650,
