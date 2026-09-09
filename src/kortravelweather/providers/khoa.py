@@ -14,8 +14,6 @@ so a bundle read does not present tomorrow's wave height as a current reading.
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Mapping
 from datetime import datetime, time
 from decimal import Decimal
@@ -24,7 +22,11 @@ from typing import Any
 from khoa import BeachIndexPlace, KhoaClient
 
 from kortravelweather.models import KST, ForecastStyle, WeatherLocation, WeatherValue
-from kortravelweather.providers.base import jsonable, make_source_record
+from kortravelweather.providers.base import (
+    jsonable,
+    make_source_record,
+    safe_location_suffix,
+)
 
 KHOA_PROVIDER = "python-khoa-api"
 KHOA_BEACH_INDEX_DATASET = "khoa_beach_index"
@@ -38,22 +40,14 @@ _METRIC_FIELDS: tuple[tuple[str, str, str | None, str], ...] = (
 )
 
 
-def _slug(value: str) -> str:
-    normalized = re.sub(r"[^0-9A-Za-z]+", "-", value.strip().lower()).strip("-")
-    return normalized or "beach"
-
-
 def beach_location(place: BeachIndexPlace) -> WeatherLocation | None:
     """Convert one beach into a stable anchor, or ``None`` without coordinates."""
     if place.latitude is None or place.longitude is None:
         return None
     name = (place.name or "").strip() or "해수욕장"
     code = (place.id or "").strip()
-    suffix = code or (
-        f"{_slug(name)}-"
-        + hashlib.sha256(
-            f"{name}|{place.latitude}|{place.longitude}".encode()
-        ).hexdigest()[:12]
+    suffix = safe_location_suffix(
+        code, discriminator=f"{code}|{name}|{place.latitude}|{place.longitude}"
     )
     address = (place.road_address or place.parcel_address or "").strip()
     return WeatherLocation(

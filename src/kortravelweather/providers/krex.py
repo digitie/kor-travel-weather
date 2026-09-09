@@ -14,8 +14,6 @@ asking for "now" and getting an empty page.
 
 from __future__ import annotations
 
-import hashlib
-import re
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -24,7 +22,11 @@ from typing import Any
 from krex import KrexClient, RestAreaWeather
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
-from kortravelweather.providers.base import jsonable, make_source_record
+from kortravelweather.providers.base import (
+    jsonable,
+    make_source_record,
+    safe_location_suffix,
+)
 
 KREX_PROVIDER = "python-krex-api"
 KREX_RESTAREA_DATASET = "krex_restarea_weather"
@@ -42,22 +44,15 @@ _METRIC_FIELDS: tuple[tuple[str, str, str | None, str], ...] = (
 )
 
 
-def _slug(value: str) -> str:
-    normalized = re.sub(r"[^0-9A-Za-z]+", "-", value.strip().lower()).strip("-")
-    return normalized or "restarea"
-
-
 def restarea_location(record: RestAreaWeather) -> WeatherLocation | None:
     """Convert one rest-area reading into a stable anchor, or ``None``."""
     if record.lat is None or record.lon is None:
         return None
     name = (record.unit_name or "").strip() or "휴게소"
     code = (record.unit_code or "").strip()
-    suffix = code or (
-        f"{_slug(name)}-"
-        + hashlib.sha256(
-            f"{name}|{record.route_no}|{record.lat}|{record.lon}".encode()
-        ).hexdigest()[:12]
+    suffix = safe_location_suffix(
+        code,
+        discriminator=f"{code}|{name}|{record.route_no}|{record.lat}|{record.lon}",
     )
     return WeatherLocation(
         location_id=f"krex-{suffix}",

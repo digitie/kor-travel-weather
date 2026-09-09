@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from kortravelweather_dagster.regional_sources import publish_regional_records
 
-from kortravelweather.models import ForecastStyle
+from kortravelweather.models import ForecastStyle, WeatherLocation
 from kortravelweather.providers import khoa, krex, krforest
 from kortravelweather.repository import WeatherRepository
 
@@ -362,4 +362,78 @@ def test_a_disabled_provider_is_skipped_before_any_request_is_made() -> None:
         max_values=10,
         settings=WeatherSettings.model_construct(enabled_providers=[]),
     )
+    assert result["skipped"] is True
+
+
+@pytest.mark.parametrize(
+    ("module", "factory", "converter", "code_field"),
+    [
+        (khoa, _beach, "beach_location", "id"),
+        (krforest, _mountain, "station_location", "obs_id"),
+        (krex, _restarea, "restarea_location", "unit_code"),
+    ],
+)
+def test_a_non_ascii_station_code_still_yields_a_usable_location_id(
+    module: Any, factory: Any, converter: str, code_field: str
+) -> None:
+    """A "code" is only a code until it is not.
+
+    KHOA's published catalog uses ``BCH###``; its live beach index returns the
+    Korean beach name in the same field, and the first production run died on
+    ``location_id`` validation.  Every one of these adapters reads a station id
+    it does not control, so none of them may assume it is ASCII.
+    """
+    convert = getattr(module, converter)
+    location = convert(factory(**{code_field: "상주해수욕장"}))
+    assert location is not None
+    # Validating the model is the assertion: WeatherLocation is what rejected
+    # the raw Korean id in production.
+    WeatherLocation.model_validate(location.model_dump())
+
+    # Two stations sharing an unusable code must not collapse into one anchor.
+    other = convert(factory(**{code_field: "상주해수욕장", "latitude": 35.0, "lat": 35.0}))
+    if other is not None and other.latitude != location.latitude:
+        assert other.location_id != location.location_id
+
+
+def test_a_usable_code_is_kept_verbatim() -> None:
+    """The digest is a fallback, not a rename: a good code stays readable."""
+    assert krforest.station_location(_mountain()).location_id == "krforest-M001"
+    assert krex.restarea_location(_restarea()).location_id == "krex-000001"
+    assert khoa.beach_location(_beach()).location_id == "khoa-BCH110"
+
+
+def test_a_disabled_asset_skips_before_its_credential_is_needed(monkeypatch) -> None:
+    """The gate has to sit in the asset, not only in the run function.
+
+    The first production run failed here: the asset built its client -- which
+    is what demands the credential -- before anything consulted the enabled
+    list, so a provider that was switched off raised "credential이 설정되지
+    않았습니다" instead of skipping.  Calling the run function directly, as the
+    other test does, cannot see that ordering.
+    """
+    from dagster import build_asset_context
+
+    # Set explicitly rather than relying on whatever the ambient environment
+    # happens to enable: the assertion is about ordering, and a test that
+    # passes because the provider was off anyway proves nothing.
+    monkeypatch.setenv(
+        "KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS", '["python-kma-api"]'
+    )
+    from kortravelweather_dagster.definitions import krex_restarea_sync
+
+    class _Client:
+        @staticmethod
+        def create_client(**_: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("the credential was demanded despite being disabled")
+
+    class _Repository:
+        @staticmethod
+        def create_repository(**_: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("the repository was built despite being disabled")
+
+    context = build_asset_context(
+        resources={"krex_client": _Client(), "weather_repository": _Repository()}
+    )
+    result = krex_restarea_sync(context)
     assert result["skipped"] is True

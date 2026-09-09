@@ -14,8 +14,6 @@ would mean an async path through the repository for one provider out of eleven.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import re
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
@@ -24,7 +22,11 @@ from typing import Any
 from krforest import ForestClient, MountainWeather
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
-from kortravelweather.providers.base import jsonable, make_source_record
+from kortravelweather.providers.base import (
+    jsonable,
+    make_source_record,
+    safe_location_suffix,
+)
 
 KRFOREST_PROVIDER = "python-krforest-api"
 KRFOREST_MOUNTAIN_DATASET = "krforest_mountain_weather"
@@ -50,11 +52,6 @@ _METRIC_FIELDS: tuple[tuple[str, str, str | None, str], ...] = (
 )
 
 
-def _slug(value: str) -> str:
-    normalized = re.sub(r"[^0-9A-Za-z]+", "-", value.strip().lower()).strip("-")
-    return normalized or "station"
-
-
 def station_location(record: MountainWeather) -> WeatherLocation | None:
     """Convert one observation row into a stable anchor, or ``None``.
 
@@ -65,11 +62,10 @@ def station_location(record: MountainWeather) -> WeatherLocation | None:
         return None
     name = (record.obs_name or "").strip() or "산악기상관측소"
     code = (record.obs_id or "").strip()
-    suffix = code or (
-        f"{_slug(name)}-"
-        + hashlib.sha256(
-            f"{name}|{record.local_area}|{record.latitude}|{record.longitude}".encode()
-        ).hexdigest()[:12]
+    suffix = safe_location_suffix(
+        code,
+        discriminator=f"{code}|{name}|{record.local_area}|"
+        f"{record.latitude}|{record.longitude}",
     )
     return WeatherLocation(
         location_id=f"krforest-{suffix}",
