@@ -19,6 +19,7 @@ parsing tests below cover the same ground for environments without Docker.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -30,6 +31,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASE_COMPOSE = REPO_ROOT / "compose.yaml"
 N150_COMPOSE = REPO_ROOT / "deploy" / "compose.n150.yaml"
+#: Every compose file in the repository, found rather than listed.  Naming
+#: them is how the last round of this test missed the override file.
+COMPOSE_FILES = sorted(
+    {BASE_COMPOSE, *REPO_ROOT.glob("compose*.y*ml"), *REPO_ROOT.glob("deploy/compose*.y*ml")}
+)
 PYTHON_DOCKERFILE = "deploy/Dockerfile.python"
 COMMIT_ENV = "KOR_TRAVEL_WEATHER_GIT_COMMIT"
 BUILD_ARG = "GIT_COMMIT"
@@ -66,7 +72,10 @@ def _environment_names(service: dict) -> set[str]:
 
 @pytest.fixture(scope="module")
 def compose_files() -> dict[str, dict]:
-    return {"compose.yaml": _load(BASE_COMPOSE), "deploy/compose.n150.yaml": _load(N150_COMPOSE)}
+    return {
+        str(path.relative_to(REPO_ROOT)).replace("\\", "/"): _load(path)
+        for path in COMPOSE_FILES
+    }
 
 
 @pytest.fixture(scope="module")
@@ -133,15 +142,44 @@ def test_every_python_image_receives_the_revision_as_a_build_arg(
         )
 
 
-def test_the_build_arg_comes_from_the_caller_not_a_literal(
+def test_no_compose_file_pins_the_build_arg_to_a_literal(
     compose_files: dict[str, dict],
 ) -> None:
-    """A literal here is the same hand-pinned value this change removed."""
+    """A literal is the hand-pinned value this change removed, wherever it sits.
+
+    An override file wins over the base, so checking only the base leaves the
+    production-only file free to bake a fixed revision into every image.
+    """
+    offenders: list[str] = []
+    for filename, document in compose_files.items():
+        for name, service in (document.get("services") or {}).items():
+            build = service.get("build")
+            if not isinstance(build, dict):
+                continue
+            value = (build.get("args") or {}).get(BUILD_ARG)
+            if value is None:
+                continue
+            if not str(value).startswith("${"):
+                offenders.append(f"{filename}:{name}={value!r}")
+    assert not offenders, (
+        f"{offenders} pin {BUILD_ARG} to a literal; it would be baked into every "
+        "image forever, which is exactly the failure this change removed"
+    )
+
+
+def test_the_build_arg_reads_the_name_the_runbooks_export(
+    compose_files: dict[str, dict],
+) -> None:
+    """Bind the interpolation to the variable the deploy commands actually set.
+
+    Renaming one side leaves the other silently supplying nothing, and every
+    image then bakes ``unknown`` while all the other checks still pass.
+    """
     for name, service in _python_image_services(compose_files["compose.yaml"]).items():
         value = str(service["build"]["args"][BUILD_ARG])
-        assert value.startswith("${"), (
-            f"service {name} pins {BUILD_ARG}={value!r}; a literal would be baked "
-            "into every image forever, which is the failure this change removed"
+        assert value.startswith("${" + BUILD_ARG), (
+            f"service {name} interpolates {value!r}, which is not the {BUILD_ARG} "
+            "the documented build commands export"
         )
 
 
@@ -164,14 +202,23 @@ def test_the_python_image_bakes_the_revision_after_the_final_stage(
     env_lines = [
         i for i, line in enumerate(dockerfile_lines) if line.startswith(f"ENV {COMMIT_ENV}=")
     ]
-    assert arg_lines, f"no active `ARG {BUILD_ARG}` line"
-    assert env_lines, f"no active `ENV {COMMIT_ENV}=` line"
-    assert min(arg_lines) > final_from, (
+    # Exactly one of each: Docker takes the last declaration, so a second line
+    # appended below would silently win and could bake a fixed revision while a
+    # "check the first one" test stayed green.
+    assert len(arg_lines) == 1, (
+        f"expected one active `ARG {BUILD_ARG}` line, found {len(arg_lines)}; "
+        "the last declaration wins, so a duplicate can override the intended one"
+    )
+    assert len(env_lines) == 1, (
+        f"expected one active `ENV {COMMIT_ENV}=` line, found {len(env_lines)}; "
+        "the last declaration wins"
+    )
+    assert arg_lines[0] > final_from, (
         f"ARG {BUILD_ARG} is declared before the final FROM, so it is out of scope "
         "in the stage that ships and the image would carry no revision"
     )
-    assert min(env_lines) > min(arg_lines), "ENV must follow the ARG it reads"
-    assert dockerfile_lines[min(env_lines)].strip() == f"ENV {COMMIT_ENV}=${{{BUILD_ARG}}}"
+    assert env_lines[0] > arg_lines[0], "ENV must follow the ARG it reads"
+    assert dockerfile_lines[env_lines[0]].strip() == f"ENV {COMMIT_ENV}=${{{BUILD_ARG}}}"
 
 
 def test_the_unset_default_is_honest(dockerfile_lines: list[str]) -> None:
@@ -196,19 +243,23 @@ def test_the_example_env_does_not_pin_a_revision() -> None:
     )
 
 
-def test_every_documented_build_command_passes_the_revision() -> None:
-    """The same build command is copied into several documents.
+def test_every_documented_build_command_computes_the_revision() -> None:
+    """Find the build commands rather than listing the documents that hold them.
 
-    Fixing one of them leaves the others baking ``unknown`` -- and one of those
-    documents then tells the operator to smoke-check ``/version``.
+    The same invocation is copied across several runbooks; fixing the ones you
+    remember leaves the rest baking ``unknown``, and one of them then tells the
+    operator to smoke-check ``/version``. Listing the documents is what let that
+    happen, so search instead.
+
+    Requiring the value to be *computed* matters as much as its presence: a
+    typed-in ``GIT_COMMIT=6003da9`` satisfies a substring check and is precisely
+    the hand-pinned revision this change exists to remove.
     """
-    documents = [
-        REPO_ROOT / "deploy" / "n150.md",
-        REPO_ROOT / "deploy" / "README.md",
-        REPO_ROOT / "docs" / "runbooks" / "docker-app.md",
-    ]
+    computed = re.compile(rf"{BUILD_ARG}=\$\((?:git|`)")
     offenders: list[str] = []
-    for document in documents:
+    for document in sorted(REPO_ROOT.glob("**/*.md")):
+        if any(part in {".git", "node_modules", ".venv"} for part in document.parts):
+            continue
         lines = document.read_text(encoding="utf-8").splitlines()
         for index, line in enumerate(lines):
             if "up -d --build" not in line:
@@ -218,11 +269,13 @@ def test_every_documented_build_command_passes_the_revision() -> None:
             start = index
             while start > 0 and lines[start - 1].rstrip().endswith("\\"):
                 start -= 1
-            if BUILD_ARG not in " ".join(lines[start : index + 1]):
+            command = " ".join(lines[start : index + 1])
+            if not computed.search(command):
                 offenders.append(f"{document.relative_to(REPO_ROOT)}:{index + 1}")
     assert not offenders, (
-        f"{offenders} build without {BUILD_ARG}; those images would report an "
-        "unknown revision while the surrounding runbook says to verify /version"
+        f"{offenders} build without computing {BUILD_ARG} from git; those images "
+        "report a revision that is either unknown or hand-typed, while the "
+        "surrounding runbook says to verify /version"
     )
 
 
