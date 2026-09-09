@@ -9,7 +9,7 @@ from kortravelweather.models import PurgeReport
 
 class _PurgeableRepository(Protocol):
     def purge_expired_history(
-        self, *, retention_days: int, batch_rows: int = ..., max_batches: int = ...
+        self, *, retention_days: int, ahead_days: int = ...
     ) -> PurgeReport: ...
 
 
@@ -17,24 +17,23 @@ def run_weather_retention_purge(
     *,
     repository: _PurgeableRepository,
     retention_days: int,
-    max_batches: int,
+    ahead_days: int = 7,
 ) -> dict[str, Any]:
-    """Delete history past the window and describe what went.
+    """Drop the days past the window and describe what went.
 
-    The interesting field is ``truncated``.  The deleted counts alone cannot
-    distinguish "nothing was due" from "the run hit its cap and gave up with a
-    backlog", and those two need very different responses -- the second means
-    the window is shorter than the ingest rate and the table will keep growing
-    no matter how often this runs.
+    ``rows_outside_any_partition`` is the field worth watching.  Everything else
+    says what retention did; that one says whether retention can still reach the
+    data at all -- rows in the DEFAULT partition are never dropped, so a
+    non-zero value is the table quietly starting to grow again.
     """
     report = repository.purge_expired_history(
-        retention_days=retention_days, max_batches=max_batches
+        retention_days=retention_days, ahead_days=ahead_days
     )
     return {
         "retention_days": retention_days,
         "cutoff": report.cutoff.isoformat(),
-        "values_deleted": report.values_deleted,
+        "partitions_dropped": list(report.partitions_dropped),
+        "pointers_deleted": report.pointers_deleted,
         "sources_deleted": report.sources_deleted,
-        "run_sources_deleted": report.run_sources_deleted,
-        "truncated": report.truncated,
+        "rows_outside_any_partition": report.rows_outside_any_partition,
     }

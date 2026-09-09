@@ -243,13 +243,17 @@ class PurgeReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cutoff: datetime
-    values_deleted: int = 0
-    run_sources_deleted: int = 0
+    #: Names rather than a count: which day went is the useful fact when a run
+    #: drops nothing, and a zero says nothing about whether that was correct.
+    partitions_dropped: tuple[str, ...] = ()
+    #: Current-value pointers into the dropped days.  A location that stops
+    #: reporting loses its current value once its last reading ages out.
+    pointers_deleted: int = 0
     sources_deleted: int = 0
-    #: The run stopped at its batch cap with work still to do.  Not an error --
-    #: the next run continues -- but a run that reports this every day is not
-    #: keeping up, and that is invisible from the deleted counts alone.
-    truncated: bool = False
+    #: Rows that landed outside every dated partition, so retention will never
+    #: reach them.  Non-zero means a partition was missing when something
+    #: inserted -- silent growth is exactly what partitioning was meant to end.
+    rows_outside_any_partition: int = 0
 
 
 def kst_now() -> datetime:

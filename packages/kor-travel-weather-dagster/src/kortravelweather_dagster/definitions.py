@@ -495,15 +495,15 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
     result = run_weather_retention_purge(
         repository=repository,
         retention_days=runtime.retention_days,
-        max_batches=runtime.retention_max_batches,
+        ahead_days=runtime.retention_ahead_days,
     )
-    if result["truncated"]:
-        # Deleted counts alone cannot tell "nothing was due" from "gave up with
-        # a backlog", and only the second one means the table keeps growing.
+    if result["rows_outside_any_partition"]:
+        # These rows are in the DEFAULT partition, which retention never drops.
+        # Nothing else in the result distinguishes that from a healthy run.
         context.log.warning(
-            "retention purge stopped at its batch cap with work remaining; "
-            "the ingest rate may exceed what a %s-day window can hold",
-            result["retention_days"],
+            "%s fact rows are outside every dated partition and will never be "
+            "aged out; a partition was missing when they were inserted",
+            result["rows_outside_any_partition"],
         )
     context.add_output_metadata(result)
     return result

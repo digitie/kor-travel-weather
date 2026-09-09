@@ -94,7 +94,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0014_purge_escape_hatch"
+            assert version == "0015_partition_weather_values"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -192,11 +192,12 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
                 text(
                     "INSERT INTO weather_values "
                     "(value_id, location_id, provider, dataset_key, weather_domain, "
-                    "forecast_style, metric_key, target_at, normalization_version, payload, "
+                    "forecast_style, metric_key, target_at, known_at, "
+                    "normalization_version, payload, "
                     "collected_at, source_record_key, value_number) VALUES "
                     "('immutable-value', 'immutability', 'p', 'd', 'd', 'short', 'TMP', "
-                    "'2026-01-01 00:00:00+00', 'test', '{}', '2026-01-01 00:00:00+00', "
-                    "'immutable-source', 1)"
+                    "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00', 'test', '{}', "
+                    "'2026-01-01 00:00:00+00', 'immutable-source', 1)"
                 )
             )
         with pytest.raises(Exception, match="immutable"), engine.begin() as connection:
@@ -377,10 +378,17 @@ def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
             definitions = _index_definitions(connection)
             definitions.update(_index_definitions(connection, "weather_current_values"))
 
-        # ``ix_weather_values_marker_lookup`` comes from 0006, not from the
-        # runbook's pre-build block; everything else must genuinely be present
-        # before the upgrade, or the survival check below silently skips it.
-        expected_prebuilt = set(names) - {"ix_weather_values_marker_lookup"}
+        # 0015 rebuilds ``weather_values`` to partition it, so every index on
+        # that table is necessarily recreated and pre-building one saves
+        # nothing.  Only the projection's indexes survive a deploy, and those
+        # are the ones the runbook still tells operators to build ahead.
+        rebuilt_by_partitioning = set(_MARKER_INDEXES)
+        expected_prebuilt = set(names) - rebuilt_by_partitioning
+        for name in sorted(rebuilt_by_partitioning & set(before)):
+            assert before[name] != after.get(name), (
+                f"{name} kept its oid across 0015; if the fact table is no "
+                "longer rebuilt, the runbook should go back to pre-building it"
+            )
         assert expected_prebuilt <= set(before), (
             f"{sorted(expected_prebuilt - set(before))} were never pre-created, so "
             "this test would prove nothing about them"
