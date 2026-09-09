@@ -158,33 +158,36 @@ quiet upstream, which is how the krforest problem went unnoticed for three runs.
 
 ## Retention
 
-`weather_values` and `weather_source_records` are append-only, which is why a
-published fact can be trusted and also why, left alone, they only grow. The
-Dagster `daily_weather_retention` schedule (03:20 Asia/Seoul, after the hourly
-ingests) deletes history older than `KOR_TRAVEL_WEATHER_RETENTION_DAYS`
-(default 2).
+`weather_values` is partitioned by day on `known_at`, and retention drops the
+days that have fallen out of the window rather than deleting the rows in them.
+Deleting three million facts a night writes a tombstone and a WAL record for
+every one and then needs a vacuum to return the space; dropping a partition is a
+catalog change, so nothing is scanned, nothing is vacuumed, and the space comes
+back at once. That difference is why the table could reach 33 GB with no way to
+shed anything.
 
-Two things it deliberately does not do. It never deletes a fact the
-current-value projection still points at, so a location that stops reporting
-keeps its last reading however old it is. And it never updates a row — the
-immutability trigger still refuses that, including inside the purge's own
-transaction; the purge opens a `SET LOCAL` permission that applies to `DELETE`
-only and expires with the transaction.
+The Dagster `daily_weather_retention` schedule (03:20 Asia/Seoul, after the
+hourly ingests) keeps `KOR_TRAVEL_WEATHER_RETENTION_DAYS` days, default 2. Each
+run also creates the coming week's partitions: a missing partition sends rows to
+DEFAULT, where retention can never reach them.
 
-A run stops at `KOR_TRAVEL_WEATHER_RETENTION_MAX_BATCHES` and leaves the rest to
-the next one, reporting `truncated: true` and logging a warning. A run that
-reports it every night means the ingest rate exceeds what the window can hold,
-and the table will keep growing no matter how often the job runs.
+Two consequences worth stating plainly.
 
-The provider catalog currently includes WeatherAPI, OpenWeatherMap, Open-Meteo,
-Visual Crossing, Tomorrow.io, Weatherbit, Weatherstack, AccuWeather, and
-wttr.in. KMA weather warnings are stored as `kma_weather_alerts` facts and are
-available through `alerts` and the map marker warning badge. KMA warning
-issuing offices are selected by each target's `metadata.kma_alert_station_id`,
-falling back to `KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID` (default `108`). A
-deployment covering multiple offices must configure one target group per
-office; rows carrying an explicit region are only fanned out to matching
-anchors.
+**A location that stops reporting loses its current value** once its last
+reading ages out. A partition cannot be dropped selectively, so the projection's
+pointers into it are deleted first — which is what "we keep two days" actually
+means. The previous batched delete spared any fact a pointer named, and so kept
+stale readings for ever.
+
+**`rows_outside_any_partition` is the field to watch.** Rows in the DEFAULT
+partition are never dropped, so a non-zero count is the table quietly starting
+to grow again. The asset logs a warning; nothing else in the result
+distinguishes it from a healthy run.
+
+History remains append-only. The immutability trigger still refuses every
+UPDATE, including inside the purge's own transaction; the purge opens a
+`SET LOCAL` permission that applies to `DELETE` only — used now just for source
+records, which are small and not partitioned.
 
 ## Consumer guidance
 

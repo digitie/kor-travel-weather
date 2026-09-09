@@ -23,6 +23,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -58,6 +59,12 @@ from .metrics import (
     observe_sync_started,
 )
 from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
+from .partitions import (
+    default_partition_rows,
+    drop_partitions_before,
+    ensure_default_partition,
+    ensure_partitions,
+)
 from .settings import WeatherSettings, get_settings
 
 
@@ -181,6 +188,11 @@ class WeatherValueRow(Base):
             "metric_key",
             "target_at",
             "source_record_key",
+            # PostgreSQL requires the partition key in every unique constraint.
+            # It costs nothing here: the logical identity already fixes
+            # ``source_record_key``, and a source record has one ``known_at``,
+            # so adding it cannot let a second row through.
+            "known_at",
             name="uq_weather_values_identity",
         ),
         Index("ix_weather_values_location_time", "location_id", "valid_at", "observed_at"),
@@ -244,6 +256,9 @@ class WeatherValueRow(Base):
             "valid_until IS NULL OR valid_from IS NULL OR valid_until >= valid_from",
             name="ck_weather_values_valid_window",
         ),
+        # Retention drops a day rather than deleting three million rows; see
+        # ``kortravelweather.partitions``.
+        {"postgresql_partition_by": "RANGE (known_at)"},
     )
 
     value_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -271,7 +286,12 @@ class WeatherValueRow(Base):
     valid_until: Mapped[datetime | None] = mapped_column(AwareDateTime())
     observed_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
     target_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
-    known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    # Part of the primary key because it is the partition key, and PostgreSQL
+    # requires that.  Never null in practice or in principle: the insert path
+    # falls back to ``collected_at``, which the model defaults.
+    known_at: Mapped[datetime] = mapped_column(
+        AwareDateTime(), primary_key=True, nullable=False
+    )
     normalization_version: Mapped[str] = mapped_column(String(40), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict, server_default=text("'{}'")
@@ -347,13 +367,19 @@ class WeatherCurrentValueRow(Base):
             text("source_record_key DESC NULLS LAST"),
             text("value_id DESC"),
         ),
+        # The fact table is partitioned by ``known_at``, so its primary key is
+        # ``(value_id, known_at)`` and a reference has to name both.  The
+        # projection already carried ``known_at`` for ordering, and 0012's
+        # backfill is what makes it trustworthy enough to key on.
+        ForeignKeyConstraint(
+            ["value_id", "known_at"],
+            ["weather_values.value_id", "weather_values.known_at"],
+            ondelete="RESTRICT",
+            name="weather_current_values_value_fkey",
+        ),
     )
 
-    value_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("weather_values.value_id", ondelete="RESTRICT"),
-        primary_key=True,
-    )
+    value_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     location_id: Mapped[str] = mapped_column(
         String(120),
         ForeignKey("weather_locations.location_id", ondelete="RESTRICT"),
@@ -379,7 +405,7 @@ class WeatherCurrentValueRow(Base):
     # last within their group, and the next revision of that logical point
     # fills them in.  Promoting NOT NULL here would break the outgoing release's
     # inserts mid-deploy.
-    known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    known_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
     source_record_key: Mapped[str | None] = mapped_column(String(255))
 
 
@@ -580,6 +606,14 @@ def _metric_source_key(value: WeatherValue) -> str:
 #: the guard reads a setting that only the purge sets, only for DELETE, and only
 #: inside its own transaction.  ``SET LOCAL`` means an error or a rollback takes
 #: the permission with it.
+#: ``create_schema`` builds a small window and leans on the DEFAULT partition
+#: for the rest.  Fixtures date facts years out on purpose, and covering that
+#: range literally meant 800 partitions per schema build -- paid by nearly every
+#: test, to exercise nothing.  Anything outside the window still inserts; it
+#: simply lands in DEFAULT, which the partition tests target directly.
+SCHEMA_PARTITION_PAST_DAYS = 3
+SCHEMA_PARTITION_FUTURE_DAYS = 3
+
 PURGE_GUC = "kortravelweather.purge"
 
 #: Kept as one string because both schema paths must install it byte-identically
@@ -646,8 +680,23 @@ class WeatherRepository:
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_schema(self) -> None:
+        """Build the schema the way ``alembic upgrade head`` would.
+
+        The fact table is partitioned, so creating it is not enough: without
+        partitions every insert fails, and a DEFAULT partition alone would mean
+        tests never exercise a real one.  The window is deliberately wide --
+        fixtures date facts years out.
+        """
         Base.metadata.create_all(self.engine)
         install_immutability_triggers(self.engine)
+        today = kst_now().date()
+        with self.engine.begin() as connection:
+            ensure_default_partition(connection)
+            ensure_partitions(
+                connection,
+                start=today - timedelta(days=SCHEMA_PARTITION_PAST_DAYS),
+                end=today + timedelta(days=SCHEMA_PARTITION_FUTURE_DAYS),
+            )
 
     def _location_model(self, row: WeatherLocationRow) -> WeatherLocation:
         return WeatherLocation(
@@ -1126,7 +1175,9 @@ class WeatherRepository:
             # turn an identical response into a false immutable conflict.
             canonical_known = _canonical_datetime(source.fetched_at)
             canonical_collected = _canonical_datetime(source.fetched_at)
-        row = session.get(WeatherValueRow, value_id)
+        # The primary key is composite now that the table is partitioned by
+        # ``known_at``; ``value_id`` alone no longer identifies a row.
+        row = session.get(WeatherValueRow, (value_id, canonical_known))
         if row is not None:
             expected = {
                 "location_id": value.location_id,
@@ -2316,107 +2367,75 @@ class WeatherRepository:
         return recovered
 
     def purge_expired_history(
-        self, *, retention_days: int, batch_rows: int = 20_000, max_batches: int = 500
+        self, *, retention_days: int, ahead_days: int = 7
     ) -> PurgeReport:
-        """Delete fact and source history older than ``retention_days``.
+        """Drop the days that have fallen out of the window, and make new ones.
 
-        Deletes in batches inside one advisory-locked scope so two schedules --
-        or a schedule and an operator -- cannot interleave.  The batching is not
-        for speed; it is so a run that cannot keep up stops at a known point
-        instead of holding locks on the whole table until it is killed.
+        The fact table is partitioned by ``known_at``, so removing a day is a
+        catalog change: no scan, no WAL for the rows, no vacuum, and the space
+        comes back at once.  The batched ``DELETE`` this replaces wrote a
+        tombstone and a WAL record per row and then needed a vacuum -- hours
+        every night on this disk to remove data nobody wanted.
 
-        A fact the current-value projection still points at is never deleted,
-        however old it is.  That is what keeps a location that stopped
-        reporting from losing its last reading, and it is also why the
-        projection's ``ON DELETE RESTRICT`` never fires here.
+        Order matters.  The projection's foreign key is ``ON DELETE RESTRICT``
+        and points into these partitions, so its stale pointers go first;
+        otherwise the drop is refused, which is the behaviour we want -- a fact
+        must never disappear from under a pointer.  A location that stopped
+        reporting therefore loses its current value once its last reading ages
+        out, which is what "we keep N days" means.
+
+        Source records are not partitioned -- they are small -- so they are
+        still deleted, and only once nothing references them.
         """
         if retention_days <= 0:
             raise ValueError("retention_days는 1 이상이어야 합니다.")
         cutoff = kst_now() - timedelta(days=retention_days)
-        truncated = False
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
+            connection = session.connection()
+            # Make tomorrow's partitions before dropping yesterday's: a missing
+            # partition is an insert that fails, and the ingest does not wait
+            # for the next maintenance window.
+            ensure_default_partition(connection)
+            ensure_partitions(
+                connection,
+                start=cutoff.date(),
+                end=(kst_now() + timedelta(days=ahead_days)).date(),
+            )
+            pointers = session.execute(
+                text(
+                    "DELETE FROM weather_current_values WHERE known_at < :cutoff"
+                ),
+                {"cutoff": cutoff},
+            ).rowcount
+            dropped = drop_partitions_before(connection, cutoff.date())
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
-            values_deleted, values_capped = self._purge_in_batches(
-                session,
-                "DELETE FROM weather_values WHERE value_id IN ("
-                "  SELECT wv.value_id FROM weather_values wv"
-                "  WHERE wv.known_at < :cutoff"
-                "    AND NOT EXISTS ("
-                "      SELECT 1 FROM weather_current_values cv"
-                "      WHERE cv.value_id = wv.value_id)"
-                "  LIMIT :batch)",
-                cutoff=cutoff,
-                batch_rows=batch_rows,
-                max_batches=max_batches,
-            )
-            # Run links first: they hold a RESTRICT reference to the source
-            # records the next statement removes.
-            run_sources_deleted, links_capped = self._purge_in_batches(
-                session,
-                "DELETE FROM weather_sync_run_sources WHERE source_record_key IN ("
-                "  SELECT sr.source_record_key FROM weather_source_records sr"
-                "  WHERE sr.fetched_at < :cutoff"
-                "    AND NOT EXISTS ("
-                "      SELECT 1 FROM weather_values wv"
-                "      WHERE wv.source_record_key = sr.source_record_key)"
-                "  LIMIT :batch)",
-                cutoff=cutoff,
-                batch_rows=batch_rows,
-                max_batches=max_batches,
-            )
-            sources_deleted, sources_capped = self._purge_in_batches(
-                session,
-                "DELETE FROM weather_source_records WHERE source_record_key IN ("
-                "  SELECT sr.source_record_key FROM weather_source_records sr"
-                "  WHERE sr.fetched_at < :cutoff"
-                "    AND NOT EXISTS ("
-                "      SELECT 1 FROM weather_values wv"
-                "      WHERE wv.source_record_key = sr.source_record_key)"
-                "    AND NOT EXISTS ("
-                "      SELECT 1 FROM weather_sync_run_sources rs"
-                "      WHERE rs.source_record_key = sr.source_record_key)"
-                "  LIMIT :batch)",
-                cutoff=cutoff,
-                batch_rows=batch_rows,
-                max_batches=max_batches,
-            )
-            truncated = values_capped or links_capped or sources_capped
+            sources = session.execute(
+                text(
+                    "DELETE FROM weather_source_records sr "
+                    "WHERE sr.fetched_at < :cutoff "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM weather_values wv "
+                    "    WHERE wv.source_record_key = sr.source_record_key) "
+                    "  AND NOT EXISTS ("
+                    "    SELECT 1 FROM weather_sync_run_sources rs "
+                    "    WHERE rs.source_record_key = sr.source_record_key)"
+                ),
+                {"cutoff": cutoff},
+            ).rowcount
+            stranded = default_partition_rows(connection)
         report = PurgeReport(
             cutoff=cutoff,
-            values_deleted=values_deleted,
-            run_sources_deleted=run_sources_deleted,
-            sources_deleted=sources_deleted,
-            truncated=truncated,
+            partitions_dropped=tuple(dropped),
+            pointers_deleted=int(pointers or 0),
+            sources_deleted=int(sources or 0),
+            rows_outside_any_partition=stranded,
         )
-        observe_history_purged(report.values_deleted, report.sources_deleted)
+        observe_history_purged(len(dropped), report.sources_deleted)
         return report
-
-    @staticmethod
-    def _purge_in_batches(
-        session: Session,
-        statement: str,
-        *,
-        cutoff: datetime,
-        batch_rows: int,
-        max_batches: int,
-    ) -> tuple[int, bool]:
-        deleted = 0
-        for _ in range(max_batches):
-            result = session.execute(
-                text(statement), {"cutoff": cutoff, "batch": batch_rows}
-            )
-            rows = int(result.rowcount or 0)
-            deleted += rows
-            if rows == 0:
-                return deleted, False
-        # Hitting the cap is not an error -- the next run continues where this
-        # one stopped -- but it has to be reported, or a purge that never
-        # catches up is indistinguishable from one with nothing left to do.
-        return deleted, True
 
     def heartbeat_sync_run(self, run_id: str) -> bool:
         """Refresh a running sync lease using an atomic status check."""
