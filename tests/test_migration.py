@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
 from alembic.config import Config
@@ -92,7 +93,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0011_current_value_alert_index"
+            assert version == "0013_current_value_sort_index"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -105,10 +106,20 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             assert "ix_weather_values_alert_lookup" in weather_value_indexes
             # The nearby bundle reads warnings from the projection on their own
             # budget; without this index that read walks the whole slice.
-            assert "ix_weather_current_values_alert_lookup" in {
+            projection_indexes = {
                 item["name"]
                 for item in inspect(engine).get_indexes("weather_current_values")
             }
+            assert "ix_weather_current_values_alert_lookup" in projection_indexes
+            # Without this the bundle read ranks a location's whole slice.
+            assert "ix_weather_current_values_location_current" in projection_indexes
+            projection_columns = {
+                item["name"]
+                for item in inspect(engine).get_columns("weather_current_values")
+            }
+            # The bundle sort keys must live on the pointer table, or the
+            # per-location limit cannot be applied before the fact join.
+            assert {"known_at", "source_record_key"} <= projection_columns
             assert "weather_current_values" in inspect(engine).get_table_names()
             assert {
                 "ix_weather_current_values_location_target",
@@ -126,6 +137,23 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
                 )
             ).scalar_one()
             assert current_value == "projection-value-new"
+            # 0012 backfills the denormalised sort keys.  Removing NOT NULL took
+            # away the only runtime assertion that the backfill ran at all, so
+            # check the values here: disabling the loop entirely used to leave
+            # the whole suite green.
+            keys = connection.execute(
+                text(
+                    "SELECT cv.known_at = wv.known_at "
+                    "   AND cv.source_record_key = wv.source_record_key "
+                    "FROM weather_current_values cv "
+                    "JOIN weather_values wv ON wv.value_id = cv.value_id "
+                    "WHERE cv.location_id = 'projection-backfill'"
+                )
+            ).scalar_one()
+            assert keys is True, (
+                "the projection's sort keys do not match the fact it points at; "
+                "the backfill did not run or did not finish"
+            )
         with engine.begin() as connection:
             connection.execute(
                 text(
@@ -192,7 +220,10 @@ _MARKER_INDEXES = (
     "ix_weather_values_marker_observed",
     "ix_weather_values_alert_lookup",
 )
-_PROJECTION_INDEXES = ("ix_weather_current_values_alert_lookup",)
+_PROJECTION_INDEXES = (
+    "ix_weather_current_values_alert_lookup",
+    "ix_weather_current_values_location_current",
+)
 
 
 def _index_definitions(connection, table: str = "weather_values") -> dict[str, str]:
@@ -305,6 +336,24 @@ def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
                 )
             )
 
+        # 0013's index needs 0012's columns, so it can only be pre-built after
+        # that revision -- which is what the runbook says. Proving the ordering
+        # works here is the point: the previous version of this test listed the
+        # index but never created it, so the survival check skipped it.
+        command.upgrade(config, "0012_current_value_sort_keys")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE INDEX ix_weather_current_values_location_current "
+                    "ON weather_current_values "
+                    "(location_id, "
+                    " (CASE WHEN forecast_style IN ('observed', 'nowcast') "
+                    "  THEN 0 ELSE 1 END), "
+                    " target_at DESC, known_at DESC NULLS LAST, "
+                    " source_record_key DESC NULLS LAST, value_id DESC)"
+                )
+            )
+
         names = _MARKER_INDEXES + _PROJECTION_INDEXES
 
         def oids(connection) -> dict[str, int]:
@@ -327,14 +376,269 @@ def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
             definitions = _index_definitions(connection)
             definitions.update(_index_definitions(connection, "weather_current_values"))
 
-        for name in names:
-            if name not in before:
-                # 0006 builds the marker lookup; it is not pre-created here.
-                continue
+        # ``ix_weather_values_marker_lookup`` comes from 0006, not from the
+        # runbook's pre-build block; everything else must genuinely be present
+        # before the upgrade, or the survival check below silently skips it.
+        expected_prebuilt = set(names) - {"ix_weather_values_marker_lookup"}
+        assert expected_prebuilt <= set(before), (
+            f"{sorted(expected_prebuilt - set(before))} were never pre-created, so "
+            "this test would prove nothing about them"
+        )
+        for name in sorted(expected_prebuilt):
             assert before[name] == after[name], f"{name} was rebuilt by the migration"
         # And the migration must still have produced every index it owns.
         for name in names:
             assert name in definitions
+    finally:
+        get_settings.cache_clear()
+
+
+def test_the_bundle_ordering_is_served_by_its_index(monkeypatch) -> None:
+    """Plan the real statement and refuse a plan that has to sort.
+
+    The ordering expression exists four times: SQLAlchemy's ``case()`` in the
+    query, ``_CURRENT_PREFERENCE_EXPRESSION`` in the ORM index, ``_PREFERENCE``
+    in revision 0013, and the pre-build block in ``deploy/n150.md``.  Comparing
+    the strings would still not answer the only question that matters, because
+    the query's copy is not a string at all -- PostgreSQL has to agree that the
+    compiled ``case()`` and the stored index expression are the same thing.
+
+    So ask PostgreSQL.  With sequential scans off, a matching expression yields
+    an index scan that stops at the LIMIT; a mismatch yields a Sort node, and
+    the read goes back to ranking every row in the location's slice.  This test
+    binds the query to the ORM index; the migration's copy is held to the ORM
+    index by ``test_create_all_and_alembic_build_identical_marker_indexes``, and
+    the runbook's copy by ``test_migration_leaves_a_pre_built_index_alone``.
+    """
+    import contextlib
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from sqlalchemy.dialects import postgresql
+
+    from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
+
+    database_url = TEST_DATABASE_URL
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    try:
+        repository = WeatherRepository(database_url)
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        repository.create_schema()
+
+        locations = [f"plan-{index}" for index in range(12)]
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        for location_id in locations:
+            repository.upsert_location(
+                WeatherLocation(
+                    location_id=location_id,
+                    name=location_id,
+                    latitude=37.5,
+                    longitude=127.0,
+                )
+            )
+            repository.record_source(
+                source_record_key=f"plan-source-{location_id}",
+                provider="p",
+                dataset_key="d",
+                source_entity_type="weather_response",
+                source_entity_id=location_id,
+                payload={"rows": [], "location": location_id},
+            )
+        repository.upsert_values(
+            [
+                WeatherValue(
+                    location_id=location_id,
+                    provider="p",
+                    dataset_key="d",
+                    weather_domain="weather",
+                    forecast_style=(
+                        ForecastStyle.OBSERVED if index % 3 == 0 else ForecastStyle.SHORT
+                    ),
+                    metric_key=f"M{index}",
+                    target_at=base + timedelta(hours=index),
+                    known_at=base,
+                    value_number=Decimal(index),
+                    source_record_key=f"plan-source-{location_id}",
+                )
+                for location_id in locations
+                for index in range(40)
+            ]
+        )
+        with repository.engine.begin() as connection:
+            connection.execute(text("ANALYZE weather_current_values"))
+
+        captured: list[str] = []
+
+        class _Stop(Exception):
+            pass
+
+        class _Recorder:
+            def execute(self, statement, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003
+                captured.append(
+                    str(
+                        statement.compile(
+                            dialect=postgresql.dialect(),
+                            compile_kwargs={"literal_binds": True},
+                        )
+                    )
+                )
+                raise _Stop
+
+            def scalars(self, statement, *args, **kwargs):  # noqa: ANN001,ANN002,ANN003
+                raise _Stop
+
+        with contextlib.suppress(_Stop):
+            WeatherRepository._current_value_models_many(
+                WeatherRepository.__new__(WeatherRepository),
+                _Recorder(),
+                locations,
+                limit_per_location=5,
+                prefer_current=True,
+            )
+        assert captured, "no statement was compiled"
+        statement = captured[0]
+        assert "ORDER BY CASE WHEN" in statement, (
+            "the read no longer orders by the preference expression; this test "
+            "is planning something other than what it claims to"
+        )
+
+        with repository.engine.connect() as connection:
+            # Not a performance assertion -- the fixture is far too small for the
+            # planner to care.  Disabling the alternative is what makes the
+            # question "can this index serve the ordering" answerable at all.
+            connection.execute(text("SET enable_seqscan = off"))
+            plan = "\n".join(
+                line for (line,) in connection.execute(text("EXPLAIN " + statement))
+            )
+
+        assert "ix_weather_current_values_location_current" in plan, (
+            f"the bundle read does not use its index:\n{plan}"
+        )
+        assert "Sort" not in plan, (
+            "PostgreSQL had to sort, so the query's ORDER BY and the index "
+            f"expression are not the same expression:\n{plan}"
+        )
+    finally:
+        get_settings.cache_clear()
+
+
+def test_backfill_corrects_sort_keys_left_stale_by_the_outgoing_release(
+    monkeypatch,
+) -> None:
+    """Stale sort keys must be repaired, not just missing ones.
+
+    Compose starts this migration while the previous release is still serving.
+    That release moves a pointer by writing ``value_id`` alone -- the new
+    columns are not in its model -- so the row ends up naming a new fact while
+    carrying the *previous* fact's ``known_at`` and ``source_record_key``.  The
+    keys are wrong but not null, so a "backfill what is missing" pass walks past
+    the row forever and every later read orders that location on a fact it no
+    longer points at.
+
+    Re-running the revision is how such a row gets repaired, which is also the
+    retry an operator performs after an interrupted deploy: alembic records the
+    version only once ``upgrade()`` returns, so the second run has to be both
+    safe and effective.
+    """
+    database_url = TEST_DATABASE_URL
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    try:
+        engine = WeatherRepository(database_url).engine
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        config = Config("alembic.ini")
+        command.upgrade(config, "0006_marker_lookup_index")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO weather_locations "
+                    "(location_id, name, latitude, longitude, created_at, updated_at) "
+                    "VALUES ('stale-keys', 'Stale', 37, 127, "
+                    "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+                )
+            )
+            for suffix, known_at in (
+                ("old", "2026-01-01 00:00:00+00"),
+                ("new", "2026-01-01 01:00:00+00"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO weather_source_records "
+                        "(source_record_key, provider, dataset_key, source_entity_type, "
+                        "source_entity_id, raw_payload_hash, payload, fetched_at, "
+                        "imported_at) VALUES (:source_key, 'p', 'd', 'weather_response', "
+                        "'stale-keys', :hash, '{}', :known_at, :known_at)"
+                    ),
+                    {
+                        "source_key": f"stale-source-{suffix}",
+                        "hash": f"stale-hash-{suffix}",
+                        "known_at": known_at,
+                    },
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO weather_values "
+                        "(value_id, location_id, provider, dataset_key, weather_domain, "
+                        "forecast_style, metric_key, target_at, known_at, "
+                        "normalization_version, payload, collected_at, source_record_key, "
+                        "value_number) VALUES (:value_id, 'stale-keys', 'p', 'd', "
+                        "'weather', 'short', 'TMP', '2026-01-01 02:00:00+00', :known_at, "
+                        "'test', '{}', :known_at, :source_key, 1)"
+                    ),
+                    {
+                        "value_id": f"stale-value-{suffix}",
+                        "known_at": known_at,
+                        "source_key": f"stale-source-{suffix}",
+                    },
+                )
+        command.upgrade(config, "0012_current_value_sort_keys")
+
+        def sort_keys() -> tuple[Any, ...]:
+            with engine.connect() as connection:
+                return tuple(
+                    connection.execute(
+                        text(
+                            "SELECT value_id, known_at, source_record_key "
+                            "FROM weather_current_values "
+                            "WHERE location_id = 'stale-keys'"
+                        )
+                    ).one()
+                )
+
+        value_id, _, source_key = sort_keys()
+        assert value_id == "stale-value-new"
+        assert source_key == "stale-source-new"
+
+        # Exactly what the outgoing release's UPDATE path writes: the pointer
+        # moves, the denormalised keys do not.
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE weather_current_values SET value_id = 'stale-value-old' "
+                    "WHERE location_id = 'stale-keys'"
+                )
+            )
+        assert sort_keys()[:3:2] == ("stale-value-old", "stale-source-new"), (
+            "the pointer did not move, or moved its keys with it -- either way "
+            "the stale row this test exists to repair was never created"
+        )
+
+        # An operator re-running the interrupted revision.
+        command.stamp(config, "0011_current_value_alert_index")
+        command.upgrade(config, "0012_current_value_sort_keys")
+
+        value_id, known_at, source_key = sort_keys()
+        assert value_id == "stale-value-old"
+        assert source_key == "stale-source-old", (
+            "the backfill skipped a row whose keys were stale rather than null, "
+            "so its ordering names a fact the pointer no longer references"
+        )
+        assert known_at.isoformat().startswith("2026-01-01T00:00")
     finally:
         get_settings.cache_clear()
 

@@ -141,6 +141,16 @@ class SourceRecordRow(Base):
     imported_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
+#: Observed and nowcast rows describe now; forecast rows describe later.  A
+#: bundle's ``latest`` wants the former first, and the index that serves that
+#: ordering must spell the expression exactly as the query does.  The query
+#: builds it with SQLAlchemy's ``case()`` rather than this string, so the two
+#: are held together by ``test_the_bundle_ordering_is_served_by_its_index``,
+#: which plans the real statement and fails if PostgreSQL has to sort.
+_CURRENT_PREFERENCE_EXPRESSION = (
+    "(CASE WHEN forecast_style IN ('observed', 'nowcast') THEN 0 ELSE 1 END)"
+)
+
 #: The one definition of "this row is a warning" used by the current-value
 #: projection.  The alert read and the partial index that serves it must apply
 #: the same expression, or PostgreSQL cannot prove the index covers the query
@@ -318,6 +328,20 @@ class WeatherCurrentValueRow(Base):
             text("target_at DESC"),
             postgresql_where=text(_ALERT_PROJECTION_PREDICATE),
         ),
+        # The bundle's current-value read sorts observed/nowcast ahead of
+        # forecast rows and then by recency.  Spelling that expression into an
+        # index lets the per-location LIMIT stop early instead of ranking the
+        # location's whole slice.  Keep it byte-identical to
+        # ``_CURRENT_PREFERENCE_EXPRESSION`` or PostgreSQL will not match it.
+        Index(
+            "ix_weather_current_values_location_current",
+            text("location_id"),
+            text(_CURRENT_PREFERENCE_EXPRESSION),
+            text("target_at DESC"),
+            text("known_at DESC NULLS LAST"),
+            text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"),
+        ),
     )
 
     value_id: Mapped[str] = mapped_column(
@@ -336,6 +360,22 @@ class WeatherCurrentValueRow(Base):
     forecast_style: Mapped[str] = mapped_column(String(40), nullable=False)
     metric_key: Mapped[str] = mapped_column(String(80), nullable=False)
     target_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    # Denormalised tie-breakers, carried so a bundle read can order a location's
+    # slice without joining the fact table first.  Ordering that mixed these two
+    # columns with projection columns forced the join ahead of the sort, so a
+    # per-location LIMIT could not bound the work: reading 60 rows cost the same
+    # as reading 200 because both first joined every projected row for that
+    # location (measured on production, 4,284 rows per location and 425,263 PK
+    # lookups into a 28 GB table for a 100-location bundle).  These are written
+    # from the fact the pointer names and move with it.
+    # Nullable on purpose.  The migration adds these to a live table, and the
+    # previous release keeps writing pointer rows until it is replaced, so rows
+    # created during a deploy carry no sort keys.  ``nullslast`` orders those
+    # last within their group, and the next revision of that logical point
+    # fills them in.  Promoting NOT NULL here would break the outgoing release's
+    # inserts mid-deploy.
+    known_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    source_record_key: Mapped[str | None] = mapped_column(String(255))
 
 
 _MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
@@ -1477,6 +1517,8 @@ class WeatherRepository:
                         forecast_style=candidate.forecast_style,
                         metric_key=candidate.metric_key,
                         target_at=candidate.target_at,
+                        known_at=candidate.known_at,
+                        source_record_key=candidate.source_record_key,
                     )
                 )
                 continue
@@ -1488,6 +1530,10 @@ class WeatherRepository:
                 )
             if self._revision_order(candidate) > self._revision_order(current):
                 projection.value_id = candidate.value_id
+                # The denormalised sort keys describe the fact the pointer
+                # names, so they have to move with it.
+                projection.known_at = candidate.known_at
+                projection.source_record_key = candidate.source_record_key
         session.flush()
 
     def _current_value_models_many(
@@ -1535,13 +1581,17 @@ class WeatherRepository:
                     else_=1,
                 )
             )
+        # Every sort key is a projection column, so the LIMIT can be applied
+        # before the fact table is touched.  Ordering on ``weather_values``
+        # columns forced the join ahead of the sort, which made the per-location
+        # cap meaningless: the read joined a location's whole slice either way.
         if newest_first:
             order.extend(
                 [
                     desc(timestamp),
-                    nullslast(desc(WeatherValueRow.known_at)),
-                    nullslast(desc(WeatherValueRow.source_record_key)),
-                    desc(WeatherValueRow.value_id),
+                    nullslast(desc(WeatherCurrentValueRow.known_at)),
+                    nullslast(desc(WeatherCurrentValueRow.source_record_key)),
+                    desc(WeatherCurrentValueRow.value_id),
                 ]
             )
         else:
@@ -1552,14 +1602,13 @@ class WeatherRepository:
                 [
                     timestamp,
                     WeatherCurrentValueRow.metric_key,
-                    nullslast(desc(WeatherValueRow.known_at)),
-                    nullslast(desc(WeatherValueRow.source_record_key)),
-                    desc(WeatherValueRow.value_id),
+                    nullslast(desc(WeatherCurrentValueRow.known_at)),
+                    nullslast(desc(WeatherCurrentValueRow.source_record_key)),
+                    desc(WeatherCurrentValueRow.value_id),
                 ]
             )
         candidate = (
             select(WeatherCurrentValueRow.value_id.label("value_id"))
-            .join(WeatherValueRow, WeatherValueRow.value_id == WeatherCurrentValueRow.value_id)
             .where(WeatherCurrentValueRow.location_id == requested_locations.c.location_id)
             .order_by(*order)
             .limit(limit_per_location)
@@ -1598,7 +1647,14 @@ class WeatherRepository:
             # advisory carries ``valid_until`` and stays active well past three
             # days, so a plain ``target_at`` window would hide exactly the
             # warnings that matter most.
-            candidate = candidate.where(
+            #
+            # ``valid_until`` is the one sort/filter column still on the fact,
+            # so the join belongs here rather than beside the other options: a
+            # predicate added without it compiles to a silent cross join.
+            candidate = candidate.join(
+                WeatherValueRow,
+                WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
+            ).where(
                 or_(
                     WeatherCurrentValueRow.target_at >= alert_active_at - ALERT_MAX_AGE,
                     WeatherValueRow.valid_until > alert_active_at,
