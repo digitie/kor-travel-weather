@@ -31,6 +31,18 @@ from kortravelweather.providers.base import (
 KHOA_PROVIDER = "python-khoa-api"
 KHOA_BEACH_INDEX_DATASET = "khoa_beach_index"
 
+#: KHOA issues two outlooks for the same day -- morning and afternoon -- and
+#: they carry different wave heights and temperatures.  Dating both at midnight
+#: made them the same fact, which the append-only table correctly refused
+#: ("immutable weather fact 충돌") on the first live run.  The period *is* the
+#: target time, so it belongs in ``target_at``.
+#:
+#: An unrecognised period lands at noon.  Two unrecognised periods on one day
+#: would then collide and fail the run -- loudly, with no bad data written,
+#: which is the right failure for a vocabulary that grew upstream.
+_PERIOD_HOURS = {"오전": 9, "오후": 15}
+_UNKNOWN_PERIOD_HOUR = 12
+
 _METRIC_FIELDS: tuple[tuple[str, str, str | None, str], ...] = (
     ("WAVE_HEIGHT", "max_wave_height_m", "m", "최대 파고"),
     ("WATER_TEMP", "average_water_temperature_c", "℃", "평균 수온"),
@@ -102,7 +114,12 @@ def beach_index_to_weather_values(
             # Without a date the row cannot be placed on a timeline, and
             # defaulting it to "now" would file a forecast as an observation.
             continue
-        target_at = datetime.combine(forecast.predicted_on, time.min, tzinfo=KST)
+        hour = _PERIOD_HOURS.get(
+            (forecast.forecast_period or "").strip(), _UNKNOWN_PERIOD_HOUR
+        )
+        target_at = datetime.combine(
+            forecast.predicted_on, time(hour=hour), tzinfo=KST
+        )
         for metric, attribute, unit, metric_name in _METRIC_FIELDS:
             raw_value = getattr(forecast, attribute)
             if raw_value is None:

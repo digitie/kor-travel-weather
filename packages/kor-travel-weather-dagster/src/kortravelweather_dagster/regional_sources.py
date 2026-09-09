@@ -172,6 +172,11 @@ def publish_regional_records(
     return {
         "provider": provider,
         "dataset_key": dataset_key,
+        # A run that fetched rows and anchored none looked exactly like a
+        # healthy run: krforest returned 513 stations with no coordinates and
+        # reported success three times before anyone noticed it had never
+        # written a value.
+        "produced_nothing": len(values) == 0,
         "records_fetched": len(records),
         "locations_anchored": anchored,
         "locations_disabled": disabled,

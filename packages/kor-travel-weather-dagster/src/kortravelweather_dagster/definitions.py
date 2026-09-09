@@ -392,6 +392,14 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
             max_values=runtime.max_values_per_run,
             settings=runtime,
         )
+        if result.get("produced_nothing"):
+            # Distinguishable from a healthy run only here: the counts
+            # alone cannot tell an empty upstream from a broken adapter.
+            context.log.warning(
+                "%s fetched %s records and published nothing",
+                result["provider"],
+                result["records_fetched"],
+            )
         context.add_output_metadata(result)
         return result
     finally:
@@ -452,6 +460,22 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
             max_values=runtime.max_values_per_run,
             settings=runtime,
         )
+        if result.get("produced_nothing"):
+            # Distinguishable from a healthy run only here: the counts
+            # alone cannot tell an empty upstream from a broken adapter.
+            context.log.warning(
+                "%s fetched %s records and published nothing",
+                result["provider"],
+                result["records_fetched"],
+            )
+        if result.get("produced_nothing"):
+            # Distinguishable from a healthy run only here: the counts
+            # alone cannot tell an empty upstream from a broken adapter.
+            context.log.warning(
+                "%s fetched %s records and published nothing",
+                result["provider"],
+                result["records_fetched"],
+            )
         context.add_output_metadata(result)
         return result
     finally:
