@@ -622,12 +622,20 @@ def _resolve_regional_job():
 
 regional_weather_job = _resolve_regional_job()
 
+# KMA and AirKorea ingest are off by default as of 2026-09-09.  The jobs stay
+# defined so a backfill can still be launched deliberately; what is stopped is
+# the clock, not the capability.
+#
+# `STOPPED` is the *default*, not a lock: a status flipped in the Dagster UI is
+# stored in the instance and survives deploys.  If these ever need to stay off
+# for good, the schedules have to stop being built at all — see the sibling
+# `kor-travel-map` repository, which does exactly that.
 hourly_kma_weather_schedule = ScheduleDefinition(
     name="hourly_kma_weather",
     cron_schedule="0 * * * *",
     job=weather_job,
     execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
+    default_status=DefaultScheduleStatus.STOPPED,
 )
 
 hourly_airkorea_weather_schedule = ScheduleDefinition(
@@ -635,7 +643,7 @@ hourly_airkorea_weather_schedule = ScheduleDefinition(
     cron_schedule="10 * * * *",
     job=airkorea_job,
     execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
+    default_status=DefaultScheduleStatus.STOPPED,
 )
 
 hourly_external_weather_schedule = ScheduleDefinition(
