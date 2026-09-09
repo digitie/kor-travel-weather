@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -389,6 +390,117 @@ def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
         # And the migration must still have produced every index it owns.
         for name in names:
             assert name in definitions
+    finally:
+        get_settings.cache_clear()
+
+
+def _revision_module(name: str):  # noqa: ANN202
+    """Import a migration by path; alembic never exposes them as modules."""
+    import importlib.util
+
+    path = Path("alembic") / "versions" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"revision_{name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_backfill_sweep_walks_past_its_own_batch_boundary(monkeypatch) -> None:
+    """The batch size is 50,000, so no test table reaches the second batch.
+
+    That hides the whole of the new failure surface.  A sweep pages through the
+    primary key by cursor, and a cursor that fails to advance either loops
+    forever or -- worse -- returns having silently skipped every row after the
+    first batch, which looks exactly like success.  Shrink the batch to one row
+    and make the sweep page.
+    """
+    database_url = TEST_DATABASE_URL
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
+    get_settings.cache_clear()
+    try:
+        engine = WeatherRepository(database_url).engine
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        config = Config("alembic.ini")
+        command.upgrade(config, "0012_current_value_sort_keys")
+
+        rows = 7
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO weather_locations "
+                    "(location_id, name, latitude, longitude, created_at, updated_at) "
+                    "VALUES ('sweep', 'Sweep', 37, 127, "
+                    "'2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00')"
+                )
+            )
+            for index in range(rows):
+                connection.execute(
+                    text(
+                        "INSERT INTO weather_source_records "
+                        "(source_record_key, provider, dataset_key, source_entity_type, "
+                        "source_entity_id, raw_payload_hash, payload, fetched_at, "
+                        "imported_at) VALUES (:key, 'p', 'd', 'weather_response', "
+                        "'sweep', :key, '{}', :at, :at)"
+                    ),
+                    {"key": f"sweep-source-{index}", "at": "2026-01-01 00:00:00+00"},
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO weather_values "
+                        "(value_id, location_id, provider, dataset_key, weather_domain, "
+                        "forecast_style, metric_key, target_at, known_at, "
+                        "normalization_version, payload, collected_at, source_record_key, "
+                        "value_number) VALUES (:value_id, 'sweep', 'p', 'd', 'weather', "
+                        "'short', :metric, '2026-01-01 02:00:00+00', :at, 'test', '{}', "
+                        ":at, :key, 1)"
+                    ),
+                    {
+                        "value_id": f"sweep-value-{index}",
+                        "metric": f"M{index}",
+                        "at": "2026-01-01 00:00:00+00",
+                        "key": f"sweep-source-{index}",
+                    },
+                )
+                # A pointer row as the outgoing release writes it: no sort keys.
+                connection.execute(
+                    text(
+                        "INSERT INTO weather_current_values "
+                        "(value_id, location_id, provider, dataset_key, weather_domain, "
+                        "forecast_style, metric_key, target_at) "
+                        "VALUES (:value_id, 'sweep', 'p', 'd', 'weather', 'short', "
+                        ":metric, '2026-01-01 02:00:00+00')"
+                    ),
+                    {"value_id": f"sweep-value-{index}", "metric": f"M{index}"},
+                )
+
+        revision = _revision_module("0012_current_value_sort_keys")
+        monkeypatch.setattr(revision, "_BATCH_ROWS", 1)
+
+        with engine.begin() as connection:
+            repaired = revision._sweep(connection)
+        assert repaired == rows, (
+            f"the sweep repaired {repaired} of {rows} rows; a cursor that does "
+            "not advance stops after its first batch and reports success"
+        )
+
+        with engine.connect() as connection:
+            disagreeing = connection.execute(
+                text(
+                    "SELECT count(*) FROM weather_current_values cv "
+                    "JOIN weather_values wv ON wv.value_id = cv.value_id "
+                    "WHERE cv.source_record_key IS DISTINCT FROM wv.source_record_key "
+                    "   OR cv.known_at IS DISTINCT FROM wv.known_at"
+                )
+            ).scalar_one()
+        assert disagreeing == 0
+
+        # A sweep that changes nothing is what upgrade() takes as proof that
+        # every row is consistent, so it has to actually mean that.
+        with engine.begin() as connection:
+            assert revision._sweep(connection) == 0
     finally:
         get_settings.cache_clear()
 

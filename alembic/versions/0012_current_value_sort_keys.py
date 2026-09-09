@@ -24,15 +24,34 @@ across a sequential scan of the 28 GB fact table, and every reader -- and the
 whole public API, which waits on this migration -- would block for the
 duration.
 
-The batches are resumable, and they select rows whose keys **disagree with the
-fact the pointer names** rather than rows whose keys are missing.  That
-distinction matters: the outgoing release moves an existing pointer by writing
-``value_id`` alone, because the new columns are not in its model.  Such a row
-ends up with a new ``value_id`` and the previous fact's sort keys -- stale, not
-null -- and a "backfill what is missing" pass would walk past it forever.  The
-column adds use ``IF NOT EXISTS`` for the same resumability reason.  Alembic
-writes ``alembic_version`` only after ``upgrade()`` returns, so anything
-committed before that point has to be safe to repeat.
+The backfill repairs rows whose keys **disagree with the fact the pointer
+names**, not rows whose keys are missing.  That distinction matters: the
+outgoing release moves an existing pointer by writing ``value_id`` alone,
+because the new columns are not in its model.  Such a row ends up with a new
+``value_id`` and the previous fact's sort keys -- stale, not null -- and a
+"backfill what is missing" pass would walk past it forever.  The column adds
+use ``IF NOT EXISTS`` for the same resumability reason.  Alembic writes
+``alembic_version`` only after ``upgrade()`` returns, so anything committed
+before that point has to be safe to repeat.
+
+## Why the batches are a keyset sweep
+
+The obvious batching -- "update the next 50,000 rows that still disagree" --
+is quadratic, and only on a table large enough to matter.  Each batch rescans
+from the beginning and joins every already-repaired row to the fact table again
+just to discover it no longer qualifies, so batch *n* does *n* times the work of
+batch 1.  Measured on production (3.75M pointers over a 33 GB fact table): about
+70 s for the first batch and rising, against 75 batches.
+
+So the batches walk the primary key instead, each one starting where the last
+ended.  Every row is visited exactly once per sweep and the disagreement test is
+a filter rather than the thing being searched for, which makes a sweep linear.
+
+A sweep that updates nothing has, by construction, just visited every row and
+found them all consistent -- so it is the completion proof as well, and no
+separate verification pass is needed.  More than one sweep is expected while the
+previous release is still repointing rows behind us; a repeat that keeps finding
+work is the signal something is wrong, and that is what ``_MAX_SWEEPS`` catches.
 
 The columns stay nullable.  Compose starts this migration while the previous
 release is still serving and ingesting, and that release writes pointer rows
@@ -56,9 +75,13 @@ branch_labels = None
 depends_on = None
 
 _BATCH_ROWS = 50_000
-# 2,887,417 rows on production at the time of writing; the cap only exists so a
-# pathological loop cannot run forever.
-_MAX_BATCHES = 500
+# 3,746,027 rows on production at the time of writing.  A sweep visits each row
+# once, so this cap only exists so a pathological loop cannot run forever.
+_MAX_BATCHES = 10_000
+# One sweep repairs the backlog; the second exists to confirm it and to catch
+# rows the outgoing release repointed while the first was running.  Needing more
+# than a few means something is writing stale keys faster than we fix them.
+_MAX_SWEEPS = 5
 _LOCK_TIMEOUT = "2s"
 _LOCK_ATTEMPTS = 30
 
@@ -95,43 +118,57 @@ def upgrade() -> None:
                     raise
         op.execute(sa.text("SET lock_timeout = 0"))
 
-        for _ in range(_MAX_BATCHES):
-            result = bind.execute(
-                sa.text(
-                    "UPDATE weather_current_values cv "
-                    "SET known_at = wv.known_at, "
-                    "    source_record_key = wv.source_record_key "
-                    "FROM weather_values wv "
-                    "WHERE wv.value_id = cv.value_id "
-                    "  AND cv.value_id IN ("
-                    "    SELECT cv2.value_id FROM weather_current_values cv2 "
-                    "    JOIN weather_values wv2 ON wv2.value_id = cv2.value_id "
-                    "    WHERE cv2.source_record_key IS DISTINCT FROM "
-                    "          wv2.source_record_key "
-                    "       OR cv2.known_at IS DISTINCT FROM wv2.known_at "
-                    "    LIMIT :batch"
-                    "  )"
-                ),
-                {"batch": _BATCH_ROWS},
-            )
-            if result.rowcount == 0:
-                break
-        else:
-            remaining = bind.execute(
-                sa.text(
-                    "SELECT count(*) FROM weather_current_values cv "
-                    "JOIN weather_values wv ON wv.value_id = cv.value_id "
-                    "WHERE cv.source_record_key IS DISTINCT FROM wv.source_record_key "
-                    "   OR cv.known_at IS DISTINCT FROM wv.known_at"
-                )
-            ).scalar_one()
-            # Finishing the loop without draining is indistinguishable from
-            # success once alembic records the revision, so refuse instead.
-            raise RuntimeError(
-                f"current-value sort keys still disagree with their facts on "
-                f"{remaining} rows after {_MAX_BATCHES} batches; raise "
-                "_MAX_BATCHES or investigate before re-running"
-            )
+        for _ in range(_MAX_SWEEPS):
+            if _sweep(bind) == 0:
+                return
+        raise RuntimeError(
+            f"current-value sort keys still disagreed with their facts after "
+            f"{_MAX_SWEEPS} full sweeps; something is writing stale keys faster "
+            "than this repairs them -- check that the previous release is no "
+            "longer publishing before re-running"
+        )
+
+
+def _sweep(bind: sa.engine.Connection) -> int:
+    """Walk the whole table once by primary key, repairing as we go.
+
+    Returns the number of rows repaired.  Zero means this sweep looked at every
+    pointer and found each one already agreeing with its fact, which is the
+    completion proof -- ``upgrade()`` needs no separate verification query.
+    """
+    cursor = ""
+    repaired = 0
+    for _ in range(_MAX_BATCHES):
+        last, seen, updated = bind.execute(
+            sa.text(
+                "WITH batch AS ("
+                "  SELECT value_id FROM weather_current_values "
+                "  WHERE value_id > :cursor ORDER BY value_id LIMIT :batch"
+                "), repaired AS ("
+                "  UPDATE weather_current_values cv "
+                "  SET known_at = wv.known_at, "
+                "      source_record_key = wv.source_record_key "
+                "  FROM weather_values wv "
+                "  WHERE cv.value_id IN (SELECT value_id FROM batch) "
+                "    AND wv.value_id = cv.value_id "
+                "    AND (cv.source_record_key IS DISTINCT FROM "
+                "         wv.source_record_key "
+                "     OR cv.known_at IS DISTINCT FROM wv.known_at) "
+                "  RETURNING 1"
+                ") SELECT (SELECT max(value_id) FROM batch), "
+                "         (SELECT count(*) FROM batch), "
+                "         (SELECT count(*) FROM repaired)"
+            ),
+            {"cursor": cursor, "batch": _BATCH_ROWS},
+        ).one()
+        if seen == 0:
+            return repaired
+        cursor = last
+        repaired += updated
+    raise RuntimeError(
+        f"the backfill sweep did not reach the end of weather_current_values in "
+        f"{_MAX_BATCHES} batches of {_BATCH_ROWS}; raise _MAX_BATCHES"
+    )
 
 
 def downgrade() -> None:
