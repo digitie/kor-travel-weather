@@ -25,10 +25,18 @@ from kortravelweather.settings import WeatherSettings
 from .airkorea_weather import run_airkorea_weather_sync
 from .external_weather import run_external_weather_sync
 from .kma_weather import run_weather_sync, targets_from_settings
+from .regional_sources import (
+    run_khoa_beach_index_sync,
+    run_krex_restarea_sync,
+    run_krforest_mountain_sync,
+)
 from .resources import (
     AirKoreaResource,
     ExternalWeatherProviderResource,
+    KhoaResource,
     KmaClientResource,
+    KrexResource,
+    KrforestResource,
     WeatherRepositoryResource,
 )
 from .retention import run_weather_retention_purge
@@ -355,6 +363,79 @@ def external_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
 
 
 @asset(
+    name="khoa_beach_index_sync",
+    required_resource_keys={"khoa_client", "weather_repository"},
+    description="국립해양조사원 해수욕장 해양지수(파고·수온·기온·풍속)를 publish한다.",
+)
+def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
+    runtime = WeatherSettings()
+    repository = context.resources.weather_repository.create_repository()
+    client = context.resources.khoa_client.create_client(
+        settings=runtime, repository=repository
+    )
+    try:
+        result = run_khoa_beach_index_sync(
+            repository=repository,
+            client=client,
+            max_places=runtime.regional_max_records,
+            max_values=runtime.max_values_per_run,
+        )
+        context.add_output_metadata(result)
+        return result
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+@asset(
+    name="krforest_mountain_sync",
+    required_resource_keys={"krforest_client", "weather_repository"},
+    description="산림청 산악기상관측망 관측값을 publish한다.",
+)
+def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
+    runtime = WeatherSettings()
+    repository = context.resources.weather_repository.create_repository()
+    result = run_krforest_mountain_sync(
+        repository=repository,
+        api_key=context.resources.krforest_client.api_key(
+            settings=runtime, repository=repository
+        ),
+        max_records=runtime.regional_max_records,
+        max_values=runtime.max_values_per_run,
+        timeout=runtime.provider_http_timeout_seconds,
+    )
+    context.add_output_metadata(result)
+    return result
+
+
+@asset(
+    name="krex_restarea_sync",
+    required_resource_keys={"krex_client", "weather_repository"},
+    description="한국도로공사 고속도로 휴게소 기상 관측값을 publish한다.",
+)
+def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
+    runtime = WeatherSettings()
+    repository = context.resources.weather_repository.create_repository()
+    client = context.resources.krex_client.create_client(
+        settings=runtime, repository=repository
+    )
+    try:
+        result = run_krex_restarea_sync(
+            repository=repository,
+            client=client,
+            max_records=runtime.regional_max_records,
+            max_values=runtime.max_values_per_run,
+        )
+        context.add_output_metadata(result)
+        return result
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+@asset(
     name="weather_retention_purge",
     required_resource_keys={"weather_repository"},
     description="보존 기간이 지난 fact/source 이력을 매일 정리한다.",
@@ -387,6 +468,9 @@ _ASSETS = [
     kma_weather_sync,
     airkorea_weather_sync,
     external_weather_sync,
+    khoa_beach_index_sync,
+    krforest_mountain_sync,
+    krex_restarea_sync,
     weather_retention_purge,
 ]
 
@@ -400,12 +484,19 @@ _unresolved_external_job = define_asset_job(
 _unresolved_retention_job = define_asset_job(
     "weather_retention_job", selection=[weather_retention_purge]
 )
+_unresolved_regional_job = define_asset_job(
+    "regional_weather_job",
+    selection=[khoa_beach_index_sync, krforest_mountain_sync, krex_restarea_sync],
+)
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
 # ``UnresolvedAssetJobDefinition`` directly emits a deprecation warning today
 # and becomes an error in newer Dagster releases.
 _resources = {
     "kma_client": KmaClientResource(),
+    "khoa_client": KhoaResource(),
+    "krex_client": KrexResource(),
+    "krforest_client": KrforestResource(),
     "weather_repository": WeatherRepositoryResource(),
     "airkorea_client": AirKoreaResource(),
     "external_weather": ExternalWeatherProviderResource(),
@@ -468,6 +559,20 @@ def _resolve_retention_job():
 
 weather_retention_job = _resolve_retention_job()
 
+
+def _resolve_regional_job():
+    asset_defs = Definitions(
+        assets=_ASSETS,
+        resources=_resources,
+    )
+    return _unresolved_regional_job.resolve(
+        asset_defs.resolve_asset_graph(),
+        resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
+    )
+
+
+regional_weather_job = _resolve_regional_job()
+
 hourly_kma_weather_schedule = ScheduleDefinition(
     name="hourly_kma_weather",
     cron_schedule="0 * * * *",
@@ -493,6 +598,18 @@ hourly_external_weather_schedule = ScheduleDefinition(
 )
 
 
+# Twice a day, on the half hour so it never collides with the hourly
+# ingests.  These three sources publish a few times a day at most; asking
+# hourly would multiply an already 3M-fact-per-day pipeline for readings
+# that have not changed.
+regional_weather_schedule = ScheduleDefinition(
+    name="twice_daily_regional_weather",
+    cron_schedule="30 5,17 * * *",
+    job=regional_weather_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
 # 03:20 KST: the ingest schedules fire at :00, :10 and :15 of every hour, and
 # the purge holds row locks on what it deletes, so it must not land on one.
 daily_weather_retention_schedule = ScheduleDefinition(
@@ -506,11 +623,18 @@ daily_weather_retention_schedule = ScheduleDefinition(
 
 defs = Definitions(
     assets=_ASSETS,
-    jobs=[weather_job, airkorea_job, external_weather_job, weather_retention_job],
+    jobs=[
+        weather_job,
+        airkorea_job,
+        external_weather_job,
+        regional_weather_job,
+        weather_retention_job,
+    ],
     schedules=[
         hourly_kma_weather_schedule,
         hourly_airkorea_weather_schedule,
         hourly_external_weather_schedule,
+        regional_weather_schedule,
         daily_weather_retention_schedule,
     ],
     resources=_resources,

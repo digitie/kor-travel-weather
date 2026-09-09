@@ -111,6 +111,90 @@ class AirKoreaResource(ConfigurableResource):
         )
 
 
+def _provider_key(
+    provider: str,
+    *,
+    settings: WeatherSettings | None = None,
+    repository: WeatherRepository | None = None,
+) -> str:
+    """Resolve a provider credential, preferring the admin-managed one.
+
+    An operator can rotate a key in the admin UI without a redeploy, so the
+    database value wins over the environment when both are present.
+    """
+    runtime = settings or WeatherSettings()
+    database_key = (
+        repository.get_provider_credential(
+            provider, runtime.optional_credential_encryption_key()
+        )
+        if repository
+        else None
+    )
+    key = database_key or runtime.provider_api_key(provider) or ""
+    if not key:
+        raise RuntimeError(f"{provider} credential이 설정되지 않았습니다.")
+    return key
+
+
+class KhoaResource(ConfigurableResource):
+    """국립해양조사원 client. data.go.kr service key를 쓴다."""
+
+    def create_client(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> Any:
+        from khoa import KhoaClient
+
+        runtime = settings or WeatherSettings()
+        return KhoaClient(
+            service_key=_provider_key(
+                "python-khoa-api", settings=runtime, repository=repository
+            ),
+            timeout=runtime.provider_http_timeout_seconds,
+            retries=runtime.provider_retries,
+            # The client reads a .env file by default; deployments inject the
+            # key through settings, and reading a stray file would make which
+            # key is in use depend on the working directory.
+            env_file=None,
+        )
+
+
+class KrexResource(ConfigurableResource):
+    """한국도로공사 client. data.go.kr이 아니라 data.ex.co.kr key를 쓴다."""
+
+    def create_client(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> Any:
+        from krex import KrexClient
+
+        runtime = settings or WeatherSettings()
+        return KrexClient(
+            ex_api_key=_provider_key(
+                "python-krex-api", settings=runtime, repository=repository
+            ),
+            timeout=runtime.provider_http_timeout_seconds,
+        )
+
+
+class KrforestResource(ConfigurableResource):
+    """산림청 client는 async 전용이라 adapter가 key만 받아 경계를 소유한다."""
+
+    def api_key(
+        self,
+        *,
+        settings: WeatherSettings | None = None,
+        repository: WeatherRepository | None = None,
+    ) -> str:
+        return _provider_key(
+            "python-krforest-api", settings=settings, repository=repository
+        )
+
+
 class ExternalWeatherProviderResource(ConfigurableResource):
     """환경 설정으로 생성되는 Open-Meteo/유료 provider resource."""
 

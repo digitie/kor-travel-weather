@@ -397,3 +397,61 @@ def test_external_dagster_boundary_is_atomic_and_idempotent(tmp_path: Any) -> No
     assert second["values_loaded"] == 0
     assert len(repository.timeline("seoul", include_revisions=True)) == 2
     assert len(repository.list_sync_run_sources(first["run_id"])) == 1
+
+
+def test_provider_registries_agree() -> None:
+    """Three lists name the same providers, and none can import the others.
+
+    ``settings.SUPPORTED_PROVIDER_KEYS`` gates what may be enabled,
+    ``providers.catalog.PROVIDER_CATALOG`` describes each provider to the admin
+    UI, and ``WeatherSettings.provider_api_key`` says which credential field a
+    provider reads.  ``settings`` cannot import the catalog -- the providers
+    package pulls in the factory, and the factory imports settings -- so the
+    duplication is unavoidable and this test is what makes it safe.
+
+    Each way of drifting fails differently and silently: a provider missing from
+    the catalog is invisible in the admin UI, one missing from the supported set
+    cannot be enabled at all, and one missing from the credential map is enabled
+    but authenticates as anonymous.
+    """
+    from pydantic import SecretStr
+
+    from kortravelweather.providers import PROVIDER_CATALOG
+    from kortravelweather.settings import SUPPORTED_PROVIDER_KEYS, WeatherSettings
+
+    catalog_keys = {spec.key for spec in PROVIDER_CATALOG}
+    assert catalog_keys == SUPPORTED_PROVIDER_KEYS, (
+        "PROVIDER_CATALOG and SUPPORTED_PROVIDER_KEYS disagree: "
+        f"catalog-only={sorted(catalog_keys - SUPPORTED_PROVIDER_KEYS)}, "
+        f"settings-only={sorted(SUPPORTED_PROVIDER_KEYS - catalog_keys)}"
+    )
+
+    settings = WeatherSettings.model_construct()
+    for spec in PROVIDER_CATALOG:
+        if not spec.auth_required:
+            continue
+        assert spec.credential_field is not None, (
+            f"{spec.key} requires auth but names no credential field"
+        )
+        assert hasattr(settings, spec.credential_field), (
+            f"{spec.key} names credential field {spec.credential_field!r}, "
+            "which is not a setting"
+        )
+
+    # The credential map is private to the method, so exercise it through the
+    # method: every authenticating provider must resolve to *some* field, which
+    # a provider absent from the map does not.
+    configured = WeatherSettings.model_construct(
+        **{
+            spec.credential_field: SecretStr("k")
+            for spec in PROVIDER_CATALOG
+            if spec.auth_required and spec.credential_field
+        }
+    )
+    for spec in PROVIDER_CATALOG:
+        if not spec.auth_required:
+            continue
+        assert configured.provider_api_key(spec.key) == "k", (
+            f"{spec.key} is in the catalog but not in provider_api_key's map, "
+            "so it would authenticate with no key at all"
+        )

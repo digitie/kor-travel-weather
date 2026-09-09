@@ -936,7 +936,10 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyproj" },
     { name = "python-airkorea-api" },
+    { name = "python-khoa-api" },
     { name = "python-kma-api" },
+    { name = "python-krex-api" },
+    { name = "python-krforest-api" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -973,7 +976,10 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "python-airkorea-api", directory = "packages/python-airkorea-api" },
+    { name = "python-khoa-api", git = "https://github.com/digitie/python-khoa-api.git?rev=bc6fe221ceada92abf808c91dec6dafc90d5f225" },
     { name = "python-kma-api", git = "https://github.com/digitie/python-kma-api.git?rev=0868b76bd4b7de96b20f667e431c3f43b67cb537" },
+    { name = "python-krex-api", git = "https://github.com/digitie/python-krex-api.git?rev=c6d8717ec2b712cc952bc566b351f07a7cd3824a" },
+    { name = "python-krforest-api", git = "https://github.com/digitie/python-krforest-api.git?rev=05676f35b0b79cce6ce0705d32d5146c6a7a0bbb" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -1877,6 +1883,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyshp"
+version = "3.1.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/6e/f6f241fcb57f09c856ae78249d70cf31c576840218226ba7d88eda5ceab8/pyshp-3.1.6.tar.gz", hash = "sha256:4c4b5a4138815c93defd6ebe50bae885b7e58984f431cdb7bb5d00718ac71daf", size = 2227945, upload-time = "2026-07-25T16:53:12.324Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ac/72/1f79dab76eb7651b5e3622a46b18a7f93f57c3a1317b712986c58810895e/pyshp-3.1.6-py3-none-any.whl", hash = "sha256:be8cd9436dcbde477c63ea789f7dcdea3af19f17ea84f2744bfc12efe9145d1e", size = 73744, upload-time = "2026-07-25T16:53:10.889Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1952,12 +1967,43 @@ wheels = [
 ]
 
 [[package]]
+name = "python-khoa-api"
+version = "0.1.0"
+source = { git = "https://github.com/digitie/python-khoa-api.git?rev=bc6fe221ceada92abf808c91dec6dafc90d5f225#bc6fe221ceada92abf808c91dec6dafc90d5f225" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "requests" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
+]
+
+[[package]]
 name = "python-kma-api"
 version = "0.1.0"
 source = { git = "https://github.com/digitie/python-kma-api.git?rev=0868b76bd4b7de96b20f667e431c3f43b67cb537#0868b76bd4b7de96b20f667e431c3f43b67cb537" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+]
+
+[[package]]
+name = "python-krex-api"
+version = "0.1.0"
+source = { git = "https://github.com/digitie/python-krex-api.git?rev=c6d8717ec2b712cc952bc566b351f07a7cd3824a#c6d8717ec2b712cc952bc566b351f07a7cd3824a" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[[package]]
+name = "python-krforest-api"
+version = "0.1.0"
+source = { git = "https://github.com/digitie/python-krforest-api.git?rev=05676f35b0b79cce6ce0705d32d5146c6a7a0bbb#05676f35b0b79cce6ce0705d32d5146c6a7a0bbb" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyproj" },
+    { name = "pyshp" },
 ]
 
 [[package]]
