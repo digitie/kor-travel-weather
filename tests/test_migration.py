@@ -406,14 +406,15 @@ def _revision_module(name: str):  # noqa: ANN202
     return module
 
 
-def test_the_backfill_sweep_walks_past_its_own_batch_boundary(monkeypatch) -> None:
-    """The batch size is 50,000, so no test table reaches the second batch.
+def test_the_backfill_pass_reports_exactly_what_it_repaired(monkeypatch) -> None:
+    """``upgrade()`` stops when a pass reports zero, so the count has to be real.
 
-    That hides the whole of the new failure surface.  A sweep pages through the
-    primary key by cursor, and a cursor that fails to advance either loops
-    forever or -- worse -- returns having silently skipped every row after the
-    first batch, which looks exactly like success.  Shrink the batch to one row
-    and make the sweep page.
+    The pass is one statement over the whole table, and its return value is the
+    only thing standing between "every pointer agrees with its fact" and
+    "alembic recorded the revision anyway".  A count that is too low ends the
+    loop early; one that never reaches zero fails the deploy.  So: N rows in
+    need of repair must report exactly N, and the pass that follows must report
+    zero rather than repairing them a second time.
     """
     database_url = TEST_DATABASE_URL
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
@@ -477,13 +478,12 @@ def test_the_backfill_sweep_walks_past_its_own_batch_boundary(monkeypatch) -> No
                 )
 
         revision = _revision_module("0012_current_value_sort_keys")
-        monkeypatch.setattr(revision, "_BATCH_ROWS", 1)
 
         with engine.begin() as connection:
-            repaired = revision._sweep(connection)
+            repaired = revision._repair_pass(connection)
         assert repaired == rows, (
-            f"the sweep repaired {repaired} of {rows} rows; a cursor that does "
-            "not advance stops after its first batch and reports success"
+            f"the pass reported {repaired} of {rows} rows repaired; upgrade() "
+            "treats that number as the amount of work left to do"
         )
 
         with engine.connect() as connection:
@@ -497,10 +497,10 @@ def test_the_backfill_sweep_walks_past_its_own_batch_boundary(monkeypatch) -> No
             ).scalar_one()
         assert disagreeing == 0
 
-        # A sweep that changes nothing is what upgrade() takes as proof that
+        # A pass that changes nothing is what upgrade() takes as proof that
         # every row is consistent, so it has to actually mean that.
         with engine.begin() as connection:
-            assert revision._sweep(connection) == 0
+            assert revision._repair_pass(connection) == 0
     finally:
         get_settings.cache_clear()
 

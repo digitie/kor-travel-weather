@@ -34,24 +34,33 @@ use ``IF NOT EXISTS`` for the same resumability reason.  Alembic writes
 ``alembic_version`` only after ``upgrade()`` returns, so anything committed
 before that point has to be safe to repeat.
 
-## Why the batches are a keyset sweep
+## Why the backfill is one statement and not a loop of batches
 
-The obvious batching -- "update the next 50,000 rows that still disagree" --
-is quadratic, and only on a table large enough to matter.  Each batch rescans
-from the beginning and joins every already-repaired row to the fact table again
-just to discover it no longer qualifies, so batch *n* does *n* times the work of
-batch 1.  Measured on production (3.75M pointers over a 33 GB fact table): about
-70 s for the first batch and rising, against 75 batches.
+Both batched forms were tried against production and both were far too slow, for
+the same reason: batching makes the fact lookups *random*, and this database
+sustains about 160 random reads a second.
 
-So the batches walk the primary key instead, each one starting where the last
-ended.  Every row is visited exactly once per sweep and the disagreement test is
-a filter rather than the thing being searched for, which makes a sweep linear.
+"Update the next 50,000 rows that still disagree" is additionally quadratic --
+each batch rescans from the start and re-joins every already-repaired row just
+to learn it no longer qualifies -- but paging the primary key instead, which is
+linear, still measured 160 rows/s and projected just under six hours, because
+every row still costs one random read into the 33 GB fact table.
 
-A sweep that updates nothing has, by construction, just visited every row and
-found them all consistent -- so it is the completion proof as well, and no
-separate verification pass is needed.  More than one sweep is expected while the
-previous release is still repointing rows behind us; a repeat that keeps finding
-work is the signal something is wrong, and that is what ``_MAX_SWEEPS`` catches.
+A single statement lets the planner hash the 3.7M pointers and read the fact
+table sequentially, once.  That is the same total data and no random reads at
+all.  Sequential throughput here is roughly two orders of magnitude better, so
+the pass is minutes rather than hours.
+
+The statement takes row locks, not table locks, so readers are unaffected --
+but it holds those locks on every pointer row for the length of the pass, which
+*would* stall a concurrently publishing older release.  ``deploy/n150.md`` says
+to pause ingestion for this revision; that is why.
+
+A pass that updates nothing has, by construction, just compared every pointer to
+its fact and found them all consistent -- so it is the completion proof as well,
+and no separate verification query is needed.  A second pass is expected to
+repair nothing and simply confirm; more than that means rows are being made
+stale faster than this repairs them, which is what ``_MAX_PASSES`` catches.
 
 The columns stay nullable.  Compose starts this migration while the previous
 release is still serving and ingesting, and that release writes pointer rows
@@ -74,14 +83,15 @@ down_revision = "0011_current_value_alert_index"
 branch_labels = None
 depends_on = None
 
-_BATCH_ROWS = 50_000
-# 3,746,027 rows on production at the time of writing.  A sweep visits each row
-# once, so this cap only exists so a pathological loop cannot run forever.
-_MAX_BATCHES = 10_000
-# One sweep repairs the backlog; the second exists to confirm it and to catch
-# rows the outgoing release repointed while the first was running.  Needing more
-# than a few means something is writing stale keys faster than we fix them.
-_MAX_SWEEPS = 5
+# One pass repairs the backlog; the second confirms it and picks up anything the
+# outgoing release repointed while the first was running.  Needing more than a
+# few means something is writing stale keys faster than we repair them.
+_MAX_PASSES = 5
+# The pass hashes the pointer table (3.7M rows, ~2 GB on production) and probes
+# it with a sequential scan of the fact table.  The server default of 4 MB would
+# spill that hash into hundreds of temp-file batches; this is a session-local
+# setting on a one-shot migration container, not a server change.
+_WORK_MEM = "256MB"
 _LOCK_TIMEOUT = "2s"
 _LOCK_ATTEMPTS = 30
 
@@ -118,57 +128,36 @@ def upgrade() -> None:
                     raise
         op.execute(sa.text("SET lock_timeout = 0"))
 
-        for _ in range(_MAX_SWEEPS):
-            if _sweep(bind) == 0:
+        op.execute(sa.text(f"SET work_mem = '{_WORK_MEM}'"))
+        for _ in range(_MAX_PASSES):
+            if _repair_pass(bind) == 0:
                 return
         raise RuntimeError(
             f"current-value sort keys still disagreed with their facts after "
-            f"{_MAX_SWEEPS} full sweeps; something is writing stale keys faster "
+            f"{_MAX_PASSES} full passes; something is writing stale keys faster "
             "than this repairs them -- check that the previous release is no "
             "longer publishing before re-running"
         )
 
 
-def _sweep(bind: sa.engine.Connection) -> int:
-    """Walk the whole table once by primary key, repairing as we go.
+def _repair_pass(bind: sa.engine.Connection) -> int:
+    """Compare every pointer to its fact in one statement, repairing as it goes.
 
-    Returns the number of rows repaired.  Zero means this sweep looked at every
-    pointer and found each one already agreeing with its fact, which is the
+    Returns the number of rows repaired.  Zero means this pass compared every
+    pointer and found each already agreeing with its fact, which is the
     completion proof -- ``upgrade()`` needs no separate verification query.
     """
-    cursor = ""
-    repaired = 0
-    for _ in range(_MAX_BATCHES):
-        last, seen, updated = bind.execute(
-            sa.text(
-                "WITH batch AS ("
-                "  SELECT value_id FROM weather_current_values "
-                "  WHERE value_id > :cursor ORDER BY value_id LIMIT :batch"
-                "), repaired AS ("
-                "  UPDATE weather_current_values cv "
-                "  SET known_at = wv.known_at, "
-                "      source_record_key = wv.source_record_key "
-                "  FROM weather_values wv "
-                "  WHERE cv.value_id IN (SELECT value_id FROM batch) "
-                "    AND wv.value_id = cv.value_id "
-                "    AND (cv.source_record_key IS DISTINCT FROM "
-                "         wv.source_record_key "
-                "     OR cv.known_at IS DISTINCT FROM wv.known_at) "
-                "  RETURNING 1"
-                ") SELECT (SELECT max(value_id) FROM batch), "
-                "         (SELECT count(*) FROM batch), "
-                "         (SELECT count(*) FROM repaired)"
-            ),
-            {"cursor": cursor, "batch": _BATCH_ROWS},
-        ).one()
-        if seen == 0:
-            return repaired
-        cursor = last
-        repaired += updated
-    raise RuntimeError(
-        f"the backfill sweep did not reach the end of weather_current_values in "
-        f"{_MAX_BATCHES} batches of {_BATCH_ROWS}; raise _MAX_BATCHES"
-    )
+    return bind.execute(
+        sa.text(
+            "UPDATE weather_current_values cv "
+            "SET known_at = wv.known_at, "
+            "    source_record_key = wv.source_record_key "
+            "FROM weather_values wv "
+            "WHERE wv.value_id = cv.value_id "
+            "  AND (cv.source_record_key IS DISTINCT FROM wv.source_record_key "
+            "   OR cv.known_at IS DISTINCT FROM wv.known_at)"
+        )
+    ).rowcount
 
 
 def downgrade() -> None:
