@@ -48,6 +48,17 @@ from kortravelweather.providers.krforest import (
 from kortravelweather.providers.krforest import (
     station_location as mountain_station_location,
 )
+from kortravelweather.providers.krforest_dust import (
+    KRFOREST_DUST_DATASET,
+    DustCatalogUnavailable,
+    dust_source_record,
+    dust_to_weather_values,
+    fetch_dust,
+    pair_with_stations,
+)
+from kortravelweather.providers.krforest_dust import (
+    station_location as dust_station_location,
+)
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
@@ -236,6 +247,60 @@ def run_krforest_mountain_sync(
         to_location=mountain_station_location,
         to_values=mountain_weather_to_weather_values,
         build_source_record=mountain_source_record,
+        max_values=max_values,
+    )
+
+
+def run_krforest_dust_sync(
+    *,
+    repository: WeatherRepository,
+    api_key: str,
+    hours: int,
+    max_records: int,
+    max_values: int,
+    timeout: float | None = None,
+    settings: WeatherSettings | None = None,
+) -> dict[str, Any]:
+    """Publish 청정넷 readings, or say why it could not.
+
+    The readings and the station catalog are separately approved data.go.kr
+    datasets, so a key can hold one and not the other.  Without the catalog a
+    reading has a station code and no coordinates, which is not something to
+    guess at -- and not something a nightly red schedule helps with either,
+    since the remedy is an application that takes days.
+    """
+    runtime = settings or WeatherSettings()
+    skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
+    if skipped is not None:
+        return skipped
+    with provider_request(KRFOREST_PROVIDER, KRFOREST_DUST_DATASET):
+        try:
+            stations, measurements = fetch_dust(
+                api_key=api_key,
+                hours=hours,
+                max_records=max_records,
+                timeout=timeout,
+            )
+        except DustCatalogUnavailable as exc:
+            return {
+                "provider": KRFOREST_PROVIDER,
+                "dataset_key": KRFOREST_DUST_DATASET,
+                "skipped": True,
+                "reason": str(exc),
+                "records_fetched": 0,
+                "values_loaded": 0,
+            }
+    paired = pair_with_stations(measurements, stations)
+    # The station is what carries the coordinates, so the record handed to the
+    # publish path is the pair; the reading alone cannot be anchored.
+    return publish_regional_records(
+        repository=repository,
+        provider=KRFOREST_PROVIDER,
+        dataset_key=KRFOREST_DUST_DATASET,
+        records=paired,
+        to_location=lambda pair: dust_station_location(pair[1]),
+        to_values=lambda pair, **kwargs: dust_to_weather_values(pair[0], **kwargs),
+        build_source_record=lambda pair, **kwargs: dust_source_record(pair[0], **kwargs),
         max_values=max_values,
     )
 

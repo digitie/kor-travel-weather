@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from krforest import ForestClient, MountainWeather
 
-from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
+from kortravelweather.models import KST, ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.providers.base import (
     jsonable,
     make_source_record,
@@ -147,14 +147,27 @@ def mountain_weather_to_weather_values(
     return values
 
 
+#: The vendor returns a row per station either way, but the readings are only
+#: populated when an ``observation_time`` is named -- without one every metric
+#: comes back as ``"-"``, which the model maps to ``None`` and this adapter then
+#: drops.  That is what made this source look broken for its first three runs.
+_OBSERVATION_TIME_FORMAT = "%Y%m%d%H%M"
+#: Readings land on ten-minute marks and appear a few minutes late, so asking
+#: for the current minute usually finds nothing.  The walk-back is bounded: an
+#: outage must not turn one run into a long series of empty requests.
+_LOOKBACK_STEP_MINUTES = 10
+_MAX_LOOKBACK_STEPS = 12
+
+
 def fetch_mountain_weather(
     *,
     api_key: str,
     max_records: int = 2000,
-    page_size: int = 500,
+    page_size: int = 600,
     timeout: float | None = None,
+    now: datetime | None = None,
 ) -> list[MountainWeather]:
-    """Fetch mountain observations, bounded, from a synchronous caller.
+    """Fetch the most recent populated ten-minute mark, bounded.
 
     ``max_records`` is a budget, not a filter: the walk stops once it is
     reached, so a station catalog that grows upstream cannot turn one run into
@@ -166,30 +179,57 @@ def fetch_mountain_weather(
             max_records=max_records,
             page_size=page_size,
             client_timeout=timeout,
+            now=now or datetime.now(KST),
         )
     )
 
 
 async def _fetch_mountain_weather(
-    *, api_key: str, max_records: int, page_size: int, client_timeout: float | None
+    *,
+    api_key: str,
+    max_records: int,
+    page_size: int,
+    client_timeout: float | None,
+    now: datetime,
 ) -> list[MountainWeather]:
     # Named ``client_timeout`` rather than ``timeout``: it configures the HTTP
     # client, it is not a deadline on this coroutine, and calling it ``timeout``
     # makes ruff's ASYNC109 read it as one.
-    collected: list[MountainWeather] = []
     async with ForestClient(api_key=api_key, timeout=client_timeout) as client:
-        page_no = 1
-        while len(collected) < max_records:
-            page = await client.travel.mountain_weather(
-                page_no=page_no, num_of_rows=min(page_size, max_records - len(collected))
+        mark = now.replace(second=0, microsecond=0)
+        mark -= timedelta(minutes=mark.minute % _LOOKBACK_STEP_MINUTES)
+        for step in range(_MAX_LOOKBACK_STEPS):
+            stamp = (mark - timedelta(minutes=step * _LOOKBACK_STEP_MINUTES)).strftime(
+                _OBSERVATION_TIME_FORMAT
             )
-            items = list(page.items)
-            if not items:
-                break
-            collected.extend(items)
-            if not getattr(page, "has_next_page", False):
-                break
-            page_no += 1
+            collected = await _fetch_one_mark(
+                client, stamp=stamp, max_records=max_records, page_size=page_size
+            )
+            # A mark with rows but no readings is the same as no mark at all;
+            # keep walking rather than publishing a station list.
+            if any(record.temperature_2m is not None for record in collected):
+                return collected
+    return []
+
+
+async def _fetch_one_mark(
+    client: ForestClient, *, stamp: str, max_records: int, page_size: int
+) -> list[MountainWeather]:
+    collected: list[MountainWeather] = []
+    page_no = 1
+    while len(collected) < max_records:
+        page = await client.travel.mountain_weather(
+            observation_time=stamp,
+            page_no=page_no,
+            num_of_rows=min(page_size, max_records - len(collected)),
+        )
+        items = list(page.items)
+        if not items:
+            break
+        collected.extend(items)
+        if not getattr(page, "has_next_page", False):
+            break
+        page_no += 1
     return collected[:max_records]
 
 
