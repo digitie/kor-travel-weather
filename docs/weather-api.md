@@ -139,10 +139,16 @@ several hundred stations and no facts.
 
 **청정넷 needs two data.go.kr approvals, and they are separate.** `15078005`
 carries the readings; `15078013` is the station catalog and the only place the
-coordinates live. A key approved for the first and not the second fetches
-perfectly good numbers that cannot be placed anywhere, so the asset reports a
-skip naming the dataset to apply for rather than failing — the remedy takes
-days, and a schedule that goes red every morning helps nobody.
+coordinates live — a measurement names a station code and nothing else. A key
+approved for the first and not the second fetches perfectly good numbers that
+cannot be placed anywhere, so the asset reports a skip naming the dataset to
+apply for rather than failing.
+
+The vendor returns a window oldest-first and the window spans days, so the fetch
+pages **backwards** from `total_count`. Paging forward and stopping at the
+record budget collects the oldest rows in the window, which the recency cutoff
+then discards — the first run against an approved catalog fetched three-day-old
+rows and published nothing.
 
 `python-krex-api` needs a data.ex.co.kr key
 (`KOR_TRAVEL_WEATHER_KREX_API_KEY`), which is a different key from the shared

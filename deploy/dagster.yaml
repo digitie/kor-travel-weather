@@ -1,0 +1,39 @@
+# Dagster instance settings for the compose deployment.
+#
+# Without this file Dagster runs on its defaults, and one of those defaults has
+# taken ingestion down twice: a run whose process disappears stays STARTED for
+# ever. It keeps counting against `max_concurrent_runs`, so after enough
+# container replacements the limit is full of runs that are not running and the
+# daemon logs "10 runs are currently in progress. Maximum is 10, won't launch
+# more" until somebody notices. The second time, hourly collection had been
+# stalled for eighteen hours.
+#
+# `run_monitoring` is the supported cure: the daemon checks that a started run
+# still has a live process and fails it when it does not, which releases the
+# slot on its own.
+run_monitoring:
+  enabled: true
+  # A deploy replaces the container, so a run can look unresponsive while it is
+  # simply being restarted. Long enough not to fail healthy runs mid-deploy,
+  # short enough that a stalled schedule is noticed within one interval.
+  start_timeout_seconds: 300
+  max_resume_run_attempts: 0
+  poll_interval_seconds: 60
+
+run_coordinator:
+  module: dagster._core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    # The ingest jobs are IO-bound against rate-limited public APIs, so the cap
+    # exists to protect the providers and this host's single spinning disk, not
+    # the CPU. Raising it does not make collection faster.
+    max_concurrent_runs: 10
+
+retention:
+  # Run history is the only record of what collection did, but it is also the
+  # thing that grows without bound on a host that has already run out of disk
+  # once. A fortnight outlives any weekend.
+  schedule:
+    purge_after_days: 14
+  sensor:
+    purge_after_days: 14
