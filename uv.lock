@@ -979,7 +979,7 @@ requires-dist = [
     { name = "python-khoa-api", git = "https://github.com/digitie/python-khoa-api.git?rev=bc6fe221ceada92abf808c91dec6dafc90d5f225" },
     { name = "python-kma-api", git = "https://github.com/digitie/python-kma-api.git?rev=0868b76bd4b7de96b20f667e431c3f43b67cb537" },
     { name = "python-krex-api", git = "https://github.com/digitie/python-krex-api.git?rev=c6d8717ec2b712cc952bc566b351f07a7cd3824a" },
-    { name = "python-krforest-api", git = "https://github.com/digitie/python-krforest-api.git?rev=05676f35b0b79cce6ce0705d32d5146c6a7a0bbb" },
+    { name = "python-krforest-api", git = "https://github.com/digitie/python-krforest-api.git?rev=7a67f5f71abedc435c060a5c127387d65a54c130" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -1998,7 +1998,7 @@ dependencies = [
 [[package]]
 name = "python-krforest-api"
 version = "0.1.0"
-source = { git = "https://github.com/digitie/python-krforest-api.git?rev=05676f35b0b79cce6ce0705d32d5146c6a7a0bbb#05676f35b0b79cce6ce0705d32d5146c6a7a0bbb" }
+source = { git = "https://github.com/digitie/python-krforest-api.git?rev=7a67f5f71abedc435c060a5c127387d65a54c130#7a67f5f71abedc435c060a5c127387d65a54c130" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },

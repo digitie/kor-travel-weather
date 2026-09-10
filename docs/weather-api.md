@@ -109,52 +109,51 @@ credential is configured.
 
 ## Regional observation networks
 
-Three sources are collected on their own schedule, `twice_daily_regional_weather`
-(05:30 and 17:30 Asia/Seoul):
+Collected on their own schedule, `twice_daily_regional_weather` (05:30 and 17:30
+Asia/Seoul):
 
 | Provider | Dataset | What |
 | --- | --- | --- |
 | `python-khoa-api` | `khoa_beach_index` | 해수욕장별 파고·수온·기온·풍속 일별 **예보** |
-| `python-krforest-api` | `krforest_mountain_weather` | 산악관측소 기온·습도·기압·강수·지면온도·풍향풍속 관측 |
-| `python-krex-api` | `krex_restarea_weather` | 고속도로 휴게소 기온·습도·풍속·강수·적설·이슬점 관측 |
+| `python-krforest-api` | `krforest_mountain_weather` | 산악관측소 기온·습도·기압·강수·지면온도·풍향풍속 |
+| `python-krforest-api` | `krforest_dust` | 청정넷(AICAN) PM10·PM2.5·PM1.0과 기온·습도·풍향풍속 |
+| `python-krex-api` | `krex_restarea_weather` | 고속도로 휴게소 기온·습도·풍속·강수·적설·이슬점 |
 
 They differ from the hourly providers in shape: one call returns every station
 in the country and each row carries its own coordinates, so there is no station
 catalog to refresh and no per-location fan-out. Anchors are created insert-only
-under the `khoa-`, `krforest-` and `krex-` id prefixes, so an administrator can
-disable one without the next run restoring it.
+under the `khoa-`, `krforest-`, `krforest-dust-` and `krex-` id prefixes, so an
+administrator can disable one without the next run restoring it.
 
 The KHOA rows are recorded as forecasts (`forecast_style=short`), not
-observations — they are next-day outlooks, and filing them as current readings
-would make a bundle present tomorrow's wave height as the present sea state.
+observations — they are next-day outlooks, and a beach carries a morning and an
+afternoon one for the same date, so they take target times of 09:00 and 15:00
+KST rather than sharing midnight.
 
-They run twice a day rather than hourly because the hourly path already
-produces roughly three million facts a day and these sources publish a few
-times a day at most. `KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS` bounds one run;
-a run that hits the value budget cuts between stations, never inside one, and
-reports `values_truncated`.
+**Mountain readings need an explicit observation time.** The vendor returns a
+row per station either way, but every metric comes back as `"-"` unless a
+ten-minute mark is named. The fetch asks for the current mark and walks back up
+to two hours until it finds one with readings; a mark that has rows and no
+readings is treated as no mark at all, because publishing it would anchor
+several hundred stations and no facts.
 
-Only `python-khoa-api` is enabled by default, and the first live run is why:
+**청정넷 needs two data.go.kr approvals, and they are separate.** `15078005`
+carries the readings; `15078013` is the station catalog and the only place the
+coordinates live. A key approved for the first and not the second fetches
+perfectly good numbers that cannot be placed anywhere, so the asset reports a
+skip naming the dataset to apply for rather than failing — the remedy takes
+days, and a schedule that goes red every morning helps nobody.
 
-- `python-krforest-api`'s single wired endpoint (`mountListSearch`) returns no
-  coordinates at all — the fields are absent from the response, not null — and
-  every reading came back as `"-"`. Nothing can be anchored, so it publishes
-  nothing. The adapter is written and tested and will work the moment the
-  upstream carries coordinates.
-- `python-krex-api` needs a data.ex.co.kr key (`KOR_TRAVEL_WEATHER_KREX_API_KEY`),
-  which is a different key from the shared data.go.kr one and is not a fallback.
-
-Add either to `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS` to turn it on; a provider
+`python-krex-api` needs a data.ex.co.kr key
+(`KOR_TRAVEL_WEATHER_KREX_API_KEY`), which is a different key from the shared
+data.go.kr one and is not a fallback. It is off by default; add it to
+`KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS` with the key to turn it on. A provider
 that is not in that list is skipped before its credential is even requested.
 
-KHOA issues a morning and an afternoon outlook for the same date, and they carry
-different values. They are separate facts with target times of 09:00 and 15:00
-KST — dating both at midnight made them one fact with two values, which the
-append-only table refuses.
-
-A run that fetches rows and publishes none reports `produced_nothing` and logs a
-warning. Without it, a source that anchors nothing is indistinguishable from a
-quiet upstream, which is how the krforest problem went unnoticed for three runs.
+`KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS` bounds one run; a run that hits the
+value budget cuts between stations, never inside one, and reports
+`values_truncated`. A run that fetches rows and publishes none reports
+`produced_nothing` and logs a warning.
 
 ## Retention
 

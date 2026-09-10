@@ -25,7 +25,7 @@ dependencies = [
   "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@0868b76bd4b7de96b20f667e431c3f43b67cb537",
   "python-airkorea-api",
   "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@bc6fe221ceada92abf808c91dec6dafc90d5f225",
-  "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@05676f35b0b79cce6ce0705d32d5146c6a7a0bbb",
+  "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@7a67f5f71abedc435c060a5c127387d65a54c130",
   "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@c6d8717ec2b712cc952bc566b351f07a7cd3824a",
   "pyproj>=3.5",
 ]

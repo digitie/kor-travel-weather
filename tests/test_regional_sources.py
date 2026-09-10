@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -12,6 +12,7 @@ from kortravelweather_dagster.regional_sources import publish_regional_records
 from kortravelweather.models import ForecastStyle, WeatherLocation
 from kortravelweather.providers import khoa, krex, krforest
 from kortravelweather.repository import WeatherRepository
+from kortravelweather.settings import WeatherSettings
 
 TEST_DATABASE_URL = os.environ.get(
     "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
@@ -515,3 +516,238 @@ def test_a_run_that_publishes_nothing_says_so() -> None:
 
     healthy = _publish_mountains([_mountain()], max_values=1000)
     assert healthy["produced_nothing"] is False
+
+
+def _dust(**overrides: Any) -> Any:
+    fields: dict[str, Any] = {
+        "station_code": "0011",
+        "observed_at": datetime(2026, 9, 10, 0, 0, tzinfo=UTC),
+        "temperature": 20.9,
+        "humidity": 46.5,
+        "wind_direction": 180.0,
+        "wind_speed": 1.2,
+        "pm10": 3.6,
+        "pm25": 3.5,
+        "pm01": 3.3,
+        "avoc_pm10": 3.2,
+        "avoc_pm25": 3.1,
+        "avoc_pm01": 3.0,
+    }
+    fields.update(overrides)
+    return _Row(**fields)
+
+
+def _dust_station(**overrides: Any) -> Any:
+    fields: dict[str, Any] = {
+        "station_code": "0011",
+        "station_group_code": "00",
+        "description": "홍릉시험림",
+        "address": "서울특별시 동대문구",
+        "installed_at": "20190801",
+        "equipment_name": None,
+        "equipment_model": None,
+        "equipment_maker": None,
+        "equipment_reference_number": None,
+        "elevation": 90.0,
+        "latitude": 37.59,
+        "longitude": 127.04,
+    }
+    fields.update(overrides)
+    return _Row(**fields)
+
+
+def test_dust_readings_become_air_quality_values() -> None:
+    from kortravelweather.providers import krforest_dust
+
+    values = krforest_dust.dust_to_weather_values(
+        _dust(), location_id="krforest-dust-0011", source_record_key="s", known_at=KNOWN_AT
+    )
+    by_metric = {value.metric_key: value for value in values}
+    assert set(by_metric) == {
+        "PM10", "PM25", "PM01", "TEMP", "HUMIDITY", "WIND_SPEED", "WIND_DIRECTION"
+    }
+    assert by_metric["PM25"].unit == "㎍/㎥"
+    assert by_metric["PM25"].weather_domain == "air_quality"
+    assert all(v.forecast_style is ForecastStyle.OBSERVED for v in values)
+    # target_at follows the reading, not the fetch: ten-minute marks are the
+    # whole point of this feed.
+    assert by_metric["PM10"].target_at == datetime(2026, 9, 10, 0, 0, tzinfo=UTC)
+    # A null metric must not become a zero reading.
+    partial = krforest_dust.dust_to_weather_values(
+        _dust(pm01=None, wind_speed=None),
+        location_id="l", source_record_key="s", known_at=KNOWN_AT,
+    )
+    assert "PM01" not in {v.metric_key for v in partial}
+    assert "WIND_SPEED" not in {v.metric_key for v in partial}
+
+
+def test_a_reading_whose_station_is_unknown_is_dropped() -> None:
+    """The station carries the only coordinates there are.
+
+    A measurement names a station code and nothing else, so a reading whose
+    station is missing from the catalog cannot be placed anywhere. Guessing
+    would put air-quality numbers on the wrong mountain.
+    """
+    from kortravelweather.providers import krforest_dust
+
+    stations = {"0011": _dust_station()}
+    paired = krforest_dust.pair_with_stations(
+        [_dust(), _dust(station_code="9999"), _dust(station_code=None)], stations
+    )
+    assert len(paired) == 1
+    assert paired[0][1].station_code == "0011"
+
+
+def test_the_dust_station_becomes_an_anchor_with_its_network_named() -> None:
+    from kortravelweather.providers import krforest_dust
+
+    location = krforest_dust.station_location(_dust_station())
+    assert location is not None
+    WeatherLocation.model_validate(location.model_dump())
+    assert location.location_id == "krforest-dust-0011"
+    point = krforest_dust.measurement_point_metadata(location)
+    assert point is not None
+    assert point["network"] == "청정넷(AICAN)"
+    assert point["elevation"] == 90.0
+    assert krforest_dust.station_location(_dust_station(latitude=None)) is None
+
+
+class _FakePage:
+    def __init__(self, items: list[Any], has_next: bool = False) -> None:
+        self.items = tuple(items)
+        self.has_next_page = has_next
+
+
+class _FakeForestClient:
+    """Records the observation times asked for, and answers from a script."""
+
+    def __init__(self, marks: dict[str, list[Any]]) -> None:
+        self._marks = marks
+        self.asked: list[str] = []
+        self.travel = self
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def mountain_weather(
+        self, *, observation_time: str | None = None, page_no: int = 1, num_of_rows: int = 10
+    ) -> Any:
+        self.asked.append(observation_time or "")
+        return _FakePage(self._marks.get(observation_time or "", []))
+
+
+def test_the_mountain_fetch_names_an_observation_time() -> None:
+    """Without one the vendor returns a station list with every reading "-".
+
+    That is exactly what shipped: three production runs reported success while
+    publishing nothing, because a row per station arrived and none of them
+    carried a temperature.
+    """
+    from kortravelweather.providers import krforest
+
+    now = datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
+    fake = _FakeForestClient({"202609100900": [_mountain()]})
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(krforest, "ForestClient", lambda **_: fake)
+        rows = krforest.fetch_mountain_weather(api_key="k", now=now)
+    assert [r.obs_id for r in rows] == ["M001"]
+    assert fake.asked == ["202609100900"], (
+        "the fetch did not name a ten-minute mark, so the readings come back empty"
+    )
+
+
+def test_the_mountain_fetch_walks_back_past_marks_with_no_readings() -> None:
+    """A mark that exists but carries no readings is the same as no mark.
+
+    Publishing it would anchor several hundred stations and no facts, which is
+    indistinguishable from a healthy run once the counts are the only signal.
+    """
+    from kortravelweather.providers import krforest
+
+    now = datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
+    fake = _FakeForestClient(
+        {
+            "202609100900": [_mountain(temperature_2m=None, temperature_10m=None)],
+            "202609100850": [_mountain(obs_id="M050")],
+        }
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(krforest, "ForestClient", lambda **_: fake)
+        rows = krforest.fetch_mountain_weather(api_key="k", now=now)
+    assert [r.obs_id for r in rows] == ["M050"]
+    assert fake.asked == ["202609100900", "202609100850"]
+
+
+def test_the_walk_back_reaches_no_further_than_a_couple_of_hours() -> None:
+    """An outage must not turn one run into an unbounded series of requests.
+
+    Asserted from the marks actually requested, not from the loop counter:
+    comparing against ``_MAX_LOOKBACK_STEPS`` would pass for any value of it,
+    which is what the first version of this test did.
+    """
+    from kortravelweather.providers import krforest
+
+    fake = _FakeForestClient({})
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(krforest, "ForestClient", lambda **_: fake)
+        rows = krforest.fetch_mountain_weather(
+            api_key="k", now=datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
+        )
+    assert rows == []
+    asked = [datetime.strptime(stamp, "%Y%m%d%H%M") for stamp in fake.asked]
+    assert asked, "nothing was requested at all"
+    reach = max(asked) - min(asked)
+    assert reach <= timedelta(hours=2), (
+        f"the walk reached {reach} into the past; an outage would spend that "
+        "many requests finding nothing"
+    )
+
+
+def test_a_missing_station_catalog_is_a_skip_not_a_failure() -> None:
+    """The readings and the catalog are separately approved datasets.
+
+    A key can hold one and not the other, and the remedy is an application that
+    takes days -- so a schedule that goes red every morning helps nobody. It
+    still has to say which dataset, or the message is unactionable.
+    """
+    from kortravelweather_dagster.regional_sources import run_krforest_dust_sync
+    from krforest.exceptions import ForestAuthError
+
+    from kortravelweather.providers import krforest_dust
+
+    class _Unapproved:
+        """Answers the catalog call the way data.go.kr does before approval."""
+
+        def __init__(self) -> None:
+            self.safety = self
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def dust_stations(self, **_: Any) -> Any:
+            raise ForestAuthError("HTTP 403: SERVICE_KEY_IS_NOT_REGISTERED_ERROR")
+
+    # Patched at the client, so the message under test is the one the adapter
+    # builds. Raising a hand-written message here would assert nothing about
+    # what an operator actually reads.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(krforest_dust, "ForestClient", lambda **_: _Unapproved())
+        result = run_krforest_dust_sync(
+            repository=None,  # type: ignore[arg-type]
+            api_key="k",
+            hours=1,
+            max_records=10,
+            max_values=10,
+            settings=WeatherSettings.model_construct(
+                enabled_providers=[krforest_dust.KRFOREST_PROVIDER]
+            ),
+        )
+    assert result["skipped"] is True
+    assert krforest_dust.STATION_DATASET_ID in result["reason"]
+    assert result["values_loaded"] == 0

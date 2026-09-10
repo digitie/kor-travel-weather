@@ -177,14 +177,12 @@ class WeatherSettings(BaseSettings):
             "python-kma-api",
             "python-airkorea-api",
             "python-khoa-api",
-            # Off by default, for reasons the first live run established rather
-            # than guesses.  python-krforest-api's only wired endpoint
-            # (mountListSearch) returns no coordinates at all and, at the time
-            # of writing, "-" for every reading, so nothing can be anchored.
-            # python-krex-api authenticates with a data.ex.co.kr key that most
-            # deployments will not have; enabling it by default buys a failing
-            # schedule twice a day.  Both adapters are tested and ready; add the
-            # key to KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS to turn one on.
+            "python-krforest-api",
+            # python-krex-api stays off by default: it authenticates with a
+            # data.ex.co.kr key that most deployments will not have, and
+            # enabling it buys a failing schedule twice a day.  The adapter is
+            # tested; add it to KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS with the
+            # key to turn it on.
             "open_meteo",
             "weatherapi",
             "openweathermap",
@@ -243,6 +241,21 @@ class WeatherSettings(BaseSettings):
         validation_alias="KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS",
         gt=0,
         le=20_000,
+    )
+    #: 청정넷 readings land on ten-minute marks, so an hour is six per station.
+    #: A window rather than "since last run" because the vendor's date filter is
+    #: day-granular and exclusive at both ends; the trim happens client-side.
+    regional_dust_hours: int = Field(
+        default=3,
+        validation_alias="KOR_TRAVEL_WEATHER_REGIONAL_DUST_HOURS",
+        gt=0,
+        le=168,
+    )
+    regional_dust_max_records: int = Field(
+        default=20_000,
+        validation_alias="KOR_TRAVEL_WEATHER_REGIONAL_DUST_MAX_RECORDS",
+        gt=0,
+        le=500_000,
     )
     retention_days: int = Field(
         default=2,

@@ -31,6 +31,7 @@ from .kma_weather import run_weather_sync, targets_from_settings
 from .regional_sources import (
     run_khoa_beach_index_sync,
     run_krex_restarea_sync,
+    run_krforest_dust_sync,
     run_krforest_mountain_sync,
     skipped_when_disabled,
 )
@@ -435,6 +436,43 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
 
 
 @asset(
+    name="krforest_dust_sync",
+    required_resource_keys={"krforest_client", "weather_repository"},
+    description="산림 청정넷(AICAN) 미세먼지 PM10·PM2.5·PM1.0과 기상값을 publish한다.",
+)
+def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
+    runtime = WeatherSettings()
+    skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
+    if skipped is not None:
+        context.add_output_metadata(skipped)
+        return skipped
+    repository = context.resources.weather_repository.create_repository()
+    result = run_krforest_dust_sync(
+        repository=repository,
+        api_key=context.resources.krforest_client.api_key(
+            settings=runtime, repository=repository
+        ),
+        hours=runtime.regional_dust_hours,
+        max_records=runtime.regional_dust_max_records,
+        max_values=runtime.max_values_per_run,
+        timeout=runtime.provider_http_timeout_seconds,
+        settings=runtime,
+    )
+    if result.get("skipped"):
+        # Not a failure: the readings are fine and the catalog is a separate
+        # data.go.kr approval, so nothing here can fix it this morning.
+        context.log.warning("청정넷 수집을 건너뜁니다: %s", result.get("reason"))
+    elif result.get("produced_nothing"):
+        context.log.warning(
+            "%s fetched %s readings and published nothing",
+            result["provider"],
+            result["records_fetched"],
+        )
+    context.add_output_metadata(result)
+    return result
+
+
+@asset(
     name="krex_restarea_sync",
     required_resource_keys={"krex_client", "weather_repository"},
     description="한국도로공사 고속도로 휴게소 기상 관측값을 publish한다.",
@@ -519,6 +557,7 @@ _ASSETS = [
     external_weather_sync,
     khoa_beach_index_sync,
     krforest_mountain_sync,
+    krforest_dust_sync,
     krex_restarea_sync,
     weather_retention_purge,
 ]
@@ -535,7 +574,12 @@ _unresolved_retention_job = define_asset_job(
 )
 _unresolved_regional_job = define_asset_job(
     "regional_weather_job",
-    selection=[khoa_beach_index_sync, krforest_mountain_sync, krex_restarea_sync],
+    selection=[
+        khoa_beach_index_sync,
+        krforest_mountain_sync,
+        krforest_dust_sync,
+        krex_restarea_sync,
+    ],
 )
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
