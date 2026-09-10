@@ -238,22 +238,37 @@ async def _fetch_measurements(
     max_records: int,
     page_size: int,
 ) -> list[ForestDustMeasurement]:
+    """Page **backwards** from the newest rows.
+
+    The vendor returns the window in ascending time order, so paging forward and
+    stopping at ``max_records`` collects the oldest rows in it -- which the
+    caller then trims against a recent cutoff, leaving nothing.  That is not
+    hypothetical: the first run against an approved catalog fetched 3,000 rows
+    from three days ago and published zero.
+
+    ``total_count`` gives the last page directly, so the walk starts there and
+    stops as soon as a page is entirely older than what the caller wants.
+    """
+    first = await client.safety.dust_measurements(
+        start_date=start_date, end_date=end_date, page_no=1, num_of_rows=1
+    )
+    total = int(getattr(first, "total_count", 0) or 0)
+    if total == 0:
+        return []
     collected: list[ForestDustMeasurement] = []
-    page_no = 1
-    while len(collected) < max_records:
+    page_no = max(1, (total + page_size - 1) // page_size)
+    while page_no >= 1 and len(collected) < max_records:
         page = await client.safety.dust_measurements(
             start_date=start_date,
             end_date=end_date,
             page_no=page_no,
-            num_of_rows=min(page_size, max_records - len(collected)),
+            num_of_rows=page_size,
         )
         items = list(page.items)
         if not items:
             break
         collected.extend(items)
-        if not getattr(page, "has_next_page", False):
-            break
-        page_no += 1
+        page_no -= 1
     return collected[:max_records]
 
 

@@ -386,3 +386,29 @@ def test_every_provider_credential_reaches_the_containers() -> None:
             f"{service_name} does not receive {missing}; the setting exists and "
             "the deployment can set it, but the container never sees it"
         )
+
+
+def test_dagster_runs_with_run_monitoring_enabled() -> None:
+    """A run whose process dies must not hold a concurrency slot for ever.
+
+    Dagster's default is to leave it STARTED. It keeps counting against
+    `max_concurrent_runs`, so after enough container replacements the limit is
+    full of runs that are not running and nothing new launches -- twice in one
+    deployment week, the second time stalling hourly collection for eighteen
+    hours. `run_monitoring` is what releases the slot without a human.
+    """
+    config_path = REPO_ROOT / "deploy" / "dagster.yaml"
+    assert config_path.exists(), "deploy/dagster.yaml is missing"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config.get("run_monitoring", {}).get("enabled") is True
+
+    mounted = False
+    for path in COMPOSE_FILES:
+        service = (_load(path).get("services") or {}).get("dagster")
+        for volume in (service or {}).get("volumes") or []:
+            if "dagster.yaml" in str(volume):
+                mounted = True
+    assert mounted, (
+        "deploy/dagster.yaml exists but no compose file mounts it, so the "
+        "container still runs on Dagster's defaults"
+    )

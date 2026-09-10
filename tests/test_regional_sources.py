@@ -751,3 +751,89 @@ def test_a_missing_station_catalog_is_a_skip_not_a_failure() -> None:
     assert result["skipped"] is True
     assert krforest_dust.STATION_DATASET_ID in result["reason"]
     assert result["values_loaded"] == 0
+
+
+class _PagedDustClient:
+    """Serves a window in ascending time order across pages, like the vendor."""
+
+    def __init__(self, rows: list[Any], stations: list[Any]) -> None:
+        self._rows = rows
+        self._stations = stations
+        self.safety = self
+        self.pages_asked: list[int] = []
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def dust_stations(self, *, page_no: int = 1, num_of_rows: int = 10) -> Any:
+        start = (page_no - 1) * num_of_rows
+        chunk = self._stations[start : start + num_of_rows]
+        return _FakePage(chunk, has_next=start + num_of_rows < len(self._stations))
+
+    async def dust_measurements(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        page_no: int = 1,
+        num_of_rows: int = 10,
+    ) -> Any:
+        self.pages_asked.append(page_no)
+        start = (page_no - 1) * num_of_rows
+        page = _FakePage(self._rows[start : start + num_of_rows])
+        page.total_count = len(self._rows)
+        return page
+
+
+def test_the_dust_fetch_reaches_the_newest_rows_not_the_oldest() -> None:
+    """The vendor returns the window oldest-first, and the window is days wide.
+
+    Paging forward and stopping at the record cap collects the oldest rows in
+    it, which the cutoff then discards -- so the run publishes nothing. That is
+    what the first run against an approved catalog did: 3,000 rows from three
+    days ago, zero values.
+    """
+    from kortravelweather.providers import krforest_dust
+
+    now = datetime(2026, 9, 10, 12, 40, tzinfo=UTC)
+    # Three days of ten-minute marks, ascending: only the tail is recent.
+    rows = [
+        _dust(observed_at=now - timedelta(minutes=10 * i), station_code="0011")
+        for i in reversed(range(432))
+    ]
+    client = _PagedDustClient(rows, [_dust_station()])
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(krforest_dust, "ForestClient", lambda **_: client)
+        stations, recent = krforest_dust.fetch_dust(
+            api_key="k", hours=3, max_records=60, page_size=20, now=now
+        )
+    assert stations, "the catalog did not load"
+    assert recent, (
+        "no recent readings survived the cutoff; the fetch collected the oldest "
+        "rows in the window"
+    )
+    assert all(row.observed_at >= now - timedelta(hours=3) for row in recent)
+    # And it must not have walked the whole archive to get there.
+    assert len(client.pages_asked) <= 6, (
+        f"asked for {len(client.pages_asked)} pages to reach the newest rows"
+    )
+
+
+def test_the_dust_fetch_is_bounded_by_its_record_budget() -> None:
+    from kortravelweather.providers import krforest_dust
+
+    now = datetime(2026, 9, 10, 12, 40, tzinfo=UTC)
+    rows = [
+        _dust(observed_at=now - timedelta(minutes=i), station_code="0011")
+        for i in reversed(range(500))
+    ]
+    client = _PagedDustClient(rows, [_dust_station()])
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(krforest_dust, "ForestClient", lambda **_: client)
+        _, recent = krforest_dust.fetch_dust(
+            api_key="k", hours=24, max_records=40, page_size=20, now=now
+        )
+    assert len(recent) <= 40

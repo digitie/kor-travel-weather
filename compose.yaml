@@ -127,6 +127,11 @@ services:
       - "14103"
     volumes:
       - dagster-home:/opt/dagster/home
+      # Read-only: this is configuration, and the instance writes its run
+      # storage alongside it in the volume above.  Without it Dagster runs on
+      # defaults that leave a run STARTED for ever when its process dies, and
+      # those runs keep consuming the concurrency limit.
+      - ./deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
     tmpfs:
       - /var/run/kor-travel-weather-metrics
     command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "14102"]
