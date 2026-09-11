@@ -137,27 +137,16 @@ def _provider_key(
 
 
 class KhoaResource(ConfigurableResource):
-    """국립해양조사원 client. data.go.kr service key를 쓴다."""
+    """국립해양조사원 client는 async 전용이라 adapter가 key만 받아 경계를 소유한다."""
 
-    def create_client(
+    def api_key(
         self,
         *,
         settings: WeatherSettings | None = None,
         repository: WeatherRepository | None = None,
-    ) -> Any:
-        from khoa import KhoaClient
-
-        runtime = settings or WeatherSettings()
-        return KhoaClient(
-            service_key=_provider_key(
-                "python-khoa-api", settings=runtime, repository=repository
-            ),
-            timeout=runtime.provider_http_timeout_seconds,
-            retries=runtime.provider_retries,
-            # The client reads a .env file by default; deployments inject the
-            # key through settings, and reading a stray file would make which
-            # key is in use depend on the working directory.
-            env_file=None,
+    ) -> str:
+        return _provider_key(
+            "python-khoa-api", settings=settings, repository=repository
         )
 
 

@@ -14,6 +14,7 @@ so a bundle read does not present tomorrow's wave height as a current reading.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime, time
 from decimal import Decimal
@@ -172,30 +173,69 @@ def beach_index_to_weather_values(
 
 
 def fetch_beach_index(
-    client: KhoaClient,
     *,
+    api_key: str,
     max_places: int = 400,
     page_size: int = 100,
+    retries: int = 3,
+    timeout: float | None = None,
 ) -> list[BeachIndexPlace]:
-    """Fetch the nationwide beach index, bounded.
+    """Fetch the nationwide beach index, bounded, from a synchronous caller.
+
+    KhoaClient became async-only (every ``beach_index``-style sync method was
+    removed; only the ``a``-prefixed coroutines remain).  The event loop is
+    owned here for the duration of one call, the same boundary
+    ``providers.krforest.fetch_mountain_weather`` crosses for ForestClient, so
+    Dagster and the repository stay synchronous.
 
     ``max_places`` is a budget rather than a filter: the builtin catalog lists
     356 beaches today, and a catalog that grows upstream must not silently turn
     one run into an unbounded walk.
     """
-    collected: list[BeachIndexPlace] = []
-    page_no = 1
-    while len(collected) < max_places:
-        page = client.beach_index(
-            page_no=page_no, num_of_rows=min(page_size, max_places - len(collected))
+    return asyncio.run(
+        _fetch_beach_index(
+            api_key=api_key,
+            max_places=max_places,
+            page_size=page_size,
+            retries=retries,
+            client_timeout=timeout,
         )
-        items = list(page.items)
-        if not items:
-            break
-        collected.extend(items)
-        if not getattr(page, "has_next_page", False):
-            break
-        page_no += 1
+    )
+
+
+async def _fetch_beach_index(
+    *,
+    api_key: str,
+    max_places: int,
+    page_size: int,
+    retries: int,
+    client_timeout: float | None,
+) -> list[BeachIndexPlace]:
+    # Named ``client_timeout`` rather than ``timeout``: it configures the HTTP
+    # client, it is not a deadline on this coroutine (see krforest.py for the
+    # same rationale, where ruff's ASYNC109 first flagged it).
+    collected: list[BeachIndexPlace] = []
+    async with KhoaClient(
+        service_key=api_key,
+        timeout=client_timeout or 10.0,
+        retries=retries,
+        # The client reads a .env file by default; deployments inject the key
+        # through settings, and reading a stray file would make which key is
+        # in use depend on the working directory.
+        env_file=None,
+    ) as client:
+        page_no = 1
+        while len(collected) < max_places:
+            page = await client.abeach_index(
+                page_no=page_no, num_of_rows=min(page_size, max_places - len(collected))
+            )
+            items = list(page.items)
+            if not items:
+                break
+            collected.extend(items)
+            if not getattr(page, "has_next_page", False):
+                break
+            page_no += 1
     return collected[:max_places]
 
 

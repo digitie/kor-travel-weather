@@ -1,11 +1,17 @@
 "use client";
 
-import maplibregl, {
-  type Map as MapLibreMap,
-  type MapLibreEvent,
-  type Marker as MapLibreMarker,
-  type PointLike,
-  type PositionAnchor,
+// maplibre-gl v6 is ESM-only and dropped its default export; a namespace
+// import keeps every `maplibregl.X` reference below working as both a value
+// (`new maplibregl.Map(...)`, `new maplibregl.Marker(...)`) and a type
+// (`maplibregl.ErrorEvent`, `maplibregl.IControl`), which named imports alone
+// could not do without renaming every call site.
+import * as maplibregl from "maplibre-gl";
+import type {
+  Map as MapLibreMap,
+  MapLibreEvent,
+  Marker as MapLibreMarker,
+  PointLike,
+  PositionAnchor,
 } from "maplibre-gl";
 import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +32,14 @@ import {
 } from "@/lib/weather-clusters";
 
 import "maplibre-gl/dist/maplibre-gl.css";
+
+// Next.js's asset handling hashes the worker without its `maplibre-gl-shared.mjs`
+// sibling, so the auto-detected worker URL 404s and every map mounts with no
+// tiles. `scripts/copy-maplibre-worker.mjs` (predev/prebuild) copies both files
+// to public/maplibre; this points the client at them. Must run before the first
+// `new maplibregl.Map(...)`, which is why it sits at module scope in the one file
+// that constructs one, rather than inside the component.
+maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
 
 /**
  * React/MapLibre boundary modelled on digitie's maplibre-vworld-react
