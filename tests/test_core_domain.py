@@ -13,7 +13,7 @@ from kortravelweather.providers.kma import (
     KmaNowcastRow,
     short_forecast_to_weather_values,
 )
-from kortravelweather.repository import WeatherRepository
+from kortravelweather.repository import PURGE_SOURCE_RECORDS_SQL, WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 TEST_DATABASE_URL = os.environ.get(
@@ -979,3 +979,80 @@ def test_the_purge_permission_does_not_outlive_the_purge() -> None:
     _seed_history(repository, "after", datetime.now(KST))
     with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
         connection.execute(text("DELETE FROM weather_values"))
+
+
+def test_the_purge_lookup_is_served_by_its_indexes() -> None:
+    """Plan the real "still cited?" check and refuse a plan that scans.
+
+    Both ``NOT EXISTS`` subqueries key on ``source_record_key``, which appears
+    nowhere else as a leading index column, so this check used to fall back to
+    a full scan per candidate row -- of ``weather_values``, the biggest table
+    in the database. That scan ran inside the same transaction as the
+    partition maintenance ahead of it, so it held every lock that transaction
+    had taken for as long as it ran, which is what once stalled every
+    ingestion job that reads ``weather_locations`` for as long as the scan
+    took.
+
+    Migration 0016 and the matching ORM indexes are what closes that. This
+    test binds the exact query text ``purge_expired_history`` runs
+    (``PURGE_SOURCE_RECORDS_SQL``) to those indexes, so an edit to either the
+    query or the indexes that breaks the match fails here instead of in
+    production.
+    """
+    repository = _retention_repository()
+    with repository.engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            # weather_values' identity constraint and weather_sync_run_sources'
+            # primary key both carry source_record_key as a trailing column,
+            # so PostgreSQL can serve the lookup from either of them without
+            # ever touching the two indexes this test exists to check -- and
+            # at this fixture's row count, cost estimates cannot tell them
+            # apart, so it will. Dropping both for the plan only, inside a
+            # transaction this test never commits, is what forces the
+            # question to be "can *this* index serve the lookup" rather than
+            # "can any index".
+            connection.execute(
+                text(
+                    "ALTER TABLE weather_values "
+                    "DROP CONSTRAINT uq_weather_values_identity"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE weather_sync_run_sources "
+                    "DROP CONSTRAINT weather_sync_run_sources_pkey"
+                )
+            )
+            # Not a performance assertion -- the fixture is far too small for
+            # the planner to care. Disabling the alternative is what makes
+            # the question "can this index serve the lookup" answerable at
+            # all once the competing indexes above are out of the way.
+            connection.execute(text("SET enable_seqscan = off"))
+            plan = "\n".join(
+                line
+                for (line,) in connection.execute(
+                    text("EXPLAIN " + PURGE_SOURCE_RECORDS_SQL),
+                    {"cutoff": datetime.now(KST)},
+                )
+            )
+        finally:
+            transaction.rollback()
+
+    # weather_values is partitioned, so the plan names each child partition's
+    # own copy of the index (e.g. weather_values_20260908_source_record_key_idx)
+    # rather than the parent's ix_weather_values_source_record_key -- the
+    # parent name never appears in a plan, only in the catalog.
+    assert "_source_record_key_idx" in plan, (
+        f"the weather_values half of the lookup does not use its index:\n{plan}"
+    )
+    assert "ix_weather_sync_run_sources_source_record_key" in plan, (
+        f"the weather_sync_run_sources half of the lookup does not use its "
+        f"index:\n{plan}"
+    )
+    assert "Seq Scan on weather_values" not in plan, (
+        f"the lookup fell back to scanning weather_values whole:\n{plan}"
+    )
+    assert "Seq Scan on weather_sync_run_sources" not in plan, (
+        f"the lookup fell back to scanning weather_sync_run_sources whole:\n{plan}"
+    )

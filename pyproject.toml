@@ -44,6 +44,12 @@ dev = [
 dagster = [
   "dagster>=1.9,<2",
   "dagster-webserver>=1.9,<2",
+  # Backs run/event-log/schedule storage with PostgreSQL instead of Dagster's
+  # SQLite default; see deploy/dagster.yaml for why. dagster-postgres does not
+  # share dagster's own version numbering (1.13.x here resolves against
+  # dagster-postgres 0.29.x), so this is pinned to its own minor line rather
+  # than mirrored against the dagster>=1.9,<2 pin above.
+  "dagster-postgres>=0.29,<0.30",
 ]
 
 [project.scripts]

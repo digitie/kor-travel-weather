@@ -92,6 +92,10 @@ services:
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
+      # A separate database, not a schema in ${POSTGRES_DB} -- see
+      # deploy/dagster.yaml. Password comes from PGPASSWORD below, the same
+      # way KOR_TRAVEL_WEATHER_DATABASE_URL above gets it.
+      DAGSTER_POSTGRES_URL: postgresql://${POSTGRES_USER:-weather}@db:5432/${DAGSTER_POSTGRES_DB:-weather_dagster}
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}

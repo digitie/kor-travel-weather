@@ -11,6 +11,42 @@
 # `run_monitoring` is the supported cure: the daemon checks that a started run
 # still has a live process and fails it when it does not, which releases the
 # slot on its own.
+#
+# Storage below is what run_monitoring's own bookkeeping depends on. Without
+# it, Dagster falls back to SQLite files under DAGSTER_HOME, and SQLite
+# accepts one writer at a time -- ten concurrent runs plus the daemon are ten
+# writers. Under load that surfaced as `sqlite3.OperationalError: database is
+# locked`, and a run whose STEP_SUCCESS/RUN_SUCCESS event lost that race never
+# updates its own status: it stays STARTED with a live process run_monitoring
+# has no reason to touch, and the run coordinator counts it against
+# `max_concurrent_runs` forever. PostgreSQL is the officially supported
+# alternative and handles concurrent writers correctly. It lives in its own
+# database (`weather_dagster`, see deploy/n150.md) rather than a schema inside
+# the application's own database, because dagster-postgres manages its schema
+# with its own Alembic history under a table literally named
+# `alembic_version` -- sharing a database with this project's own
+# `alembic_version` would collide.
+run_storage:
+  module: dagster_postgres.run_storage
+  class: PostgresRunStorage
+  config:
+    postgres_url:
+      env: DAGSTER_POSTGRES_URL
+
+event_log_storage:
+  module: dagster_postgres.event_log
+  class: PostgresEventLogStorage
+  config:
+    postgres_url:
+      env: DAGSTER_POSTGRES_URL
+
+schedule_storage:
+  module: dagster_postgres.schedule_storage
+  class: PostgresScheduleStorage
+  config:
+    postgres_url:
+      env: DAGSTER_POSTGRES_URL
+
 run_monitoring:
   enabled: true
   # A deploy replaces the container, so a run can look unresponsive while it is
