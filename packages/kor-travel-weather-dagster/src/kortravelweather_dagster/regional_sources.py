@@ -201,16 +201,20 @@ def publish_regional_records(
 def run_khoa_beach_index_sync(
     *,
     repository: WeatherRepository,
-    client: Any,
+    api_key: str,
     max_places: int,
     max_values: int,
+    retries: int = 3,
+    timeout: float | None = None,
     settings: WeatherSettings | None = None,
 ) -> dict[str, Any]:
     skipped = skipped_when_disabled(KHOA_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
         return skipped
     with provider_request(KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET):
-        places = fetch_beach_index(client, max_places=max_places)
+        places = fetch_beach_index(
+            api_key=api_key, max_places=max_places, retries=retries, timeout=timeout
+        )
     return publish_regional_records(
         repository=repository,
         provider=KHOA_PROVIDER,

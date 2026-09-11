@@ -347,22 +347,30 @@ def test_a_provider_removed_from_the_enabled_list_is_not_collected() -> None:
 
 
 def test_a_disabled_provider_is_skipped_before_any_request_is_made() -> None:
-    """Skipping after the fetch would still spend the quota it was meant to save."""
+    """Skipping after the fetch would still spend the quota it was meant to save.
+
+    ``api_key`` is a plain string now that KhoaClient is async-only and cannot
+    be constructed ahead of time and handed in -- there is no object left to
+    make explode, so the request itself has to be what we prove never ran.
+    That is what the ``fetch_beach_index`` patch below stands in for.
+    """
+    from kortravelweather_dagster import regional_sources
     from kortravelweather_dagster.regional_sources import run_khoa_beach_index_sync
 
     from kortravelweather.settings import WeatherSettings
 
-    class _ExplodingClient:
-        def beach_index(self, **_: Any) -> Any:  # pragma: no cover - must not run
-            raise AssertionError("the provider was called despite being disabled")
+    def _exploding_fetch(**_: Any) -> Any:  # pragma: no cover - must not run
+        raise AssertionError("the provider was called despite being disabled")
 
-    result = run_khoa_beach_index_sync(
-        repository=None,  # type: ignore[arg-type]
-        client=_ExplodingClient(),
-        max_places=10,
-        max_values=10,
-        settings=WeatherSettings.model_construct(enabled_providers=[]),
-    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(regional_sources, "fetch_beach_index", _exploding_fetch)
+        result = run_khoa_beach_index_sync(
+            repository=None,  # type: ignore[arg-type]
+            api_key="k",
+            max_places=10,
+            max_values=10,
+            settings=WeatherSettings.model_construct(enabled_providers=[]),
+        )
     assert result["skipped"] is True
 
 
@@ -437,6 +445,38 @@ def test_a_disabled_asset_skips_before_its_credential_is_needed(monkeypatch) -> 
         resources={"krex_client": _Client(), "weather_repository": _Repository()}
     )
     result = krex_restarea_sync(context)
+    assert result["skipped"] is True
+
+
+def test_khoa_asset_skips_before_its_credential_is_needed(monkeypatch) -> None:
+    """Same ordering bug, same fix, for the provider whose client is async-only.
+
+    KhoaResource no longer builds a KhoaClient at all (it cannot -- the client
+    is only ever entered inside an ``async with``), but resolving the api key
+    still touches the admin-managed credential store, so the gate has to sit
+    ahead of that call too.
+    """
+    from dagster import build_asset_context
+
+    monkeypatch.setenv(
+        "KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS", '["python-kma-api"]'
+    )
+    from kortravelweather_dagster.definitions import khoa_beach_index_sync
+
+    class _Client:
+        @staticmethod
+        def api_key(**_: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("the credential was demanded despite being disabled")
+
+    class _Repository:
+        @staticmethod
+        def create_repository(**_: Any) -> Any:  # pragma: no cover - must not run
+            raise AssertionError("the repository was built despite being disabled")
+
+    context = build_asset_context(
+        resources={"khoa_client": _Client(), "weather_repository": _Repository()}
+    )
+    result = khoa_beach_index_sync(context)
     assert result["skipped"] is True
 
 
@@ -837,3 +877,55 @@ def test_the_dust_fetch_is_bounded_by_its_record_budget() -> None:
             api_key="k", hours=24, max_records=40, page_size=20, now=now
         )
     assert len(recent) <= 40
+
+
+class _FakeAsyncKhoaClient:
+    """Answers ``abeach_index`` the way khoa's async-only client does.
+
+    KhoaClient's ``feat!: khoa를 asyncio 전용 라이브러리로 전환`` release deleted
+    every sync method, so a caller that forgets to ``await`` gets back a bare
+    coroutine object instead of a ``Page`` -- ``list(page.items)`` then raises
+    ``AttributeError`` rather than silently doing the wrong thing.  Nothing in
+    this suite exercised that plumbing before: the pure-function tests never
+    call ``fetch_beach_index``, and the disabled-provider tests return before
+    reaching it.
+    """
+
+    def __init__(self, pages: list[list[Any]]) -> None:
+        self._pages = pages
+        self.page_nos_asked: list[int] = []
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def abeach_index(self, *, page_no: int = 1, num_of_rows: int = 10) -> Any:
+        self.page_nos_asked.append(page_no)
+        items = self._pages[page_no - 1] if page_no <= len(self._pages) else []
+        return _FakePage(items, has_next=page_no < len(self._pages))
+
+
+def test_fetch_beach_index_awaits_and_pages_through_the_async_client() -> None:
+    """The plumbing a live run exercises, reproduced with a fake client.
+
+    Verified separately, live, against the real API (49 beaches, 2500 values);
+    this is what pins that behaviour in the automated suite so a regression
+    -- an un-awaited coroutine, a client never entered via ``async with`` --
+    fails ``pytest`` instead of only a manual smoke test.
+    """
+    fake = _FakeAsyncKhoaClient([[_beach(id="BCH001")], [_beach(id="BCH002")]])
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(khoa, "KhoaClient", lambda **_: fake)
+        places = khoa.fetch_beach_index(api_key="k", max_places=10, page_size=1)
+    assert [p.id for p in places] == ["BCH001", "BCH002"]
+    assert fake.page_nos_asked == [1, 2]
+
+
+def test_fetch_beach_index_is_bounded_by_its_record_budget() -> None:
+    fake = _FakeAsyncKhoaClient([[_beach(id=f"BCH{i:03d}")] for i in range(1, 6)])
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(khoa, "KhoaClient", lambda **_: fake)
+        places = khoa.fetch_beach_index(api_key="k", max_places=3, page_size=1)
+    assert len(places) == 3

@@ -1,0 +1,4 @@
+# Copied from node_modules/maplibre-gl/dist by scripts/copy-maplibre-worker.mjs
+# (predev/prebuild) so it always matches the installed version -- never
+# checked in.
+public/maplibre/

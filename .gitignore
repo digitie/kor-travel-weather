@@ -68,6 +68,9 @@ node_modules/
 .next/
 # Windows-side Playwright e2e scratch (frontend WSL + Playwright Windows, #117)
 .e2e-win/
+# Playwright MCP's own scratch output (screenshots/snapshots/console logs from
+# ad hoc browser verification) -- writes to the repo root by default.
+.playwright-mcp/
 
 # Local-only sensitive notes (prod 배포 런북 / 접속 — 민감정보 포함) — 커밋 금지.
 # 정본 위치/절차는 AGENTS.md §prod 배포 & 보안 감사. 각 worktree docs/에 수동 복사.
