@@ -107,7 +107,14 @@ class AirKoreaResource(ConfigurableResource):
         return AirKoreaClient(
             service_key=key,
             timeout=runtime.provider_http_timeout_seconds,
-            retries=runtime.provider_retries,
+            # The shared provider_retries knob is tuned for a per-location
+            # request, but AirKorea's sync groups stations by SIDO and fetches
+            # a whole province in one bulk call -- one failed request there
+            # fails every station in it. A transient blip against data.go.kr's
+            # gateway (the same infra KMA sees SERVICETIMEOUT_ERROR from) has
+            # a much larger blast radius here, so this floor keeps it retrying
+            # even when the shared setting is tuned low for everything else.
+            retries=max(runtime.provider_retries, 3),
         )
 
 

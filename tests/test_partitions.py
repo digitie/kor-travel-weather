@@ -88,6 +88,53 @@ def test_only_days_entirely_before_the_cutoff_are_dropped() -> None:
     assert partition_name(days[2]) in remaining
 
 
+def test_a_partitions_boundary_is_anchored_to_kst_midnight() -> None:
+    """A bare date literal is cast in the session's timezone, not KST.
+
+    ``weather_values_20260911`` must cover the KST calendar day of the 11th --
+    ``[2026-09-10 15:00 UTC, 2026-09-11 15:00 UTC)`` -- not UTC midnight to
+    UTC midnight, which is nine hours earlier and starts on the wrong side of
+    the KST day. A row collected between 00:00 and 09:00 KST used to land in
+    the previous day's UTC-anchored partition, silently misfiling until
+    retention dropped -- or failed to drop -- the wrong day.
+    """
+    repository = _repository()
+    day = date(2031, 6, 1)
+    with repository.engine.begin() as connection:
+        ensure_partitions(connection, start=day, end=day)
+        bound = connection.execute(
+            text(
+                "SELECT pg_get_expr(c.relpartbound, c.oid) FROM pg_class c "
+                "WHERE c.relname = :name"
+            ),
+            {"name": partition_name(day)},
+        ).scalar_one()
+    assert "2031-05-31 15:00:00+00" in bound, (
+        f"lower bound is not KST midnight on {day}: {bound}"
+    )
+    assert "2031-06-01 15:00:00+00" in bound, (
+        f"upper bound is not KST midnight on {day + timedelta(days=1)}: {bound}"
+    )
+
+
+def test_existing_partitions_reads_back_the_kst_day_it_was_created_for() -> None:
+    """The round trip must agree with ``partition_name``, not PostgreSQL's echo.
+
+    PostgreSQL reports a partition's bound back in the connection's own
+    timezone, so a KST-midnight boundary can be echoed with a UTC timestamp
+    that starts on the previous calendar day. Reading that string's leading
+    date naively would disagree with the name the partition was created
+    under -- exactly the mismatch that let a day fail to be dropped, or drop
+    the wrong one.
+    """
+    repository = _repository()
+    day = date(2031, 6, 1)
+    with repository.engine.begin() as connection:
+        ensure_partitions(connection, start=day, end=day)
+        parsed = dict(existing_partitions(connection))
+    assert parsed[partition_name(day)] == day
+
+
 def test_the_default_partition_is_never_dropped() -> None:
     """It has no bound, so "before the cutoff" cannot be true of it.
 

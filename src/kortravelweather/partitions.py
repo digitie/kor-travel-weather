@@ -19,9 +19,11 @@ and not the others is an insert that fails at midnight.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import Connection, text
+
+from .models import KST
 
 VALUES_TABLE = "weather_values"
 #: Everything outside the declared ranges lands here.  It should stay empty; it
@@ -33,6 +35,21 @@ DEFAULT_PARTITION = f"{VALUES_TABLE}_default"
 
 def partition_name(day: date) -> str:
     return f"{VALUES_TABLE}_{day:%Y%m%d}"
+
+
+def _kst_midnight_literal(day: date) -> str:
+    """A day boundary as an explicit KST instant, not a bare date.
+
+    A bare ``'2026-09-11'`` literal is cast to ``timestamptz`` using the
+    session's timezone -- UTC on this deployment -- so the boundary actually
+    sat at UTC midnight, nine hours before the KST day it was named for
+    started.  Any row collected between midnight and 09:00 KST (still the
+    previous day in UTC) landed in the wrong partition, invisible until
+    retention dropped -- or failed to drop -- the day it should have been in.
+    Spelling out the offset anchors the boundary to KST regardless of what
+    timezone the connection happens to default to.
+    """
+    return f"{day:%Y-%m-%d}T00:00:00+09:00"
 
 
 def ensure_default_partition(connection: Connection) -> None:
@@ -62,7 +79,8 @@ def ensure_partitions(connection: Connection, *, start: date, end: date) -> list
         connection.execute(
             text(
                 f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF {VALUES_TABLE} "
-                f"FOR VALUES FROM ('{day:%Y-%m-%d}') TO ('{day + timedelta(days=1):%Y-%m-%d}')"
+                f"FOR VALUES FROM ('{_kst_midnight_literal(day)}') "
+                f"TO ('{_kst_midnight_literal(day + timedelta(days=1))}')"
             )
         )
         created.append(name)
@@ -93,15 +111,27 @@ def existing_partitions(connection: Connection) -> list[tuple[str, date | None]]
 
 
 def _lower_bound(bound: str | None) -> date | None:
-    """Read the first day a partition covers out of its bound expression."""
+    """Read the first KST day a partition covers out of its bound expression.
+
+    PostgreSQL echoes ``pg_get_expr``'s ``timestamptz`` literal back in the
+    connection's own timezone, not the KST offset it was created with, so a
+    partition named for a KST day can come back stamped with the *previous*
+    UTC day for the hours before 09:00 KST.  Parsing it as an aware instant
+    and converting to KST -- rather than trusting whatever calendar day the
+    string happens to start with -- is what keeps this agreeing with
+    ``partition_name`` regardless of the session's display timezone.
+    """
     if not bound or "FROM (" not in bound:
         return None
     fragment = bound.split("FROM (", 1)[1].split(")", 1)[0]
     literal = fragment.strip().strip("'").strip()
     try:
-        return date.fromisoformat(literal[:10])
+        parsed = datetime.fromisoformat(literal)
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(KST)
+    return parsed.date()
 
 
 def drop_partitions_before(connection: Connection, cutoff: date) -> list[str]:

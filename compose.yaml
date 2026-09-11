@@ -106,8 +106,12 @@ services:
       KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
       KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
       KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","visual_crossing","tomorrow_io","weatherbit","weatherstack","accuweather","wttr_in"]}
-      KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-15}
-      KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-1}
+      # 15s/1 retry (2 attempts total) was too thin for data.go.kr's gateway,
+      # which has a documented SERVICETIMEOUT_ERROR mode -- KMA and AirKorea
+      # both saw runs fail outright on a single slow response. 20s/3 retries
+      # (4 attempts, backoff tail up to ~1.2s) rides out a brief stall instead.
+      KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-20}
+      KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-3}
       KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
       KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
@@ -124,7 +128,14 @@ services:
       KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN:-300}
       KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN:-10000}
       KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
-      KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-500000}
+      # 500k was sized before external forecast/timeline datasets were added.
+      # Those legitimately fetch a multi-day hourly window per location --
+      # open_meteo_forecast alone needs ~1.9M for the current catalog size
+      # (1,428 locations x 7 days x 24h x 8 fields), so every run of it failed
+      # outright, discarding a fully-fetched batch. 8M covers today's largest
+      # legitimate run (visual_crossing_timeline's ~15-day hourly window) with
+      # headroom for catalog growth, while still catching a genuine runaway.
+      KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
     expose:
       - "14102"

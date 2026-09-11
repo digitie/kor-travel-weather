@@ -196,13 +196,13 @@ class WeatherSettings(BaseSettings):
         validation_alias=AliasChoices("KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS", "WEATHER_PROVIDERS"),
     )
     provider_http_timeout_seconds: float = Field(
-        default=15.0,
+        default=20.0,
         validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS",
         gt=0,
         le=120,
     )
     provider_retries: int = Field(
-        default=1, validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_RETRIES", ge=0, le=5
+        default=3, validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_RETRIES", ge=0, le=5
     )
     targets: list[dict[str, Any]] = Field(
         default_factory=list, validation_alias="KOR_TRAVEL_WEATHER_TARGETS"
@@ -223,7 +223,7 @@ class WeatherSettings(BaseSettings):
         le=10_000_000,
     )
     max_values_per_run: int = Field(
-        default=500_000,
+        default=8_000_000,
         validation_alias="KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN",
         gt=0,
         le=10_000_000,
