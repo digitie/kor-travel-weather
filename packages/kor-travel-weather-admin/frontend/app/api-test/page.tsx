@@ -7,11 +7,11 @@ import { PageHeader } from "@/components/admin-shell";
 type Preset = { label: string; method: "GET" | "POST"; path: string; description: string };
 
 const PRESETS: Preset[] = [
-  { label: "Health", method: "GET", path: "/health", description: "API liveness" },
-  { label: "공개 위치", method: "GET", path: "/v1/weather/locations?limit=20", description: "enabled catalog" },
-  { label: "관리자 위치", method: "GET", path: "/v1/admin/locations?limit=20", description: "관리자 catalog" },
-  { label: "Provider catalog", method: "GET", path: "/v1/admin/providers", description: "configured provider" },
-  { label: "Sync runs", method: "GET", path: "/v1/admin/sync-runs?limit=20", description: "수집 실행 기록" },
+  { label: "상태 확인", method: "GET", path: "/health", description: "서버가 살아있는지 확인" },
+  { label: "공개 위치", method: "GET", path: "/v1/weather/locations?limit=20", description: "공개된 위치 목록" },
+  { label: "관리자 위치", method: "GET", path: "/v1/admin/locations?limit=20", description: "관리자용 위치 목록" },
+  { label: "제공처 목록", method: "GET", path: "/v1/admin/providers", description: "등록된 데이터 제공처 목록" },
+  { label: "수집 실행", method: "GET", path: "/v1/admin/sync-runs?limit=20", description: "수집 실행 기록" },
 ];
 
 export default function ApiTestPage() {
@@ -56,26 +56,26 @@ export default function ApiTestPage() {
   return (
     <>
       <PageHeader
-        actions={<span className="status on">proxy ready</span>}
-        description="운영 UI 인증 세션을 통해 public/admin API 응답과 문제 envelope를 빠르게 확인합니다."
+        actions={<span className="status on">연결됨</span>}
+        description="로그인한 관리자 세션으로 API를 직접 호출해서 응답을 확인하는 도구입니다."
         section="시스템"
         title="API 테스트"
       />
       <section className="api-console">
         <aside className="api-presets panel">
-          <div className="panel-head"><div><h2>빠른 요청</h2><p>자주 확인하는 endpoint</p></div></div>
+          <div className="panel-head"><div><h2>빠른 요청</h2><p>자주 쓰는 API 요청</p></div></div>
           <div className="preset-list">{PRESETS.map((preset) => <button key={preset.path} type="button" className={selectedPreset === preset ? "selected" : ""} onClick={() => { setMethod(preset.method); setPath(preset.path); setBody(""); }}><span><strong>{preset.label}</strong><small>{preset.description}</small></span><code>{preset.method}</code></button>)}</div>
         </aside>
         <div className="api-workspace panel">
-          <div className="panel-head"><div><h2>요청 작성</h2><p>브라우저에서 직접 backend를 호출하지 않고 same-origin proxy를 사용합니다.</p></div>{status !== null ? <span className={`status ${status < 400 ? "on" : "off"}`}>{status} · {duration}ms</span> : null}</div>
+          <div className="panel-head"><div><h2>요청 작성</h2><p>관리자 서버를 거쳐 안전하게 API를 호출합니다.</p></div>{status !== null ? <span className={`status ${status < 400 ? "on" : "off"}`}>{status} · {duration}ms</span> : null}</div>
           <div className="api-form">
-            <label className="api-field" htmlFor="api-method"><span>Method</span><select id="api-method" aria-label="HTTP method" value={method} onChange={(event) => setMethod(event.target.value as "GET" | "POST")}><option>GET</option><option>POST</option></select></label>
-            <label className="api-field" htmlFor="api-path"><span>Path</span><input id="api-path" aria-label="API path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/v1/weather/locations" /></label>
+            <label className="api-field" htmlFor="api-method"><span>요청 방식</span><select id="api-method" aria-label="HTTP method" value={method} onChange={(event) => setMethod(event.target.value as "GET" | "POST")}><option>GET</option><option>POST</option></select></label>
+            <label className="api-field" htmlFor="api-path"><span>요청 경로</span><input id="api-path" aria-label="API path" value={path} onChange={(event) => setPath(event.target.value)} placeholder="/v1/weather/locations" /></label>
             <button type="button" className="button primary api-submit" onClick={runRequest} disabled={running}>{running ? "실행 중…" : "요청 실행"}</button>
           </div>
-          {method === "POST" ? <label className="api-body-field" htmlFor="api-body"><span>JSON body</span><textarea id="api-body" className="api-body" aria-label="JSON body" value={body} onChange={(event) => setBody(event.target.value)} placeholder={'{"location_id":"seoul"}'} /></label> : null}
+          {method === "POST" ? <label className="api-body-field" htmlFor="api-body"><span>요청 본문(JSON)</span><textarea id="api-body" className="api-body" aria-label="JSON body" value={body} onChange={(event) => setBody(event.target.value)} placeholder={'{"location_id":"seoul"}'} /></label> : null}
           {error ? <div className="error" role="alert">{error}</div> : null}
-          <div className="api-result"><div className="section-label"><span>response</span><span>{result === null ? "—" : "JSON"}</span></div><pre>{result === null ? "요청 결과가 여기에 표시됩니다." : typeof result === "string" ? result : JSON.stringify(result, null, 2)}</pre></div>
+          <div className="api-result"><div className="section-label"><span>응답 결과</span><span>{result === null ? "—" : "JSON"}</span></div><pre>{result === null ? "요청 결과가 여기에 표시됩니다." : typeof result === "string" ? result : JSON.stringify(result, null, 2)}</pre></div>
         </div>
       </section>
     </>

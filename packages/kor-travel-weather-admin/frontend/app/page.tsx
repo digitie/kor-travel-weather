@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
-import { getHealth, getLocations, getPublicLocations, getSyncRuns, SyncRun } from "@/lib/api";
+import { getHealth, getLocations, getPublicLocations, getSyncRuns, syncRunStatusLabel, SyncRun } from "@/lib/api";
 
 function SummaryCard({
   icon: Icon,
@@ -76,28 +76,28 @@ export default function HomePage() {
             <Link className="button secondary" href="/sync-runs">수집 실행</Link>
           </>
         }
-        description="KMA 원천 응답과 공개용 weather fact를 한 곳에서 점검합니다."
+        description="날씨 데이터 수집 현황과 공개 API 상태를 한눈에 확인합니다."
         section="개요"
         title="운영 홈"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}
       <section className="cards home-metrics" aria-busy={loading} aria-label="운영 요약">
-        <SummaryCard icon={MapPin} label="활성 위치" value={activeTotal.toLocaleString("ko-KR")} detail="public catalog" loading={loading} />
-        <SummaryCard icon={Database} label="카탈로그 전체" value={catalogTotal.toLocaleString("ko-KR")} detail="관리 대상 anchor" loading={loading} />
-        <SummaryCard icon={Activity} label="최근 수집" value={lastRun?.status ?? "—"} detail={lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")} facts` : "실행 기록 없음"} loading={loading} />
-        <SummaryCard icon={CloudSun} label="API 상태" value={loading ? "—" : health} detail="weather source" loading={loading} />
+        <SummaryCard icon={MapPin} label="활성 위치" value={activeTotal.toLocaleString("ko-KR")} detail="공개 API에 노출된 위치" loading={loading} />
+        <SummaryCard icon={Database} label="카탈로그 전체" value={catalogTotal.toLocaleString("ko-KR")} detail="등록된 전체 위치" loading={loading} />
+        <SummaryCard icon={Activity} label="최근 수집" value={lastRun ? syncRunStatusLabel(lastRun.status) : "—"} detail={lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")}건 저장` : "실행 기록 없음"} loading={loading} />
+        <SummaryCard icon={CloudSun} label="API 상태" value={loading ? "—" : health} detail="공개 API 응답 상태" loading={loading} />
       </section>
       <section className="panel dashboard-note">
-        <div className="panel-head"><div><h2>운영 기준</h2><p>수집 실패 시 이전 immutable fact는 그대로 보존됩니다.</p></div></div>
+        <div className="panel-head"><div><h2>운영 기준</h2><p>수집이 실패해도 이전에 저장된 값은 그대로 남습니다.</p></div></div>
         <div className="dashboard-grid">
-          <div><span className="eyebrow">catalog</span><p>위치 카탈로그의 enabled 상태가 Dagster 실행 대상의 기준입니다.</p></div>
-          <div><span className="eyebrow">lineage</span><p>각 metric은 원천 response의 source_record_key를 공유합니다.</p></div>
-          <div><span className="eyebrow">revision</span><p>수정 응답은 history로 남고 public latest는 최신 revision만 선택합니다.</p></div>
+          <div><span className="eyebrow">위치 카탈로그</span><p>카탈로그에서 켜둔 위치만 수집 대상이 됩니다.</p></div>
+          <div><span className="eyebrow">원본 데이터</span><p>각 값이 어떤 원본 응답에서 왔는지 그대로 추적할 수 있습니다.</p></div>
+          <div><span className="eyebrow">수정 이력</span><p>값이 수정되면 이전 값도 이력으로 남고, 공개 화면에는 최신 값만 보여줍니다.</p></div>
         </div>
       </section>
       <section className="panel recent-panel">
-        <div className="panel-head"><div><h2>최근 실행</h2><p>Dagster run의 마지막 상태</p></div></div>
-        {lastRun ? <div className="run-summary"><code>{lastRun.run_id}</code><span className={`status ${lastRun.status === "success" ? "on" : "off"}`}>{lastRun.status}</span><span>{lastRun.values_loaded} facts · {lastRun.grids_fetched} grids · {lastRun.requests_fetched} requests</span></div> : <div className="empty">아직 수집 실행이 없습니다.</div>}
+        <div className="panel-head"><div><h2>최근 실행</h2><p>가장 최근 수집 실행 상태입니다.</p></div></div>
+        {lastRun ? <div className="run-summary"><code>{lastRun.run_id}</code><span className={`status ${lastRun.status === "success" ? "on" : "off"}`}>{syncRunStatusLabel(lastRun.status)}</span><span>{lastRun.values_loaded}건 저장 · 격자 {lastRun.grids_fetched}개 · 요청 {lastRun.requests_fetched}건</span></div> : <div className="empty">아직 수집 실행이 없습니다.</div>}
       </section>
     </>
   );

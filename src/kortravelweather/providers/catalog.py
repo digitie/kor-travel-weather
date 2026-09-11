@@ -38,16 +38,16 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://apis.data.go.kr",
         (
             DatasetSpec(
-                "kma_ultra_short_nowcast", "초단기실황", "현재 관측값", "KMA", "provider 응답 주기"
+                "kma_ultra_short_nowcast", "초단기실황", "현재 관측값", "KMA", "매시 정각 관측 · 40분부터 조회 가능"
             ),
             DatasetSpec(
-                "kma_ultra_short_forecast", "초단기예보", "시간별 예보", "KMA", "발표 기준", True
+                "kma_ultra_short_forecast", "초단기예보", "시간별 예보", "KMA", "매시 30분 발표 · 45분부터 조회 가능", True
             ),
             DatasetSpec(
-                "kma_short_forecast", "단기예보", "시간·일별 예보", "KMA", "발표 기준", True
+                "kma_short_forecast", "단기예보", "시간·일별 예보", "KMA", "하루 8회(02,05,08,11,14,17,20,23시) 발표", True
             ),
             DatasetSpec(
-                "kma_mid_forecast", "중기예보", "3–10일 지역 예보", "KMA", "발표 기준", True
+                "kma_mid_forecast", "중기예보", "3–10일 지역 예보", "KMA", "하루 2회(06,18시) 발표", True
             ),
         ),
     ),
@@ -63,7 +63,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
                 "해수욕장 해양지수",
                 "해수욕장별 파고·수온·기온·풍속 일별 예보",
                 "/beachIndex",
-                "일별",
+                "하루 1회 갱신",
                 True,
             ),
         ),
@@ -80,14 +80,14 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
                 "산악기상관측",
                 "산악관측소 기온·습도·기압·강수·풍향풍속 관측값",
                 "/mtweather/mountListSearch",
-                "10분",
+                "10분마다 갱신",
             ),
             DatasetSpec(
                 "krforest_dust",
                 "청정넷 미세먼지",
                 "산림 청정넷(AICAN) PM10·PM2.5·PM1.0과 기온·습도·풍향풍속",
                 "/AicanDustData/dustData",
-                "10분",
+                "10분마다 갱신",
             ),
         ),
     ),
@@ -103,7 +103,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
                 "휴게소 기상",
                 "고속도로 휴게소 기온·습도·풍속·강수·적설 관측값",
                 "/openapi/restinfo/restWeatherList",
-                "시간별",
+                "매시간 갱신",
             ),
         ),
     ),
@@ -119,14 +119,14 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
                 "측정소 카탈로그",
                 "AirKorea 측정소 위치·메타데이터",
                 "/MsrstnInfoInqireSvc/getMsrstnList",
-                "시간별",
+                "매시간 갱신",
             ),
             DatasetSpec(
                 "airkorea_realtime_measurement",
                 "대기질 관측",
                 "AirKorea 측정소 실시간 관측",
                 "/ArpltnInforInqireSvc/getMsrstnAcctoRltmMesureDnsty",
-                "시간별",
+                "매시간 갱신",
             ),
         ),
     ),
@@ -140,16 +140,16 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
             DatasetSpec(
                 "weatherapi_current",
                 "현재 관측",
-                "WeatherAPI current",
+                "기온·습도·풍속 등 현재 날씨 관측값",
                 "/current.json",
-                "요청 시점",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
                 "weatherapi_forecast",
                 "예보",
-                "WeatherAPI hourly forecast",
+                "기온·강수확률 등 시간별 날씨 예보",
                 "/forecast.json",
-                "시간별",
+                "매시간 갱신",
                 True,
             ),
         ),
@@ -164,16 +164,16 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
             DatasetSpec(
                 "openweathermap_current",
                 "현재 관측",
-                "OpenWeatherMap current",
+                "기온·습도·풍속 등 현재 날씨 관측값",
                 "/weather",
-                "요청 시점",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
                 "openweathermap_forecast",
                 "예보",
-                "OpenWeatherMap 3-hour forecast",
+                "기온·강수확률 등 3시간 간격 날씨 예보",
                 "/forecast",
-                "3시간별",
+                "3시간마다 갱신",
                 True,
             ),
         ),
@@ -186,14 +186,14 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://api.open-meteo.com/v1",
         (
             DatasetSpec(
-                "open_meteo_current", "현재 관측", "Open-Meteo current", "/forecast", "요청 시점"
+                "open_meteo_current", "현재 관측", "기온·습도·풍속 등 현재 날씨 관측값", "/forecast", "조회할 때마다 실시간 조회"
             ),
             DatasetSpec(
                 "open_meteo_forecast",
                 "예보",
-                "Open-Meteo hourly forecast",
+                "기온·강수확률 등 시간별 날씨 예보",
                 "/forecast",
-                "시간별",
+                "매시간 갱신",
                 True,
             ),
         ),
@@ -207,10 +207,10 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         (
             DatasetSpec(
                 "visual_crossing_timeline",
-                "Timeline",
-                "Visual Crossing timeline",
+                "예보",
+                "기온·강수확률 등 시간별 날씨 예보",
                 "/timeline",
-                "시간별",
+                "매시간 갱신",
                 True,
             ),
         ),
@@ -225,16 +225,16 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
             DatasetSpec(
                 "tomorrow_io_realtime",
                 "실시간",
-                "Tomorrow.io realtime",
+                "기온·습도·풍속 등 현재 날씨 관측값",
                 "/weather/realtime",
-                "요청 시점",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
                 "tomorrow_io_forecast",
                 "예보",
-                "Tomorrow.io forecast",
+                "기온·강수확률 등 시간별 날씨 예보",
                 "/weather/forecast",
-                "시간별",
+                "매시간 갱신",
                 True,
             ),
         ),
@@ -247,14 +247,14 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://api.weatherbit.io/v2.0",
         (
             DatasetSpec(
-                "weatherbit_current", "현재 관측", "Weatherbit current", "/current", "요청 시점"
+                "weatherbit_current", "현재 관측", "기온·습도·풍속 등 현재 날씨 관측값", "/current", "조회할 때마다 실시간 조회"
             ),
             DatasetSpec(
                 "weatherbit_forecast",
                 "예보",
-                "Weatherbit hourly forecast",
+                "기온·강수확률 등 시간별 날씨 예보",
                 "/forecast/hourly",
-                "시간별",
+                "매시간 갱신",
                 True,
             ),
         ),
@@ -267,7 +267,7 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://api.weatherstack.com",
         (
             DatasetSpec(
-                "weatherstack_current", "현재 관측", "Weatherstack current", "/current", "요청 시점"
+                "weatherstack_current", "현재 관측", "기온·습도·풍속 등 현재 날씨 관측값", "/current", "조회할 때마다 실시간 조회"
             ),
         ),
     ),
@@ -281,16 +281,16 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
             DatasetSpec(
                 "accuweather_current",
                 "현재 관측",
-                "AccuWeather current conditions",
+                "기온·습도·풍속 등 현재 날씨 관측값",
                 "/currentconditions",
-                "요청 시점",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
                 "accuweather_forecast",
                 "예보",
-                "AccuWeather hourly forecast",
+                "기온·강수확률 등 시간별 날씨 예보",
                 "/forecasts",
-                "시간별",
+                "매시간 갱신",
                 True,
             ),
         ),
@@ -305,12 +305,12 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
             DatasetSpec(
                 "wttr_in_current",
                 "현재 관측",
-                "wttr.in current condition",
+                "기온·습도·풍속 등 현재 날씨 관측값",
                 "/:location",
-                "요청 시점",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
-                "wttr_in_forecast", "예보", "wttr.in hourly forecast", "/:location", "시간별", True
+                "wttr_in_forecast", "예보", "기온·강수확률 등 시간별 날씨 예보", "/:location", "매시간 갱신", True
             ),
         ),
     ),
