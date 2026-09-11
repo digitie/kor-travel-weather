@@ -1771,6 +1771,28 @@ tbody tr:hover {
   font-size: 0.6875rem;
 }
 
+.dagster-run-elapsed {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.dagster-run-error {
+  display: block;
+  overflow-wrap: anywhere;
+  margin-top: 0.25rem;
+  max-width: 24rem;
+  color: var(--destructive);
+  font-size: 0.75rem;
+  white-space: normal;
+}
+
+.warn-text {
+  color: var(--warning);
+}
+
 .inline-link {
   display: inline-flex;
   align-items: center;
