@@ -1,4 +1,4 @@
-export type DagsterSchedule = { name: string; status: string | null; cron: string | null };
+export type DagsterSchedule = { name: string; status: string | null; cron: string | null; jobName: string };
 export type DagsterRepository = { name: string; locationName: string; schedules: DagsterSchedule[]; jobs: string[]; assets: string[] };
 export type DagsterRun = { runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null; errorMessage: string | null };
 export type DagsterSnapshot = { repositories: DagsterRepository[]; runs: DagsterRun[]; checkedAt: string };
@@ -65,9 +65,34 @@ export function formatElapsed(seconds: number): string {
   return "1분 미만";
 }
 
+/**
+ * A cron string is precise but not something a person reads at a glance.
+ * Covers this project's own schedules (every hour, a couple of fixed times a
+ * day) in plain Korean; anything shaped differently falls back to the raw
+ * expression rather than guessing wrong.
+ */
+export function describeCron(cron: string): string {
+  const parts = cron.trim().split(/\s+/);
+  if (parts.length !== 5) return cron;
+  const [minute, hour, day, month, weekday] = parts;
+  if (day !== "*" || month !== "*" || weekday !== "*") return cron;
+  if (hour === "*") {
+    if (/^\d+$/.test(minute)) {
+      return minute === "0" ? "매시 정각" : `매시 ${minute}분`;
+    }
+    return cron;
+  }
+  const minuteNum = Number(minute);
+  if (!/^\d+$/.test(minute) || Number.isNaN(minuteNum)) return cron;
+  const hours = hour.split(",");
+  if (!hours.every((value) => /^\d+$/.test(value))) return cron;
+  const times = hours.map((value) => `${value.padStart(2, "0")}:${minute.padStart(2, "0")}`);
+  return `매일 ${times.join(", ")}`;
+}
+
 type GraphqlResponse = {
   data?: {
-    repositoriesOrError?: { __typename: string; nodes?: Array<{ name: string; location: { name: string }; schedules: Array<{ name: string; cronSchedule: string | null; scheduleState: { status: string } }>; jobs: Array<{ name: string }>; assetNodes: Array<{ assetKey: { path: string[] } }> }>; message?: string };
+    repositoriesOrError?: { __typename: string; nodes?: Array<{ name: string; location: { name: string }; schedules: Array<{ name: string; cronSchedule: string | null; pipelineName: string; scheduleState: { status: string } }>; jobs: Array<{ name: string }>; assetNodes: Array<{ assetKey: { path: string[] } }> }>; message?: string };
     runsOrError?: { __typename: string; results?: Array<{ runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null }>; message?: string };
   };
   errors?: Array<{ message?: string }>;
@@ -145,7 +170,7 @@ const QUERY = `query WeatherDagsterOverview($limit: Int!) {
       nodes {
         name
         location { name }
-        schedules { name cronSchedule scheduleState { status } }
+        schedules { name cronSchedule pipelineName scheduleState { status } }
         jobs { name }
         assetNodes { assetKey { path } }
       }
@@ -184,7 +209,7 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
     repositories: repositories.nodes.map((repository) => ({
       name: repository.name,
       locationName: repository.location.name,
-      schedules: repository.schedules.map((schedule) => ({ name: schedule.name, status: schedule.scheduleState.status, cron: schedule.cronSchedule })),
+      schedules: repository.schedules.map((schedule) => ({ name: schedule.name, status: schedule.scheduleState.status, cron: schedule.cronSchedule, jobName: schedule.pipelineName })),
       jobs: repository.jobs.map((job) => job.name),
       assets: repository.assetNodes.map((asset) => asset.assetKey.path.join("/")),
     })),
