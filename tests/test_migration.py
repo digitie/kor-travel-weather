@@ -94,7 +94,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0015_partition_weather_values"
+            assert version == "0016_purge_lookup_indexes"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
@@ -226,6 +226,13 @@ _PROJECTION_INDEXES = (
     "ix_weather_current_values_alert_lookup",
     "ix_weather_current_values_location_current",
 )
+#: The purge's "still cited?" lookup. Unlike the marker/projection indexes
+#: above, these are plain (no expression, no predicate) -- the assertion this
+#: shares a loop with only checks that both schema paths agree, not ordering.
+_PURGE_LOOKUP_INDEXES = (
+    "ix_weather_values_source_record_key",
+    "ix_weather_sync_run_sources_source_record_key",
+)
 
 
 def _index_definitions(connection, table: str = "weather_values") -> dict[str, str]:
@@ -263,6 +270,9 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
             from_create_all.update(
                 _index_definitions(connection, "weather_current_values")
             )
+            from_create_all.update(
+                _index_definitions(connection, "weather_sync_run_sources")
+            )
 
         # 2) schema built by the migration chain
         with engine.begin() as connection:
@@ -273,6 +283,9 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
             from_alembic = _index_definitions(connection)
             from_alembic.update(
                 _index_definitions(connection, "weather_current_values")
+            )
+            from_alembic.update(
+                _index_definitions(connection, "weather_sync_run_sources")
             )
 
         for name in _MARKER_INDEXES + _PROJECTION_INDEXES:
@@ -286,6 +299,15 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
             # The marker queries read revisions descending; an ascending index
             # cannot serve that ordering.
             assert "DESC" in from_alembic[name]
+
+        for name in _PURGE_LOOKUP_INDEXES:
+            assert name in from_create_all, f"{name} missing from create_all schema"
+            assert name in from_alembic, f"{name} missing from alembic schema"
+            assert from_create_all[name] == from_alembic[name], (
+                f"{name} differs between schema paths:\n"
+                f"  create_all: {from_create_all[name]}\n"
+                f"  alembic   : {from_alembic[name]}"
+            )
     finally:
         get_settings.cache_clear()
 

@@ -414,6 +414,50 @@ def test_dagster_runs_with_run_monitoring_enabled() -> None:
     )
 
 
+def test_dagster_runs_are_recorded_in_postgresql_not_sqlite() -> None:
+    """SQLite accepts one writer; ten concurrent runs plus the daemon are ten.
+
+    Without an explicit ``run_storage``/``event_log_storage``/
+    ``schedule_storage``, Dagster falls back to SQLite files under
+    ``DAGSTER_HOME``, and concurrent writers hit
+    ``sqlite3.OperationalError: database is locked``. A run whose
+    STEP_SUCCESS/RUN_SUCCESS event loses that race never updates its own
+    status: it stays STARTED with a live process, which is a state
+    ``run_monitoring`` (see ``test_dagster_runs_with_run_monitoring_enabled``)
+    has no reason to touch, so the slot it holds is never released. PostgreSQL
+    handles concurrent writers correctly, which is why it is the officially
+    supported alternative.
+    """
+    config_path = REPO_ROOT / "deploy" / "dagster.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    for key, class_name in (
+        ("run_storage", "PostgresRunStorage"),
+        ("event_log_storage", "PostgresEventLogStorage"),
+        ("schedule_storage", "PostgresScheduleStorage"),
+    ):
+        section = config.get(key) or {}
+        assert section.get("module", "").startswith("dagster_postgres"), (
+            f"{key} is not backed by dagster_postgres, so it is on Dagster's "
+            f"SQLite default: {section}"
+        )
+        assert section.get("class") == class_name, section
+        assert "env" in (section.get("config", {}).get("postgres_url") or {}), (
+            f"{key}'s postgres_url is not sourced from an environment "
+            "variable, so this test cannot confirm the container receives it"
+        )
+
+    names: set[str] = set()
+    for path in COMPOSE_FILES:
+        service = (_load(path).get("services") or {}).get("dagster")
+        if service:
+            names |= _environment_names(service)
+    assert "DAGSTER_POSTGRES_URL" in names, (
+        "deploy/dagster.yaml points run/event-log/schedule storage at "
+        "DAGSTER_POSTGRES_URL, but no compose file passes that variable to "
+        "the dagster service"
+    )
+
+
 def test_the_web_image_copies_its_public_directory_into_the_runtime_stage() -> None:
     """``next start`` serves static files from ``./public``, relative to its cwd.
 

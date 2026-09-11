@@ -248,6 +248,13 @@ class WeatherValueRow(Base):
                 "weather_domain = 'weather_alert' OR metric_key = 'ALERT'"
             ),
         ),
+        # ``purge_expired_history`` checks "does any fact still cite this
+        # source record" before deleting it. ``source_record_key`` only ever
+        # appears as a trailing column elsewhere in this table, so that lookup
+        # forced a full scan per candidate row -- the query that once held the
+        # whole purge transaction, and with it every lock the transaction had
+        # taken, for as long as the scan ran.
+        Index("ix_weather_values_source_record_key", "source_record_key"),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",
             name="ck_weather_values_has_value",
@@ -459,6 +466,14 @@ class SyncRunSourceRow(Base):
     """한 실행이 관측한 immutable source response association."""
 
     __tablename__ = "weather_sync_run_sources"
+    __table_args__ = (
+        # The same purge lookup this table's other half of the "still cited?"
+        # check. The primary key leads with ``run_id``, which this check does
+        # not have, so it could not use it either.
+        Index(
+            "ix_weather_sync_run_sources_source_record_key", "source_record_key"
+        ),
+    )
 
     run_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("weather_sync_runs.run_id", ondelete="RESTRICT"), primary_key=True
@@ -615,6 +630,23 @@ SCHEMA_PARTITION_PAST_DAYS = 3
 SCHEMA_PARTITION_FUTURE_DAYS = 3
 
 PURGE_GUC = "kortravelweather.purge"
+
+#: Delete a source record once nothing still cites it. Both ``NOT EXISTS``
+#: subqueries key on ``source_record_key``, served by
+#: ``ix_weather_values_source_record_key`` and
+#: ``ix_weather_sync_run_sources_source_record_key``; a test binds this exact
+#: string to those indexes so a future edit cannot silently reintroduce the
+#: full scan those indexes exist to avoid.
+PURGE_SOURCE_RECORDS_SQL = (
+    "DELETE FROM weather_source_records sr "
+    "WHERE sr.fetched_at < :cutoff "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM weather_values wv "
+    "    WHERE wv.source_record_key = sr.source_record_key) "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM weather_sync_run_sources rs "
+    "    WHERE rs.source_record_key = sr.source_record_key)"
+)
 
 #: Kept as one string because both schema paths must install it byte-identically
 #: -- ``create_schema`` here and the alembic revision -- and
@@ -2414,17 +2446,7 @@ class WeatherRepository:
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
             sources = session.execute(
-                text(
-                    "DELETE FROM weather_source_records sr "
-                    "WHERE sr.fetched_at < :cutoff "
-                    "  AND NOT EXISTS ("
-                    "    SELECT 1 FROM weather_values wv "
-                    "    WHERE wv.source_record_key = sr.source_record_key) "
-                    "  AND NOT EXISTS ("
-                    "    SELECT 1 FROM weather_sync_run_sources rs "
-                    "    WHERE rs.source_record_key = sr.source_record_key)"
-                ),
-                {"cutoff": cutoff},
+                text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": cutoff}
             ).rowcount
             stranded = default_partition_rows(connection)
         report = PurgeReport(
