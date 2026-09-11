@@ -1656,6 +1656,7 @@ class WeatherRepository:
         limit_per_location: int,
         prefer_current: bool,
         newest_first: bool = True,
+        now: datetime | None = None,
         from_at: datetime | None = None,
         to_at: datetime | None = None,
         dataset_key: str | None = None,
@@ -1725,6 +1726,24 @@ class WeatherRepository:
             .order_by(*order)
             .limit(limit_per_location)
         )
+        if prefer_current:
+            # "현재 날씨" falls back to a forecast only once observed/nowcast is
+            # exhausted, and the fallback must be the nearest slot that has
+            # already started -- not the nearest slot yet to come. Sorting by
+            # ``target_at DESC`` alone always prefers the furthest-future row,
+            # so a sparse nowcast let a same-metric mid-range forecast days out
+            # outrank an ultra-short-forecast slot minutes away. Bounding the
+            # fallback to ``target_at <= now`` keeps the existing DESC index
+            # fully servable (a static index cannot be built against ``now()``,
+            # so ordering by closeness would have forced a per-location scan);
+            # observed/nowcast rows are exempt since an observation is never of
+            # the future to begin with.
+            candidate = candidate.where(
+                or_(
+                    WeatherCurrentValueRow.forecast_style.in_(("observed", "nowcast")),
+                    WeatherCurrentValueRow.target_at <= (now or kst_now()),
+                )
+            )
         if from_at is not None:
             candidate = candidate.where(WeatherCurrentValueRow.target_at >= from_at)
         if to_at is not None:
@@ -1818,13 +1837,16 @@ class WeatherRepository:
         # ``stmt`` is a select(WeatherValueRow) with all public filters applied.
         return ranked.where(*stmt._where_criteria).subquery("current_weather_revision")
 
-    def latest_values(self, location_id: str, *, limit: int = 100) -> list[WeatherValue]:
+    def latest_values(
+        self, location_id: str, *, limit: int = 100, now: datetime | None = None
+    ) -> list[WeatherValue]:
         with self._session_factory() as session:
             return self._current_value_models_many(
                 session,
                 [location_id],
                 limit_per_location=limit,
                 prefer_current=True,
+                now=now,
             ).get(location_id, [])
 
     def latest_values_many(
@@ -1834,6 +1856,7 @@ class WeatherRepository:
         limit_per_location: int = 100,
         weather_domain: str | None = None,
         metric_keys: Sequence[str] | None = None,
+        now: datetime | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Fetch current projections for several locations in one query."""
         if limit_per_location <= 0:
@@ -1842,6 +1865,7 @@ class WeatherRepository:
             return self._current_value_models_many(
                 session,
                 location_ids,
+                now=now,
                 limit_per_location=limit_per_location,
                 prefer_current=True,
                 weather_domain=weather_domain,

@@ -389,6 +389,146 @@ def test_nearest_locations_uses_sql_bbox_exact_distance_and_limit(tmp_path, monk
     assert all(distance <= 5 for _, distance in rows)
 
 
+def test_current_weather_falls_back_to_the_forecast_slot_closest_to_now(tmp_path) -> None:
+    """The forecast fallback must pick the nearest slot, not the furthest one.
+
+    ``forecast_style`` prefers observed/nowcast over any forecast, but SKY has
+    no nowcast category at all -- it only ever comes from a forecast. Sorting
+    that fallback tier by ``target_at DESC`` alone always prefers the
+    furthest-future row, so a short-range forecast three days out could
+    outrank an ultra-short-forecast slot that started ten minutes ago, simply
+    because it targets a later moment. "현재 날씨" -- the weather right now --
+    must not be a forecast for something that has not happened yet.
+    """
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    near_past = now - timedelta(minutes=10)
+    far_future = now + timedelta(days=3)
+
+    source_records = [
+        {
+            "source_record_key": "near-slot",
+            "provider": "p",
+            "dataset_key": "kma_ultra_short_forecast",
+            "source_entity_type": "weather_response",
+            "source_entity_id": "x",
+            "payload": {},
+            "fetched_at": now,
+        },
+        {
+            "source_record_key": "far-slot",
+            "provider": "p",
+            "dataset_key": "kma_short_forecast",
+            "source_entity_type": "weather_response",
+            "source_entity_id": "x",
+            "payload": {},
+            "fetched_at": now,
+        },
+    ]
+    facts = [
+        WeatherValue(
+            location_id="x",
+            provider="p",
+            dataset_key="kma_ultra_short_forecast",
+            weather_domain="kma_ultra_short_forecast",
+            forecast_style=ForecastStyle.ULTRA_SHORT,
+            metric_key="SKY",
+            target_at=near_past,
+            value_text="맑음",
+            source_record_key="near-slot",
+        ),
+        WeatherValue(
+            location_id="x",
+            provider="p",
+            dataset_key="kma_short_forecast",
+            weather_domain="kma_short_forecast",
+            forecast_style=ForecastStyle.SHORT,
+            metric_key="SKY",
+            target_at=far_future,
+            value_text="흐림",
+            source_record_key="far-slot",
+        ),
+    ]
+    assert repo.ingest_batch(source_records=source_records, values=facts) == 2
+
+    latest = repo.latest_values_many(["x"], limit_per_location=100, now=now)["x"]
+    sky_values = [value for value in latest if value.metric_key == "SKY"]
+    assert sky_values, "the SKY fact never reached the current-value projection"
+    assert sky_values[0].target_at == near_past, (
+        "current weather picked the far-future forecast slot instead of the "
+        "one closest to (and already under way at) now"
+    )
+
+
+def test_current_weather_still_prefers_nowcast_over_any_forecast(tmp_path) -> None:
+    """The closest-slot fallback must never outrank an actual observation.
+
+    A forecast slot ten minutes from now is closer to "now" than an hourly
+    nowcast reading can ever be, but a forecast is still a forecast -- the
+    nowcast/observed tier must keep winning whenever it exists at all.
+    """
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    repo.create_schema()
+    repo.upsert_location(_location())
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    observed_at = now - timedelta(minutes=55)
+    forecast_at = now + timedelta(minutes=10)
+
+    source_records = [
+        {
+            "source_record_key": "nowcast-slot",
+            "provider": "p",
+            "dataset_key": "kma_ultra_short_nowcast",
+            "source_entity_type": "weather_response",
+            "source_entity_id": "x",
+            "payload": {},
+            "fetched_at": now,
+        },
+        {
+            "source_record_key": "forecast-slot",
+            "provider": "p",
+            "dataset_key": "kma_ultra_short_forecast",
+            "source_entity_type": "weather_response",
+            "source_entity_id": "x",
+            "payload": {},
+            "fetched_at": now,
+        },
+    ]
+    facts = [
+        WeatherValue(
+            location_id="x",
+            provider="p",
+            dataset_key="kma_ultra_short_nowcast",
+            weather_domain="kma_ultra_short_nowcast",
+            forecast_style=ForecastStyle.NOWCAST,
+            metric_key="T1H",
+            target_at=observed_at,
+            value_number=Decimal("21"),
+            source_record_key="nowcast-slot",
+        ),
+        WeatherValue(
+            location_id="x",
+            provider="p",
+            dataset_key="kma_ultra_short_forecast",
+            weather_domain="kma_ultra_short_forecast",
+            forecast_style=ForecastStyle.ULTRA_SHORT,
+            metric_key="T1H",
+            target_at=forecast_at,
+            value_number=Decimal("22"),
+            source_record_key="forecast-slot",
+        ),
+    ]
+    assert repo.ingest_batch(source_records=source_records, values=facts) == 2
+
+    latest = repo.latest_values_many(["x"], limit_per_location=100, now=now)["x"]
+    t1h_values = [value for value in latest if value.metric_key == "T1H"]
+    assert t1h_values[0].target_at == observed_at, (
+        "a same-metric forecast slot outranked the actual observation"
+    )
+
+
 def test_current_projection_hides_append_only_revisions_from_bundles(tmp_path) -> None:
     repo = WeatherRepository(TEST_DATABASE_URL)
     repo.create_schema()
