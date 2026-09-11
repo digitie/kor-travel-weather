@@ -412,3 +412,29 @@ def test_dagster_runs_with_run_monitoring_enabled() -> None:
         "deploy/dagster.yaml exists but no compose file mounts it, so the "
         "container still runs on Dagster's defaults"
     )
+
+
+def test_the_web_image_copies_its_public_directory_into_the_runtime_stage() -> None:
+    """``next start`` serves static files from ``./public``, relative to its cwd.
+
+    The admin frontend's ``public/`` directory was empty until
+    ``scripts/copy-maplibre-worker.mjs`` (a build-time ``prebuild``/``predev``
+    hook) started writing maplibre-gl's worker files into it, so the runtime
+    stage never needed to copy it and the omission was invisible. It built
+    clean and ran clean locally -- `npm run build && npm run start` from one
+    working directory never notices a copy the image itself never performs --
+    and would have shipped a container where the map mounts with no tiles,
+    silently, because the worker 404s. Next.js's own convention is that
+    ``public/`` is always required at runtime when it exists in the source
+    tree; the runner stage must copy it unconditionally, not only once
+    something is known to depend on it.
+    """
+    dockerfile = (REPO_ROOT / "deploy" / "Dockerfile.web").read_text(encoding="utf-8")
+    stages = re.split(r"(?im)^FROM\b", dockerfile)
+    runner_stage = next(
+        (stage for stage in stages if re.search(r"(?i)\bAS\s+runner\b", stage)), None
+    )
+    assert runner_stage is not None, "no 'AS runner' stage found in Dockerfile.web"
+    assert re.search(
+        r"COPY\s+--from=builder\s+/app/public\s+\./public", runner_stage
+    ), "the runner stage does not copy /app/public from the builder stage"
