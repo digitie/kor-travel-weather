@@ -3,12 +3,62 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Iterable
 from typing import Any
 
 from kortravelweather.metrics import provider_request
 from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
 from kortravelweather.repository import WeatherRepository
+
+
+def _fetch_with_deadline(
+    provider: WeatherProvider,
+    target: ProviderLocation,
+    *,
+    dataset_key: str,
+    timeout_seconds: float | None,
+) -> Any:
+    """Call ``provider.fetch`` under a wall-clock ceiling.
+
+    ``request_json`` already bounds every HTTP *attempt*, and that is enough
+    for a provider that answers slowly or refuses. It is not enough for a
+    connection that neither returns a byte nor errors: no attempt ever
+    completes, so no retry budget is ever spent. One such call held a run for
+    eighteen hours, and because its process stayed alive the whole time,
+    Dagster's own liveness check had nothing to act on.
+
+    The worker is a daemon thread because an abandoned fetch cannot be killed
+    -- only outlived. Daemon threads do not keep the run process alive once
+    the step gives up, which a ``ThreadPoolExecutor`` worker would.
+    """
+    if timeout_seconds is None:
+        return provider.fetch(target, dataset_key=dataset_key)
+
+    outcome: dict[str, Any] = {}
+
+    def _call() -> None:
+        try:
+            outcome["value"] = provider.fetch(target, dataset_key=dataset_key)
+        except BaseException as exc:  # re-raised on the calling thread below
+            outcome["error"] = exc
+
+    worker = threading.Thread(
+        target=_call,
+        name=f"fetch-{provider.provider_key}-{dataset_key}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout_seconds)
+    if worker.is_alive():
+        raise TimeoutError(
+            f"provider fetch가 {timeout_seconds:.0f}초 안에 끝나지 않았습니다: "
+            f"{provider.provider_key}/{dataset_key}/{target.location_id}"
+        )
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
 
 
 def run_external_weather_sync(
@@ -21,6 +71,8 @@ def run_external_weather_sync(
     max_response_rows: int = 1_000_000,
     max_values: int = 500_000,
     max_payload_bytes: int = 16 * 1024 * 1024,
+    fetch_timeout_seconds: float | None = None,
+    min_request_interval_seconds: float = 0.0,
 ) -> dict[str, Any]:
     """응답을 bounded stage한 후 하나의 publish transaction으로 저장한다."""
     target_list = list(targets)
@@ -40,13 +92,28 @@ def run_external_weather_sync(
     )
     staged_sources: list[dict[str, Any]] = []
     staged_values = []
+    sent_at: float | None = None
     try:
         for target in target_list:
             heartbeat = getattr(repository, "heartbeat_sync_run", None)
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+            if min_request_interval_seconds > 0 and sent_at is not None:
+                # Monthly quota is not the only ceiling a provider publishes;
+                # a per-minute one is breached by a fast sweep long before the
+                # month is, and being throttled costs far more time than the
+                # pacing does.
+                idle = min_request_interval_seconds - (time.monotonic() - sent_at)
+                if idle > 0:
+                    time.sleep(idle)
+            sent_at = time.monotonic()
             with provider_request(provider.provider_key, dataset_key):
-                response = provider.fetch(target, dataset_key=dataset_key)
+                response = _fetch_with_deadline(
+                    provider,
+                    target,
+                    dataset_key=dataset_key,
+                    timeout_seconds=fetch_timeout_seconds,
+                )
             if response.provider != provider.provider_key or response.dataset_key != dataset_key:
                 raise ValueError("provider 응답의 provider/dataset 계약이 요청과 다릅니다.")
             if response.response_rows > max_response_rows:

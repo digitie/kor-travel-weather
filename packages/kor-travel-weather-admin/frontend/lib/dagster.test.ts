@@ -13,7 +13,7 @@ function run(overrides: Partial<DagsterRun>): DagsterRun {
   return {
     runId: "11111111-1111-1111-1111-111111111111",
     status: "STARTED",
-    jobName: "external_weather_job",
+    jobName: "open_meteo_weather_job",
     startTime: 0,
     endTime: null,
     errorMessage: null,
@@ -23,7 +23,14 @@ function run(overrides: Partial<DagsterRun>): DagsterRun {
 
 describe("jobLabel", () => {
   it("translates a known job name into its Korean description", () => {
-    expect(jobLabel("external_weather_job")).toBe("외부 제공 날씨 수집");
+    expect(jobLabel("kma_weather_job")).toBe("기상청 단기예보 수집");
+  });
+
+  it("names the provider for each external collection job", () => {
+    // One job per external provider: the label has to say which source is
+    // late, which the single "external weather" job it replaced could not.
+    expect(jobLabel("open_meteo_weather_job")).toBe("Open-Meteo 날씨 수집");
+    expect(jobLabel("accuweather_weather_sync")).toBe("AccuWeather 날씨 수집");
   });
 
   it("translates a known step name the same way as a job name", () => {

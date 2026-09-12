@@ -3,14 +3,38 @@ export type DagsterRepository = { name: string; locationName: string; schedules:
 export type DagsterRun = { runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null; errorMessage: string | null };
 export type DagsterSnapshot = { repositories: DagsterRepository[]; runs: DagsterRun[]; checkedAt: string };
 
+// External weather is one job per provider, so the label is the provider's own
+// name -- the operator reading this page wants to know which source is late,
+// not that "external" collection in the abstract is.
+const EXTERNAL_PROVIDER_LABELS: Record<string, string> = {
+  weatherapi: "WeatherAPI",
+  openweathermap: "OpenWeatherMap",
+  open_meteo: "Open-Meteo",
+  visual_crossing: "Visual Crossing",
+  tomorrow_io: "Tomorrow.io",
+  weatherbit: "Weatherbit",
+  weatherstack: "Weatherstack",
+  accuweather: "AccuWeather",
+  wttr_in: "wttr.in",
+};
+
+function externalLabels(suffix: string): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(EXTERNAL_PROVIDER_LABELS).map(([key, label]) => [
+      `${key}${suffix}`,
+      `${label} 날씨 수집`,
+    ]),
+  );
+}
+
 // dagster job/schedule/asset names are internal identifiers, not something an
 // operator glancing at this page should have to already know by heart.
 const JOB_LABELS: Record<string, string> = {
   kma_weather_job: "기상청 단기예보 수집",
   airkorea_weather_job: "에어코리아 대기질 수집",
-  external_weather_job: "외부 제공 날씨 수집",
   weather_retention_job: "보존 기간 만료 데이터 정리",
   regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집",
+  ...externalLabels("_weather_job"),
 };
 
 const RUN_STATUS_LABELS: Record<string, string> = {
@@ -32,12 +56,12 @@ export function runStatusLabel(status: string): string {
 const STEP_LABELS: Record<string, string> = {
   kma_weather_sync: "기상청 단기예보 수집",
   airkorea_weather_sync: "에어코리아 대기질 수집",
-  external_weather_sync: "외부 제공 날씨 수집",
   weather_retention_purge: "보존 기간 만료 데이터 정리",
   khoa_beach_index_sync: "해수욕장 지수 수집",
   krforest_mountain_sync: "산악 날씨 수집",
   krforest_dust_sync: "청정넷 미세먼지 수집",
   krex_restarea_sync: "고속도로 휴게소 날씨 수집",
+  ...externalLabels("_weather_sync"),
 };
 
 /**
