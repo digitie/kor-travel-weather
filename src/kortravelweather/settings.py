@@ -222,8 +222,15 @@ class WeatherSettings(BaseSettings):
     # and the eight sweeps a day its three-hourly schedule performs:
     #
     #   weatherapi     100,000/mo -> 150 locations =  72,000/mo
-    #   open_meteo     300,000/mo -> 450 locations = 216,000/mo (7,200/day)
+    #   open_meteo      10,000/day -> 300 locations = 7,200 weighted/day
     #   openweathermap 1,000,000/mo -> uncapped    = 685,440/mo for all 1,428
+    #
+    # Open-Meteo bills weighted calls, not requests: its published formula is
+    # max(1, variables/10) * max(1, days/7) * locations, and this project's
+    # query asks for 15 variables over the default 7 days, so every request
+    # costs 1.5. Sizing it as 450 locations by raw request count put it at
+    # 10,800 weighted/day against a 10,000 ceiling, and it began failing with
+    # "provider rate limit" once the daily counter caught up.
     #
     # These sit near 70% of each ceiling rather than exactly at the 80% the
     # margin allows, because a retried request spends quota too: one location
@@ -234,7 +241,7 @@ class WeatherSettings(BaseSettings):
     # request then takes ~15s instead of ~0.3s, and the run outlives its own
     # schedule until the queue fills with runs that will never finish.
     provider_location_caps: dict[str, int] = Field(
-        default_factory=lambda: {"weatherapi": 150, "open_meteo": 450},
+        default_factory=lambda: {"weatherapi": 150, "open_meteo": 300},
         validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS",
     )
     # Minimum seconds between two requests to the same provider. Monthly quota

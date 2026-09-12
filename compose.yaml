@@ -132,7 +132,7 @@ services:
       # comments in settings.py carry the arithmetic. Override only against a
       # paid plan -- exceeding a quota throttles the provider into runs that
       # outlive their own schedule.
-      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":450}}
+      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":300}}
       KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS:-{"openweathermap":1.25}}
       KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
       # 500k was sized before external forecast/timeline datasets were added.
