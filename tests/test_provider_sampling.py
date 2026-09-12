@@ -97,10 +97,12 @@ def test_a_catalog_stacked_on_one_point_still_returns_the_limit() -> None:
 
 #: Each vendor's published free-tier ceiling, and the whole catalog as the cap
 #: that applies when a provider is absent from ``provider_location_caps``.
+#: Open-Meteo is deliberately absent: it bills weighted calls rather than
+#: requests, so a raw-request assertion here would pass while the real usage
+#: was over. Its own test below carries the weight.
 _FREE_TIER_CALLS_PER_MONTH = {
     "weatherapi": 100_000,
     "openweathermap": 1_000_000,
-    "open_meteo": 300_000,
 }
 _CATALOG_LOCATIONS = 1_428
 _DATASETS_PER_PROVIDER = 2
@@ -129,17 +131,40 @@ def test_the_shipped_caps_stay_inside_each_vendor_free_tier() -> None:
         )
 
 
+#: Open-Meteo charges weighted calls, not requests:
+#: ``max(1, variables/10) * max(1, days/7) * locations``. This project's query
+#: asks for 15 variables (7 `current` + 8 `hourly`) over the default 7 days.
+#: Counting raw requests instead put the cap 8% over the daily ceiling and the
+#: provider started returning "provider rate limit"; the weight belongs in the
+#: assertion so the next person to raise the cap cannot miss it.
+_OPEN_METEO_VARIABLES = 15
+_OPEN_METEO_FORECAST_DAYS = 7
+_OPEN_METEO_CALL_WEIGHT = max(1.0, _OPEN_METEO_VARIABLES / 10) * max(
+    1.0, _OPEN_METEO_FORECAST_DAYS / 7
+)
+
+
 def test_open_meteo_also_stays_inside_its_daily_ceiling() -> None:
-    """Open-Meteo caps by day and hour as well as by month.
+    """Open-Meteo caps by day and hour as well as by month, and bills by weight.
 
     The monthly figure alone would permit a cap that breaches the daily one, and
     the daily limit is the one a full sweep actually runs into first.
     """
+    assert _OPEN_METEO_CALL_WEIGHT == 1.5
+
     caps = WeatherSettings.model_construct().provider_location_caps
-    calls_per_day = caps["open_meteo"] * _DATASETS_PER_PROVIDER * _SWEEPS_PER_DAY
-    assert calls_per_day <= 10_000 * 0.8
-    calls_per_sweep = caps["open_meteo"] * _DATASETS_PER_PROVIDER
-    assert calls_per_sweep <= 5_000 * 0.8  # published hourly ceiling
+    requests_per_sweep = caps["open_meteo"] * _DATASETS_PER_PROVIDER
+
+    weighted_per_day = requests_per_sweep * _SWEEPS_PER_DAY * _OPEN_METEO_CALL_WEIGHT
+    assert weighted_per_day <= 10_000 * 0.8, (
+        f"{weighted_per_day:,.0f} weighted calls/day exceeds the 20% margin on 10,000"
+    )
+
+    weighted_per_sweep = requests_per_sweep * _OPEN_METEO_CALL_WEIGHT
+    assert weighted_per_sweep <= 5_000 * 0.8  # published hourly ceiling
+
+    weighted_per_month = weighted_per_day * 30
+    assert weighted_per_month <= 300_000 * 0.8
 
 
 def test_openweathermap_is_paced_under_its_per_minute_ceiling() -> None:
