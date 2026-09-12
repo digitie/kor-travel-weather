@@ -1,8 +1,8 @@
 # kor-travel-weather Dagster
 
 `python-kma-api`의 `KmaClient`/`DataGoKrClient`를 기존 KMA resource에서 직접
-생성한다. 외부 provider는 `ExternalWeatherProviderResource`와
-`external_weather_job`을 사용한다. 두 경로 모두 응답을 먼저 stage한 뒤 한
+생성한다. 외부 provider는 `ExternalWeatherProviderResource`와 provider마다 하나씩
+있는 `{provider}_weather_job`을 사용한다. 두 경로 모두 응답을 먼저 stage한 뒤 한
 transaction으로 source record와 normalized fact를 publish한다. 빈 응답·격자
 불일치·credential 오류는 run을 실패시키며 부분 fact를 publish하지 않는다. MVP에는
 durable cursor가 없어 매 실행에서 응답을 재검증하고, raw response idempotency로

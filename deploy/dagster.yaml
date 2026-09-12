@@ -55,6 +55,29 @@ run_monitoring:
   start_timeout_seconds: 300
   max_resume_run_attempts: 0
   poll_interval_seconds: 60
+  # The liveness check above only fails a run whose *process is gone*. A process
+  # that is alive and wedged inside one socket read is indistinguishable from one
+  # doing useful work, so nothing above can end it. That is not hypothetical: ten
+  # runs sat STARTED for between three and eighteen hours, filled
+  # `max_concurrent_runs` with work that was not running, and every schedule
+  # behind them -- KMA, AirKorea, regional -- stopped launching entirely while
+  # the daemon logged "Maximum is 10, won't launch more" for most of a day.
+  #
+  # This is the only bound that does not care *why* a run stopped moving: it
+  # compares wall clock against the run's start time and cancels past it.
+  #
+  # Sized from measured production runs, not from what the cadence implies. Over
+  # one week, runs that *succeeded* took 23,898s for weatherapi_forecast and
+  # 22,959s for weatherapi_current -- and one job now covers every dataset of its
+  # provider, so weatherapi alone is ~13h of legitimate work. A cap anywhere near
+  # the hourly schedule would cancel healthy runs and turn this backstop into the
+  # outage it is meant to prevent, so it sits above the worst measured case.
+  #
+  # This value is deliberately uncomfortable. A 1-hour schedule whose run takes
+  # 13 hours is the reason the queue fills in the first place, and no timeout
+  # fixes that -- only collecting less, or collecting less often, does. Bring
+  # this down once a sweep fits inside its own interval.
+  max_runtime_seconds: 57600
 
 run_coordinator:
   module: dagster._core.run_coordinator
@@ -64,6 +87,17 @@ run_coordinator:
     # exists to protect the providers and this host's single spinning disk, not
     # the CPU. Raising it does not make collection faster.
     max_concurrent_runs: 10
+    # External collection is one job per provider (see definitions.py), and a
+    # full sweep of one provider currently runs for hours against rate-limited
+    # free tiers while its schedule fires every hour. Uncapped, those nine jobs
+    # take every slot and hold it: that is exactly how KMA, AirKorea and the
+    # regional sources ended up queued behind work that was not going to finish
+    # this hour either. Reserving the rest of the pool for them matters more
+    # than collecting every external provider on every tick.
+    tag_concurrency_limits:
+      - key: "kortravelweather/run_group"
+        value: "external_weather"
+        limit: 3
 
 retention:
   # Run history is the only record of what collection did, but it is also the

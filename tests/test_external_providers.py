@@ -399,6 +399,61 @@ def test_external_dagster_boundary_is_atomic_and_idempotent(tmp_path: Any) -> No
     assert len(repository.list_sync_run_sources(first["run_id"])) == 1
 
 
+def test_a_provider_that_never_answers_ends_its_own_run(tmp_path: Any) -> None:
+    """A fetch that hangs must fail the run, not occupy it indefinitely.
+
+    Every HTTP *attempt* is already bounded, but a socket that returns neither
+    bytes nor an error never finishes an attempt, so no retry budget is ever
+    spent. Ten runs wedged exactly this way held every concurrency slot for up
+    to eighteen hours while their processes stayed alive -- which is precisely
+    the state Dagster's liveness check cannot distinguish from real work.
+    """
+    import threading
+
+    release = threading.Event()
+
+    class HangingProvider:
+        provider_key = "open_meteo"
+
+        def fetch(self, target: Any, *, dataset_key: str) -> Any:
+            # Blocks until the test releases it, standing in for a socket that
+            # is open but will never answer.
+            release.wait(timeout=30)
+            raise AssertionError("fetch should have been abandoned by its deadline")
+
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    repository.upsert_location(
+        WeatherLocation(
+            location_id="seoul",
+            name="서울",
+            latitude=37.5665,
+            longitude=126.978,
+        )
+    )
+    try:
+        with pytest.raises(TimeoutError):
+            run_external_weather_sync(
+                repository=repository,
+                provider=HangingProvider(),  # type: ignore[arg-type]
+                targets=[LOCATION],
+                dataset_key="open_meteo_current",
+                fetch_timeout_seconds=0.2,
+            )
+        # The run is closed out as failed rather than left "running": a row that
+        # stays running blocks the next tick for this provider/dataset until the
+        # stale-run reconciler eventually reaps it.
+        runs = [
+            run
+            for run in repository.list_sync_runs(limit=10)
+            if run.provider == "open_meteo" and run.dataset_key == "open_meteo_current"
+        ]
+        assert runs, "the aborted attempt should still be recorded"
+        assert runs[0].status == "failed"
+    finally:
+        release.set()
+
+
 def test_provider_registries_agree() -> None:
     """Three lists name the same providers, and none can import the others.
 

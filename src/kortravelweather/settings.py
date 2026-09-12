@@ -216,6 +216,36 @@ class WeatherSettings(BaseSettings):
     max_targets_per_run: int = Field(
         default=10_000, validation_alias="KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN", gt=0, le=100_000
     )
+    # How many of the ~1,400 catalog locations each external provider may sweep.
+    # Unlisted providers sweep all of them. Each cap is that vendor's published
+    # free-tier quota, less a 20% margin, divided by the provider's dataset count
+    # and the eight sweeps a day its three-hourly schedule performs:
+    #
+    #   weatherapi     100,000/mo -> 150 locations =  72,000/mo
+    #   open_meteo     300,000/mo -> 450 locations = 216,000/mo (7,200/day)
+    #   openweathermap 1,000,000/mo -> uncapped    = 685,440/mo for all 1,428
+    #
+    # These sit near 70% of each ceiling rather than exactly at the 80% the
+    # margin allows, because a retried request spends quota too: one location
+    # can cost up to four calls, so planning to the last permitted call leaves
+    # nothing for the failures the retries exist to absorb.
+    #
+    # Exceeding a quota does not fail cleanly: the vendor throttles, every
+    # request then takes ~15s instead of ~0.3s, and the run outlives its own
+    # schedule until the queue fills with runs that will never finish.
+    provider_location_caps: dict[str, int] = Field(
+        default_factory=lambda: {"weatherapi": 150, "open_meteo": 450},
+        validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS",
+    )
+    # Minimum seconds between two requests to the same provider. Monthly quota
+    # is not the only ceiling: OpenWeatherMap also publishes 60 calls/minute,
+    # and a 2,856-request sweep issued back to back runs at roughly 200/minute
+    # once responses are fast, which is throttled even though the month is well
+    # inside budget. 1.25s holds it at 48/minute, a 20% margin under the limit.
+    provider_min_request_interval_seconds: dict[str, float] = Field(
+        default_factory=lambda: {"openweathermap": 1.25},
+        validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS",
+    )
     max_response_rows_per_run: int = Field(
         default=1_000_000,
         validation_alias="KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN",
@@ -337,6 +367,82 @@ class WeatherSettings(BaseSettings):
                 return parsed
             raise ValueError("KOR_TRAVEL_WEATHER_CORS_ORIGINS는 JSON 배열이어야 합니다.")
         return value
+
+    @field_validator("provider_min_request_interval_seconds", mode="before")
+    @classmethod
+    def _parse_request_intervals(cls, value: Any) -> Any:
+        if value is None or value == "":
+            return {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS는 "
+                    '{"provider": 초} 형태의 JSON object여야 합니다.'
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS는 "
+                    "JSON object여야 합니다."
+                )
+            return parsed
+        return value
+
+    @field_validator("provider_min_request_interval_seconds")
+    @classmethod
+    def _validate_request_intervals(cls, value: dict[str, float]) -> dict[str, float]:
+        normalized: dict[str, float] = {}
+        for provider, interval in value.items():
+            key = PROVIDER_KEY_ALIASES.get(
+                str(provider).strip().lower(), str(provider).strip().lower()
+            )
+            if key not in SUPPORTED_PROVIDER_KEYS:
+                raise ValueError(f"지원하지 않는 provider가 있습니다: {provider}")
+            if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+                raise ValueError(f"{key}의 요청 간격은 숫자여야 합니다: {interval!r}")
+            if interval < 0 or interval > 60:
+                raise ValueError(f"{key}의 요청 간격은 0~60초여야 합니다: {interval!r}")
+            normalized[key] = float(interval)
+        return normalized
+
+    @field_validator("provider_location_caps", mode="before")
+    @classmethod
+    def _parse_location_caps(cls, value: Any) -> Any:
+        if value is None or value == "":
+            return {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    "KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS는 "
+                    '{"provider": 개수} 형태의 JSON object여야 합니다.'
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS는 JSON object여야 합니다."
+                )
+            return parsed
+        return value
+
+    @field_validator("provider_location_caps")
+    @classmethod
+    def _validate_location_caps(cls, value: dict[str, int]) -> dict[str, int]:
+        normalized: dict[str, int] = {}
+        for provider, cap in value.items():
+            key = PROVIDER_KEY_ALIASES.get(
+                str(provider).strip().lower(), str(provider).strip().lower()
+            )
+            if key not in SUPPORTED_PROVIDER_KEYS:
+                raise ValueError(f"지원하지 않는 provider가 있습니다: {provider}")
+            if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+                # A cap of 0 would silently collect nothing, which reads as a
+                # broken provider rather than a deliberate one; remove the entry
+                # or disable the provider instead.
+                raise ValueError(f"{key}의 위치 상한은 1 이상의 정수여야 합니다: {cap!r}")
+            normalized[key] = cap
+        return normalized
 
     @field_validator("enabled_providers", mode="before")
     @classmethod
