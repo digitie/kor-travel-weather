@@ -103,6 +103,16 @@ export type WeatherMarker = {
   alerts: WeatherValue[];
 };
 
+const SYNC_RUN_STATUS_LABELS: Record<string, string> = {
+  success: "성공",
+  failed: "실패",
+  running: "진행 중",
+};
+
+export function syncRunStatusLabel(status: string): string {
+  return SYNC_RUN_STATUS_LABELS[status] ?? status;
+}
+
 export type SyncRun = {
   run_id: string;
   provider: string;

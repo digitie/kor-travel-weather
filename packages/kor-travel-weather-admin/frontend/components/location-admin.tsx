@@ -103,7 +103,7 @@ export function LocationAdmin() {
         <div className="panel-head">
           <div>
             <h2>새 KMA 위치</h2>
-            <p>좌표와 격자 anchor를 등록합니다.</p>
+            <p>위도·경도와 격자 좌표를 등록합니다.</p>
           </div>
         </div>
         <form className="location-create-form" onSubmit={submit}>
@@ -129,8 +129,8 @@ export function LocationAdmin() {
       <div className="panel">
         <div className="panel-head">
           <div>
-            <h2>Location catalog</h2>
-            <p>비활성화는 이력 보존을 위해 enabled=false로 처리합니다.</p>
+            <h2>등록된 위치 목록</h2>
+            <p>비활성화해도 기록은 남고, 수집 대상에서만 제외됩니다.</p>
           </div>
           <div className="toolbar catalog-toolbar">
             <input
@@ -159,7 +159,7 @@ export function LocationAdmin() {
           <div className="table-wrap">
           <table>
             <thead>
-              <tr><th scope="col">location</th><th scope="col">grid</th><th scope="col">coordinates</th><th scope="col">status</th><th scope="col" /></tr>
+              <tr><th scope="col">위치</th><th scope="col">격자</th><th scope="col">좌표</th><th scope="col">상태</th><th scope="col" /></tr>
             </thead>
             <tbody>
               {locations.map((location) => (
@@ -167,7 +167,7 @@ export function LocationAdmin() {
                   <td><strong>{location.name}</strong><br /><code>{location.location_id}</code></td>
                   <td><code>{location.nx ?? "—"} / {location.ny ?? "—"}</code></td>
                   <td><code>{location.latitude.toFixed(4)}, {location.longitude.toFixed(4)}</code></td>
-                  <td><span className={`status ${location.enabled ? "on" : "off"}`}>{location.enabled ? "enabled" : "disabled"}</span></td>
+                  <td><span className={`status ${location.enabled ? "on" : "off"}`}>{location.enabled ? "사용 중" : "사용 안 함"}</span></td>
                   <td><button className="secondary" onClick={() => void toggle(location)} type="button">{location.enabled ? "비활성화" : "활성화"}</button></td>
                 </tr>
               ))}

@@ -14,7 +14,7 @@ import {
 } from "@/lib/api";
 
 function sourceLabel(source: ProviderCredential["source"]) {
-  if (source === "database") return "DB override";
+  if (source === "database") return "직접 등록한 키";
   if (source === "environment") return "환경변수";
   return "미설정";
 }
@@ -50,7 +50,7 @@ export default function ProviderSettingsPage() {
       setProviders(providerResult.data);
       setCredentials(credentialResult.data);
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : "provider 설정을 불러오지 못했습니다.");
+      setError(reason instanceof Error ? reason.message : "제공처 설정을 불러오지 못했습니다.");
     } finally {
       setLoading(false);
     }
@@ -82,14 +82,14 @@ export default function ProviderSettingsPage() {
   }
 
   async function remove(provider: string) {
-    if (!window.confirm("DB에 저장된 API 키를 삭제할까요? 환경변수 키는 삭제되지 않습니다.")) return;
+    if (!window.confirm("직접 등록한 API 키를 삭제할까요? 환경변수로 설정한 키는 삭제되지 않습니다.")) return;
     setBusy(provider);
     setError(null);
     setNotice(null);
     try {
       await deleteProviderCredential(provider);
       await refresh();
-      setNotice(`${providerByKey.get(provider)?.label ?? provider} DB override를 삭제했습니다.`);
+      setNotice(`${providerByKey.get(provider)?.label ?? provider}에 직접 등록했던 키를 삭제했습니다.`);
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : "API 키 삭제에 실패했습니다.");
     } finally {
@@ -106,46 +106,46 @@ export default function ProviderSettingsPage() {
             새로고침
           </button>
         }
-        description="provider별 API 키를 암호화된 DB override로 관리합니다. 키 원문은 다시 표시하지 않습니다."
+        description="제공처 API 키를 암호화해서 저장하고 관리합니다. 한 번 저장한 키는 원문으로 다시 보여주지 않습니다."
         section="시스템"
-        title="Provider API 키"
+        title="제공처 API 키"
       />
       {error ? <div className="error" role="alert">{error}</div> : null}
       {notice ? <div className="notice" role="status">{notice}</div> : null}
       <section className="panel settings-note" aria-label="API 키 보안 안내">
         <div className="settings-note-icon" aria-hidden="true"><KeyRound size={17} /></div>
         <div>
-          <strong>안전한 credential 경계</strong>
-          <p>저장 시 암호화하고 화면에는 source, fingerprint, 마지막 4자리만 표시합니다. 환경변수에서 온 키는 이 화면에서 삭제할 수 없습니다.</p>
+          <strong>안전하게 보관합니다</strong>
+          <p>저장할 때 암호화하고, 화면에는 키가 어디서 왔는지와 마지막 4자리만 보여줍니다. 환경변수로 설정한 키는 이 화면에서 삭제할 수 없습니다.</p>
         </div>
       </section>
-      <section className="credential-grid" aria-label="provider API 키 목록">
-        {loading && !credentials.length ? <div className="panel loading" role="status" aria-busy="true">provider 설정을 불러오는 중…</div> : null}
-        {!loading && !credentials.length && !error ? <div className="panel empty">설정 가능한 provider가 없습니다.</div> : null}
+      <section className="credential-grid" aria-label="제공처 API 키 목록">
+        {loading && !credentials.length ? <div className="panel loading" role="status" aria-busy="true">제공처 설정을 불러오는 중…</div> : null}
+        {!loading && !credentials.length && !error ? <div className="panel empty">설정 가능한 제공처가 없습니다.</div> : null}
         {credentials.map((credential) => {
           const provider = providerByKey.get(credential.provider);
           const isBusy = busy === credential.provider;
           const keyless = provider ? !provider.auth_required : false;
           return (
-            <article className="panel credential-card" key={credential.provider}>
+            <article className="panel credential-card" id={`provider-${credential.provider}`} key={credential.provider}>
               <div className="credential-header">
                 <div>
-                  <span className="eyebrow">{credential.provider}</span>
                   <h2>{provider?.label ?? credential.provider}</h2>
-                  <p>{provider?.base_url ?? "provider catalog"}</p>
+                  <p>{provider?.base_url ?? "등록된 제공처 정보 없음"}</p>
                 </div>
                 <span className={`status ${credential.configured ? "on" : "off"}`}>
-                  {credential.configured ? "configured" : "not configured"}
+                  {credential.configured ? "설정됨" : "미설정"}
                 </span>
               </div>
               <dl className="credential-meta">
-                <div><dt>source</dt><dd>{sourceLabel(credential.source)}</dd></div>
-                <div><dt>fingerprint</dt><dd><code>{credential.fingerprint ? credential.fingerprint.slice(0, 19) + "…" : "—"}</code></dd></div>
-                <div><dt>last four</dt><dd><code>{credential.last4 ? `••••${credential.last4}` : "—"}</code></dd></div>
-                <div><dt>updated</dt><dd>{updatedLabel(credential.updated_at)}</dd></div>
+                <div><dt>제공처 ID</dt><dd><code>{credential.provider}</code></dd></div>
+                <div><dt>등록 방식</dt><dd>{sourceLabel(credential.source)}</dd></div>
+                <div><dt>키 식별값</dt><dd><code>{credential.fingerprint ? credential.fingerprint.slice(0, 19) + "…" : "—"}</code></dd></div>
+                <div><dt>끝 네 자리</dt><dd><code>{credential.last4 ? `••••${credential.last4}` : "—"}</code></dd></div>
+                <div><dt>저장 시각</dt><dd>{updatedLabel(credential.updated_at)}</dd></div>
               </dl>
               {keyless ? (
-                <p className="credential-readonly">이 provider는 API 키 없이 동작합니다.</p>
+                <p className="credential-readonly">이 제공처는 API 키 없이 동작합니다.</p>
               ) : (
                 <div className="credential-form">
                   <label htmlFor={`credential-${credential.provider}`}>
@@ -167,7 +167,7 @@ export default function ProviderSettingsPage() {
                     </button>
                     <button className="button secondary" type="button" disabled={isBusy || credential.source !== "database"} onClick={() => void remove(credential.provider)}>
                       <Trash2 size={15} aria-hidden="true" />
-                      DB 키 삭제
+                      등록한 키 삭제
                     </button>
                   </div>
                 </div>

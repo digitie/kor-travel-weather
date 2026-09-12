@@ -13,6 +13,22 @@ const JOB_LABELS: Record<string, string> = {
   regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집",
 };
 
+const RUN_STATUS_LABELS: Record<string, string> = {
+  SUCCESS: "성공",
+  FAILURE: "실패",
+  STARTED: "진행 중",
+  STARTING: "시작 중",
+  QUEUED: "대기 중",
+  CANCELING: "취소 중",
+  CANCELED: "취소됨",
+  NOT_STARTED: "대기",
+};
+
+/** A Dagster run status a person can read, falling back to the raw enum for any status this project doesn't expect. */
+export function runStatusLabel(status: string): string {
+  return RUN_STATUS_LABELS[status] ?? status;
+}
+
 const STEP_LABELS: Record<string, string> = {
   kma_weather_sync: "기상청 단기예보 수집",
   airkorea_weather_sync: "에어코리아 대기질 수집",
@@ -194,7 +210,7 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
   const payload = (await response.json()) as GraphqlResponse;
   if (!response.ok || payload.errors?.length) throw new Error(payload.errors?.[0]?.message ?? `Dagster 연결 실패 (${response.status})`);
   const repositories = payload.data?.repositoriesOrError;
-  if (!repositories || !repositories.nodes) throw new Error(repositories?.message ?? "Dagster repository를 읽지 못했습니다.");
+  if (!repositories || !repositories.nodes) throw new Error(repositories?.message ?? "Dagster 작업 목록을 읽지 못했습니다.");
   const runs = payload.data?.runsOrError;
   const results = runs?.results ?? [];
   const failureMessages = new Map<string, string | null>(

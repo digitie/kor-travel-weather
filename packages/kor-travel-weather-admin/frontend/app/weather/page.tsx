@@ -29,8 +29,8 @@ export default function WeatherPage() {
   return (
     <>
       <PageHeader
-        actions={<span className="status on">{locations.length || "—"} active locations</span>}
-        description="kor-travel-map의 feature 조회 흐름처럼 지도에서 위치를 고르고 최신 관측·예보를 확인합니다."
+        actions={<span className="status on">활성 위치 {locations.length || "—"}곳</span>}
+        description="지도에서 위치를 선택하면 최신 관측값과 예보를 확인할 수 있습니다."
         section="날씨 탐색"
         title="날씨 지도"
       />
