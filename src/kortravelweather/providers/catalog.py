@@ -38,16 +38,35 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://apis.data.go.kr",
         (
             DatasetSpec(
-                "kma_ultra_short_nowcast", "초단기실황", "현재 관측값", "KMA", "매시 정각 관측 · 40분부터 조회 가능"
+                "kma_ultra_short_nowcast",
+                "초단기실황",
+                "현재 관측값",
+                "KMA",
+                "매시 정각 관측 · 40분부터 조회 가능",
             ),
             DatasetSpec(
-                "kma_ultra_short_forecast", "초단기예보", "시간별 예보", "KMA", "매시 30분 발표 · 45분부터 조회 가능", True
+                "kma_ultra_short_forecast",
+                "초단기예보",
+                "시간별 예보",
+                "KMA",
+                "매시 30분 발표 · 45분부터 조회 가능",
+                True,
             ),
             DatasetSpec(
-                "kma_short_forecast", "단기예보", "시간·일별 예보", "KMA", "하루 8회(02,05,08,11,14,17,20,23시) 발표", True
+                "kma_short_forecast",
+                "단기예보",
+                "시간·일별 예보",
+                "KMA",
+                "하루 8회(02,05,08,11,14,17,20,23시) 발표",
+                True,
             ),
             DatasetSpec(
-                "kma_mid_forecast", "중기예보", "3–10일 지역 예보", "KMA", "하루 2회(06,18시) 발표", True
+                "kma_mid_forecast",
+                "중기예보",
+                "3–10일 지역 예보",
+                "KMA",
+                "하루 2회(06,18시) 발표",
+                True,
             ),
         ),
     ),
@@ -186,7 +205,11 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://api.open-meteo.com/v1",
         (
             DatasetSpec(
-                "open_meteo_current", "현재 관측", "기온·습도·풍속 등 현재 날씨 관측값", "/forecast", "조회할 때마다 실시간 조회"
+                "open_meteo_current",
+                "현재 관측",
+                "기온·습도·풍속 등 현재 날씨 관측값",
+                "/forecast",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
                 "open_meteo_forecast",
@@ -247,7 +270,11 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://api.weatherbit.io/v2.0",
         (
             DatasetSpec(
-                "weatherbit_current", "현재 관측", "기온·습도·풍속 등 현재 날씨 관측값", "/current", "조회할 때마다 실시간 조회"
+                "weatherbit_current",
+                "현재 관측",
+                "기온·습도·풍속 등 현재 날씨 관측값",
+                "/current",
+                "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
                 "weatherbit_forecast",
@@ -267,7 +294,11 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
         "https://api.weatherstack.com",
         (
             DatasetSpec(
-                "weatherstack_current", "현재 관측", "기온·습도·풍속 등 현재 날씨 관측값", "/current", "조회할 때마다 실시간 조회"
+                "weatherstack_current",
+                "현재 관측",
+                "기온·습도·풍속 등 현재 날씨 관측값",
+                "/current",
+                "조회할 때마다 실시간 조회",
             ),
         ),
     ),
@@ -310,7 +341,12 @@ PROVIDER_CATALOG: tuple[ProviderSpec, ...] = (
                 "조회할 때마다 실시간 조회",
             ),
             DatasetSpec(
-                "wttr_in_forecast", "예보", "기온·강수확률 등 시간별 날씨 예보", "/:location", "매시간 갱신", True
+                "wttr_in_forecast",
+                "예보",
+                "기온·강수확률 등 시간별 날씨 예보",
+                "/:location",
+                "매시간 갱신",
+                True,
             ),
         ),
     ),
