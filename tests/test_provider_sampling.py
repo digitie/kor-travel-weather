@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from kortravelweather_dagster.external_weather import _PUBLISH_BATCH_VALUES
+
 from kortravelweather.providers import ProviderLocation
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.settings import WeatherSettings
@@ -106,34 +108,35 @@ _FREE_TIER_CALLS_PER_MONTH = {
 }
 
 #: Measured, not estimated: openweathermap's forecast step held 8.14 GiB while
-#: sweeping all 1,428 locations, because a sweep stages every value in memory
-#: before it publishes. It is a rough figure and varies by dataset shape, but
-#: the order of magnitude is what matters -- one step is allowed a couple of
-#: gigabytes on a 14 GiB host that runs other services too.
+#: sweeping all 1,428 locations back when a sweep staged every value before
+#: publishing -- about 5.8 MiB per location.
 _OBSERVED_MIB_PER_LOCATION = 8.14 * 1024 / 1428
 _STEP_MEMORY_BUDGET_MIB = 2560
+
+#: ~1,350 values per location for the widest dataset (open_meteo's forecast),
+#: so the per-location figure above divided by them approximates one value.
+_OBSERVED_MIB_PER_VALUE = _OBSERVED_MIB_PER_LOCATION / 1350
 _CATALOG_LOCATIONS = 1_428
 _DATASETS_PER_PROVIDER = 2
 _SWEEPS_PER_DAY = 8  # the "15 */3 * * *" schedule
 
 
-def test_no_cap_lets_one_step_exhaust_the_host() -> None:
-    """Quota is not the only ceiling a cap has to respect; memory is the other.
+def test_a_sweep_cannot_hold_the_whole_host_in_memory() -> None:
+    """What bounds a step's memory is the publish batch, not the location count.
 
-    A sweep stages every value before publishing, so its peak memory scales
-    with the location count. OpenWeatherMap's quota would happily cover the
-    whole catalog, but at 1,428 locations that step held 8.14 GiB, drove the
+    It used to be the location count: a sweep staged every value before
+    publishing, so openweathermap at 1,428 locations held 8.14 GiB, drove the
     host to 358 MiB free, slowed every other provider sevenfold and killed two
-    image builds. A cap raised on quota reasoning alone would do it again.
+    image builds. Batched publishing is what removed that coupling, so this
+    asserts the batch -- if batching is ever switched off by default, the old
+    failure returns and the location caps alone will not stop it.
     """
-    caps = WeatherSettings.model_construct().provider_location_caps
-    for provider in list(_FREE_TIER_CALLS_PER_MONTH) + ["open_meteo"]:
-        locations = caps.get(provider, _CATALOG_LOCATIONS)
-        projected = locations * _OBSERVED_MIB_PER_LOCATION
-        assert projected <= _STEP_MEMORY_BUDGET_MIB, (
-            f"{provider} sweeps {locations} locations, projecting ~{projected:,.0f} MiB "
-            f"for one step against a {_STEP_MEMORY_BUDGET_MIB:,} MiB budget"
-        )
+    assert _PUBLISH_BATCH_VALUES > 0, "batching off means a sweep stages everything again"
+    projected = _PUBLISH_BATCH_VALUES * _OBSERVED_MIB_PER_VALUE
+    assert projected <= _STEP_MEMORY_BUDGET_MIB, (
+        f"a {_PUBLISH_BATCH_VALUES:,}-value batch projects ~{projected:,.0f} MiB "
+        f"against a {_STEP_MEMORY_BUDGET_MIB:,} MiB budget"
+    )
 
 
 def test_the_shipped_caps_stay_inside_each_vendor_free_tier() -> None:
@@ -157,16 +160,21 @@ def test_the_shipped_caps_stay_inside_each_vendor_free_tier() -> None:
 
 
 #: Open-Meteo charges weighted calls, not requests:
-#: ``max(1, variables/10) * max(1, days/7) * locations``. This project's query
-#: asks for 15 variables (7 `current` + 8 `hourly`) over the default 7 days.
-#: Counting raw requests instead put the cap 8% over the daily ceiling and the
-#: provider started returning "provider rate limit"; the weight belongs in the
-#: assertion so the next person to raise the cap cannot miss it.
-_OPEN_METEO_VARIABLES = 15
+#: ``max(1, variables/10) * max(1, days/7) * locations``. Counting raw requests
+#: instead put the cap 8% over the daily ceiling and the provider started
+#: returning "provider rate limit"; the weight belongs in the assertion so the
+#: next person to raise the cap cannot miss it.
+#:
+#: The two datasets no longer cost the same. ``current`` asks for its 7
+#: variables alone; ``forecast`` adds the 8 hourly ones, and only it parses
+#: them.
 _OPEN_METEO_FORECAST_DAYS = 7
-_OPEN_METEO_CALL_WEIGHT = max(1.0, _OPEN_METEO_VARIABLES / 10) * max(
-    1.0, _OPEN_METEO_FORECAST_DAYS / 7
-)
+_OPEN_METEO_DAY_WEIGHT = max(1.0, _OPEN_METEO_FORECAST_DAYS / 7)
+_OPEN_METEO_DATASET_WEIGHTS = {
+    "open_meteo_current": max(1.0, 7 / 10) * _OPEN_METEO_DAY_WEIGHT,
+    "open_meteo_forecast": max(1.0, 15 / 10) * _OPEN_METEO_DAY_WEIGHT,
+}
+_OPEN_METEO_WEIGHT_PER_LOCATION_PER_SWEEP = sum(_OPEN_METEO_DATASET_WEIGHTS.values())
 
 
 def test_open_meteo_also_stays_inside_its_daily_ceiling() -> None:
@@ -175,21 +183,18 @@ def test_open_meteo_also_stays_inside_its_daily_ceiling() -> None:
     The monthly figure alone would permit a cap that breaches the daily one, and
     the daily limit is the one a full sweep actually runs into first.
     """
-    assert _OPEN_METEO_CALL_WEIGHT == 1.5
+    assert _OPEN_METEO_DATASET_WEIGHTS["open_meteo_current"] == 1.0
+    assert _OPEN_METEO_DATASET_WEIGHTS["open_meteo_forecast"] == 1.5
 
     caps = WeatherSettings.model_construct().provider_location_caps
-    requests_per_sweep = caps["open_meteo"] * _DATASETS_PER_PROVIDER
+    weighted_per_sweep = caps["open_meteo"] * _OPEN_METEO_WEIGHT_PER_LOCATION_PER_SWEEP
+    weighted_per_day = weighted_per_sweep * _SWEEPS_PER_DAY
 
-    weighted_per_day = requests_per_sweep * _SWEEPS_PER_DAY * _OPEN_METEO_CALL_WEIGHT
     assert weighted_per_day <= 10_000 * 0.8, (
         f"{weighted_per_day:,.0f} weighted calls/day exceeds the 20% margin on 10,000"
     )
-
-    weighted_per_sweep = requests_per_sweep * _OPEN_METEO_CALL_WEIGHT
     assert weighted_per_sweep <= 5_000 * 0.8  # published hourly ceiling
-
-    weighted_per_month = weighted_per_day * 30
-    assert weighted_per_month <= 300_000 * 0.8
+    assert weighted_per_day * 30 <= 300_000 * 0.8
 
 
 def test_openweathermap_is_paced_under_its_per_minute_ceiling() -> None:

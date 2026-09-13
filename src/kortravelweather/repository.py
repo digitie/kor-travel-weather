@@ -1445,16 +1445,24 @@ class WeatherRepository:
         requests_fetched: int = 0,
         status: str = "success",
         error: str | None = None,
+        values_loaded_offset: int = 0,
     ) -> tuple[int, SyncRun]:
         """Publish facts and terminalize their run in one transaction.
 
         Keeping the run row lock until the conditional terminal transition
         prevents stale-run recovery from observing a half-published success.
+
+        ``values_loaded_offset`` is what a caller already published in earlier
+        batches of the same run. Without it the run row would record only this
+        final batch, and a sweep that published 400,000 values across ten
+        batches would report the last 50,000 -- the count operators read on the
+        수집 실행 page to tell a working provider from a broken one.
         """
         finished: SyncRun
         loaded: int
         with self._session_factory.begin() as session:
             loaded = self._ingest_batch_session(session, source_records, values)
+            loaded += values_loaded_offset
             result = session.execute(
                 update(SyncRunRow)
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")

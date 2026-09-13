@@ -399,6 +399,80 @@ def test_external_dagster_boundary_is_atomic_and_idempotent(tmp_path: Any) -> No
     assert len(repository.list_sync_run_sources(first["run_id"])) == 1
 
 
+def test_a_sweep_publishes_in_batches_without_holding_it_all(tmp_path: Any) -> None:
+    """Memory, not atomicity, is what bounds a sweep now.
+
+    Staging a whole sweep put 8.14 GiB in one step and drove the host into
+    swap. Batching releases each chunk, and the run row must still report the
+    *total* -- reporting only the final batch would make a working provider
+    look like it collected almost nothing.
+    """
+    payload = {
+        "current": {
+            "time": "2026-08-30T03:00:00Z",
+            "temperature_2m": 25,
+            "relative_humidity_2m": 50,
+        }
+    }
+    targets = [
+        ProviderLocation(
+            location_id=f"loc-{index}",
+            latitude=37.0 + index / 100,
+            longitude=127.0 + index / 100,
+            metadata={},
+        )
+        for index in range(5)
+    ]
+    transport = FixtureTransport(*[FakeResponse(payload) for _ in targets])
+    provider = OpenMeteoProvider(transport=transport)
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    for target in targets:
+        repository.upsert_location(
+            WeatherLocation(
+                location_id=target.location_id,
+                name=target.location_id,
+                latitude=target.latitude,
+                longitude=target.longitude,
+            )
+        )
+
+    published: list[int] = []
+    original = repository.ingest_batch
+
+    def counting_ingest_batch(**kwargs: Any) -> int:
+        loaded = original(**kwargs)
+        published.append(loaded)
+        return loaded
+
+    repository.ingest_batch = counting_ingest_batch  # type: ignore[method-assign]
+
+    # Each fixture response yields 2 values, so a threshold of 3 flushes on
+    # every second location and leaves the fifth for publish_and_finish.
+    result = run_external_weather_sync(
+        repository=repository,
+        provider=provider,
+        targets=targets,
+        dataset_key="open_meteo_current",
+        publish_batch_values=3,
+    )
+
+    expected_total = 2 * len(targets)
+    run = repository.get_sync_run(result["run_id"])
+    assert run is not None
+
+    # The work was genuinely split: some of it landed in early flushes, and
+    # some was left for the final publish. Either extreme would mean the
+    # batching did nothing.
+    assert published, "the sweep should have flushed at least one batch early"
+    assert 0 < sum(published) < expected_total
+
+    # And the run reports everything, not just the batch it finished with.
+    assert run.values_loaded == expected_total
+    assert result["values_loaded"] == expected_total
+    assert len(result["source_record_keys"]) == len(targets)
+
+
 def test_a_provider_that_never_answers_ends_its_own_run(tmp_path: Any) -> None:
     """A fetch that hangs must fail the run, not occupy it indefinitely.
 

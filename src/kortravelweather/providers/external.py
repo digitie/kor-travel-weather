@@ -440,12 +440,18 @@ class OpenMeteoProvider(HttpWeatherProvider):
                 "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,"
                 "wind_speed_10m,wind_direction_10m,weather_code"
             ),
-            "hourly": (
+        }
+        # Ask for the 168-step hourly block only when this dataset parses it.
+        # Open-Meteo prices a call as max(1, variables/10) * max(1, days/7), so
+        # sending all 15 variables for the current dataset -- which keeps seven
+        # values and discards the rest -- cost 1.5 calls for 1 call of data, and
+        # a 9KB response for a 400-byte answer.
+        if dataset.endswith("forecast"):
+            params["hourly"] = (
                 "temperature_2m,relative_humidity_2m,apparent_temperature,"
                 "precipitation_probability,precipitation,"
                 "wind_speed_10m,wind_direction_10m,weather_code"
-            ),
-        }
+            )
         payload, metadata = self._request("forecast", params=params)
         if not isinstance(payload, Mapping):
             raise ProviderError("Open-Meteo 응답이 object가 아닙니다.", code="schema")

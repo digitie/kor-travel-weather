@@ -49,10 +49,18 @@ run 큐를 채운다. 실제로 그렇게 성공한 run 하나가 6.6시간 걸�
   예산이 한참 남은 채로 throttle을 맞는다.
 
 resource가 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`와 provider별 secret/base URL을 읽고,
-활성 location catalog를 `ProviderLocation`으로 변환한다. provider별 응답은 모두 stage한
-후 `WeatherRepository.publish_and_finish`에 전달하므로, 중간 target의 timeout·429·4xx·
-schema 오류가 발생하면 failed run만 남고 기존 KMA 또는 external fact는 publish되지
-않는다. provider가 반환한 `source_record_key`는 response payload와 redacted request
+활성 location catalog를 `ProviderLocation`으로 변환한다.
+
+응답은 **배치 단위로 stage하며 publish**한다(`_PUBLISH_BATCH_VALUES`). 예전에는 sweep
+전체를 모은 뒤 한 번에 publish해서 "중간에 실패하면 아무것도 publish되지 않는" 성질이
+있었지만, 그 대가로 openweathermap의 forecast 스텝이 8.14GiB를 점유해 호스트를 스왑으로
+몰아넣었고 다른 provider의 요청이 0.3초에서 9.7초로 느려졌다. 지금은 배치 하나가
+원자적이고, 중간에 실패하면 **이미 publish된 배치는 남는다**. fact는 immutable이고
+`source_record_key`로 식별되므로 부분 sweep은 단지 갱신된 지점이 적다는 뜻이며, 재시도는
+빠진 것만 채운다. 실패한 run은 그때까지 적재한 건수를 기록한다.
+
+중간 target의 timeout·429·4xx·schema 오류는 여전히 run을 실패시킨다.
+provider가 반환한 `source_record_key`는 response payload와 redacted request
 metadata의 hash라서 같은 응답 replay는 no-op이며, 수정 응답은 새 source revision이다.
 KMA/외부 실행은 provider 응답을 bounded iterable로 소비하고 run heartbeat를
 그룹/대상 경계에서 갱신한다. stale 회수는 `heartbeat_at`(legacy row는
