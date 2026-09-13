@@ -223,7 +223,16 @@ class WeatherSettings(BaseSettings):
     #
     #   weatherapi     100,000/mo -> 150 locations =  72,000/mo
     #   open_meteo      10,000/day -> 300 locations = 7,200 weighted/day
-    #   openweathermap 1,000,000/mo -> uncapped    = 685,440/mo for all 1,428
+    #   openweathermap 1,000,000/mo -> 350 locations = 168,000/mo
+    #
+    # OpenWeatherMap's quota would cover the whole catalog; memory will not.
+    # A sweep stages every value in memory before publishing, and at 1,428
+    # locations its forecast step held 8.14 GiB -- roughly 5.8 MiB per
+    # location -- on a 14 GiB host it shares with other services. That single
+    # step drove free memory to 358 MiB, slowed every other provider from
+    # 1.3s to 9.7s per request, and killed two image builds outright. 350
+    # keeps one step near 2 GiB. Raising it needs the staging rewritten to
+    # publish in batches, not a bigger number here.
     #
     # Open-Meteo bills weighted calls, not requests: its published formula is
     # max(1, variables/10) * max(1, days/7) * locations, and this project's
@@ -241,7 +250,7 @@ class WeatherSettings(BaseSettings):
     # request then takes ~15s instead of ~0.3s, and the run outlives its own
     # schedule until the queue fills with runs that will never finish.
     provider_location_caps: dict[str, int] = Field(
-        default_factory=lambda: {"weatherapi": 150, "open_meteo": 300},
+        default_factory=lambda: {"weatherapi": 150, "open_meteo": 300, "openweathermap": 350},
         validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS",
     )
     # Minimum seconds between two requests to the same provider. Monthly quota

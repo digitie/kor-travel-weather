@@ -104,18 +104,43 @@ _FREE_TIER_CALLS_PER_MONTH = {
     "weatherapi": 100_000,
     "openweathermap": 1_000_000,
 }
+
+#: Measured, not estimated: openweathermap's forecast step held 8.14 GiB while
+#: sweeping all 1,428 locations, because a sweep stages every value in memory
+#: before it publishes. It is a rough figure and varies by dataset shape, but
+#: the order of magnitude is what matters -- one step is allowed a couple of
+#: gigabytes on a 14 GiB host that runs other services too.
+_OBSERVED_MIB_PER_LOCATION = 8.14 * 1024 / 1428
+_STEP_MEMORY_BUDGET_MIB = 2560
 _CATALOG_LOCATIONS = 1_428
 _DATASETS_PER_PROVIDER = 2
 _SWEEPS_PER_DAY = 8  # the "15 */3 * * *" schedule
 
 
+def test_no_cap_lets_one_step_exhaust_the_host() -> None:
+    """Quota is not the only ceiling a cap has to respect; memory is the other.
+
+    A sweep stages every value before publishing, so its peak memory scales
+    with the location count. OpenWeatherMap's quota would happily cover the
+    whole catalog, but at 1,428 locations that step held 8.14 GiB, drove the
+    host to 358 MiB free, slowed every other provider sevenfold and killed two
+    image builds. A cap raised on quota reasoning alone would do it again.
+    """
+    caps = WeatherSettings.model_construct().provider_location_caps
+    for provider in list(_FREE_TIER_CALLS_PER_MONTH) + ["open_meteo"]:
+        locations = caps.get(provider, _CATALOG_LOCATIONS)
+        projected = locations * _OBSERVED_MIB_PER_LOCATION
+        assert projected <= _STEP_MEMORY_BUDGET_MIB, (
+            f"{provider} sweeps {locations} locations, projecting ~{projected:,.0f} MiB "
+            f"for one step against a {_STEP_MEMORY_BUDGET_MIB:,} MiB budget"
+        )
+
+
 def test_the_shipped_caps_stay_inside_each_vendor_free_tier() -> None:
     """The defaults are a quota calculation, so drift either way is a bug.
 
-    An uncapped provider must be checked against the *whole* catalog, not
-    skipped: openweathermap is left out of the mapping precisely because its
-    quota covers all 1,428 locations, and that only stays true while the
-    catalog and the schedule stay where they are.
+    A provider absent from the caps mapping must be checked against the *whole*
+    catalog, since that is what it would then sweep.
 
     Exceeding a quota does not fail cleanly -- the vendor throttles, every
     request takes ~15s instead of ~0.3s, and the run outlives its own schedule.
