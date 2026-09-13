@@ -12,6 +12,13 @@ from kortravelweather.metrics import provider_request
 from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
 from kortravelweather.repository import WeatherRepository
 
+#: Normalized values held in memory before a partial publish releases them.
+#: Sized so one batch stays in the low hundreds of MB even for the widest
+#: dataset (open_meteo's forecast yields ~1,350 values per location, so this is
+#: roughly 37 locations); small enough to bound the step, large enough that the
+#: publish transactions stay infrequent.
+_PUBLISH_BATCH_VALUES = 50_000
+
 
 def _fetch_with_deadline(
     provider: WeatherProvider,
@@ -73,8 +80,22 @@ def run_external_weather_sync(
     max_payload_bytes: int = 16 * 1024 * 1024,
     fetch_timeout_seconds: float | None = None,
     min_request_interval_seconds: float = 0.0,
+    publish_batch_values: int = _PUBLISH_BATCH_VALUES,
 ) -> dict[str, Any]:
-    """응답을 bounded stage한 후 하나의 publish transaction으로 저장한다."""
+    """응답을 bounded batch로 stage하며 publish한다.
+
+    Publishing happens in batches rather than once at the end. Holding an
+    entire sweep in memory is what put 8.14 GiB in a single step and drove the
+    host into swap, where every provider's requests slowed from ~0.3s to 9.7s
+    and two deploys died mid-build.
+
+    That trades away all-or-nothing: a sweep that fails partway now leaves the
+    batches it already published. For this data that is the better failure --
+    the facts are immutable and keyed by ``source_record_key``, so a partial
+    sweep is simply fewer locations refreshed, and the retry republishes only
+    what is missing. The run is still marked failed, now carrying the count it
+    managed to load.
+    """
     target_list = list(targets)
     if not target_list:
         raise ValueError("external weather target이 비어 있습니다.")
@@ -92,6 +113,11 @@ def run_external_weather_sync(
     )
     staged_sources: list[dict[str, Any]] = []
     staged_values = []
+    #: Every key the run published, kept for the result. Only the keys are
+    #: retained across batches -- holding the source records themselves is what
+    #: this batching exists to avoid.
+    source_record_keys: list[str] = []
+    published_values = 0
     sent_at: float | None = None
     try:
         for target in target_list:
@@ -132,7 +158,10 @@ def run_external_weather_sync(
                 raise ValueError(
                     f"provider raw payload가 상한을 초과했습니다: {payload_size} bytes"
                 )
-            if len(staged_values) + len(response.values) > max_values:
+            # The cap counts what the run has produced in total, published
+            # batches included; counting only the pending batch would let an
+            # unbounded sweep through one flush at a time.
+            if published_values + len(staged_values) + len(response.values) > max_values:
                 raise ValueError("external weather normalized value 수가 상한을 초과했습니다.")
             if any(
                 value.provider != provider.provider_key or value.dataset_key != dataset_key
@@ -141,20 +170,29 @@ def run_external_weather_sync(
                 raise ValueError("provider 응답 fact의 provider/dataset 계약이 요청과 다릅니다.")
             staged_sources.append({**response.source_record, "run_id": run.run_id})
             staged_values.extend(response.values)
+            source_record_keys.append(response.source_record["source_record_key"])
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+            if publish_batch_values > 0 and len(staged_values) >= publish_batch_values:
+                published_values += repository.ingest_batch(
+                    source_records=staged_sources, values=staged_values
+                )
+                staged_sources = []
+                staged_values = []
         loaded, finished = repository.publish_and_finish(
             run_id=run.run_id,
             source_records=staged_sources,
             values=staged_values,
             grids_fetched=0,
             requests_fetched=len(target_list),
+            values_loaded_offset=published_values,
         )
     except Exception as exc:
         repository.finish_sync_run(
             run.run_id,
             status="failed",
-            requests_fetched=len(staged_sources),
+            requests_fetched=len(source_record_keys),
+            values_loaded=published_values,
             error=str(redact_secrets(str(exc)))[:1000],
         )
         raise
@@ -166,5 +204,5 @@ def run_external_weather_sync(
         "targets": len(target_list),
         "requests_fetched": len(target_list),
         "values_loaded": loaded,
-        "source_record_keys": [record["source_record_key"] for record in staged_sources],
+        "source_record_keys": source_record_keys,
     }
