@@ -186,12 +186,19 @@ class WeatherSettings(BaseSettings):
             "open_meteo",
             "weatherapi",
             "openweathermap",
-            "visual_crossing",
+            # visual_crossing and wttr_in stay off by default. Visual Crossing's
+            # free tier is 1,000 records a day, which one sweep of the catalog
+            # exhausts before it has covered a tenth of it: 28 consecutive runs
+            # published 0 values. wttr.in is a volunteer service with no
+            # published quota, no API key and therefore no entry in
+            # provider_location_caps, so leaving it on pointed 2,856 requests a
+            # sweep at somebody's donated hardware, and its data had gone two
+            # days stale regardless. Both adapters are tested; add either to
+            # KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS to turn it back on.
             "tomorrow_io",
             "weatherbit",
             "weatherstack",
             "accuweather",
-            "wttr_in",
         ],
         validation_alias=AliasChoices("KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS", "WEATHER_PROVIDERS"),
     )
@@ -221,36 +228,44 @@ class WeatherSettings(BaseSettings):
     # free-tier quota, less a 20% margin, divided by the provider's dataset count
     # and the eight sweeps a day its three-hourly schedule performs:
     #
-    #   weatherapi     100,000/mo -> 150 locations =  72,000/mo
-    #   open_meteo      10,000/day -> 300 locations = 7,200 weighted/day
-    #   openweathermap 1,000,000/mo -> 350 locations = 168,000/mo
+    #   weatherapi     100,000/mo  -> 150 locations =  74,400/mo
+    #   open_meteo      10,000/day -> 380 locations =   6,080 weighted/day
+    #   openweathermap 1,000,000/mo -> 350 locations = 173,600/mo
     #
-    # OpenWeatherMap's quota would cover the whole catalog; memory will not.
-    # A sweep stages every value in memory before publishing, and at 1,428
-    # locations its forecast step held 8.14 GiB -- roughly 5.8 MiB per
-    # location -- on a 14 GiB host it shares with other services. That single
-    # step drove free memory to 358 MiB, slowed every other provider from
-    # 1.3s to 9.7s per request, and killed two image builds outright. 350
-    # keeps one step near 2 GiB. Raising it needs the staging rewritten to
-    # publish in batches, not a bigger number here.
+    # OpenWeatherMap's quota would cover the whole catalog, and since a sweep
+    # now publishes in batches its memory no longer scales with the location
+    # count -- the old ceiling was memory, at 8.14 GiB for one 1,428-location
+    # forecast step, which drove free memory to 358 MiB, slowed every other
+    # provider from 1.3s to 9.7s per request and killed two image builds.
+    # What holds it at 350 now is time. Each provider gets a three-hour slot,
+    # and 1,428 locations would need 2.3 hours of it at the measured average of
+    # 5.78s per forecast request -- 4.6 hours at the slowest rate actually
+    # observed, which is already past the slot. That cost is database write
+    # throughput on a spinning disk, so raising this cap means making the
+    # writes faster first.
     #
-    # Open-Meteo bills weighted calls, not requests: its published formula is
-    # max(1, variables/10) * max(1, days/7) * locations, and this project's
-    # query asks for 15 variables over the default 7 days, so every request
-    # costs 1.5. Sizing it as 450 locations by raw request count put it at
-    # 10,800 weighted/day against a 10,000 ceiling, and it began failing with
-    # "provider rate limit" once the daily counter caught up.
+    # Open-Meteo bills weighted calls, not requests:
+    # max(1, variables/10) * max(1, days/14) per request. Sizing it as 450
+    # locations by raw request count put it at 10,800 weighted/day against a
+    # 10,000 ceiling, and it began failing with "provider rate limit" once the
+    # daily counter caught up. Each request now carries a single block of at most
+    # 10 variables, so it costs exactly 1.0 whichever way the vendor counts
+    # variables spread across two blocks, and 380 locations over two datasets and
+    # eight sweeps spend 6,080 a day. The forecast step goes from a measured 79
+    # minutes to about 100, still inside its three-hour slot.
     #
-    # These sit near 70% of each ceiling rather than exactly at the 80% the
-    # margin allows, because a retried request spends quota too: one location
-    # can cost up to four calls, so planning to the last permitted call leaves
-    # nothing for the failures the retries exist to absorb.
+    # All three sit near 70% of their ceilings rather than the 80% the margin
+    # allows, because a retried request spends quota too: provider_retries is 3,
+    # so one location can cost four calls per dataset and eight across both.
+    # Planning to the last permitted call would leave nothing for the failures
+    # the retries exist to absorb; at these caps roughly a fifth of Open-Meteo's
+    # requests could retry in full before the daily ceiling came into reach.
     #
     # Exceeding a quota does not fail cleanly: the vendor throttles, every
     # request then takes ~15s instead of ~0.3s, and the run outlives its own
     # schedule until the queue fills with runs that will never finish.
     provider_location_caps: dict[str, int] = Field(
-        default_factory=lambda: {"weatherapi": 150, "open_meteo": 300, "openweathermap": 350},
+        default_factory=lambda: {"weatherapi": 150, "open_meteo": 380, "openweathermap": 350},
         validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS",
     )
     # Minimum seconds between two requests to the same provider. Monthly quota

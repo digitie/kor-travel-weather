@@ -436,20 +436,30 @@ class OpenMeteoProvider(HttpWeatherProvider):
             "latitude": location.latitude,
             "longitude": location.longitude,
             "timezone": "UTC",
-            "current": (
-                "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,"
-                "wind_speed_10m,wind_direction_10m,weather_code"
-            ),
         }
-        # Ask for the 168-step hourly block only when this dataset parses it.
-        # Open-Meteo prices a call as max(1, variables/10) * max(1, days/7), so
-        # sending all 15 variables for the current dataset -- which keeps seven
-        # values and discards the rest -- cost 1.5 calls for 1 call of data, and
-        # a 9KB response for a 400-byte answer.
+        # One block per request, never both. Open-Meteo charges
+        # ``max(1, variables/10) * max(1, days/14)`` per call, and its published
+        # example -- 15 variables over two weeks billed as 1.5 calls -- counts
+        # variables for the request as a whole. What it does not say is whether
+        # two blocks of 7 and 8 count as 15 variables (1.5 calls) or as two
+        # blocks each rounded up to the 10-variable floor (2.0 calls). Asking
+        # for one block of at most 10 costs exactly 1.0 under either reading, so
+        # the quota arithmetic stops depending on which is right; going over is
+        # not a clean failure but a throttle that stretches every request to
+        # ~15s until runs outlive their own schedule.
+        #
+        # The current block carried by a forecast request was a duplicate of
+        # what ``open_meteo_current`` already publishes -- 7 of that dataset's
+        # 1,351 values -- so dropping it costs no data.
         if dataset.endswith("forecast"):
             params["hourly"] = (
                 "temperature_2m,relative_humidity_2m,apparent_temperature,"
                 "precipitation_probability,precipitation,"
+                "wind_speed_10m,wind_direction_10m,weather_code"
+            )
+        else:
+            params["current"] = (
+                "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,"
                 "wind_speed_10m,wind_direction_10m,weather_code"
             )
         payload, metadata = self._request("forecast", params=params)

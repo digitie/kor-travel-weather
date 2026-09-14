@@ -53,7 +53,7 @@ services:
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
       KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
-      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","visual_crossing","tomorrow_io","weatherbit","weatherstack","accuweather","wttr_in"]}
+      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
       KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
       KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
@@ -105,7 +105,7 @@ services:
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
       KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
-      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","visual_crossing","tomorrow_io","weatherbit","weatherstack","accuweather","wttr_in"]}
+      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
       # 15s/1 retry (2 attempts total) was too thin for data.go.kr's gateway,
       # which has a documented SERVICETIMEOUT_ERROR mode -- KMA and AirKorea
       # both saw runs fail outright on a single slow response. 20s/3 retries
@@ -132,7 +132,7 @@ services:
       # comments in settings.py carry the arithmetic. Override only against a
       # paid plan -- exceeding a quota throttles the provider into runs that
       # outlive their own schedule.
-      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":300,"openweathermap":350}}
+      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":380,"openweathermap":350}}
       KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS:-{"openweathermap":1.25}}
       KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
       # 500k was sized before external forecast/timeline datasets were added.
