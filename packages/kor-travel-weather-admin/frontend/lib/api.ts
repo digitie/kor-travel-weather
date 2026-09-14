@@ -1,3 +1,5 @@
+import { failureMessage, readBody } from "@/lib/http";
+
 export type PageMeta = {
   limit: number;
   offset: number;
@@ -159,27 +161,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     cache: "no-store",
   });
-  // Not every failure carries a JSON body: the auth middleware answers with a
-  // plain-text 401, an unhandled backend exception yields Starlette's
-  // text/plain "Internal Server Error", and a gateway timeout returns HTML.
-  // Parsing before checking the status turned all of those into a SyntaxError
-  // that hid the real status code from the operator.
-  const raw = await response.text();
-  let payload: (ApiEnvelope<T> & { detail?: string }) | { detail?: string } | null = null;
-  try {
-    payload = raw ? JSON.parse(raw) : null;
-  } catch {
-    payload = null;
-  }
-  if (!response.ok) {
-    const detail =
-      payload && typeof payload === "object" && typeof payload.detail === "string" && payload.detail
-        ? payload.detail
-        : `요청 실패 (${response.status})`;
-    throw new Error(detail);
-  }
-  if (!payload) throw new Error(`응답을 해석하지 못했습니다 (${response.status})`);
-  return payload as ApiEnvelope<T>;
+  // See lib/http.ts: parsing before checking the status turns every plain-text
+  // or HTML failure into a SyntaxError and hides what the server said.
+  const body = await readBody<(ApiEnvelope<T> & { detail?: string }) | { detail?: string }>(
+    response,
+  );
+  if (!response.ok) throw new Error(failureMessage(response, body));
+  if (!body.data) throw new Error(`응답을 해석하지 못했습니다 (${response.status})`);
+  return body.data as ApiEnvelope<T>;
 }
 
 export function getLocations(
