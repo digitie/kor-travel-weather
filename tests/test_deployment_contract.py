@@ -482,3 +482,111 @@ def test_the_web_image_copies_its_public_directory_into_the_runtime_stage() -> N
     assert re.search(
         r"COPY\s+--from=builder\s+/app/public\s+\./public", runner_stage
     ), "the runner stage does not copy /app/public from the builder stage"
+
+
+#: Services whose ports the n150 reverse proxy dials. HAProxy runs outside
+#: Docker, so a service it fronts must be published on the host's LAN address;
+#: compose.yaml binds everything to loopback, and the override is what moves
+#: them. Derived from the three public hostnames in docs/runbooks/docker-app.md.
+_LAN_PUBLISHED_SERVICES = {"api", "dagster-gateway", "web"}
+
+#: Neither authenticates, so neither is ever reachable from the proxy. The
+#: runbook says so; this makes it true.
+_LOOPBACK_ONLY_SERVICES = {"db", "prometheus"}
+
+
+def _published_addresses(service: dict) -> list[str]:
+    """Host addresses from compose short-syntax ports (``HOST:hostport:port``)."""
+    addresses = []
+    for entry in service.get("ports") or []:
+        if not isinstance(entry, str):  # long syntax has no host address field
+            continue
+        parts = entry.split(":")
+        if len(parts) == 3:
+            addresses.append(parts[0])
+    return addresses
+
+
+def test_the_base_compose_file_publishes_nothing_beyond_loopback(
+    compose_files: dict[str, dict],
+) -> None:
+    """A plain ``docker compose up`` must never expose a port to the network.
+
+    The base file is what a developer runs, and what a deploy falls back to when
+    the override is forgotten. Forgetting it should cost reachability, which is
+    loud, rather than silently publishing an admin UI to the LAN.
+    """
+    offenders = [
+        f"{name}: {address}"
+        for name, service in (compose_files["compose.yaml"].get("services") or {}).items()
+        for address in _published_addresses(service)
+        if address != "127.0.0.1"
+    ]
+    assert not offenders, (
+        f"compose.yaml publishes {offenders} beyond loopback; the LAN bindings "
+        "belong in deploy/compose.n150.yaml so the default stays closed"
+    )
+
+
+def test_the_n150_override_covers_every_service_the_proxy_fronts(
+    compose_files: dict[str, dict],
+) -> None:
+    """Dropping a service from the override takes its public hostname down.
+
+    Deploying without the override at all is what did it last time: all three
+    hostnames answered 503 while every container reported healthy, because
+    nothing listened on the address HAProxy dials. Losing one service from the
+    override is the same failure, one hostname at a time and easier to miss.
+    """
+    override = compose_files["deploy/compose.n150.yaml"].get("services") or {}
+    missing = _LAN_PUBLISHED_SERVICES - set(override)
+    assert not missing, (
+        f"{sorted(missing)} have a public hostname but no LAN binding in the n150 "
+        "override, so HAProxy would get connection refused for them"
+    )
+    for name in _LAN_PUBLISHED_SERVICES:
+        addresses = _published_addresses(override[name])
+        assert addresses, f"{name} is in the n150 override but publishes no port"
+        assert all(address != "127.0.0.1" for address in addresses), (
+            f"{name} is bound to loopback in the n150 override, which is what the "
+            "override exists to change"
+        )
+
+
+def test_the_n150_override_never_exposes_the_database_or_prometheus(
+    compose_files: dict[str, dict],
+) -> None:
+    """Neither has authentication of its own, so neither may leave the host."""
+    override = compose_files["deploy/compose.n150.yaml"].get("services") or {}
+    offenders = [
+        f"{name}: {address}"
+        for name in _LOOPBACK_ONLY_SERVICES
+        for address in _published_addresses(override.get(name, {}))
+        if address != "127.0.0.1"
+    ]
+    assert not offenders, (
+        f"the n150 override publishes {offenders}; neither PostgreSQL nor "
+        "Prometheus authenticates, so neither is ever reachable from the gateway"
+    )
+
+
+def test_the_deploy_script_stamps_the_revision_it_builds() -> None:
+    """The runbook's instruction is easy to half-follow; the script is not.
+
+    Deploying by hand without GIT_COMMIT bakes "unknown" into the image, and
+    then /version answers 200 with a value that cannot disagree with anything --
+    the smoke test passes and confirms nothing. That has now happened twice.
+    """
+    script = (REPO_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+    assert re.search(r"^\s*export GIT_COMMIT", script, re.MULTILINE), (
+        "deploy.sh does not export GIT_COMMIT, so compose would bake 'unknown'"
+    )
+    assert "git describe" in script, "deploy.sh does not derive GIT_COMMIT from git"
+    assert "docker compose port" in script, (
+        "deploy.sh should ask compose which address it published rather than "
+        "assuming one; checking 127.0.0.1 on a LAN-published host reports a "
+        "healthy service as down, and vice versa"
+    )
+    assert "git_commit" in script, (
+        "deploy.sh does not verify /version reports the commit it just built"
+    )

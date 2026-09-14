@@ -1,3 +1,5 @@
+import { failureMessage, readBody } from "@/lib/http";
+
 export type DagsterSchedule = { name: string; status: string | null; cron: string | null; jobName: string };
 export type DagsterRepository = { name: string; locationName: string; schedules: DagsterSchedule[]; jobs: string[]; assets: string[] };
 export type DagsterRun = { runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null; errorMessage: string | null };
@@ -231,8 +233,15 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
     body: JSON.stringify({ query: QUERY, variables: { limit } }),
     cache: "no-store",
   });
-  const payload = (await response.json()) as GraphqlResponse;
-  if (!response.ok || payload.errors?.length) throw new Error(payload.errors?.[0]?.message ?? `Dagster 연결 실패 (${response.status})`);
+  // A cross-origin POST is refused by the middleware with a plain-text 403, and
+  // the Dagster gateway answers 502/504 with HTML. Parsing before checking the
+  // status reported those as "unexpected token '교' ... is not valid json",
+  // which tells a reader nothing and hides a message that was already clear.
+  const body = await readBody<GraphqlResponse>(response);
+  if (!response.ok) throw new Error(failureMessage(response, body, "Dagster 연결 실패"));
+  const payload = body.data;
+  if (!payload) throw new Error(`Dagster 응답을 해석하지 못했습니다 (${response.status})`);
+  if (payload.errors?.length) throw new Error(payload.errors[0].message);
   const repositories = payload.data?.repositoriesOrError;
   if (!repositories || !repositories.nodes) throw new Error(repositories?.message ?? "Dagster 작업 목록을 읽지 못했습니다.");
   const runs = payload.data?.runsOrError;

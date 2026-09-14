@@ -13,10 +13,23 @@
    Compose의 API/Dagster는 production profile을 강제로 사용하므로 admin token이
    없으면 기동하지 않는다.
    metrics token은 admin token과 달라야 하며 API Prometheus scrape 전용이다.
-2. `GIT_COMMIT=$(git describe --always --dirty --abbrev=7) docker compose -f compose.yaml up -d --build`를 실행한다.
-   `GIT_COMMIT`은 이미지에 구워져 `/version`이 답하는 값이 된다. 빼먹으면
-   `unknown`이 구워져 아래 스모크 확인이 아무것도 확인하지 못한다. `migrate` one-shot
-   서비스가 `alembic upgrade head`를 완료한 뒤 API/Dagster가 시작된다.
+2. `deploy/deploy.sh`를 실행한다. `docker compose`를 손으로 직접 띄우지 않는다 —
+   이 단계는 두 번 틀렸고, 스크립트는 두 경우를 모두 막는다.
+
+   - **compose 파일**: `compose.yaml` 하나만 쓰면 모든 포트가 loopback에 묶인다.
+     n150의 HAProxy는 Docker 밖에서 LAN 주소로 접속하므로, 그렇게 배포하면
+     컨테이너는 전부 healthy인데 공개 hostname 3개가 모두 503을 답한다.
+     `deploy/compose.n150.yaml`이 그 포트들을 LAN에 묶어 두므로, 배포 호스트의
+     `.env`에 `COMPOSE_FILE=compose.yaml:deploy/compose.n150.yaml`을 넣어
+     compose 명령이 무엇이든 이 override를 집어 들게 한다.
+   - **`GIT_COMMIT`**: 이미지에 구워져 `/version`이 답하는 값이 된다. 빼먹으면
+     `unknown`이 구워지고, 그러면 `/version`은 200과 함께 무엇과도 어긋날 수 없는
+     값을 답한다 — 5번의 스모크 확인이 통과하면서 아무것도 확인하지 못한다.
+
+   스크립트는 빌드를 detach해서 SSH가 끊겨도 중단되지 않게 하고, 확인할 주소를
+   `docker compose port api 14101`로 compose에게 물어본 뒤 `/version`이 방금 배포한
+   commit을 답할 때까지 기다린다. `migrate` one-shot 서비스가 `alembic upgrade head`를
+   완료한 뒤 API/Dagster가 시작된다.
 3. migration 복구가 필요하면 `docker compose -f compose.yaml run --rm migrate`를
    별도로 실행하고, `docker compose ... ps`에서 완료 상태를 확인한다.
 4. API/Dagster/DB는 compose 기본값처럼 loopback/internal network에 두고,
