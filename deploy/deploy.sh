@@ -40,7 +40,15 @@ case "$GIT_COMMIT" in
         ;;
 esac
 
-echo "deploying $GIT_COMMIT using ${COMPOSE_FILE:-compose.yaml}"
+# Compose reads COMPOSE_FILE from .env itself, so it is usually not in this
+# shell's environment. Reporting the shell's view said "using compose.yaml" on a
+# deploy that in fact used the n150 override -- a deploy script claiming the
+# wrong configuration is the same failure this script exists to prevent.
+compose_files="${COMPOSE_FILE:-}"
+if [ -z "$compose_files" ]; then
+    compose_files="$(grep -E '^COMPOSE_FILE=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+fi
+echo "deploying $GIT_COMMIT using ${compose_files:-compose.yaml}"
 
 # Detached, so losing the SSH connection cannot kill a build midway through.
 nohup docker compose up -d --build "$@" > /tmp/kor-travel-weather-deploy.log 2>&1 &
