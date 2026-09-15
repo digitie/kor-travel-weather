@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from time import sleep
 from typing import Any
 
 from kortravelweather.metrics import provider_request
@@ -54,10 +55,10 @@ class StagedResponse:
     values: list[WeatherValue]
 
 
-def _kma_provider_call(call: Any, *, dataset: str, retries: int) -> Any:
+async def _kma_provider_call(call: Any, *, dataset: str, retries: int) -> Any:
     """Observe one logical KMA/DataGo.kr call across the retry boundary."""
     with provider_request(KMA_PROVIDER_NAME, dataset):
-        return _retry_call(call, retries=retries)
+        return await _retry_call(call, retries=retries)
 
 
 def targets_from_settings(
@@ -441,7 +442,7 @@ def _warning_matches_target(item: Any, target: WeatherTarget) -> bool:
     return expected_text == returned_text or expected_text in returned_text
 
 
-def stage_grid(
+async def stage_grid(
     *,
     client: Any,
     target: WeatherTarget,
@@ -481,7 +482,7 @@ def stage_grid(
         return limit
 
     if include_base:
-        snapshot = _kma_provider_call(
+        snapshot = await _kma_provider_call(
             lambda: client.now(nx=location.nx, ny=location.ny),
             dataset="kma_ultra_short_nowcast",
             retries=retries,
@@ -517,7 +518,7 @@ def stage_grid(
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
         ultra_rows = _bounded_rows(
-            _kma_provider_call(
+            await _kma_provider_call(
                 lambda: client.forecast.short(nx=location.nx, ny=location.ny),
                 dataset="kma_ultra_short_forecast",
                 retries=retries,
@@ -550,7 +551,7 @@ def stage_grid(
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
         short_rows = _bounded_rows(
-            _kma_provider_call(
+            await _kma_provider_call(
                 lambda: client.forecast.vilage(nx=location.nx, ny=location.ny),
                 dataset="kma_short_forecast",
                 retries=retries,
@@ -588,7 +589,7 @@ def stage_grid(
                 "중기예보에는 mid_land_region_code와 mid_temperature_region_code가 모두 필요합니다."
             )
         land_rows = _bounded_rows(
-            _kma_provider_call(
+            await _kma_provider_call(
                 lambda: data_client.mid_land_forecast(reg_id=land_region_code),
                 dataset="kma_mid_forecast",
                 retries=retries,
@@ -627,7 +628,7 @@ def stage_grid(
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
         temp_rows = _bounded_rows(
-            _kma_provider_call(
+            await _kma_provider_call(
                 lambda: data_client.mid_temperature_forecast(reg_id=temperature_region_code),
                 dataset="kma_mid_forecast",
                 retries=retries,
@@ -685,7 +686,98 @@ def run_weather_sync(
     retries: int = 0,
     sync_run: Any | None = None,
 ) -> dict[str, Any]:
+    """Own the event loop KmaClient/DataGoKrClient now require for the run.
+
+    Both clients are constructed by the caller -- so a disabled provider
+    never demands its credential -- but entered and closed here, in the same
+    ``asyncio.run()`` that stages every grid.  Each client's shared rate
+    limiter binds to whichever event loop first calls ``acquire()`` and
+    raises if a later call arrives from a different one, and a run stages up
+    to ``max_grids`` grids and ``max_mid_groups`` region pairs against the
+    same client -- a separate ``asyncio.run()`` per grid, the obvious
+    alternative, would trip that on the second one.
+    """
+    return asyncio.run(
+        _run_weather_sync(
+            repository=repository,
+            client=client,
+            targets=targets,
+            alert_targets=alert_targets,
+            max_grids=max_grids,
+            max_mid_groups=max_mid_groups,
+            max_targets=max_targets,
+            max_response_rows=max_response_rows,
+            max_values=max_values,
+            include_mid=include_mid,
+            include_alerts=include_alerts,
+            alert_station_id=alert_station_id,
+            data_client=data_client,
+            retries=retries,
+            sync_run=sync_run,
+        )
+    )
+
+
+async def _run_weather_sync(
+    *,
+    repository: WeatherRepository,
+    client: Any,
+    targets: Sequence[WeatherTarget],
+    alert_targets: Sequence[WeatherTarget] | None = None,
+    max_grids: int = 300,
+    max_mid_groups: int | None = None,
+    max_targets: int = 10_000,
+    max_response_rows: int = 1_000_000,
+    max_values: int = 500_000,
+    include_mid: bool = False,
+    include_alerts: bool = False,
+    alert_station_id: str | int | None = None,
+    data_client: Any | None = None,
+    retries: int = 0,
+    sync_run: Any | None = None,
+) -> dict[str, Any]:
     """Fetch and publish every grid with bounded, sequential staging."""
+    async with AsyncExitStack() as clients:
+        await clients.enter_async_context(client)
+        if data_client is not None:
+            await clients.enter_async_context(data_client)
+        return await _stage_and_publish_weather(
+            repository=repository,
+            client=client,
+            targets=targets,
+            alert_targets=alert_targets,
+            max_grids=max_grids,
+            max_mid_groups=max_mid_groups,
+            max_targets=max_targets,
+            max_response_rows=max_response_rows,
+            max_values=max_values,
+            include_mid=include_mid,
+            include_alerts=include_alerts,
+            alert_station_id=alert_station_id,
+            data_client=data_client,
+            retries=retries,
+            sync_run=sync_run,
+        )
+
+
+async def _stage_and_publish_weather(
+    *,
+    repository: WeatherRepository,
+    client: Any,
+    targets: Sequence[WeatherTarget],
+    alert_targets: Sequence[WeatherTarget] | None = None,
+    max_grids: int = 300,
+    max_mid_groups: int | None = None,
+    max_targets: int = 10_000,
+    max_response_rows: int = 1_000_000,
+    max_values: int = 500_000,
+    include_mid: bool = False,
+    include_alerts: bool = False,
+    alert_station_id: str | int | None = None,
+    data_client: Any | None = None,
+    retries: int = 0,
+    sync_run: Any | None = None,
+) -> dict[str, Any]:
     run = sync_run or repository.start_sync_run(
         provider=KMA_PROVIDER_NAME,
         dataset_key="kma_weather_bundle",
@@ -789,7 +881,7 @@ def run_weather_sync(
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
 
-        def stage_and_append(
+        async def stage_and_append(
             target: WeatherTarget,
             group_targets: Sequence[WeatherTarget],
             *,
@@ -808,7 +900,7 @@ def run_weather_sync(
                     f"{remaining_values} < {len(group_targets)}"
                 )
             per_target_values = max(1, remaining_values // len(group_targets))
-            responses = stage_grid(
+            responses = await stage_grid(
                 client=client,
                 target=target,
                 include_mid=include_mid_for_group,
@@ -849,14 +941,14 @@ def run_weather_sync(
         # Grid requests are deduplicated first; each staged response is
         # immediately bounded, fanned out, and released before the next grid.
         for grid_key, group_targets in grid_groups.items():
-            stage_and_append(
+            await stage_and_append(
                 group_targets[0],
                 group_targets,
                 include_mid_for_group=False,
                 source_entity_id=f"grid:{grid_key[0]}:{grid_key[1]}",
             )
         for mid_region_codes, group_targets in mid_groups.items():
-            stage_and_append(
+            await stage_and_append(
                 group_targets[0],
                 group_targets,
                 include_mid_for_group=True,
@@ -896,7 +988,7 @@ def run_weather_sync(
                     )
 
                 warning_items = _bounded_rows(
-                    _kma_provider_call(
+                    await _kma_provider_call(
                         fetch_warnings,
                         dataset="kma_weather_alerts",
                         retries=retries,
@@ -995,11 +1087,11 @@ def run_weather_sync(
         raise
 
 
-def _retry_call(call: Any, *, retries: int) -> Any:
+async def _retry_call(call: Any, *, retries: int) -> Any:
     last_error: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            return call()
+            return await call()
         except (AssertionError, TypeError, ValueError):
             # Contract/parse failures are deterministic and must not spend
             # additional provider quota. The python-kma-api client already
@@ -1021,6 +1113,6 @@ def _retry_call(call: Any, *, retries: int) -> Any:
             last_error = exc
             if attempt >= retries:
                 break
-            sleep(min(0.25 * (2**attempt), 5.0))
+            await asyncio.sleep(min(0.25 * (2**attempt), 5.0))
     assert last_error is not None
     raise last_error

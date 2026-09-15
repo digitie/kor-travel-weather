@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -34,6 +35,18 @@ def _target() -> WeatherTarget:
     )
 
 
+class _EntersAndCloses:
+    """Mixin so a fake client/data_client survives being entered by
+    ``run_weather_sync``'s ``AsyncExitStack`` -- KmaClient/DataGoKrClient
+    became async-only, and this is the boundary that now owns them."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 class FakeRepository:
     def __init__(self) -> None:
         self.values = []
@@ -55,12 +68,12 @@ class FakeRepository:
         return self.runs[0]
 
 
-class FakeClient:
+class FakeClient(_EntersAndCloses):
     def __init__(self, fail=False):
         self.fail = fail
         self.forecast = SimpleNamespace(short=self.short, vilage=self.vilage)
 
-    def now(self, **kwargs):
+    async def now(self, **kwargs):
         if self.fail:
             raise RuntimeError("quota")
         return SimpleNamespace(
@@ -80,7 +93,7 @@ class FakeClient:
             },
         )
 
-    def short(self, **kwargs):
+    async def short(self, **kwargs):
         return [
             {
                 "baseDate": "20260101",
@@ -94,7 +107,7 @@ class FakeClient:
             }
         ]
 
-    def vilage(self, **kwargs):
+    async def vilage(self, **kwargs):
         return [
             {
                 "baseDate": "20260101",
@@ -289,8 +302,8 @@ def test_sync_publishes_only_after_all_grids() -> None:
 
 
 def test_alert_targets_include_measurement_anchor_markers() -> None:
-    class AlertClient:
-        def weather_warning_list(self, **kwargs):
+    class AlertClient(_EntersAndCloses):
+        async def weather_warning_list(self, **kwargs):
             return [
                 {
                     "stnId": "108",
@@ -359,21 +372,21 @@ def test_base_requests_dedupe_when_mid_regions_differ() -> None:
             super().__init__()
             self.calls = {"now": 0, "short": 0, "vilage": 0}
 
-        def now(self, **kwargs):
+        async def now(self, **kwargs):
             self.calls["now"] += 1
-            snapshot = super().now(**kwargs)
+            snapshot = await super().now(**kwargs)
             snapshot.raw["items"][0].update(nx=kwargs["nx"], ny=kwargs["ny"])
             return snapshot
 
-        def short(self, **kwargs):
+        async def short(self, **kwargs):
             self.calls["short"] += 1
-            rows = super().short(**kwargs)
+            rows = await super().short(**kwargs)
             rows[0].update(nx=kwargs["nx"], ny=kwargs["ny"])
             return rows
 
-        def vilage(self, **kwargs):
+        async def vilage(self, **kwargs):
             self.calls["vilage"] += 1
-            rows = super().vilage(**kwargs)
+            rows = await super().vilage(**kwargs)
             rows[0].update(nx=kwargs["nx"], ny=kwargs["ny"])
             return rows
 
@@ -399,31 +412,31 @@ def test_base_requests_dedupe_when_mid_regions_differ() -> None:
 
 def test_mid_requests_dedupe_by_region_pair_and_validate_response() -> None:
     class GridClient(FakeClient):
-        def now(self, **kwargs):
-            snapshot = super().now(**kwargs)
+        async def now(self, **kwargs):
+            snapshot = await super().now(**kwargs)
             snapshot.raw["items"][0].update(nx=kwargs["nx"], ny=kwargs["ny"])
             return snapshot
 
-        def short(self, **kwargs):
-            rows = super().short(**kwargs)
+        async def short(self, **kwargs):
+            rows = await super().short(**kwargs)
             rows[0].update(nx=kwargs["nx"], ny=kwargs["ny"])
             return rows
 
-        def vilage(self, **kwargs):
-            rows = super().vilage(**kwargs)
+        async def vilage(self, **kwargs):
+            rows = await super().vilage(**kwargs)
             rows[0].update(nx=kwargs["nx"], ny=kwargs["ny"])
             return rows
 
-    class CountingDataClient:
+    class CountingDataClient(_EntersAndCloses):
         def __init__(self) -> None:
             self.land_calls: list[str] = []
             self.temperature_calls: list[str] = []
 
-        def mid_land_forecast(self, *, reg_id: str):
+        async def mid_land_forecast(self, *, reg_id: str):
             self.land_calls.append(reg_id)
             return [{"tmFc": "202601010600", "regId": reg_id, "wf3Am": "맑음", "rnSt3Am": "20"}]
 
-        def mid_temperature_forecast(self, *, reg_id: str):
+        async def mid_temperature_forecast(self, *, reg_id: str):
             self.temperature_calls.append(reg_id)
             return [{"tmFc": "202601010600", "regId": reg_id, "taMin3": "-1", "taMax3": "4"}]
 
@@ -487,7 +500,7 @@ def test_wrong_grid_is_not_retried() -> None:
             super().__init__()
             self.now_calls = 0
 
-        def now(self, **kwargs):
+        async def now(self, **kwargs):
             self.now_calls += 1
             return SimpleNamespace(
                 raw={
@@ -506,7 +519,7 @@ def test_wrong_grid_is_not_retried() -> None:
 
     client = WrongGridClient()
     with pytest.raises(ValueError, match="격자 불일치"):
-        stage_grid(client=client, target=_target(), retries=3)
+        asyncio.run(stage_grid(client=client, target=_target(), retries=3))
     assert client.now_calls == 1
 
 
@@ -516,22 +529,22 @@ def test_row_budget_rejects_before_copying_next_kma_response() -> None:
             super().__init__()
             self.calls = {"now": 0, "short": 0, "vilage": 0}
 
-        def now(self, **kwargs):
+        async def now(self, **kwargs):
             self.calls["now"] += 1
-            row = super().now(**kwargs).raw["items"][0]
+            row = (await super().now(**kwargs)).raw["items"][0]
             return SimpleNamespace(raw={"items": [row, row]})
 
-        def short(self, **kwargs):
+        async def short(self, **kwargs):
             self.calls["short"] += 1
-            return super().short(**kwargs)
+            return await super().short(**kwargs)
 
-        def vilage(self, **kwargs):
+        async def vilage(self, **kwargs):
             self.calls["vilage"] += 1
-            return super().vilage(**kwargs)
+            return await super().vilage(**kwargs)
 
     client = OversizedClient()
     with pytest.raises(ValueError, match="row 수가 상한"):
-        stage_grid(client=client, target=_target(), max_response_rows=1)
+        asyncio.run(stage_grid(client=client, target=_target(), max_response_rows=1))
     assert client.calls == {"now": 1, "short": 0, "vilage": 0}
 
 
@@ -541,17 +554,17 @@ def test_value_budget_stops_before_fanout_and_next_provider_call() -> None:
             super().__init__()
             self.calls = {"now": 0, "short": 0, "vilage": 0}
 
-        def now(self, **kwargs):
+        async def now(self, **kwargs):
             self.calls["now"] += 1
-            return super().now(**kwargs)
+            return await super().now(**kwargs)
 
-        def short(self, **kwargs):
+        async def short(self, **kwargs):
             self.calls["short"] += 1
-            return super().short(**kwargs)
+            return await super().short(**kwargs)
 
-        def vilage(self, **kwargs):
+        async def vilage(self, **kwargs):
             self.calls["vilage"] += 1
-            return super().vilage(**kwargs)
+            return await super().vilage(**kwargs)
 
     repository = FakeRepository()
     client = CountingClient()
@@ -569,13 +582,13 @@ def test_value_budget_stops_before_fanout_and_next_provider_call() -> None:
 def test_non_retryable_kma_auth_error_is_called_once() -> None:
     calls = 0
 
-    def fail() -> None:
+    async def fail() -> None:
         nonlocal calls
         calls += 1
         raise KmaAuthError("invalid key", retryable=False)
 
     with pytest.raises(KmaAuthError):
-        kma_weather._retry_call(fail, retries=2)
+        asyncio.run(kma_weather._retry_call(fail, retries=2))
     assert calls == 1
 
 
@@ -583,14 +596,20 @@ def test_retryable_kma_server_error_uses_exponential_backoff(monkeypatch) -> Non
     calls = 0
     delays: list[float] = []
 
-    def fail_twice() -> str:
+    async def fail_twice() -> str:
         nonlocal calls
         calls += 1
         if calls < 3:
             raise KmaServerError("temporary", retryable=True)
         return "ok"
 
-    monkeypatch.setattr(kma_weather, "sleep", delays.append)
-    assert kma_weather._retry_call(fail_twice, retries=2) == "ok"
+    async def fake_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    # kma_weather.py does ``import asyncio`` and calls ``asyncio.sleep`` -- the
+    # module attribute it reads from is the real asyncio module, so this is
+    # the name that has to be patched (there is no local ``sleep`` any more).
+    monkeypatch.setattr(kma_weather.asyncio, "sleep", fake_sleep)
+    assert asyncio.run(kma_weather._retry_call(fail_twice, retries=2)) == "ok"
     assert calls == 3
     assert delays == [0.25, 0.5]
