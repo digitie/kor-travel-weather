@@ -31,10 +31,10 @@ class FakeClient:
     def __init__(self, service_key: str | None = None) -> None:
         FakeClient.last_init_key = service_key
 
-    def __enter__(self) -> FakeClient:
+    async def __aenter__(self) -> FakeClient:
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args: Any) -> None:
         return None
 
     @classmethod
@@ -42,26 +42,26 @@ class FakeClient:
         cls.last_from_env_called = True
         return cls("env-key")
 
-    def station_measurements(self, station_name: str, **kwargs: Any) -> list[FakeMeasurement]:
+    async def station_measurements(self, station_name: str, **kwargs: Any) -> list[FakeMeasurement]:
         FakeClient.last_call = (
             "station_measurements",
             {"station_name": station_name, **kwargs},
         )
         return [FakeMeasurement(station_name, datetime(2026, 4, 30, 14, tzinfo=KST), 35.0)]
 
-    def sido_measurements(self, *args: Any, **kwargs: Any) -> list[FakeMeasurement]:
+    async def sido_measurements(self, *args: Any, **kwargs: Any) -> list[FakeMeasurement]:
         FakeClient.last_call = ("sido_measurements", {"args": args, **kwargs})
         return [FakeMeasurement("종로구", datetime(2026, 4, 30, 14, tzinfo=KST), 35.0)]
 
-    def stations(self, **kwargs: Any) -> list[FakeStation]:
+    async def stations(self, **kwargs: Any) -> list[FakeStation]:
         FakeClient.last_call = ("stations", kwargs)
         return [FakeStation("종로구", 0.0)]
 
-    def nearby_stations(self, **kwargs: Any) -> list[FakeStation]:
+    async def nearby_stations(self, **kwargs: Any) -> list[FakeStation]:
         FakeClient.last_call = ("nearby_stations", kwargs)
         return [FakeStation("종로구", 0.4)]
 
-    def forecast_notices(self, **kwargs: Any) -> list[dict[str, str]]:
+    async def forecast_notices(self, **kwargs: Any) -> list[dict[str, str]]:
         FakeClient.last_call = ("forecast_notices", kwargs)
         return [{"informCode": "PM10"}]
 

@@ -161,7 +161,7 @@ def restarea_weather_to_weather_values(
     return values
 
 
-def fetch_restarea_weather(
+async def fetch_restarea_weather(
     client: KrexClient,
     *,
     max_records: int = 2000,
@@ -173,8 +173,13 @@ def fetch_restarea_weather(
     routinely returns nothing; ``latest_weather`` walks back until it finds
     data.  ``lookback_hours`` bounds that walk -- without it, an outage turns
     every run into a long series of empty requests.
+
+    ``KrexClient`` became async-only (every sync method was removed, along
+    with the separate ``AsyncKrexClient`` it used to disambiguate from); the
+    caller owns the event loop, the same boundary every other dedicated
+    Korean source crosses for its own async-only client.
     """
-    page = client.restarea.latest_weather(lookback_hours=lookback_hours)
+    page = await client.restarea.latest_weather(lookback_hours=lookback_hours)
     return list(page.items)[:max_records]
 
 

@@ -234,7 +234,7 @@ def measurement_to_weather_values(
     return values
 
 
-def fetch_station_catalog(
+async def fetch_station_catalog(
     client: AirKoreaClient,
     *,
     max_stations: int = 1000,
@@ -244,12 +244,18 @@ def fetch_station_catalog(
     The public endpoint currently caps ``numOfRows`` at a provider-defined
     page size (100).  Walking pages prevents a successful first response from
     silently dropping the rest of the nationwide station catalog.
+
+    ``AirKoreaClient`` became async-only (the separate ``AsyncAirKoreaClient``
+    it used to disambiguate from is gone, and so are the sync methods); the
+    caller owns the event loop for the whole run, not one loop per call --
+    the client's shared rate limiter binds to whichever loop first calls
+    ``acquire()`` and raises if a later call arrives from a different one.
     """
     page_size = min(100, max_stations)
     stations: list[Station] = []
     page_no = 1
     while len(stations) < max_stations:
-        page = client.stations(page_no=page_no, num_of_rows=page_size)
+        page = await client.stations(page_no=page_no, num_of_rows=page_size)
         if not page:
             break
         remaining = max_stations - len(stations)
@@ -267,7 +273,7 @@ def fetch_station_catalog(
     return result
 
 
-def fetch_sido_measurements(
+async def fetch_sido_measurements(
     client: AirKoreaClient,
     *,
     sido_name: str,
@@ -297,7 +303,7 @@ def fetch_sido_measurements(
     max_pages = (max_stations + requested_page_size - 1) // requested_page_size + 1
     while len(measurements) < max_stations and page_no <= max_pages:
         page = list(
-            bulk(
+            await bulk(
                 sido_name,
                 page_no=page_no,
                 num_of_rows=requested_page_size,
@@ -321,7 +327,7 @@ def fetch_sido_measurements(
     return measurements[:max_stations]
 
 
-def fetch_station_measurement(
+async def fetch_station_measurement(
     client: AirKoreaClient,
     *,
     station_name: str,
@@ -329,7 +335,7 @@ def fetch_station_measurement(
     known_at: datetime,
     expected_sido: str | None = None,
 ) -> tuple[dict[str, Any], list[WeatherValue]] | None:
-    measurement = client.latest_station_measurement(station_name)
+    measurement = await client.latest_station_measurement(station_name)
     if measurement is None:
         return None
     # ``stationName`` is the only selector exposed by python-airkorea-api.

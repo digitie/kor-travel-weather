@@ -99,7 +99,7 @@ class DebugRun:
     error: Mapping[str, Any] | None = None
 
 
-def run_debug_method(
+async def run_debug_method(
     client: AirKoreaClient,
     function_name: str,
     input_data: Mapping[str, Any] | None = None,
@@ -111,24 +111,23 @@ def run_debug_method(
         raise ValueError(f"debug fixture does not support {function_name!r}; known: {known}")
 
     safe_input = redact_sensitive(jsonable(input_data or {}))
-    start_index = len(client._http.exchanges)
     parsed: Any = None
     processed: Any = None
     error: Mapping[str, Any] | None = None
     catalog = _catalog_for_debug_run(function_name, input_data or {})
 
     start_time = time.perf_counter()
-    try:
-        method = getattr(client, function_name)
-        parsed = method(**dict(input_data or {}))
-        # AirKoreaPage(raw call() 결과)는 item 목록을 "processed"로 펴서
-        # Processed Result 탭이 pandas 표로 보여줄 수 있게 합니다.
-        processed = list(parsed.items) if isinstance(parsed, AirKoreaPage) else parsed
-    except Exception as exc:
-        error = build_error(exc)
+    with client._http.capture_exchanges() as exchanges:
+        try:
+            method = getattr(client, function_name)
+            parsed = await method(**dict(input_data or {}))
+            # AirKoreaPage(raw call() 결과)는 item 목록을 "processed"로 펴서
+            # Processed Result 탭이 pandas 표로 보여줄 수 있게 합니다.
+            processed = list(parsed.items) if isinstance(parsed, AirKoreaPage) else parsed
+        except Exception as exc:
+            error = build_error(exc)
     elapsed_ms = (time.perf_counter() - start_time) * 1000
 
-    exchanges = client._http.exchanges[start_index:]
     trace: list[str] = [_catalog_trace(item) for item in catalog]
     trace.append(f"실행 시간: {elapsed_ms:.1f}ms")
     if error is not None:

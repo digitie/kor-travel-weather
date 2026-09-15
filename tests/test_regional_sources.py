@@ -746,6 +746,80 @@ def test_the_walk_back_reaches_no_further_than_a_couple_of_hours() -> None:
     )
 
 
+class _FakeRestareaService:
+    def __init__(self, items: list[Any]) -> None:
+        self._items = items
+        self.asked: list[int] = []
+
+    async def latest_weather(self, *, lookback_hours: int = 24) -> Any:
+        self.asked.append(lookback_hours)
+        return _FakePage(self._items)
+
+
+class _FakeKrexClient:
+    """``KrexClient`` became async-only; this stands in for the whole object.
+
+    ``fetch_restarea_weather`` receives the client as a parameter rather than
+    constructing it -- the resource builds it so a disabled provider never
+    demands its credential -- so a fake here needs no monkeypatching, unlike
+    KHOA/krforest above.
+    """
+
+    def __init__(self, items: list[Any]) -> None:
+        self.restarea = _FakeRestareaService(items)
+        self.entered = False
+        self.closed = False
+
+    async def __aenter__(self) -> Any:
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        self.closed = True
+
+
+def test_the_restarea_fetch_awaits_the_async_client_and_bounds_the_page() -> None:
+    """``python-krex-api``'s unification removed every sync method from
+    ``KrexClient``; calling ``restarea.latest_weather`` without awaiting it
+    would hand back a coroutine object, not readings, and this is the only
+    thing that would notice."""
+    import asyncio
+
+    from kortravelweather.providers import krex
+
+    fake = _FakeKrexClient([_restarea(), _restarea(unit_code="000002")])
+    rows = asyncio.run(
+        krex.fetch_restarea_weather(fake, max_records=1, lookback_hours=6)
+    )
+    assert [row.unit_code for row in rows] == ["000001"], (
+        "max_records did not bound the page"
+    )
+    assert fake.restarea.asked == [6]
+
+
+def test_krex_restarea_sync_enters_and_closes_the_client_in_one_event_loop() -> None:
+    """The shared rate limiter binds to whichever loop first calls
+    ``acquire()`` and raises if a later call comes from a different one, so
+    the whole run -- entering the client, fetching, closing it -- has to
+    happen inside the single ``asyncio.run()`` this wraps."""
+    from kortravelweather_dagster.regional_sources import run_krex_restarea_sync
+
+    fake = _FakeKrexClient([_restarea()])
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    result = run_krex_restarea_sync(
+        repository=repository,
+        client=fake,
+        max_records=10,
+        max_values=1000,
+        # off by default: it needs a data.ex.co.kr key most deployments lack.
+        settings=WeatherSettings(enabled_providers=["python-krex-api"]),
+    )
+    assert fake.entered is True
+    assert fake.closed is True
+    assert result["records_fetched"] == 1
+
+
 def test_a_missing_station_catalog_is_a_skip_not_a_failure() -> None:
     """The readings and the catalog are separately approved datasets.
 

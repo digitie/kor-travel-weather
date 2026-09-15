@@ -22,11 +22,11 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "cryptography>=42",
   "prometheus-client>=0.20,<1",
-  "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@1f8d8df137db2c57e0fea99b730bf4976c8fbfe0",
+  "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@acd1cfa3fab7a7bc091b3ccede0cc905f0874a25",
   "python-airkorea-api",
-  "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@3314f683121ee5b3caee83e361c7ad5a1d5d5cd4",
-  "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@7a67f5f71abedc435c060a5c127387d65a54c130",
-  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@c6d8717ec2b712cc952bc566b351f07a7cd3824a",
+  "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@38a2b74aabc1c077ebd2e1aa5ad3b2a70ffc8dd5",
+  "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@270ef7a9884bef1f995e2f8fb43c5fb1e9da7905",
+  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@d153f3cdd87c9cfacceeb94310bbe6067a1bbfa8",
   "pyproj>=3.5",
 ]
 

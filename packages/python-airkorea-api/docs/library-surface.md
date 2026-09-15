@@ -4,15 +4,15 @@
 
 ## 클라이언트 형태
 
-클라이언트 facade는 `python-krheritage-api`와 같은 형태를 따릅니다. `AirKoreaClient()`는 동기 클라이언트이고, `AirKoreaClient.aio()`는 같은 public method를 `await`로 호출하는 `AsyncAirKoreaClient`를 반환합니다.
+`AirKoreaClient()`는 async 전용입니다. HTTP 조회와 `run_debug_method()`는 await, 페이지 순회는 async for를 사용합니다. 연결은 async with 또는 await aclose()로 해제합니다.
 
 ```python
 from airkorea import AirKoreaClient
 
 air = AirKoreaClient()
-rows = air.station_measurements("종로구", num_of_rows=1)
+rows = (await air.station_measurements("종로구", num_of_rows=1))
 
-async with AirKoreaClient.aio() as async_air:
+async with AirKoreaClient() as async_air:
     async_rows = await async_air.station_measurements("종로구", num_of_rows=1)
 ```
 
@@ -20,7 +20,7 @@ async with AirKoreaClient.aio() as async_air:
 
 ```python
 air = AirKoreaClient(service_key="decoded-service-key")
-async_air = AirKoreaClient.aio(service_key="decoded-service-key")
+async_air = AirKoreaClient(service_key="decoded-service-key")
 ```
 
 ## 문자열 호환 enum
@@ -41,8 +41,8 @@ async_air = AirKoreaClient.aio(service_key="decoded-service-key")
 from airkorea import AirKoreaClient, Pollutant, SidoName
 
 air = AirKoreaClient()
-rows = air.sido_measurements(SidoName.SEOUL)
-alarms = air.dust_alarms(2026, item_code=Pollutant.PM25)
+rows = (await air.sido_measurements(SidoName.SEOUL))
+alarms = (await air.dust_alarms(2026, item_code=Pollutant.PM25))
 ```
 
 ## 좌표 표준
@@ -62,7 +62,7 @@ alarms = air.dust_alarms(2026, item_code=Pollutant.PM25)
 from airkorea import LatLon
 
 point = LatLon(lat=37.5665, lon=126.9780)
-nearby = air.nearby_stations(coordinate=point)
+nearby = (await air.nearby_stations(coordinate=point))
 ```
 
 다른 입력:
@@ -70,11 +70,11 @@ nearby = air.nearby_stations(coordinate=point)
 ```python
 from airkorea import LatLon
 
-air.nearby_stations(lat=37.5665, lon=126.9780)
-air.nearby_stations(coordinate=(37.5665, 126.9780))
-air.nearby_stations(coordinate=LatLon(37.5665, 126.9780))
-air.nearby_stations(coordinate={"latitude": 37.5665, "longitude": 126.9780})
-air.nearby_stations(tm={"tmX": 198242, "tmY": 451580})
+(await air.nearby_stations(lat=37.5665, lon=126.9780))
+(await air.nearby_stations(coordinate=(37.5665, 126.9780)))
+(await air.nearby_stations(coordinate=LatLon(37.5665, 126.9780)))
+(await air.nearby_stations(coordinate={"latitude": 37.5665, "longitude": 126.9780}))
+(await air.nearby_stations(tm={"tmX": 198242, "tmY": 451580}))
 ```
 
 `coordinate`와 `tm` 계열 입력을 동시에 넘기면 `ValueError`가 발생합니다. 좌표계가 섞였을 때 조용히 틀린 측정소를 고르는 일을 막기 위한 의도적인 동작입니다.
@@ -84,13 +84,13 @@ air.nearby_stations(tm={"tmX": 198242, "tmY": 451580})
 응답 객체는 Pydantic v2 `BaseModel` 기반입니다. 필드 접근은 속성으로 하고, 외부 직렬화에는 `model_dump()`나 `model_dump_json()`을 사용할 수 있습니다. 원본 응답은 `raw`에 보존합니다.
 
 ```python
-latest = air.latest_station_measurement("종로구")
+latest = (await air.latest_station_measurement("종로구"))
 if latest is not None:
     print(latest.khai_grade_enum)
     print(latest.khai_grade_enum.label if latest.khai_grade_enum else None)
     print(latest.model_dump(mode="json"))
 
-station = air.stations(station_name="종로구")[0]
+station = (await air.stations(station_name="종로구"))[0]
 print(station.coordinates)
 ```
 
@@ -110,12 +110,12 @@ print(station.coordinates)
 일반적인 사용은 typed convenience method(`stations()`, `sido_measurements()` 등)를 권장합니다. 아직 typed model이 충분하지 않거나, 응답의 `pageNo`/`numOfRows`/`totalCount` 같은 원본 페이지 메타데이터가 필요하면 `AirKoreaClient.call()`을 사용합니다.
 
 ```python
-page = air.call(
+page = (await air.call(
     "MsrstnInfoInqireSvc",
     "getMsrstnList",
     {"addr": "서울"},
     num_of_rows=10,
-)
+))
 
 page.items          # tuple[RawRecord, ...]
 page.raw            # response.body 원본 mapping
@@ -129,7 +129,7 @@ page.context        # AirKoreaCallContext
 여러 페이지를 가져올 때는 `iter_pages()`를 사용합니다.
 
 ```python
-for page in air.iter_pages(
+async for page in air.iter_pages(
     "MsrstnInfoInqireSvc",
     "getMsrstnList",
     {"addr": "서울"},
@@ -159,14 +159,14 @@ cache_key = make_cache_key("getMsrstnList", safe_params, service_name="MsrstnInf
 
 ## 서비스키 로딩
 
-`AirKoreaClient()`와 `AirKoreaClient.aio()`는 `service_key`를 생략하면 기본적으로 `DATA_GO_KR_SERVICE_KEY` 환경변수를 읽고, 값이 없으면 현재 작업 디렉터리의 `.env` 파일에서 같은 이름을 찾습니다. 외부 UI에서 `.env` 경로를 직접 지정해야 할 때는 `from_env()`를 사용할 수 있습니다.
+`AirKoreaClient()`는 `service_key`를 생략하면 기본적으로 `DATA_GO_KR_SERVICE_KEY` 환경변수를 읽고, 값이 없으면 현재 작업 디렉터리의 `.env` 파일에서 같은 이름을 찾습니다. 외부 UI에서 `.env` 경로를 직접 지정해야 할 때는 `from_env()`를 사용할 수 있습니다.
 
 ```python
 from airkorea import AirKoreaClient
 
 air = AirKoreaClient()
 air_from_file = AirKoreaClient.from_env(dotenv_path="local.env")
-async_air = AirKoreaClient.aio()
+async_air = AirKoreaClient()
 ```
 
 서비스키는 클라이언트 내부에서 `normalize_service_key()`를 거치므로, 복사/붙여넣기 중 섞인 앞뒤 공백, 줄바꿈, 탭은 제거됩니다.
@@ -200,12 +200,12 @@ selected = api_catalog_for_method("station_measurements")
 ```python
 from airkorea import AirKoreaClient, run_debug_method, save_debug_fixture
 
-air = AirKoreaClient()
-debug_run = run_debug_method(
-    air,
-    "station_measurements",
-    {"station_name": "종로구", "num_of_rows": 1},
-)
+async with AirKoreaClient() as air:
+    debug_run = await run_debug_method(
+        air,
+        "station_measurements",
+        {"station_name": "종로구", "num_of_rows": 1},
+    )
 
 save_debug_fixture(
     base_dir="tests/fixtures",

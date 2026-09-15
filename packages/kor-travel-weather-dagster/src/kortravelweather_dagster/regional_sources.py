@@ -15,6 +15,7 @@ more accurate by being asked every hour.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -318,13 +319,25 @@ def run_krex_restarea_sync(
     lookback_hours: int = 24,
     settings: WeatherSettings | None = None,
 ) -> dict[str, Any]:
+    """Fetch and publish, owning the event loop ``KrexClient`` now requires.
+
+    The client is constructed by the caller (so a disabled provider never
+    demands its credential) but entered and closed here: ``async with
+    client:`` is what calls ``aclose()``, and doing that inside the same
+    ``asyncio.run()`` that makes the one fetch call is what
+    ``python-krex-api``'s shared rate limiter requires -- it binds to
+    whichever event loop first calls ``acquire()`` and raises if a later
+    call arrives from a different one, which a second, separate
+    ``asyncio.run()`` always would be.
+    """
     skipped = skipped_when_disabled(KREX_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
         return skipped
-    with provider_request(KREX_PROVIDER, KREX_RESTAREA_DATASET):
-        records = fetch_restarea_weather(
+    records = asyncio.run(
+        _fetch_restarea_weather(
             client, max_records=max_records, lookback_hours=lookback_hours
         )
+    )
     return publish_regional_records(
         repository=repository,
         provider=KREX_PROVIDER,
@@ -335,3 +348,13 @@ def run_krex_restarea_sync(
         build_source_record=restarea_source_record,
         max_values=max_values,
     )
+
+
+async def _fetch_restarea_weather(
+    client: Any, *, max_records: int, lookback_hours: int
+) -> list[Any]:
+    async with client:
+        with provider_request(KREX_PROVIDER, KREX_RESTAREA_DATASET):
+            return await fetch_restarea_weather(
+                client, max_records=max_records, lookback_hours=lookback_hours
+            )

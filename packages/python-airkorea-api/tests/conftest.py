@@ -41,7 +41,7 @@ class FakeSession:
     def last_call(self) -> Call:
         return self.calls[-1]
 
-    def get(self, url: str, *, params: Mapping[str, Any], timeout: float) -> FakeResponse:
+    async def get(self, url: str, *, params: Mapping[str, Any], timeout: float) -> FakeResponse:
         self.calls.append(Call(url=url, params=dict(params), timeout=timeout))
         if not self._responses:
             raise AssertionError("FakeSession has no queued responses")

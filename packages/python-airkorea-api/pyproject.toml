@@ -69,6 +69,7 @@ warn_unused_ignores = true
 testpaths = ["tests"]
 addopts = "-ra -s -m 'not integration'"
 pythonpath = ["src"]
+asyncio_mode = "auto"
 markers = [
   "integration: tests that call the real AirKorea API and require DATA_GO_KR_SERVICE_KEY",
 ]
