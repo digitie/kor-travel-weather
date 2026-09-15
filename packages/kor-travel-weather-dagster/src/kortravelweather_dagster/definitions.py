@@ -242,13 +242,9 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
         if not sync_started:
             repository.finish_sync_run(run.run_id, status="failed", error="asset setup failed")
         raise
-    finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
-        close_data = getattr(data_client, "close", None)
-        if callable(close_data):
-            close_data()
+    # No `finally: client.close()` here -- KmaClient/DataGoKrClient are
+    # async-only now, and run_weather_sync closes both itself, inside the
+    # same asyncio.run() that used them (see kma_weather.py).
 
 
 @asset(
@@ -262,19 +258,17 @@ def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     client = context.resources.airkorea_client.create_client(
         settings=runtime, repository=repository
     )
-    try:
-        result = run_airkorea_weather_sync(
-            repository=repository,
-            client=client,
-            max_stations=runtime.airkorea_max_stations,
-            max_values=runtime.max_values_per_run,
-        )
-        context.add_output_metadata(result)
-        return result
-    finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+    # No `client.close()` here -- AirKoreaClient is async-only now, and
+    # run_airkorea_weather_sync closes it itself, inside the same
+    # asyncio.run() that used it.
+    result = run_airkorea_weather_sync(
+        repository=repository,
+        client=client,
+        max_stations=runtime.airkorea_max_stations,
+        max_values=runtime.max_values_per_run,
+    )
+    context.add_output_metadata(result)
+    return result
 
 
 #: Providers that own a dedicated asset already.  Everything else in the
@@ -575,36 +569,26 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     client = context.resources.krex_client.create_client(
         settings=runtime, repository=repository
     )
-    try:
-        result = run_krex_restarea_sync(
-            repository=repository,
-            client=client,
-            max_records=runtime.regional_max_records,
-            max_values=runtime.max_values_per_run,
-            settings=runtime,
+    # No `client.close()` here -- KrexClient is async-only now, and
+    # run_krex_restarea_sync closes it itself, inside the same asyncio.run()
+    # that used it.
+    result = run_krex_restarea_sync(
+        repository=repository,
+        client=client,
+        max_records=runtime.regional_max_records,
+        max_values=runtime.max_values_per_run,
+        settings=runtime,
+    )
+    if result.get("produced_nothing"):
+        # Distinguishable from a healthy run only here: the counts
+        # alone cannot tell an empty upstream from a broken adapter.
+        context.log.warning(
+            "%s fetched %s records and published nothing",
+            result["provider"],
+            result["records_fetched"],
         )
-        if result.get("produced_nothing"):
-            # Distinguishable from a healthy run only here: the counts
-            # alone cannot tell an empty upstream from a broken adapter.
-            context.log.warning(
-                "%s fetched %s records and published nothing",
-                result["provider"],
-                result["records_fetched"],
-            )
-        if result.get("produced_nothing"):
-            # Distinguishable from a healthy run only here: the counts
-            # alone cannot tell an empty upstream from a broken adapter.
-            context.log.warning(
-                "%s fetched %s records and published nothing",
-                result["provider"],
-                result["records_fetched"],
-            )
-        context.add_output_metadata(result)
-        return result
-    finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+    context.add_output_metadata(result)
+    return result
 
 
 @asset(
