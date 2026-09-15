@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -16,6 +17,27 @@ from kortravelweather.providers.airkorea import (
     station_location,
 )
 from kortravelweather.providers.kma import weather_warning_to_weather_values
+
+
+async def _resolved(value):
+    """Wrap an already-known value as a coroutine.
+
+    ``AirKoreaClient`` became async-only, so every fake below stands in for a
+    coroutine function; ``lambda *a, **k: _resolved(value)`` gives a
+    monkeypatch target the same shape without every test spelling out its own
+    ``async def``.
+    """
+    return value
+
+
+class _EntersAndCloses:
+    """Mixin so a fake client survives ``async with client:``."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
 
 
 def _station(name: str, address: str, lat: float, lon: float) -> Station:
@@ -58,13 +80,15 @@ def test_airkorea_bulk_measurements_walk_pages_and_stop_on_repeat() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, int, int]] = []
 
-        def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
+        async def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
             self.calls.append((sido_name, page_no, num_of_rows))
             row = SimpleNamespace(station_name=f"Station {page_no}")
             return [row] if page_no < 3 else [row]
 
     client = _BulkClient()
-    rows = fetch_sido_measurements(client, sido_name="서울", max_stations=3, page_size=1)
+    rows = asyncio.run(
+        fetch_sido_measurements(client, sido_name="서울", max_stations=3, page_size=1)
+    )
 
     assert [row.station_name for row in rows] == ["Station 1", "Station 2", "Station 3"]
     assert client.calls == [("서울", 1, 1), ("서울", 2, 1), ("서울", 3, 1)]
@@ -102,7 +126,7 @@ class _PagedStationsClient:
         self.pages = pages
         self.calls: list[tuple[int, int]] = []
 
-    def stations(self, *, page_no: int, num_of_rows: int) -> list[Station]:
+    async def stations(self, *, page_no: int, num_of_rows: int) -> list[Station]:
         self.calls.append((page_no, num_of_rows))
         return self.pages.get(page_no, [])
 
@@ -118,7 +142,7 @@ def test_airkorea_catalog_walks_pages_with_a_hard_station_cap() -> None:
     ]
     client = _PagedStationsClient({1: first, 2: second})
 
-    result = fetch_station_catalog(client, max_stations=150)
+    result = asyncio.run(fetch_station_catalog(client, max_stations=150))
 
     assert len(result) == 150
     assert client.calls == [(1, 100), (2, 100)]
@@ -127,7 +151,7 @@ def test_airkorea_catalog_walks_pages_with_a_hard_station_cap() -> None:
 
 def test_airkorea_measurement_identity_mismatch_is_rejected() -> None:
     class _MismatchedClient:
-        def latest_station_measurement(self, station_name: str):
+        async def latest_station_measurement(self, station_name: str):
             class Measurement:
                 station_name = "다른 측정소"
                 sido_name = "서울"
@@ -144,11 +168,13 @@ def test_airkorea_measurement_identity_mismatch_is_rejected() -> None:
             return Measurement()
 
     with pytest.raises(ValueError, match="응답 이름"):
-        fetch_station_measurement(
-            _MismatchedClient(),
-            station_name="종로구",
-            location_id="airkorea-jongno",
-            known_at=datetime.now(UTC),
+        asyncio.run(
+            fetch_station_measurement(
+                _MismatchedClient(),
+                station_name="종로구",
+                location_id="airkorea-jongno",
+                known_at=datetime.now(UTC),
+            )
         )
 
 
@@ -209,7 +235,7 @@ def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> 
         def finish_sync_run(self, *args, **kwargs):
             raise AssertionError("station-level failures must not abort the run")
 
-    class FakeClient:
+    class FakeClient(_EntersAndCloses):
         pass
 
     values = [
@@ -226,12 +252,14 @@ def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> 
         )
     ]
 
-    def fake_fetch_measurement(client, *, station_name, location_id, **kwargs):
+    async def fake_fetch_measurement(client, *, station_name, location_id, **kwargs):
         if station_name == "Limited":
             raise RuntimeError("provider rate limit")
         return ({"source_record_key": "measurement-good"}, values)
 
-    monkeypatch.setattr(airkorea_weather, "fetch_station_catalog", lambda *args, **kwargs: catalog)
+    monkeypatch.setattr(
+        airkorea_weather, "fetch_station_catalog", lambda *a, **k: _resolved(catalog)
+    )
     monkeypatch.setattr(airkorea_weather, "fetch_station_measurement", fake_fetch_measurement)
 
     repository = FakeRepository()
@@ -317,18 +345,20 @@ def test_airkorea_sync_uses_sido_bulk_endpoint(monkeypatch) -> None:
             khai_value=None,
         )
 
-    class FakeClient:
+    class FakeClient(_EntersAndCloses):
         def __init__(self) -> None:
             self.calls: list[tuple[str, int, int]] = []
 
-        def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
+        async def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
             self.calls.append((sido_name, page_no, num_of_rows))
             return [_measurement()]
 
-        def latest_station_measurement(self, station_name: str):
+        async def latest_station_measurement(self, station_name: str):
             raise AssertionError("bulk-capable client must not issue station requests")
 
-    monkeypatch.setattr(airkorea_weather, "fetch_station_catalog", lambda *args, **kwargs: catalog)
+    monkeypatch.setattr(
+        airkorea_weather, "fetch_station_catalog", lambda *a, **k: _resolved(catalog)
+    )
     client = FakeClient()
     repository = FakeRepository()
 
