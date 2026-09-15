@@ -1,5 +1,12 @@
 # 아키텍처 결정 레코드 (ADR)
 
+## 2026-09-14: async 전용 전환과 공통 TPS
+
+사용자 요청에 따라 기존 비동기 구현을 AirKoreaClient로 통합한다. 동기 클라이언트와
+aio facade를 제거하고 public 조회·debug·페이지 순회를 await/async for로 제공한다.
+공통 AsyncTokenBucket을 패키지 내부에 포함하고 서비스·재시도·redirect 예산을 공유한다.
+이 결정은 ADR-5의 동기/비동기 병행 결정을 대체한다. 검증·리뷰·live 완료 후 PR을 머지한다.
+
 이 문서는 `python-airkorea-api` 프로젝트의 설계 방향, 핵심 설계 선택지 및 아키텍처 결정을 기록한다.
 
 ---

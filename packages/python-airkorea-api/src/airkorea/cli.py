@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
@@ -44,22 +45,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     forecast_parser.add_argument("--inform-code")
 
     args = parser.parse_args(argv)
-    with (
+    return asyncio.run(_run(args))
+
+
+async def _run(args: argparse.Namespace) -> int:
+    async with (
         AirKoreaClient(service_key=args.service_key)
         if args.service_key
         else AirKoreaClient()
     ) as client:
         result: Any
         if args.command == "station":
-            result = client.station_measurements(
+            result = await client.station_measurements(
                 args.station_name,
                 data_term=args.data_term,
                 num_of_rows=args.num_of_rows,
             )
         elif args.command == "sido":
-            result = client.sido_measurements(args.sido_name, num_of_rows=args.num_of_rows)
+            result = await client.sido_measurements(args.sido_name, num_of_rows=args.num_of_rows)
         elif args.command == "stations":
-            result = client.stations(
+            result = await client.stations(
                 addr=args.addr,
                 station_name=args.station_name,
                 num_of_rows=args.num_of_rows,
@@ -67,11 +72,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "nearby":
             location = _location_kwargs(args)
             if "lat" in location:
-                result = client.nearby_stations(lat=location["lat"], lon=location["lon"])
+                result = await client.nearby_stations(lat=location["lat"], lon=location["lon"])
             else:
-                result = client.nearby_stations(tm_x=location["tm_x"], tm_y=location["tm_y"])
+                result = await client.nearby_stations(tm_x=location["tm_x"], tm_y=location["tm_y"])
         else:
-            result = client.forecast_notices(
+            result = await client.forecast_notices(
                 search_date=args.search_date,
                 inform_code=args.inform_code,
             )

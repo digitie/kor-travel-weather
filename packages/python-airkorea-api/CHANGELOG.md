@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- AirKoreaClient를 async 전용으로 통합하고 모든 네트워크 조회·debug 호출과 페이지 순회를 비동기로 제공한다.
+- aio()/aio_from_env()/AsyncAirKoreaClient 및 동기 close()/with를 제거한다. aclose()/async with로 이전한다.
+- 공통 AsyncTokenBucket으로 서비스·재시도·redirect별 TPS와 공유 quota를 제어한다.
+
 ## Unreleased
 
 - `AirKoreaClient.call()` raw endpoint 호출과 `iter_pages()` 페이지 순회를 추가했습니다.

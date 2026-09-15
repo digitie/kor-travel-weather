@@ -12,7 +12,7 @@
 
 | 표면 | 진입점 | 설명 |
 |---|---|---|
-| Python 라이브러리 | `from airkorea import AirKoreaClient` | 동기/비동기 하이브리드 클라이언트, enum, 좌표 값 객체, raw page 접근 |
+| Python 라이브러리 | `from airkorea import AirKoreaClient` | 비동기 전용 클라이언트, enum, 좌표 값 객체, raw page 접근 |
 | CLI | `airkorea <command>` | 자주 쓰는 조회 중심 커맨드라인 도구, 라이브러리와 함께 설치됨 |
 
 ## 먼저 읽을 문서
@@ -62,7 +62,7 @@ PowerShell:
 $env:DATA_GO_KR_SERVICE_KEY="발급받은_인증키"
 ```
 
-`AirKoreaClient()`는 `python-krheritage-api`와 같은 facade 형태로 서비스키를 키워드 인자로 받습니다. `service_key`를 생략하면 `DATA_GO_KR_SERVICE_KEY` 환경변수와 현재 작업 디렉터리의 `.env`를 순서대로 확인합니다.
+`AirKoreaClient()`는 서비스키를 키워드 인자로 받습니다. `service_key`를 생략하면 `DATA_GO_KR_SERVICE_KEY` 환경변수와 현재 작업 디렉터리의 `.env`를 순서대로 확인합니다.
 
 ```dotenv
 DATA_GO_KR_SERVICE_KEY=발급받은_인증키
@@ -70,24 +70,40 @@ DATA_GO_KR_SERVICE_KEY=발급받은_인증키
 
 포털에서 키를 복사하면서 앞뒤 공백, 줄바꿈, 탭이 섞여도 클라이언트 생성 시 제거합니다.
 
+## async 전용 전환과 TPS
+
+`AirKoreaClient`의 조회 메서드는 모두 await가 필요하다. 기존 `aio()`/`aio_from_env()`와
+`AsyncAirKoreaClient`는 제거하고 생성자를 하나로 통합했다. `close()`는 `aclose()`로,
+동기 with는 async with로 전환한다. `iter_pages()`와 `iter_paginated_pages()`는
+async for로 순회한다. `run_debug_method()`도 await로 호출한다.
+
+`max_rps`는 초당 충전량이고 기본값은 5다. 초기 burst 용량은 max(1, max_rps)다.
+여러 클라이언트가 같은 quota를 공유하면 `AsyncTokenBucket(max_rps=2, capacity=1)`을
+하나 만들고 `rate_limiter=bucket`으로 주입한다. 주입한 버킷이 max_rps 설정보다 우선하며
+한 이벤트 루프에서 공유한다. 요청, 재시도, redirect가 각각 토큰을 소비한다.
+자세한 계약은 [비동기·TPS 안내](docs/async-tps.md)를 참고한다.
+
 ## 빠른 사용
 
 ```python
+import asyncio
 from airkorea import AirKoreaClient, DataTerm, SidoName
 
-air = AirKoreaClient()
+async def main():
+    async with AirKoreaClient(max_rps=5) as air:
+        latest = await air.latest_station_measurement("종로구", data_term=DataTerm.DAILY)
+        for row in await air.sido_measurements(SidoName.SEOUL, num_of_rows=5):
+            print(row.station_name, row.pm10_value, row.pm25_value, row.khai_grade_enum)
 
-latest = air.latest_station_measurement("종로구", data_term=DataTerm.DAILY)
-for row in air.sido_measurements(SidoName.SEOUL, num_of_rows=5):
-    print(row.station_name, row.pm10_value, row.pm25_value, row.khai_grade_enum)
+asyncio.run(main())
 ```
 
-비동기 코드는 `AirKoreaClient.aio()`가 반환하는 `AsyncAirKoreaClient`를 사용합니다.
+`AirKoreaClient`는 async 전용입니다. 아래 예제는 async 함수 내부에서 실행하며, 스크립트의 가장 바깥에서 한 번 `asyncio.run(main())`을 호출합니다.
 
 ```python
 from airkorea import AirKoreaClient
 
-async with AirKoreaClient.aio() as air:
+async with AirKoreaClient() as air:
     rows = await air.station_measurements("종로구", num_of_rows=1)
 ```
 
@@ -98,8 +114,8 @@ async with AirKoreaClient.aio() as air:
 from airkorea import LatLon
 
 seoul_city_hall = LatLon(lat=37.5665, lon=126.9780)
-nearby = air.nearby_stations(coordinate=seoul_city_hall)
-measurement = air.measurement_near(coordinate=seoul_city_hall)
+nearby = (await air.nearby_stations(coordinate=seoul_city_hall))
+measurement = (await air.measurement_near(coordinate=seoul_city_hall))
 ```
 
 ## 라이브러리 친화 API
@@ -120,18 +136,18 @@ enum은 `str` 기반이라 기존 문자열 코드와 잘 섞입니다.
 ```python
 from airkorea import Pollutant, StatsDataGubun, StatsSearchCondition
 
-stats = air.sido_average_stats(
+stats = (await air.sido_average_stats(
     item_code=Pollutant.PM25,
     data_gubun=StatsDataGubun.HOUR,
     search_condition=StatsSearchCondition.WEEK,
-)
-alarms = air.dust_alarms(2026, item_code=Pollutant.PM10)
+))
+alarms = (await air.dust_alarms(2026, item_code=Pollutant.PM10))
 ```
 
 응답 모델도 외부 프로그램에서 후처리하기 쉽게 enum/좌표 property를 제공합니다.
 
 ```python
-station = air.stations(station_name="종로구")[0]
+station = (await air.stations(station_name="종로구"))[0]
 print(station.coordinates)        # LatLon(...) or None
 print(latest.khai_grade_enum)     # AirQualityGrade.MODERATE or None
 print(latest.model_dump())        # Pydantic dict
@@ -140,12 +156,12 @@ print(latest.model_dump())        # Pydantic dict
 원본 endpoint를 직접 호출해야 할 때는 `call()`이 페이지 메타데이터와 인증키가 제거된 호출 context를 함께 반환합니다.
 
 ```python
-page = air.call(
+page = (await air.call(
     "MsrstnInfoInqireSvc",
     "getMsrstnList",
     {"addr": "서울"},
     num_of_rows=10,
-)
+))
 
 print(page.items)              # tuple[Mapping[str, Any], ...]
 print(page.has_next_page)      # pageNo/numOfRows/totalCount 기반
@@ -155,7 +171,7 @@ print(page.request_params)     # serviceKey 제외
 여러 페이지는 `iter_pages()`로 순회합니다.
 
 ```python
-for page in air.iter_pages("MsrstnInfoInqireSvc", "getMsrstnList", {"addr": "서울"}):
+async for page in air.iter_pages("MsrstnInfoInqireSvc", "getMsrstnList", {"addr": "서울"}):
     for raw_station in page.items:
         print(raw_station["stationName"])
 ```
@@ -187,12 +203,12 @@ Streamlit 같은 외부 Web UI에서 입력값을 바꿔가며 실행한 결과�
 ```python
 from airkorea import AirKoreaClient, run_debug_method, save_debug_fixture
 
-air = AirKoreaClient()
-debug_run = run_debug_method(
-    air,
-    "station_measurements",
-    {"station_name": "종로구", "num_of_rows": 1},
-)
+async with AirKoreaClient() as air:
+    debug_run = await run_debug_method(
+        air,
+        "station_measurements",
+        {"station_name": "종로구", "num_of_rows": 1},
+    )
 
 save_debug_fixture(
     base_dir="tests/fixtures",

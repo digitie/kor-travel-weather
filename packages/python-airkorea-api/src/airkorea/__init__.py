@@ -1,5 +1,6 @@
 """한국환경공단 AirKorea API용 Python 클라이언트."""
 
+from airkorea._ratelimit import AsyncTokenBucket
 from airkorea.catalog import (
     ApiCatalogEntry,
     ParamSpec,
@@ -10,7 +11,7 @@ from airkorea.catalog import (
     api_catalog_params_for_method,
     get_api_catalog_entry,
 )
-from airkorea.client import SUPPORTED_ENDPOINTS, AirKoreaClient, AsyncAirKoreaClient
+from airkorea.client import SUPPORTED_ENDPOINTS, AirKoreaClient
 from airkorea.codes import (
     AirQualityGrade,
     DataTerm,
@@ -84,7 +85,6 @@ from airkorea.models import (
     WeeklyForecastNotice,
 )
 from airkorea.pagination import (
-    aiter_paginated_pages,
     has_next_page,
     iter_paginated_pages,
     next_page_no,
@@ -111,7 +111,7 @@ __all__ = [
     "AirQualityStat",
     "ApiCatalogEntry",
     "AdvisoryOccurrence",
-    "AsyncAirKoreaClient",
+    "AsyncTokenBucket",
     "BackgroundConcentration",
     "CaiMeasurement",
     "DataTerm",
@@ -147,7 +147,6 @@ __all__ = [
     "api_catalog_for_debug_input",
     "api_catalog_for_method",
     "api_catalog_params_for_method",
-    "aiter_paginated_pages",
     "build_error",
     "coerce_latlon",
     "coerce_tm_point",

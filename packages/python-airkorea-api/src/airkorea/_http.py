@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import random
 import urllib.parse
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 import httpx
 
+from airkorea._httpx import send_after_token
+from airkorea._ratelimit import AsyncTokenBucket
 from airkorea.exceptions import (
     AirKoreaAuthError,
     AirKoreaNetworkError,
@@ -29,10 +34,6 @@ class ResponseLike(Protocol):
     text: str
 
     def json(self) -> Any: ...
-
-
-class SessionLike(Protocol):
-    def get(self, url: str, *, params: Mapping[str, Any], timeout: float) -> ResponseLike: ...
 
 
 class AsyncSessionLike(Protocol):
@@ -66,191 +67,6 @@ class HttpExchange:
 
 
 class HttpClient:
-    """AirKorea 서비스군이 공유하는 httpx 기반 동기 요청 래퍼."""
-
-    def __init__(
-        self,
-        service_key: str,
-        *,
-        session: SessionLike | None = None,
-        timeout: float = 10.0,
-        retries: int = 3,
-        retry_backoff: float = 0.3,
-    ) -> None:
-        normalized_service_key = normalize_service_key(service_key)
-        if not normalized_service_key:
-            raise AirKoreaAuthError("service_key is required")
-        self._service_key = normalized_service_key
-        self._session = cast(SessionLike, session or httpx.Client())
-        self._owns_session = session is None
-        self._timeout = timeout
-        self._retries = max(0, retries)
-        self._retry_backoff = max(0.0, retry_backoff)
-        self._exchanges: deque[HttpExchange] = deque(maxlen=_MAX_EXCHANGES)
-
-    def __enter__(self) -> HttpClient:
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self.close()
-
-    @property
-    def exchanges(self) -> tuple[HttpExchange, ...]:
-        """현재 클라이언트가 기록한 인증키 제거 HTTP 교환 목록입니다."""
-
-        return tuple(self._exchanges)
-
-    @property
-    def last_exchange(self) -> HttpExchange | None:
-        """마지막 HTTP 교환 기록을 반환하고, 호출 전이면 ``None``을 반환합니다."""
-
-        return self._exchanges[-1] if self._exchanges else None
-
-    def clear_exchanges(self) -> None:
-        """디버그 실행 단위를 나누기 위해 누적 HTTP 교환 기록을 비웁니다."""
-
-        self._exchanges.clear()
-
-    def close(self) -> None:
-        """내부에서 만든 httpx 클라이언트를 닫습니다."""
-
-        if not self._owns_session:
-            return
-        close = getattr(self._session, "close", None)
-        if callable(close):
-            close()
-
-    def get_body(
-        self,
-        base_url: str,
-        endpoint: str,
-        params: Mapping[str, Any],
-        *,
-        service_key_param: str = "serviceKey",
-        format_param: str = "returnType",
-        format_value: str = "json",
-    ) -> Mapping[str, Any]:
-        url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
-        request_params = self._params(
-            params,
-            service_key_param=service_key_param,
-            format_param=format_param,
-            format_value=format_value,
-        )
-        response = self._request(
-            url,
-            request_params,
-        )
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            self._record_exchange(
-                url=url,
-                request_params=request_params,
-                response=response,
-                response_text=response.text[:300],
-            )
-            _raise_for_plain_text(response.text)
-            raise AirKoreaParseError(f"failed to parse JSON response: {exc}") from exc
-
-        if not isinstance(payload, Mapping):
-            self._record_exchange(
-                url=url,
-                request_params=request_params,
-                response=response,
-            )
-            raise AirKoreaParseError("JSON response root is not an object")
-
-        try:
-            body = _extract_body(payload, self._service_key)
-        except Exception:
-            self._record_exchange(
-                url=url,
-                request_params=request_params,
-                response=response,
-                response_json=payload,
-            )
-            raise
-
-        self._record_exchange(
-            url=url,
-            request_params=request_params,
-            response=response,
-            response_body=body,
-            response_json=payload,
-        )
-        return body
-
-    def _request(self, url: str, params: Mapping[str, Any]) -> ResponseLike:
-        last_error: Exception | None = None
-        for attempt in range(self._retries + 1):
-            try:
-                response = self._session.get(url, params=params, timeout=self._timeout)
-            except httpx.RequestError as exc:
-                last_error = exc
-                if attempt < self._retries:
-                    self._sleep_before_retry(attempt)
-                    continue
-                raise AirKoreaNetworkError(str(exc)) from None
-
-            if response.status_code in TRANSIENT_STATUSES and attempt < self._retries:
-                self._sleep_before_retry(attempt)
-                continue
-            _raise_for_status(response, self._service_key)
-            return response
-
-        raise AirKoreaNetworkError(str(last_error) if last_error else "request failed")
-
-    def _params(
-        self,
-        params: Mapping[str, Any],
-        *,
-        service_key_param: str,
-        format_param: str,
-        format_value: str,
-    ) -> dict[str, Any]:
-        query: dict[str, Any] = {
-            service_key_param: self._service_key,
-            format_param: format_value,
-        }
-        for key, value in params.items():
-            if value is not None:
-                query[key] = value
-        return query
-
-    def _sleep_before_retry(self, attempt: int) -> None:
-        if self._retry_backoff <= 0:
-            return
-        import time
-
-        delay = min(self._retry_backoff * (2**attempt), _MAX_RETRY_BACKOFF_SECONDS)
-        time.sleep(delay * random.uniform(0.5, 1.5))
-
-    def _record_exchange(
-        self,
-        *,
-        url: str,
-        request_params: Mapping[str, Any],
-        response: ResponseLike,
-        response_body: Mapping[str, Any] | None = None,
-        response_json: Mapping[str, Any] | None = None,
-        response_text: str = "",
-    ) -> None:
-        self._exchanges.append(
-            HttpExchange(
-                method="GET",
-                url=url,
-                request_params=sanitize_request_params(request_params),
-                status_code=response.status_code,
-                response_headers=_response_headers(response),
-                response_body=response_body,
-                response_json=response_json,
-                response_text=response_text,
-            )
-        )
-
-
-class AsyncHttpClient:
     """AirKorea 서비스군이 공유하는 httpx 기반 비동기 요청 래퍼."""
 
     def __init__(
@@ -261,19 +77,40 @@ class AsyncHttpClient:
         timeout: float = 10.0,
         retries: int = 3,
         retry_backoff: float = 0.3,
+        max_rps: float = 5.0,
+        rate_limiter: AsyncTokenBucket | None = None,
     ) -> None:
         normalized_service_key = normalize_service_key(service_key)
         if not normalized_service_key:
             raise AirKoreaAuthError("service_key is required")
+        self._rate_limiter = rate_limiter if rate_limiter is not None else AsyncTokenBucket(max_rps)
+        if session is not None and not inspect.iscoroutinefunction(session.get):
+            raise TypeError("session.get must be async")
         self._service_key = normalized_service_key
-        self._session = cast(AsyncSessionLike, session or httpx.AsyncClient())
+        self._session = cast(
+            AsyncSessionLike, session if session is not None else httpx.AsyncClient()
+        )
         self._owns_session = session is None
         self._timeout = timeout
         self._retries = max(0, retries)
         self._retry_backoff = max(0.0, retry_backoff)
         self._exchanges: deque[HttpExchange] = deque(maxlen=_MAX_EXCHANGES)
+        self._exchange_scope: ContextVar[list[HttpExchange] | None] = ContextVar(
+            "airkorea_exchange_scope",
+            default=None,
+        )
 
-    async def __aenter__(self) -> AsyncHttpClient:
+    @contextmanager
+    def capture_exchanges(self) -> Iterator[list[HttpExchange]]:
+        """현재 호출 문맥의 교환만 모으며 다른 동시 호출과 기록을 섞지 않는다."""
+        exchanges: list[HttpExchange] = []
+        token = self._exchange_scope.set(exchanges)
+        try:
+            yield exchanges
+        finally:
+            self._exchange_scope.reset(token)
+
+    async def __aenter__(self) -> HttpClient:
         return self
 
     async def __aexit__(self, *args: object) -> None:
@@ -333,9 +170,9 @@ class AsyncHttpClient:
                 url=url,
                 request_params=request_params,
                 response=response,
-                response_text=response.text[:300],
+                response_text=_scrub_service_key(response.text, self._service_key)[:300],
             )
-            _raise_for_plain_text(response.text)
+            _raise_for_plain_text(response.text, self._service_key)
             raise AirKoreaParseError(f"failed to parse JSON response: {exc}") from exc
 
         if not isinstance(payload, Mapping):
@@ -370,17 +207,29 @@ class AsyncHttpClient:
         last_error: Exception | None = None
         for attempt in range(self._retries + 1):
             try:
-                response = await self._session.get(
-                    url,
-                    params=params,
-                    timeout=self._timeout,
-                )
+                await self._rate_limiter.acquire()
+                if isinstance(self._session, httpx.AsyncClient):
+                    request = self._session.build_request(
+                        "GET",
+                        url,
+                        params=params,
+                        timeout=self._timeout,
+                    )
+                    response = await send_after_token(self._session, request, self._rate_limiter)
+                else:
+                    response = await self._session.get(
+                        url,
+                        params=params,
+                        timeout=self._timeout,
+                    )
             except httpx.RequestError as exc:
                 last_error = exc
                 if attempt < self._retries:
                     await self._sleep_before_retry(attempt)
                     continue
-                raise AirKoreaNetworkError(str(exc)) from None
+                raise AirKoreaNetworkError(
+                    _scrub_service_key(str(exc), self._service_key)
+                ) from None
 
             if response.status_code in TRANSIENT_STATUSES and attempt < self._retries:
                 await self._sleep_before_retry(attempt)
@@ -423,18 +272,20 @@ class AsyncHttpClient:
         response_json: Mapping[str, Any] | None = None,
         response_text: str = "",
     ) -> None:
-        self._exchanges.append(
-            HttpExchange(
-                method="GET",
-                url=url,
-                request_params=sanitize_request_params(request_params),
-                status_code=response.status_code,
-                response_headers=_response_headers(response),
-                response_body=response_body,
-                response_json=response_json,
-                response_text=response_text,
-            )
+        exchange = HttpExchange(
+            method="GET",
+            url=url,
+            request_params=sanitize_request_params(request_params),
+            status_code=response.status_code,
+            response_headers=_response_headers(response),
+            response_body=response_body,
+            response_json=response_json,
+            response_text=response_text,
         )
+        self._exchanges.append(exchange)
+        scope = self._exchange_scope.get()
+        if scope is not None:
+            scope.append(exchange)
 
 
 def _response_headers(response: ResponseLike) -> dict[str, str]:
@@ -467,9 +318,9 @@ def _raise_for_status(response: ResponseLike, service_key: str) -> None:
         raise AirKoreaServerError(f"HTTP {status}: {text}")
 
 
-def _raise_for_plain_text(text: str) -> None:
+def _raise_for_plain_text(text: str, service_key: str) -> None:
     upper = text.upper()
-    preview = text[:300]
+    preview = _scrub_service_key(text, service_key)[:300]
     auth_markers = (
         "SERVICE_KEY",
         "SERVICE KEY",

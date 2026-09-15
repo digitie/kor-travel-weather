@@ -38,11 +38,11 @@ def measurement_row() -> dict[str, object]:
     }
 
 
-def test_station_measurements_maps_types_and_params() -> None:
+async def test_station_measurements_maps_types_and_params() -> None:
     session = FakeSession([FakeResponse(json_data=payload([measurement_row()]))])
     client = AirKoreaClient(service_key="decoded-key", session=session, retries=0)
 
-    rows = client.station_measurements("종로구", data_term=DataTerm.DAILY, num_of_rows=1)
+    rows = await client.station_measurements("종로구", data_term=DataTerm.DAILY, num_of_rows=1)
 
     assert len(rows) == 1
     row = rows[0]
@@ -65,7 +65,7 @@ def test_station_measurements_maps_types_and_params() -> None:
     assert session.last_call.params["ver"] == "1.3"
 
 
-def test_latest_station_measurement_returns_first_or_none() -> None:
+async def test_latest_station_measurement_returns_first_or_none() -> None:
     session = FakeSession(
         [
             FakeResponse(json_data=payload([measurement_row()])),
@@ -74,23 +74,23 @@ def test_latest_station_measurement_returns_first_or_none() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    assert client.latest_station_measurement("종로구") is not None
-    assert client.latest_station_measurement("종로구") is None
+    assert (await client.latest_station_measurement("종로구")) is not None
+    assert (await client.latest_station_measurement("종로구")) is None
 
 
-def test_station_measurements_uses_request_station_name_when_response_omits_it() -> None:
+async def test_station_measurements_uses_request_station_name_when_response_omits_it() -> None:
     row = measurement_row()
     row.pop("stationName")
     session = FakeSession([FakeResponse(json_data=payload([row]))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    rows = client.station_measurements("종로구", num_of_rows=1)
+    rows = await client.station_measurements("종로구", num_of_rows=1)
 
     assert rows[0].station_name == "종로구"
     assert "stationName" not in rows[0].raw
 
 
-def test_sido_measurements_validates_sido_and_handles_missing_values() -> None:
+async def test_sido_measurements_validates_sido_and_handles_missing_values() -> None:
     row = measurement_row()
     row["stationName"] = "중구"
     row["pm10Value"] = "-"
@@ -98,7 +98,7 @@ def test_sido_measurements_validates_sido_and_handles_missing_values() -> None:
     session = FakeSession([FakeResponse(json_data=payload({"item": row}))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    rows = client.sido_measurements(SidoName.SEOUL)
+    rows = await client.sido_measurements(SidoName.SEOUL)
 
     assert rows[0].station_name == "중구"
     assert rows[0].pm10_value is None
@@ -106,22 +106,22 @@ def test_sido_measurements_validates_sido_and_handles_missing_values() -> None:
     assert session.last_call.params["sidoName"] == "서울"
 
     with pytest.raises(ValueError):
-        client.sido_measurements("서울특별시")
+        (await client.sido_measurements("서울특별시"))
 
 
-def test_unhealthy_stations_uses_measurement_model() -> None:
+async def test_unhealthy_stations_uses_measurement_model() -> None:
     row = measurement_row()
     row["khaiGrade"] = "3"
     session = FakeSession([FakeResponse(json_data=payload(row))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    rows = client.unhealthy_stations()
+    rows = await client.unhealthy_stations()
 
     assert rows[0].khai_grade_label == "나쁨"
     assert session.last_call.url.endswith("/getUnityAirEnvrnIdexSnstiveAboveMsrstnList")
 
 
-def test_stations_maps_dmx_dmy_to_lat_lon() -> None:
+async def test_stations_maps_dmx_dmy_to_lat_lon() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -143,7 +143,7 @@ def test_stations_maps_dmx_dmy_to_lat_lon() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    stations = client.stations(addr="서울", station_name="종로구")
+    stations = await client.stations(addr="서울", station_name="종로구")
 
     assert stations[0].station_name == "종로구"
     assert stations[0].year == 1997
@@ -155,7 +155,7 @@ def test_stations_maps_dmx_dmy_to_lat_lon() -> None:
     assert session.last_call.params["stationName"] == "종로구"
 
 
-def test_nearby_stations_accepts_direct_tm_and_latlon() -> None:
+async def test_nearby_stations_accepts_direct_tm_and_latlon() -> None:
     direct_session = FakeSession(
         [
             FakeResponse(
@@ -165,7 +165,7 @@ def test_nearby_stations_accepts_direct_tm_and_latlon() -> None:
     )
     direct_client = AirKoreaClient(service_key="KEY", session=direct_session, retries=0)
 
-    direct_rows = direct_client.nearby_stations(tm=TmPoint(244148, 412423), ver="1")
+    direct_rows = await direct_client.nearby_stations(tm=TmPoint(244148, 412423), ver="1")
 
     assert direct_rows[0].station_name == "부발읍"
     assert direct_rows[0].distance_km == 8.1
@@ -183,8 +183,8 @@ def test_nearby_stations_accepts_direct_tm_and_latlon() -> None:
     )
     place_client = AirKoreaClient(service_key="KEY", session=place_session, retries=0)
 
-    place_client.nearby_stations(coordinate=LatLon(lat=37.5665, lon=126.9780))
-    place_client.nearby_stations(lat=37.5665, lon=126.9780)
+    (await place_client.nearby_stations(coordinate=LatLon(lat=37.5665, lon=126.9780)))
+    (await place_client.nearby_stations(lat=37.5665, lon=126.9780))
 
     assert place_session.calls[0].params["tmX"] == pytest.approx(198242, abs=2)
     assert place_session.calls[0].params["tmY"] == pytest.approx(451580, abs=2)
@@ -200,14 +200,14 @@ def test_nearby_stations_accepts_direct_tm_and_latlon() -> None:
         {"tm_x": 1.0, "tm_y": 2.0, "lat": 37.5, "lon": 127.0},
     ],
 )
-def test_nearby_stations_rejects_bad_coordinate_modes(kwargs: dict[str, float]) -> None:
+async def test_nearby_stations_rejects_bad_coordinate_modes(kwargs: dict[str, float]) -> None:
     client = AirKoreaClient(service_key="KEY", session=FakeSession([]), retries=0)
 
     with pytest.raises(ValueError):
-        client.nearby_stations(**kwargs)
+        (await client.nearby_stations(**kwargs))
 
 
-def test_tm_coordinates() -> None:
+async def test_tm_coordinates() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -225,14 +225,14 @@ def test_tm_coordinates() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    rows = client.tm_coordinates("혜화동")
+    rows = await client.tm_coordinates("혜화동")
 
     assert rows[0].tm_x == 200089.0
     assert rows[0].tm_y == 453946.0
     assert session.last_call.params["umdName"] == "혜화동"
 
 
-def test_forecast_notices_and_weekly_forecasts() -> None:
+async def test_forecast_notices_and_weekly_forecasts() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -267,8 +267,10 @@ def test_forecast_notices_and_weekly_forecasts() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    notices = client.forecast_notices(search_date=date(2026, 4, 30), inform_code=InformCode.PM10)
-    weekly = client.weekly_forecasts(search_date="2026-04-30")
+    notices = await client.forecast_notices(
+        search_date=date(2026, 4, 30), inform_code=InformCode.PM10
+    )
+    weekly = await client.weekly_forecasts(search_date="2026-04-30")
 
     assert notices[0].inform_data == date(2026, 4, 30)
     assert notices[0].inform_code_enum is InformCode.PM10
@@ -281,7 +283,7 @@ def test_forecast_notices_and_weekly_forecasts() -> None:
     assert weekly[0].first_content == "전국: 보통"
 
 
-def test_measurement_near_chains_nearby_station_then_measurement() -> None:
+async def test_measurement_near_chains_nearby_station_then_measurement() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -292,32 +294,32 @@ def test_measurement_near_chains_nearby_station_then_measurement() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    result = client.measurement_near(coordinate=LatLon(lat=37.5665, lon=126.9780))
+    result = await client.measurement_near(coordinate=LatLon(lat=37.5665, lon=126.9780))
 
     assert result is not None
     assert result.station_name == "종로구"
     assert session.calls[1].params["stationName"] == "종로구"
 
 
-def test_items_malformed_shape_raises_parse_error() -> None:
+async def test_items_malformed_shape_raises_parse_error() -> None:
     session = FakeSession([FakeResponse(json_data=payload(["bad"]))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
     with pytest.raises(AirKoreaParseError):
-        client.stations()
+        (await client.stations())
 
 
-def test_malformed_measurement_raises_parse_error() -> None:
+async def test_malformed_measurement_raises_parse_error() -> None:
     row = measurement_row()
     row["pm10Value"] = "not-a-number"
     session = FakeSession([FakeResponse(json_data=payload([row]))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
     with pytest.raises(AirKoreaParseError):
-        client.station_measurements("종로구")
+        (await client.station_measurements("종로구"))
 
 
-def test_call_returns_raw_page_with_sanitized_context() -> None:
+async def test_call_returns_raw_page_with_sanitized_context() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -330,7 +332,7 @@ def test_call_returns_raw_page_with_sanitized_context() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    page = client.call(
+    page = await client.call(
         "msrstninfoinqiresvc",
         "getMsrstnList",
         {"addr": "Seoul", "returnType": "xml", "serviceKey": "SHOULD_NOT_LEAK"},
@@ -358,11 +360,11 @@ def test_call_returns_raw_page_with_sanitized_context() -> None:
     assert session.last_call.params["numOfRows"] == 1
 
 
-def test_call_uses_service_key_capitalization_for_user_support_service() -> None:
+async def test_call_uses_service_key_capitalization_for_user_support_service() -> None:
     session = FakeSession([FakeResponse(json_data=payload([]))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    page = client.call(
+    page = await client.call(
         "UserSportSvc",
         "getSvckeyDalyStats",
         {"searchDate": "2026-04-30"},
@@ -373,7 +375,7 @@ def test_call_uses_service_key_capitalization_for_user_support_service() -> None
     assert "serviceKey" not in session.last_call.params
 
 
-def test_iter_pages_follows_total_count_metadata() -> None:
+async def test_iter_pages_follows_total_count_metadata() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -392,20 +394,23 @@ def test_iter_pages_follows_total_count_metadata() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    pages = list(client.iter_pages("MsrstnInfoInqireSvc", "getMsrstnList", num_of_rows=1))
+    pages = [
+        item
+        async for item in client.iter_pages("MsrstnInfoInqireSvc", "getMsrstnList", num_of_rows=1)
+    ]
 
     assert [page.items[0]["stationName"] for page in pages] == ["first", "second"]
     assert [call.params["pageNo"] for call in session.calls] == [1, 2]
 
 
-def test_call_rejects_unknown_service_or_endpoint() -> None:
+async def test_call_rejects_unknown_service_or_endpoint() -> None:
     client = AirKoreaClient(service_key="KEY", session=FakeSession([]), retries=0)
 
     with pytest.raises(ValueError):
-        client.call("missing", "getMsrstnList")
+        (await client.call("missing", "getMsrstnList"))
 
     with pytest.raises(ValueError):
-        client.call("MsrstnInfoInqireSvc", "missing")
+        (await client.call("MsrstnInfoInqireSvc", "missing"))
 
 
 def test_from_env_reads_default_dotenv_file(monkeypatch, tmp_path) -> None:
@@ -421,7 +426,7 @@ def test_from_env_reads_default_dotenv_file(monkeypatch, tmp_path) -> None:
 def test_async_client_matches_sync_mapping_and_context_manager() -> None:
     async def run() -> None:
         session = AsyncFakeSession([FakeResponse(json_data=payload([measurement_row()]))])
-        async with AirKoreaClient.aio(service_key="decoded-key", session=session, retries=0) as air:
+        async with AirKoreaClient(service_key="decoded-key", session=session, retries=0) as air:
             rows = await air.station_measurements(
                 "종로구",
                 data_term=DataTerm.DAILY,
@@ -456,7 +461,7 @@ def test_async_iter_pages_follows_total_count_metadata() -> None:
                 ),
             ]
         )
-        air = AirKoreaClient.aio(service_key="KEY", session=session, retries=0)
+        air = AirKoreaClient(service_key="KEY", session=session, retries=0)
         pages = [
             page
             async for page in air.iter_pages(
@@ -594,7 +599,7 @@ def test_async_client_covers_all_typed_methods() -> None:
                 FakeResponse(json_data=payload({"stationName": "raw"})),
             ]
         )
-        air = AirKoreaClient.aio(service_key="KEY", session=session, retries=0)
+        air = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
         assert await air.latest_station_measurement("종로구") is not None
         assert (await air.sido_measurements(SidoName.SEOUL))[0].station_name == "종로구"

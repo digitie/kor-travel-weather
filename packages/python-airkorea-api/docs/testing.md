@@ -22,7 +22,7 @@ python -m mypy src/airkorea
 - 서비스 목록은 `SUPPORTED_ENDPOINTS`와 `tests/test_expanded_api.py`가 서로 맞아야 한다.
 - API 카탈로그는 `SUPPORTED_ENDPOINTS` 전체를 덮어야 하며 데이터셋명과 서비스키 링크를 포함해야 한다.
 - raw `call()`/`iter_pages()`는 인증키성 params를 실제 요청과 context에서 제거하고, `pageNo` 순회를 fixture로 검증한다.
-- 비동기 클라이언트는 실제 네트워크 없이 fake async session으로 동기 클라이언트와 같은 파라미터/모델/페이지 순회 결과를 검증한다.
+- 비동기 클라이언트는 실제 네트워크 없이 fake async session으로 기존 파라미터/모델/페이지 순회 결과가 보존되는지 검증한다.
 - public API를 새로 추가하면 `tests/test_public_api.py`의 권장 export 목록도 함께 갱신한다.
 
 ## 디버그 fixture replay

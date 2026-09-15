@@ -14,10 +14,10 @@ def test_body_pagination_helpers() -> None:
     assert not has_next_page({"pageNo": "3", "numOfRows": "10", "totalCount": "25"})
 
 
-def test_iter_paginated_pages_follows_page_metadata() -> None:
+async def test_iter_paginated_pages_follows_page_metadata() -> None:
     seen: list[tuple[int, int]] = []
 
-    def fetch_page(page_no: int, num_of_rows: int) -> AirKoreaPage[str]:
+    async def fetch_page(page_no: int, num_of_rows: int) -> AirKoreaPage[str]:
         seen.append((page_no, num_of_rows))
         return AirKoreaPage[str](
             items=(f"page-{page_no}",),
@@ -27,14 +27,14 @@ def test_iter_paginated_pages_follows_page_metadata() -> None:
             raw={},
         )
 
-    pages = list(iter_paginated_pages(fetch_page, num_of_rows=1))
+    pages = [item async for item in iter_paginated_pages(fetch_page, num_of_rows=1)]
 
     assert [page.items[0] for page in pages] == ["page-1", "page-2"]
     assert seen == [(1, 1), (2, 1)]
 
 
-def test_iter_paginated_pages_validates_guards() -> None:
-    def fetch_page(page_no: int, num_of_rows: int) -> AirKoreaPage[str]:
+async def test_iter_paginated_pages_validates_guards() -> None:
+    async def fetch_page(page_no: int, num_of_rows: int) -> AirKoreaPage[str]:
         return AirKoreaPage[str](
             items=("x",),
             total_count=1,
@@ -44,7 +44,7 @@ def test_iter_paginated_pages_validates_guards() -> None:
         )
 
     with pytest.raises(ValueError):
-        list(iter_paginated_pages(fetch_page, page_no=0))
+        [item async for item in iter_paginated_pages(fetch_page, page_no=0)]
 
     with pytest.raises(ValueError):
-        list(iter_paginated_pages(fetch_page, max_items=-1))
+        [item async for item in iter_paginated_pages(fetch_page, max_items=-1)]

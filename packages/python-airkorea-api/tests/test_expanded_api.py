@@ -27,7 +27,7 @@ def test_supported_endpoints_covers_all_airkorea_openapi_groups() -> None:
     assert "getMinuDustFrcstDspth50Over" in endpoints
 
 
-def test_statistics_methods_map_params_and_models() -> None:
+async def test_statistics_methods_map_params_and_models() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -72,14 +72,16 @@ def test_statistics_methods_map_params_and_models() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    sido = client.sido_average_stats(
+    sido = await client.sido_average_stats(
         item_code=Pollutant.PM25,
         data_gubun=StatsDataGubun.DAILY,
         search_condition=StatsSearchCondition.WEEK,
     )
-    cities = client.city_average_stats("Seoul", item_code="PM10")
-    daily = client.station_daily_stats(date(2026, 4, 1), "2026-04-30", station_name="Jongno-gu")
-    monthly = client.station_monthly_stats("20260401", "20260430")
+    cities = await client.city_average_stats("Seoul", item_code="PM10")
+    daily = await client.station_daily_stats(
+        date(2026, 4, 1), "2026-04-30", station_name="Jongno-gu"
+    )
+    monthly = await client.station_monthly_stats("20260401", "20260430")
 
     assert sido[0].item_code == "PM10"
     assert sido[0].region_values["seoul"] == 35.0
@@ -99,7 +101,7 @@ def test_statistics_methods_map_params_and_models() -> None:
     assert session.calls[3].url.endswith("/ArpltnStatsSvc/getMsrstnAcctoRMmrg")
 
 
-def test_remaining_airkorea_services_map_params_and_models() -> None:
+async def test_remaining_airkorea_services_map_params_and_models() -> None:
     session = FakeSession(
         [
             FakeResponse(
@@ -207,15 +209,15 @@ def test_remaining_airkorea_services_map_params_and_models() -> None:
     )
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
-    ozone = client.ozone_advisories(year=2026)
-    yellow_dust = client.yellow_dust_advisories(year="2026")
-    alarms = client.dust_alarms(2026, item_code=Pollutant.PM25)
-    traffic = client.traffic_stats(date(2026, 4, 30))
-    high = client.high_pm25_forecasts("2026-04-30")
-    cai = client.cai_measurements(station_name="Jongno-gu")
-    background = client.background_concentrations(date(2022, 1, 3), "s0002")
-    english_measurements = client.english_measurements(station_name="Jeungpyeong")
-    english_stations = client.english_stations(station_name="Sangdae", road_address="Korean")
+    ozone = await client.ozone_advisories(year=2026)
+    yellow_dust = await client.yellow_dust_advisories(year="2026")
+    alarms = await client.dust_alarms(2026, item_code=Pollutant.PM25)
+    traffic = await client.traffic_stats(date(2026, 4, 30))
+    high = await client.high_pm25_forecasts("2026-04-30")
+    cai = await client.cai_measurements(station_name="Jongno-gu")
+    background = await client.background_concentrations(date(2022, 1, 3), "s0002")
+    english_measurements = await client.english_measurements(station_name="Jeungpyeong")
+    english_stations = await client.english_stations(station_name="Sangdae", road_address="Korean")
 
     assert ozone[0].kind == "ozone"
     assert ozone[0].issue_value == 0.133
@@ -232,9 +234,7 @@ def test_remaining_airkorea_services_map_params_and_models() -> None:
     assert background[0].pm25_value == 12.0
     assert english_measurements[0].station_name_english == "Jeungpyeong"
     assert english_stations[0].road_address_english == "English road"
-    assert session.calls[0].url.endswith(
-        "/OzYlwsndOccrrncInforInqireSvc/getOzAdvsryOccrrncInfo"
-    )
+    assert session.calls[0].url.endswith("/OzYlwsndOccrrncInforInqireSvc/getOzAdvsryOccrrncInfo")
     assert session.calls[1].url.endswith(
         "/OzYlwsndOccrrncInforInqireSvc/getYlwsndAdvsryOccrrncInfo"
     )
@@ -246,9 +246,9 @@ def test_remaining_airkorea_services_map_params_and_models() -> None:
     assert session.calls[8].url.endswith("/atmstMsrstnInfoEngNm/getList")
 
 
-def test_malformed_new_api_item_raises_parse_error() -> None:
+async def test_malformed_new_api_item_raises_parse_error() -> None:
     session = FakeSession([FakeResponse(json_data=payload({"dataTime": "not-a-date"}))])
     client = AirKoreaClient(service_key="KEY", session=session, retries=0)
 
     with pytest.raises(AirKoreaParseError):
-        client.sido_average_stats(item_code="PM10")
+        (await client.sido_average_stats(item_code="PM10"))

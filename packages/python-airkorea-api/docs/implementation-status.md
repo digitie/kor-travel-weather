@@ -25,7 +25,7 @@
 | public client/API 목록 | `src/airkorea/client.py` |
 | enum/코드 정규화 | `src/airkorea/codes.py` |
 | 좌표 호환 입력/AirKorea TM 변환 | `src/airkorea/coords.py` |
-| httpx 동기/비동기 HTTP envelope/result-code 처리 | `src/airkorea/_http.py` |
+| httpx 비동기 HTTP envelope/result-code 처리 | `src/airkorea/_http.py` |
 | 호출 context/캐시 키 | `src/airkorea/metadata.py` |
 | 페이지 순회 helper | `src/airkorea/pagination.py` |
 | Pydantic 응답 모델 | `src/airkorea/models.py` |
@@ -34,13 +34,13 @@
 ## 라이브러리 표면
 
 - enum 입력: `DataTerm`, `InformCode`, `Pollutant`, `SidoName`, `StatsDataGubun`, `StatsSearchCondition`, `AirQualityGrade`
-- 클라이언트 facade: `AirKoreaClient(service_key=...)`, `AirKoreaClient.aio(service_key=...)`, `AsyncAirKoreaClient`
+- 클라이언트 facade: `AirKoreaClient(service_key=...)`
 - 좌표 입력: WGS84 public 경계는 `LatLon(lat=..., lon=...)`, AirKorea TM은 `TmPoint(tm_x, tm_y)`
 - GeoJSON/WKT/GIS 출력 경계에서만 표준에 맞춰 `(lon, lat)` 순서로 변환
 - 기존 `LatLon(lat, lon)`, `(lat, lon)`, mapping, `lat=...`, `lon=...` 호출은 호환 유지
 - 기존 문자열 입력은 호환 유지
 - 응답 모델은 Pydantic v2 `BaseModel` 기반이며 `raw`를 보존하면서 enum/좌표 property를 제공
-- raw escape hatch: `AirKoreaClient.call()`과 `iter_pages()`는 `SUPPORTED_ENDPOINTS` 내 endpoint를 원본 page로 반환하며, 비동기 클라이언트도 같은 이름을 제공
+- raw escape hatch: `AirKoreaClient.call()`과 `iter_pages()`는 `SUPPORTED_ENDPOINTS` 내 endpoint를 원본 page로 반환하며, await 호출과 async for 순회를 제공
 - provenance/cache helper: `AirKoreaCallContext`, `sanitize_request_params`, `make_cache_key`
 - debug fixture helper: `DebugRun`, `run_debug_method`, `save_debug_fixture`
 - API catalog helper: `ApiCatalogEntry`, `api_catalog`, `api_catalog_dicts`

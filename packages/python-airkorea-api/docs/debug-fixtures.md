@@ -19,12 +19,12 @@ Web UI는 테스트 코드를 생성하지 않습니다. 저장된 fixture JSON�
 ```python
 from airkorea import AirKoreaClient, run_debug_method
 
-air = AirKoreaClient()
-debug_run = run_debug_method(
-    air,
-    "station_measurements",
-    {"station_name": "종로구", "num_of_rows": 1},
-)
+async with AirKoreaClient() as air:
+    debug_run = await run_debug_method(
+        air,
+        "station_measurements",
+        {"station_name": "종로구", "num_of_rows": 1},
+    )
 
 debug_run.request    # 인증키가 제거된 요청 정보
 debug_run.response   # 저장 가능한 response.body

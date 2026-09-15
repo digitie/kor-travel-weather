@@ -42,15 +42,15 @@ def measurement_row() -> dict[str, object]:
     }
 
 
-def test_run_debug_method_captures_safe_request_response() -> None:
+async def test_run_debug_method_captures_safe_request_response() -> None:
     session = FakeSession([FakeResponse(json_data=payload([measurement_row()]))])
     client = AirKoreaClient(service_key="decoded-key", session=session, retries=0)
 
-    debug_run = run_debug_method(
+    debug_run = (await run_debug_method(
         client,
         "station_measurements",
         {"station_name": "종로구", "num_of_rows": 1},
-    )
+    ))
 
     assert debug_run.error is None
     assert debug_run.request["method"] == "GET"
@@ -64,10 +64,10 @@ def test_run_debug_method_captures_safe_request_response() -> None:
     assert debug_run.trace[-1].endswith("-> HTTP 200")
 
 
-def test_run_debug_method_returns_validation_error_without_http_call() -> None:
+async def test_run_debug_method_returns_validation_error_without_http_call() -> None:
     client = AirKoreaClient(service_key="decoded-key", session=FakeSession([]), retries=0)
 
-    debug_run = run_debug_method(client, "sido_measurements", {"sido_name": "서울특별시"})
+    debug_run = (await run_debug_method(client, "sido_measurements", {"sido_name": "서울특별시"}))
 
     assert debug_run.error is not None
     assert debug_run.error["type"] == "ValueError"
@@ -75,14 +75,14 @@ def test_run_debug_method_returns_validation_error_without_http_call() -> None:
     assert debug_run.response == {}
 
 
-def test_save_debug_fixture_redacts_and_prevents_overwrite(tmp_path) -> None:
+async def test_save_debug_fixture_redacts_and_prevents_overwrite(tmp_path) -> None:
     session = FakeSession([FakeResponse(json_data=payload([measurement_row()]))])
     client = AirKoreaClient(service_key="decoded-key", session=session, retries=0)
-    debug_run = run_debug_method(
+    debug_run = (await run_debug_method(
         client,
         "station_measurements",
         {"station_name": "종로구", "num_of_rows": 1},
-    )
+    ))
 
     fixture_path = save_debug_fixture(
         base_dir=tmp_path,

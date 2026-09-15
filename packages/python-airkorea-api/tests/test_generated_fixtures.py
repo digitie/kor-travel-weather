@@ -21,11 +21,11 @@ def all_fixture_files() -> list[Path]:
     all_fixture_files(),
     ids=lambda path: f"{path.parent.name}/{path.stem}",
 )
-def test_generated_fixtures(fixture_path: Path) -> None:
+async def test_generated_fixtures(fixture_path: Path) -> None:
     with fixture_path.open("r", encoding="utf-8") as file:
         case: dict[str, Any] = json.load(file)
 
-    actual = replay_case(case)
+    actual = (await replay_case(case))
     expected = case["processed"]
     assertion = case.get("assertion", {"mode": "snapshot"})
     assert_case(actual, expected, assertion)

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from airkorea import AirKoreaClient
 from airkorea.debug import jsonable
 from tests.conftest import FakeResponse, FakeSession
 
-Runner = Callable[[AirKoreaClient, Mapping[str, Any]], Any]
+Runner = Callable[[AirKoreaClient, Mapping[str, Any]], Awaitable[Any]]
 
 _METHOD_NAMES = (
     "station_measurements",
@@ -37,7 +37,7 @@ _METHOD_NAMES = (
 )
 
 
-def replay_case(case: Mapping[str, Any]) -> Any:
+async def replay_case(case: Mapping[str, Any]) -> Any:
     """fixture의 저장 응답을 fake session에 넣어 public method를 재실행합니다."""
 
     session = FakeSession([_fake_response(response) for response in _fixture_responses(case)])
@@ -48,14 +48,14 @@ def replay_case(case: Mapping[str, Any]) -> Any:
     except KeyError as exc:
         known = ", ".join(sorted(RUNNERS))
         raise ValueError(f"unknown fixture function {function_name!r}; known: {known}") from exc
-    return jsonable(runner(client, _input_data(case)))
+    return jsonable(await runner(client, _input_data(case)))
 
 
 def _method_runner(function_name: str) -> Runner:
-    def run(client: AirKoreaClient, input_data: Mapping[str, Any]) -> Any:
+    async def run(client: AirKoreaClient, input_data: Mapping[str, Any]) -> Any:
         args, kwargs = _args_kwargs(input_data)
         method = getattr(client, function_name)
-        return method(*args, **kwargs)
+        return (await method(*args, **kwargs))
 
     return run
 
