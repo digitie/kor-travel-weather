@@ -144,6 +144,12 @@ services:
       # headroom for catalog growth, while still catching a genuine runaway.
       KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+      # Never actually reached this container until now: settings.py has
+      # defaulted retention_days to 2 all along, but nothing here forwarded
+      # KOR_TRAVEL_WEATHER_RETENTION_DAYS from the deployment .env, so every
+      # deployment ran on the code default regardless of what was configured.
+      KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
+      KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
     expose:
       - "14102"
       - "14103"

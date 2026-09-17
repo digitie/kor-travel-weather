@@ -590,3 +590,31 @@ def test_the_deploy_script_stamps_the_revision_it_builds() -> None:
     assert "git_commit" in script, (
         "deploy.sh does not verify /version reports the commit it just built"
     )
+
+
+def test_retention_settings_actually_reach_the_dagster_container(
+    compose_files: dict[str, dict],
+) -> None:
+    """Setting these in the deployment .env used to do nothing.
+
+    settings.py has always defaulted retention_days to 2 and read
+    KOR_TRAVEL_WEATHER_RETENTION_DAYS/KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS
+    from the environment -- but no compose file forwarded either variable into
+    the dagster container's environment, so every deployment ran on the code
+    default regardless of what the .env said. The nightly retention job reads
+    WeatherSettings() fresh inside that container; an operator raising the
+    configured value would see no effect at all, silently.
+    """
+    names: set[str] = set()
+    for document in compose_files.values():
+        service = (document.get("services") or {}).get("dagster")
+        if service:
+            names |= _environment_names(service)
+    for name in (
+        "KOR_TRAVEL_WEATHER_RETENTION_DAYS",
+        "KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS",
+    ):
+        assert name in names, (
+            f"no compose file forwards {name} into the dagster service; the "
+            "nightly retention job would silently run on the code default"
+        )

@@ -117,6 +117,72 @@ def test_a_partitions_boundary_is_anchored_to_kst_midnight() -> None:
     )
 
 
+def test_a_legacy_utc_bounded_partition_does_not_block_the_next_kst_day() -> None:
+    """Production hit exactly this: every partition up to a point was created
+    under the old UTC-midnight boundary, and the first genuinely new day after
+    them computed a KST-midnight lower bound nine hours earlier -- inside the
+    legacy partition's range -- so PostgreSQL refused it outright:
+    ``partition "weather_values_20260918" would overlap partition
+    "weather_values_20260917"``. That aborted the whole nightly maintenance
+    job before it ever reached the drop step, so nothing was purged either,
+    for as long as the mismatch persisted.
+
+    The fix does not rewrite the legacy partition (that means moving its
+    rows); it clamps the next new partition's lower bound to wherever
+    coverage already ends. Confirmed here by hand-creating a UTC-bounded
+    partition the way the old code did, then asking for the following days
+    the way the nightly job would.
+    """
+    repository = _repository()
+    legacy_day = date(2032, 1, 1)
+    transition_day = legacy_day + timedelta(days=1)
+    clean_day = transition_day + timedelta(days=1)
+    with repository.engine.begin() as connection:
+        # Mimics the pre-fix boundary: UTC midnight to UTC midnight, not KST.
+        connection.execute(
+            text(
+                f"CREATE TABLE {partition_name(legacy_day)} "
+                f"PARTITION OF weather_values "
+                f"FOR VALUES FROM ('{legacy_day.isoformat()} 00:00:00+00') "
+                f"TO ('{transition_day.isoformat()} 00:00:00+00')"
+            )
+        )
+
+        # This is the call that used to raise InvalidObjectDefinition.
+        created = ensure_partitions(connection, start=transition_day, end=clean_day)
+        assert created == [
+            partition_name(transition_day),
+            partition_name(clean_day),
+        ]
+
+        transition_bound = connection.execute(
+            text("SELECT pg_get_expr(c.relpartbound, c.oid) FROM pg_class c WHERE c.relname = :n"),
+            {"n": partition_name(transition_day)},
+        ).scalar_one()
+        clean_bound = connection.execute(
+            text("SELECT pg_get_expr(c.relpartbound, c.oid) FROM pg_class c WHERE c.relname = :n"),
+            {"n": partition_name(clean_day)},
+        ).scalar_one()
+
+    # The transitional day starts where the legacy partition's UTC bound
+    # ends -- not at its own, nine-hours-earlier KST midnight -- so it can
+    # never overlap. It still ends at a clean KST midnight: 00:00 KST on
+    # clean_day is 15:00 UTC the day before (KST is UTC+9), i.e. transition_day.
+    assert f"{transition_day.isoformat()} 00:00:00+00" in transition_bound
+    assert f"{transition_day.isoformat()} 15:00:00+00" in transition_bound
+    # The day after it is unaffected by the legacy boundary: a full,
+    # ordinary 24-hour KST day, chained from exactly where the transitional
+    # one left off.
+    assert f"{transition_day.isoformat()} 15:00:00+00" in clean_bound
+    assert f"{clean_day.isoformat()} 15:00:00+00" in clean_bound
+
+    # Idempotent afterward, same as the ordinary case: re-running must not
+    # try to recompute -- and re-collide with -- the clamped boundary.
+    with repository.engine.begin() as connection:
+        again = ensure_partitions(connection, start=transition_day, end=clean_day)
+    assert again == created
+
+
 def test_existing_partitions_reads_back_the_kst_day_it_was_created_for() -> None:
     """The round trip must agree with ``partition_name``, not PostgreSQL's echo.
 

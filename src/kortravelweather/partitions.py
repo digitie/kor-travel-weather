@@ -37,7 +37,7 @@ def partition_name(day: date) -> str:
     return f"{VALUES_TABLE}_{day:%Y%m%d}"
 
 
-def _kst_midnight_literal(day: date) -> str:
+def _kst_midnight(day: date) -> datetime:
     """A day boundary as an explicit KST instant, not a bare date.
 
     A bare ``'2026-09-11'`` literal is cast to ``timestamptz`` using the
@@ -49,7 +49,56 @@ def _kst_midnight_literal(day: date) -> str:
     Spelling out the offset anchors the boundary to KST regardless of what
     timezone the connection happens to default to.
     """
-    return f"{day:%Y-%m-%d}T00:00:00+09:00"
+    return datetime(day.year, day.month, day.day, tzinfo=KST)
+
+
+def _existing_partition_bounds(connection: Connection) -> list[tuple[datetime, datetime]]:
+    """Every dated partition's ``(lower, upper)`` bound, in whatever timezone
+    PostgreSQL happens to echo it back in. The DEFAULT partition has no bound
+    and is skipped."""
+    rows = connection.execute(
+        text(
+            "SELECT pg_get_expr(c.relpartbound, c.oid) "
+            "FROM pg_class c "
+            "JOIN pg_inherits i ON i.inhrelid = c.oid "
+            "JOIN pg_class p ON p.oid = i.inhparent "
+            "WHERE p.relname = :parent"
+        ),
+        {"parent": VALUES_TABLE},
+    ).scalars().all()
+    bounds: list[tuple[datetime, datetime]] = []
+    for bound in rows:
+        if not bound or "FROM (" not in bound or " TO (" not in bound:
+            continue  # the DEFAULT partition has no FROM/TO to parse.
+        try:
+            lower_literal = bound.split("FROM (", 1)[1].split(")", 1)[0].strip().strip("'")
+            upper_literal = bound.split(" TO (", 1)[1].split(")", 1)[0].strip().strip("'")
+            bounds.append(
+                (datetime.fromisoformat(lower_literal), datetime.fromisoformat(upper_literal))
+            )
+        except (ValueError, IndexError):
+            continue
+    return bounds
+
+
+def _overlapping_upper_bound(
+    bounds: list[tuple[datetime, datetime]], *, lower: datetime, upper: datetime
+) -> datetime | None:
+    """Among existing partitions, the upper bound of one that would overlap
+    the candidate ``[lower, upper)`` range, or ``None`` if none does.
+
+    Two ranges overlap exactly when each starts before the other ends.
+    Scoping the check to genuine overlap -- not merely "some other partition
+    ends later than this range starts" -- matters because a shared table can
+    hold partitions for entirely unrelated periods (a historical backfill, a
+    test fixture); those must never inflate a day nowhere near them.
+    """
+    overlapping = [
+        existing_upper
+        for existing_lower, existing_upper in bounds
+        if existing_lower < upper and existing_upper > lower
+    ]
+    return max(overlapping) if overlapping else None
 
 
 def ensure_default_partition(connection: Connection) -> None:
@@ -66,24 +115,59 @@ def ensure_partitions(connection: Connection, *, start: date, end: date) -> list
 
     Idempotent, so the maintenance job can run it every night and the migration
     can run it over whatever range the existing data occupies.
+
+    Every partition this function has ever created for this deployment used a
+    UTC midnight boundary, not the KST one ``_kst_midnight`` computes
+    now -- that KST fix landed after partitions already existed out to
+    ``weather_values_20260917``, and ``CREATE TABLE IF NOT EXISTS`` silently
+    no-ops on an existing name without checking whether its bounds match what
+    was asked for.  So every night since, the *next* new day -- the first one
+    whose partition does not already exist -- computed a KST-aligned lower
+    bound nine hours earlier than the old UTC scheme's boundary, which
+    overlapped it, and PostgreSQL refused the whole statement:
+    ``partition "weather_values_20260918" would overlap partition
+    "weather_values_20260917"``.  The maintenance job has been failing outright
+    on this every night since, which means nothing has been purged either --
+    ``ensure_partitions`` runs first in that job, and the exception aborts
+    before ``drop_partitions_before`` is ever reached.
+
+    The fix does not touch existing partitions -- rewriting a live partition's
+    bounds means moving its rows, and that is not something to do implicitly
+    inside a nightly maintenance call.  Instead, a new day's lower bound is
+    clamped to the upper bound of any *existing* partition it would otherwise
+    overlap, so it can never collide with what is already there.  A table that
+    shares storage across unrelated periods (a historical backfill, a test
+    fixture) must not have those inflate a day nowhere near them -- the check
+    is genuine overlap, not merely "something else in the table ends later."
+    In production this clamp only ever fires once, on the first genuinely new
+    day right after the legacy ones; that one partition ends up covering fewer
+    than 24 hours (nine, for this exact transition), and every partition after
+    it is a clean, fully KST-aligned day.
     """
     if end < start:
         raise ValueError("end는 start 이후여야 합니다.")
+    existing_bounds = _existing_partition_bounds(connection)
     created: list[str] = []
     day = start
     while day <= end:
         name = partition_name(day)
+        lower = _kst_midnight(day)
+        upper = _kst_midnight(day + timedelta(days=1))
+        clamp = _overlapping_upper_bound(existing_bounds, lower=lower, upper=upper)
+        if clamp is not None and clamp > lower:
+            lower = clamp
         # ``IF NOT EXISTS`` is not available for ATTACH-style partition
         # creation in every supported server, but it is for CREATE TABLE ...
         # PARTITION OF, which is what this is.
         connection.execute(
             text(
                 f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF {VALUES_TABLE} "
-                f"FOR VALUES FROM ('{_kst_midnight_literal(day)}') "
-                f"TO ('{_kst_midnight_literal(day + timedelta(days=1))}')"
+                f"FOR VALUES FROM ('{lower.isoformat()}') "
+                f"TO ('{upper.isoformat()}')"
             )
         )
         created.append(name)
+        existing_bounds.append((lower, upper))
         day += timedelta(days=1)
     return created
 
