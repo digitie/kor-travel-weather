@@ -30,7 +30,13 @@ from kortravelweather.settings import WeatherSettings
 
 from .airkorea_weather import run_airkorea_weather_sync
 from .external_weather import run_external_weather_sync
-from .kma_weather import run_weather_sync, targets_from_settings
+from .kma_weather import (
+    KMA_SHORT_FORECAST,
+    KMA_ULTRA_SHORT_FORECAST,
+    KMA_ULTRA_SHORT_NOWCAST,
+    run_weather_sync,
+    targets_from_settings,
+)
 from .regional_sources import (
     run_khoa_beach_index_sync,
     run_krex_restarea_sync,
@@ -90,20 +96,7 @@ def _is_kma_target_location(location: object) -> bool:
     )
 
 
-@asset(
-    name="kma_weather_sync",
-    required_resource_keys={"kma_client", "weather_repository"},
-    description="KMA grids are staged first, then published as one immutable batch.",
-)
-def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
-    settings = WeatherSettings()
-    client_resource = context.resources.kma_client
-    repository_resource = context.resources.weather_repository
-    repository = repository_resource.create_repository()
-    # Admin-managed enabled locations are the canonical target source. Env
-    # targets are an additive/override layer for bootstrap and provider-specific
-    # fields such as mid_land_region_code/mid_temperature_region_code;
-    # disabled rows never enter a run.
+def _load_all_kma_locations(repository: WeatherRepository) -> list[object]:
     db_locations = []
     catalog_offset = 0
     catalog_page_size = 5000
@@ -115,37 +108,40 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
         if len(page) < catalog_page_size:
             break
         catalog_offset += len(page)
-    disabled_ids = {location.location_id for location in db_locations if not location.enabled}
+    return db_locations
 
-    def provider_codes(metadata: dict[str, object]) -> dict[str, object]:
-        """Read canonical and pre-ADR alias keys from persisted anchors."""
-        legacy = metadata.get("mid_region_code")
-        land = metadata.get("mid_land_region_code") or metadata.get("mid_land_reg_id") or legacy
-        temperature = (
-            metadata.get("mid_temperature_region_code") or metadata.get("mid_ta_reg_id") or legacy
-        )
-        return {
-            "mid_region_code": legacy,
-            "mid_land_region_code": land,
-            "mid_temperature_region_code": temperature,
-        }
 
-    db_targets = [
-        {
-            **location.model_dump(),
-            **provider_codes(location.metadata),
-        }
-        for location in db_locations
-        if location.enabled and _is_kma_target_location(location)
-    ]
-    merged: dict[str, dict[str, object]] = {row["location_id"]: row for row in db_targets}
+def _provider_codes(metadata: dict[str, object]) -> dict[str, object]:
+    """Read canonical and pre-ADR alias keys from persisted anchors."""
+    legacy = metadata.get("mid_region_code")
+    land = metadata.get("mid_land_region_code") or metadata.get("mid_land_reg_id") or legacy
+    temperature = (
+        metadata.get("mid_temperature_region_code") or metadata.get("mid_ta_reg_id") or legacy
+    )
+    return {
+        "mid_region_code": legacy,
+        "mid_land_region_code": land,
+        "mid_temperature_region_code": temperature,
+    }
+
+
+def _merge_env_targets(
+    rows: dict[str, dict[str, object]],
+    settings: WeatherSettings,
+    disabled_ids: set[str],
+) -> dict[str, dict[str, object]]:
+    """Layer env-configured targets over the DB catalog snapshot.
+
+    DB anchor coordinates/lifecycle are canonical; env rows may only add
+    provider-specific fields (mid region codes) to an existing row, or
+    bootstrap a brand new one.
+    """
+    merged = dict(rows)
     for row in settings.targets:
         location_id = row.get("location_id")
         if not isinstance(location_id, str) or location_id in disabled_ids:
             continue
         if location_id in merged:
-            # DB anchor coordinates/lifecycle are canonical. Env may only add
-            # provider-specific fields to an existing row.
             for key in (
                 "mid_region_code",
                 "mid_land_region_code",
@@ -157,94 +153,201 @@ def kma_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
                     merged[location_id][key] = row[key]
         elif row.get("enabled", True):
             merged[location_id] = dict(row)
-    run = None
-    sync_started = False
-    client = None
-    data_client = None
-    try:
-        targets = targets_from_settings(
-            merged.values(),
-            extra_points=settings.extra_points,
-            disabled_location_ids=disabled_ids,
+    return merged
+
+
+def _kma_grid_targets(
+    repository: WeatherRepository, settings: WeatherSettings
+) -> tuple[list[object], dict[str, dict[str, object]], set[str]]:
+    """Build the validated target set every base-grid/mid-forecast KMA job shares.
+
+    Admin-managed enabled locations opted into KMA (see
+    ``_is_kma_target_location``) are the canonical source; env targets are an
+    additive/override layer for bootstrap and provider-specific fields.
+    """
+    db_locations = _load_all_kma_locations(repository)
+    disabled_ids = {location.location_id for location in db_locations if not location.enabled}
+    db_targets = {
+        location.location_id: {**location.model_dump(), **_provider_codes(location.metadata)}
+        for location in db_locations
+        if location.enabled and _is_kma_target_location(location)
+    }
+    merged = _merge_env_targets(db_targets, settings, disabled_ids)
+    targets = targets_from_settings(
+        merged.values(),
+        extra_points=settings.extra_points,
+        disabled_location_ids=disabled_ids,
+    )
+    return targets, merged, disabled_ids
+
+
+def _kma_alert_targets(
+    repository: WeatherRepository, settings: WeatherSettings, disabled_ids: set[str]
+) -> list[object]:
+    """Every enabled location, KMA-opted-in or not.
+
+    Measurement anchors are excluded from base-grid fetches to keep the grid
+    budget bounded, but KMA advisories must still be visible on their map
+    markers, so the alert target snapshot is not filtered by
+    ``_is_kma_target_location``.
+    """
+    db_locations = _load_all_kma_locations(repository)
+    alert_rows = {
+        location.location_id: {**location.model_dump(), **_provider_codes(location.metadata)}
+        for location in db_locations
+        if location.enabled
+    }
+    merged = _merge_env_targets(alert_rows, settings, disabled_ids)
+    return targets_from_settings(merged.values(), disabled_location_ids=disabled_ids)
+
+
+def _make_kma_dataset_asset(
+    *,
+    name: str,
+    dataset_key: str,
+    description: str,
+    base_datasets: frozenset[str] | None,
+    include_base: bool,
+    include_mid: bool,
+    include_alerts: bool,
+    needs_data_client: bool,
+):
+    """Build one independently-scheduled asset for a single KMA dataset.
+
+    KMA's five datasets (초단기실황/초단기예보/단기예보/중기예보/특보) each publish on a
+    different real cadence and used to share one bundled asset and one
+    ``weather_sync_runs`` row -- a single dataset's failure or backlog was
+    invisible next to four others succeeding, and every run paid for all five
+    even when only one had new data available.  One asset per dataset keeps
+    each schedule, quota accounting and sync-run status honest about what it
+    actually fetched.
+    """
+
+    @asset(
+        name=name,
+        required_resource_keys={"kma_client", "weather_repository"},
+        description=description,
+    )
+    def _kma_dataset_sync(context: AssetExecutionContext) -> dict[str, object]:
+        settings = WeatherSettings()
+        client_resource = context.resources.kma_client
+        repository = context.resources.weather_repository.create_repository()
+        targets, merged, disabled_ids = _kma_grid_targets(repository, settings)
+        alert_targets = (
+            _kma_alert_targets(repository, settings, disabled_ids) if include_alerts else None
         )
-        # Measurement anchors are intentionally excluded from KMA base-grid
-        # fetches to keep the grid budget bounded, but KMA advisories must still
-        # be visible on their map markers. Build a separate alert-only target
-        # snapshot from every enabled catalog row (plus enabled env targets).
-        alert_rows: dict[str, dict[str, object]] = {
-            location.location_id: {
-                **location.model_dump(),
-                **provider_codes(location.metadata),
-            }
-            for location in db_locations
-            if location.enabled
-        }
-        for row in settings.targets:
-            location_id = row.get("location_id")
-            if not isinstance(location_id, str) or location_id in disabled_ids:
-                continue
-            if location_id in alert_rows:
-                for key in (
-                    "mid_region_code",
-                    "mid_land_region_code",
-                    "mid_temperature_region_code",
-                    "mid_land_reg_id",
-                    "mid_ta_reg_id",
-                ):
-                    if row.get(key):
-                        alert_rows[location_id][key] = row[key]
-            elif row.get("enabled", True):
-                alert_rows[location_id] = dict(row)
-        alert_targets = targets_from_settings(
-            alert_rows.values(), disabled_location_ids=disabled_ids
-        )
-        # Count the validated target set, including generated extra points,
-        # rather than the pre-validation catalog snapshot.
-        run = repository.start_sync_run(
-            provider="python-kma-api",
-            dataset_key="kma_weather_bundle",
-            locations_total=len(targets),
-        )
-        client = client_resource.create_client(settings=settings, repository=repository)
-        data_client = client_resource.create_data_client(settings=settings, repository=repository)
-        sync_started = True
-        result = run_weather_sync(
-            repository=repository,
-            client=client,
-            targets=targets,
-            max_grids=settings.max_grids_per_run,
-            max_targets=settings.max_targets_per_run,
-            max_response_rows=settings.max_response_rows_per_run,
-            max_values=settings.max_values_per_run,
-            include_mid=any(target.has_mid for target in targets),
-            include_alerts=True,
-            alert_station_id=settings.kma_alert_station_id,
-            alert_targets=alert_targets,
-            data_client=data_client,
-            # python-kma-api owns the transport retry boundary through the
-            # resource above.  Do not retry the same client call a second time
-            # here; otherwise one configured retry can multiply network
-            # attempts per endpoint.
-            retries=0,
-            sync_run=run,
-        )
-        context.add_output_metadata(result)
-        return result
-    except Exception:
-        if run is None:
-            # Target parsing failed before a normal run could be opened. Keep
-            # the setup failure visible in the sync-run catalog as well.
+        run = None
+        sync_started = False
+        try:
             run = repository.start_sync_run(
                 provider="python-kma-api",
-                dataset_key="kma_weather_bundle",
-                locations_total=len(merged),
+                dataset_key=dataset_key,
+                locations_total=len(alert_targets) if alert_targets is not None else len(targets),
             )
-        if not sync_started:
-            repository.finish_sync_run(run.run_id, status="failed", error="asset setup failed")
-        raise
-    # No `finally: client.close()` here -- KmaClient/DataGoKrClient are
-    # async-only now, and run_weather_sync closes both itself, inside the
-    # same asyncio.run() that used them (see kma_weather.py).
+            client = client_resource.create_client(settings=settings, repository=repository)
+            data_client = (
+                client_resource.create_data_client(settings=settings, repository=repository)
+                if needs_data_client
+                else None
+            )
+            sync_started = True
+            result = run_weather_sync(
+                repository=repository,
+                client=client,
+                targets=targets,
+                max_grids=settings.max_grids_per_run,
+                max_targets=settings.max_targets_per_run,
+                max_response_rows=settings.max_response_rows_per_run,
+                max_values=settings.max_values_per_run,
+                include_base=include_base,
+                base_datasets=base_datasets,
+                include_mid=include_mid,
+                include_alerts=include_alerts,
+                alert_station_id=settings.kma_alert_station_id,
+                alert_targets=alert_targets,
+                data_client=data_client,
+                # python-kma-api owns the transport retry boundary through the
+                # resource above.  Do not retry the same client call a second
+                # time here; otherwise one configured retry can multiply
+                # network attempts per endpoint.
+                retries=0,
+                sync_run=run,
+            )
+            context.add_output_metadata(result)
+            return result
+        except Exception:
+            if run is None:
+                # Target parsing failed before a normal run could be opened.
+                # Keep the setup failure visible in the sync-run catalog too.
+                run = repository.start_sync_run(
+                    provider="python-kma-api",
+                    dataset_key=dataset_key,
+                    locations_total=len(merged),
+                )
+            if not sync_started:
+                repository.finish_sync_run(run.run_id, status="failed", error="asset setup failed")
+            raise
+        # No `finally: client.close()` here -- KmaClient/DataGoKrClient are
+        # async-only now, and run_weather_sync closes both itself, inside the
+        # same asyncio.run() that used them (see kma_weather.py).
+
+    return _kma_dataset_sync
+
+
+kma_ultra_short_nowcast_sync = _make_kma_dataset_asset(
+    name="kma_ultra_short_nowcast_sync",
+    dataset_key=KMA_ULTRA_SHORT_NOWCAST,
+    description="KMA 초단기실황(관측)을 매시 publish한다.",
+    base_datasets=frozenset({KMA_ULTRA_SHORT_NOWCAST}),
+    include_base=True,
+    include_mid=False,
+    include_alerts=False,
+    needs_data_client=False,
+)
+
+kma_ultra_short_forecast_sync = _make_kma_dataset_asset(
+    name="kma_ultra_short_forecast_sync",
+    dataset_key=KMA_ULTRA_SHORT_FORECAST,
+    description="KMA 초단기예보(6시간)를 매시 publish한다.",
+    base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+    include_base=True,
+    include_mid=False,
+    include_alerts=False,
+    needs_data_client=False,
+)
+
+kma_short_forecast_sync = _make_kma_dataset_asset(
+    name="kma_short_forecast_sync",
+    dataset_key=KMA_SHORT_FORECAST,
+    description=("KMA 단기예보(3일)를 발표시각(02/05/08/11/14/17/20/23시)마다 publish한다."),
+    base_datasets=frozenset({KMA_SHORT_FORECAST}),
+    include_base=True,
+    include_mid=False,
+    include_alerts=False,
+    needs_data_client=False,
+)
+
+kma_mid_forecast_sync = _make_kma_dataset_asset(
+    name="kma_mid_forecast_sync",
+    dataset_key="kma_mid_forecast",
+    description="KMA 중기예보(3~10일)를 발표시각(06/18시)마다 publish한다.",
+    base_datasets=None,
+    include_base=False,
+    include_mid=True,
+    include_alerts=False,
+    needs_data_client=True,
+)
+
+kma_weather_alerts_sync = _make_kma_dataset_asset(
+    name="kma_weather_alerts_sync",
+    dataset_key="kma_weather_alerts",
+    description="KMA 기상특보를 매시 publish한다.",
+    base_datasets=None,
+    include_base=False,
+    include_mid=False,
+    include_alerts=True,
+    needs_data_client=True,
+)
 
 
 @asset(
@@ -621,7 +724,11 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
 #: When this was four hand-copied lists, adding an asset meant remembering all
 #: four -- and a resolution site that missed one still worked, silently.
 _ASSETS = [
-    kma_weather_sync,
+    kma_ultra_short_nowcast_sync,
+    kma_ultra_short_forecast_sync,
+    kma_short_forecast_sync,
+    kma_mid_forecast_sync,
+    kma_weather_alerts_sync,
     airkorea_weather_sync,
     *_EXTERNAL_PROVIDER_ASSETS,
     khoa_beach_index_sync,
@@ -631,7 +738,21 @@ _ASSETS = [
     weather_retention_purge,
 ]
 
-_unresolved_weather_job = define_asset_job("kma_weather_job", selection=[kma_weather_sync])
+_unresolved_kma_ultra_short_nowcast_job = define_asset_job(
+    "kma_ultra_short_nowcast_job", selection=[kma_ultra_short_nowcast_sync]
+)
+_unresolved_kma_ultra_short_forecast_job = define_asset_job(
+    "kma_ultra_short_forecast_job", selection=[kma_ultra_short_forecast_sync]
+)
+_unresolved_kma_short_forecast_job = define_asset_job(
+    "kma_short_forecast_job", selection=[kma_short_forecast_sync]
+)
+_unresolved_kma_mid_forecast_job = define_asset_job(
+    "kma_mid_forecast_job", selection=[kma_mid_forecast_sync]
+)
+_unresolved_kma_weather_alerts_job = define_asset_job(
+    "kma_weather_alerts_job", selection=[kma_weather_alerts_sync]
+)
 _unresolved_airkorea_job = define_asset_job(
     "airkorea_weather_job", selection=[airkorea_weather_sync]
 )
@@ -687,7 +808,11 @@ def _resolve_job(unresolved):
     )
 
 
-weather_job = _resolve_job(_unresolved_weather_job)
+kma_ultra_short_nowcast_job = _resolve_job(_unresolved_kma_ultra_short_nowcast_job)
+kma_ultra_short_forecast_job = _resolve_job(_unresolved_kma_ultra_short_forecast_job)
+kma_short_forecast_job = _resolve_job(_unresolved_kma_short_forecast_job)
+kma_mid_forecast_job = _resolve_job(_unresolved_kma_mid_forecast_job)
+kma_weather_alerts_job = _resolve_job(_unresolved_kma_weather_alerts_job)
 airkorea_job = _resolve_job(_unresolved_airkorea_job)
 external_weather_jobs = {
     key: _resolve_job(unresolved) for key, unresolved in _unresolved_external_jobs.items()
@@ -695,10 +820,54 @@ external_weather_jobs = {
 weather_retention_job = _resolve_job(_unresolved_retention_job)
 regional_weather_job = _resolve_job(_unresolved_regional_job)
 
-hourly_kma_weather_schedule = ScheduleDefinition(
-    name="hourly_kma_weather",
+hourly_kma_ultra_short_nowcast_schedule = ScheduleDefinition(
+    name="hourly_kma_ultra_short_nowcast",
     cron_schedule="0 * * * *",
-    job=weather_job,
+    job=kma_ultra_short_nowcast_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+hourly_kma_ultra_short_forecast_schedule = ScheduleDefinition(
+    name="hourly_kma_ultra_short_forecast",
+    cron_schedule="0 * * * *",
+    job=kma_ultra_short_forecast_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+# python-kma-api's VILAGE_PUBLISH_HOURS: 단기예보 only actually publishes eight
+# times a day (KST 02/05/08/11/14/17/20/23), each covering the next ~3 days.
+# Fetching it hourly like the other two datasets bought nothing but 3x the
+# quota spend -- 16 of every 24 hourly calls would have returned a response
+# identical to the one already staged. :15 clears VILAGE_FCST_DELAY (10min).
+kma_short_forecast_schedule = ScheduleDefinition(
+    name="kma_short_forecast_publish_hours",
+    cron_schedule="15 2,5,8,11,14,17,20,23 * * *",
+    job=kma_short_forecast_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+# python-kma-api's MID_FCST_PUBLISH_HOURS: 중기예보 publishes twice a day
+# (KST 06/18). No current catalog location carries mid region codes, so this
+# is a no-op run today -- kept scheduled so opting a location in later needs
+# no code change, just admin metadata.
+kma_mid_forecast_schedule = ScheduleDefinition(
+    name="kma_mid_forecast_publish_hours",
+    cron_schedule="30 6,18 * * *",
+    job=kma_mid_forecast_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+# Advisories can be issued at any time, so this stays hourly like the two
+# ultra-short datasets; offset five minutes past them so all three do not
+# compete for the same concurrency slot at the top of the hour.
+hourly_kma_weather_alerts_schedule = ScheduleDefinition(
+    name="hourly_kma_weather_alerts",
+    cron_schedule="5 * * * *",
+    job=kma_weather_alerts_job,
     execution_timezone="Asia/Seoul",
     default_status=DefaultScheduleStatus.RUNNING,
 )
@@ -759,14 +928,22 @@ daily_weather_retention_schedule = ScheduleDefinition(
 defs = Definitions(
     assets=_ASSETS,
     jobs=[
-        weather_job,
+        kma_ultra_short_nowcast_job,
+        kma_ultra_short_forecast_job,
+        kma_short_forecast_job,
+        kma_mid_forecast_job,
+        kma_weather_alerts_job,
         airkorea_job,
         *external_weather_jobs.values(),
         regional_weather_job,
         weather_retention_job,
     ],
     schedules=[
-        hourly_kma_weather_schedule,
+        hourly_kma_ultra_short_nowcast_schedule,
+        hourly_kma_ultra_short_forecast_schedule,
+        kma_short_forecast_schedule,
+        kma_mid_forecast_schedule,
+        hourly_kma_weather_alerts_schedule,
         hourly_airkorea_weather_schedule,
         *external_weather_schedules,
         regional_weather_schedule,

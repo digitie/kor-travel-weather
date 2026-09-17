@@ -301,6 +301,141 @@ def test_sync_publishes_only_after_all_grids() -> None:
     assert repository.values
 
 
+def test_base_datasets_narrows_stage_grid_to_one_dataset() -> None:
+    class CountingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {"now": 0, "short": 0, "vilage": 0}
+
+        async def now(self, **kwargs):
+            self.calls["now"] += 1
+            return await super().now(**kwargs)
+
+        async def short(self, **kwargs):
+            self.calls["short"] += 1
+            return await super().short(**kwargs)
+
+        async def vilage(self, **kwargs):
+            self.calls["vilage"] += 1
+            return await super().vilage(**kwargs)
+
+    repository = FakeRepository()
+    client = CountingClient()
+    result = run_weather_sync(
+        repository=repository,
+        client=client,
+        targets=[_target()],
+        base_datasets=frozenset({"kma_ultra_short_nowcast"}),
+    )
+    assert result["status"] == "success"
+    assert client.calls == {"now": 1, "short": 0, "vilage": 0}
+    assert len(repository.sources) == 1
+    assert result["grids_fetched"] == 1
+    assert result["requests_fetched"] == 1
+
+
+def test_include_base_false_skips_grid_fetch_for_mid_only_run() -> None:
+    class CountingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {"now": 0, "short": 0, "vilage": 0}
+
+        async def now(self, **kwargs):
+            self.calls["now"] += 1
+            return await super().now(**kwargs)
+
+        async def short(self, **kwargs):
+            self.calls["short"] += 1
+            return await super().short(**kwargs)
+
+        async def vilage(self, **kwargs):
+            self.calls["vilage"] += 1
+            return await super().vilage(**kwargs)
+
+    class CountingDataClient(_EntersAndCloses):
+        def __init__(self) -> None:
+            self.land_calls: list[str] = []
+            self.temperature_calls: list[str] = []
+
+        async def mid_land_forecast(self, *, reg_id: str):
+            self.land_calls.append(reg_id)
+            return [{"tmFc": "202601010600", "regId": reg_id, "wf3Am": "맑음", "rnSt3Am": "20"}]
+
+        async def mid_temperature_forecast(self, *, reg_id: str):
+            self.temperature_calls.append(reg_id)
+            return [{"tmFc": "202601010600", "regId": reg_id, "taMin3": "-1", "taMax3": "4"}]
+
+    client = CountingClient()
+    data_client = CountingDataClient()
+    target = WeatherTarget(
+        _target().location,
+        mid_land_region_code="11B00000",
+        mid_temperature_region_code="11B10101",
+    )
+    result = run_weather_sync(
+        repository=FakeRepository(),
+        client=client,
+        targets=[target],
+        include_base=False,
+        include_mid=True,
+        data_client=data_client,
+    )
+    assert result["status"] == "success"
+    assert client.calls == {"now": 0, "short": 0, "vilage": 0}
+    assert result["grids_fetched"] == 0
+    assert data_client.land_calls == ["11B00000"]
+    assert data_client.temperature_calls == ["11B10101"]
+
+
+def test_include_base_false_skips_grid_fetch_for_alerts_only_run() -> None:
+    class CountingClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {"now": 0, "short": 0, "vilage": 0}
+
+        async def now(self, **kwargs):
+            self.calls["now"] += 1
+            return await super().now(**kwargs)
+
+        async def short(self, **kwargs):
+            self.calls["short"] += 1
+            return await super().short(**kwargs)
+
+        async def vilage(self, **kwargs):
+            self.calls["vilage"] += 1
+            return await super().vilage(**kwargs)
+
+    class AlertClient(_EntersAndCloses):
+        async def weather_warning_list(self, **kwargs):
+            return [{"stnId": "108", "tmFc": "202601010600", "tmSeq": "1", "title": "호우주의보"}]
+
+    measurement_target = WeatherTarget(
+        WeatherLocation(
+            location_id="airkorea-station",
+            name="측정소",
+            latitude=37.5,
+            longitude=127,
+            nx=60,
+            ny=127,
+            metadata={"measurement_point": {"provider": "python-airkorea-api"}},
+        )
+    )
+    client = CountingClient()
+    result = run_weather_sync(
+        repository=FakeRepository(),
+        client=client,
+        targets=[_target()],
+        include_base=False,
+        include_alerts=True,
+        data_client=AlertClient(),
+        alert_targets=[measurement_target],
+    )
+    assert result["status"] == "success"
+    assert client.calls == {"now": 0, "short": 0, "vilage": 0}
+    assert result["grids_fetched"] == 0
+    assert result["alerts_fetched"] == 1
+
+
 def test_alert_targets_include_measurement_anchor_markers() -> None:
     class AlertClient(_EntersAndCloses):
         async def weather_warning_list(self, **kwargs):

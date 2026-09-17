@@ -1,9 +1,23 @@
 # Dagster boundary
 
-`kma_weather_sync`는 hourly (`0 * * * *`, Asia/Seoul) asset이다. target은 활성 DB
-catalog가 정본이며 env `TARGETS`는 bootstrap 신규 row와 provider 속성을 보완한다.
-DB에서 disabled 된 id는 env가 재활성화할 수 없다. lat/lon만 있는 target은
-`kma.to_grid`로 nx/ny를 계산한다.
+KMA는 **dataset마다 하나씩** asset/job/schedule 경계를 갖는다: `kma_ultra_short_nowcast_sync`
+(초단기실황, hourly `0 * * * *`), `kma_ultra_short_forecast_sync`(초단기예보, hourly
+`0 * * * *`), `kma_short_forecast_sync`(단기예보, KMA 실제 발표시각인
+`15 2,5,8,11,14,17,20,23 * * *`), `kma_mid_forecast_sync`(중기예보,
+`30 6,18 * * *`), `kma_weather_alerts_sync`(특보, hourly `5 * * * *`). 예전에는 다섯
+dataset이 `kma_weather_sync` 하나의 asset과 `kma_weather_bundle`이라는 하나의
+`weather_sync_runs` row를 공유했다 — 단기예보는 3시간에 한 번만 새 응답이 나오는데도
+매시간 재요청했고(quota의 3분의 2가 낭비), 다섯 dataset 중 하나가 실패해도 admin
+화면에는 뭉뚱그려진 run 하나만 보여 어느 dataset이 문제인지 알 수 없었다. 지금은
+dataset마다 자기 cadence로만 요청하고 자기 `dataset_key`로 추적된다.
+
+target은 활성 DB catalog가 정본이며 env `TARGETS`는 bootstrap 신규 row와 provider
+속성을 보완한다. DB에서 disabled 된 id는 env가 재활성화할 수 없다. lat/lon만 있는
+target은 `kma.to_grid`로 nx/ny를 계산한다. AirKorea 등 다른 provider의 측정소
+anchor는 `_is_kma_target_location`이 기본적으로 KMA target에서 제외한다 —
+`metadata.kma_opt_in=true`로 관리자가 명시적으로 opt-in한 행만 예외다. 특보만은
+예외로, `_kma_alert_targets`가 opt-in 여부와 무관하게 활성 location 전체를 대상으로
+한다 — 지도 marker에는 특보가 항상 보여야 하기 때문이다.
 
 중기예보 target은 `mid_land_region_code`(예: `11B00000`)와
 `mid_temperature_region_code`(예: `11B10101`)를 모두 설정한다. 과거 설정의

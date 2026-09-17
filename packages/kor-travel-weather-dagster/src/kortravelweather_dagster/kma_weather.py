@@ -28,6 +28,19 @@ from kortravelweather.providers.kma import (
 )
 from kortravelweather.repository import WeatherRepository
 
+KMA_ULTRA_SHORT_NOWCAST = "kma_ultra_short_nowcast"
+KMA_ULTRA_SHORT_FORECAST = "kma_ultra_short_forecast"
+KMA_SHORT_FORECAST = "kma_short_forecast"
+
+#: The three grid-based datasets ``stage_grid`` can fetch per call. Every
+#: caller that does not name a subset gets all three, matching the original
+#: bundled behavior; a caller building one job per dataset (see
+#: ``definitions.py``) narrows this to a single entry so that job's requests
+#: and ``weather_sync_runs`` tracking reflect only what it actually fetched.
+BASE_GRID_DATASETS = frozenset(
+    {KMA_ULTRA_SHORT_NOWCAST, KMA_ULTRA_SHORT_FORECAST, KMA_SHORT_FORECAST}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class WeatherTarget:
@@ -449,6 +462,7 @@ async def stage_grid(
     fetched_at: datetime | None = None,
     include_mid: bool = False,
     include_base: bool = True,
+    base_datasets: frozenset[str] | None = None,
     data_client: Any | None = None,
     retries: int = 0,
     source_entity_id: str | None = None,
@@ -481,7 +495,8 @@ async def stage_grid(
             limit = min(limit, max(1, values_budget // multiplier))
         return limit
 
-    if include_base:
+    active_base_datasets = base_datasets if base_datasets is not None else BASE_GRID_DATASETS
+    if include_base and KMA_ULTRA_SHORT_NOWCAST in active_base_datasets:
         snapshot = await _kma_provider_call(
             lambda: client.now(nx=location.nx, ny=location.ny),
             dataset="kma_ultra_short_nowcast",
@@ -517,6 +532,7 @@ async def stage_grid(
             raise ValueError("provider response row 수가 상한을 초과했습니다.")
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+    if include_base and KMA_ULTRA_SHORT_FORECAST in active_base_datasets:
         ultra_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: client.forecast.short(nx=location.nx, ny=location.ny),
@@ -550,6 +566,7 @@ async def stage_grid(
             raise ValueError("provider response row 수가 상한을 초과했습니다.")
         if values_budget is not None and values_budget <= 0:
             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+    if include_base and KMA_SHORT_FORECAST in active_base_datasets:
         short_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: client.forecast.vilage(nx=location.nx, ny=location.ny),
@@ -679,6 +696,8 @@ def run_weather_sync(
     max_targets: int = 10_000,
     max_response_rows: int = 1_000_000,
     max_values: int = 500_000,
+    include_base: bool = True,
+    base_datasets: frozenset[str] | None = None,
     include_mid: bool = False,
     include_alerts: bool = False,
     alert_station_id: str | int | None = None,
@@ -696,6 +715,12 @@ def run_weather_sync(
     to ``max_grids`` grids and ``max_mid_groups`` region pairs against the
     same client -- a separate ``asyncio.run()`` per grid, the obvious
     alternative, would trip that on the second one.
+
+    ``include_base``/``base_datasets`` let a caller build one job per KMA
+    dataset (nowcast, ultra-short forecast, short forecast, mid forecast,
+    alerts) instead of fetching the whole bundle every run -- each dataset
+    has its own real publish cadence, and a run that only wants one no
+    longer has to pay for (or track sync-run status against) the others.
     """
     return asyncio.run(
         _run_weather_sync(
@@ -708,6 +733,8 @@ def run_weather_sync(
             max_targets=max_targets,
             max_response_rows=max_response_rows,
             max_values=max_values,
+            include_base=include_base,
+            base_datasets=base_datasets,
             include_mid=include_mid,
             include_alerts=include_alerts,
             alert_station_id=alert_station_id,
@@ -729,6 +756,8 @@ async def _run_weather_sync(
     max_targets: int = 10_000,
     max_response_rows: int = 1_000_000,
     max_values: int = 500_000,
+    include_base: bool = True,
+    base_datasets: frozenset[str] | None = None,
     include_mid: bool = False,
     include_alerts: bool = False,
     alert_station_id: str | int | None = None,
@@ -751,6 +780,8 @@ async def _run_weather_sync(
             max_targets=max_targets,
             max_response_rows=max_response_rows,
             max_values=max_values,
+            include_base=include_base,
+            base_datasets=base_datasets,
             include_mid=include_mid,
             include_alerts=include_alerts,
             alert_station_id=alert_station_id,
@@ -771,6 +802,8 @@ async def _stage_and_publish_weather(
     max_targets: int = 10_000,
     max_response_rows: int = 1_000_000,
     max_values: int = 500_000,
+    include_base: bool = True,
+    base_datasets: frozenset[str] | None = None,
     include_mid: bool = False,
     include_alerts: bool = False,
     alert_station_id: str | int | None = None,
@@ -904,7 +937,8 @@ async def _stage_and_publish_weather(
                 client=client,
                 target=target,
                 include_mid=include_mid_for_group,
-                include_base=not include_mid_for_group,
+                include_base=include_base and not include_mid_for_group,
+                base_datasets=base_datasets,
                 data_client=data_client,
                 retries=retries,
                 source_entity_id=source_entity_id,
@@ -940,13 +974,14 @@ async def _stage_and_publish_weather(
 
         # Grid requests are deduplicated first; each staged response is
         # immediately bounded, fanned out, and released before the next grid.
-        for grid_key, group_targets in grid_groups.items():
-            await stage_and_append(
-                group_targets[0],
-                group_targets,
-                include_mid_for_group=False,
-                source_entity_id=f"grid:{grid_key[0]}:{grid_key[1]}",
-            )
+        if include_base:
+            for grid_key, group_targets in grid_groups.items():
+                await stage_and_append(
+                    group_targets[0],
+                    group_targets,
+                    include_mid_for_group=False,
+                    source_entity_id=f"grid:{grid_key[0]}:{grid_key[1]}",
+                )
         for mid_region_codes, group_targets in mid_groups.items():
             await stage_and_append(
                 group_targets[0],
@@ -1037,28 +1072,29 @@ async def _stage_and_publish_weather(
                             )
                         )
                 keep_alive()
+        grids_fetched = len(grid_groups) if include_base else 0
+        base_dataset_count = (
+            len(base_datasets) if base_datasets is not None else len(BASE_GRID_DATASETS)
+        )
+        base_requests_fetched = grids_fetched * base_dataset_count
         publish_and_finish = getattr(repository, "publish_and_finish", None)
         if callable(publish_and_finish):
             loaded, finished = publish_and_finish(
                 run_id=run.run_id,
                 source_records=sources,
                 values=values,
-                grids_fetched=len(grid_groups),
+                grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
-                requests_fetched=len(grid_groups) * 3
-                + len(mid_groups) * 2
-                + alert_groups,
+                requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
             )
         else:
             loaded = repository.ingest_batch(source_records=sources, values=values)
             finished = repository.finish_sync_run(
                 run.run_id,
                 status="success",
-                grids_fetched=len(grid_groups),
+                grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
-                requests_fetched=len(grid_groups) * 3
-                + len(mid_groups) * 2
-                + alert_groups,
+                requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
                 values_loaded=loaded,
             )
         if finished.status != "success":
@@ -1068,11 +1104,9 @@ async def _stage_and_publish_weather(
         return {
             "run_id": finished.run_id,
             "status": finished.status,
-            "grids_fetched": len(grid_groups),
+            "grids_fetched": grids_fetched,
             "mid_groups_fetched": len(mid_groups),
-            "requests_fetched": len(grid_groups) * 3
-            + len(mid_groups) * 2
-            + alert_groups,
+            "requests_fetched": base_requests_fetched + len(mid_groups) * 2 + alert_groups,
             "alerts_fetched": alert_rows_total,
             "values_loaded": loaded,
         }
