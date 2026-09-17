@@ -32,7 +32,11 @@ function externalLabels(suffix: string): Record<string, string> {
 // dagster job/schedule/asset names are internal identifiers, not something an
 // operator glancing at this page should have to already know by heart.
 const JOB_LABELS: Record<string, string> = {
-  kma_weather_job: "기상청 단기예보 수집",
+  kma_ultra_short_nowcast_job: "기상청 초단기실황 수집",
+  kma_ultra_short_forecast_job: "기상청 초단기예보 수집",
+  kma_short_forecast_job: "기상청 단기예보 수집",
+  kma_mid_forecast_job: "기상청 중기예보 수집",
+  kma_weather_alerts_job: "기상청 특보 수집",
   airkorea_weather_job: "에어코리아 대기질 수집",
   weather_retention_job: "보존 기간 만료 데이터 정리",
   regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집",
@@ -56,7 +60,11 @@ export function runStatusLabel(status: string): string {
 }
 
 const STEP_LABELS: Record<string, string> = {
-  kma_weather_sync: "기상청 단기예보 수집",
+  kma_ultra_short_nowcast_sync: "기상청 초단기실황 수집",
+  kma_ultra_short_forecast_sync: "기상청 초단기예보 수집",
+  kma_short_forecast_sync: "기상청 단기예보 수집",
+  kma_mid_forecast_sync: "기상청 중기예보 수집",
+  kma_weather_alerts_sync: "기상청 특보 수집",
   airkorea_weather_sync: "에어코리아 대기질 수집",
   weather_retention_purge: "보존 기간 만료 데이터 정리",
   khoa_beach_index_sync: "해수욕장 지수 수집",

@@ -23,7 +23,7 @@ function run(overrides: Partial<DagsterRun>): DagsterRun {
 
 describe("jobLabel", () => {
   it("translates a known job name into its Korean description", () => {
-    expect(jobLabel("kma_weather_job")).toBe("기상청 단기예보 수집");
+    expect(jobLabel("kma_short_forecast_job")).toBe("기상청 단기예보 수집");
   });
 
   it("names the provider for each external collection job", () => {
