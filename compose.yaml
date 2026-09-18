@@ -162,8 +162,17 @@ services:
       - ./deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
     tmpfs:
       - /var/run/kor-travel-weather-metrics
-    command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "0.0.0.0", "-p", "14102"]
+    command: ["./deploy/dagster-entrypoint.sh"]
     working_dir: /app
+    # Visibility only -- `docker ps`/monitoring can see a wedged code-server
+    # (see deploy/dagster-entrypoint.sh for the actual recovery, since Compose
+    # does not restart a container merely for reporting unhealthy).
+    healthcheck:
+      test: ["CMD", "python", "/app/deploy/dagster_healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
 
   dagster-gateway:
     build:
