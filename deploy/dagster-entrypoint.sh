@@ -10,9 +10,16 @@
 # view: confirmed once in production, stuck for about 8 hours until noticed
 # by hand, and every job appeared to fail because none could be launched.
 #
-# This wrapper is the missing supervision: once the workspace stays unhealthy
-# for ten straight minutes, it kills `dagster dev` so the container actually
-# exits and the existing restart policy takes over.
+# This wrapper is the missing supervision. On a failed check it first asks
+# the still-alive outer proxy to reload the code location (the same action
+# the UI's own "Reload" button sends, dagster_reload_location.py) -- tested
+# against a deliberately killed inner worker, this alone fixes it in a few
+# seconds with no restart at all, because dagster dev's own recovery loop
+# only watches the outer proxy's liveness and never notices the inner worker
+# died on its own (see dagster_reload_location.py for the sourced reasoning).
+# Only if the workspace stays unhealthy for ten straight minutes even with
+# reload attempts does it fall back to killing `dagster dev` so the container
+# actually exits and the existing restart policy takes over.
 set -eu
 
 dagster dev -m kortravelweather_dagster.definitions -h 0.0.0.0 -p 14102 &
@@ -64,13 +71,30 @@ while kill -0 "$dagster_pid" 2>/dev/null; do
     if python /app/deploy/dagster_healthcheck.py; then
         failures=0
     else
-        failures=$((failures + 1))
-        echo "dagster-entrypoint: workspace health check failed (${failures} consecutive)" >&2
-        if [ "$failures" -ge 10 ]; then
-            echo "dagster-entrypoint: workspace unhealthy for ${failures} consecutive minutes, restarting" >&2
-            terminate
-            wait "$dagster_pid" 2>/dev/null || true
-            exit 1
+        echo "dagster-entrypoint: workspace health check failed, asking dagster dev to reload the code location" >&2
+        python /app/deploy/dagster_reload_location.py || true
+        recovered=0
+        attempt=0
+        while [ "$attempt" -lt 3 ]; do
+            wait_seconds 5
+            if python /app/deploy/dagster_healthcheck.py; then
+                recovered=1
+                break
+            fi
+            attempt=$((attempt + 1))
+        done
+        if [ "$recovered" -eq 1 ]; then
+            echo "dagster-entrypoint: reload fixed the code location, no restart needed" >&2
+            failures=0
+        else
+            failures=$((failures + 1))
+            echo "dagster-entrypoint: still unhealthy after a reload attempt (${failures} consecutive)" >&2
+            if [ "$failures" -ge 10 ]; then
+                echo "dagster-entrypoint: workspace unhealthy for ${failures} consecutive minutes even with reload attempts, restarting" >&2
+                terminate
+                wait "$dagster_pid" 2>/dev/null || true
+                exit 1
+            fi
         fi
     fi
     wait_seconds 60
