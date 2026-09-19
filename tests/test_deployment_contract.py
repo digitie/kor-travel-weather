@@ -372,10 +372,13 @@ def test_every_provider_credential_reaches_the_containers() -> None:
         for spec in PROVIDER_CATALOG
         if spec.auth_required and spec.credential_field
     }
-    # KMA is built by the Dagster resource from the shared data.go.kr key, and
-    # the two run in these services; anything else that authenticates has to be
-    # reachable from both.
-    for service_name in ("api", "dagster"):
+    # KMA is built by the Dagster resource from the shared data.go.kr key.
+    # dagster-code-server is the only Dagster service that ever imports
+    # kortravelweather_dagster.definitions (dagster-webserver/dagster-daemon
+    # talk to it over grpc_server and never touch provider code themselves),
+    # so it is the only one anything here needs to be reachable from besides
+    # the API.
+    for service_name in ("api", "dagster-code-server"):
         names: set[str] = set()
         for path in COMPOSE_FILES:
             service = (_load(path).get("services") or {}).get(service_name)
@@ -402,15 +405,17 @@ def test_dagster_runs_with_run_monitoring_enabled() -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config.get("run_monitoring", {}).get("enabled") is True
 
+    # MonitoringDaemon is one of the daemons dagster-daemon runs; that is the
+    # service this setting has to reach for it to do anything.
     mounted = False
     for path in COMPOSE_FILES:
-        service = (_load(path).get("services") or {}).get("dagster")
+        service = (_load(path).get("services") or {}).get("dagster-daemon")
         for volume in (service or {}).get("volumes") or []:
             if "dagster.yaml" in str(volume):
                 mounted = True
     assert mounted, (
-        "deploy/dagster.yaml exists but no compose file mounts it, so the "
-        "container still runs on Dagster's defaults"
+        "deploy/dagster.yaml exists but no compose file mounts it into "
+        "dagster-daemon, so that container still runs on Dagster's defaults"
     )
 
 
@@ -446,15 +451,17 @@ def test_dagster_runs_are_recorded_in_postgresql_not_sqlite() -> None:
             "variable, so this test cannot confirm the container receives it"
         )
 
+    # dagster-daemon is what actually writes through run_monitoring; that is
+    # the service this test needs to confirm receives the setting.
     names: set[str] = set()
     for path in COMPOSE_FILES:
-        service = (_load(path).get("services") or {}).get("dagster")
+        service = (_load(path).get("services") or {}).get("dagster-daemon")
         if service:
             names |= _environment_names(service)
     assert "DAGSTER_POSTGRES_URL" in names, (
         "deploy/dagster.yaml points run/event-log/schedule storage at "
         "DAGSTER_POSTGRES_URL, but no compose file passes that variable to "
-        "the dagster service"
+        "the dagster-daemon service"
     )
 
 
@@ -602,12 +609,14 @@ def test_retention_settings_actually_reach_the_dagster_container(
     from the environment -- but no compose file forwarded either variable into
     the dagster container's environment, so every deployment ran on the code
     default regardless of what the .env said. The nightly retention job reads
-    WeatherSettings() fresh inside that container; an operator raising the
-    configured value would see no effect at all, silently.
+    WeatherSettings() fresh inside dagster-code-server (the only Dagster
+    service that imports kortravelweather_dagster.definitions and actually
+    runs job code); an operator raising the configured value would see no
+    effect at all, silently.
     """
     names: set[str] = set()
     for document in compose_files.values():
-        service = (document.get("services") or {}).get("dagster")
+        service = (document.get("services") or {}).get("dagster-code-server")
         if service:
             names |= _environment_names(service)
     for name in (
@@ -615,6 +624,7 @@ def test_retention_settings_actually_reach_the_dagster_container(
         "KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS",
     ):
         assert name in names, (
-            f"no compose file forwards {name} into the dagster service; the "
-            "nightly retention job would silently run on the code default"
+            f"no compose file forwards {name} into the dagster-code-server "
+            "service; the nightly retention job would silently run on the "
+            "code default"
         )

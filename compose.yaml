@@ -1,3 +1,69 @@
+# Shared by every dagster-* service below (grpc_server workspace targets and
+# the daemon never import kortravelweather_dagster.definitions directly any
+# more, but keeping one environment block avoids each service silently
+# drifting from what the others receive -- see deploy/n150.md for why the
+# three were split out of one `dagster dev` process in the first place).
+x-dagster-environment: &dagster-environment
+  DAGSTER_HOME: /opt/dagster/home
+  KOR_TRAVEL_WEATHER_ENV: production
+  KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
+  # A separate database, not a schema in ${POSTGRES_DB} -- see
+  # deploy/dagster.yaml. Password comes from PGPASSWORD below, the same way
+  # KOR_TRAVEL_WEATHER_DATABASE_URL above gets it.
+  DAGSTER_POSTGRES_URL: postgresql://${POSTGRES_USER:-weather}@db:5432/${DAGSTER_POSTGRES_DB:-weather_dagster}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+  KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+  KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
+  KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
+  KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
+  KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
+  KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
+  # 15s/1 retry (2 attempts total) was too thin for data.go.kr's gateway,
+  # which has a documented SERVICETIMEOUT_ERROR mode -- KMA and AirKorea
+  # both saw runs fail outright on a single slow response. 20s/3 retries
+  # (4 attempts, backoff tail up to ~1.2s) rides out a brief stall instead.
+  KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-20}
+  KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-3}
+  KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
+  KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
+  KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
+  KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY: ${KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY:-}
+  KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY:-}
+  KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY:-}
+  KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY: ${KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY:-}
+  KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL: ${KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL:-https://api.open-meteo.com/v1}
+  KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
+  KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
+  KOR_TRAVEL_WEATHER_TARGETS: ${KOR_TRAVEL_WEATHER_TARGETS:-[]}
+  KOR_TRAVEL_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_WEATHER_EXTRA_POINTS:-}
+  KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS: ${KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS:-1000}
+  KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN:-300}
+  KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN:-10000}
+  # How much of the catalog each external provider sweeps, and how fast it
+  # may ask. Both default from each vendor's free-tier quota; the code
+  # comments in settings.py carry the arithmetic. Override only against a
+  # paid plan -- exceeding a quota throttles the provider into runs that
+  # outlive their own schedule.
+  KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":380,"openweathermap":350}}
+  KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS:-{"openweathermap":1.25}}
+  KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
+  # 500k was sized before external forecast/timeline datasets were added.
+  # Those legitimately fetch a multi-day hourly window per location --
+  # open_meteo_forecast alone needs ~1.9M for the current catalog size
+  # (1,428 locations x 7 days x 24h x 8 fields), so every run of it failed
+  # outright, discarding a fully-fetched batch. 8M covers today's largest
+  # legitimate run (visual_crossing_timeline's ~15-day hourly window) with
+  # headroom for catalog growth, while still catching a genuine runaway.
+  KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
+  KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+  # Never actually reached this container until now: settings.py has
+  # defaulted retention_days to 2 all along, but nothing here forwarded
+  # KOR_TRAVEL_WEATHER_RETENTION_DAYS from the deployment .env, so every
+  # deployment ran on the code default regardless of what was configured.
+  KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
+  KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+
 services:
   db:
     image: postgres:16-alpine
@@ -75,7 +141,19 @@ services:
       timeout: 5s
       retries: 12
 
-  dagster:
+  # Runs the actual job code (kortravelweather_dagster.definitions) and every
+  # run's forked subprocess -- the heaviest of the three, and the one that
+  # inherits the full application environment below. It used to be one third
+  # of a `dagster dev` process instead of its own container: that process
+  # bundled this code-server as an internal child watched only by dagster
+  # dev's own supervision, which could not tell "the process is alive but
+  # wedged" from "the process is fine" and had no path back from the former
+  # (see deploy/n150.md's incident writeup). A standalone `dagster api grpc`
+  # here is never passed --heartbeat, so it has no self-destruct clock at
+  # all; it now only stops for a real crash or OOM, which `restart:
+  # unless-stopped` already handles the same way it does for every other
+  # service in this file.
+  dagster-code-server:
     build:
       context: .
       dockerfile: deploy/Dockerfile.python
@@ -89,23 +167,9 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DAGSTER_HOME: /opt/dagster/home
-      KOR_TRAVEL_WEATHER_ENV: production
-      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
-      # A separate database, not a schema in ${POSTGRES_DB} -- see
-      # deploy/dagster.yaml. Password comes from PGPASSWORD below, the same
-      # way KOR_TRAVEL_WEATHER_DATABASE_URL above gets it.
-      DAGSTER_POSTGRES_URL: postgresql://${POSTGRES_USER:-weather}@db:5432/${DAGSTER_POSTGRES_DB:-weather_dagster}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
-      KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      <<: *dagster-environment
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
       PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
-      KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
-      KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
-      KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
-      KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
-      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
       # 15s/1 retry (2 attempts total) was too thin for data.go.kr's gateway,
       # which has a documented SERVICETIMEOUT_ERROR mode -- KMA and AirKorea
       # both saw runs fail outright on a single slow response. 20s/3 retries
@@ -144,14 +208,13 @@ services:
       # headroom for catalog growth, while still catching a genuine runaway.
       KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
-      # Never actually reached this container until now: settings.py has
-      # defaulted retention_days to 2 all along, but nothing here forwarded
-      # KOR_TRAVEL_WEATHER_RETENTION_DAYS from the deployment .env, so every
-      # deployment ran on the code default regardless of what was configured.
+      # settings.py has defaulted retention_days to 2 all along; this is what
+      # actually forwards KOR_TRAVEL_WEATHER_RETENTION_DAYS from the
+      # deployment .env into the container that runs the retention job.
       KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
       KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
     expose:
-      - "14102"
+      - "14106"
       - "14103"
     volumes:
       - dagster-home:/opt/dagster/home
@@ -162,16 +225,118 @@ services:
       - ./deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
     tmpfs:
       - /var/run/kor-travel-weather-metrics
-    command: ["./deploy/dagster-entrypoint.sh"]
+    command:
+      [
+        "dagster",
+        "api",
+        "grpc",
+        "-h",
+        "0.0.0.0",
+        "-p",
+        "14106",
+        "-m",
+        "kortravelweather_dagster.definitions",
+        "--inject-env-vars-from-instance",
+      ]
     working_dir: /app
-    # Visibility only -- `docker ps`/monitoring can see a wedged code-server
-    # (see deploy/dagster-entrypoint.sh for the actual recovery, since Compose
-    # does not restart a container merely for reporting unhealthy).
+    # Relative CPU priority under contention (work-conserving: costs nothing
+    # while idle, only outranks default-priority (1024) siblings when they are
+    # actually competing for the same core) and memory headroom/OOM
+    # preference -- this is the container a host-wide CPU/memory squeeze from
+    # unrelated projects sharing n150 actually hit (see deploy/n150.md).
+    # `cpus:` (a hard CFS quota) is deliberately not set here: it would
+    # protect *other* containers from this one, not the other way around, and
+    # would throttle -- i.e. self-inflict new latency on -- exactly the
+    # process this is trying to make more responsive.
+    cpu_shares: 4096
+    mem_reservation: 2g
+    mem_limit: 4g
+    mem_swappiness: 10
+    oom_score_adj: -500
+    pids_limit: 2048
     healthcheck:
-      test: ["CMD", "python", "/app/deploy/dagster_healthcheck.py"]
-      interval: 60s
+      test: ["CMD", "dagster", "api", "grpc-health-check", "-h", "127.0.0.1", "-p", "14106"]
+      interval: 30s
       timeout: 10s
-      retries: 10
+      retries: 5
+      start_period: 30s
+
+  # Serves the UI/GraphQL API only -- never imports user code, so it cannot be
+  # the thing that goes down when a run or the code server misbehaves.
+  dagster-webserver:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      dagster-code-server:
+        condition: service_healthy
+    environment:
+      <<: *dagster-environment
+    expose:
+      - "14102"
+    volumes:
+      - dagster-home:/opt/dagster/home
+      - ./deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+      - ./deploy/workspace.yaml:/app/deploy/workspace.yaml:ro
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "14102", "-w", "/app/deploy/workspace.yaml"]
+    working_dir: /app
+    cpu_shares: 2048
+    mem_reservation: 512m
+    mem_swappiness: 10
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14102/server_info', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  # Schedules/sensors/run queueing/run monitoring only -- also never imports
+  # user code. Exactly one instance system-wide, per Dagster's own guidance.
+  dagster-daemon:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "1"
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      dagster-code-server:
+        condition: service_healthy
+    environment:
+      <<: *dagster-environment
+    volumes:
+      - dagster-home:/opt/dagster/home
+      - ./deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+      - ./deploy/workspace.yaml:/app/deploy/workspace.yaml:ro
+    command: ["dagster-daemon", "run", "-w", "/app/deploy/workspace.yaml"]
+    working_dir: /app
+    cpu_shares: 2048
+    mem_reservation: 512m
+    mem_swappiness: 10
+    healthcheck:
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
       start_period: 60s
 
   dagster-gateway:
@@ -180,7 +345,7 @@ services:
       dockerfile: deploy/Dockerfile.dagster-gateway
     restart: unless-stopped
     depends_on:
-      dagster:
+      dagster-webserver:
         condition: service_started
     environment:
       DAGSTER_UI_USER: ${DAGSTER_UI_USER:-admin}
@@ -211,7 +376,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      dagster:
+      dagster-code-server:
         condition: service_started
     secrets:
       - source: metrics_token
@@ -243,7 +408,7 @@ services:
         condition: service_healthy
     environment:
       WEATHER_API_INTERNAL_URL: http://api:14101
-      DAGSTER_UI_INTERNAL_URL: http://dagster:14102
+      DAGSTER_UI_INTERNAL_URL: http://dagster-webserver:14102
       NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
       # The VWorld browser key is public and is embedded at Next build time.
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}

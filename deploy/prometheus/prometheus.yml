@@ -15,8 +15,11 @@ scrape_configs:
       - targets: ["api:14101"]
 
   # Dagster's worker registry is bound only to the compose network (14103).
-  # It intentionally has no public host port or browser-facing route.
+  # It intentionally has no public host port or browser-facing route. Only
+  # dagster-code-server imports kortravelweather_dagster.definitions (and
+  # runs every job as its own forked subprocess) -- dagster-webserver and
+  # dagster-daemon never touch this module, so they never bind this port.
   - job_name: kor-travel-weather-dagster
     metrics_path: /metrics
     static_configs:
-      - targets: ["dagster:14103"]
+      - targets: ["dagster-code-server:14103"]
