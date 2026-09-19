@@ -216,6 +216,18 @@ services:
     expose:
       - "14106"
       - "14103"
+    # Loopback-only, not the LAN address `dagster-gateway`/`api`/`web` use in
+    # deploy/compose.n150.yaml: this gRPC port has none of dagster-gateway's
+    # Basic Auth in front of it (nothing does -- it's a bare code-server, and
+    # a peer that reaches it can execute code and launch runs directly), so
+    # only the host itself should be able to reach it -- which is exactly
+    # what a host-networked shared dagster-webserver/dagster-daemon
+    # (following kor-travel-docker-manager's platform-topology.md §7 plan,
+    # matching pinvi/geo's own host-network + loopback code-server wiring)
+    # would need in order to register this location in its workspace.yaml.
+    # Not reachable from other machines on the LAN.
+    ports:
+      - "127.0.0.1:14106:14106"
     volumes:
       - dagster-home:/opt/dagster/home
       # Read-only: this is configuration, and the instance writes its run
