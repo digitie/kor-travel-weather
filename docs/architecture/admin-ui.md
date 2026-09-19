@@ -44,7 +44,7 @@ kor-travel-geo 호환 해시를 설정하며, 이 값이 평문 비밀번호보�
 설정된 경우에도 Web UI는 Basic fallback을 사용하지 않으며, 평문 값은 로그인
 검증과 Dagster gateway 등 별도 호환 경계에서만 사용한다.
 Compose에서는
-`DAGSTER_UI_INTERNAL_URL=http://dagster:14102`를 web 컨테이너에 주입한다. 세션
+`DAGSTER_UI_INTERNAL_URL=http://dagster-webserver:14102`를 web 컨테이너에 주입한다. 세션
 서명키와 backend token은 저장소/브라우저 로그에 기록하지 않는다. production 세션
 서명키는 최소 32바이트의 무작위 값이어야 하며, 예제의 placeholder는 거부된다.
 `WEATHER_UI_TRUST_PROXY=true`는 reverse proxy가 `X-Forwarded-For`를 신뢰된 마지막

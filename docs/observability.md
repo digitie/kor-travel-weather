@@ -5,7 +5,7 @@ API와 Dagster worker는 Prometheus text exposition 형식의 집계 지표를 �
 | 대상 | scrape 주소 | 인증 | 설명 |
 | --- | --- | --- | --- |
 | FastAPI | `http://api:14101/metrics` | `Authorization: Bearer $KOR_TRAVEL_WEATHER_METRICS_TOKEN` | HTTP 요청/지연, sync lifecycle |
-| Dagster worker | `http://dagster:14103/metrics` | compose 내부 network 전용 | multiprocess worker의 provider 호출/동기화 지표 |
+| Dagster worker | `http://dagster-code-server:14103/metrics` | compose 내부 network 전용 | multiprocess worker의 provider 호출/동기화 지표 |
 
 기본 `compose.yaml`은 Prometheus를 `127.0.0.1:14104`에만 바인딩하고 두 target을
 `deploy/prometheus/prometheus.yml`에서 scrape한다. Prometheus 데이터는

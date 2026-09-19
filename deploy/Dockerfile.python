@@ -35,12 +35,6 @@ RUN if [ "${INSTALL_DAGSTER}" = "1" ]; then \
 COPY packages/kor-travel-weather-api/src ./packages/kor-travel-weather-api/src
 COPY packages/kor-travel-weather-dagster/src ./packages/kor-travel-weather-dagster/src
 
-# The dagster service's entrypoint wraps `dagster dev` with its own workspace
-# health watchdog (see deploy/dagster-entrypoint.sh); harmless to have in the
-# api/migrate images too.
-COPY deploy/dagster-entrypoint.sh deploy/dagster_healthcheck.py deploy/dagster_reload_location.py ./deploy/
-RUN chmod +x ./deploy/dagster-entrypoint.sh
-
 # Bake the deployed revision into the image rather than injecting it at run
 # time.  `.dockerignore` keeps `.git` out of the build context, so the value has
 # to come from the caller -- but baking it means a restart cannot drift from the
@@ -49,4 +43,4 @@ RUN chmod +x ./deploy/dagster-entrypoint.sh
 ARG GIT_COMMIT=unknown
 ENV KOR_TRAVEL_WEATHER_GIT_COMMIT=${GIT_COMMIT}
 
-EXPOSE 14101 14102 14103
+EXPOSE 14101 14102 14103 14106

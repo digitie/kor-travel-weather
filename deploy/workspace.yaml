@@ -1,0 +1,14 @@
+# Points dagster-webserver and dagster-daemon at the standalone code-server
+# container instead of importing kortravelweather_dagster.definitions
+# directly. Neither process runs user code any more; loading it through
+# grpc_server means neither one can ever hold (or lose track of) a code
+# location's own process, which is what let a previous dagster-dev-managed
+# code-server die under host contention and stay undetected for hours (see
+# deploy/n150.md and the "dagster job이 실패" incident writeup for the full
+# history). The code server itself is what actually restarts on a real
+# crash now, via its own container's `restart: unless-stopped`.
+load_from:
+  - grpc_server:
+      host: dagster-code-server
+      port: 14106
+      location_name: kortravelweather_dagster.definitions
