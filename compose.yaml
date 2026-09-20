@@ -7,10 +7,21 @@ x-dagster-environment: &dagster-environment
   DAGSTER_HOME: /opt/dagster/home
   KOR_TRAVEL_WEATHER_ENV: production
   KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
-  # A separate database, not a schema in ${POSTGRES_DB} -- see
-  # deploy/dagster.yaml. Password comes from PGPASSWORD below, the same way
-  # KOR_TRAVEL_WEATHER_DATABASE_URL above gets it.
-  DAGSTER_POSTGRES_URL: postgresql://${POSTGRES_USER:-weather}@db:5432/${DAGSTER_POSTGRES_DB:-weather_dagster}
+  # Run/event-log/schedule storage lives on kor-travel-docker-manager's shared
+  # control-plane instance (kor-travel-shared-postgres, ADR-44/45 pattern),
+  # not weather's own `db` -- see kor-travel-docker-manager's
+  # docs/shared-postgres-onboarding.md. Reached by service name over the
+  # kor-travel-shared-net bridge (see `networks:` on the three dagster-*
+  # services below), never by host.docker.internal: an earlier attempt
+  # (#63/#64) tried the gateway-IP route and got ConnectionRefusedError --
+  # kor-travel-shared-postgres only listens on its own network namespace,
+  # which service-name DNS resolves correctly and a gateway IP does not.
+  # weather's own `db` no longer holds Dagster's run/event-log/schedule
+  # history from this point forward; it stays up as a rollback fallback (its
+  # data isn't migrated -- this is a fresh, empty database on the shared
+  # instance, same posture ADR-44/45 took for concierge/geo's Dagster
+  # metadata split).
+  DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@kor-travel-shared-postgres:11000/kor_travel_weather_dagster
   PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
   KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
   KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
@@ -161,6 +172,9 @@ services:
         INSTALL_DAGSTER: "1"
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
+    networks:
+      - default
+      - kor-travel-shared-net
     depends_on:
       db:
         condition: service_healthy
@@ -283,6 +297,9 @@ services:
         INSTALL_DAGSTER: "1"
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
+    networks:
+      - default
+      - kor-travel-shared-net
     depends_on:
       db:
         condition: service_healthy
@@ -326,6 +343,9 @@ services:
         INSTALL_DAGSTER: "1"
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
+    networks:
+      - default
+      - kor-travel-shared-net
     depends_on:
       db:
         condition: service_healthy
@@ -445,6 +465,16 @@ volumes:
   weather-postgres:
   dagster-home:
   prometheus-data:
+
+# `default` is named explicitly because the three dagster-* services above
+# declare `networks:` themselves -- once a service lists networks: at all,
+# compose stops attaching it to the implicit default bridge, so `default`
+# has to be listed alongside kor-travel-shared-net or weather's own db/api
+# access from those services breaks silently.
+networks:
+  default: {}
+  kor-travel-shared-net:
+    external: true
 
 secrets:
   metrics_token:
