@@ -7,10 +7,22 @@ x-dagster-environment: &dagster-environment
   DAGSTER_HOME: /opt/dagster/home
   KOR_TRAVEL_WEATHER_ENV: production
   KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-weather}@db:5432/${POSTGRES_DB:-weather}
-  # A separate database, not a schema in ${POSTGRES_DB} -- see
-  # deploy/dagster.yaml. Password comes from PGPASSWORD below, the same way
-  # KOR_TRAVEL_WEATHER_DATABASE_URL above gets it.
-  DAGSTER_POSTGRES_URL: postgresql://${POSTGRES_USER:-weather}@db:5432/${DAGSTER_POSTGRES_DB:-weather_dagster}
+  # kor-travel-shared-postgres (loopback :11000 on the host -- see
+  # kor-travel-docker-manager's ADR-44, which set this instance up for
+  # concierge first), not weather's own `db`. Deliberately not migrating the
+  # old weather_dagster run/schedule/event-log history there: this points at
+  # a freshly created, empty database and accumulates new data from here on
+  # (the old database is left in place on `db` as a rollback fallback, same
+  # as ADR-44 kept concierge's old instance running rather than dropping it).
+  # The password is embedded in the URL, unlike
+  # KOR_TRAVEL_WEATHER_DATABASE_URL's PGPASSWORD convention above, because
+  # deploy/dagster.yaml's run/event-log/schedule storage config reads
+  # postgres_url as one opaque environment variable with no separate
+  # password field to source from PGPASSWORD. host.docker.internal resolves
+  # via the extra_hosts entry below -- the shared instance is host-networked
+  # loopback-only, unreachable by weather's own bridge-networked services'
+  # service-name DNS.
+  DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@host.docker.internal:11000/kor_travel_weather_dagster
   PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
   KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
   KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
@@ -251,6 +263,13 @@ services:
         "--inject-env-vars-from-instance",
       ]
     working_dir: /app
+    # kor-travel-shared-postgres (DAGSTER_POSTGRES_URL above) is
+    # host-networked and loopback-only; this is what lets a bridge-networked
+    # container reach the host's own loopback via `host.docker.internal`,
+    # since `--inject-env-vars-from-instance` needs the code server to reach
+    # the instance's storage directly, the same as the webserver/daemon do.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # Relative CPU priority under contention (work-conserving: costs nothing
     # while idle, only outranks default-priority (1024) siblings when they are
     # actually competing for the same core) and memory headroom/OOM
@@ -300,6 +319,11 @@ services:
       - ./deploy/workspace.yaml:/app/deploy/workspace.yaml:ro
     command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "14102", "-w", "/app/deploy/workspace.yaml"]
     working_dir: /app
+    # kor-travel-shared-postgres (DAGSTER_POSTGRES_URL above) is
+    # host-networked and loopback-only; this is what lets this
+    # bridge-networked container reach the host's own loopback.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     cpu_shares: 2048
     mem_reservation: 512m
     mem_swappiness: 10
@@ -341,6 +365,11 @@ services:
       - ./deploy/workspace.yaml:/app/deploy/workspace.yaml:ro
     command: ["dagster-daemon", "run", "-w", "/app/deploy/workspace.yaml"]
     working_dir: /app
+    # kor-travel-shared-postgres (DAGSTER_POSTGRES_URL above) is
+    # host-networked and loopback-only; this is what lets this
+    # bridge-networked container reach the host's own loopback.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     cpu_shares: 2048
     mem_reservation: 512m
     mem_swappiness: 10
