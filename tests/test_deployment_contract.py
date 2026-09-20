@@ -294,6 +294,7 @@ def test_rendered_compose_never_carries_the_revision_into_a_container() -> None:
                 "POSTGRES_PASSWORD=x",
                 "KOR_TRAVEL_WEATHER_ADMIN_TOKEN=x",
                 "KOR_TRAVEL_WEATHER_METRICS_TOKEN=xxxxxxxxxxxxxxxx",
+                "KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD=x",
                 "WEATHER_UI_PASSWORD=x",
                 "WEATHER_UI_SESSION_SECRET=" + "s" * 40,
             ]
