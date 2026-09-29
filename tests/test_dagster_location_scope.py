@@ -28,6 +28,9 @@ COMPOSE = REPO_ROOT / "compose.yaml"
 FRONTEND = REPO_ROOT / "packages" / "kor-travel-weather-admin" / "frontend"
 SCOPE_MODULE = FRONTEND / "lib" / "dagster-scope.ts"
 DAGSTER_SRC = REPO_ROOT / "packages" / "kor-travel-weather-dagster" / "src"
+UNSCOPED_ROOT_FIELDS = re.compile(
+    r"\b(repositoriesOrError|workspaceOrError|runsOrError|runOrError)\s*[({]"
+)
 
 
 def _workspace_locations() -> list[str]:
@@ -76,7 +79,7 @@ def test_no_frontend_code_sends_unscoped_dagster_queries() -> None:
         if path.name.endswith(".test.ts"):
             continue
         text = path.read_text(encoding="utf-8")
-        if re.search(r"\b(repositoriesOrError|workspaceOrError|runsOrError|runOrError)\s*[({]", text):
+        if UNSCOPED_ROOT_FIELDS.search(text):
             offenders.append(str(path.relative_to(REPO_ROOT)))
     assert not offenders, f"Dagster GraphQL documents outside lib/dagster-scope.ts: {offenders}"
 
