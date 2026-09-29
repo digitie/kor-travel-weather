@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
 import { DagsterRepository, DagsterRun, DagsterSchedule, DagsterSnapshot, STALLED_RUN_THRESHOLD_SECONDS, describeCron, formatElapsed, getDagsterSnapshot, isStalledRun, jobLabel, runElapsedSeconds, runStatusLabel } from "@/lib/dagster";
+import { dagsterLocationUrl, dagsterRunUrl, dagsterScheduleUrl } from "@/lib/dagster-scope";
 
 function statusClass(status: string | null | undefined) {
   if (status === "RUNNING" || status === "SUCCESS" || status === "STARTED") return "on";
@@ -41,7 +42,7 @@ function RunRow({ run, nowSeconds }: { run: DagsterRun; nowSeconds: number }) {
       </td>
       <td>{dateTime(run.startTime)}</td>
       <td>{dateTime(run.endTime)}</td>
-      <td><a className="inline-link" href={`${process.env.NEXT_PUBLIC_DAGSTER_URL ?? "https://weather-dagster.digitie.mywire.org"}/runs/${encodeURIComponent(run.runId)}`} target="_blank" rel="noreferrer">Dagster에서 열기 <ExternalLink size={13} /></a></td>
+      <td><a className="inline-link" href={dagsterRunUrl(run.runId)} target="_blank" rel="noreferrer">Dagster에서 열기 <ExternalLink size={13} /></a></td>
     </tr>
   );
 }
@@ -66,6 +67,7 @@ function ScheduleRow({ schedule, expanded, onToggle }: { schedule: DagsterSchedu
               <div><span>실행되는 작업</span><code>{schedule.jobName}</code></div>
               <div><span>스케줄 이름</span><code>{schedule.name}</code></div>
               <div><span>실행 주기(원본)</span><code>{schedule.cron ?? "—"}</code></div>
+              <div><span>Dagster</span><a className="inline-link" href={dagsterScheduleUrl(schedule.name)} target="_blank" rel="noreferrer">스케줄 열기 <ExternalLink size={13} /></a></div>
             </div>
           </td>
         </tr>
@@ -105,7 +107,7 @@ export default function DagsterPage() {
               <RefreshCw size={15} className={loading ? "spin" : ""} />
               새로고침
             </button>
-            <a className="button secondary" href={process.env.NEXT_PUBLIC_DAGSTER_URL ?? "https://weather-dagster.digitie.mywire.org"} target="_blank" rel="noreferrer">
+            <a className="button secondary" href={dagsterLocationUrl()} target="_blank" rel="noreferrer">
               Dagster UI <ExternalLink size={15} />
             </a>
           </>
