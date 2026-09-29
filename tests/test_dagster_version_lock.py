@@ -117,7 +117,8 @@ def _dockerfile_instructions() -> list[str]:
     """Dockerfile instructions with ``\\`` continuations joined and comments dropped."""
     text = PYTHON_DOCKERFILE.read_text(encoding="utf-8")
     lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
-    return [instruction.strip() for instruction in "\n".join(lines).replace("\\\n", " ").split("\n")]
+    joined = "\n".join(lines).replace("\\\n", " ")
+    return [instruction.strip() for instruction in joined.split("\n")]
 
 
 def test_the_image_installs_only_from_the_lock() -> None:
@@ -133,7 +134,9 @@ def test_the_image_installs_only_from_the_lock() -> None:
             f"{instruction!r} installs outside the lock"
         )
         for sync in re.findall(r"uv\s+sync[^;&|]*", instruction):
-            assert "--locked" in sync.split(), f"{sync!r} may re-resolve instead of installing uv.lock"
+            assert "--locked" in sync.split(), (
+                f"{sync!r} may re-resolve instead of installing uv.lock"
+            )
 
 
 def test_the_image_runs_a_digest_pinned_python_312() -> None:
