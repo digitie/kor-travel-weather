@@ -77,6 +77,12 @@ run_monitoring:
   # 13 hours is the reason the queue fills in the first place, and no timeout
   # fixes that -- only collecting less, or collecting less often, does. Bring
   # this down once a sweep fits inside its own interval.
+  #
+  # Every weather run also carries this bound itself, as the `dagster/max_runtime`
+  # tag (RUN_MAX_RUNTIME_SECONDS in definitions.py), so it survives a Dagster
+  # instance shared with other projects, where this instance-wide value is not
+  # ours to set. Change the two together; tests/test_dagster_location_scope.py
+  # fails when they differ.
   max_runtime_seconds: 57600
 
 run_coordinator:
