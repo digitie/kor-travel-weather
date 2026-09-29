@@ -66,7 +66,15 @@ def test_alerts_are_hourly_but_offset_from_the_other_kma_schedules() -> None:
 
 
 def _jobs():
-    jobs = list(defs.get_repository_def().get_all_jobs())
+    # ``__ASSET_JOB`` is Dagster's implicit job for ad-hoc materializations
+    # from the asset graph. It takes no tags from Definitions, so such a
+    # manual launch runs under the instance default unless the launcher adds
+    # the tag; every scheduled run goes through one of the named jobs below.
+    jobs = [
+        job
+        for job in defs.get_repository_def().get_all_jobs()
+        if not job.name.startswith("__ASSET_JOB")
+    ]
     # Guards the loops below from passing on an empty repository.
     assert len(jobs) >= 10
     return jobs
