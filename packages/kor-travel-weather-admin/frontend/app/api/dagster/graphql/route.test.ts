@@ -35,6 +35,14 @@ describe("POST /api/dagster/graphql", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it.each(["__proto__", "constructor"])("answers a %s variable with 400, not 502", async (name) => {
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    const response = await POST(post(`{"operationName":"WeatherDagsterOverview","variables":{"limit":12,"${name}":1}}`));
+    expect(response.status).toBe(400);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("forwards a named operation with the scope the server chose", async () => {
     vi.stubEnv("DAGSTER_UI_INTERNAL_URL", "http://127.0.0.1:14107/");
     const upstream = vi.fn(async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));

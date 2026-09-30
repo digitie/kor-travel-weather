@@ -143,7 +143,10 @@ export function scopedDagsterRequest(raw: unknown): ScopedDagsterRequest {
   const variables = raw.variables ?? {};
   if (!isPlainObject(variables)) return { ok: false, message: "Dagster 요청 변수 형식이 올바르지 않습니다." };
   for (const [name, value] of Object.entries(variables)) {
-    const check = operation.callerVariables[name];
+    // Own keys only: a plain-object lookup would hand back Object.prototype's
+    // `constructor` (which accepts any value) or, for a JSON `__proto__` key,
+    // the prototype itself -- not a function, so the proxy answered 502.
+    const check = Object.hasOwn(operation.callerVariables, name) ? operation.callerVariables[name] : undefined;
     if (!check) return { ok: false, message: `허용되지 않은 Dagster 요청 변수입니다: ${name}` };
     if (!check(value)) return { ok: false, message: `Dagster 요청 변수 값이 올바르지 않습니다: ${name}` };
   }

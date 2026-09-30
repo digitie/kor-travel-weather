@@ -99,6 +99,16 @@ describe("the proxy forwards nothing else", () => {
     ).toContain("repositoryTag");
   });
 
+  it.each(["constructor", "toString", "hasOwnProperty", "__proto__"])(
+    "refuses a variable named after an Object.prototype member: %s",
+    (name) => {
+      // Parsed from the wire, as the proxy does: JSON.parse makes `__proto__`
+      // an own key rather than setting the prototype.
+      const raw = JSON.parse(`{"operationName":"WeatherDagsterOverview","variables":{"limit":12,"${name}":1}}`);
+      expect(refused(raw)).toContain(name);
+    },
+  );
+
   it("refuses malformed or missing variables", () => {
     refused({ operationName: "WeatherDagsterOverview", variables: { limit: 0 } });
     refused({ operationName: "WeatherDagsterOverview", variables: { limit: 5000 } });
