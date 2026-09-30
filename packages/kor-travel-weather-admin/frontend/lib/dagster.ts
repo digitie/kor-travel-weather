@@ -1,3 +1,4 @@
+import type { DagsterOperationName, DagsterOperationRequest } from "@/lib/dagster-scope";
 import { failureMessage, readBody } from "@/lib/http";
 
 export type DagsterSchedule = { name: string; status: string | null; cron: string | null; jobName: string };
@@ -142,7 +143,7 @@ export function describeCron(cron: string): string {
 
 type GraphqlResponse = {
   data?: {
-    repositoriesOrError?: { __typename: string; nodes?: Array<{ name: string; location: { name: string }; schedules: Array<{ name: string; cronSchedule: string | null; pipelineName: string; scheduleState: { status: string } }>; jobs: Array<{ name: string }>; assetNodes: Array<{ assetKey: { path: string[] } }> }>; message?: string };
+    repositoryOrError?: { __typename: string; name?: string; location?: { name: string }; schedules?: Array<{ name: string; cronSchedule: string | null; pipelineName: string; scheduleState: { status: string } }>; jobs?: Array<{ name: string }>; assetNodes?: Array<{ assetKey: { path: string[] } }>; message?: string };
     runsOrError?: { __typename: string; results?: Array<{ runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null }>; message?: string };
   };
   errors?: Array<{ message?: string }>;
@@ -155,24 +156,24 @@ type RunEvent =
 
 type RunEventsResponse = {
   data?: {
-    runOrError?: { __typename: string; eventConnection?: { events: RunEvent[] } };
+    runsOrError?: { __typename: string; results?: Array<{ eventConnection?: { events: RunEvent[] } }> };
   };
 };
 
-const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: ID!) {
-  runOrError(runId: $runId) {
-    __typename
-    ... on Run {
-      eventConnection(limit: 2000) {
-        events {
-          __typename
-          ... on RunFailureEvent { message }
-          ... on ExecutionStepFailureEvent { stepKey message }
-        }
-      }
-    }
-  }
-}`;
+/**
+ * POST one named operation to the proxy. The proxy owns the query text and
+ * scopes it to this project's code location (lib/dagster-scope.ts), so the
+ * browser never sends a GraphQL document of its own.
+ */
+function postDagsterOperation(operationName: DagsterOperationName, variables: Record<string, unknown>): Promise<Response> {
+  const request: DagsterOperationRequest = { operationName, variables };
+  return fetch("/api/dagster/graphql", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(request),
+    cache: "no-store",
+  });
+}
 
 /**
  * The run/schedule list says a run failed; it does not say why. The actual
@@ -183,15 +184,10 @@ const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: ID!) {
  */
 async function fetchRunFailureMessage(runId: string): Promise<string | null> {
   try {
-    const response = await fetch("/api/dagster/graphql", {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ query: RUN_FAILURE_QUERY, variables: { runId } }),
-      cache: "no-store",
-    });
+    const response = await postDagsterOperation("WeatherDagsterRunFailure", { runId });
     if (!response.ok) return null;
     const payload = (await response.json()) as RunEventsResponse;
-    const events = payload.data?.runOrError?.eventConnection?.events ?? [];
+    const events = payload.data?.runsOrError?.results?.[0]?.eventConnection?.events ?? [];
     const runFailure = events.find(
       (event): event is Extract<RunEvent, { __typename: "RunFailureEvent" }> =>
         event.__typename === "RunFailureEvent",
@@ -213,34 +209,8 @@ async function fetchRunFailureMessage(runId: string): Promise<string | null> {
   }
 }
 
-const QUERY = `query WeatherDagsterOverview($limit: Int!) {
-  repositoriesOrError {
-    __typename
-    ... on RepositoryConnection {
-      nodes {
-        name
-        location { name }
-        schedules { name cronSchedule pipelineName scheduleState { status } }
-        jobs { name }
-        assetNodes { assetKey { path } }
-      }
-    }
-    ... on PythonError { message }
-  }
-  runsOrError(limit: $limit) {
-    __typename
-    ... on Runs { results { runId status jobName startTime endTime } }
-    ... on PythonError { message }
-  }
-}`;
-
 export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
-  const response = await fetch("/api/dagster/graphql", {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify({ query: QUERY, variables: { limit } }),
-    cache: "no-store",
-  });
+  const response = await postDagsterOperation("WeatherDagsterOverview", { limit });
   // A cross-origin POST is refused by the middleware with a plain-text 403, and
   // the Dagster gateway answers 502/504 with HTML. Parsing before checking the
   // status reported those as "unexpected token '교' ... is not valid json",
@@ -250,10 +220,15 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
   const payload = body.data;
   if (!payload) throw new Error(`Dagster 응답을 해석하지 못했습니다 (${response.status})`);
   if (payload.errors?.length) throw new Error(payload.errors[0].message);
-  const repositories = payload.data?.repositoriesOrError;
-  if (!repositories || !repositories.nodes) throw new Error(repositories?.message ?? "Dagster 작업 목록을 읽지 못했습니다.");
+  // One repository, selected by this project's own code location: on a
+  // webserver shared with other projects, theirs never reach this page.
+  const repository = payload.data?.repositoryOrError;
+  if (!repository || repository.__typename !== "Repository") throw new Error(repository?.message ?? "Dagster 작업 목록을 읽지 못했습니다.");
+  // A PythonError or InvalidPipelineRunsFilterError has no `results`; reading
+  // it as an empty list would show a broken run query as "no runs yet".
   const runs = payload.data?.runsOrError;
-  const results = runs?.results ?? [];
+  if (!runs || runs.__typename !== "Runs") throw new Error(runs?.message ?? "Dagster 실행 기록을 읽지 못했습니다.");
+  const results = runs.results ?? [];
   const failureMessages = new Map<string, string | null>(
     await Promise.all(
       results
@@ -263,13 +238,15 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
   );
   return {
     checkedAt: new Date().toISOString(),
-    repositories: repositories.nodes.map((repository) => ({
-      name: repository.name,
-      locationName: repository.location.name,
-      schedules: repository.schedules.map((schedule) => ({ name: schedule.name, status: schedule.scheduleState.status, cron: schedule.cronSchedule, jobName: schedule.pipelineName })),
-      jobs: repository.jobs.map((job) => job.name),
-      assets: repository.assetNodes.map((asset) => asset.assetKey.path.join("/")),
-    })),
+    repositories: [
+      {
+        name: repository.name ?? "",
+        locationName: repository.location?.name ?? "",
+        schedules: (repository.schedules ?? []).map((schedule) => ({ name: schedule.name, status: schedule.scheduleState.status, cron: schedule.cronSchedule, jobName: schedule.pipelineName })),
+        jobs: (repository.jobs ?? []).map((job) => job.name),
+        assets: (repository.assetNodes ?? []).map((asset) => asset.assetKey.path.join("/")),
+      },
+    ],
     runs: results.map((run) => ({
       runId: run.runId,
       status: run.status,

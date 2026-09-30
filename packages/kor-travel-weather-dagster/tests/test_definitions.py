@@ -63,3 +63,69 @@ def test_alerts_are_hourly_but_offset_from_the_other_kma_schedules() -> None:
     schedule = _schedule("hourly_kma_weather_alerts")
     assert schedule.cron_schedule == "5 * * * *"
     assert schedule.job_name == "kma_weather_alerts_job"
+
+
+def _jobs():
+    # ``__ASSET_JOB`` is Dagster's implicit job for ad-hoc materializations
+    # from the asset graph. It takes no tags from Definitions, so such a
+    # manual launch runs under the instance default unless the launcher adds
+    # the tag; every scheduled run goes through one of the named jobs below.
+    jobs = [
+        job
+        for job in defs.get_repository_def().get_all_jobs()
+        if not job.name.startswith("__ASSET_JOB")
+    ]
+    # Guards the loops below from passing on an empty repository.
+    assert len(jobs) >= 10
+    return jobs
+
+
+def test_every_run_carries_its_own_max_runtime() -> None:
+    # A shared Dagster instance has one instance-wide max_runtime_seconds for
+    # every project; weather's measured long sweeps need their own bound on
+    # the run itself, not in an instance file.
+    from kortravelweather_dagster.definitions import RUN_MAX_RUNTIME_SECONDS, RUN_MAX_RUNTIME_TAG
+
+    for job in _jobs():
+        assert job.run_tags.get(RUN_MAX_RUNTIME_TAG) == str(RUN_MAX_RUNTIME_SECONDS), job.name
+
+
+def test_external_jobs_keep_their_run_group_next_to_the_runtime_tag() -> None:
+    from kortravelweather_dagster.definitions import (
+        EXTERNAL_RUN_GROUP,
+        EXTERNAL_RUN_GROUP_TAG,
+        external_weather_jobs,
+    )
+
+    assert external_weather_jobs
+    for job in external_weather_jobs.values():
+        assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) == EXTERNAL_RUN_GROUP, job.name
+
+
+def test_schedule_runs_inherit_the_runtime_tag() -> None:
+    # Job tags reach a run only through the job's run tags; a schedule that
+    # set run tags of its own would have to repeat them.
+    from kortravelweather_dagster.definitions import RUN_MAX_RUNTIME_SECONDS, RUN_MAX_RUNTIME_TAG
+
+    repository = defs.get_repository_def()
+    for schedule in repository.schedule_defs:
+        job = repository.get_job(schedule.job_name)
+        assert job.run_tags.get(RUN_MAX_RUNTIME_TAG) == str(RUN_MAX_RUNTIME_SECONDS), schedule.name
+        assert RUN_MAX_RUNTIME_TAG not in (schedule.tags or {}), schedule.name
+
+
+def test_every_instigator_declares_its_running_state_in_code() -> None:
+    # The on/off state of a schedule or sensor lives in Dagster's metadata DB
+    # only when someone toggled it by hand. A fresh DB -- the shared Dagster
+    # instance starts from one -- brings every instigator up in its *declared*
+    # default, so anything production runs must declare RUNNING here, never
+    # rely on a toggle stored somewhere else.
+    from dagster import DefaultScheduleStatus, DefaultSensorStatus
+
+    repository = defs.get_repository_def()
+    schedules = list(repository.schedule_defs)
+    assert len(schedules) >= 17
+    for schedule in schedules:
+        assert schedule.default_status == DefaultScheduleStatus.RUNNING, schedule.name
+    for sensor in repository.sensor_defs:
+        assert sensor.default_status == DefaultSensorStatus.RUNNING, sensor.name

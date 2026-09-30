@@ -33,6 +33,20 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
 - `/admin/dagster`의 GraphQL은 server-side internal URL로만 전달한다. 운영 외부
   링크는 `NEXT_PUBLIC_DAGSTER_URL`로 명시하고, 상태 확인 실패도 UI에 error
   banner로 남긴다.
+- Dagster 조회는 모두 이 프로젝트의 code location
+  (`kortravelweather_dagster.definitions`)으로 한정한다. 저장소는
+  `repositoryOrError(repositorySelector)`로, 실행 목록과 실패 원인 조회는
+  `runsOrError(filter: {tags: [.dagster/repository = __repository__@<location>]})`로
+  읽는다. 여러 프로젝트가 한 Dagster webserver를 공유해도 다른 프로젝트의
+  스케줄·실행이 섞이지 않고, 지금의 전용 webserver에서도 결과가 같다(Dagster가
+  모든 run에 이 tag를 붙인다). 브라우저는 GraphQL 문서를 보내지 않고
+  `{operationName, variables}`만 보낸다. `/api/dagster/graphql` proxy는
+  `lib/dagster-scope.ts`에 등록된 operation만 받아 query 본문과 location scope를
+  서버에서 채우며, 그 밖의 요청(raw query, mutation, scope 변수를 직접 넣은 요청)은
+  400으로 거부한다. location 이름은 `deploy/workspace.yaml`이 정본이고
+  `tests/test_dagster_location_scope.py`가 TypeScript 사본과 묶는다. Dagster UI 링크는
+  `/locations/<location>`(스케줄은 `/locations/<location>/schedules/<name>`)으로,
+  run 링크는 instance 전역에서 유일한 `/runs/<id>`로 연다.
 
 ## Configuration
 

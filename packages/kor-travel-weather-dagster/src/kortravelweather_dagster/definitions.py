@@ -395,6 +395,19 @@ EXTERNAL_PROVIDER_KEYS = tuple(
 EXTERNAL_RUN_GROUP_TAG = "kortravelweather/run_group"
 EXTERNAL_RUN_GROUP = "external_weather"
 
+#: Dagster's per-run override of ``run_monitoring.max_runtime_seconds``.
+RUN_MAX_RUNTIME_TAG = "dagster/max_runtime"
+#: The wall-clock bound every run of this project has today, carried on the
+#: runs themselves instead of only in deploy/dagster.yaml.  That file's
+#: ``max_runtime_seconds`` is instance-wide: on a Dagster instance shared with
+#: other projects there is one value for all of them, and it is not ours to
+#: size -- the measured ~13h weatherapi sweeps that set 57600 (see the comment
+#: there) would be cancelled by a bound chosen for someone else's jobs.  With
+#: the tag, every weather run keeps exactly this bound under either instance.
+#: tests/test_dagster_location_scope.py binds this to deploy/dagster.yaml.
+RUN_MAX_RUNTIME_SECONDS = 57600
+_RUN_LIMIT_TAGS = {RUN_MAX_RUNTIME_TAG: str(RUN_MAX_RUNTIME_SECONDS)}
+
 
 def _external_slug(provider_key: str) -> str:
     return provider_key.replace("-", "_").replace(".", "_")
@@ -739,33 +752,33 @@ _ASSETS = [
 ]
 
 _unresolved_kma_ultra_short_nowcast_job = define_asset_job(
-    "kma_ultra_short_nowcast_job", selection=[kma_ultra_short_nowcast_sync]
+    "kma_ultra_short_nowcast_job", selection=[kma_ultra_short_nowcast_sync], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_kma_ultra_short_forecast_job = define_asset_job(
-    "kma_ultra_short_forecast_job", selection=[kma_ultra_short_forecast_sync]
+    "kma_ultra_short_forecast_job", selection=[kma_ultra_short_forecast_sync], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_kma_short_forecast_job = define_asset_job(
-    "kma_short_forecast_job", selection=[kma_short_forecast_sync]
+    "kma_short_forecast_job", selection=[kma_short_forecast_sync], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_kma_mid_forecast_job = define_asset_job(
-    "kma_mid_forecast_job", selection=[kma_mid_forecast_sync]
+    "kma_mid_forecast_job", selection=[kma_mid_forecast_sync], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_kma_weather_alerts_job = define_asset_job(
-    "kma_weather_alerts_job", selection=[kma_weather_alerts_sync]
+    "kma_weather_alerts_job", selection=[kma_weather_alerts_sync], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_airkorea_job = define_asset_job(
-    "airkorea_weather_job", selection=[airkorea_weather_sync]
+    "airkorea_weather_job", selection=[airkorea_weather_sync], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_external_jobs = {
     key: define_asset_job(
         external_job_name(key),
         selection=[asset_def],
-        tags={EXTERNAL_RUN_GROUP_TAG: EXTERNAL_RUN_GROUP},
+        tags={**_RUN_LIMIT_TAGS, EXTERNAL_RUN_GROUP_TAG: EXTERNAL_RUN_GROUP},
     )
     for key, asset_def in zip(EXTERNAL_PROVIDER_KEYS, _EXTERNAL_PROVIDER_ASSETS, strict=True)
 }
 _unresolved_retention_job = define_asset_job(
-    "weather_retention_job", selection=[weather_retention_purge]
+    "weather_retention_job", selection=[weather_retention_purge], tags=_RUN_LIMIT_TAGS
 )
 _unresolved_regional_job = define_asset_job(
     "regional_weather_job",
@@ -775,6 +788,7 @@ _unresolved_regional_job = define_asset_job(
         krforest_dust_sync,
         krex_restarea_sync,
     ],
+    tags=_RUN_LIMIT_TAGS,
 )
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an

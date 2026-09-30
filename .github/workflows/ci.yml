@@ -80,4 +80,6 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run lint
       - run: npm run type-check
+      # `vitest run`, not watch mode: the script exits with the suite's result.
+      - run: npm test
       - run: npm run build

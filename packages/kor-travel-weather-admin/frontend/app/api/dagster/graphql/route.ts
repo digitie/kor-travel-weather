@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { scopedDagsterRequest } from "@/lib/dagster-scope";
+
 const dagsterBase = () => process.env.DAGSTER_UI_INTERNAL_URL ?? "http://127.0.0.1:14102";
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
@@ -33,10 +35,28 @@ export async function POST(request: NextRequest) {
         { status: 413, headers: { "cache-control": "no-store, private" } },
       );
     }
+    // Only the named operations in lib/dagster-scope.ts go through, with the
+    // query text and this project's code-location scope supplied here. A raw
+    // GraphQL document from the browser is refused: once the webserver behind
+    // this proxy is shared, forwarding it would expose -- and let a mutation
+    // act on -- other projects' runs and schedules.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      parsed = null;
+    }
+    const scoped = scopedDagsterRequest(parsed);
+    if (!scoped.ok) {
+      return NextResponse.json(
+        { errors: [{ message: scoped.message }] },
+        { status: 400, headers: { "cache-control": "no-store, private" } },
+      );
+    }
     const response = await fetch(`${dagsterBase().replace(/\/$/, "")}/graphql`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body,
+      body: scoped.body,
       cache: "no-store",
     });
     return new NextResponse(response.body, {
