@@ -224,8 +224,11 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
   // webserver shared with other projects, theirs never reach this page.
   const repository = payload.data?.repositoryOrError;
   if (!repository || repository.__typename !== "Repository") throw new Error(repository?.message ?? "Dagster 작업 목록을 읽지 못했습니다.");
+  // A PythonError or InvalidPipelineRunsFilterError has no `results`; reading
+  // it as an empty list would show a broken run query as "no runs yet".
   const runs = payload.data?.runsOrError;
-  const results = runs?.results ?? [];
+  if (!runs || runs.__typename !== "Runs") throw new Error(runs?.message ?? "Dagster 실행 기록을 읽지 못했습니다.");
+  const results = runs.results ?? [];
   const failureMessages = new Map<string, string | null>(
     await Promise.all(
       results

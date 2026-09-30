@@ -57,6 +57,7 @@ const OVERVIEW_QUERY = `query WeatherDagsterOverview($limit: Int!, $repositoryLo
   runsOrError(limit: $limit, filter: { ${RUN_TAG_FILTER} }) {
     __typename
     ... on Runs { results { runId status jobName startTime endTime } }
+    ... on InvalidPipelineRunsFilterError { message }
     ... on PythonError { message }
   }
 }`;

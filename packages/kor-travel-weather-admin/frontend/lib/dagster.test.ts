@@ -153,4 +153,22 @@ describe("getDagsterSnapshot", () => {
     );
     await expect(getDagsterSnapshot()).rejects.toThrow("Could not find Repository");
   });
+
+  it.each([
+    ["PythonError", "psycopg2.OperationalError: connection refused"],
+    ["InvalidPipelineRunsFilterError", "Invalid runs filter"],
+  ])("reports a %s from the run query instead of showing no runs", async (typename, message) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          data: {
+            repositoryOrError: { __typename: "Repository", name: "__repository__", location: { name: DAGSTER_LOCATION_NAME }, schedules: [], jobs: [], assetNodes: [] },
+            runsOrError: { __typename: typename, message },
+          },
+        }),
+      ),
+    );
+    await expect(getDagsterSnapshot()).rejects.toThrow(message);
+  });
 });
