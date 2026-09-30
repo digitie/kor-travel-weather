@@ -92,3 +92,16 @@ Dagster의 liveness 검사로는 구분할 수 없었다. 그래서 경계가 �
 - `deploy/dagster.yaml`의 `run_monitoring.max_runtime_seconds`는 이유와 무관하게
   run 전체의 벽시계 상한이다. 위 deadline이 닿지 못하는 지점에서 멈추더라도
   슬롯은 반드시 반환된다.
+
+이 상한(57600초)은 instance 설정에만 두지 않고 run 자체에도 싣는다. 이름 붙은
+job은 모두 `dagster/max_runtime` 태그(`RUN_MAX_RUNTIME_SECONDS`)를 달고 만들어지므로,
+여러 프로젝트가 같이 쓰는 Dagster instance에서도 weather run은 이 값을 그대로 가진다.
+
+예외는 `__ASSET_JOB`이다. Dagster UI의 asset graph에서 **Materialize**로 바로 띄운
+run은 Dagster가 암묵적으로 만드는 `__ASSET_JOB`으로 실행되고, 이 job은
+`Definitions`의 태그를 받지 않는다. 그래서 공용 instance에서는 그런 run이 **호스트
+기본 `max_runtime_seconds`**를 받는다. 그 값은 다른 프로젝트 기준으로 정해지므로
+weather의 긴 sweep(측정상 ~13시간인 weatherapi 등 외부 provider 전체 수집)은
+중간에 취소될 수 있다. 긴 수집은 asset graph가 아니라 이름 붙은 job
+(`<provider>_weather_job`, `kma_*_job`, `airkorea_weather_job` 등)의 Launchpad로 띄운다.
+짧은 단건 재적재는 asset graph로 띄워도 된다.
