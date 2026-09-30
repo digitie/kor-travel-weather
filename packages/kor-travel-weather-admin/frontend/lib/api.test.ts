@@ -13,18 +13,31 @@ afterEach(() => {
 });
 
 describe("request error handling", () => {
-  it("reports the status when the middleware answers with a plain-text 401", async () => {
+  // A short plain-text body is the server's own sentence and says more than the
+  // status code (lib/http.ts failureMessage, since 571ec32). What must never
+  // reach the reader is the parser's complaint about that sentence.
+  it("reports the middleware's own sentence for a plain-text 401", async () => {
     respond("관리자 UI 인증이 필요합니다.", {
       status: 401,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
     // Parsing before checking the status turned this into
-    // `SyntaxError: Unexpected token '관' ...`, hiding the real status.
-    await expect(getPublicLocations()).rejects.toThrow("요청 실패 (401)");
+    // `SyntaxError: Unexpected token '관' ...`, hiding what the server said.
+    const failure = getPublicLocations();
+    await expect(failure).rejects.toThrow("관리자 UI 인증이 필요합니다.");
+    await expect(failure).rejects.not.toThrow(/token|JSON/);
   });
 
-  it("reports the status when the backend returns an unhandled 500", async () => {
+  it("reports the backend's plain-text body for an unhandled 500", async () => {
     respond("Internal Server Error", {
+      status: 500,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+    await expect(getPublicLocations()).rejects.toThrow("Internal Server Error");
+  });
+
+  it("falls back to the status for a plain-text body too long to be a sentence", async () => {
+    respond("x".repeat(201), {
       status: 500,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
