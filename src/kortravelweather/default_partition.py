@@ -367,10 +367,15 @@ def purge_report(engine: Engine, *, retention_days: int, log: Log, exact: bool) 
     with engine.connect() as connection:
         floor = default_partition_floor(connection)
         estimate, oldest, newest = _estimated_rows_before(connection, cutoff)
+        pointers = connection.execute(
+            text("SELECT count(*) FROM weather_current_values WHERE known_at < :cutoff"),
+            {"cutoff": cutoff},
+        ).scalar_one()
         report: dict[str, Any] = {
             "cutoff": cutoff,
             "floor": floor,
             "expired_rows_estimate": estimate,
+            "pointers": pointers,
             # Every row in DEFAULT is dated before the floor, so once the floor
             # itself is past retention the whole partition is expired.
             "whole_partition_expired": floor is not None and floor <= cutoff,
@@ -389,8 +394,9 @@ def purge_report(engine: Engine, *, retention_days: int, log: Log, exact: bool) 
             report.update(rows=rows, expired_rows=expired)
             log(f"exact: {rows:,} rows, {expired:,} before the cutoff")
         log(
-            "FK impact: weather_current_values rows pointing before the cutoff are deleted "
-            "first (the foreign key is ON DELETE RESTRICT); newer pointers are untouched. "
+            f"FK impact: {pointers:,} weather_current_values rows point before the cutoff "
+            "and are deleted first (the foreign key is ON DELETE RESTRICT); newer pointers "
+            "are untouched. "
             "The swap drops that foreign key for the catalog change and re-validates it "
             "afterwards under SHARE UPDATE EXCLUSIVE."
         )
@@ -607,7 +613,9 @@ def purge_execute(
         report = purge_report(engine, retention_days=retention_days, log=log, exact=False)
         floor = report["floor"]
         if floor is None:
-            raise SystemExit("refusing: no validated floor; run weather_values_forward_partitions.py")
+            raise SystemExit(
+                "refusing: no validated floor; run weather_values_forward_partitions.py"
+            )
         cutoff: datetime = report["cutoff"]
         if report["whole_partition_expired"]:
             _delete_expired_pointers(engine, cutoff, log)
