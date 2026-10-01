@@ -72,6 +72,10 @@ def upgrade() -> None:
         # Same locks, order and timeouts as the nightly job, on either path.
         lock_for_partition_ddl(bind)
         ensure_forward_partitions(bind, floor=floor, start=start, end=end)
+    # ``lock_for_partition_ddl`` set both with SET LOCAL; hand the rest of the
+    # upgrade transaction (later revisions, alembic_version) the session's own.
+    op.execute("SET LOCAL lock_timeout TO DEFAULT")
+    op.execute("SET LOCAL statement_timeout TO DEFAULT")
 
 
 def downgrade() -> None:

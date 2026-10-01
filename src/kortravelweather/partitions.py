@@ -150,12 +150,18 @@ def ddl_lock_timeout_ms(connection: Connection) -> int:
     that gives up first, every time, and the DDL can never get past an
     autovacuum of DEFAULT (production's DEFAULT is due for one within a day).
 
-    Waiting longer than ``deadlock_timeout`` cannot make an ingest the victim
-    of a deadlock with this DDL: the DDL always takes a lock and then waits
-    before the ingest that completes a cycle starts waiting, so the DDL's
-    deadlock check fires first and it is the DDL that aborts (40P01, retried).
-    The cost is that writers queue behind the waiting request for at most this
-    long.
+    Against an ingest, which locks in the same order (facts, then
+    projection), the DDL is normally the first to wait in a cycle, so its
+    deadlock check fires first and the DDL aborts (40P01, retried).  That is
+    not guaranteed for every session: a read of ``weather_current_values``
+    that then reads the fact table -- the API's current-value path -- takes
+    the two in the other order, and if it starts waiting first it is the one
+    the deadlock check cancels.  That is accepted: it needs a read to
+    interleave with the nightly drop or the one-time swap, the only DDL that
+    takes the projection lock strongly enough, and the reader gets an error it
+    can retry.  Changing the readers' lock order is out of scope.  The cost
+    for everyone else is that they queue behind the waiting request for at
+    most this long.
     """
     deadlock_ms = int(
         connection.execute(

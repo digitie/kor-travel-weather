@@ -46,6 +46,7 @@ nightly job) removes one an interrupted run left behind.
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 from datetime import date, timedelta
 
@@ -82,5 +83,16 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+def _exit_on_sigterm() -> None:
+    """Turn SIGTERM into SystemExit so the cleanup in ``except BaseException`` runs.
+
+    ``docker restart``/redeploy of the code-server sends SIGTERM, which
+    otherwise kills Python without unwinding: an unvalidated floor would be
+    left behind mid-VALIDATE instead of being removed.
+    """
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+
+
 if __name__ == "__main__":
+    _exit_on_sigterm()
     sys.exit(main(sys.argv[1:]))

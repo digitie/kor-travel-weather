@@ -2659,9 +2659,16 @@ class WeatherRepository:
             except IntegrityError:
                 with self.engine.begin() as connection:
                     delete_dangling_projection_rows(connection)
+                break
+        for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
+            try:
                 with self.engine.begin() as connection:
                     validate_foreign_keys_into_facts(connection)
                 return
+            except OperationalError as exc:
+                if not is_lock_conflict(exc) or attempt == PARTITION_DDL_ATTEMPTS:
+                    raise
+                time.sleep(PARTITION_DDL_RETRY_SECONDS)
 
     def forward_partition_days(self) -> int | None:
         """Days of dated partitions ahead of today (see ``partitions``)."""

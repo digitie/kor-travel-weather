@@ -607,3 +607,49 @@ def test_the_batched_purge_refuses_when_nothing_has_expired(monkeypatch) -> None
     with pytest.raises(SystemExit, match="no row past retention"):
         purge_execute(repository.engine, retention_days=2, log=lambda _: None)
     command.upgrade(Config("alembic.ini"), "head")
+
+
+@pytest.mark.parametrize(
+    "script", ["weather_values_forward_partitions.py", "weather_values_purge_default.py"]
+)
+def test_the_scripts_turn_sigterm_into_an_unwinding_exit(script) -> None:
+    """A container restart sends SIGTERM; it must unwind so cleanup runs."""
+    import importlib.util
+    import signal
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        f"_script_{script[:-3]}", Path("scripts") / script
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        module._exit_on_sigterm()
+        with pytest.raises(SystemExit):
+            signal.raise_signal(signal.SIGTERM)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_an_exit_mid_validation_removes_the_floor(monkeypatch) -> None:
+    """What SIGTERM becomes (SystemExit) takes the same cleanup path."""
+    import kortravelweather.default_partition as operator_steps
+
+    repository = _populated_default(monkeypatch)
+
+    def terminated(*_args, **_kwargs):
+        raise SystemExit(1)
+
+    monkeypatch.setattr(operator_steps, "ensure_forward_partitions", terminated)
+    with pytest.raises(SystemExit):
+        establish_floor(
+            repository.engine,
+            floor_day=kst_now().date() + timedelta(days=1),
+            ahead_days=3,
+            log=lambda _: None,
+            force=True,
+        )
+    assert _floor_constraints(repository) == 0
+    command.upgrade(Config("alembic.ini"), "head")
