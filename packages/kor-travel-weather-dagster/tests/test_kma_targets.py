@@ -117,7 +117,9 @@ def test_station_only_catalog_still_yields_kma_grid_targets() -> None:
     assert targets, "a station-only catalog must not leave the KMA grid jobs without targets"
     assert len(_grids(targets)) == 10
     assert set(_ids(targets)) <= {row.location_id for row in catalog}
-    assert fill.coverage_line() == "station fill: 10 of 48 stations on 10 of 48 grids (0 shared with explicit targets)"
+    assert fill.coverage_line() == (
+        "station fill: 10 of 48 stations on 10 of 48 grids (0 shared with explicit targets)"
+    )
 
 
 def test_station_fill_has_its_own_budget_below_the_run_ceiling() -> None:
@@ -178,7 +180,9 @@ def test_stations_on_a_chosen_grid_all_receive_its_response() -> None:
     targets, fill = _fill([first, twin], kma_station_fill_max_grids=1)
     assert set(_ids(targets)) == {"airkorea-a", "airkorea-b"}
     assert len(_grids(targets)) == 1
-    assert fill.coverage_line() == "station fill: 2 of 2 stations on 1 of 1 grids (0 shared with explicit targets)"
+    assert fill.coverage_line() == (
+        "station fill: 2 of 2 stations on 1 of 1 grids (0 shared with explicit targets)"
+    )
 
 
 def test_explicit_targets_come_first_and_the_budget_goes_to_uncovered_grids() -> None:
