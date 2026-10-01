@@ -17,9 +17,9 @@ from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.metrics import (
     change_http_in_flight,
+    forward_partition_days_exposition,
     metrics_content_type,
     metrics_payload,
-    forward_partition_days_exposition,
     observe_http_request,
 )
 from kortravelweather.repository import WeatherRepository, repository_from_settings
