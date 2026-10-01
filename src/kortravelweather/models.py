@@ -243,6 +243,8 @@ class PurgeReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cutoff: datetime
+    #: Forward partitions this run created.
+    partitions_created: tuple[str, ...] = ()
     #: Names rather than a count: which day went is the useful fact when a run
     #: drops nothing, and a zero says nothing about whether that was correct.
     partitions_dropped: tuple[str, ...] = ()
@@ -254,6 +256,10 @@ class PurgeReport(BaseModel):
     #: reach them.  Non-zero means a partition was missing when something
     #: inserted -- silent growth is exactly what partitioning was meant to end.
     rows_outside_any_partition: int = 0
+    #: DEFAULT's validated floor (``known_at < floor``).  ``None`` means DEFAULT
+    #: holds rows and has no floor, so no forward partition could be created
+    #: without scanning it -- run ``scripts/weather_values_forward_partitions.py``.
+    default_floor: datetime | None = None
 
 
 def kst_now() -> datetime:

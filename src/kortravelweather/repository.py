@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 import uuid
-from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, TypeVar
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import (
@@ -46,8 +47,8 @@ from sqlalchemy import (
     update,
     values,
 )
-from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -60,10 +61,20 @@ from .metrics import (
 )
 from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
+    add_default_floor,
+    default_partition_floor,
+    default_partition_is_empty,
     default_partition_rows,
     drop_partitions_before,
     ensure_default_partition,
+    ensure_forward_partitions,
     ensure_partitions,
+    existing_partitions,
+    is_lock_conflict,
+    kst_midnight,
+    lock_for_partition_ddl,
+    missing_forward_days,
+    validate_default_floor,
 )
 from .settings import WeatherSettings, get_settings
 
@@ -628,6 +639,12 @@ def _metric_source_key(value: WeatherValue) -> str:
 #: simply lands in DEFAULT, which the partition tests target directly.
 SCHEMA_PARTITION_PAST_DAYS = 3
 SCHEMA_PARTITION_FUTURE_DAYS = 3
+
+#: Lock-race retries for one partition-DDL step: about a minute in all.
+PARTITION_DDL_ATTEMPTS = 20
+PARTITION_DDL_RETRY_SECONDS = 3.0
+
+_T = TypeVar("_T")
 
 PURGE_GUC = "kortravelweather.purge"
 
@@ -2441,55 +2458,126 @@ class WeatherRepository:
         tombstone and a WAL record per row and then needed a vacuum -- hours
         every night on this disk to remove data nobody wanted.
 
-        Order matters.  The projection's foreign key is ``ON DELETE RESTRICT``
-        and points into these partitions, so its stale pointers go first;
-        otherwise the drop is refused, which is the behaviour we want -- a fact
-        must never disappear from under a pointer.  A location that stopped
-        reporting therefore loses its current value once its last reading ages
-        out, which is what "we keep N days" means.
+        Four short transactions, not one.  Inside one long transaction the
+        partition DDL held ACCESS EXCLUSIVE on the fact table through the
+        pointer delete and the source purge as well, and on 2026-09-30 it
+        deadlocked an ingest.  Each DDL step now takes its locks up front, with
+        a lock timeout below the deadlock timeout, and is retried on a lost
+        race (``_partition_ddl``): it never holds the table longer than its
+        catalog change and never makes an ingest the deadlock victim.
 
-        Source records are not partitioned -- they are small -- so they are
-        still deleted, and only once nothing references them.
+        1. Create the forward partitions -- tomorrow's before yesterday's go,
+           because a missing partition is an insert that fails.  Only days at
+           or after DEFAULT's floor are created, so DEFAULT is never scanned.
+        2. Delete the projection's pointers into the expiring days.  Its
+           foreign key is ``ON DELETE RESTRICT``, so a pointer left behind makes
+           step 3 refuse -- a fact must never vanish from under one.  A location
+           that stopped reporting therefore loses its current value once its
+           last reading ages out, which is what "we keep N days" means.
+        3. Drop the expired dated partitions.
+        4. Delete the source records nothing cites any more.  They are not
+           partitioned -- they are small -- so they are still deleted.
         """
         if retention_days <= 0:
             raise ValueError("retention_days는 1 이상이어야 합니다.")
         cutoff = kst_now() - timedelta(days=retention_days)
+        today = kst_now().date()
+        created, floor = self._partition_ddl(
+            lambda connection: self._ensure_forward_window(
+                connection, start=today, end=today + timedelta(days=ahead_days)
+            )
+        )
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
-            connection = session.connection()
-            # Make tomorrow's partitions before dropping yesterday's: a missing
-            # partition is an insert that fails, and the ingest does not wait
-            # for the next maintenance window.
-            ensure_default_partition(connection)
-            ensure_partitions(
-                connection,
-                start=cutoff.date(),
-                end=(kst_now() + timedelta(days=ahead_days)).date(),
-            )
             pointers = session.execute(
-                text(
-                    "DELETE FROM weather_current_values WHERE known_at < :cutoff"
-                ),
+                text("DELETE FROM weather_current_values WHERE known_at < :cutoff"),
                 {"cutoff": cutoff},
             ).rowcount
-            dropped = drop_partitions_before(connection, cutoff.date())
+        dropped = self._partition_ddl(
+            lambda connection: self._drop_expired_partitions(connection, cutoff.date())
+        )
+        with self._session_factory.begin() as session:
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
+            )
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
             sources = session.execute(
                 text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": cutoff}
             ).rowcount
-            stranded = default_partition_rows(connection)
+            stranded = default_partition_rows(session.connection())
         report = PurgeReport(
             cutoff=cutoff,
+            partitions_created=tuple(created),
             partitions_dropped=tuple(dropped),
             pointers_deleted=int(pointers or 0),
             sources_deleted=int(sources or 0),
             rows_outside_any_partition=stranded,
+            default_floor=floor,
         )
         observe_history_purged(len(dropped), report.sources_deleted)
         return report
+
+    def _partition_ddl(self, step: Callable[[Connection], _T]) -> _T:
+        """Run one partition-DDL transaction, retrying a lost lock race.
+
+        ``step`` takes its locks through ``lock_for_partition_ddl``, which gives
+        up after ``DDL_LOCK_TIMEOUT_MS``.  Losing that race is normal on a busy
+        table -- an ingest holding the projection for a few seconds -- so it is
+        retried, with the transaction rolled back in between so nothing is
+        held while waiting.
+        """
+        for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
+            try:
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
+                    )
+                    return step(connection)
+            except OperationalError as exc:
+                if not is_lock_conflict(exc) or attempt == PARTITION_DDL_ATTEMPTS:
+                    raise
+                time.sleep(PARTITION_DDL_RETRY_SECONDS)
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _ensure_forward_window(
+        connection: Connection, *, start: date, end: date
+    ) -> tuple[list[str], datetime | None]:
+        """Create ``[start, end]``'s missing partitions without scanning DEFAULT.
+
+        A DEFAULT with no floor gets one only while it is empty, where
+        validating it reads nothing.  A non-empty DEFAULT without a floor is
+        left alone and reported (``default_floor=None``): validating it is a
+        full scan, which is an operator's call, not a nightly job's --
+        ``scripts/weather_values_forward_partitions.py`` does it.
+        """
+        ensure_default_partition(connection)
+        floor = default_partition_floor(connection)
+        if floor is None:
+            if not default_partition_is_empty(connection):
+                return [], None
+            lock_for_partition_ddl(connection)
+            add_default_floor(connection, kst_midnight(start))
+            validate_default_floor(connection)
+            floor = default_partition_floor(connection)
+            assert floor is not None
+        if not missing_forward_days(connection, floor=floor, start=start, end=end):
+            return [], floor
+        lock_for_partition_ddl(connection)
+        return ensure_forward_partitions(connection, floor=floor, start=start, end=end), floor
+
+    @staticmethod
+    def _drop_expired_partitions(connection: Connection, cutoff: date) -> list[str]:
+        if not any(
+            lower is not None and lower + timedelta(days=1) <= cutoff
+            for _, lower in existing_partitions(connection)
+        ):
+            return []
+        lock_for_partition_ddl(connection)
+        return drop_partitions_before(connection, cutoff)
 
     def heartbeat_sync_run(self, run_id: str) -> bool:
         """Refresh a running sync lease using an atomic status check."""

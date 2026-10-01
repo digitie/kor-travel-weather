@@ -858,6 +858,13 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
             "aged out; a partition was missing when they were inserted",
             result["rows_outside_any_partition"],
         )
+    if result["default_floor"] is None:
+        # No forward partition could be created: DEFAULT holds rows and has no
+        # floor, and proving one is a full scan this job does not run.
+        context.log.warning(
+            "DEFAULT partition has rows and no known_at floor; no forward "
+            "partition was created. Run scripts/weather_values_forward_partitions.py"
+        )
     context.add_output_metadata(result)
     return result
 
