@@ -423,3 +423,54 @@ def test_the_forward_partition_alert_reads_only_the_api_job() -> None:
     }
     expr = alerts["KorTravelWeatherForwardPartitionsLow"]["expr"]
     assert 'ktw_forward_partition_days{job="kor-travel-weather-api"}' in expr
+
+
+def test_a_failed_forward_partition_read_is_counted_and_the_absent_alert_exists() -> None:
+    """The sample is omitted but the scrape stays 200 and ``up`` stays 1.
+
+    Without a counter and an ``absent()`` rule that would silently disable
+    KorTravelWeatherForwardPartitionsLow.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    from kortravelweather.metrics import METRIC_ERRORS
+
+    def broken() -> int:
+        raise RuntimeError("catalog read failed")
+
+    def errors() -> float:
+        return METRIC_ERRORS.labels(operation="forward_partitions")._value.get()
+
+    admin_token = "admin-token-for-metrics-tests-1234"
+    metrics_token = "metrics-token-for-scrape-tests-5678"
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="production",
+        database_url="postgresql+psycopg://weather@127.0.0.1:15432/weather_test",
+        admin_token=admin_token,
+        metrics_token=metrics_token,
+    )
+    from types import SimpleNamespace
+
+    client = TestClient(
+        create_app(settings, repository=SimpleNamespace(forward_partition_days=broken))
+    )
+    before = errors()
+    scraped = client.get("/metrics", headers={"authorization": f"Bearer {metrics_token}"})
+    assert scraped.status_code == 200
+    assert not any(
+        line.startswith("ktw_forward_partition_days") for line in scraped.text.splitlines()
+    )
+    assert errors() == before + 1
+
+    rules = yaml.safe_load(Path("deploy/prometheus/alerts.yml").read_text(encoding="utf-8"))
+    absent = {
+        rule["alert"]: rule
+        for group in rules["groups"]
+        for rule in group["rules"]
+        if "alert" in rule
+    }["KorTravelWeatherForwardPartitionsUnknown"]
+    assert 'absent(ktw_forward_partition_days{job="kor-travel-weather-api"})' in absent["expr"]
+    assert absent["for"] == "30m"

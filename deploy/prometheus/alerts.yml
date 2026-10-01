@@ -40,6 +40,16 @@ groups:
           summary: "weather_values has 3 or fewer days of forward partitions"
           description: "The nightly retention job extends the window. Facts dated past the last partition are refused once DEFAULT has a floor; check weather_retention_job."
 
+      - alert: KorTravelWeatherForwardPartitionsUnknown
+        expr: |
+          absent(ktw_forward_partition_days{job="kor-travel-weather-api"})
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API has not reported the weather_values forward partition window"
+          description: "The API omits ktw_forward_partition_days when its catalog read fails (see ktw_metrics_errors_total{operation=\"forward_partitions\"}), which would silence KorTravelWeatherForwardPartitionsLow."
+
       - alert: KorTravelWeatherSyncFailed
         expr: |
           sum(increase(ktw_sync_runs_finished_total{status=~"failed|partial"}[15m])) > 0

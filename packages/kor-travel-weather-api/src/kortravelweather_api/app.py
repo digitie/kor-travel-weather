@@ -21,6 +21,7 @@ from kortravelweather.metrics import (
     metrics_content_type,
     metrics_payload,
     observe_http_request,
+    observe_metric_error,
 )
 from kortravelweather.repository import WeatherRepository, repository_from_settings
 from kortravelweather.settings import WeatherSettings, get_settings
@@ -197,6 +198,10 @@ def create_app(
                     await run_in_threadpool(forward_days)
                 )
             except Exception:
+                # The sample is omitted, so the scrape still succeeds and `up`
+                # stays 1; KorTravelWeatherForwardPartitionsUnknown catches the
+                # gap and this counter says why.
+                observe_metric_error("forward_partitions")
                 logger.warning("forward partition gauge refresh failed", exc_info=True)
         try:
             payload = metrics_payload() + forward_sample

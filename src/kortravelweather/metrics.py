@@ -462,6 +462,12 @@ def _safe(operation: str, callback: Callable[[], None]) -> None:
             METRIC_ERRORS.labels(operation=operation).inc()
 
 
+def observe_metric_error(operation: str) -> None:
+    """Count an instrumentation failure that was swallowed (see ``_safe``)."""
+    with suppress(Exception):
+        METRIC_ERRORS.labels(operation=operation).inc()
+
+
 def observe_http_request(
     *, method: str, route: object, status_code: int, duration_seconds: float
 ) -> None:

@@ -2671,8 +2671,15 @@ class WeatherRepository:
                 time.sleep(PARTITION_DDL_RETRY_SECONDS)
 
     def forward_partition_days(self) -> int | None:
-        """Days of dated partitions ahead of today (see ``partitions``)."""
-        with self.engine.connect() as connection:
+        """Days of dated partitions ahead of today (see ``partitions``).
+
+        Read on every metrics scrape, so it is bounded: a catalog read that
+        cannot finish in a few seconds is cancelled rather than holding the
+        scrape (the caller counts the failure and the absent-sample alert
+        fires).
+        """
+        with self.engine.begin() as connection:
+            connection.execute(text("SET LOCAL statement_timeout = '5s'"))
             return forward_partition_days(connection, today=kst_now().date())
 
     def heartbeat_sync_run(self, run_id: str) -> bool:
