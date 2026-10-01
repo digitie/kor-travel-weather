@@ -23,8 +23,11 @@ catalog(2026-09-20 새 DB 이후 운영이 그랬다)에서 세 격자 job과 �
 매번 실패했기 때문이다. 격자 선택은 측정소가 아니라 KMA 격자 중심 좌표로 외부 provider
 cap과 같은 `spatially_even_subset` 순서를 쓴다 — 측정소가 생기고 사라져도(AirKorea는
 주소만 바뀌어도 id를 새로 만든다) 고른 격자가 흔들리지 않는다. 고른 격자 위 측정소는 모두
-같은 응답을 fan-out으로 받는다. 실행 로그에 `station fill: X of Y stations on Z of W
-grids` 한 줄을 남긴다.
+같은 응답을 fan-out으로 받는다. **명시 target의 격자 위 측정소도 마찬가지다** — 그 격자는
+어차피 요청하므로 채우기 예산을 쓰지 않고 응답만 함께 받는다(전국 중기 지역 target 21곳 중
+19곳이 측정소가 있는 격자였고, 처음 구현은 그 측정소들을 빼서 10곳이 매시 KMA를 잃었다).
+실행 로그에 `station fill: X of Y stations on Z of W grids (N shared with explicit
+targets)` 한 줄을 남긴다.
 
 **채우기 예산은 따로 둔다.** `KMA_STATION_FILL_MAX_GRIDS`(기본 150)가 채우기 격자 수의
 상한이고, 명시 target과 합친 전체는 여전히 `MAX_GRIDS_PER_RUN`(기본 300)을 넘지 않는다.
