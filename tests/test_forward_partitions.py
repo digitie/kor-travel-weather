@@ -232,3 +232,103 @@ def test_partition_ddl_gives_way_to_an_ingest_instead_of_deadlocking(monkeypatch
 
     created, _ = repository._partition_ddl(create)
     assert created == [partition_name(day)]
+
+
+def _stage_pointer(repository: WeatherRepository, known_at: datetime) -> None:
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO weather_current_values (value_id, location_id, provider, "
+                "dataset_key, weather_domain, forecast_style, metric_key, target_at, "
+                "known_at, source_record_key) SELECT value_id, location_id, provider, "
+                "dataset_key, weather_domain, forecast_style, metric_key, target_at, "
+                "known_at, source_record_key FROM weather_values WHERE known_at = :at"
+            ),
+            {"at": known_at},
+        )
+
+
+def _default_rows(repository: WeatherRepository) -> int:
+    with repository.engine.connect() as connection:
+        return connection.execute(
+            text(f"SELECT count(*) FROM ONLY {DEFAULT_PARTITION}")
+        ).scalar_one()
+
+
+def test_purge_deletes_only_expired_rows_in_batches_while_default_stays(monkeypatch) -> None:
+    from kortravelweather.default_partition import purge_execute, purge_report
+
+    repository = _fresh_database(monkeypatch, "0016_purge_lookup_indexes")
+    now = kst_now()
+    old = now - timedelta(days=30)
+    _stage_default_row(repository, old)
+    _stage_default_row(repository, old + timedelta(hours=1))
+    _stage_default_row(repository, now)
+    _stage_pointer(repository, old)
+    command.upgrade(Config("alembic.ini"), "head")
+    establish_floor(
+        repository.engine,
+        floor_day=now.date() + timedelta(days=1),
+        ahead_days=2,
+        log=lambda _: None,
+        force=True,
+    )
+
+    lines: list[str] = []
+    report = purge_report(repository.engine, retention_days=2, log=lines.append, exact=True)
+    assert report["expired_rows"] == 2
+    assert report["pointers"] == 1
+    assert report["whole_partition_expired"] is False
+    assert _default_rows(repository) == 3, "the dry run changed something"
+
+    purge_execute(
+        repository.engine,
+        retention_days=2,
+        log=lines.append,
+        batch_blocks=1,
+        pause_seconds=0,
+    )
+    assert _default_rows(repository) == 1
+    with repository.engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT count(*) FROM weather_current_values")
+        ).scalar_one() == 0
+        assert default_partition_floor(connection) is not None
+    # Idempotent: a second run deletes nothing more.
+    purge_execute(repository.engine, retention_days=2, log=lines.append, pause_seconds=0)
+    assert _default_rows(repository) == 1
+    assert any("resume with --start-block" in line for line in lines)
+
+
+def test_purge_swaps_out_a_default_that_is_entirely_past_retention(monkeypatch) -> None:
+    from kortravelweather.default_partition import purge_execute
+
+    repository = _fresh_database(monkeypatch, "0016_purge_lookup_indexes")
+    today = kst_now().date()
+    old = kst_now() - timedelta(days=30)
+    _stage_default_row(repository, old)
+    _stage_pointer(repository, old)
+    command.upgrade(Config("alembic.ini"), "head")
+    establish_floor(
+        repository.engine,
+        floor_day=today - timedelta(days=10),
+        ahead_days=2,
+        log=lambda _: None,
+        force=True,
+    )
+    before = _names(repository)
+
+    purge_execute(repository.engine, retention_days=2, log=lambda _: None)
+
+    assert _default_rows(repository) == 0
+    assert _names(repository) == before, "dated partitions must be untouched"
+    with repository.engine.connect() as connection:
+        assert default_partition_floor(connection) == kst_midnight(today - timedelta(days=10))
+        assert connection.execute(
+            text("SELECT count(*) FROM weather_current_values")
+        ).scalar_one() == 0
+    # The new DEFAULT still refuses edits outside a purge.
+    _stage_default_row(repository, old + timedelta(hours=2))
+    with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
+        connection.execute(text(f"DELETE FROM {DEFAULT_PARTITION}"))
+    command.upgrade(Config("alembic.ini"), "head")

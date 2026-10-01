@@ -210,94 +210,267 @@ def establish_floor(
     return created
 
 
-def purge_report(engine: Engine, *, retention_days: int, log: Log, exact: bool) -> dict[str, Any]:
-    """What ``purge_execute`` would remove, without changing anything.
+def _estimated_rows_before(connection: Connection, cutoff: datetime) -> tuple[int, Any, Any]:
+    """Rows of DEFAULT dated before ``cutoff``, from the planner's statistics.
 
-    The FK impact is the projection rows whose ``known_at`` is below the floor:
-    those point into DEFAULT and must be deleted before it can be detached.
+    Instant and read-only: ``pg_stats`` holds an equi-depth histogram of
+    ``known_at``, so the share of bounds before the cutoff is the share of
+    rows.  ``--exact`` replaces it with a real count (a full read).
     """
+    row = connection.execute(
+        text(
+            "SELECT (SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass(:t)), "
+            "  histogram_bounds::text::timestamptz[] "
+            "FROM pg_stats WHERE tablename = :t AND attname = 'known_at'"
+        ),
+        {"t": DEFAULT_PARTITION},
+    ).first()
+    if row is None or not row[1]:
+        return 0, None, None
+    total, bounds = int(row[0] or 0), list(row[1])
+    before = sum(1 for bound in bounds if bound < cutoff)
+    return round(total * before / max(len(bounds), 1)), bounds[0], bounds[-1]
+
+
+def purge_report(engine: Engine, *, retention_days: int, log: Log, exact: bool) -> dict[str, Any]:
+    """What ``purge_execute`` would remove, without changing anything."""
     describe(engine, log)
     cutoff = kst_now() - timedelta(days=retention_days)
     with engine.connect() as connection:
         floor = default_partition_floor(connection)
-        report: dict[str, Any] = {"cutoff": cutoff, "floor": floor}
-        if floor is None:
-            log("no validated floor: run weather_values_forward_partitions.py first")
-            report["eligible"] = False
-            return report
-        report["eligible"] = floor <= cutoff
-        log(f"retention cutoff {cutoff.isoformat()}, floor {floor.isoformat()}")
-        if not report["eligible"]:
-            log(
-                "NOT eligible yet: DEFAULT may hold rows inside the retention window. "
-                f"Eligible from {(floor + timedelta(days=retention_days)).isoformat()}"
-            )
+        estimate, oldest, newest = _estimated_rows_before(connection, cutoff)
         pointers = connection.execute(
-            text("SELECT count(*) FROM weather_current_values WHERE known_at < :floor"),
-            {"floor": floor},
+            text("SELECT count(*) FROM weather_current_values WHERE known_at < :cutoff"),
+            {"cutoff": cutoff},
         ).scalar_one()
-        orphaned = connection.execute(
-            text(
-                "SELECT count(*) FROM (SELECT location_id FROM weather_current_values "
-                "GROUP BY location_id HAVING max(known_at) < :floor) quiet"
-            ),
-            {"floor": floor},
-        ).scalar_one()
-        report.update(pointers=pointers, locations_losing_current=orphaned)
-        log(
-            f"FK impact: {pointers:,} weather_current_values rows point below the floor "
-            f"and would be deleted; {orphaned:,} locations would have no current value"
-        )
+        report: dict[str, Any] = {
+            "cutoff": cutoff,
+            "floor": floor,
+            "expired_rows_estimate": estimate,
+            "pointers": pointers,
+            # Every row in DEFAULT is older than the floor, so once the floor
+            # itself is past retention the whole partition is expired.
+            "whole_partition_expired": floor is not None and floor <= cutoff,
+        }
+        log(f"retention: {retention_days} days -> cutoff {cutoff.isoformat()}")
+        log(f"known_at in DEFAULT (statistics): {oldest} .. {newest}")
+        log(f"rows before the cutoff (estimate): {estimate:,}")
         if exact:
-            rows, oldest, newest = connection.execute(
-                text(f"SELECT count(*), min(known_at), max(known_at) FROM ONLY {DEFAULT_PARTITION}")
+            rows, expired = connection.execute(
+                text(
+                    f"SELECT count(*), count(*) FILTER (WHERE known_at < :cutoff) "
+                    f"FROM ONLY {DEFAULT_PARTITION}"
+                ),
+                {"cutoff": cutoff},
             ).one()
-            report.update(rows=rows, oldest=oldest, newest=newest)
-            log(f"exact: {rows:,} rows, known_at {oldest} .. {newest}")
+            report.update(rows=rows, expired_rows=expired)
+            log(f"exact: {rows:,} rows, {expired:,} before the cutoff")
+        log(
+            f"FK impact: {pointers:,} weather_current_values rows point before the cutoff. "
+            "They are deleted first: the foreign key is ON DELETE RESTRICT, so a fact "
+            "cannot go while a pointer to it exists. Newer pointers are untouched."
+        )
+        if floor is None:
+            log("no validated floor yet: run weather_values_forward_partitions.py first")
+        elif report["whole_partition_expired"]:
+            log("the whole DEFAULT is past retention: --execute detaches and drops it")
+        else:
+            whole = floor + timedelta(days=retention_days)
+            log(
+                "DEFAULT still holds rows inside retention: --execute deletes only the "
+                f"expired ones, in small batches. The whole partition can go from {whole}"
+            )
+            if oldest is not None:
+                log(f"the first rows expire from {oldest + timedelta(days=retention_days)}")
     return report
 
 
-def purge_execute(engine: Engine, *, retention_days: int, log: Log) -> None:
-    """Swap DEFAULT for an empty one and drop the old table.  Destructive.
+def _delete_expired_pointers(engine: Engine, cutoff: datetime, log: Log) -> int:
+    """Delete projection rows older than the cutoff, 10,000 per transaction."""
+    total = 0
+    while True:
+        with engine.begin() as connection:
+            connection.execute(text("SET LOCAL lock_timeout = '2s'"))
+            deleted = int(
+                connection.execute(
+                    text(
+                        "DELETE FROM weather_current_values WHERE value_id IN ("
+                        "  SELECT value_id FROM weather_current_values "
+                        "  WHERE known_at < :cutoff LIMIT 10000)"
+                    ),
+                    {"cutoff": cutoff},
+                ).rowcount
+                or 0
+            )
+        total += deleted
+        if not deleted:
+            break
+    log(f"deleted {total:,} projection rows before the cutoff")
+    return total
 
-    1. Delete the projection rows pointing below the floor (normally none:
-       the nightly retention already deleted every pointer older than its
-       cutoff, which is later than the floor here).
-    2. One DDL transaction, locks taken up front with a short timeout and
-       retried: ``DETACH PARTITION`` (ACCESS EXCLUSIVE on the fact table;
-       PostgreSQL also checks that no ``weather_current_values`` row still
-       references the detached rows, which reads the projection once while
-       the lock is held -- the one step here whose duration grows with data),
-       ``DROP TABLE`` of the detached DEFAULT (its files are unlinked at
-       commit; the 36 GB comes back at once), then a new empty DEFAULT with
-       the same floor (instant on an empty table).  Every writer waits for
-       this transaction, so it is the step to run at a quiet hour.
+
+def purge_expired_rows(
+    engine: Engine,
+    *,
+    cutoff: datetime,
+    log: Log,
+    batch_blocks: int = 2048,
+    pause_seconds: float = 0.2,
+    start_block: int = 0,
+) -> int:
+    """Delete DEFAULT's rows dated before ``cutoff`` in short batches.
+
+    DEFAULT has no index leading with ``known_at``, so a plain
+    ``DELETE ... WHERE known_at <`` would be one statement reading the whole
+    heap.  This walks the heap instead, ``batch_blocks`` pages at a time
+    (16 MB at the default) with a TID range scan, deleting only expired rows in
+    each range, one short transaction per range.  Each transaction takes ROW
+    EXCLUSIVE on DEFAULT -- compatible with every reader and writer -- and row
+    locks only on expired rows nobody else touches; ``lock_timeout`` bounds
+    any wait.  The immutability trigger lets the DELETE through only inside
+    these transactions (``SET LOCAL``).
+
+    Resumable: progress lines print the next block, and ``start_block`` picks
+    up there.  Idempotent: a range already cleaned deletes nothing.
+    """
+    from .repository import PURGE_GUC
+
+    _delete_expired_pointers(engine, cutoff, log)
+    with engine.connect() as connection:
+        pages = int(
+            connection.execute(
+                text(
+                    "SELECT pg_relation_size(to_regclass(:t)) "
+                    "/ current_setting('block_size')::int"
+                ),
+                {"t": DEFAULT_PARTITION},
+            ).scalar_one()
+        )
+    log(f"walking {pages:,} pages from block {start_block:,}, {batch_blocks} per batch")
+    deleted_total = 0
+    started = time.monotonic()
+    block = start_block
+    batches = 0
+    while block < pages:
+        upper = block + batch_blocks
+        deleted = 0
+        for attempt in range(1, LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                with engine.begin() as connection:
+                    connection.execute(text("SET LOCAL lock_timeout = '2s'"))
+                    connection.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+                    deleted = int(
+                        connection.execute(
+                            text(
+                                f"DELETE FROM ONLY {DEFAULT_PARTITION} "
+                                "WHERE ctid >= CAST(:lo AS tid) AND ctid < CAST(:hi AS tid) "
+                                "AND known_at < :cutoff"
+                            ),
+                            {"lo": f"({block},0)", "hi": f"({upper},0)", "cutoff": cutoff},
+                        ).rowcount
+                        or 0
+                    )
+                break
+            except OperationalError as exc:
+                if not is_lock_conflict(exc) or attempt == LOCK_RETRY_ATTEMPTS:
+                    raise
+                time.sleep(LOCK_RETRY_SECONDS)
+            except IntegrityError:
+                # An ingest wrote a pointer to an expired fact after the
+                # pointer pass.  Clear it and redo this range.
+                if attempt == LOCK_RETRY_ATTEMPTS:
+                    raise
+                _delete_expired_pointers(engine, cutoff, log)
+        deleted_total += deleted
+        block = upper
+        batches += 1
+        if batches % 50 == 0 or block >= pages:
+            elapsed = time.monotonic() - started
+            done = (min(block, pages) - start_block) / max(pages - start_block, 1)
+            left = elapsed / done - elapsed if done else 0.0
+            log(
+                f"block {min(block, pages):,}/{pages:,} ({done:.0%}), deleted "
+                f"{deleted_total:,}, {elapsed / 60:.1f} min, ~{left / 60:.0f} min left; "
+                f"resume with --start-block {block}"
+            )
+        if pause_seconds:
+            time.sleep(pause_seconds)
+    log(f"deleted {deleted_total:,} expired rows from {DEFAULT_PARTITION}")
+    return deleted_total
+
+
+def vacuum_default(engine: Engine, log: Log) -> None:
+    """Plain VACUUM: SHARE UPDATE EXCLUSIVE, so reads and inserts continue.
+
+    It removes the dead tuples and their index entries; it does not shrink the
+    files.  The space returns to the OS when DEFAULT is swapped out, once the
+    whole partition is past retention.
+    """
+    started = time.monotonic()
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        connection.execute(text(f"VACUUM (ANALYZE) {DEFAULT_PARTITION}"))
+    log(f"vacuumed {DEFAULT_PARTITION} in {(time.monotonic() - started) / 60:.1f} min")
+
+
+def purge_execute(
+    engine: Engine,
+    *,
+    retention_days: int,
+    log: Log,
+    vacuum: bool = True,
+    start_block: int = 0,
+    batch_blocks: int = 2048,
+    pause_seconds: float = 0.2,
+) -> None:
+    """Remove what is past retention from DEFAULT.  Destructive.
+
+    Two strategies, chosen by what the floor proves:
+
+    * Whole partition expired (floor <= cutoff, so every row is): delete the
+      projection rows pointing before the cutoff, then one DDL transaction --
+      locks taken up front with a short timeout and retried -- detaches
+      DEFAULT (ACCESS EXCLUSIVE on the fact table; PostgreSQL also checks that
+      no projection row still references it, one read of the projection while
+      the lock is held), drops it (files unlinked at commit: all the space
+      back at once, no dead tuples, no vacuum) and creates a new empty DEFAULT
+      with the same floor.  Writers wait for that one transaction only.
+    * Some rows still inside retention: delete only the expired rows, batch
+      by batch (``purge_expired_rows``), then a plain VACUUM.  Nothing blocks
+      writers; the files keep their size until the swap above.
     """
     report = purge_report(engine, retention_days=retention_days, log=log, exact=False)
-    if not report.get("eligible"):
-        raise SystemExit("refusing: DEFAULT is not entirely past retention")
-    floor: datetime = report["floor"]
+    floor = report["floor"]
+    if floor is None:
+        raise SystemExit("refusing: no validated floor; run weather_values_forward_partitions.py")
+    cutoff: datetime = report["cutoff"]
+    if report["whole_partition_expired"]:
+        _delete_expired_pointers(engine, cutoff, log)
 
-    with engine.begin() as connection:
-        deleted = connection.execute(
-            text("DELETE FROM weather_current_values WHERE known_at < :floor"),
-            {"floor": floor},
-        ).rowcount
-    log(f"deleted {deleted:,} projection rows below the floor")
+        def swap(connection: Connection) -> None:
+            lock_for_partition_ddl(connection)
+            connection.execute(
+                text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {DEFAULT_PARTITION}")
+            )
+            connection.execute(text(f"DROP TABLE {DEFAULT_PARTITION}"))
+            ensure_default_partition(connection)
+            add_default_floor(connection, floor)
+            validate_default_floor(connection)
 
-    def swap(connection: Connection) -> None:
-        lock_for_partition_ddl(connection)
-        connection.execute(
-            text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {DEFAULT_PARTITION}")
+        started = time.monotonic()
+        _with_lock_retries(engine, swap, log)
+        log(
+            "detached and dropped the old DEFAULT; a new empty DEFAULT with the same "
+            f"floor is in place ({time.monotonic() - started:.1f}s)"
         )
-        connection.execute(text(f"DROP TABLE {DEFAULT_PARTITION}"))
-        ensure_default_partition(connection)
-        add_default_floor(connection, floor)
-        validate_default_floor(connection)
-
-    started = time.monotonic()
-    _with_lock_retries(engine, swap, log)
-    log(
-        f"detached and dropped the old DEFAULT; new empty DEFAULT with the same floor "
-        f"in place ({time.monotonic() - started:.1f}s)"
-    )
+    else:
+        purge_expired_rows(
+            engine,
+            cutoff=cutoff,
+            log=log,
+            batch_blocks=batch_blocks,
+            pause_seconds=pause_seconds,
+            start_block=start_block,
+        )
+        if vacuum:
+            vacuum_default(engine, log)
+    describe(engine, log)
