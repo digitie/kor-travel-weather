@@ -15,9 +15,45 @@ target은 활성 DB catalog가 정본이며 env `TARGETS`는 bootstrap 신규 ro
 속성을 보완한다. DB에서 disabled 된 id는 env가 재활성화할 수 없다. lat/lon만 있는
 target은 `kma.to_grid`로 nx/ny를 계산한다. AirKorea 등 다른 provider의 측정소
 anchor는 `_is_kma_target_location`이 기본적으로 KMA target에서 제외한다 —
-`metadata.kma_opt_in=true`로 관리자가 명시적으로 opt-in한 행만 예외다. 특보만은
-예외로, `_kma_alert_targets`가 opt-in 여부와 무관하게 활성 location 전체를 대상으로
-한다 — 지도 marker에는 특보가 항상 보여야 하기 때문이다.
+`metadata.kma_opt_in=true`로 관리자가 명시적으로 opt-in한 행만 예외다.
+
+격자 job(초단기실황·초단기예보·단기예보)은 명시 target이 덮지 않은 격자 일부를
+`_station_grid_fill`로 측정소 anchor에서 채운다. 명시 target이 하나도 없는 새
+catalog(2026-09-20 새 DB 이후 운영이 그랬다)에서 세 격자 job과 특보 job이 빈 target으로
+매번 실패했기 때문이다. 격자 선택은 측정소가 아니라 KMA 격자 중심 좌표로 외부 provider
+cap과 같은 `spatially_even_subset` 순서를 쓴다 — 측정소가 생기고 사라져도(AirKorea는
+주소만 바뀌어도 id를 새로 만든다) 고른 격자가 흔들리지 않는다. 고른 격자 위 측정소는 모두
+같은 응답을 fan-out으로 받는다. 실행 로그에 `station fill: X of Y stations on Z of W
+grids` 한 줄을 남긴다.
+
+**채우기 예산은 따로 둔다.** `KMA_STATION_FILL_MAX_GRIDS`(기본 150)가 채우기 격자 수의
+상한이고, 명시 target과 합친 전체는 여전히 `MAX_GRIDS_PER_RUN`(기본 300)을 넘지 않는다.
+`MAX_GRIDS_PER_RUN`은 상한이지 소진 목표가 아니다. data.go.kr 한도는 서비스가 아니라
+오퍼레이션마다 일 10,000건이고, **같은 서비스 키를 Map과 로컬 python-kma-api 테스트도
+쓴다**. 매시 도는 두 오퍼레이션 기준:
+
+| 채우기 격자 | 초단기실황/초단기예보 (각 24회/일) | 10,000 대비 | 단기예보 (8회/일) |
+| --- | --- | --- | --- |
+| 150 (기본) | 3,600/일 | 36% | 1,200/일 |
+| 300 | 7,200/일 | 72% | 2,400/일 |
+
+재시도(`PROVIDER_RETRIES`, 기본 3)는 일시 오류에서만 호출을 더 쓰므로 36%는 키를 나눠
+쓰는 다른 사용처와 재시도 몫으로 남긴다. 명시 target은 이 위에 더해진다.
+
+**한 run의 크기.** KMA는 모든 응답이 유효할 때만 한 `ingest_batch` transaction으로
+publish한다(아래 단락) — 외부 provider의 분할 publish와 달리 부분 publish가 없다는
+계약이라 그대로 두고, 크기를 채우기 예산으로 묶는다. 2026-10-01 운영 catalog(측정소
+1,429곳, 1,074격자, 격자당 최대 7곳) 실측으로 150격자는 측정소 196곳, 300격자는 385곳을
+덮는다. 단기예보 응답이 격자당 약 900행이면 150격자 run은 약 18만 fact(fan-out 포함),
+메모리 약 0.36 GiB, 300격자는 약 0.73 GiB다. fact 수는 격자 수 × 격자당 행 수 × 격자당
+측정소 수로 묶이고, 최종 상한은 `MAX_VALUES_PER_RUN`이다.
+
+특보만은 예외로, `_kma_alert_targets`가 opt-in 여부와 무관하게 활성 location 전체를
+대상으로 한다 — 지도 marker에는 특보가 항상 보여야 하기 때문이다(채우기는 계산하지
+않는다). 빈 target 검사는 dataset마다 자기가 읽는 target으로 한다: 특보는 alert target,
+격자 job은 격자 target이다. 중기예보는 지역 코드가 있는 target이 없으면 실패하지 않고
+`skipped: true`와 이유를 output metadata로 남긴다 — 키 없는 외부 provider와 같은 규칙이다.
+측정소에는 중기 지역 코드가 없으므로 env `TARGETS`나 관리자 catalog에 지정해야 한다.
 
 중기예보 target은 `mid_land_region_code`(예: `11B00000`)와
 `mid_temperature_region_code`(예: `11B10101`)를 모두 설정한다. 과거 설정의

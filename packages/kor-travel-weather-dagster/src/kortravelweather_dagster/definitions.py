@@ -3,6 +3,7 @@
 import logging
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from dagster import (
     AssetExecutionContext,
@@ -34,6 +35,7 @@ from .kma_weather import (
     KMA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_NOWCAST,
+    WeatherTarget,
     run_weather_sync,
     targets_from_settings,
 )
@@ -79,13 +81,15 @@ _start_metrics_server_from_env()
 
 
 def _is_kma_target_location(location: object) -> bool:
-    """Keep AirKorea station anchors out of KMA's grid target set by default.
+    """Keep measurement-station anchors out of KMA's explicit target set.
 
-    AirKorea's nationwide station catalog is intentionally the anchor source
-    for external providers.  Treating every station as a KMA target would turn
-    a 300+ station catalog into hundreds of KMA grid calls and make the KMA
-    budget fail.  An administrator can opt a shared anchor into KMA explicitly
-    with ``metadata.kma_opt_in=true``.
+    The station catalog (AirKorea, KRForest, KREX, KHOA) is intentionally the
+    anchor source for external providers.  Treating every station as a KMA
+    target would turn a 1,400-anchor catalog into well over a thousand KMA grid
+    calls and make the KMA budget fail.  An administrator can opt a shared
+    anchor into KMA explicitly with ``metadata.kma_opt_in=true``; the rest are
+    sampled into whatever grid budget the explicit targets leave over (see
+    ``_station_grid_fill``).
     """
     metadata = getattr(location, "metadata", None)
     if not isinstance(metadata, Mapping):
@@ -157,13 +161,20 @@ def _merge_env_targets(
 
 
 def _kma_grid_targets(
-    repository: WeatherRepository, settings: WeatherSettings
-) -> tuple[list[object], dict[str, dict[str, object]], set[str]]:
+    repository: WeatherRepository,
+    settings: WeatherSettings,
+    *,
+    station_fill: bool,
+) -> tuple[list[WeatherTarget], dict[str, dict[str, object]], set[str], "StationFill | None"]:
     """Build the validated target set every base-grid/mid-forecast KMA job shares.
 
     Admin-managed enabled locations opted into KMA (see
     ``_is_kma_target_location``) are the canonical source; env targets are an
-    additive/override layer for bootstrap and provider-specific fields.
+    additive/override layer for bootstrap and provider-specific fields.  With
+    ``station_fill`` (the base-grid jobs only -- mid and alerts read nothing a
+    station grid adds) part of the grid budget they leave unused is filled from
+    the station catalog (``_station_grid_fill``), so a catalog with no explicit
+    target still collects KMA instead of failing every run.
     """
     db_locations = _load_all_kma_locations(repository)
     disabled_ids = {location.location_id for location in db_locations if not location.enabled}
@@ -178,7 +189,105 @@ def _kma_grid_targets(
         extra_points=settings.extra_points,
         disabled_location_ids=disabled_ids,
     )
-    return targets, merged, disabled_ids
+    fill = None
+    if station_fill:
+        fill = _station_grid_fill(
+            db_locations,
+            targets,
+            max_grids=settings.max_grids_per_run,
+            fill_max_grids=settings.kma_station_fill_max_grids,
+            disabled_ids=disabled_ids,
+        )
+        targets.extend(fill.targets)
+    return targets, merged, disabled_ids, fill
+
+
+@dataclass(frozen=True, slots=True)
+class StationFill:
+    """What ``_station_grid_fill`` took, for the run log's coverage line."""
+
+    targets: list[WeatherTarget]
+    grids_filled: int
+    #: Enabled station anchors / grids no explicit target already covers.
+    stations_total: int
+    grids_total: int
+
+    def coverage_line(self) -> str:
+        return (
+            f"station fill: {len(self.targets)} of {self.stations_total} stations "
+            f"on {self.grids_filled} of {self.grids_total} grids"
+        )
+
+
+def _station_grid_fill(
+    db_locations: list[object],
+    targets: list[WeatherTarget],
+    *,
+    max_grids: int,
+    fill_max_grids: int,
+    disabled_ids: set[str],
+) -> StationFill:
+    """Spend a bounded grid budget on station anchors no explicit target covers.
+
+    Explicit KMA targets (non-station anchors, opted-in stations, env
+    ``TARGETS``/``EXTRA_POINTS``) used to be the only source.  A fresh catalog
+    has none of them -- only the station anchors the AirKorea and regional
+    syncs create -- so every KMA grid job failed on every run with an empty
+    target set.  The station catalog already covers the country, so a sample
+    of it is collected instead.
+
+    The sample has its own budget, ``fill_max_grids``
+    (``KMA_STATION_FILL_MAX_GRIDS``), because grids are what cost a KMA call
+    and the data.go.kr key is shared: ``max_grids_per_run`` is a ceiling, not a
+    spend target.  The fill takes at most ``fill_max_grids`` grids and never
+    more than the explicit targets leave under ``max_grids_per_run``.
+
+    Grids are ranked by their own KMA grid-cell centre with the same
+    limit-independent ``spatially_even_subset`` order the external providers'
+    caps use.  Ranking the grid rather than a station on it keeps the choice
+    stable when stations come and go: AirKorea re-keys a station on any
+    address edit.  Every station on a chosen grid rides along, since one
+    response already fans out to all anchors on its grid.
+    """
+    covered = {(target.location.nx, target.location.ny) for target in targets}
+    taken = {target.location.location_id for target in targets}
+    stations = targets_from_settings(
+        (
+            location.model_dump()
+            for location in db_locations
+            if location.enabled
+            and not _is_kma_target_location(location)
+            and location.location_id not in taken
+        ),
+        disabled_location_ids=disabled_ids,
+    )
+    by_grid: dict[tuple[int, int], list[WeatherTarget]] = {}
+    for station in stations:
+        grid = (station.location.nx, station.location.ny)
+        if grid not in covered:
+            by_grid.setdefault(grid, []).append(station)
+    uncovered_stations = sum(len(group) for group in by_grid.values())
+    budget = min(fill_max_grids, max_grids - len(covered))
+    if budget <= 0 or not by_grid:
+        return StationFill([], 0, uncovered_stations, len(by_grid))
+
+    from kma import to_latlon
+
+    cells = {}
+    for nx, ny in by_grid:
+        latitude, longitude = to_latlon(nx, ny)
+        cells[f"grid-{nx}-{ny}"] = (nx, ny), ProviderLocation(
+            location_id=f"grid-{nx}-{ny}", latitude=latitude, longitude=longitude
+        )
+    chosen = spatially_even_subset([cell for _, cell in cells.values()], budget)
+    filled = [
+        station
+        for picked in chosen
+        for station in sorted(
+            by_grid[cells[picked.location_id][0]], key=lambda item: item.location.location_id
+        )
+    ]
+    return StationFill(filled, len(chosen), uncovered_stations, len(by_grid))
 
 
 def _kma_alert_targets(
@@ -232,7 +341,28 @@ def _make_kma_dataset_asset(
         settings = WeatherSettings()
         client_resource = context.resources.kma_client
         repository = context.resources.weather_repository.create_repository()
-        targets, merged, disabled_ids = _kma_grid_targets(repository, settings)
+        targets, merged, disabled_ids, fill = _kma_grid_targets(
+            repository, settings, station_fill=include_base
+        )
+        if fill is not None:
+            context.log.info(fill.coverage_line())
+        if include_mid and not any(target.has_mid for target in targets):
+            # Mid-forecast regions are configuration (env TARGETS or admin
+            # metadata); stations carry none.  An unconfigured source is
+            # switched off, not broken -- the same rule as a keyless external
+            # provider -- so this is a recorded skip rather than a red run.
+            skipped = {
+                "provider": "python-kma-api",
+                "dataset_key": dataset_key,
+                "skipped": True,
+                "reason": (
+                    "중기예보 지역 코드(mid_land_region_code/"
+                    "mid_temperature_region_code)가 설정된 target이 없습니다."
+                ),
+                "locations_total": len(targets),
+            }
+            context.add_output_metadata(skipped)
+            return skipped
         alert_targets = (
             _kma_alert_targets(repository, settings, disabled_ids) if include_alerts else None
         )
@@ -864,9 +994,9 @@ kma_short_forecast_schedule = ScheduleDefinition(
 )
 
 # python-kma-api's MID_FCST_PUBLISH_HOURS: 중기예보 publishes twice a day
-# (KST 06/18). No current catalog location carries mid region codes, so this
-# is a no-op run today -- kept scheduled so opting a location in later needs
-# no code change, just admin metadata.
+# (KST 06/18). Until some target carries mid region codes (env TARGETS or
+# admin metadata) the run records a skip with that reason rather than failing
+# -- kept scheduled so configuring a region later needs no code change.
 kma_mid_forecast_schedule = ScheduleDefinition(
     name="kma_mid_forecast_publish_hours",
     cron_schedule="30 6,18 * * *",
