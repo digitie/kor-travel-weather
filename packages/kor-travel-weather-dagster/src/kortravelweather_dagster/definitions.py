@@ -34,6 +34,7 @@ from .kma_weather import (
     KMA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_NOWCAST,
+    WeatherTarget,
     run_weather_sync,
     targets_from_settings,
 )
@@ -79,13 +80,15 @@ _start_metrics_server_from_env()
 
 
 def _is_kma_target_location(location: object) -> bool:
-    """Keep AirKorea station anchors out of KMA's grid target set by default.
+    """Keep measurement-station anchors out of KMA's explicit target set.
 
-    AirKorea's nationwide station catalog is intentionally the anchor source
-    for external providers.  Treating every station as a KMA target would turn
-    a 300+ station catalog into hundreds of KMA grid calls and make the KMA
-    budget fail.  An administrator can opt a shared anchor into KMA explicitly
-    with ``metadata.kma_opt_in=true``.
+    The station catalog (AirKorea, KRForest, KREX, KHOA) is intentionally the
+    anchor source for external providers.  Treating every station as a KMA
+    target would turn a 1,400-anchor catalog into well over a thousand KMA grid
+    calls and make the KMA budget fail.  An administrator can opt a shared
+    anchor into KMA explicitly with ``metadata.kma_opt_in=true``; the rest are
+    sampled into whatever grid budget the explicit targets leave over (see
+    ``_station_grid_fill``).
     """
     metadata = getattr(location, "metadata", None)
     if not isinstance(metadata, Mapping):
@@ -163,7 +166,10 @@ def _kma_grid_targets(
 
     Admin-managed enabled locations opted into KMA (see
     ``_is_kma_target_location``) are the canonical source; env targets are an
-    additive/override layer for bootstrap and provider-specific fields.
+    additive/override layer for bootstrap and provider-specific fields.  Grid
+    budget they leave unused is filled from the station catalog
+    (``_station_grid_fill``), so a catalog with no explicit target still
+    collects KMA instead of failing every run.
     """
     db_locations = _load_all_kma_locations(repository)
     disabled_ids = {location.location_id for location in db_locations if not location.enabled}
@@ -178,7 +184,80 @@ def _kma_grid_targets(
         extra_points=settings.extra_points,
         disabled_location_ids=disabled_ids,
     )
+    targets.extend(
+        _station_grid_fill(
+            db_locations,
+            targets,
+            max_grids=settings.max_grids_per_run,
+            disabled_ids=disabled_ids,
+        )
+    )
     return targets, merged, disabled_ids
+
+
+def _station_grid_fill(
+    db_locations: list[object],
+    targets: list[WeatherTarget],
+    *,
+    max_grids: int,
+    disabled_ids: set[str],
+) -> list[WeatherTarget]:
+    """Spend the grid budget the explicit targets leave over on station anchors.
+
+    Explicit KMA targets (non-station anchors, opted-in stations, env
+    ``TARGETS``/``EXTRA_POINTS``) used to be the only source.  A fresh catalog
+    has none of them -- only the station anchors the AirKorea and regional
+    syncs create -- so every KMA grid job failed on every run with an empty
+    target set.  The station catalog already covers the country, so the
+    budget the explicit targets do not use is filled from it instead.
+
+    Grids, not stations, are what cost a KMA call, so one representative per
+    uncovered grid is ranked with the same coverage-preserving, limit-
+    independent order the external providers' caps use, and the first
+    ``max_grids - covered`` grids are taken.  Every station on a chosen grid
+    rides along: one response already fans out to all anchors on its grid.
+    The grid count therefore never exceeds ``max_grids``, which the run
+    enforces anyway.
+    """
+    covered = {(target.location.nx, target.location.ny) for target in targets}
+    remaining = max_grids - len(covered)
+    if remaining <= 0:
+        return []
+    taken = {target.location.location_id for target in targets}
+    stations = targets_from_settings(
+        (
+            location.model_dump()
+            for location in db_locations
+            if location.enabled
+            and not _is_kma_target_location(location)
+            and location.location_id not in taken
+        ),
+        disabled_location_ids=disabled_ids,
+    )
+    by_grid: dict[tuple[int, int], list[WeatherTarget]] = {}
+    for station in sorted(stations, key=lambda item: item.location.location_id):
+        grid = (station.location.nx, station.location.ny)
+        if grid not in covered:
+            by_grid.setdefault(grid, []).append(station)
+    representatives = {
+        group[0].location.location_id: grid for grid, group in by_grid.items()
+    }
+    chosen = spatially_even_subset(
+        [
+            ProviderLocation(
+                location_id=group[0].location.location_id,
+                latitude=group[0].location.latitude,
+                longitude=group[0].location.longitude,
+            )
+            for group in by_grid.values()
+        ],
+        remaining,
+    )
+    return [
+        station
+        for picked in chosen
+        for station in by_grid[representatives[picked.location_id]]
+    ]
 
 
 def _kma_alert_targets(

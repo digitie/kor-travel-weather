@@ -817,13 +817,21 @@ async def _stage_and_publish_weather(
         locations_total=len(targets),
     )
     try:
-        if not targets:
+        alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
+        # Check each dataset against the targets it actually reads.  A single
+        # grid-target check failed the alerts job -- which reads only
+        # alert_targets -- on every run while the grid set was empty, and let a
+        # mid job with no region-coded target succeed having fetched nothing.
+        if include_base and not targets:
             raise ValueError("weather target이 비어 있습니다.")
+        if include_mid and not any(target.has_mid for target in targets):
+            raise ValueError("중기예보 지역 코드가 설정된 weather target이 없습니다.")
+        if include_alerts and not alert_target_list:
+            raise ValueError("weather alert target이 비어 있습니다.")
         if len(targets) > max_targets:
             raise ValueError(
                 f"weather target 수가 상한을 초과했습니다: {len(targets)} > {max_targets}"
             )
-        alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
         if len(alert_target_list) > max_targets:
             raise ValueError(
                 f"weather alert target 수가 상한을 초과했습니다: "

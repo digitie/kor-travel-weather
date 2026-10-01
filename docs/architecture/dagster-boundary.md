@@ -15,9 +15,18 @@ target은 활성 DB catalog가 정본이며 env `TARGETS`는 bootstrap 신규 ro
 속성을 보완한다. DB에서 disabled 된 id는 env가 재활성화할 수 없다. lat/lon만 있는
 target은 `kma.to_grid`로 nx/ny를 계산한다. AirKorea 등 다른 provider의 측정소
 anchor는 `_is_kma_target_location`이 기본적으로 KMA target에서 제외한다 —
-`metadata.kma_opt_in=true`로 관리자가 명시적으로 opt-in한 행만 예외다. 특보만은
-예외로, `_kma_alert_targets`가 opt-in 여부와 무관하게 활성 location 전체를 대상으로
-한다 — 지도 marker에는 특보가 항상 보여야 하기 때문이다.
+`metadata.kma_opt_in=true`로 관리자가 명시적으로 opt-in한 행만 예외다. 명시 target이
+쓰고 남은 격자 예산(`MAX_GRIDS_PER_RUN`)은 `_station_grid_fill`이 측정소 anchor로
+채운다 — 아직 덮이지 않은 격자마다 대표 측정소 하나를 외부 provider cap과 같은
+`spatially_even_subset` 순서로 골라 남은 개수만큼 취하고, 고른 격자의 측정소는 모두
+fan-out으로 함께 받는다. 그래서 명시 target이 하나도 없는 새 catalog에서도(2026-09-20
+새 DB 이후 운영이 그랬다) 격자 job이 빈 target으로 매번 실패하지 않으며, 격자 수는
+상한을 넘지 않는다. 특보만은 예외로, `_kma_alert_targets`가 opt-in 여부와 무관하게
+활성 location 전체를 대상으로 한다 — 지도 marker에는 특보가 항상 보여야 하기 때문이다.
+빈 target 검사는 dataset마다 자기가 읽는 target으로 한다: 특보는 alert target, 중기예보는
+지역 코드가 있는 target이다. 지역 코드가 있는 target이 없으면 중기예보 job은 아무것도
+받지 않고 성공하는 대신 그 이유로 실패한다 — 측정소에는 중기 지역 코드가 없으므로 env
+`TARGETS`나 관리자 catalog에 지정해야 한다.
 
 중기예보 target은 `mid_land_region_code`(예: `11B00000`)와
 `mid_temperature_region_code`(예: `11B10101`)를 모두 설정한다. 과거 설정의
