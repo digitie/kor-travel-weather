@@ -220,6 +220,21 @@ class WeatherSettings(BaseSettings):
     max_grids_per_run: int = Field(
         default=300, validation_alias="KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN", gt=0, le=5000
     )
+    # Grids the KMA base jobs may spend on station anchors that no explicit
+    # target covers (see kortravelweather_dagster.definitions._station_grid_fill).
+    # The hourly operations (getUltraSrtNcst, getUltraSrtFcst) each cost one
+    # call per grid per hour against data.go.kr's 10,000/day per-operation
+    # limit, on a key shared with other projects:
+    #
+    #   150 grids x 24 runs = 3,600/day = 36% of 10,000 per operation
+    #
+    # Explicit targets come on top, still bounded by max_grids_per_run.
+    kma_station_fill_max_grids: int = Field(
+        default=150,
+        validation_alias="KOR_TRAVEL_WEATHER_KMA_STATION_FILL_MAX_GRIDS",
+        ge=0,
+        le=5000,
+    )
     max_targets_per_run: int = Field(
         default=10_000, validation_alias="KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN", gt=0, le=100_000
     )
