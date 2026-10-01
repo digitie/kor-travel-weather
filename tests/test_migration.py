@@ -94,7 +94,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0016_purge_lookup_indexes"
+            assert version == "0017_forward_partitions"
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }

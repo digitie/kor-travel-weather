@@ -41,6 +41,12 @@ BASE_GRID_DATASETS = frozenset(
     {KMA_ULTRA_SHORT_NOWCAST, KMA_ULTRA_SHORT_FORECAST, KMA_SHORT_FORECAST}
 )
 
+#: Locations per alert publish transaction.  Each transaction holds the
+#: advisory locks of only these locations, so an ingest for any other location
+#: never waits on an alerts publish; 50 of production's 1,450 is 29 short
+#: transactions instead of one that held every location.
+ALERT_PUBLISH_LOCATIONS = 50
+
 
 @dataclass(frozen=True, slots=True)
 class WeatherTarget:
@@ -816,6 +822,8 @@ async def _stage_and_publish_weather(
         dataset_key="kma_weather_bundle",
         locations_total=len(targets),
     )
+    #: Alert chunks already committed; reported even when the run fails.
+    published_values = 0
     try:
         alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
         # Check each dataset against the targets it actually reads.  A single
@@ -915,6 +923,8 @@ async def _stage_and_publish_weather(
             )
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
+        alert_sources: list[dict[str, Any]] = []
+        alert_values: list[WeatherValue] = []
         response_rows_total = 0
         heartbeat = getattr(repository, "heartbeat_sync_run", None)
 
@@ -1068,13 +1078,13 @@ async def _stage_and_publish_weather(
                         "fetched_at": alert_to,
                         "run_id": run.run_id,
                     }
-                    sources.append(source)
+                    alert_sources.append(source)
                     for target in station_targets:
                         if not _warning_matches_target(item, target):
                             continue
-                        if len(values) >= max_values:
+                        if len(values) + len(alert_values) >= max_values:
                             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
-                        values.append(
+                        alert_values.append(
                             template[0].model_copy(
                                 update={"location_id": target.location.location_id}
                             )
@@ -1085,6 +1095,39 @@ async def _stage_and_publish_weather(
             len(base_datasets) if base_datasets is not None else len(BASE_GRID_DATASETS)
         )
         base_requests_fetched = grids_fetched * base_dataset_count
+        # Alerts fan one notice out to every enabled location -- 1,450 of them
+        # in production.  Published in the run's single batch, that was one
+        # transaction holding 1,450 location locks for as long as the insert
+        # took: over an hour on 2026-10-01, with every other writer queued
+        # behind it.  Alerts are published per location chunk instead, each
+        # chunk its own short transaction holding only its own locations.
+        #
+        # This gives up all-or-nothing for alerts, and only for alerts: a chunk
+        # that fails leaves the chunks before it published and the run marked
+        # failed with what it loaded.  Each published fact is a whole, correct
+        # notice for its location, and the next run replays the rest (already
+        # published facts are an idempotent no-op).  Every chunk carries the
+        # notices' source records, so each one re-checks that the run still
+        # owns its lease before it publishes anything.  Grid and mid facts are
+        # unchanged: they publish together in the final transaction below.
+        if alert_values:
+            by_location: dict[str, list[WeatherValue]] = {}
+            for value in alert_values:
+                by_location.setdefault(value.location_id, []).append(value)
+            location_ids = sorted(by_location)
+            for offset in range(0, len(location_ids), ALERT_PUBLISH_LOCATIONS):
+                keep_alive()
+                chunk = [
+                    value
+                    for location_id in location_ids[offset : offset + ALERT_PUBLISH_LOCATIONS]
+                    for value in by_location[location_id]
+                ]
+                published_values += repository.ingest_batch(
+                    source_records=alert_sources, values=chunk
+                )
+        else:
+            # Notices that matched no location are still a fetched response.
+            sources.extend(alert_sources)
         publish_and_finish = getattr(repository, "publish_and_finish", None)
         if callable(publish_and_finish):
             loaded, finished = publish_and_finish(
@@ -1094,9 +1137,13 @@ async def _stage_and_publish_weather(
                 grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
                 requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
+                values_loaded_offset=published_values,
             )
         else:
-            loaded = repository.ingest_batch(source_records=sources, values=values)
+            loaded = (
+                repository.ingest_batch(source_records=sources, values=values)
+                + published_values
+            )
             finished = repository.finish_sync_run(
                 run.run_id,
                 status="success",
@@ -1123,7 +1170,7 @@ async def _stage_and_publish_weather(
             run.run_id,
             status="failed",
             grids_fetched=0,
-            values_loaded=0,
+            values_loaded=published_values,
             error=str(exc)[:2000],
         )
         raise

@@ -110,6 +110,246 @@ def ensure_default_partition(connection: Connection) -> None:
     )
 
 
+#: The DEFAULT partition's upper bound: ``CHECK (known_at < floor)``.
+#:
+#: Creating a partition while a DEFAULT partition exists makes PostgreSQL prove
+#: that DEFAULT holds no row for the new range.  Without a constraint that
+#: proves it, the proof is a full scan of DEFAULT under an ACCESS EXCLUSIVE
+#: lock on it -- which, on the 36 GB DEFAULT the fresh 2026-09-20 database grew
+#: because no dated partition was ever created, is every writer stopped for as
+#: long as the disk takes to read it.  With this constraint validated, every day
+#: at or after the floor is proven empty from the catalog alone and the
+#: partition is created in milliseconds.
+#:
+#: The floor is set once, at the first forward day, and never moves: every day
+#: from it onwards gets its own partition, so DEFAULT only ever receives rows
+#: dated before it (a backfill into a day nobody partitioned).  The trade-off is
+#: deliberate: a fact dated past the forward window is now refused instead of
+#: landing in DEFAULT, where retention could never reach it.  The window is
+#: ``retention_ahead_days`` long and the maintenance job extends it nightly.
+DEFAULT_FLOOR_CONSTRAINT = f"{DEFAULT_PARTITION}_known_at_floor"
+
+#: A partition-DDL statement that runs longer than this is cancelled.  Every
+#: statement inside the ACCESS EXCLUSIVE window is meant to be a catalog
+#: change; one that turns into a scan (a floor missing, a foreign key still in
+#: place) must fail rather than hold every writer for as long as it reads.
+DDL_STATEMENT_TIMEOUT = "60s"
+
+
+def kst_midnight(day: date) -> datetime:
+    """Public name of the KST day boundary every partition bound uses."""
+    return _kst_midnight(day)
+
+
+def ddl_lock_timeout_ms(connection: Connection) -> int:
+    """How long partition DDL waits for a lock: three ``deadlock_timeout``s.
+
+    It must outlast ``deadlock_timeout``.  An autovacuum that blocks a lock
+    request is cancelled only by the waiter's deadlock check, which runs once
+    the waiter has waited ``deadlock_timeout``; a lock timeout shorter than
+    that gives up first, every time, and the DDL can never get past an
+    autovacuum of DEFAULT (production's DEFAULT is due for one within a day).
+
+    Against an ingest, which locks in the same order (facts, then
+    projection), the DDL is normally the first to wait in a cycle, so its
+    deadlock check fires first and the DDL aborts (40P01, retried).  That is
+    not guaranteed for every session: a read of ``weather_current_values``
+    that then reads the fact table -- the API's current-value path -- takes
+    the two in the other order, and if it starts waiting first it is the one
+    the deadlock check cancels.  That is accepted: it needs a read to
+    interleave with the nightly drop or the one-time swap, the only DDL that
+    takes the projection lock strongly enough, and the reader gets an error it
+    can retry.  Changing the readers' lock order is out of scope.  The cost
+    for everyone else is that they queue behind the waiting request for at
+    most this long.
+    """
+    deadlock_ms = int(
+        connection.execute(
+            text("SELECT setting::int FROM pg_settings WHERE name = 'deadlock_timeout'")
+        ).scalar_one()
+    )
+    return max(2000, 3 * deadlock_ms)
+
+
+def lock_for_partition_ddl(connection: Connection, *, drop_foreign_keys: bool = False) -> None:
+    """Take every lock partition DDL needs, in the ingest's order, up front.
+
+    An ingest writes facts first and the projection second, so the DDL takes
+    the fact table first and ``weather_current_values`` second.  Taken lazily,
+    mid statement, the projection lock is what deadlocked the retention run of
+    2026-09-30 against an ingest.
+
+    ``CREATE TABLE ... PARTITION OF`` needs SHARE ROW EXCLUSIVE on the
+    projection (it clones the foreign key's triggers).  Dropping that foreign
+    key -- what keeps a DETACH from checking every projection row while it
+    holds the whole tree -- needs ACCESS EXCLUSIVE on it.  Both are held only
+    for the catalog changes that follow, bounded by ``DDL_STATEMENT_TIMEOUT``.
+    """
+    timeout = ddl_lock_timeout_ms(connection)
+    connection.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
+    connection.execute(text(f"SET LOCAL statement_timeout = '{DDL_STATEMENT_TIMEOUT}'"))
+    connection.execute(text(f"LOCK TABLE {VALUES_TABLE} IN ACCESS EXCLUSIVE MODE"))
+    has_projection = connection.execute(
+        text("SELECT to_regclass('weather_current_values') IS NOT NULL")
+    ).scalar_one()
+    if has_projection:
+        mode = "ACCESS EXCLUSIVE" if drop_foreign_keys else "SHARE ROW EXCLUSIVE"
+        connection.execute(text(f"LOCK TABLE weather_current_values IN {mode} MODE"))
+
+
+def is_lock_conflict(exc: BaseException) -> bool:
+    """A lock timeout or a deadlock: the DDL lost a race and can retry."""
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    return sqlstate in {"55P03", "40P01"}
+
+
+def drop_foreign_keys_into_facts(connection: Connection) -> list[tuple[str, str, str]]:
+    """Drop every foreign key that references the fact table; return them.
+
+    A DETACH of a partition the projection references checks every projection
+    row against it, under ACCESS EXCLUSIVE on the whole tree: on production's
+    3.6M-row projection that is a nested loop of millions of probes or a hash
+    join over the 21 GB DEFAULT -- minutes to hours with every ingest blocked,
+    which ``lock_timeout`` does nothing to bound.  Without the foreign key the
+    DETACH is a catalog change.  The caller re-adds it ``NOT VALID`` in the
+    same transaction and validates it afterwards under SHARE UPDATE EXCLUSIVE,
+    while writers carry on.  Returns ``(table, name, definition)``.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid) "
+            "FROM pg_constraint WHERE contype = 'f' AND confrelid = to_regclass(:t) "
+            "AND conparentid = 0 ORDER BY 1, 2"
+        ),
+        {"t": VALUES_TABLE},
+    ).all()
+    keys = [
+        (table, name, definition.replace(" NOT VALID", ""))
+        for table, name, definition in rows
+        if table != VALUES_TABLE and not table.startswith(f"{VALUES_TABLE}_")
+    ]
+    for table, name, _ in keys:
+        connection.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT {name}"))
+    return keys
+
+
+def readd_foreign_keys_not_valid(
+    connection: Connection, keys: list[tuple[str, str, str]]
+) -> None:
+    """New rows are checked from now on; existing ones by ``validate_foreign_keys``."""
+    for table, name, definition in keys:
+        connection.execute(
+            text(f"ALTER TABLE {table} ADD CONSTRAINT {name} {definition} NOT VALID")
+        )
+
+
+def unvalidated_foreign_keys_into_facts(connection: Connection) -> list[tuple[str, str]]:
+    return [
+        (str(table), str(name))
+        for table, name in connection.execute(
+            text(
+                "SELECT conrelid::regclass::text, conname FROM pg_constraint "
+                "WHERE contype = 'f' AND confrelid = to_regclass(:t) "
+                "AND conparentid = 0 AND NOT convalidated"
+            ),
+            {"t": VALUES_TABLE},
+        ).all()
+    ]
+
+
+def default_partition_floor(connection: Connection) -> datetime | None:
+    """The validated floor of DEFAULT, or ``None`` when there is none yet.
+
+    A floor added ``NOT VALID`` and not yet validated proves nothing to the
+    planner, so it counts as absent here.
+    """
+    row = connection.execute(
+        text(
+            "SELECT c.convalidated, "
+            "  substring(pg_get_constraintdef(c.oid) from $re$'([^']+)'$re$)::timestamptz "
+            "FROM pg_constraint c "
+            "WHERE c.conrelid = to_regclass(:table) AND c.conname = :name"
+        ),
+        {"table": DEFAULT_PARTITION, "name": DEFAULT_FLOOR_CONSTRAINT},
+    ).first()
+    if row is None or not row[0]:
+        return None
+    return row[1]
+
+
+def add_default_floor(connection: Connection, floor: datetime) -> bool:
+    """Add the floor ``NOT VALID``; return whether it was added.
+
+    ``NOT VALID`` makes this a catalog change: new rows are checked from now
+    on, existing ones are not read.  It still needs ACCESS EXCLUSIVE on DEFAULT
+    for that instant.  An existing floor -- validated or not -- is left alone:
+    the floor never moves.
+    """
+    exists = connection.execute(
+        text(
+            "SELECT 1 FROM pg_constraint "
+            "WHERE conrelid = to_regclass(:table) AND conname = :name"
+        ),
+        {"table": DEFAULT_PARTITION, "name": DEFAULT_FLOOR_CONSTRAINT},
+    ).first()
+    if exists is not None:
+        return False
+    connection.execute(
+        text(
+            f"ALTER TABLE {DEFAULT_PARTITION} ADD CONSTRAINT {DEFAULT_FLOOR_CONSTRAINT} "
+            f"CHECK (known_at < '{floor.isoformat()}') NOT VALID"
+        )
+    )
+    return True
+
+
+def validate_default_floor(connection: Connection) -> None:
+    """Prove the floor against every existing DEFAULT row.
+
+    ``VALIDATE CONSTRAINT`` takes only SHARE UPDATE EXCLUSIVE: inserts and
+    reads carry on while it scans, which on a large DEFAULT is the whole cost.
+    """
+    connection.execute(
+        text(f"ALTER TABLE {DEFAULT_PARTITION} VALIDATE CONSTRAINT {DEFAULT_FLOOR_CONSTRAINT}")
+    )
+
+
+def default_partition_is_empty(connection: Connection) -> bool:
+    """Cheap even on a huge DEFAULT: it stops at the first visible row."""
+    return not connection.execute(
+        text(f"SELECT EXISTS (SELECT 1 FROM ONLY {DEFAULT_PARTITION})")
+    ).scalar_one()
+
+
+def missing_forward_days(
+    connection: Connection, *, floor: datetime, start: date, end: date
+) -> list[date]:
+    """Days in ``[start, end]`` at or after the floor that have no partition."""
+    existing = {name for name, _ in existing_partitions(connection)}
+    days: list[date] = []
+    day = start
+    while day <= end:
+        if _kst_midnight(day) >= floor and partition_name(day) not in existing:
+            days.append(day)
+        day += timedelta(days=1)
+    return days
+
+
+def ensure_forward_partitions(
+    connection: Connection, *, floor: datetime, start: date, end: date
+) -> list[str]:
+    """Create the missing partitions at or after the floor; return their names.
+
+    Only days the floor proves DEFAULT-free are touched, so nothing here scans
+    DEFAULT.  Days before the floor are left to DEFAULT: creating one would
+    need exactly the scan this exists to avoid, and they are past days.
+    """
+    created: list[str] = []
+    for day in missing_forward_days(connection, floor=floor, start=start, end=end):
+        created.extend(ensure_partitions(connection, start=day, end=day))
+    return created
+
+
 def ensure_partitions(connection: Connection, *, start: date, end: date) -> list[str]:
     """Create the daily partitions covering ``[start, end]`` inclusive.
 
@@ -247,15 +487,113 @@ def drop_partitions_before(connection: Connection, cutoff: date) -> list[str]:
     return dropped
 
 
-def default_partition_rows(connection: Connection) -> int:
-    """How many rows fell outside every declared range.
+#: ``default_partition_rows`` stops counting here: it runs nightly, and a full
+#: count of a large DEFAULT is a full read of it.
+DEFAULT_ROWS_COUNT_CAP = 100_000
 
-    Non-zero means a partition was missing when something inserted, and those
-    rows will never be dropped by retention because they are not in a dated
-    partition.  Silent growth is exactly what partitioning was meant to end.
+
+def default_partition_rows(connection: Connection) -> int:
+    """How many rows are in DEFAULT, counted up to ``DEFAULT_ROWS_COUNT_CAP``.
+
+    With a floor in place every one of them is dated before it -- a backfill
+    into a day nobody partitioned, or what was there before the floor existed
+    -- and none can be dated after it.  Retention never drops them; only
+    ``scripts/weather_values_purge_default.py`` does.  The count is capped so
+    the nightly job reads at most that many rows, not the whole partition.
     """
     return int(
         connection.execute(
-            text(f"SELECT count(*) FROM ONLY {DEFAULT_PARTITION}")
+            text(
+                f"SELECT count(*) FROM (SELECT 1 FROM ONLY {DEFAULT_PARTITION} "
+                f"LIMIT {DEFAULT_ROWS_COUNT_CAP}) capped"
+            )
         ).scalar_one()
+    )
+
+
+def validate_foreign_keys_into_facts(connection: Connection) -> list[str]:
+    """Validate what ``readd_foreign_keys_not_valid`` left unvalidated.
+
+    ``VALIDATE CONSTRAINT`` takes SHARE UPDATE EXCLUSIVE on the referencing
+    table and ROW SHARE on the fact table: readers and writers carry on while
+    it reads the projection once.  Raises the foreign-key violation if a row
+    points at a fact that is gone (see ``delete_dangling_projection_rows``).
+    """
+    connection.execute(text(f"SET LOCAL lock_timeout = '{ddl_lock_timeout_ms(connection)}ms'"))
+    validated: list[str] = []
+    for table, name in unvalidated_foreign_keys_into_facts(connection):
+        connection.execute(text(f"ALTER TABLE {table} VALIDATE CONSTRAINT {name}"))
+        validated.append(name)
+    return validated
+
+
+def delete_dangling_projection_rows(connection: Connection) -> int:
+    """Delete projection rows whose fact is gone, so the foreign key validates.
+
+    Only reachable when a pointer to an expiring fact was written between the
+    pointer delete and the drop; a plain DELETE, so writers carry on.
+    """
+    return int(
+        connection.execute(
+            text(
+                "DELETE FROM weather_current_values c WHERE NOT EXISTS ("
+                f"  SELECT 1 FROM {VALUES_TABLE} v "
+                "  WHERE v.value_id = c.value_id AND v.known_at = c.known_at)"
+            )
+        ).rowcount
+        or 0
+    )
+
+
+def forward_partition_days(connection: Connection, *, today: date) -> int | None:
+    """Whole days of dated partitions ahead of ``today``; ``None`` if there are none.
+
+    0 means today's partition is the last one: tomorrow's facts have nowhere
+    to go -- with a floor they are refused, without one they sink into DEFAULT.
+    """
+    days = [day for _, day in existing_partitions(connection) if day is not None]
+    if not days:
+        return None
+    return (max(days) - today).days
+
+
+def dated_partition_bounds(connection: Connection) -> list[tuple[datetime, datetime]]:
+    """``(lower, upper)`` of every dated partition."""
+    return _existing_partition_bounds(connection)
+
+
+def drop_unvalidated_floor(connection: Connection) -> bool:
+    """Drop the floor if it exists but was never validated; return whether it did.
+
+    An unvalidated floor still refuses every new DEFAULT row dated from it on,
+    yet proves nothing to the planner, so no partition can be created for those
+    days without the scan the floor exists to avoid.  It is only ever a step
+    in progress; anywhere else it is a leftover, and a harmful one.
+    """
+    row = connection.execute(
+        text(
+            "SELECT convalidated FROM pg_constraint "
+            "WHERE conrelid = to_regclass(:table) AND conname = :name"
+        ),
+        {"table": DEFAULT_PARTITION, "name": DEFAULT_FLOOR_CONSTRAINT},
+    ).first()
+    if row is None or row[0]:
+        return False
+    connection.execute(
+        text(f"ALTER TABLE {DEFAULT_PARTITION} DROP CONSTRAINT {DEFAULT_FLOOR_CONSTRAINT}")
+    )
+    return True
+
+
+def floor_constraint_present(connection: Connection) -> bool:
+    """Whether DEFAULT has the floor constraint at all, validated or not."""
+    return (
+        connection.execute(
+            text(
+                "SELECT 1 FROM pg_constraint "
+                "WHERE conrelid = to_regclass(:table) AND conname = :name"
+            ),
+            {"table": DEFAULT_PARTITION, "name": DEFAULT_FLOOR_CONSTRAINT},
+        ).first()
+        is not None
     )

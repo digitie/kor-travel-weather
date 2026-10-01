@@ -64,7 +64,14 @@ entity로 추적한다.
 각 grid의 nowcast/ultra-short/short (필요하면 mid) 응답을 남은 row/fact budget
 안에서 bounded stage한다. 모든 응답이 유효하고 non-empty일 때만 full raw source record와 normalized facts를 한
 `ingest_batch` transaction으로 publish한다. N번째 grid 실패, quota/4xx, wrong grid,
-malformed date는 이전 fact를 변경하지 않는다. response metadata(endpoint, request
+malformed date는 이전 fact를 변경하지 않는다. **특보만은 예외다**: 한 notice가 활성
+location 전체(운영 1,450곳)로 fan-out되므로, 한 transaction으로 publish하면 그 동안
+1,450곳의 location lock을 모두 쥔다(2026-10-01에 한 시간 넘게 쥐고 다른 writer를 전부
+세웠다). 그래서 특보 fact는 `ALERT_PUBLISH_LOCATIONS`(50)곳씩 나눈 짧은 transaction으로
+publish한다. 한 chunk가 실패하면 앞 chunk는 publish된 채 남고 run은 그때까지의
+`values_loaded`로 failed가 된다 — 각 fact는 그 location에 대한 온전한 notice이고 다음
+run의 replay는 이미 있는 fact에 대해 no-op이다. 격자·중기 fact는 그대로 마지막 한
+transaction에서 함께 publish된다. response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직
 없으므로 source idempotency가 반복 응답의 저장 비용을 제어하고, 호출 비용을 줄이는
 cursor는 후속 범위다.

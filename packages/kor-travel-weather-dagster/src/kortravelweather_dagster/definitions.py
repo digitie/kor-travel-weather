@@ -57,6 +57,9 @@ from .resources import (
 )
 from .retention import run_weather_retention_purge
 
+#: Same threshold as the KorTravelWeatherForwardPartitionsLow alert.
+FORWARD_PARTITION_ALERT_DAYS = 3
+
 logger = logging.getLogger(__name__)
 
 
@@ -850,13 +853,27 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
         retention_days=runtime.retention_days,
         ahead_days=runtime.retention_ahead_days,
     )
-    if result["rows_outside_any_partition"]:
-        # These rows are in the DEFAULT partition, which retention never drops.
-        # Nothing else in the result distinguishes that from a healthy run.
+    if result["default_floor"] is None:
+        # No forward partition could be created: DEFAULT holds rows and has no
+        # floor, and proving one is a full scan this job does not run.
         context.log.warning(
-            "%s fact rows are outside every dated partition and will never be "
-            "aged out; a partition was missing when they were inserted",
+            "DEFAULT partition has rows and no known_at floor; no forward "
+            "partition was created. Run scripts/weather_values_forward_partitions.py"
+        )
+    elif result["rows_outside_any_partition"]:
+        # With a floor every DEFAULT row is dated before it: a backfill into a
+        # day nobody partitioned, or what predates the floor.  Expected, not an
+        # anomaly -- but retention never drops them; the purge script does.
+        context.log.info(
+            "%s rows (counted up to the cap) are in DEFAULT, all before the floor; "
+            "scripts/weather_values_purge_default.py removes them",
             result["rows_outside_any_partition"],
+        )
+    days = result["forward_partition_days"]
+    if days is None or days <= FORWARD_PARTITION_ALERT_DAYS:
+        context.log.warning(
+            "only %s day(s) of forward partitions remain; facts dated past them are refused",
+            days,
         )
     context.add_output_metadata(result)
     return result

@@ -333,6 +333,12 @@ HISTORY_PURGED_SOURCES = Counter(
     "Source records deleted by the retention purge.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
+FORWARD_PARTITION_DAYS = Gauge(
+    "ktw_forward_partition_days",
+    "Whole days of dated weather_values partitions ahead of today (-1: none).",
+    multiprocess_mode="livemax",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 METRIC_ERRORS = Counter(
     "ktw_metrics_errors_total",
     "Instrumentation errors swallowed to keep the data path healthy.",
@@ -569,6 +575,11 @@ def observe_history_purged(values: int, sources: int) -> None:
 
     if values > 0 or sources > 0:
         _safe("history_purged", update)
+
+
+def observe_forward_partition_days(days: int | None) -> None:
+    """Set at scrape time from the catalog; see ``WeatherRepository.forward_partition_days``."""
+    _safe("forward_partitions", lambda: FORWARD_PARTITION_DAYS.set(-1 if days is None else days))
 
 
 def metrics_payload() -> bytes:

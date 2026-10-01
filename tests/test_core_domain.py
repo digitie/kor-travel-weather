@@ -1059,8 +1059,10 @@ def test_rows_that_landed_outside_every_partition_are_reported() -> None:
     # Inserted directly, because the ingest path cannot produce this row: it
     # takes ``known_at`` from the source record's fetch time, so a caller
     # cannot date a fact into a range with no partition.  The row this test
-    # needs is the one a *missing* partition produces -- a day the maintenance
-    # job failed to create -- and raw SQL is the only way to stage it.
+    # needs is the one a *missing* partition produces.  Since DEFAULT has a
+    # floor (``known_at < F``, see partitions.DEFAULT_FLOOR_CONSTRAINT) that is
+    # a past day nobody partitioned -- a backfill; a day after the floor always
+    # has a partition, and a fact dated past the forward window is refused.
     with repository.engine.begin() as connection:
         connection.execute(
             text(
@@ -1070,7 +1072,7 @@ def test_rows_that_landed_outside_every_partition_are_reported() -> None:
                 "source_record_key, value_number) "
                 "SELECT 'stranded', location_id, provider, dataset_key, weather_domain, "
                 "forecast_style, 'STRANDED', target_at, "
-                "now() + interval '900 days', normalization_version, payload, "
+                "now() - interval '900 days', normalization_version, payload, "
                 "collected_at, source_record_key, 1 FROM weather_values LIMIT 1"
             )
         )
