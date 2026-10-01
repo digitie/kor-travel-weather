@@ -117,7 +117,9 @@ def test_station_only_catalog_still_yields_kma_grid_targets() -> None:
     assert targets, "a station-only catalog must not leave the KMA grid jobs without targets"
     assert len(_grids(targets)) == 10
     assert set(_ids(targets)) <= {row.location_id for row in catalog}
-    assert fill.coverage_line() == "station fill: 10 of 48 stations on 10 of 48 grids"
+    assert fill.coverage_line() == (
+        "station fill: 10 of 48 stations on 10 of 48 grids (0 shared with explicit targets)"
+    )
 
 
 def test_station_fill_has_its_own_budget_below_the_run_ceiling() -> None:
@@ -178,10 +180,12 @@ def test_stations_on_a_chosen_grid_all_receive_its_response() -> None:
     targets, fill = _fill([first, twin], kma_station_fill_max_grids=1)
     assert set(_ids(targets)) == {"airkorea-a", "airkorea-b"}
     assert len(_grids(targets)) == 1
-    assert fill.coverage_line() == "station fill: 2 of 2 stations on 1 of 1 grids"
+    assert fill.coverage_line() == (
+        "station fill: 2 of 2 stations on 1 of 1 grids (0 shared with explicit targets)"
+    )
 
 
-def test_explicit_targets_come_first_and_stations_fill_only_uncovered_grids() -> None:
+def test_explicit_targets_come_first_and_the_budget_goes_to_uncovered_grids() -> None:
     explicit = WeatherLocation(
         location_id="seoul-city-hall", name="서울시청", latitude=37.5665, longitude=126.978
     )
@@ -191,8 +195,79 @@ def test_explicit_targets_come_first_and_stations_fill_only_uncovered_grids() ->
 
     ids = _ids(targets)
     assert ids[0] == "seoul-city-hall"
-    assert "airkorea-jung" not in ids  # its grid is already covered
+    # The explicit grid is not bought twice: 1 explicit + 3 filled grids.
     assert len(_grids(targets)) == 4
+
+
+def _mid_targets_on_station_cells() -> tuple[list[dict], list[WeatherLocation]]:
+    # Production after the nationwide mid regions went into env TARGETS: most
+    # explicit targets sit on a grid cell that already holds station anchors.
+    explicit = [
+        {
+            "location_id": "kma-mid-seoul",
+            "name": "서울",
+            "latitude": 37.5665,
+            "longitude": 126.978,
+            "mid_land_region_code": "11B00000",
+            "mid_temperature_region_code": "11B10101",
+        },
+        {
+            "location_id": "kma-mid-busan",
+            "name": "부산",
+            "latitude": 35.18,
+            "longitude": 129.075,
+            "mid_land_region_code": "11H20000",
+            "mid_temperature_region_code": "11H20201",
+        },
+    ]
+    stations = [
+        _station("airkorea-jung", 37.5666, 126.9781),
+        _station("airkorea-jongno", 37.5664, 126.9779),
+        _station("airkorea-busan-jung", 35.1801, 129.0751),
+        *_station_catalog(),
+    ]
+    return explicit, stations
+
+
+def test_stations_sharing_an_explicit_targets_cell_receive_its_response() -> None:
+    explicit, stations = _mid_targets_on_station_cells()
+    shared = {"airkorea-jung", "airkorea-jongno", "airkorea-busan-jung"}
+    for fill_budget in (0, 3):
+        targets, fill = _fill(
+            stations, targets=explicit, kma_station_fill_max_grids=fill_budget
+        )
+        ids = _ids(targets)
+        assert ids[:2] == ["kma-mid-seoul", "kma-mid-busan"]
+        assert shared <= set(ids), fill_budget
+        # Shared cells are already requested: they never spend fill budget.
+        assert len(_grids(targets)) == 2 + fill_budget
+        assert fill.grids_shared == 2
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_shared_cell_stations_get_values_from_the_explicit_targets_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    explicit, stations = _mid_targets_on_station_cells()
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_TARGETS", json.dumps(explicit))
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_KMA_STATION_FILL_MAX_GRIDS", "0")
+    repository = _CatalogRepository(stations)
+    client = _NowcastClient()
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["status"] == "success"
+    assert len(client.grids) == 2  # one request per explicit grid, nothing more
+    published = {value.location_id for value in repository.values}
+    assert published == {
+        "kma-mid-seoul",
+        "kma-mid-busan",
+        "airkorea-jung",
+        "airkorea-jongno",
+        "airkorea-busan-jung",
+    }
 
 
 def test_disabled_stations_are_never_filled_in() -> None:

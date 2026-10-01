@@ -210,15 +210,19 @@ class StationFill:
     """What ``_station_grid_fill`` took, for the run log's coverage line."""
 
     targets: list[WeatherTarget]
+    #: Grids taken from the fill budget.
     grids_filled: int
-    #: Enabled station anchors / grids no explicit target already covers.
+    #: Explicit-target grids that also carry stations; they cost no budget.
+    grids_shared: int
+    #: Enabled station anchors, and the grids they sit on.
     stations_total: int
     grids_total: int
 
     def coverage_line(self) -> str:
         return (
             f"station fill: {len(self.targets)} of {self.stations_total} stations "
-            f"on {self.grids_filled} of {self.grids_total} grids"
+            f"on {self.grids_filled + self.grids_shared} of {self.grids_total} grids "
+            f"({self.grids_shared} shared with explicit targets)"
         )
 
 
@@ -250,7 +254,8 @@ def _station_grid_fill(
     caps use.  Ranking the grid rather than a station on it keeps the choice
     stable when stations come and go: AirKorea re-keys a station on any
     address edit.  Every station on a chosen grid rides along, since one
-    response already fans out to all anchors on its grid.
+    response already fans out to all anchors on its grid -- and so does every
+    station on a grid an explicit target already requests, at no budget cost.
     """
     covered = {(target.location.nx, target.location.ny) for target in targets}
     taken = {target.location.location_id for target in targets}
@@ -264,33 +269,43 @@ def _station_grid_fill(
         ),
         disabled_location_ids=disabled_ids,
     )
+    # Stations on a grid an explicit target already requests ride along on
+    # that response for free: it is fetched anyway, and the fan-out reaches
+    # every anchor on the grid.  Dropping them -- the first version did --
+    # left a station without KMA whenever an explicit target shared its cell.
+    # Only the uncovered grids compete for the fill budget.
+    on_covered: list[WeatherTarget] = []
     by_grid: dict[tuple[int, int], list[WeatherTarget]] = {}
-    for station in stations:
+    for station in sorted(stations, key=lambda item: item.location.location_id):
         grid = (station.location.nx, station.location.ny)
-        if grid not in covered:
+        if grid in covered:
+            on_covered.append(station)
+        else:
             by_grid.setdefault(grid, []).append(station)
-    uncovered_stations = sum(len(group) for group in by_grid.values())
+    covered_station_grids = len({(s.location.nx, s.location.ny) for s in on_covered})
     budget = min(fill_max_grids, max_grids - len(covered))
-    if budget <= 0 or not by_grid:
-        return StationFill([], 0, uncovered_stations, len(by_grid))
+    chosen: list[ProviderLocation] = []
+    cells: dict[str, tuple[tuple[int, int], ProviderLocation]] = {}
+    if budget > 0 and by_grid:
+        from kma import to_latlon
 
-    from kma import to_latlon
-
-    cells = {}
-    for nx, ny in by_grid:
-        latitude, longitude = to_latlon(nx, ny)
-        cells[f"grid-{nx}-{ny}"] = (nx, ny), ProviderLocation(
-            location_id=f"grid-{nx}-{ny}", latitude=latitude, longitude=longitude
-        )
-    chosen = spatially_even_subset([cell for _, cell in cells.values()], budget)
+        for nx, ny in by_grid:
+            latitude, longitude = to_latlon(nx, ny)
+            cells[f"grid-{nx}-{ny}"] = (nx, ny), ProviderLocation(
+                location_id=f"grid-{nx}-{ny}", latitude=latitude, longitude=longitude
+            )
+        chosen = spatially_even_subset([cell for _, cell in cells.values()], budget)
     filled = [
-        station
-        for picked in chosen
-        for station in sorted(
-            by_grid[cells[picked.location_id][0]], key=lambda item: item.location.location_id
-        )
+        *on_covered,
+        *(station for picked in chosen for station in by_grid[cells[picked.location_id][0]]),
     ]
-    return StationFill(filled, len(chosen), uncovered_stations, len(by_grid))
+    return StationFill(
+        filled,
+        grids_filled=len(chosen),
+        grids_shared=covered_station_grids,
+        stations_total=len(stations),
+        grids_total=len(by_grid) + covered_station_grids,
+    )
 
 
 def _kma_alert_targets(
