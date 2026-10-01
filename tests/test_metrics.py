@@ -373,3 +373,53 @@ def test_multiprocess_http_listener_cleans_after_worker_is_killed(tmp_path) -> N
             worker.wait(timeout=5)
         listener.terminate()
         listener.wait(timeout=5)
+
+
+def test_forward_partition_days_is_exported_only_by_the_scrape_that_computes_it() -> None:
+    """The Dagster code-server imports metrics too and exported this gauge as 0.
+
+    On 2026-10-01 production Prometheus saw ``ktw_forward_partition_days`` from
+    both jobs: 7 from the API, which computes it, and 0 from the code-server,
+    which never does -- a false "the partitions have run out" for any rule on
+    ``<= 3``.  The shared payload every process serves must not carry it.
+    """
+    from types import SimpleNamespace
+
+    assert b"ktw_forward_partition_days" not in metrics_payload()
+
+    admin_token = "admin-token-for-metrics-tests-1234"
+    metrics_token = "metrics-token-for-scrape-tests-5678"
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="production",
+        database_url="postgresql+psycopg://weather@127.0.0.1:15432/weather_test",
+        admin_token=admin_token,
+        metrics_token=metrics_token,
+    )
+    repository = SimpleNamespace(forward_partition_days=lambda: 5)
+    client = TestClient(create_app(settings, repository=repository))
+    scraped = client.get("/metrics", headers={"authorization": f"Bearer {metrics_token}"})
+    assert scraped.status_code == 200
+    samples = [
+        line for line in scraped.text.splitlines()
+        if line.startswith("ktw_forward_partition_days")
+    ]
+    assert samples == ["ktw_forward_partition_days 5.0"]
+    # Computing it for one scrape must not leak it into what other processes serve.
+    assert b"ktw_forward_partition_days" not in metrics_payload()
+
+
+def test_the_forward_partition_alert_reads_only_the_api_job() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    rules = yaml.safe_load(Path("deploy/prometheus/alerts.yml").read_text(encoding="utf-8"))
+    alerts = {
+        rule["alert"]: rule
+        for group in rules["groups"]
+        for rule in group["rules"]
+        if "alert" in rule
+    }
+    expr = alerts["KorTravelWeatherForwardPartitionsLow"]["expr"]
+    assert 'ktw_forward_partition_days{job="kor-travel-weather-api"}' in expr

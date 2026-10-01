@@ -31,6 +31,7 @@ from prometheus_client import (
     multiprocess,
     start_http_server,
 )
+from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.mmap_dict import MmapedDict
 from prometheus_client.multiprocess import MultiProcessCollector
 
@@ -333,12 +334,6 @@ HISTORY_PURGED_SOURCES = Counter(
     "Source records deleted by the retention purge.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
-FORWARD_PARTITION_DAYS = Gauge(
-    "ktw_forward_partition_days",
-    "Whole days of dated weather_values partitions ahead of today (-1: none).",
-    multiprocess_mode="livemax",
-    registry=_INSTRUMENTATION_REGISTRY,
-)
 METRIC_ERRORS = Counter(
     "ktw_metrics_errors_total",
     "Instrumentation errors swallowed to keep the data path healthy.",
@@ -577,9 +572,34 @@ def observe_history_purged(values: int, sources: int) -> None:
         _safe("history_purged", update)
 
 
-def observe_forward_partition_days(days: int | None) -> None:
-    """Set at scrape time from the catalog; see ``WeatherRepository.forward_partition_days``."""
-    _safe("forward_partitions", lambda: FORWARD_PARTITION_DAYS.set(-1 if days is None else days))
+FORWARD_PARTITION_DAYS_METRIC = "ktw_forward_partition_days"
+
+
+def forward_partition_days_exposition(days: int | None) -> bytes:
+    """One scrape's ``ktw_forward_partition_days`` sample, for the API only.
+
+    Deliberately not a ``Gauge`` on the shared registry.  Every process that
+    imports this module exports a registered unlabelled gauge -- at 0 until
+    something sets it -- and in multiprocess mode even a gauge on a private
+    registry is written to the shared value files.  The Dagster code-server
+    imports this module but never computes the value, so it exported 0, which
+    an alert on ``<= 3`` reads as "the window has run out".  A collector-built
+    family is serialised here and nowhere else: only the scrape that computed
+    the value carries it.  ``-1`` means no dated partition exists.
+    """
+    registry = CollectorRegistry(auto_describe=False)
+    value = -1 if days is None else days
+
+    class _ForwardPartitionDays:
+        def collect(self) -> Iterator[GaugeMetricFamily]:
+            yield GaugeMetricFamily(
+                FORWARD_PARTITION_DAYS_METRIC,
+                "Whole days of dated weather_values partitions ahead of today (-1: none).",
+                value=value,
+            )
+
+    registry.register(_ForwardPartitionDays())
+    return generate_latest(registry)
 
 
 def metrics_payload() -> bytes:

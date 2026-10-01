@@ -582,14 +582,14 @@ def test_a_replayed_expired_source_is_skipped_not_fatal(monkeypatch) -> None:
 
 
 def test_the_forward_window_is_observable(monkeypatch) -> None:
-    from kortravelweather.metrics import metrics_payload, observe_forward_partition_days
+    from kortravelweather.metrics import forward_partition_days_exposition
 
     repository = _fresh_database(monkeypatch, "head")
     assert repository.forward_partition_days() == 7
     report = repository.purge_expired_history(retention_days=2, ahead_days=7)
     assert report.forward_partition_days == 7
-    observe_forward_partition_days(repository.forward_partition_days())
-    assert b"ktw_forward_partition_days 7.0" in metrics_payload()
+    exposition = forward_partition_days_exposition(repository.forward_partition_days())
+    assert b"ktw_forward_partition_days 7.0" in exposition
 
 
 def test_the_batched_purge_refuses_when_nothing_has_expired(monkeypatch) -> None:

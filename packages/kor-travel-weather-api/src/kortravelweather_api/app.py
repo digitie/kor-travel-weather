@@ -19,7 +19,7 @@ from kortravelweather.metrics import (
     change_http_in_flight,
     metrics_content_type,
     metrics_payload,
-    observe_forward_partition_days,
+    forward_partition_days_exposition,
     observe_http_request,
 )
 from kortravelweather.repository import WeatherRepository, repository_from_settings
@@ -187,15 +187,19 @@ def create_app(
                     },
                 )
         forward_days = getattr(runtime_repository, "forward_partition_days", None)
+        forward_sample = b""
         if callable(forward_days):
             # A catalog read, refreshed per scrape so the alert sees the
             # partitions that exist now rather than at the last nightly run.
+            # Only this scrape carries the sample; see the function's docstring.
             try:
-                observe_forward_partition_days(await run_in_threadpool(forward_days))
+                forward_sample = forward_partition_days_exposition(
+                    await run_in_threadpool(forward_days)
+                )
             except Exception:
                 logger.warning("forward partition gauge refresh failed", exc_info=True)
         try:
-            payload = metrics_payload()
+            payload = metrics_payload() + forward_sample
         except Exception:
             logger.exception("Prometheus metrics collection failed")
             return Response(
