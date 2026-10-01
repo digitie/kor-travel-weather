@@ -23,7 +23,9 @@ from kortravelweather import repository as repository_module
 from kortravelweather.default_partition import establish_floor
 from kortravelweather.models import kst_now
 from kortravelweather.partitions import (
+    DEFAULT_FLOOR_CONSTRAINT,
     DEFAULT_PARTITION,
+    add_default_floor,
     default_partition_floor,
     ensure_forward_partitions,
     existing_partitions,
@@ -274,6 +276,7 @@ def test_purge_deletes_only_expired_rows_in_batches_while_default_stays(monkeypa
         force=True,
     )
 
+    _analyze(repository)
     lines: list[str] = []
     report = purge_report(repository.engine, retention_days=2, log=lines.append, exact=True)
     assert report["expired_rows"] == 2
@@ -294,8 +297,10 @@ def test_purge_deletes_only_expired_rows_in_batches_while_default_stays(monkeypa
             text("SELECT count(*) FROM weather_current_values")
         ).scalar_one() == 0
         assert default_partition_floor(connection) is not None
-    # Idempotent: a second run deletes nothing more.
-    purge_execute(repository.engine, retention_days=2, log=lines.append, pause_seconds=0)
+    # A second run finds nothing expired and refuses rather than re-reading
+    # the whole partition to delete nothing.
+    with pytest.raises(SystemExit, match="no row past retention"):
+        purge_execute(repository.engine, retention_days=2, log=lines.append, pause_seconds=0)
     assert _default_rows(repository) == 1
     assert any("resume with --start-block" in line for line in lines)
 
@@ -331,4 +336,274 @@ def test_purge_swaps_out_a_default_that_is_entirely_past_retention(monkeypatch) 
     _stage_default_row(repository, old + timedelta(hours=2))
     with repository.engine.begin() as connection, pytest.raises(Exception, match="immutable"):
         connection.execute(text(f"DELETE FROM {DEFAULT_PARTITION}"))
+    command.upgrade(Config("alembic.ini"), "head")
+
+
+def _analyze(repository: WeatherRepository) -> None:
+    with repository.engine.connect().execution_options(
+        isolation_level="AUTOCOMMIT"
+    ) as connection:
+        connection.execute(text(f"ANALYZE {DEFAULT_PARTITION}"))
+
+
+def _floor_constraints(repository: WeatherRepository) -> int:
+    with repository.engine.connect() as connection:
+        return connection.execute(
+            text(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid = to_regclass(:t) "
+                "AND conname = :n"
+            ),
+            {"t": DEFAULT_PARTITION, "n": DEFAULT_FLOOR_CONSTRAINT},
+        ).scalar_one()
+
+
+def _populated_default(monkeypatch) -> WeatherRepository:
+    repository = _fresh_database(monkeypatch, "0016_purge_lookup_indexes")
+    _stage_default_row(repository, kst_now())
+    command.upgrade(Config("alembic.ini"), "head")
+    return repository
+
+
+def test_a_failure_after_validation_leaves_no_floor_behind(monkeypatch) -> None:
+    """H3: a validated floor must imply its partitions exist.
+
+    The partitions are created in the validating transaction, so a failure
+    there rolls the validation back, and the unvalidated floor left by step 1
+    is removed -- whatever the failure was.
+    """
+    import kortravelweather.default_partition as operator_steps
+
+    repository = _populated_default(monkeypatch)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("connection lost")
+
+    monkeypatch.setattr(operator_steps, "ensure_forward_partitions", broken)
+    with pytest.raises(RuntimeError, match="connection lost"):
+        establish_floor(
+            repository.engine,
+            floor_day=kst_now().date() + timedelta(days=1),
+            ahead_days=3,
+            log=lambda _: None,
+            force=True,
+        )
+    assert _floor_constraints(repository) == 0
+    assert partition_name(kst_now().date() + timedelta(days=1)) not in _names(repository)
+    command.upgrade(Config("alembic.ini"), "head")
+
+
+def test_a_validated_floor_always_has_its_partitions(monkeypatch) -> None:
+    repository = _populated_default(monkeypatch)
+    today = kst_now().date()
+    establish_floor(
+        repository.engine,
+        floor_day=today + timedelta(days=1),
+        ahead_days=4,
+        log=lambda _: None,
+        force=True,
+    )
+    with repository.engine.connect() as connection:
+        floor = default_partition_floor(connection)
+    assert floor == kst_midnight(today + timedelta(days=1))
+    names = _names(repository)
+    for offset in range(1, 5):
+        assert partition_name(today + timedelta(days=offset)) in names, offset
+    command.upgrade(Config("alembic.ini"), "head")
+
+
+def test_a_leftover_unvalidated_floor_is_removed_by_the_next_run_and_the_nightly_job(
+    monkeypatch,
+) -> None:
+    """An interrupted script (kill -9, lost connection) can leave step 1 behind.
+
+    Left alone it would refuse every fact from its date on, with no partition
+    to take them.  Both the next script run and the nightly job remove it.
+    """
+    repository = _populated_default(monkeypatch)
+    today = kst_now().date()
+    with repository.engine.begin() as connection:
+        add_default_floor(connection, kst_midnight(today + timedelta(days=1)))
+    assert _floor_constraints(repository) == 1
+
+    report = repository.purge_expired_history(retention_days=2, ahead_days=3)
+    assert report.default_floor is None
+    assert _floor_constraints(repository) == 0, "the nightly job kept a leftover floor"
+
+    with repository.engine.begin() as connection:
+        add_default_floor(connection, kst_midnight(today + timedelta(days=1)))
+    lines: list[str] = []
+    establish_floor(
+        repository.engine,
+        floor_day=today + timedelta(days=2),
+        ahead_days=3,
+        log=lines.append,
+        force=True,
+    )
+    assert any("interrupted run" in line for line in lines)
+    with repository.engine.connect() as connection:
+        assert default_partition_floor(connection) == kst_midnight(today + timedelta(days=2))
+    command.upgrade(Config("alembic.ini"), "head")
+
+
+def test_a_rerun_rechecks_the_time_guard(monkeypatch) -> None:
+    repository = _populated_default(monkeypatch)
+    today = kst_now().date()
+    with repository.engine.begin() as connection:
+        add_default_floor(connection, kst_midnight(today + timedelta(days=1)))
+    # A floor less than three hours away is refused, leftover or not.
+    with pytest.raises(SystemExit):
+        establish_floor(repository.engine, floor_day=today, ahead_days=3, log=lambda _: None)
+    assert _floor_constraints(repository) == 0
+    command.upgrade(Config("alembic.ini"), "head")
+
+
+def test_the_lock_wait_outlasts_the_deadlock_check(monkeypatch) -> None:
+    """H2: autovacuum yields only to a waiter that reaches its deadlock check.
+
+    A session holding SHARE UPDATE EXCLUSIVE on DEFAULT -- what an autovacuum
+    holds -- for longer than ``deadlock_timeout``: the floor step must still
+    get through on its first attempt.
+    """
+    import threading
+    import time as clock
+
+    import kortravelweather.default_partition as operator_steps
+    from kortravelweather.partitions import ddl_lock_timeout_ms
+
+    repository = _populated_default(monkeypatch)
+    with repository.engine.connect() as connection:
+        deadlock_ms = connection.execute(
+            text("SELECT setting::int FROM pg_settings WHERE name = 'deadlock_timeout'")
+        ).scalar_one()
+        assert ddl_lock_timeout_ms(connection) > deadlock_ms
+    monkeypatch.setattr(operator_steps, "LOCK_RETRY_ATTEMPTS", 1)
+    held = threading.Event()
+
+    def hold() -> None:
+        with repository.engine.begin() as connection:
+            connection.execute(
+                text(f"LOCK TABLE {DEFAULT_PARTITION} IN SHARE UPDATE EXCLUSIVE MODE")
+            )
+            held.set()
+            clock.sleep(deadlock_ms / 1000 + 0.5)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    held.wait(10)
+    try:
+        establish_floor(
+            repository.engine,
+            floor_day=kst_now().date() + timedelta(days=1),
+            ahead_days=2,
+            log=lambda _: None,
+            force=True,
+        )
+    finally:
+        holder.join()
+    with repository.engine.connect() as connection:
+        assert default_partition_floor(connection) is not None
+    command.upgrade(Config("alembic.ini"), "head")
+
+
+def test_dropping_a_partition_keeps_the_projection_foreign_key_valid(monkeypatch) -> None:
+    """H1: the foreign key is dropped around the detach and validated after."""
+    from kortravelweather.partitions import ensure_partitions
+
+    repository = _fresh_database(monkeypatch, "head")
+    old_day = kst_now().date() - timedelta(days=30)
+    with repository.engine.begin() as connection:
+        ensure_partitions(connection, start=old_day, end=old_day)
+    repository.purge_expired_history(retention_days=2)
+    assert partition_name(old_day) not in _names(repository)
+    with repository.engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT conname, convalidated FROM pg_constraint WHERE contype = 'f' "
+                "AND conrelid = 'weather_current_values'::regclass "
+                "AND confrelid = 'weather_values'::regclass"
+            )
+        ).all()
+    assert rows and all(valid for _, valid in rows), rows
+
+
+def test_a_replayed_expired_source_is_skipped_not_fatal(monkeypatch) -> None:
+    """M2: a replay keeps its first fetch time, which retention may have dropped.
+
+    Its facts land between the floor and the oldest remaining partition, where
+    no partition takes them and DEFAULT's floor refuses them; that used to fail
+    the whole batch.  They are past retention, so they are skipped.
+    """
+    from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
+    from kortravelweather.partitions import drop_partitions_before
+
+    repository = _fresh_database(monkeypatch, "head")
+    today = kst_now().date()
+    with repository.engine.begin() as connection:
+        drop_partitions_before(connection, today)  # yesterday's partition is gone
+    repository.upsert_location(
+        WeatherLocation(location_id="m2", name="m2", latitude=37.5, longitude=127.0)
+    )
+    stale = kst_midnight(today) - timedelta(hours=12)
+    fresh = kst_now()
+
+    def record(key: str, at: datetime) -> dict:
+        return {
+            "source_record_key": key,
+            "provider": "p",
+            "dataset_key": "d",
+            "source_entity_type": "weather_response",
+            "source_entity_id": "m2",
+            "payload": {"key": key},
+            "fetched_at": at,
+        }
+
+    def value(key: str, at: datetime) -> WeatherValue:
+        return WeatherValue(
+            location_id="m2",
+            provider="p",
+            dataset_key="d",
+            weather_domain="weather",
+            forecast_style=ForecastStyle.SHORT,
+            metric_key="TMP",
+            target_at=at,
+            known_at=at,
+            value_number=1,
+            source_record_key=key,
+        )
+
+    loaded = repository.ingest_batch(
+        source_records=[record("stale", stale), record("fresh", fresh)],
+        values=[value("stale", stale), value("fresh", fresh)],
+    )
+    assert loaded == 1
+    with repository.engine.connect() as connection:
+        keys = connection.execute(text("SELECT source_record_key FROM weather_values")).scalars()
+        assert list(keys) == ["fresh"]
+
+
+def test_the_forward_window_is_observable(monkeypatch) -> None:
+    from kortravelweather.metrics import metrics_payload, observe_forward_partition_days
+
+    repository = _fresh_database(monkeypatch, "head")
+    assert repository.forward_partition_days() == 7
+    report = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert report.forward_partition_days == 7
+    observe_forward_partition_days(repository.forward_partition_days())
+    assert b"ktw_forward_partition_days 7.0" in metrics_payload()
+
+
+def test_the_batched_purge_refuses_when_nothing_has_expired(monkeypatch) -> None:
+    from kortravelweather.default_partition import purge_execute
+
+    repository = _populated_default(monkeypatch)
+    establish_floor(
+        repository.engine,
+        floor_day=kst_now().date() + timedelta(days=1),
+        ahead_days=2,
+        log=lambda _: None,
+        force=True,
+    )
+    _analyze(repository)
+    with pytest.raises(SystemExit, match="no row past retention"):
+        purge_execute(repository.engine, retention_days=2, log=lambda _: None)
     command.upgrade(Config("alembic.ini"), "head")

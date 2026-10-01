@@ -9,18 +9,22 @@ foreign-key impact on ``weather_current_values``.
 ``--execute`` picks the strategy from DEFAULT's floor (added by
 ``weather_values_forward_partitions.py``, which must run first):
 
-* every row past retention (floor <= cutoff): detach and drop DEFAULT and
-  create a new empty one with the same floor -- one short DDL transaction,
-  all the space back at once, no dead tuples, no vacuum.  Writers wait for that
-  transaction only (ACCESS EXCLUSIVE on weather_values while PostgreSQL checks
-  that no projection row still references the detached rows).
+* every row past retention (floor <= cutoff): one short DDL transaction, locks
+  taken up front (weather_values then weather_current_values, ACCESS
+  EXCLUSIVE) with a statement timeout: drop the projection's foreign key,
+  detach and drop DEFAULT, create a new empty one with the same floor, re-add
+  the foreign key NOT VALID -- catalog changes only, so writers wait
+  milliseconds.  The foreign key is then validated under SHARE UPDATE EXCLUSIVE
+  (one read of the 3.6M-row projection; writers carry on).  All the space comes
+  back at once; no dead tuples, no vacuum.
 * some rows still inside retention: delete only the expired ones, walking the
   heap 2,048 pages (16 MB) per short transaction with ROW EXCLUSIVE -- readers
-  and writers carry on -- then a plain VACUUM (SHARE UPDATE EXCLUSIVE, writers
-  carry on).  The files keep their size until the swap above.
+  and writers carry on -- then a throttled VACUUM (SHARE UPDATE EXCLUSIVE,
+  writers carry on).  Refused when statistics show nothing expired.  The files
+  keep their size until the swap above.
 
-In both cases projection rows pointing before the cutoff are deleted first,
-10,000 per transaction: the foreign key is ON DELETE RESTRICT.
+In both cases projection rows pointing before the cutoff are deleted first by
+the same page walk: the foreign key is ON DELETE RESTRICT.
 
 Idempotent and resumable: progress lines print ``--start-block`` to resume a
 walk; a range already cleaned deletes nothing.

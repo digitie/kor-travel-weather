@@ -24,12 +24,23 @@ Today's partition cannot be created: DEFAULT already holds today's rows, and
 moving them is exactly the scan this avoids.  Today's rows stay in DEFAULT and
 are removed with it by ``weather_values_purge_default.py`` once past retention.
 
-Locks and durations (see ``kortravelweather.default_partition.establish_floor``):
-ADD CONSTRAINT NOT VALID -- ACCESS EXCLUSIVE on DEFAULT, milliseconds, 500 ms
-lock timeout and retry; VALIDATE -- SHARE UPDATE EXCLUSIVE, inserts continue,
-one sequential read of the 36 GB heap (tens of minutes under load); each
-CREATE ... PARTITION OF -- SHARE ROW EXCLUSIVE on weather_current_values plus
-ACCESS EXCLUSIVE on weather_values, milliseconds, 500 ms timeout and retry.
+Run it off-peak (the VALIDATE reads all of DEFAULT) and at least 3 hours before
+the floor -- the default floor is the next KST midnight, so early morning KST
+gives the most room.  It holds the retention job's advisory lock while it runs.
+
+Steps and locks (see ``kortravelweather.default_partition.establish_floor``):
+
+1. ADD CONSTRAINT ... NOT VALID: ACCESS EXCLUSIVE on DEFAULT, milliseconds.
+2. One transaction: VALIDATE (SHARE UPDATE EXCLUSIVE, inserts continue; one
+   sequential read of the 21 GB heap, tens of minutes), then -- in a savepoint
+   retried until it gets its locks -- ACCESS EXCLUSIVE on weather_values and
+   SHARE ROW EXCLUSIVE on weather_current_values and one CREATE ... PARTITION OF
+   per day, milliseconds each because the floor proves DEFAULT empty for them.
+
+A validated floor therefore always comes with its partitions.  Every lock wait
+is 3 x deadlock_timeout, so an autovacuum in the way is cancelled rather than
+outwaited; any failure removes the unvalidated floor, and a rerun (or the
+nightly job) removes one an interrupted run left behind.
 """
 
 from __future__ import annotations

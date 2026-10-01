@@ -13,11 +13,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.metrics import (
     change_http_in_flight,
     metrics_content_type,
     metrics_payload,
+    observe_forward_partition_days,
     observe_http_request,
 )
 from kortravelweather.repository import WeatherRepository, repository_from_settings
@@ -184,6 +186,14 @@ def create_app(
                         "x-content-type-options": "nosniff",
                     },
                 )
+        forward_days = getattr(runtime_repository, "forward_partition_days", None)
+        if callable(forward_days):
+            # A catalog read, refreshed per scrape so the alert sees the
+            # partitions that exist now rather than at the last nightly run.
+            try:
+                observe_forward_partition_days(await run_in_threadpool(forward_days))
+            except Exception:
+                logger.warning("forward partition gauge refresh failed", exc_info=True)
         try:
             payload = metrics_payload()
         except Exception:

@@ -31,9 +31,12 @@ from kortravelweather.partitions import (
     add_default_floor,
     default_partition_floor,
     default_partition_is_empty,
+    drop_unvalidated_floor,
     ensure_default_partition,
     ensure_forward_partitions,
     kst_midnight,
+    lock_for_partition_ddl,
+    missing_forward_days,
     validate_default_floor,
 )
 
@@ -57,17 +60,18 @@ def upgrade() -> None:
                 "run scripts/weather_values_forward_partitions.py"
             )
             return
+        lock_for_partition_ddl(bind)
+        drop_unvalidated_floor(bind)
         add_default_floor(bind, kst_midnight(kst_now().date() - timedelta(days=1)))
         validate_default_floor(bind)
         floor = default_partition_floor(bind)
         assert floor is not None
     today = kst_now().date()
-    ensure_forward_partitions(
-        bind,
-        floor=floor,
-        start=today - timedelta(days=1),
-        end=today + timedelta(days=FORWARD_DAYS),
-    )
+    start, end = today - timedelta(days=1), today + timedelta(days=FORWARD_DAYS)
+    if missing_forward_days(bind, floor=floor, start=start, end=end):
+        # Same locks, order and timeouts as the nightly job, on either path.
+        lock_for_partition_ddl(bind)
+        ensure_forward_partitions(bind, floor=floor, start=start, end=end)
 
 
 def downgrade() -> None:

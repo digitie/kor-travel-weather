@@ -38,4 +38,5 @@ def run_weather_retention_purge(
         "sources_deleted": report.sources_deleted,
         "rows_outside_any_partition": report.rows_outside_any_partition,
         "default_floor": report.default_floor.isoformat() if report.default_floor else None,
+        "forward_partition_days": report.forward_partition_days,
     }

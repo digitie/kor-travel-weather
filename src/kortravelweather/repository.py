@@ -62,19 +62,27 @@ from .metrics import (
 from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
     add_default_floor,
+    dated_partition_bounds,
     default_partition_floor,
     default_partition_is_empty,
     default_partition_rows,
+    delete_dangling_projection_rows,
+    drop_foreign_keys_into_facts,
     drop_partitions_before,
+    drop_unvalidated_floor,
     ensure_default_partition,
     ensure_forward_partitions,
     ensure_partitions,
     existing_partitions,
+    floor_constraint_present,
+    forward_partition_days,
     is_lock_conflict,
     kst_midnight,
     lock_for_partition_ddl,
     missing_forward_days,
+    readd_foreign_keys_not_valid,
     validate_default_floor,
+    validate_foreign_keys_into_facts,
 )
 from .settings import WeatherSettings, get_settings
 
@@ -1177,6 +1185,7 @@ class WeatherRepository:
         value: WeatherValue,
         *,
         allow_replay_payload_mismatch: bool = False,
+        expired_window: tuple[datetime, datetime] | None = None,
     ) -> bool:
         self._lock_location_session(session, value.location_id)
         source_key = value.source_record_key or _metric_source_key(value)
@@ -1224,6 +1233,13 @@ class WeatherRepository:
             # turn an identical response into a false immutable conflict.
             canonical_known = _canonical_datetime(source.fetched_at)
             canonical_collected = _canonical_datetime(source.fetched_at)
+        if (
+            expired_window is not None
+            and canonical_known is not None
+            and expired_window[0] <= canonical_known < expired_window[1]
+        ):
+            # Already past retention on arrival: see ``_expired_fact_window``.
+            return False
         # The primary key is composite now that the table is partitioned by
         # ``known_at``; ``value_id`` alone no longer identifies a row.
         row = session.get(WeatherValueRow, (value_id, canonical_known))
@@ -1422,11 +1438,13 @@ class WeatherRepository:
         # taking the same advisory/row locks in opposite orders.
         for location_id in sorted({value.location_id for value in facts}):
             self._lock_location_session(session, location_id)
+        expired_window = self._expired_fact_window(session) if facts else None
         loaded = sum(
             self._insert_value_session(
                 session,
                 value,
                 allow_replay_payload_mismatch=value.source_record_key in replay_source_keys,
+                expired_window=expired_window,
             )
             for value in facts
         )
@@ -1562,6 +1580,30 @@ class WeatherRepository:
             str(row.source_record_key),
             str(row.value_id),
         )
+
+    @staticmethod
+    def _expired_fact_window(session: Session) -> tuple[datetime, datetime] | None:
+        """``[floor, oldest dated partition)``: facts here have no home and are expired.
+
+        A replayed source keeps its first fetch time as ``known_at`` (see
+        ``_insert_value_session``), so replaying a response first seen weeks
+        ago dates its facts weeks ago.  Below DEFAULT's floor they land in
+        DEFAULT, as any backfill does.  At or after the floor their day's
+        partition is the one retention already dropped -- the window here --
+        so no partition takes them and DEFAULT's floor refuses them, which used
+        to fail the whole batch.  They are past retention by construction, so
+        they are skipped like an idempotent replay (``False``: not loaded)
+        instead; resurrecting them would also put an expired value back in
+        the projection.  Two catalog reads per batch.
+        """
+        connection = session.connection()
+        floor = default_partition_floor(connection)
+        if floor is None:
+            return None
+        lowers = [lower for lower, _ in dated_partition_bounds(connection) if lower >= floor]
+        if not lowers or min(lowers) <= floor:
+            return None
+        return floor, min(lowers)
 
     def _refresh_current_projection_session(
         self, session: Session, facts: Sequence[WeatherValue]
@@ -2458,13 +2500,13 @@ class WeatherRepository:
         tombstone and a WAL record per row and then needed a vacuum -- hours
         every night on this disk to remove data nobody wanted.
 
-        Four short transactions, not one.  Inside one long transaction the
+        Short transactions, not one.  Inside one long transaction the
         partition DDL held ACCESS EXCLUSIVE on the fact table through the
         pointer delete and the source purge as well, and on 2026-09-30 it
-        deadlocked an ingest.  Each DDL step now takes its locks up front, with
-        a lock timeout below the deadlock timeout, and is retried on a lost
-        race (``_partition_ddl``): it never holds the table longer than its
-        catalog change and never makes an ingest the deadlock victim.
+        deadlocked an ingest.  Each DDL step now takes its locks up front in
+        the ingest's order, with a lock timeout longer than the deadlock
+        timeout (so an autovacuum in the way is cancelled) and a statement
+        timeout, and is retried on a lost race (``_partition_ddl``).
 
         1. Create the forward partitions -- tomorrow's before yesterday's go,
            because a missing partition is an insert that fails.  Only days at
@@ -2474,7 +2516,11 @@ class WeatherRepository:
            step 3 refuse -- a fact must never vanish from under one.  A location
            that stopped reporting therefore loses its current value once its
            last reading ages out, which is what "we keep N days" means.
-        3. Drop the expired dated partitions.
+        3. Drop the expired dated partitions.  The projection's foreign key is
+           dropped and re-added ``NOT VALID`` around the detach in the same
+           transaction -- otherwise the detach checks every projection row
+           while holding the whole tree -- and validated afterwards under
+           SHARE UPDATE EXCLUSIVE, while writers carry on.
         4. Delete the source records nothing cites any more.  They are not
            partitioned -- they are small -- so they are still deleted.
         """
@@ -2487,6 +2533,8 @@ class WeatherRepository:
                 connection, start=today, end=today + timedelta(days=ahead_days)
             )
         )
+        with self.engine.connect() as connection:
+            forward_days = forward_partition_days(connection, today=today)
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
@@ -2498,6 +2546,7 @@ class WeatherRepository:
         dropped = self._partition_ddl(
             lambda connection: self._drop_expired_partitions(connection, cutoff.date())
         )
+        self._validate_fact_foreign_keys()
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
@@ -2516,6 +2565,7 @@ class WeatherRepository:
             sources_deleted=int(sources or 0),
             rows_outside_any_partition=stranded,
             default_floor=floor,
+            forward_partition_days=forward_days,
         )
         observe_history_purged(len(dropped), report.sources_deleted)
         return report
@@ -2524,8 +2574,8 @@ class WeatherRepository:
         """Run one partition-DDL transaction, retrying a lost lock race.
 
         ``step`` takes its locks through ``lock_for_partition_ddl``, which gives
-        up after ``DDL_LOCK_TIMEOUT_MS``.  Losing that race is normal on a busy
-        table -- an ingest holding the projection for a few seconds -- so it is
+        up after ``ddl_lock_timeout_ms``.  Losing that race is normal on a busy
+        table -- an ingest holding the fact table for a few seconds -- so it is
         retried, with the transaction rolled back in between so nothing is
         held while waiting.
         """
@@ -2557,6 +2607,13 @@ class WeatherRepository:
         ensure_default_partition(connection)
         floor = default_partition_floor(connection)
         if floor is None:
+            # An unvalidated floor here is a leftover: the operator script that
+            # adds one holds this job's advisory lock for as long as it runs,
+            # so while this transaction holds it no script is mid-way.  Left in
+            # place it would refuse every fact from its date on.
+            if floor_constraint_present(connection):
+                lock_for_partition_ddl(connection)
+                drop_unvalidated_floor(connection)
             if not default_partition_is_empty(connection):
                 return [], None
             lock_for_partition_ddl(connection)
@@ -2576,8 +2633,40 @@ class WeatherRepository:
             for _, lower in existing_partitions(connection)
         ):
             return []
-        lock_for_partition_ddl(connection)
-        return drop_partitions_before(connection, cutoff)
+        lock_for_partition_ddl(connection, drop_foreign_keys=True)
+        keys = drop_foreign_keys_into_facts(connection)
+        dropped = drop_partitions_before(connection, cutoff)
+        readd_foreign_keys_not_valid(connection, keys)
+        return dropped
+
+    def _validate_fact_foreign_keys(self) -> None:
+        """Validate the foreign keys ``_drop_expired_partitions`` re-added.
+
+        SHARE UPDATE EXCLUSIVE on the projection: writers carry on.  A pointer
+        written to an expiring fact between the pointer delete and the drop
+        would fail validation; such dangling rows are deleted and validation
+        retried once.
+        """
+        for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
+            try:
+                with self.engine.begin() as connection:
+                    validate_foreign_keys_into_facts(connection)
+                return
+            except OperationalError as exc:
+                if not is_lock_conflict(exc) or attempt == PARTITION_DDL_ATTEMPTS:
+                    raise
+                time.sleep(PARTITION_DDL_RETRY_SECONDS)
+            except IntegrityError:
+                with self.engine.begin() as connection:
+                    delete_dangling_projection_rows(connection)
+                with self.engine.begin() as connection:
+                    validate_foreign_keys_into_facts(connection)
+                return
+
+    def forward_partition_days(self) -> int | None:
+        """Days of dated partitions ahead of today (see ``partitions``)."""
+        with self.engine.connect() as connection:
+            return forward_partition_days(connection, today=kst_now().date())
 
     def heartbeat_sync_run(self, run_id: str) -> bool:
         """Refresh a running sync lease using an atomic status check."""

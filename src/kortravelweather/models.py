@@ -260,6 +260,9 @@ class PurgeReport(BaseModel):
     #: holds rows and has no floor, so no forward partition could be created
     #: without scanning it -- run ``scripts/weather_values_forward_partitions.py``.
     default_floor: datetime | None = None
+    #: Whole days of dated partitions ahead of today.  At 0 tomorrow's facts
+    #: have nowhere to go; ``None`` means there is no dated partition at all.
+    forward_partition_days: int | None = None
 
 
 def kst_now() -> datetime:
