@@ -136,6 +136,11 @@ DEFAULT_FLOOR_CONSTRAINT = f"{DEFAULT_PARTITION}_known_at_floor"
 DDL_STATEMENT_TIMEOUT = "60s"
 
 
+def kst_midnight(day: date) -> datetime:
+    """Public name of the KST day boundary every partition bound uses."""
+    return _kst_midnight(day)
+
+
 def ddl_lock_timeout_ms(connection: Connection) -> int:
     """How long partition DDL waits for a lock: three ``deadlock_timeout``s.
 
@@ -227,7 +232,9 @@ def readd_foreign_keys_not_valid(
 ) -> None:
     """New rows are checked from now on; existing ones by ``validate_foreign_keys``."""
     for table, name, definition in keys:
-        connection.execute(text(f"ALTER TABLE {table} ADD CONSTRAINT {name} {definition} NOT VALID"))
+        connection.execute(
+            text(f"ALTER TABLE {table} ADD CONSTRAINT {name} {definition} NOT VALID")
+        )
 
 
 def unvalidated_foreign_keys_into_facts(connection: Connection) -> list[tuple[str, str]]:
