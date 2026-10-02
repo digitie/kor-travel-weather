@@ -43,9 +43,9 @@ targets)` 한 줄을 남긴다.
 재시도(`PROVIDER_RETRIES`, 기본 3)는 일시 오류에서만 호출을 더 쓰므로 36%는 키를 나눠
 쓰는 다른 사용처와 재시도 몫으로 남긴다. 명시 target은 이 위에 더해진다.
 
-**한 run의 크기.** KMA는 모든 응답이 유효할 때만 한 `ingest_batch` transaction으로
-publish한다(아래 단락) — 외부 provider의 분할 publish와 달리 부분 publish가 없다는
-계약이라 그대로 두고, 크기를 채우기 예산으로 묶는다. 2026-10-01 운영 catalog(측정소
+**한 run의 크기.** KMA는 모든 응답이 유효할 때만 publish를 시작하고, publish는
+location chunk 단위의 짧은 transaction으로 나눈다(아래 단락). 크기는 채우기 예산으로
+묶는다. 2026-10-01 운영 catalog(측정소
 1,429곳, 1,074격자, 격자당 최대 7곳) 실측으로 150격자는 측정소 196곳, 300격자는 385곳을
 덮는다. 단기예보 응답이 격자당 약 900행이면 150격자 run은 약 18만 fact(fan-out 포함),
 메모리 약 0.36 GiB, 300격자는 약 0.73 GiB다. fact 수는 격자 수 × 격자당 행 수 × 격자당
@@ -65,16 +65,32 @@ publish한다(아래 단락) — 외부 provider의 분할 publish와 달리 부
 entity로 추적한다.
 
 각 grid의 nowcast/ultra-short/short (필요하면 mid) 응답을 남은 row/fact budget
-안에서 bounded stage한다. 모든 응답이 유효하고 non-empty일 때만 full raw source record와 normalized facts를 한
-`ingest_batch` transaction으로 publish한다. N번째 grid 실패, quota/4xx, wrong grid,
-malformed date는 이전 fact를 변경하지 않는다. **특보만은 예외다**: 한 notice가 활성
-location 전체(운영 1,450곳)로 fan-out되므로, 한 transaction으로 publish하면 그 동안
-1,450곳의 location lock을 모두 쥔다(2026-10-01에 한 시간 넘게 쥐고 다른 writer를 전부
-세웠다). 그래서 특보 fact는 `ALERT_PUBLISH_LOCATIONS`(50)곳씩 나눈 짧은 transaction으로
-publish한다. 한 chunk가 실패하면 앞 chunk는 publish된 채 남고 run은 그때까지의
-`values_loaded`로 failed가 된다 — 각 fact는 그 location에 대한 온전한 notice이고 다음
-run의 replay는 이미 있는 fact에 대해 no-op이다. 격자·중기 fact는 그대로 마지막 한
-transaction에서 함께 publish된다. response metadata(endpoint, request
+안에서 bounded stage한다. 모든 응답이 유효하고 non-empty일 때만 publish를 시작한다 —
+N번째 grid 실패, quota/4xx, wrong grid, malformed date는 아무 fact도 publish하지 않는다.
+publish는 **location chunk 단위의 짧은 transaction**이다: 격자·중기 fact는
+`GRID_PUBLISH_LOCATIONS`(50)곳·`GRID_PUBLISH_VALUES`(5,000) fact 이하, 특보 fact는
+`ALERT_PUBLISH_LOCATIONS`(50)곳씩(한 location의 fact는 나누지 않는다). 한 transaction은
+그 chunk의 location lock만 쥔다. 예전에는 run 전체를 한 transaction으로 publish해 그
+동안 run이 닿는 모든 location lock을 쥐었다 — 특보는 2026-10-01에 1,450곳을 한 시간
+넘게, 단기예보는 2026-10-02에 1,103곳을 4시간 3분 동안 쥐고 다른 KMA job을 2시간 넘게
+세웠다. 그래서 publish **도중**의 실패(DB 오류, lease 상실)에 대해서만 all-or-nothing을
+포기한다: 앞 chunk는 publish된 채 남고 run은 그때까지의 `values_loaded`로 failed가 된다.
+publish된 chunk는 그 location들에 대한 온전한 응답의 fact 전부이고, 다음 run의 replay는
+이미 있는 fact에 대해 no-op이다. 각 chunk는 자기 fact가 인용하는 source record를 함께
+싣고 가므로 매 transaction이 run row를 잠그고 lease 소유를 다시 확인한다. 어떤 fact도
+인용하지 않는 source(어느 location에도 맞지 않은 특보)는 run을 끝내는 마지막
+transaction에 기록된다.
+
+repository 쪽 ingest transaction은 lock 대기를 `3 × deadlock_timeout`(partition DDL과
+같은 `ddl_lock_timeout_ms`)으로 묶고, lock 경합에서 지면 rollback 뒤 3초 간격으로 최대
+20회 다시 시도한다 — 오래 쥔 holder 뒤에 몇 시간씩 줄 서지 않는다. statement timeout은
+두지 않는다: transaction 길이는 chunk 크기가 묶고, n150처럼 디스크 대기가 큰 호스트에서
+정상 chunk를 거짓 실패시키지 않기 위해서다. location·source advisory lock은
+transaction당 한 번만 잡고(예전엔 fact마다 네 번 왕복), replay 확인은 1,000건씩 묶은
+primary-key 조회, current projection 갱신은 `INSERT ... ON CONFLICT DO UPDATE ... WHERE
+newer` 한 문장(1,000행씩)이다 — 비교·교체가 문장 안에서 행 단위로 원자적이다.
+
+response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직
 없으므로 source idempotency가 반복 응답의 저장 비용을 제어하고, 호출 비용을 줄이는
 cursor는 후속 범위다.
@@ -118,6 +134,21 @@ resource가 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`와 provider별 secret/base UR
 원자적이고, 중간에 실패하면 **이미 publish된 배치는 남는다**. fact는 immutable이고
 `source_record_key`로 식별되므로 부분 sweep은 단지 갱신된 지점이 적다는 뜻이며, 재시도는
 빠진 것만 채운다. 실패한 run은 그때까지 적재한 건수를 기록한다.
+
+`_PUBLISH_BATCH_VALUES`(50,000)는 **메모리** 상한일 뿐이다. stage된 배치는 KMA와 같은
+`chunked_publish` location chunk(50곳·5,000 fact 이하, location 단위로만 나눔)로
+publish한다 — 50,000 fact 한 transaction은 그 ~37곳의 lock을 37 GB fact table 위에서
+끝날 때까지 쥐었고, ingest lock timeout이 생긴 뒤로는 그 뒤에 선 KMA chunk가 기다리는
+대신 실패한다. AirKorea 측정값과 지역 provider(해수욕장·산악·고속도로)도 같은 chunk로
+publish한다. run을 끝내는 transaction은 어떤 fact도 인용하지 않는 source만 싣고 location
+lock을 잡지 않는다.
+
+**run의 `values_loaded`는 chunk가 함께 기록한다.** 각 chunk transaction은 run row를 잠근 채
+자기가 적재한 수를 더하므로, stale-run reaper가 먼저 run을 failed로 만들어 collector의
+failed finish가 no-op이 돼도 row에는 실제로 commit된 수가 남는다. `finish_sync_run`의
+`values_loaded`를 생략하면 그 기록을 유지한다. publish는 동기 repository 호출이고 lock
+경합 재시도의 pause도 blocking이므로, event loop 위에서 publish하는 collector(KMA,
+AirKorea)는 `asyncio.to_thread`로 부른다.
 
 중간 target의 timeout·429·4xx·schema 오류는 여전히 run을 실패시킨다.
 provider가 반환한 `source_record_key`는 response payload와 redacted request

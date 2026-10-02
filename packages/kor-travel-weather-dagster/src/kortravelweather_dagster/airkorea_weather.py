@@ -23,6 +23,8 @@ from kortravelweather.providers.airkorea import (
 from kortravelweather.providers.base import redact_secrets
 from kortravelweather.repository import WeatherRepository
 
+from .chunked_publish import chunk_publications, uncited_sources
+
 
 def run_airkorea_weather_sync(
     *,
@@ -99,7 +101,8 @@ async def _run_airkorea_weather_sync(
             catalog_sources = [
                 {**source, "run_id": catalog_run.run_id} for _, source in catalog_entries
             ]
-            loaded, finished = repository.publish_and_finish(
+            loaded, finished = await asyncio.to_thread(
+                repository.publish_and_finish,
                 run_id=catalog_run.run_id,
                 source_records=catalog_sources,
                 values=[],
@@ -269,10 +272,21 @@ async def _run_airkorea_weather_sync(
         ]
         failed_stations.extend(missing_locations)
         try:
-            loaded, finished = repository.publish_and_finish(
+            # Stations publish in short location chunks (``chunked_publish``),
+            # off the event loop since a lock race retries with a blocking
+            # pause.  A chunk that fails leaves earlier chunks -- whole
+            # stations -- published, and the run row carries what they loaded.
+            published = 0
+            for chunk_sources, chunk in chunk_publications(sources, values):
+                published += await asyncio.to_thread(
+                    repository.ingest_batch, source_records=chunk_sources, values=chunk
+                )
+            loaded, finished = await asyncio.to_thread(
+                repository.publish_and_finish,
                 run_id=measurement_run.run_id,
-                source_records=sources,
-                values=values,
+                source_records=uncited_sources(sources, values),
+                values=[],
+                values_loaded_offset=published,
                 grids_fetched=0,
                 requests_fetched=request_count,
                 error=(

@@ -63,6 +63,8 @@ from kortravelweather.providers.krforest_dust import (
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
+from .chunked_publish import chunk_publications, uncited_sources
+
 
 def skipped_when_disabled(provider: str, settings: WeatherSettings) -> dict[str, Any] | None:
     """Return a skip result when the operator has not enabled this provider.
@@ -167,12 +169,21 @@ def publish_regional_records(
             sources.append(source)
             values.extend(station_values)
 
+        # Stations publish in short location chunks (``chunked_publish``); the
+        # finish carries only lineage no fact cites, so it holds no location
+        # lock.  A chunk that fails leaves earlier chunks published -- whole
+        # stations, as the budget above already guarantees -- and the run row
+        # carries what they loaded.
+        published = 0
+        for chunk_sources, chunk in chunk_publications(sources, values):
+            published += repository.ingest_batch(source_records=chunk_sources, values=chunk)
         loaded, finished = repository.publish_and_finish(
             run_id=run.run_id,
-            source_records=sources,
-            values=values,
+            source_records=uncited_sources(sources, values),
+            values=[],
             grids_fetched=0,
             requests_fetched=1,
+            values_loaded_offset=published,
         )
         if finished.status != "success":
             raise RuntimeError(f"{provider} run ownership을 잃었습니다.")
