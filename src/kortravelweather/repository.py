@@ -1717,7 +1717,7 @@ class WeatherRepository:
         수집 실행 page to tell a working provider from a broken one.
         """
 
-        def step() -> tuple[int, SyncRun]:
+        def step() -> tuple[int, SyncRun, int]:
             with self._session_factory.begin() as session:
                 self._set_ingest_lock_timeout(session)
                 loaded = self._ingest_batch_session(session, source_records, values)
@@ -1740,15 +1740,27 @@ class WeatherRepository:
                 row = session.get(SyncRunRow, run_id)
                 if row is None:
                     raise KeyError(run_id)
-                return loaded, self._sync_model(row)
+                # Every source the run published, read from its lineage rows:
+                # collectors publish in location chunks, so ``source_records``
+                # here is only what no fact cited.  The primary key leads with
+                # ``run_id``.
+                sources = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(SyncRunSourceRow)
+                        .where(SyncRunSourceRow.run_id == run_id)
+                    )
+                    or 0
+                )
+                return loaded, self._sync_model(row), sources
 
-        loaded, finished = self._retry_lock_race(step)
+        loaded, finished, sources = self._retry_lock_race(step)
         observe_sync_finished(
             finished.provider,
             finished.dataset_key,
             status=finished.status,
             requests=requests_fetched,
-            sources=len(source_records),
+            sources=sources,
             values=loaded,
         )
         return loaded, finished

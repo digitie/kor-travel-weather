@@ -207,7 +207,10 @@ def run_external_weather_sync(
             run.run_id,
             status="failed",
             requests_fetched=len(source_record_keys),
-            values_loaded=published_values,
+            # None keeps the count each committed chunk recorded on the run
+            # row; ``published_values`` misses a chunk whose COMMIT landed
+            # but whose reply did not.
+            values_loaded=None,
             error=str(redact_secrets(str(exc)))[:1000],
         )
         raise

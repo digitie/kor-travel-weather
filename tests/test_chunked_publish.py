@@ -232,3 +232,48 @@ def test_chunk_publications_refuses_a_chunk_without_its_sources() -> None:
         ["s1"],
         ["s2"],
     ]
+
+
+def _sources_metric() -> float:
+    from kortravelweather import metrics
+
+    return metrics.SYNC_SOURCES.labels(
+        provider=metrics.provider_label("open_meteo"),
+        dataset=metrics.dataset_label("open_meteo_current"),
+    )._value.get()
+
+
+def test_sync_source_metric_counts_every_source_the_run_published(monkeypatch) -> None:
+    # The finish now carries only uncited sources; the metric must still count
+    # every source record the run published, chunks included.
+    monkeypatch.setattr(chunked_publish, "PUBLISH_CHUNK_LOCATIONS", 2)
+    repository, targets = _setup(5)
+    before = _sources_metric()
+    _sync(repository, targets)
+    assert _sources_metric() - before == 5
+
+
+def test_a_run_failing_on_its_own_keeps_the_count_its_chunks_committed(monkeypatch) -> None:
+    # No reaper: the collector's own failed finish passes ``values_loaded=None``
+    # and the row keeps what committed -- including a chunk whose COMMIT
+    # landed although the collector saw an error, which a client-side count
+    # would miss.
+    monkeypatch.setattr(chunked_publish, "PUBLISH_CHUNK_LOCATIONS", 1)
+    repository, targets = _setup(3)
+    original = repository.ingest_batch
+    calls: list[int] = []
+
+    def reply_lost_on_second(**kwargs: Any) -> int:
+        loaded = original(**kwargs)
+        calls.append(loaded)
+        if len(calls) == 2:
+            raise ConnectionError("reply lost after COMMIT")
+        return loaded
+
+    repository.ingest_batch = reply_lost_on_second  # type: ignore[method-assign]
+    with pytest.raises(ConnectionError):
+        _sync(repository, targets)
+    run = _run_row(repository)
+    assert run.status == "failed" and "reply lost" in (run.error or "")
+    assert _fact_count(repository) == 4
+    assert run.values_loaded == 4

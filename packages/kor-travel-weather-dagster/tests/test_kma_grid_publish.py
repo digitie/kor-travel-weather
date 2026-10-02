@@ -32,6 +32,7 @@ class _Repository:
         self.transactions: list[dict] = []
         self.runs: list = []
         self._fail_on_batch = fail_on_batch
+        self._committed = 0
 
     def start_sync_run(self, **kwargs):
         run = SimpleNamespace(run_id="run-1", status="running")
@@ -50,6 +51,7 @@ class _Repository:
                 "run_ids": {record.get("run_id") for record in source_records},
             }
         )
+        self._committed += len(values)
         return len(values)
 
     def ingest_batch(self, *, source_records, values):
@@ -63,7 +65,10 @@ class _Repository:
 
     def finish_sync_run(self, run_id, **kwargs):
         self.runs[-1].status = kwargs["status"]
-        self.runs[-1].values_loaded = kwargs.get("values_loaded")
+        # Like the repository: ``None`` keeps the count the committed
+        # publishes recorded on the run row.
+        recorded = kwargs.get("values_loaded")
+        self.runs[-1].values_loaded = self._committed if recorded is None else recorded
         return self.runs[-1]
 
 

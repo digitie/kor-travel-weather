@@ -1201,7 +1201,10 @@ async def _stage_and_publish_weather(
             run.run_id,
             status="failed",
             grids_fetched=0,
-            values_loaded=published_values,
+            # None keeps the count each committed chunk recorded on the run
+            # row; ``published_values`` misses a chunk whose COMMIT landed
+            # but whose reply did not.
+            values_loaded=None,
             error=str(exc)[:2000],
         )
         raise
