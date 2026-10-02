@@ -14,6 +14,7 @@ import math
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypeVar
 
@@ -63,6 +64,7 @@ from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
     add_default_floor,
     dated_partition_bounds,
+    ddl_lock_timeout_ms,
     default_partition_floor,
     default_partition_is_empty,
     default_partition_rows,
@@ -652,7 +654,94 @@ SCHEMA_PARTITION_FUTURE_DAYS = 3
 PARTITION_DDL_ATTEMPTS = 20
 PARTITION_DDL_RETRY_SECONDS = 3.0
 
+#: Lock-race retries for one ingest transaction.  Every ingest runs under
+#: ``ddl_lock_timeout_ms`` (three ``deadlock_timeout``s), the same bound the
+#: partition DDL uses: a writer behind another writer's short publish waits it
+#: out, but a writer behind a pathological holder gives up, rolls back and
+#: retries instead of queueing for hours (2026-10-02: three KMA jobs waited
+#: 2h+ behind one 4h publish).  About a minute in all, like the DDL.
+INGEST_LOCK_ATTEMPTS = 20
+INGEST_LOCK_RETRY_SECONDS = 3.0
+
+#: Rows per set-based projection upsert statement (10 array parameters each).
+PROJECTION_UPSERT_ROWS = 1000
+
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedFact:
+    """A fact with its canonical identity, resolved against its source record."""
+
+    value: WeatherValue
+    source_key: str
+    value_id: str
+    target_at: datetime | None
+    known_at: datetime | None
+    collected_at: datetime | None
+
+    @property
+    def logical_key(self) -> tuple[Any, ...]:
+        value = self.value
+        return (
+            value.location_id,
+            value.provider,
+            value.dataset_key,
+            value.weather_domain,
+            value.forecast_style.value,
+            value.metric_key,
+            self.target_at,
+        )
+
+    @property
+    def revision_order(self) -> tuple[datetime, str, str]:
+        # Python compares ``str`` by code point, which is UTF-8 byte order:
+        # the projection upsert compares the same keys under COLLATE "C".
+        return (
+            self.known_at or datetime.min.replace(tzinfo=UTC),
+            self.source_key,
+            self.value_id,
+        )
+
+
+#: Point the projection at the newest revision of each logical point.  The
+#: compare-and-set is in the statement itself, so it is atomic per row: an
+#: older revision arriving late never replaces a newer pointer, whatever the
+#: interleaving.  The ordering is ``_ResolvedFact.revision_order`` --
+#: ``known_at``, then ``source_record_key``, then ``value_id`` -- with the
+#: strings compared bytewise (COLLATE "C") as Python compares them.  A legacy
+#: pointer without its denormalised ``source_record_key`` (see the column's
+#: comment) reads it from the fact it names, a pruned primary-key lookup.
+PROJECTION_UPSERT_SQL = """
+INSERT INTO weather_current_values AS cv (
+    value_id, location_id, provider, dataset_key, weather_domain,
+    forecast_style, metric_key, target_at, known_at, source_record_key
+)
+SELECT * FROM unnest(
+    CAST(:value_ids AS varchar[]), CAST(:location_ids AS varchar[]),
+    CAST(:providers AS varchar[]), CAST(:dataset_keys AS varchar[]),
+    CAST(:weather_domains AS varchar[]), CAST(:forecast_styles AS varchar[]),
+    CAST(:metric_keys AS varchar[]), CAST(:target_ats AS timestamptz[]),
+    CAST(:known_ats AS timestamptz[]), CAST(:source_record_keys AS varchar[])
+)
+ON CONFLICT ON CONSTRAINT uq_weather_current_values_logical_point DO UPDATE
+SET value_id = EXCLUDED.value_id,
+    known_at = EXCLUDED.known_at,
+    source_record_key = EXCLUDED.source_record_key
+WHERE (
+    EXCLUDED.known_at,
+    EXCLUDED.source_record_key COLLATE "C",
+    EXCLUDED.value_id COLLATE "C"
+) > (
+    cv.known_at,
+    COALESCE(
+        cv.source_record_key,
+        (SELECT wv.source_record_key FROM weather_values wv
+         WHERE wv.value_id = cv.value_id AND wv.known_at = cv.known_at)
+    ) COLLATE "C",
+    cv.value_id COLLATE "C"
+)
+"""
 
 PURGE_GUC = "kortravelweather.purge"
 
@@ -814,12 +903,32 @@ class WeatherRepository:
             error=row.error,
         )
 
+    @staticmethod
+    def _advisory_xact_lock_once(session: Session, scope: str) -> bool:
+        """Take ``pg_advisory_xact_lock(hashtext(scope))`` once per transaction.
+
+        The lock is reentrant, so taking it again is harmless but not free:
+        the ingest used to take its location and source locks once per fact,
+        four round trips per fact on a run of hundreds of thousands.  Returns
+        whether this call took it.
+        """
+        transaction = session.get_transaction()
+        held = session.info.get("advisory_xact_scopes")
+        if held is None or held[0] is not transaction:
+            held = (transaction, set())
+            session.info["advisory_xact_scopes"] = held
+        if scope in held[1]:
+            return False
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": scope}
+        )
+        held[1].add(scope)
+        return True
+
     def _lock_location_session(self, session: Session, location_id: str) -> None:
         """Serialize anchor mutation and fact publication for one location."""
-        session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:location_scope))"),
-            {"location_scope": f"location:{location_id}"},
-        )
+        if not self._advisory_xact_lock_once(session, f"location:{location_id}"):
+            return
         session.execute(
             select(WeatherLocationRow.location_id)
             .where(WeatherLocationRow.location_id == location_id)
@@ -1081,10 +1190,7 @@ class WeatherRepository:
         payload = dict(record["payload"])
         fetched = record.get("fetched_at") or kst_now()
         raw_hash = _payload_hash(payload)
-        session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
-            {"source_key": source_record_key},
-        )
+        self._advisory_xact_lock_once(session, source_record_key)
         # A pending source row in the same batch must not be autoflushed while
         # checking the alternate identity; otherwise PostgreSQL raises the
         # unique constraint before we can fold the replay into that row.
@@ -1179,14 +1285,18 @@ class WeatherRepository:
             f"{source.source_entity_id} -> {value.location_id}"
         )
 
-    def _insert_value_session(
+    def _resolve_fact_session(
         self,
         session: Session,
         value: WeatherValue,
-        *,
-        allow_replay_payload_mismatch: bool = False,
-        expired_window: tuple[datetime, datetime] | None = None,
-    ) -> bool:
+        source_rows: dict[str, SourceRecordRow],
+    ) -> _ResolvedFact:
+        """Validate a fact against its source record and fix its canonical identity.
+
+        ``source_rows`` is the batch's source cache.  The session's identity
+        map holds rows only weakly, so without it a response cited by every
+        fact of a batch was read back once per fact.
+        """
         self._lock_location_session(session, value.location_id)
         source_key = value.source_record_key or _metric_source_key(value)
         canonical_target = _canonical_datetime(
@@ -1197,31 +1307,34 @@ class WeatherRepository:
             or value.collected_at
         )
         value_id = value.identity_key(source_key, target_at=canonical_target)
-        session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:source_key))"),
-            {"source_key": source_key},
-        )
+        self._advisory_xact_lock_once(session, source_key)
         explicit_source = value.source_record_key is not None
-        source = session.get(SourceRecordRow, source_key)
+        source = source_rows.get(source_key)
+        if source is None:
+            source = session.get(SourceRecordRow, source_key)
+            if source is not None:
+                source_rows[source_key] = source
         if source is None:
             if explicit_source:
                 raise ValueError(f"source record를 먼저 기록해야 합니다: {source_key}")
             # Explicit response records should be inserted by Dagster first;
             # this fallback keeps hand-authored fixtures usable without claiming
             # their row payload is the full provider response.
-            session.add(
-                SourceRecordRow(
-                    source_record_key=source_key,
-                    provider=value.provider,
-                    dataset_key=value.dataset_key,
-                    source_entity_type="metric_row",
-                    source_entity_id=value.location_id,
-                    raw_payload_hash=_payload_hash(value.payload),
-                    payload=value.payload,
-                    fetched_at=value.known_at or value.collected_at,
-                    imported_at=kst_now(),
-                )
+            fallback = SourceRecordRow(
+                source_record_key=source_key,
+                provider=value.provider,
+                dataset_key=value.dataset_key,
+                source_entity_type="metric_row",
+                source_entity_id=value.location_id,
+                raw_payload_hash=_payload_hash(value.payload),
+                payload=value.payload,
+                fetched_at=value.known_at or value.collected_at,
+                imported_at=kst_now(),
             )
+            session.add(fallback)
+            # Cached so a second fact citing the same fallback source finds
+            # it instead of adding it twice.
+            source_rows[source_key] = fallback
             canonical_known = _canonical_datetime(value.known_at or value.collected_at)
             canonical_collected = _canonical_datetime(value.collected_at)
         elif source.provider != value.provider or source.dataset_key != value.dataset_key:
@@ -1233,16 +1346,70 @@ class WeatherRepository:
             # turn an identical response into a false immutable conflict.
             canonical_known = _canonical_datetime(source.fetched_at)
             canonical_collected = _canonical_datetime(source.fetched_at)
+        return _ResolvedFact(
+            value=value,
+            source_key=source_key,
+            value_id=value_id,
+            target_at=canonical_target,
+            known_at=canonical_known,
+            collected_at=canonical_collected,
+        )
+
+    @staticmethod
+    def _existing_facts_session(
+        session: Session, facts: Sequence[_ResolvedFact]
+    ) -> dict[tuple[str, datetime | None], WeatherValueRow]:
+        """Load the facts a batch replays, by full primary key, in bounded queries.
+
+        One query per thousand facts instead of one ``session.get`` each.  The
+        primary key includes ``known_at``, so every probe prunes to the one
+        partition that can hold it.
+        """
+        keys = list(dict.fromkeys((fact.value_id, fact.known_at) for fact in facts))
+        found: dict[tuple[str, datetime | None], WeatherValueRow] = {}
+        for offset in range(0, len(keys), 1000):
+            rows = session.scalars(
+                select(WeatherValueRow).where(
+                    tuple_(WeatherValueRow.value_id, WeatherValueRow.known_at).in_(
+                        keys[offset : offset + 1000]
+                    )
+                )
+            ).all()
+            found.update(
+                {(row.value_id, _canonical_row_datetime(row.known_at)): row for row in rows}
+            )
+        return found
+
+    def _insert_value_session(
+        self,
+        session: Session,
+        fact: _ResolvedFact,
+        existing: dict[tuple[str, datetime | None], WeatherValueRow],
+        *,
+        allow_replay_payload_mismatch: bool = False,
+        expired_window: tuple[datetime, datetime] | None = None,
+    ) -> bool | None:
+        """Insert one fact: ``True`` inserted, ``False`` replayed, ``None`` expired.
+
+        ``existing`` is the batch's preloaded rows.  A row this call inserts is
+        added to it, so a duplicate later in the same batch replays against it.
+        """
+        value = fact.value
+        value_id = fact.value_id
+        canonical_known = fact.known_at
+        canonical_target = fact.target_at
+        canonical_collected = fact.collected_at
+        source_key = fact.source_key
         if (
             expired_window is not None
             and canonical_known is not None
             and expired_window[0] <= canonical_known < expired_window[1]
         ):
             # Already past retention on arrival: see ``_expired_fact_window``.
-            return False
+            return None
         # The primary key is composite now that the table is partitioned by
         # ``known_at``; ``value_id`` alone no longer identifies a row.
-        row = session.get(WeatherValueRow, (value_id, canonical_known))
+        row = existing.get((value_id, canonical_known))
         if row is not None:
             expected = {
                 "location_id": value.location_id,
@@ -1327,6 +1494,7 @@ class WeatherRepository:
         row.payload = value.payload
         row.collected_at = canonical_collected
         row.source_record_key = source_key
+        existing[(value_id, canonical_known)] = row
         return True
 
     def _ingest_batch_session(
@@ -1435,25 +1603,57 @@ class WeatherRepository:
                     )
         # Acquire location locks in a stable order before inserting facts;
         # concurrent batches that touch several anchors cannot deadlock by
-        # taking the same advisory/row locks in opposite orders.
+        # taking the same advisory/row locks in opposite orders.  Each lock is
+        # taken once per transaction (``_advisory_xact_lock_once``), not once
+        # per fact.
         for location_id in sorted({value.location_id for value in facts}):
             self._lock_location_session(session, location_id)
         expired_window = self._expired_fact_window(session) if facts else None
-        loaded = sum(
-            self._insert_value_session(
+        source_rows: dict[str, SourceRecordRow] = {}
+        resolved = [self._resolve_fact_session(session, value, source_rows) for value in facts]
+        stored_facts = self._existing_facts_session(session, resolved)
+        loaded = 0
+        candidates: list[_ResolvedFact] = []
+        for fact in resolved:
+            outcome = self._insert_value_session(
                 session,
-                value,
-                allow_replay_payload_mismatch=value.source_record_key in replay_source_keys,
+                fact,
+                stored_facts,
+                allow_replay_payload_mismatch=fact.source_key in replay_source_keys,
                 expired_window=expired_window,
             )
-            for value in facts
-        )
+            if outcome is None:
+                continue
+            loaded += int(outcome)
+            candidates.append(fact)
         # Keep the mutable current projection in the same transaction as the
         # append-only facts.  A batch may contain several revisions of one
         # logical point, so refresh after all inserts and keep only its newest
         # candidate.
-        self._refresh_current_projection_session(session, facts)
+        self._refresh_current_projection_session(session, candidates)
         return loaded
+
+    @staticmethod
+    def _set_ingest_lock_timeout(session: Session) -> None:
+        """Bound every lock wait of this ingest transaction (see ``INGEST_LOCK_ATTEMPTS``)."""
+        timeout = ddl_lock_timeout_ms(session.connection())
+        session.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
+
+    def _retry_lock_race(self, step: Callable[[], _T]) -> _T:
+        """Run one ingest transaction, retrying a lost lock race from scratch.
+
+        The transaction is rolled back before the pause, so a retrying writer
+        holds nothing while it waits.  Facts are immutable and the projection
+        update is a compare-and-set, so a replayed attempt is idempotent.
+        """
+        for attempt in range(1, INGEST_LOCK_ATTEMPTS + 1):
+            try:
+                return step()
+            except OperationalError as exc:
+                if not is_lock_conflict(exc) or attempt == INGEST_LOCK_ATTEMPTS:
+                    raise
+                time.sleep(INGEST_LOCK_RETRY_SECONDS)
+        raise AssertionError("unreachable")
 
     def ingest_batch(
         self,
@@ -1461,13 +1661,23 @@ class WeatherRepository:
         source_records: list[Mapping[str, Any]] | None = None,
         values: list[WeatherValue] | None = None,
     ) -> int:
-        """원천 record와 normalized facts를 한 transaction으로 publish한다."""
+        """원천 record와 normalized facts를 한 transaction으로 publish한다.
+
+        The transaction holds the advisory lock of every location in
+        ``values`` until it commits, so callers with many locations publish
+        them in location chunks (see ``kortravelweather_dagster.kma_weather``).
+        """
         records = source_records or []
         facts = values or []
         if not records and not facts:
             return 0
-        with self._session_factory.begin() as session:
-            return self._ingest_batch_session(session, records, facts)
+
+        def step() -> int:
+            with self._session_factory.begin() as session:
+                self._set_ingest_lock_timeout(session)
+                return self._ingest_batch_session(session, records, facts)
+
+        return self._retry_lock_race(step)
 
     def publish_and_finish(
         self,
@@ -1493,30 +1703,33 @@ class WeatherRepository:
         batches would report the last 50,000 -- the count operators read on the
         수집 실행 page to tell a working provider from a broken one.
         """
-        finished: SyncRun
-        loaded: int
-        with self._session_factory.begin() as session:
-            loaded = self._ingest_batch_session(session, source_records, values)
-            loaded += values_loaded_offset
-            result = session.execute(
-                update(SyncRunRow)
-                .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
-                .values(
-                    status=status,
-                    finished_at=kst_now(),
-                    grids_fetched=grids_fetched,
-                    mid_groups_fetched=mid_groups_fetched,
-                    requests_fetched=requests_fetched,
-                    values_loaded=loaded,
-                    error=error,
+
+        def step() -> tuple[int, SyncRun]:
+            with self._session_factory.begin() as session:
+                self._set_ingest_lock_timeout(session)
+                loaded = self._ingest_batch_session(session, source_records, values)
+                loaded += values_loaded_offset
+                result = session.execute(
+                    update(SyncRunRow)
+                    .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
+                    .values(
+                        status=status,
+                        finished_at=kst_now(),
+                        grids_fetched=grids_fetched,
+                        mid_groups_fetched=mid_groups_fetched,
+                        requests_fetched=requests_fetched,
+                        values_loaded=loaded,
+                        error=error,
+                    )
                 )
-            )
-            if result.rowcount != 1:
-                raise RuntimeError("sync run ownership was lost before publish completion")
-            row = session.get(SyncRunRow, run_id)
-            if row is None:
-                raise KeyError(run_id)
-            finished = self._sync_model(row)
+                if result.rowcount != 1:
+                    raise RuntimeError("sync run ownership was lost before publish completion")
+                row = session.get(SyncRunRow, run_id)
+                if row is None:
+                    raise KeyError(run_id)
+                return loaded, self._sync_model(row)
+
+        loaded, finished = self._retry_lock_race(step)
         observe_sync_finished(
             finished.provider,
             finished.dataset_key,
@@ -1559,29 +1772,6 @@ class WeatherRepository:
         )
 
     @staticmethod
-    def _current_logical_key(row: Any) -> tuple[Any, ...]:
-        """Return the revision-independent identity used by the projection."""
-        return (
-            row.location_id,
-            row.provider,
-            row.dataset_key,
-            row.weather_domain,
-            row.forecast_style,
-            row.metric_key,
-            _canonical_row_datetime(row.target_at),
-        )
-
-    @staticmethod
-    def _revision_order(row: Any) -> tuple[datetime, str, str]:
-        """Match ``_ranked_current_ids``' deterministic revision ordering."""
-        return (
-            _canonical_row_datetime(row.known_at)
-            or datetime.min.replace(tzinfo=UTC),
-            str(row.source_record_key),
-            str(row.value_id),
-        )
-
-    @staticmethod
     def _expired_fact_window(session: Session) -> tuple[datetime, datetime] | None:
         """``[floor, oldest dated partition)``: facts here have no home and are expired.
 
@@ -1606,114 +1796,50 @@ class WeatherRepository:
         return floor, min(lowers)
 
     def _refresh_current_projection_session(
-        self, session: Session, facts: Sequence[WeatherValue]
+        self, session: Session, facts: Sequence[_ResolvedFact]
     ) -> None:
-        """Publish newest fact pointers without scanning historical revisions.
+        """Publish newest fact pointers with one set-based upsert per thousand.
 
-        The projection is deliberately maintained in Python rather than with
-        a PostgreSQL-specific ``ON CONFLICT`` expression.  Candidate facts and
-        existing pointers are fetched in bounded set-based queries, while the
-        location advisory locks acquired by ``_ingest_batch_session`` make the
-        compare-and-set update serializable for repository writers.
+        The candidates come from the insert step, which already knows each
+        fact's identity -- nothing is read back from the fact table.  Several
+        source revisions for one target can occur in a single KMA response
+        batch; only the newest goes into the statement (an upsert cannot touch
+        one row twice).  The compare-and-set is in ``PROJECTION_UPSERT_SQL``,
+        atomic per row; the location locks ``_ingest_batch_session`` holds
+        additionally serialize it with anchor edits.
+
+        This used to be one ORM ``UPDATE`` per changed pointer after reading
+        every candidate and every current fact back: on 2026-10-02 a short-
+        forecast run spent four hours in it, row by row, holding 1,103
+        location locks.
         """
         if not facts:
             return
         session.flush()
-
-        value_ids = [
-            fact.identity_key(
-                fact.source_record_key or _metric_source_key(fact),
-                target_at=_canonical_datetime(
-                    fact.target_at
-                    or fact.valid_at
-                    or fact.observed_at
-                    or fact.issued_at
-                    or fact.collected_at
-                ),
-            )
-            for fact in facts
-        ]
-        candidate_rows: list[WeatherValueRow] = []
-        for offset in range(0, len(value_ids), 1000):
-            candidate_rows.extend(
-                session.scalars(
-                    select(WeatherValueRow).where(
-                        WeatherValueRow.value_id.in_(value_ids[offset : offset + 1000])
-                    )
-                ).all()
-            )
-
-        # Several source revisions for one target can occur in a single KMA
-        # response batch.  Only the winner needs to touch the projection.
-        newest_by_key: dict[tuple[Any, ...], WeatherValueRow] = {}
-        for row in candidate_rows:
-            key = self._current_logical_key(row)
+        newest_by_key: dict[tuple[Any, ...], _ResolvedFact] = {}
+        for fact in facts:
+            key = fact.logical_key
             previous = newest_by_key.get(key)
-            if previous is None or self._revision_order(row) > self._revision_order(previous):
-                newest_by_key[key] = row
-        if not newest_by_key:
-            return
-
-        logical_columns = (
-            WeatherCurrentValueRow.location_id,
-            WeatherCurrentValueRow.provider,
-            WeatherCurrentValueRow.dataset_key,
-            WeatherCurrentValueRow.weather_domain,
-            WeatherCurrentValueRow.forecast_style,
-            WeatherCurrentValueRow.metric_key,
-            WeatherCurrentValueRow.target_at,
-        )
-        logical_keys = list(newest_by_key)
-        projection_by_key: dict[tuple[Any, ...], WeatherCurrentValueRow] = {}
-        for offset in range(0, len(logical_keys), 1000):
-            rows = session.scalars(
-                select(WeatherCurrentValueRow).where(
-                    tuple_(*logical_columns).in_(logical_keys[offset : offset + 1000])
-                )
-            ).all()
-            projection_by_key.update({self._current_logical_key(row): row for row in rows})
-
-        existing_ids = [row.value_id for row in projection_by_key.values()]
-        existing_values: dict[str, WeatherValueRow] = {}
-        for offset in range(0, len(existing_ids), 1000):
-            rows = session.scalars(
-                select(WeatherValueRow).where(
-                    WeatherValueRow.value_id.in_(existing_ids[offset : offset + 1000])
-                )
-            ).all()
-            existing_values.update({row.value_id: row for row in rows})
-
-        for key, candidate in newest_by_key.items():
-            projection = projection_by_key.get(key)
-            if projection is None:
-                session.add(
-                    WeatherCurrentValueRow(
-                        value_id=candidate.value_id,
-                        location_id=candidate.location_id,
-                        provider=candidate.provider,
-                        dataset_key=candidate.dataset_key,
-                        weather_domain=candidate.weather_domain,
-                        forecast_style=candidate.forecast_style,
-                        metric_key=candidate.metric_key,
-                        target_at=candidate.target_at,
-                        known_at=candidate.known_at,
-                        source_record_key=candidate.source_record_key,
-                    )
-                )
-                continue
-            current = existing_values.get(projection.value_id)
-            if current is None:
-                raise RuntimeError(
-                    "current weather projection이 존재하지 않는 fact를 가리킵니다: "
-                    f"{projection.value_id}"
-                )
-            if self._revision_order(candidate) > self._revision_order(current):
-                projection.value_id = candidate.value_id
-                # The denormalised sort keys describe the fact the pointer
-                # names, so they have to move with it.
-                projection.known_at = candidate.known_at
-                projection.source_record_key = candidate.source_record_key
-        session.flush()
+            if previous is None or fact.revision_order > previous.revision_order:
+                newest_by_key[key] = fact
+        winners = list(newest_by_key.values())
+        for offset in range(0, len(winners), PROJECTION_UPSERT_ROWS):
+            chunk = winners[offset : offset + PROJECTION_UPSERT_ROWS]
+            session.execute(
+                text(PROJECTION_UPSERT_SQL),
+                {
+                    "value_ids": [fact.value_id for fact in chunk],
+                    "location_ids": [fact.value.location_id for fact in chunk],
+                    "providers": [fact.value.provider for fact in chunk],
+                    "dataset_keys": [fact.value.dataset_key for fact in chunk],
+                    "weather_domains": [fact.value.weather_domain for fact in chunk],
+                    "forecast_styles": [fact.value.forecast_style.value for fact in chunk],
+                    "metric_keys": [fact.value.metric_key for fact in chunk],
+                    "target_ats": [fact.target_at for fact in chunk],
+                    "known_ats": [fact.known_at for fact in chunk],
+                    "source_record_keys": [fact.source_key for fact in chunk],
+                },
+            )
 
     def _current_value_models_many(
         self,

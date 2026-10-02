@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -46,6 +46,72 @@ BASE_GRID_DATASETS = frozenset(
 #: never waits on an alerts publish; 50 of production's 1,450 is 29 short
 #: transactions instead of one that held every location.
 ALERT_PUBLISH_LOCATIONS = 50
+
+#: Grid and mid facts publish in location chunks too: at most this many
+#: locations, and at most ``GRID_PUBLISH_VALUES`` facts, per transaction (a
+#: location's facts never split).  A short-forecast location carries about
+#: 900 facts, so a chunk is a handful of locations.  On 2026-10-02 the whole
+#: run went out in one transaction instead: 4h03m holding 1,103 location
+#: locks, with three other KMA jobs queued 2h+ behind it.
+GRID_PUBLISH_LOCATIONS = 50
+GRID_PUBLISH_VALUES = 5_000
+
+
+def _location_chunks(
+    values: Sequence[WeatherValue], *, max_locations: int, max_values: int
+) -> Iterator[list[WeatherValue]]:
+    """Split facts into whole-location chunks, in first-appearance order.
+
+    Facts are staged grid by grid, so first-appearance order keeps the
+    locations sharing a grid -- and its source record -- in the same chunk.
+    """
+    by_location: dict[str, list[WeatherValue]] = {}
+    for value in values:
+        by_location.setdefault(value.location_id, []).append(value)
+    chunk: list[WeatherValue] = []
+    locations = 0
+    for facts in by_location.values():
+        if chunk and (locations >= max_locations or len(chunk) + len(facts) > max_values):
+            yield chunk
+            chunk, locations = [], 0
+        chunk.extend(facts)
+        locations += 1
+    if chunk:
+        yield chunk
+
+
+def _chunk_publications(
+    sources: Sequence[Mapping[str, Any]],
+    values: Sequence[WeatherValue],
+    *,
+    max_locations: int,
+    max_values: int,
+) -> Iterator[tuple[list[Mapping[str, Any]], list[WeatherValue]]]:
+    """Pair every location chunk with exactly the source records its facts cite.
+
+    Each chunk carries its own sources so each transaction re-locks the run
+    row and re-checks that the run still owns its lease before it publishes
+    (``_ingest_batch_session``); a chunk citing none would skip that check,
+    so it is refused.  A source cited by two chunks goes with both -- the
+    second is an idempotent replay.
+    """
+    by_key: dict[str, list[Mapping[str, Any]]] = {}
+    for source in sources:
+        by_key.setdefault(str(source["source_record_key"]), []).append(source)
+    for chunk in _location_chunks(values, max_locations=max_locations, max_values=max_values):
+        cited = dict.fromkeys(str(value.source_record_key) for value in chunk)
+        records = [record for key in cited for record in by_key.get(key, [])]
+        if not records:
+            raise ValueError("publish chunk의 fact가 이 run의 source record를 인용하지 않습니다.")
+        yield records, chunk
+
+
+def _uncited_sources(
+    sources: Sequence[Mapping[str, Any]], values: Sequence[WeatherValue]
+) -> list[Mapping[str, Any]]:
+    """Sources no fact cites: still fetched responses, recorded with the run's finish."""
+    cited = {str(value.source_record_key) for value in values}
+    return [source for source in sources if str(source["source_record_key"]) not in cited]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1095,45 +1161,56 @@ async def _stage_and_publish_weather(
             len(base_datasets) if base_datasets is not None else len(BASE_GRID_DATASETS)
         )
         base_requests_fetched = grids_fetched * base_dataset_count
-        # Alerts fan one notice out to every enabled location -- 1,450 of them
-        # in production.  Published in the run's single batch, that was one
-        # transaction holding 1,450 location locks for as long as the insert
-        # took: over an hour on 2026-10-01, with every other writer queued
-        # behind it.  Alerts are published per location chunk instead, each
-        # chunk its own short transaction holding only its own locations.
+        # Every fact publishes in location chunks, each its own short
+        # transaction holding only its own locations' locks.  One transaction
+        # for the run held every location it touched for as long as the
+        # insert took: alerts (fanned out to all 1,450 locations) for over an
+        # hour on 2026-10-01, a short-forecast run for 4h03m on 2026-10-02,
+        # with every other writer queued behind them.
         #
-        # This gives up all-or-nothing for alerts, and only for alerts: a chunk
-        # that fails leaves the chunks before it published and the run marked
-        # failed with what it loaded.  Each published fact is a whole, correct
-        # notice for its location, and the next run replays the rest (already
-        # published facts are an idempotent no-op).  Every chunk carries the
-        # notices' source records, so each one re-checks that the run still
-        # owns its lease before it publishes anything.  Grid and mid facts are
-        # unchanged: they publish together in the final transaction below.
-        if alert_values:
-            by_location: dict[str, list[WeatherValue]] = {}
-            for value in alert_values:
-                by_location.setdefault(value.location_id, []).append(value)
-            location_ids = sorted(by_location)
-            for offset in range(0, len(location_ids), ALERT_PUBLISH_LOCATIONS):
-                keep_alive()
-                chunk = [
-                    value
-                    for location_id in location_ids[offset : offset + ALERT_PUBLISH_LOCATIONS]
-                    for value in by_location[location_id]
-                ]
-                published_values += repository.ingest_batch(
-                    source_records=alert_sources, values=chunk
-                )
-        else:
-            # Notices that matched no location are still a fetched response.
-            sources.extend(alert_sources)
+        # Nothing is published until every response was fetched and
+        # validated above, so a provider failure still publishes nothing.
+        # What chunking gives up is all-or-nothing against a failure *during*
+        # publish (the database, or a lost lease): the chunks before it stay
+        # published and the run is marked failed with what it loaded.  Each
+        # published chunk is every fact of whole responses for its locations,
+        # and the next run replays the rest (published facts are an
+        # idempotent no-op).  Every chunk carries the source records its facts
+        # cite, so each one re-checks that the run still owns its lease.
+        # Alerts keep their own location cap: a notice is a few facts per
+        # location, so the value cap never binds them.  The chunks are built
+        # up front, so a chunk citing no source is refused before anything
+        # publishes.
+        for chunk_sources, chunk in (
+            *_chunk_publications(
+                alert_sources,
+                alert_values,
+                max_locations=ALERT_PUBLISH_LOCATIONS,
+                max_values=max(1, len(alert_values)),
+            ),
+            *_chunk_publications(
+                sources,
+                values,
+                max_locations=GRID_PUBLISH_LOCATIONS,
+                max_values=GRID_PUBLISH_VALUES,
+            ),
+        ):
+            keep_alive()
+            published_values += repository.ingest_batch(
+                source_records=chunk_sources, values=chunk
+            )
+        # Responses no fact cites -- notices that matched no location -- are
+        # still fetched responses; they are recorded with the run's finish.
+        final_sources = [
+            *_uncited_sources(sources, values),
+            *_uncited_sources(alert_sources, alert_values),
+        ]
         publish_and_finish = getattr(repository, "publish_and_finish", None)
         if callable(publish_and_finish):
             loaded, finished = publish_and_finish(
                 run_id=run.run_id,
-                source_records=sources,
-                values=values,
+                source_records=final_sources,
+                values=[],
                 grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
                 requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
@@ -1141,7 +1218,7 @@ async def _stage_and_publish_weather(
             )
         else:
             loaded = (
-                repository.ingest_batch(source_records=sources, values=values)
+                repository.ingest_batch(source_records=final_sources, values=[])
                 + published_values
             )
             finished = repository.finish_sync_run(
