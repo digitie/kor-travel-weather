@@ -7,13 +7,22 @@ locks, with three other KMA jobs queued 2h+ behind it.
 
 from __future__ import annotations
 
+import os
+import threading
 from types import SimpleNamespace
 
 import pytest
 from kortravelweather_dagster import kma_weather
 from kortravelweather_dagster.kma_weather import WeatherTarget, run_weather_sync
+from sqlalchemy import text
 
 from kortravelweather.models import WeatherLocation
+from kortravelweather.repository import WeatherRepository
+
+TEST_DATABASE_URL = os.environ.get(
+    "KOR_TRAVEL_WEATHER_TEST_DATABASE_URL",
+    "postgresql+psycopg://weather:weather@127.0.0.1:15432/weather_test",
+)
 
 
 class _Repository:
@@ -34,6 +43,7 @@ class _Repository:
             raise RuntimeError("publish failed")
         self.transactions.append(
             {
+                "thread": threading.current_thread(),
                 "locations": {value.location_id for value in values},
                 "values": list(values),
                 "sources": {record["source_record_key"] for record in source_records},
@@ -159,6 +169,63 @@ def test_a_failed_grid_chunk_keeps_what_was_published_and_reports_it(monkeypatch
         _run(repository, monkeypatch)
     assert repository.runs[-1].status == "failed"
     assert repository.runs[-1].values_loaded == 2
+
+
+def test_a_lease_lost_between_kma_chunks_against_the_real_repository(monkeypatch) -> None:
+    # The stale-run reaper terminalizes the run after the first chunk.  The
+    # second chunk's transaction re-checks ownership under the run row lock
+    # and refuses before publishing a fact; the run row keeps the true count
+    # although the collector's own failed finish is then a no-op.
+    monkeypatch.setattr(kma_weather, "GRID_PUBLISH_LOCATIONS", 1)
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    targets = _targets(3, 1)
+    for target in targets:
+        repository.upsert_location(target.location)
+    original = repository.ingest_batch
+    calls: list[int] = []
+
+    def reaped_after_first(**kwargs):
+        if calls:
+            with repository.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "UPDATE weather_sync_runs SET status = 'failed', error = 'reaped' "
+                        "WHERE status = 'running'"
+                    )
+                )
+        loaded = original(**kwargs)
+        calls.append(loaded)
+        return loaded
+
+    repository.ingest_batch = reaped_after_first
+    with pytest.raises(ValueError, match="이미 종료"):
+        run_weather_sync(
+            repository=repository,
+            client=_Client(),
+            targets=targets,
+            base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+        )
+    assert calls == [1]
+    with repository.engine.connect() as connection:
+        located = connection.execute(
+            text("SELECT DISTINCT location_id FROM weather_values")
+        ).scalars().all()
+    assert located == [targets[0].location.location_id]
+    run = repository.list_sync_runs(limit=1)[0]
+    assert run.status == "failed" and run.error == "reaped"
+    assert run.values_loaded == 1
+
+
+def test_publishes_run_off_the_event_loop(monkeypatch) -> None:
+    # A lock race retries with a blocking pause; on the loop's thread it
+    # would stall the run's event loop for up to a minute per chunk.
+    repository = _Repository()
+    _run(repository, monkeypatch)
+    assert repository.transactions
+    assert all(
+        t["thread"] is not threading.main_thread() for t in repository.transactions
+    )
 
 
 def test_the_default_chunk_bounds_the_locks_a_transaction_holds() -> None:

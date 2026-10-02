@@ -461,11 +461,11 @@ def test_a_sweep_publishes_in_batches_without_holding_it_all(tmp_path: Any) -> N
     run = repository.get_sync_run(result["run_id"])
     assert run is not None
 
-    # The work was genuinely split: some of it landed in early flushes, and
-    # some was left for the final publish. Either extreme would mean the
-    # batching did nothing.
-    assert published, "the sweep should have flushed at least one batch early"
-    assert 0 < sum(published) < expected_total
+    # The work was genuinely split into several short transactions, and every
+    # fact went through them: the finish carries none, so it holds no
+    # location lock.
+    assert len([loaded for loaded in published if loaded]) > 1
+    assert sum(published) == expected_total
 
     # And the run reports everything, not just the batch it finished with.
     assert run.values_loaded == expected_total

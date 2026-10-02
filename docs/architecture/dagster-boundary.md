@@ -135,6 +135,21 @@ resource가 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`와 provider별 secret/base UR
 `source_record_key`로 식별되므로 부분 sweep은 단지 갱신된 지점이 적다는 뜻이며, 재시도는
 빠진 것만 채운다. 실패한 run은 그때까지 적재한 건수를 기록한다.
 
+`_PUBLISH_BATCH_VALUES`(50,000)는 **메모리** 상한일 뿐이다. stage된 배치는 KMA와 같은
+`chunked_publish` location chunk(50곳·5,000 fact 이하, location 단위로만 나눔)로
+publish한다 — 50,000 fact 한 transaction은 그 ~37곳의 lock을 37 GB fact table 위에서
+끝날 때까지 쥐었고, ingest lock timeout이 생긴 뒤로는 그 뒤에 선 KMA chunk가 기다리는
+대신 실패한다. AirKorea 측정값과 지역 provider(해수욕장·산악·고속도로)도 같은 chunk로
+publish한다. run을 끝내는 transaction은 어떤 fact도 인용하지 않는 source만 싣고 location
+lock을 잡지 않는다.
+
+**run의 `values_loaded`는 chunk가 함께 기록한다.** 각 chunk transaction은 run row를 잠근 채
+자기가 적재한 수를 더하므로, stale-run reaper가 먼저 run을 failed로 만들어 collector의
+failed finish가 no-op이 돼도 row에는 실제로 commit된 수가 남는다. `finish_sync_run`의
+`values_loaded`를 생략하면 그 기록을 유지한다. publish는 동기 repository 호출이고 lock
+경합 재시도의 pause도 blocking이므로, event loop 위에서 publish하는 collector(KMA,
+AirKorea)는 `asyncio.to_thread`로 부른다.
+
 중간 target의 timeout·429·4xx·schema 오류는 여전히 run을 실패시킨다.
 provider가 반환한 `source_record_key`는 response payload와 redacted request
 metadata의 hash라서 같은 응답 replay는 no-op이며, 수정 응답은 새 source revision이다.

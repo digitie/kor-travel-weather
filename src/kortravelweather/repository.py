@@ -1631,6 +1631,14 @@ class WeatherRepository:
         # logical point, so refresh after all inserts and keep only its newest
         # candidate.
         self._refresh_current_projection_session(session, candidates)
+        # The run row is locked above, so its count moves with the facts in
+        # the same commit.  A run published in chunks then reports what it
+        # loaded even when something else terminalizes it -- the stale-run
+        # reaper, whose conditional UPDATE makes the collector's own failed
+        # finish a no-op.
+        if loaded and len(run_rows) == 1:
+            (run,) = run_rows.values()
+            run.values_loaded = (run.values_loaded or 0) + loaded
         return loaded
 
     @staticmethod
@@ -1645,6 +1653,11 @@ class WeatherRepository:
         The transaction is rolled back before the pause, so a retrying writer
         holds nothing while it waits.  Facts are immutable and the projection
         update is a compare-and-set, so a replayed attempt is idempotent.
+
+        The pause is a blocking ``time.sleep``: the repository is synchronous.
+        Collectors that publish from an event loop (KMA, AirKorea) call it
+        through ``asyncio.to_thread`` so a retry never stalls the loop; the
+        external and regional collectors are synchronous throughout.
         """
         for attempt in range(1, INGEST_LOCK_ATTEMPTS + 1):
             try:
@@ -2826,10 +2839,18 @@ class WeatherRepository:
         grids_fetched: int = 0,
         mid_groups_fetched: int = 0,
         requests_fetched: int = 0,
-        values_loaded: int = 0,
+        values_loaded: int | None = None,
         error: str | None = None,
     ) -> SyncRun:
+        """Terminalize a running run; a no-op on one already terminal.
+
+        ``values_loaded=None`` keeps the count the run's publishes recorded
+        (``_ingest_batch_session`` adds each committed batch to it).
+        """
         transitioned = False
+        counts: dict[str, Any] = {}
+        if values_loaded is not None:
+            counts["values_loaded"] = values_loaded
         with self._session_factory.begin() as session:
             result = session.execute(
                 update(SyncRunRow)
@@ -2840,8 +2861,8 @@ class WeatherRepository:
                     grids_fetched=grids_fetched,
                     mid_groups_fetched=mid_groups_fetched,
                     requests_fetched=requests_fetched,
-                    values_loaded=values_loaded,
                     error=error,
+                    **counts,
                 )
             )
             transitioned = result.rowcount == 1
@@ -2857,7 +2878,7 @@ class WeatherRepository:
                 finished.dataset_key,
                 status=finished.status,
                 requests=requests_fetched,
-                values=values_loaded,
+                values=finished.values_loaded,
             )
         return finished
 

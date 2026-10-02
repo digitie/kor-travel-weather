@@ -12,11 +12,16 @@ from kortravelweather.metrics import provider_request
 from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
 from kortravelweather.repository import WeatherRepository
 
+from .chunked_publish import chunk_publications, uncited_sources
+
 #: Normalized values held in memory before a partial publish releases them.
 #: Sized so one batch stays in the low hundreds of MB even for the widest
 #: dataset (open_meteo's forecast yields ~1,350 values per location, so this is
-#: roughly 37 locations); small enough to bound the step, large enough that the
-#: publish transactions stay infrequent.
+#: roughly 37 locations).  This bounds memory only: a staged batch publishes in
+#: ``chunked_publish`` location chunks, each its own short transaction.  One
+#: 50,000-fact transaction held its ~37 locations' locks for as long as it took
+#: on a 37 GB fact table, and a KMA chunk queued behind it now gives up after
+#: ``INGEST_LOCK_ATTEMPTS`` instead of waiting.
 _PUBLISH_BATCH_VALUES = 50_000
 
 
@@ -174,15 +179,25 @@ def run_external_weather_sync(
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
             if publish_batch_values > 0 and len(staged_values) >= publish_batch_values:
-                published_values += repository.ingest_batch(
-                    source_records=staged_sources, values=staged_values
-                )
+                for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
+                    published_values += repository.ingest_batch(
+                        source_records=chunk_sources, values=chunk
+                    )
+                empty = uncited_sources(staged_sources, staged_values)
+                if empty:
+                    repository.ingest_batch(source_records=empty, values=[])
                 staged_sources = []
                 staged_values = []
+        for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
+            published_values += repository.ingest_batch(
+                source_records=chunk_sources, values=chunk
+            )
+        # The finish carries only responses that produced no fact, so it
+        # holds no location lock.
         loaded, finished = repository.publish_and_finish(
             run_id=run.run_id,
-            source_records=staged_sources,
-            values=staged_values,
+            source_records=uncited_sources(staged_sources, staged_values),
+            values=[],
             grids_fetched=0,
             requests_fetched=len(target_list),
             values_loaded_offset=published_values,

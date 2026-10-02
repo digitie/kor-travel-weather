@@ -209,6 +209,7 @@ def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> 
         def __init__(self) -> None:
             self.runs: list[SimpleNamespace] = []
             self.published: list[tuple[str, list[dict], list[WeatherValue], str | None]] = []
+            self.ingested: list[WeatherValue] = []
 
         def start_sync_run(self, *, provider: str, dataset_key: str, locations_total: int):
             run = SimpleNamespace(
@@ -228,9 +229,15 @@ def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> 
         def heartbeat_sync_run(self, run_id: str) -> bool:
             return True
 
+        def ingest_batch(self, *, source_records, values):
+            # Measurements publish in location chunks before the finish.
+            self.ingested.extend(values)
+            return len(values)
+
         def publish_and_finish(self, *, run_id, source_records, values, error=None, **kwargs):
             self.published.append((run_id, source_records, values, error))
-            return len(values), SimpleNamespace(run_id=run_id, status="success")
+            loaded = len(values) + kwargs.get("values_loaded_offset", 0)
+            return loaded, SimpleNamespace(run_id=run_id, status="success")
 
         def finish_sync_run(self, *args, **kwargs):
             raise AssertionError("station-level failures must not abort the run")
@@ -270,7 +277,8 @@ def test_airkorea_measurement_failure_keeps_successful_stations(monkeypatch) -> 
     assert result["status"] == "success"
     assert result["stations_failed"] == 1
     assert result["values_loaded"] == 1
-    assert repository.published[-1][2] == values
+    assert repository.ingested == values
+    assert repository.published[-1][2] == []
     assert "1개 측정소 요청 실패" in (repository.published[-1][3] or "")
 
 
@@ -305,6 +313,7 @@ def test_airkorea_sync_uses_sido_bulk_endpoint(monkeypatch) -> None:
         def __init__(self) -> None:
             self.runs: list[SimpleNamespace] = []
             self.published: list[tuple[str, list[dict], list[WeatherValue], str | None]] = []
+            self.ingested: list[WeatherValue] = []
 
         def start_sync_run(self, *, provider: str, dataset_key: str, locations_total: int):
             run = SimpleNamespace(
@@ -324,9 +333,15 @@ def test_airkorea_sync_uses_sido_bulk_endpoint(monkeypatch) -> None:
         def heartbeat_sync_run(self, run_id: str) -> bool:
             return True
 
+        def ingest_batch(self, *, source_records, values):
+            # Measurements publish in location chunks before the finish.
+            self.ingested.extend(values)
+            return len(values)
+
         def publish_and_finish(self, *, run_id, source_records, values, error=None, **kwargs):
             self.published.append((run_id, source_records, values, error))
-            return len(values), SimpleNamespace(run_id=run_id, status="success")
+            loaded = len(values) + kwargs.get("values_loaded_offset", 0)
+            return loaded, SimpleNamespace(run_id=run_id, status="success")
 
         def finish_sync_run(self, *args, **kwargs):
             raise AssertionError("bulk run should not need terminal error handling")
