@@ -103,7 +103,8 @@ chunk가 n150 디스크 대기 아래서 그 location을 예산보다 오래 쥐
 예산을 다 쓴 chunk는 통째로 건너뛴다. 건너뛴 location은 `ALERT_SKIP_RETRY_ROUNDS`(2)번,
 `ALERT_SKIP_RETRY_SECONDS`(15초) 간격으로 다시 시도하고, 그래도 남으면 다음 tick에
 맡긴다. run은 success이고 건너뛴 수와 ID(최대 100개)를 run의 `error` 칸에 메모로 남기며
-(AirKorea의 "N개 측정소 요청 실패"와 같은 방식), 로그에는 수와 앞 5개 ID를 남긴다.
+(AirKorea의 "N개 측정소 요청 실패"와 같은 방식), Dagster run 로그()와 모듈
+logger에는 수와 앞 5개 ID를, asset metadata에는 (수)를 남긴다.
 run이 실패하는 것은 특보 location을 **하나도** publish하지 못했을 때와 lock 아닌 오류뿐이다.
 같은 location이 `ALERT_STARVED_RUNS`(3) run 연속 건너뛰어지면(앞 두 run의 메모와 교집합)
 starvation 경고를 로그와 asset metadata(`alert_locations_starved`)에 남긴다.

@@ -32,6 +32,8 @@ from kortravelweather.settings import WeatherSettings
 from .airkorea_weather import run_airkorea_weather_sync
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
+    ALERT_SKIP_LOG_IDS,
+    ALERT_STARVED_RUNS,
     KMA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_NOWCAST,
@@ -421,6 +423,19 @@ def _make_kma_dataset_asset(
                 retries=0,
                 sync_run=run,
             )
+            if result.get("alert_locations_skipped"):
+                # Also in the run's own log: the module logger reaches only
+                # the compute log's stderr.
+                context.log.warning(
+                    f"특보 location {result['alert_locations_skipped']}곳을 lock 경합으로 "
+                    f"건너뜀(다음 tick에 재시도): {result['alert_locations_skipped_sample']}"
+                )
+            if result.get("alert_locations_starved"):
+                context.log.warning(
+                    f"특보 location {len(result['alert_locations_starved'])}곳이 연속 "
+                    f"{ALERT_STARVED_RUNS}회 건너뛰어짐(lock starvation): "
+                    f"{result['alert_locations_starved'][:ALERT_SKIP_LOG_IDS]}"
+                )
             context.add_output_metadata(result)
             return result
         except Exception:

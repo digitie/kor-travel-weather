@@ -136,6 +136,9 @@ def _targets(count: int) -> list[WeatherTarget]:
 
 def _run(repository, monkeypatch, *, targets: int = 5, chunk: int = 2):
     monkeypatch.setattr(kma_weather, "ALERT_PUBLISH_LOCATIONS", chunk)
+    # Alembic's fileConfig (the migration tests) disables loggers that
+    # already exist, and the full suite runs them before these tests.
+    monkeypatch.setattr(kma_weather.logger, "disabled", False)
     # raising=False: a RED run fails on behaviour, not on a missing name.
     monkeypatch.setattr(kma_weather, "ALERT_SKIP_RETRY_SECONDS", 0, raising=False)
     return run_weather_sync(

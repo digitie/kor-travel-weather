@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from sqlalchemy.exc import OperationalError
+
 from kortravelweather.metrics import provider_request
 from kortravelweather.models import WeatherLocation, WeatherValue, kst_now
 from kortravelweather.partitions import is_lock_conflict
@@ -29,7 +31,6 @@ from kortravelweather.providers.kma import (
     weather_warning_to_weather_values,
 )
 from kortravelweather.repository import WeatherRepository
-from sqlalchemy.exc import OperationalError
 
 from .chunked_publish import (
     PUBLISH_CHUNK_LOCATIONS,
@@ -1249,6 +1250,7 @@ async def _stage_and_publish_weather(
             "alerts_fetched": alert_rows_total,
             "values_loaded": loaded,
             "alert_locations_skipped": len(alerts_skipped),
+            "alert_locations_skipped_sample": alerts_skipped[:ALERT_SKIP_LOG_IDS],
             "alert_locations_starved": alerts_starved,
         }
     except Exception as exc:
