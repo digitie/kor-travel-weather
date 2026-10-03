@@ -19,7 +19,15 @@ from kortravelweather_dagster import kma_weather
 from kortravelweather_dagster.kma_weather import WeatherTarget, run_weather_sync
 from sqlalchemy.exc import OperationalError
 
+from kortravelweather import metrics
 from kortravelweather.models import WeatherLocation
+
+
+def _skipped_metric() -> float:
+    counter = getattr(metrics, "SYNC_LOCATIONS_SKIPPED", None)
+    if counter is None:  # RED: the counter does not exist yet
+        return 0.0
+    return counter.labels(provider="python-kma-api", dataset="kma_weather_alerts")._value.get()
 
 
 def _lock_timeout() -> OperationalError:
@@ -178,18 +186,33 @@ def test_a_failed_chunk_keeps_what_was_published_and_reports_it(monkeypatch) -> 
 
 
 def test_a_held_location_is_skipped_for_the_tick_not_fatal(monkeypatch, caplog) -> None:
+    # One of 20 (5%) is under the partial threshold: the run is a success.
     repository = _Repository(held={"loc-03"})
+    before = _skipped_metric()
     with caplog.at_level(logging.WARNING, logger=kma_weather.__name__):
-        result = _run(repository, monkeypatch)
+        result = _run(repository, monkeypatch, targets=20)
 
     assert result["status"] == "success"
-    assert result["values_loaded"] == 4
+    assert result["values_loaded"] == 19
     assert result["alert_locations_skipped"] == 1
-    assert set().union(*repository.batches) == {"loc-00", "loc-01", "loc-02", "loc-04"}
+    assert "loc-03" not in set().union(*repository.batches)
     # Recorded on the run, with the ID, for the operator and the next tick.
     assert repository.runs[-1].status == "success"
     assert "loc-03" in repository.runs[-1].error
     assert "loc-03" in caplog.text
+    # And counted, for an alert on the rate.
+    assert _skipped_metric() - before == 1
+
+
+def test_skipping_more_than_the_threshold_finishes_the_run_partial(monkeypatch) -> None:
+    # A success hides chronic skipping from KorTravelWeatherSyncFailed, which
+    # pages on failed|partial.  1 of 5 (20%) is over ALERT_PARTIAL_SKIP_SHARE.
+    repository = _Repository(held={"loc-03"})
+    result = _run(repository, monkeypatch)
+
+    assert result["status"] == "partial"
+    assert repository.runs[-1].status == "partial"
+    assert result["values_loaded"] == 4
 
 
 def test_a_location_released_before_the_retry_round_publishes(monkeypatch) -> None:
@@ -204,17 +227,20 @@ def test_a_location_released_before_the_retry_round_publishes(monkeypatch) -> No
     assert repository.runs[-1].error is None
 
 
-def test_a_chunk_that_times_out_skips_only_its_locations(monkeypatch) -> None:
-    # A chunk whose transaction spends every lock-race retry is skipped as a
-    # whole; the chunks around it still publish and the run succeeds.
+def test_a_chunk_that_times_out_on_another_lock_fails_the_run_at_once(monkeypatch) -> None:
+    # Locations are only tried, so a chunk that spends its whole lock-race
+    # budget waited on something else -- partition DDL, the run row.  Every
+    # later chunk would spend ~2 minutes the same way, so the run stops there
+    # (the behaviour before skipping) and says it was not a location lock.
     repository = _Repository(conflict={"loc-02"})
-    result = _run(repository, monkeypatch)
+    with pytest.raises(RuntimeError, match="location lock이 아닌") as raised:
+        _run(repository, monkeypatch)
 
-    assert result["status"] == "success"
-    assert set().union(*repository.batches) == {"loc-00", "loc-01", "loc-04"}
-    assert result["alert_locations_skipped"] == 2
-    assert repository.runs[-1].status == "success"
-    assert "loc-02" in repository.runs[-1].error and "loc-03" in repository.runs[-1].error
+    assert isinstance(raised.value.__cause__, OperationalError)
+    assert repository.calls == 2  # no later chunk, no retry round
+    assert set().union(*repository.batches) == {"loc-00", "loc-01"}
+    assert repository.runs[-1].status == "failed"
+    assert "location lock이 아닌" in repository.runs[-1].error
 
 
 def test_the_run_fails_when_no_location_could_be_published(monkeypatch) -> None:
@@ -228,25 +254,64 @@ def test_the_run_fails_when_no_location_could_be_published(monkeypatch) -> None:
 def test_a_location_skipped_three_ticks_running_is_reported_as_starved(
     monkeypatch, caplog
 ) -> None:
+    # Under the share threshold each time, so only starvation turns the third
+    # run partial -- and pages through KorTravelWeatherSyncFailed.
     repository = _Repository(held={"loc-03"})
-    first = _run(repository, monkeypatch)
-    second = _run(repository, monkeypatch)
+    first = _run(repository, monkeypatch, targets=20)
+    second = _run(repository, monkeypatch, targets=20)
     with caplog.at_level(logging.WARNING, logger=kma_weather.__name__):
-        third = _run(repository, monkeypatch)
+        third = _run(repository, monkeypatch, targets=20)
 
     assert first["alert_locations_starved"] == []
     assert second["alert_locations_starved"] == []
     assert third["alert_locations_starved"] == ["loc-03"]
     assert "loc-03" in caplog.text and "3" in caplog.text
+    assert [run.status for run in repository.runs] == ["success", "success", "partial"]
 
 
 def test_a_tick_without_skips_breaks_the_streak(monkeypatch) -> None:
     repository = _Repository(held={"loc-03"})
-    _run(repository, monkeypatch)
+    _run(repository, monkeypatch, targets=20)
     repository._held = set()
-    _run(repository, monkeypatch)
+    _run(repository, monkeypatch, targets=20)
     repository._held = {"loc-03"}
-    assert _run(repository, monkeypatch)["alert_locations_starved"] == []
+    assert _run(repository, monkeypatch, targets=20)["alert_locations_starved"] == []
+
+
+def test_a_run_that_skipped_everything_continues_the_streak(monkeypatch) -> None:
+    # The middle run publishes nothing and fails; it skipped loc-03 too.
+    repository = _Repository(held={"loc-03"})
+    _run(repository, monkeypatch, targets=20)
+    repository._held = {f"loc-{i:02d}" for i in range(20)}
+    with pytest.raises(RuntimeError):
+        _run(repository, monkeypatch, targets=20)
+    repository._held = {"loc-03"}
+    assert _run(repository, monkeypatch, targets=20)["alert_locations_starved"] == ["loc-03"]
+
+
+def test_an_unrelated_failed_run_neither_counts_nor_breaks_the_streak(monkeypatch) -> None:
+    repository = _Repository(held={"loc-03"})
+    _run(repository, monkeypatch, targets=20)
+    repository._fail_on_batch = repository.calls + 1
+    with pytest.raises(RuntimeError, match="publish failed"):
+        _run(repository, monkeypatch, targets=20)
+    repository._fail_on_batch = None
+    assert _run(repository, monkeypatch, targets=20)["alert_locations_starved"] == []
+    assert _run(repository, monkeypatch, targets=20)["alert_locations_starved"] == ["loc-03"]
+
+
+def test_the_skip_note_round_trips_any_id_and_fits_a_failure_message() -> None:
+    awkward = ["a,b", "c]d", "e f", "plain"]
+    note = kma_weather._alert_skip_note(sorted(awkward))
+    assert kma_weather._alert_skips_in(note) == set(awkward)
+    # 1,450 station IDs: the note stays inside the 2,000 characters a failed
+    # run keeps of its error, and the IDs it lists still parse.
+    many = sorted(f"airkorea-station-{i:06d}" for i in range(1450))
+    note = kma_weather._alert_skip_note(many)
+    assert len(note) <= 2000
+    listed = kma_weather._alert_skips_in(note[:2000])
+    assert listed and listed <= set(many)
+    assert "1450" in note
 
 
 def test_the_default_chunk_bounds_the_locks_a_transaction_holds() -> None:
