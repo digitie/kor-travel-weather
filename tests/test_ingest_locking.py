@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections import Counter
 from datetime import timedelta
 from decimal import Decimal
@@ -252,3 +253,80 @@ def test_location_locks_held_are_only_the_batchs_own(chunk_locations: int) -> No
         event.remove(repo.engine, "before_cursor_execute", probe)
     # One lock per location plus one for the cited source.
     assert seen == [chunk_locations + 1]
+
+
+def test_skip_locked_ingest_publishes_the_free_locations_and_names_the_held_ones(
+    monkeypatch,
+) -> None:
+    # 2026-10-03: kma_weather_alerts failed most hourly runs on one
+    # ``location:airkorea-station-...`` lock held by another job's chunk for
+    # longer than the whole retry budget.  The alerts publish now skips a
+    # location whose lock is held -- without waiting on it at all -- and
+    # publishes the rest of the chunk.
+    monkeypatch.setattr(repository_module, "INGEST_LOCK_ATTEMPTS", 20)
+    monkeypatch.setattr(repository_module, "INGEST_LOCK_RETRY_SECONDS", 3.0)
+    repo = _repository("skip-a", "skip-b", "skip-c")
+    _record(repo, "sr-skip")
+    holder_engine = create_engine(TEST_DATABASE_URL, future=True)
+    holder = holder_engine.connect()
+    holder.begin()
+    holder.execute(text("SELECT pg_advisory_xact_lock(hashtext('location:skip-b'))"))
+    try:
+        started = time.monotonic()
+        loaded, skipped = repo.ingest_skip_locked(
+            values=[
+                _fact("sr-skip", hour=0, location_id=location)
+                for location in ("skip-a", "skip-b", "skip-c")
+            ]
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        holder.rollback()
+        holder.close()
+        holder_engine.dispose()
+    assert (loaded, skipped) == (2, ["skip-b"])
+    # Not one lock_timeout: a held location is skipped, not waited on.
+    assert elapsed < 2.0
+    with repo.engine.connect() as connection:
+        published = connection.execute(
+            text(
+                "SELECT location_id FROM weather_values WHERE source_record_key = 'sr-skip' "
+                "ORDER BY location_id"
+            )
+        ).scalars().all()
+    assert published == ["skip-a", "skip-c"]
+    # The skipped location publishes on a later attempt once it is free.
+    assert repo.ingest_skip_locked(values=[_fact("sr-skip", hour=0, location_id="skip-b")]) == (
+        1,
+        [],
+    )
+
+
+def test_skip_locked_ingest_still_takes_the_free_locks_in_order() -> None:
+    # The lock-ordering guarantee is unchanged: the free locations' locks are
+    # held, sorted, for the whole transaction, plus the cited source's.
+    ids = ["order-c", "order-a", "order-b"]
+    repo = _repository(*ids)
+    _record(repo, "sr-order")
+    taken: list[str] = []
+    seen: list[int] = []
+
+    def probe(conn, cursor, statement, parameters, context, executemany) -> None:
+        if "pg_try_advisory_xact_lock" in statement or "pg_advisory_xact_lock" in statement:
+            scope = (parameters or {}).get("scope") if isinstance(parameters, dict) else None
+            if scope and scope.startswith("location:"):
+                taken.append(scope)
+        if statement.lstrip().startswith("INSERT INTO weather_current_values"):
+            cursor.execute(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                "AND pid = pg_backend_pid() AND granted"
+            )
+            seen.append(cursor.fetchone()[0])
+
+    event.listen(repo.engine, "before_cursor_execute", probe)
+    try:
+        repo.ingest_skip_locked(values=[_fact("sr-order", hour=0, location_id=i) for i in ids])
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", probe)
+    assert taken == ["location:order-a", "location:order-b", "location:order-c"]
+    assert seen == [len(ids) + 1]
