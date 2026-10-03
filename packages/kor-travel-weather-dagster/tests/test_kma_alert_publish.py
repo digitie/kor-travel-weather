@@ -136,7 +136,8 @@ def _targets(count: int) -> list[WeatherTarget]:
 
 def _run(repository, monkeypatch, *, targets: int = 5, chunk: int = 2):
     monkeypatch.setattr(kma_weather, "ALERT_PUBLISH_LOCATIONS", chunk)
-    monkeypatch.setattr(kma_weather, "ALERT_SKIP_RETRY_SECONDS", 0)
+    # raising=False: a RED run fails on behaviour, not on a missing name.
+    monkeypatch.setattr(kma_weather, "ALERT_SKIP_RETRY_SECONDS", 0, raising=False)
     return run_weather_sync(
         repository=repository,
         client=_Client(),
