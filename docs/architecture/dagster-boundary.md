@@ -90,6 +90,24 @@ transaction당 한 번만 잡고(예전엔 fact마다 네 번 왕복), replay �
 primary-key 조회, current projection 갱신은 `INSERT ... ON CONFLICT DO UPDATE ... WHERE
 newer` 한 문장(1,000행씩)이다 — 비교·교체가 문장 안에서 행 단위로 원자적이다.
 
+**특보는 잡힌 location을 기다리지 않고 건너뛴다.** 2026-10-03 `kma_weather_alerts`는
+매시 run 대부분이 `location:airkorea-station-…` 하나의 lock timeout으로 실패했다(실패
+run 대부분이 약 125초 = 재시도 예산 20 × (3초 대기 + 3초 휴지)). 다른 job의 publish
+chunk가 n150 디스크 대기 아래서 그 location을 예산보다 오래 쥐었기 때문이다(같은 날
+단기예보 run은 20만 fact에 3.3시간, chunk당 수 분). 특보 fact는 다음 매시 run이 같은
+특보를 다시 받아 오므로 한 location을 한 tick 늦게 쓰는 비용이 run 전체보다 훨씬 작다.
+그래서 특보 chunk는 `ingest_skip_locked`로 publish한다: location advisory lock을
+**정렬 순서대로 `pg_try_advisory_xact_lock`으로만** 잡고(기다리지 않으므로 deadlock의
+대기 쪽이 될 수 없다 — lock 순서 보장은 그대로), 잡힌 location의 fact는 빼고 나머지를
+같은 transaction으로 publish한다. 다른 lock(run row·source·projection)에서 재시도
+예산을 다 쓴 chunk는 통째로 건너뛴다. 건너뛴 location은 `ALERT_SKIP_RETRY_ROUNDS`(2)번,
+`ALERT_SKIP_RETRY_SECONDS`(15초) 간격으로 다시 시도하고, 그래도 남으면 다음 tick에
+맡긴다. run은 success이고 건너뛴 수와 ID(최대 100개)를 run의 `error` 칸에 메모로 남기며
+(AirKorea의 "N개 측정소 요청 실패"와 같은 방식), 로그에는 수와 앞 5개 ID를 남긴다.
+run이 실패하는 것은 특보 location을 **하나도** publish하지 못했을 때와 lock 아닌 오류뿐이다.
+같은 location이 `ALERT_STARVED_RUNS`(3) run 연속 건너뛰어지면(앞 두 run의 메모와 교집합)
+starvation 경고를 로그와 asset metadata(`alert_locations_starved`)에 남긴다.
+
 response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직
 없으므로 source idempotency가 반복 응답의 저장 비용을 제어하고, 호출 비용을 줄이는

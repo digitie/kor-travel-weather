@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -14,6 +15,7 @@ from typing import Any
 
 from kortravelweather.metrics import provider_request
 from kortravelweather.models import WeatherLocation, WeatherValue, kst_now
+from kortravelweather.partitions import is_lock_conflict
 from kortravelweather.providers.kma import (
     KMA_PROVIDER_NAME,
     KmaForecastRow,
@@ -27,6 +29,7 @@ from kortravelweather.providers.kma import (
     weather_warning_to_weather_values,
 )
 from kortravelweather.repository import WeatherRepository
+from sqlalchemy.exc import OperationalError
 
 from .chunked_publish import (
     PUBLISH_CHUNK_LOCATIONS,
@@ -53,6 +56,27 @@ BASE_GRID_DATASETS = frozenset(
 #: never waits on an alerts publish; 50 of production's 1,450 is 29 short
 #: transactions instead of one that held every location.
 ALERT_PUBLISH_LOCATIONS = 50
+
+#: An alert location whose lock another writer holds is skipped for the tick
+#: (``WeatherRepository.ingest_skip_locked``) instead of waited on: on
+#: 2026-10-03 other jobs' publish chunks held one for longer than the whole
+#: ingest retry budget (~2 minutes), and that failed most hourly alerts runs.
+#: The skipped locations get this many more rounds, this far apart, before the
+#: run leaves them to the next hourly tick.
+ALERT_SKIP_RETRY_ROUNDS = 2
+ALERT_SKIP_RETRY_SECONDS = 15.0
+
+#: A location skipped this many alerts runs in a row is reported as starved.
+ALERT_STARVED_RUNS = 3
+
+#: Skipped location IDs recorded in the run's note (sorted) and in the log.
+#: The note is what the starvation check reads back.
+ALERT_SKIP_NOTE_IDS = 100
+ALERT_SKIP_LOG_IDS = 5
+
+_ALERT_SKIP_NOTE = re.compile(r"^lock 경합으로 특보 location (\d+)곳 건너뜀: \[([^\]]*)\]")
+
+logger = logging.getLogger(__name__)
 
 #: Grid and mid facts publish in location chunks too (``chunked_publish``):
 #: at most this many locations, and at most ``GRID_PUBLISH_VALUES`` facts, per
@@ -1130,20 +1154,47 @@ async def _stage_and_publish_weather(
         # location, so the value cap never binds them.  The chunks are built
         # up front, so a chunk citing no source is refused before anything
         # publishes.
-        for chunk_sources, chunk in (
-            *chunk_publications(
-                alert_sources,
-                alert_values,
-                max_locations=ALERT_PUBLISH_LOCATIONS,
-                max_values=max(1, len(alert_values)),
-            ),
-            *chunk_publications(
-                sources,
-                values,
-                max_locations=GRID_PUBLISH_LOCATIONS,
-                max_values=GRID_PUBLISH_VALUES,
-            ),
-        ):
+        #
+        # Alerts skip a location another writer holds (``_publish_alerts``):
+        # the next hourly run fetches the same notices, so a held location
+        # costs one tick of freshness instead of the whole run.  The run fails
+        # only when no alert location could be published.
+        grid_publications = chunk_publications(
+            sources,
+            values,
+            max_locations=GRID_PUBLISH_LOCATIONS,
+            max_values=GRID_PUBLISH_VALUES,
+        )
+        alerts_published, alerts_skipped = await _publish_alerts(
+            repository, alert_sources, alert_values, keep_alive
+        )
+        published_values += alerts_published
+        alerts_starved: list[str] = []
+        skip_note: str | None = None
+        if alerts_skipped:
+            alert_locations = len({value.location_id for value in alert_values})
+            if len(alerts_skipped) == alert_locations:
+                raise RuntimeError(
+                    f"특보 location {alert_locations}곳 모두 lock 경합으로 publish하지 못했습니다."
+                )
+            skip_note = _alert_skip_note(alerts_skipped)
+            logger.warning(
+                "kma_weather_alerts: %d/%d locations skipped on lock contention, "
+                "left to the next tick: %s",
+                len(alerts_skipped),
+                alert_locations,
+                ", ".join(alerts_skipped[:ALERT_SKIP_LOG_IDS]),
+            )
+            alerts_starved = _starved_alert_locations(repository, run, alerts_skipped)
+            if alerts_starved:
+                logger.warning(
+                    "kma_weather_alerts: %d locations skipped %d runs in a row "
+                    "(lock starvation): %s",
+                    len(alerts_starved),
+                    ALERT_STARVED_RUNS,
+                    ", ".join(alerts_starved[:ALERT_SKIP_LOG_IDS]),
+                )
+        for chunk_sources, chunk in grid_publications:
             keep_alive()
             # Off the event loop: a lock race retries with a blocking pause
             # (``WeatherRepository._retry_lock_race``).
@@ -1167,6 +1218,7 @@ async def _stage_and_publish_weather(
                 mid_groups_fetched=len(mid_groups),
                 requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
                 values_loaded_offset=published_values,
+                error=skip_note,
             )
         else:
             loaded = (
@@ -1182,6 +1234,7 @@ async def _stage_and_publish_weather(
                 mid_groups_fetched=len(mid_groups),
                 requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
                 values_loaded=loaded,
+                error=skip_note,
             )
         if finished.status != "success":
             raise RuntimeError(
@@ -1195,6 +1248,8 @@ async def _stage_and_publish_weather(
             "requests_fetched": base_requests_fetched + len(mid_groups) * 2 + alert_groups,
             "alerts_fetched": alert_rows_total,
             "values_loaded": loaded,
+            "alert_locations_skipped": len(alerts_skipped),
+            "alert_locations_starved": alerts_starved,
         }
     except Exception as exc:
         repository.finish_sync_run(
@@ -1208,6 +1263,92 @@ async def _stage_and_publish_weather(
             error=str(exc)[:2000],
         )
         raise
+
+
+def _alert_skip_note(skipped: Sequence[str]) -> str:
+    """The run's note for skipped alert locations; ``_alert_skips_in`` reads it."""
+    listed = list(skipped[:ALERT_SKIP_NOTE_IDS])
+    rest = len(skipped) - len(listed)
+    note = f"lock 경합으로 특보 location {len(skipped)}곳 건너뜀: [{','.join(listed)}]"
+    return note + (f" 외 {rest}곳" if rest else "") + " (다음 tick에 재시도)"
+
+
+def _alert_skips_in(note: str | None) -> set[str]:
+    """The location IDs a run's note says it skipped (none for any other note)."""
+    match = _ALERT_SKIP_NOTE.match(note or "")
+    if match is None:
+        return set()
+    return {location for location in match.group(2).split(",") if location}
+
+
+async def _publish_alerts(
+    repository: Any,
+    alert_sources: Sequence[Mapping[str, Any]],
+    alert_values: Sequence[WeatherValue],
+    keep_alive: Any,
+) -> tuple[int, list[str]]:
+    """Publish alert facts in location chunks, skipping held locations.
+
+    A skipped location's facts are left to the next hourly run, which fetches
+    the same notices again; each fact is that location's whole notice, so the
+    rest is never half a notice.  A chunk whose transaction gives up on some
+    other lock (``_retry_lock_race`` spent) is skipped whole.  Any other error
+    propagates and fails the run.  Locations are only tried, never waited
+    on, and the repository still takes them in sorted order, so the lock
+    order every ingest relies on is unchanged.  Returns what was published
+    and the locations still skipped, sorted.
+    """
+    published = 0
+    pending: Sequence[WeatherValue] = alert_values
+    skipped: set[str] = set()
+    for round_ in range(ALERT_SKIP_RETRY_ROUNDS + 1):
+        if round_:
+            if not skipped:
+                break
+            await asyncio.sleep(ALERT_SKIP_RETRY_SECONDS)
+            pending = [value for value in alert_values if value.location_id in skipped]
+            skipped = set()
+        for chunk_sources, chunk in chunk_publications(
+            alert_sources,
+            pending,
+            max_locations=ALERT_PUBLISH_LOCATIONS,
+            max_values=max(1, len(pending)),
+        ):
+            keep_alive()
+            try:
+                # Off the event loop: a lock race retries with a blocking
+                # pause (``WeatherRepository._retry_lock_race``).
+                loaded, held = await asyncio.to_thread(
+                    repository.ingest_skip_locked, source_records=chunk_sources, values=chunk
+                )
+            except OperationalError as exc:
+                if not is_lock_conflict(exc):
+                    raise
+                loaded, held = 0, sorted({value.location_id for value in chunk})
+            published += loaded
+            skipped.update(held)
+    return published, sorted(skipped)
+
+
+def _starved_alert_locations(repository: Any, run: Any, skipped: Sequence[str]) -> list[str]:
+    """Locations this run and the ``ALERT_STARVED_RUNS - 1`` runs before it all skipped."""
+    provider = getattr(run, "provider", None)
+    dataset_key = getattr(run, "dataset_key", None)
+    if not skipped or provider is None or dataset_key is None:
+        return []
+    previous = [
+        prior
+        for prior in repository.list_sync_runs(
+            limit=ALERT_STARVED_RUNS + 1, provider=provider, dataset_key=dataset_key
+        )
+        if prior.run_id != run.run_id and prior.status != "running"
+    ][: ALERT_STARVED_RUNS - 1]
+    if len(previous) < ALERT_STARVED_RUNS - 1:
+        return []
+    starved = set(skipped)
+    for prior in previous:
+        starved &= _alert_skips_in(prior.error)
+    return sorted(starved)
 
 
 async def _retry_call(call: Any, *, retries: int) -> Any:
