@@ -114,16 +114,25 @@ source·projection lock은 여전히 ingest `lock_timeout`과 재시도 아래�
   Dagster run 로그(`context.log`)와 모듈 logger에는 수와 앞 5개 ID를, asset metadata에는
   `alert_locations_skipped`(수)를 남기고, `ktw_sync_locations_skipped_total{provider,dataset}`
   counter를 올린다. 별도 table/column은 두지 않았다(migration 없이).
-- **상태**: 건너뛴 비율이 `ALERT_PARTIAL_SKIP_SHARE`(10%)를 넘거나 starved location이 있으면
-  run은 `partial`로 끝난다 — `KorTravelWeatherSyncFailed`(status=~"failed|partial")가 그대로
-  알린다. 그 밖에는 `success`. run이 `failed`가 되는 것은 특보 location을 **하나도**
-  publish하지 못했을 때(error가 skip 메모로 시작한다), 다른 lock에서 예산을 다 쓴 chunk,
-  lock 아닌 오류뿐이다.
+- **상태**: 건너뛴 location이 `ALERT_PARTIAL_MIN_SKIPPED`(5)곳 이상**이고** 비율이
+  `ALERT_PARTIAL_SKIP_SHARE`(10%)를 넘거나, starved location이 있으면 run은 `partial`로
+  끝난다 — `KorTravelWeatherSyncFailed`(status=~"failed|partial")가 그대로 알린다. 그 밖에는
+  `success`. 최소 개수는 조용한 시간대(지역 특보 하나가 몇 곳에만 걸린 때)의 routine skip
+  하나가 20%·100%로 부풀어 알리지 않게 한다 — 그런 location이 tick마다 잡혀 있으면
+  starvation이 잡는다. run이 `failed`가 되는 것은 특보 location을 **하나도** publish하지
+  못했고 그 수가 최소 개수 이상일 때(error가 skip 메모로 시작한다), 다른 lock에서 예산을 다
+  쓴 chunk, lock 아닌 오류뿐이다. 최소 개수 미만을 전부 건너뛴 run은 메모를 남긴 success다.
 - **starvation**: 같은 location이 `ALERT_STARVED_RUNS`(3) run 연속 건너뛰어지면(이번 run과
   앞 두 run 메모의 교집합) 로그·asset metadata(`alert_locations_starved`)에 남기고 run을
   `partial`로 끝낸다. 전부 건너뛰어 실패한 run은 메모를 가지므로 연속에 포함되고, 다른
   이유로 실패한 run은 세지도 끊지도 않는다. 메모에 나열되지 못한(1,500자 밖) ID는
   starved로 잡히지 않는다.
+- **마지막 재시도 pass는 두지 않았다**: 특보 job에는 특보 publish와 run 종료 사이에 다른
+  일이 없어서(격자 chunk 없음) "종료 직전 pass"는 재시도 라운드 하나를 더 두는 것과 같고,
+  2026-10-03의 holder chunk는 수 분씩 쥐었으므로 몇십 초 뒤 pass로는 잘 풀리지 않는다.
+  매시 같은 location이 잡혀 starvation 경고가 이어지면, 특보 schedule을 매시 `:00`~`:20`에
+  시작하는 초단기예보·AirKorea·외부 provider job과 덜 겹치는 분(예: `:40`)으로 옮기거나
+  `PUBLISH_CHUNK_VALUES`를 줄여 holder chunk를 짧게 하는 것이 먼저다.
 
 response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직

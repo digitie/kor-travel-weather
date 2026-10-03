@@ -71,11 +71,16 @@ ALERT_SKIP_RETRY_SECONDS = 15.0
 #: A location skipped this many alerts runs in a row is reported as starved.
 ALERT_STARVED_RUNS = 3
 
-#: A run that skipped more than this share of its alert locations, or any
+#: A run that skipped at least ``ALERT_PARTIAL_MIN_SKIPPED`` locations and
+#: more than ``ALERT_PARTIAL_SKIP_SHARE`` of its alert locations, or any
 #: starved one, finishes ``partial`` rather than ``success``:
 #: KorTravelWeatherSyncFailed pages on failed|partial, so chronic skipping
-#: is not hidden behind green runs.
+#: is not hidden behind green runs.  The minimum keeps a quiet hour -- one
+#: regional notice for a handful of locations -- from paging on one routine
+#: skip; a location held tick after tick is still caught as starved.  The
+#: same minimum decides whether skipping *every* location fails the run.
 ALERT_PARTIAL_SKIP_SHARE = 0.10
+ALERT_PARTIAL_MIN_SKIPPED = 5
 
 #: Skipped location IDs listed in the run's note, sorted and percent-escaped,
 #: up to this many characters (the rest is counted, not listed).  A failed
@@ -1190,7 +1195,7 @@ async def _stage_and_publish_weather(
                 KMA_PROVIDER_NAME, "kma_weather_alerts", len(alerts_skipped)
             )
             skip_note = _alert_skip_note(alerts_skipped)
-            if len(alerts_skipped) == alert_locations:
+            if len(alerts_skipped) == alert_locations >= ALERT_PARTIAL_MIN_SKIPPED:
                 # The note leads the error so the starvation check reads this
                 # run's skips back like any other's.
                 raise RuntimeError(
@@ -1212,7 +1217,10 @@ async def _stage_and_publish_weather(
                     ALERT_STARVED_RUNS,
                     ", ".join(alerts_starved[:ALERT_SKIP_LOG_IDS]),
                 )
-            if alerts_starved or len(alerts_skipped) > ALERT_PARTIAL_SKIP_SHARE * alert_locations:
+            if alerts_starved or (
+                len(alerts_skipped) >= ALERT_PARTIAL_MIN_SKIPPED
+                and len(alerts_skipped) > ALERT_PARTIAL_SKIP_SHARE * alert_locations
+            ):
                 status = "partial"
         for chunk_sources, chunk in grid_publications:
             keep_alive()
