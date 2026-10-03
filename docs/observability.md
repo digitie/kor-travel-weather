@@ -53,6 +53,7 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_sync_runs_{started,finished,active}`
 - `ktw_sync_{requests,source_records,values}_total`
 - `ktw_sync_stale_recovered_total`
+- `ktw_sync_locations_skipped_total{provider,dataset}` — lock 경합으로 다음 run에 맡긴 location 수(현재 KMA 특보)
 - `ktw_metrics_errors_total{operation}`
 - `ktw_metrics_server_up`
 - `ktw_metrics_server_bind_failures_total`

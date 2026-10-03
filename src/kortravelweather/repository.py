@@ -912,17 +912,50 @@ class WeatherRepository:
         four round trips per fact on a run of hundreds of thousands.  Returns
         whether this call took it.
         """
+        held = WeatherRepository._held_advisory_scopes(session)
+        if scope in held:
+            return False
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": scope}
+        )
+        held.add(scope)
+        return True
+
+    @staticmethod
+    def _held_advisory_scopes(session: Session) -> set[str]:
+        """The advisory scopes the session's current transaction holds."""
         transaction = session.get_transaction()
         held = session.info.get("advisory_xact_scopes")
         if held is None or held[0] is not transaction:
             held = (transaction, set())
             session.info["advisory_xact_scopes"] = held
-        if scope in held[1]:
+        return held[1]
+
+    def _try_lock_location_session(self, session: Session, location_id: str) -> bool:
+        """``_lock_location_session`` that only tries the advisory lock.
+
+        Returns whether the transaction holds the location afterwards.  The
+        advisory try never waits, so it cannot be the waiting edge of a
+        deadlock and a caller taking these in sorted order keeps the ingest's
+        lock order.  The location row's ``FOR UPDATE`` after it can still
+        wait (bounded by the ingest ``lock_timeout``): every writer of that
+        row takes the advisory lock first, so it waits only on a writer that
+        does not.
+        """
+        scope = f"location:{location_id}"
+        held = self._held_advisory_scopes(session)
+        if scope in held:
+            return True
+        if not session.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtext(:scope))"), {"scope": scope}
+        ).scalar_one():
             return False
+        held.add(scope)
         session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": scope}
-        )
-        held[1].add(scope)
+            select(WeatherLocationRow.location_id)
+            .where(WeatherLocationRow.location_id == location_id)
+            .with_for_update()
+        ).scalar_one_or_none()
         return True
 
     def _lock_location_session(self, session: Session, location_id: str) -> None:
@@ -1502,7 +1535,15 @@ class WeatherRepository:
         session: Session,
         records: list[Mapping[str, Any]],
         facts: list[WeatherValue],
+        *,
+        skipped: set[str] | None = None,
     ) -> int:
+        """Publish ``records`` and ``facts``; see ``ingest_batch``.
+
+        With ``skipped`` the location locks are only tried: a location whose
+        lock another transaction holds is added to ``skipped`` and its facts
+        are left out (``ingest_skip_locked``).
+        """
         # Lock and validate every referenced run before source/fact work.
         # Reconciliation and finish use the same row-level lock/conditional
         # transition, so a terminal run cannot publish after ownership loss.
@@ -1607,7 +1648,12 @@ class WeatherRepository:
         # taken once per transaction (``_advisory_xact_lock_once``), not once
         # per fact.
         for location_id in sorted({value.location_id for value in facts}):
-            self._lock_location_session(session, location_id)
+            if skipped is None:
+                self._lock_location_session(session, location_id)
+            elif not self._try_lock_location_session(session, location_id):
+                skipped.add(location_id)
+        if skipped:
+            facts = [value for value in facts if value.location_id not in skipped]
         expired_window = self._expired_fact_window(session) if facts else None
         source_rows: dict[str, SourceRecordRow] = {}
         resolved = [self._resolve_fact_session(session, value, source_rows) for value in facts]
@@ -1689,6 +1735,38 @@ class WeatherRepository:
             with self._session_factory.begin() as session:
                 self._set_ingest_lock_timeout(session)
                 return self._ingest_batch_session(session, records, facts)
+
+        return self._retry_lock_race(step)
+
+    def ingest_skip_locked(
+        self,
+        *,
+        source_records: list[Mapping[str, Any]] | None = None,
+        values: list[WeatherValue] | None = None,
+    ) -> tuple[int, list[str]]:
+        """``ingest_batch`` that skips a location another writer holds.
+
+        Returns what it loaded and the skipped location IDs, sorted.  Their
+        facts are not published; the source records still are (an idempotent
+        replay when the caller publishes the skipped facts later).  It never
+        waits on a location's advisory lock, so a held location is skipped,
+        never given up on; every other lock wait -- the location row's
+        ``FOR UPDATE`` included -- is bounded and retried as in
+        ``ingest_batch``.  For a
+        collector whose next run republishes the same facts -- the alerts
+        fan-out, where waiting out another job's publish failed the run.
+        """
+        records = source_records or []
+        facts = values or []
+        if not records and not facts:
+            return 0, []
+
+        def step() -> tuple[int, list[str]]:
+            skipped: set[str] = set()
+            with self._session_factory.begin() as session:
+                self._set_ingest_lock_timeout(session)
+                loaded = self._ingest_batch_session(session, records, facts, skipped=skipped)
+            return loaded, sorted(skipped)
 
         return self._retry_lock_race(step)
 
@@ -2894,9 +2972,21 @@ class WeatherRepository:
             )
         return finished
 
-    def list_sync_runs(self, *, limit: int = 50) -> list[SyncRun]:
+    def list_sync_runs(
+        self,
+        *,
+        limit: int = 50,
+        provider: str | None = None,
+        dataset_key: str | None = None,
+    ) -> list[SyncRun]:
+        """Newest first, optionally one provider/dataset's runs only."""
         with self._session_factory() as session:
-            stmt = select(SyncRunRow).order_by(desc(SyncRunRow.started_at)).limit(limit)
+            stmt = select(SyncRunRow)
+            if provider is not None:
+                stmt = stmt.where(SyncRunRow.provider == provider)
+            if dataset_key is not None:
+                stmt = stmt.where(SyncRunRow.dataset_key == dataset_key)
+            stmt = stmt.order_by(desc(SyncRunRow.started_at)).limit(limit)
             return [self._sync_model(row) for row in session.scalars(stmt).all()]
 
     def get_sync_run(self, run_id: str) -> SyncRun | None:

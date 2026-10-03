@@ -90,6 +90,50 @@ transaction당 한 번만 잡고(예전엔 fact마다 네 번 왕복), replay �
 primary-key 조회, current projection 갱신은 `INSERT ... ON CONFLICT DO UPDATE ... WHERE
 newer` 한 문장(1,000행씩)이다 — 비교·교체가 문장 안에서 행 단위로 원자적이다.
 
+**특보는 잡힌 location을 기다리지 않고 건너뛴다.** 2026-10-03 `kma_weather_alerts`는
+매시 run 대부분이 `location:airkorea-station-…` 하나의 lock timeout으로 실패했다(실패
+run 대부분이 약 125초 = 재시도 예산 20 × (3초 대기 + 3초 휴지)). 다른 job의 publish
+chunk가 n150 디스크 대기 아래서 그 location을 예산보다 오래 쥐었기 때문이다(같은 날
+단기예보 run은 20만 fact에 3.3시간, chunk당 수 분). 특보 fact는 다음 매시 run이 같은
+특보를 다시 받아 오므로 한 location을 한 tick 늦게 쓰는 비용이 run 전체보다 훨씬 작다.
+그래서 특보 chunk는 `ingest_skip_locked`로 publish한다: location advisory lock을
+**정렬 순서대로 `pg_try_advisory_xact_lock`으로만** 잡고(advisory lock은 기다리지 않으므로
+deadlock의 대기 쪽이 될 수 없다 — lock 순서 보장은 그대로), 잡힌 location의 fact는 빼고
+나머지를 같은 transaction으로 publish한다. 그 뒤의 location row `FOR UPDATE`와 run row·
+source·projection lock은 여전히 ingest `lock_timeout`과 재시도 아래서 기다린다.
+
+- **재시도 라운드**: advisory lock이 잡혀 건너뛴 location만 `ALERT_SKIP_RETRY_ROUNDS`(2)번,
+  `ALERT_SKIP_RETRY_SECONDS`(15초) 간격으로 다시 시도하고, 그래도 남으면 다음 tick에 맡긴다.
+- **다른 lock에서 재시도 예산을 다 쓴 chunk**(partition DDL, 야간 drop, run row 등)는
+  건너뛰지 않고 run을 곧바로 실패시킨다("location lock이 아닌 lock … 재시도 예산을 다
+  썼습니다"). 그런 lock은 뒤 chunk도 똑같이 약 2분씩 붙잡으므로, 건너뛰며 계속하면 29개
+  chunk × 라운드로 몇 시간을 쓴 뒤 location 경합 탓으로 잘못 보고하게 된다.
+- **기록**: 건너뛴 수와 ID를 run의 `error` 칸에 메모로 남긴다(AirKorea의 "N개 측정소 요청
+  실패"와 같은 방식). ID는 percent-escape하고 정렬해 `ALERT_SKIP_NOTE_CHARS`(1,500자)까지만
+  나열하며 나머지는 "외 N곳"으로 센다 — 실패 run의 error는 2,000자로 잘리기 때문이다.
+  Dagster run 로그(`context.log`)와 모듈 logger에는 수와 앞 5개 ID를, asset metadata에는
+  `alert_locations_skipped`(수)를 남기고, `ktw_sync_locations_skipped_total{provider,dataset}`
+  counter를 올린다. 별도 table/column은 두지 않았다(migration 없이).
+- **상태**: 건너뛴 location이 `ALERT_PARTIAL_MIN_SKIPPED`(5)곳 이상**이고** 비율이
+  `ALERT_PARTIAL_SKIP_SHARE`(10%)를 넘거나, starved location이 있으면 run은 `partial`로
+  끝난다 — `KorTravelWeatherSyncFailed`(status=~"failed|partial")가 그대로 알린다. 그 밖에는
+  `success`. 최소 개수는 조용한 시간대(지역 특보 하나가 몇 곳에만 걸린 때)의 routine skip
+  하나가 20%·100%로 부풀어 알리지 않게 한다 — 그런 location이 tick마다 잡혀 있으면
+  starvation이 잡는다. run이 `failed`가 되는 것은 특보 location을 **하나도** publish하지
+  못했고 그 수가 최소 개수 이상일 때(error가 skip 메모로 시작한다), 다른 lock에서 예산을 다
+  쓴 chunk, lock 아닌 오류뿐이다. 최소 개수 미만을 전부 건너뛴 run은 메모를 남긴 success다.
+- **starvation**: 같은 location이 `ALERT_STARVED_RUNS`(3) run 연속 건너뛰어지면(이번 run과
+  앞 두 run 메모의 교집합) 로그·asset metadata(`alert_locations_starved`)에 남기고 run을
+  `partial`로 끝낸다. 전부 건너뛰어 실패한 run은 메모를 가지므로 연속에 포함되고, 다른
+  이유로 실패한 run은 세지도 끊지도 않는다. 메모에 나열되지 못한(1,500자 밖) ID는
+  starved로 잡히지 않는다.
+- **마지막 재시도 pass는 두지 않았다**: 특보 job에는 특보 publish와 run 종료 사이에 다른
+  일이 없어서(격자 chunk 없음) "종료 직전 pass"는 재시도 라운드 하나를 더 두는 것과 같고,
+  2026-10-03의 holder chunk는 수 분씩 쥐었으므로 몇십 초 뒤 pass로는 잘 풀리지 않는다.
+  매시 같은 location이 잡혀 starvation 경고가 이어지면, 특보 schedule을 매시 `:00`~`:20`에
+  시작하는 초단기예보·AirKorea·외부 provider job과 덜 겹치는 분(예: `:40`)으로 옮기거나
+  `PUBLISH_CHUNK_VALUES`를 줄여 holder chunk를 짧게 하는 것이 먼저다.
+
 response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직
 없으므로 source idempotency가 반복 응답의 저장 비용을 제어하고, 호출 비용을 줄이는

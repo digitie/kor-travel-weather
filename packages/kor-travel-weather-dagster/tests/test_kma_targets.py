@@ -80,6 +80,10 @@ class _CatalogRepository:
         self.values.extend(values)
         return len(values)
 
+    def ingest_skip_locked(self, *, source_records, values):
+        # The alerts publish; no other writer holds a lock here.
+        return self.ingest_batch(source_records=source_records, values=values), []
+
     def finish_sync_run(self, run_id, **kwargs):
         self.runs[-1].status = kwargs["status"]
         return self.runs[-1]
