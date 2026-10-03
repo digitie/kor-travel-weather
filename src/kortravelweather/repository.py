@@ -932,11 +932,15 @@ class WeatherRepository:
         return held[1]
 
     def _try_lock_location_session(self, session: Session, location_id: str) -> bool:
-        """``_lock_location_session`` that never waits on the advisory lock.
+        """``_lock_location_session`` that only tries the advisory lock.
 
-        Returns whether the transaction holds the location afterwards.  A
-        lock that never waits cannot be the waiting edge of a deadlock, so a
-        caller taking these in sorted order keeps the ingest's lock order.
+        Returns whether the transaction holds the location afterwards.  The
+        advisory try never waits, so it cannot be the waiting edge of a
+        deadlock and a caller taking these in sorted order keeps the ingest's
+        lock order.  The location row's ``FOR UPDATE`` after it can still
+        wait (bounded by the ingest ``lock_timeout``): every writer of that
+        row takes the advisory lock first, so it waits only on a writer that
+        does not.
         """
         scope = f"location:{location_id}"
         held = self._held_advisory_scopes(session)
@@ -1745,8 +1749,10 @@ class WeatherRepository:
         Returns what it loaded and the skipped location IDs, sorted.  Their
         facts are not published; the source records still are (an idempotent
         replay when the caller publishes the skipped facts later).  It never
-        waits on a location lock, so it never gives up on one either; any
-        other lock wait is bounded and retried as in ``ingest_batch``.  For a
+        waits on a location's advisory lock, so a held location is skipped,
+        never given up on; every other lock wait -- the location row's
+        ``FOR UPDATE`` included -- is bounded and retried as in
+        ``ingest_batch``.  For a
         collector whose next run republishes the same facts -- the alerts
         fan-out, where waiting out another job's publish failed the run.
         """

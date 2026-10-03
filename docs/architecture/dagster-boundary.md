@@ -97,17 +97,33 @@ chunk가 n150 디스크 대기 아래서 그 location을 예산보다 오래 쥐
 단기예보 run은 20만 fact에 3.3시간, chunk당 수 분). 특보 fact는 다음 매시 run이 같은
 특보를 다시 받아 오므로 한 location을 한 tick 늦게 쓰는 비용이 run 전체보다 훨씬 작다.
 그래서 특보 chunk는 `ingest_skip_locked`로 publish한다: location advisory lock을
-**정렬 순서대로 `pg_try_advisory_xact_lock`으로만** 잡고(기다리지 않으므로 deadlock의
-대기 쪽이 될 수 없다 — lock 순서 보장은 그대로), 잡힌 location의 fact는 빼고 나머지를
-같은 transaction으로 publish한다. 다른 lock(run row·source·projection)에서 재시도
-예산을 다 쓴 chunk는 통째로 건너뛴다. 건너뛴 location은 `ALERT_SKIP_RETRY_ROUNDS`(2)번,
-`ALERT_SKIP_RETRY_SECONDS`(15초) 간격으로 다시 시도하고, 그래도 남으면 다음 tick에
-맡긴다. run은 success이고 건너뛴 수와 ID(최대 100개)를 run의 `error` 칸에 메모로 남기며
-(AirKorea의 "N개 측정소 요청 실패"와 같은 방식), Dagster run 로그()와 모듈
-logger에는 수와 앞 5개 ID를, asset metadata에는 (수)를 남긴다.
-run이 실패하는 것은 특보 location을 **하나도** publish하지 못했을 때와 lock 아닌 오류뿐이다.
-같은 location이 `ALERT_STARVED_RUNS`(3) run 연속 건너뛰어지면(앞 두 run의 메모와 교집합)
-starvation 경고를 로그와 asset metadata(`alert_locations_starved`)에 남긴다.
+**정렬 순서대로 `pg_try_advisory_xact_lock`으로만** 잡고(advisory lock은 기다리지 않으므로
+deadlock의 대기 쪽이 될 수 없다 — lock 순서 보장은 그대로), 잡힌 location의 fact는 빼고
+나머지를 같은 transaction으로 publish한다. 그 뒤의 location row `FOR UPDATE`와 run row·
+source·projection lock은 여전히 ingest `lock_timeout`과 재시도 아래서 기다린다.
+
+- **재시도 라운드**: advisory lock이 잡혀 건너뛴 location만 `ALERT_SKIP_RETRY_ROUNDS`(2)번,
+  `ALERT_SKIP_RETRY_SECONDS`(15초) 간격으로 다시 시도하고, 그래도 남으면 다음 tick에 맡긴다.
+- **다른 lock에서 재시도 예산을 다 쓴 chunk**(partition DDL, 야간 drop, run row 등)는
+  건너뛰지 않고 run을 곧바로 실패시킨다("location lock이 아닌 lock … 재시도 예산을 다
+  썼습니다"). 그런 lock은 뒤 chunk도 똑같이 약 2분씩 붙잡으므로, 건너뛰며 계속하면 29개
+  chunk × 라운드로 몇 시간을 쓴 뒤 location 경합 탓으로 잘못 보고하게 된다.
+- **기록**: 건너뛴 수와 ID를 run의 `error` 칸에 메모로 남긴다(AirKorea의 "N개 측정소 요청
+  실패"와 같은 방식). ID는 percent-escape하고 정렬해 `ALERT_SKIP_NOTE_CHARS`(1,500자)까지만
+  나열하며 나머지는 "외 N곳"으로 센다 — 실패 run의 error는 2,000자로 잘리기 때문이다.
+  Dagster run 로그(`context.log`)와 모듈 logger에는 수와 앞 5개 ID를, asset metadata에는
+  `alert_locations_skipped`(수)를 남기고, `ktw_sync_locations_skipped_total{provider,dataset}`
+  counter를 올린다. 별도 table/column은 두지 않았다(migration 없이).
+- **상태**: 건너뛴 비율이 `ALERT_PARTIAL_SKIP_SHARE`(10%)를 넘거나 starved location이 있으면
+  run은 `partial`로 끝난다 — `KorTravelWeatherSyncFailed`(status=~"failed|partial")가 그대로
+  알린다. 그 밖에는 `success`. run이 `failed`가 되는 것은 특보 location을 **하나도**
+  publish하지 못했을 때(error가 skip 메모로 시작한다), 다른 lock에서 예산을 다 쓴 chunk,
+  lock 아닌 오류뿐이다.
+- **starvation**: 같은 location이 `ALERT_STARVED_RUNS`(3) run 연속 건너뛰어지면(이번 run과
+  앞 두 run 메모의 교집합) 로그·asset metadata(`alert_locations_starved`)에 남기고 run을
+  `partial`로 끝낸다. 전부 건너뛰어 실패한 run은 메모를 가지므로 연속에 포함되고, 다른
+  이유로 실패한 run은 세지도 끊지도 않는다. 메모에 나열되지 못한(1,500자 밖) ID는
+  starved로 잡히지 않는다.
 
 response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직

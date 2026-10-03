@@ -319,6 +319,12 @@ SYNC_VALUES = Counter(
     ("provider", "dataset"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+SYNC_LOCATIONS_SKIPPED = Counter(
+    "ktw_sync_locations_skipped_total",
+    "Locations a sync run left to its next run because another writer held them.",
+    ("provider", "dataset"),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 SYNC_STALE_RECOVERED = Counter(
     "ktw_sync_stale_recovered_total",
     "Running sync rows recovered after a worker interruption.",
@@ -562,6 +568,17 @@ def observe_sync_finished(
     _safe("sync_finished", update)
 
 
+def observe_sync_locations_skipped(provider: object, dataset: object, count: int) -> None:
+    if count > 0:
+        safe_provider, safe_dataset = provider_label(provider), dataset_label(dataset)
+        _safe(
+            "sync_locations_skipped",
+            lambda: SYNC_LOCATIONS_SKIPPED.labels(
+                provider=safe_provider, dataset=safe_dataset
+            ).inc(count),
+        )
+
+
 def observe_stale_recovered(count: int) -> None:
     if count > 0:
         _safe("sync_stale", lambda: SYNC_STALE_RECOVERED.inc(max(0, count)))
@@ -666,6 +683,7 @@ __all__ = [
     "observe_provider_request",
     "observe_stale_recovered",
     "observe_sync_finished",
+    "observe_sync_locations_skipped",
     "observe_sync_started",
     "provider_request",
     "start_metrics_server",
