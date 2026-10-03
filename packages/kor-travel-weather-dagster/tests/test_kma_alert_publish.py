@@ -206,13 +206,38 @@ def test_a_held_location_is_skipped_for_the_tick_not_fatal(monkeypatch, caplog) 
 
 def test_skipping_more_than_the_threshold_finishes_the_run_partial(monkeypatch) -> None:
     # A success hides chronic skipping from KorTravelWeatherSyncFailed, which
-    # pages on failed|partial.  1 of 5 (20%) is over ALERT_PARTIAL_SKIP_SHARE.
-    repository = _Repository(held={"loc-03"})
-    result = _run(repository, monkeypatch)
+    # pages on failed|partial.  6 of 50 (12%) is over ALERT_PARTIAL_SKIP_SHARE
+    # and at least ALERT_PARTIAL_MIN_SKIPPED.
+    repository = _Repository(held={f"loc-{i:02d}" for i in range(6)})
+    result = _run(repository, monkeypatch, targets=50)
 
     assert result["status"] == "partial"
     assert repository.runs[-1].status == "partial"
-    assert result["values_loaded"] == 4
+    assert result["values_loaded"] == 44
+
+
+def test_one_routine_skip_under_a_small_notice_stays_a_success(monkeypatch) -> None:
+    # A quiet hour: one regional notice for 5 locations, one held.  20% of a
+    # small denominator is not chronic skipping and must not page.
+    repository = _Repository(held={"loc-03"})
+    result = _run(repository, monkeypatch, targets=5)
+
+    assert result["status"] == "success"
+    assert "loc-03" in repository.runs[-1].error
+
+
+@pytest.mark.parametrize("targets", [1, 4])
+def test_a_small_notice_skipped_whole_is_recorded_not_failed(monkeypatch, targets) -> None:
+    # Every location skipped, but fewer than ALERT_PARTIAL_MIN_SKIPPED: the
+    # note records them and starvation catches a location held tick after
+    # tick; one held location does not fail the run.
+    repository = _Repository(held={f"loc-{i:02d}" for i in range(targets)})
+    result = _run(repository, monkeypatch, targets=targets)
+
+    assert result["status"] == "success"
+    assert result["values_loaded"] == 0
+    assert result["alert_locations_skipped"] == targets
+    assert "loc-00" in repository.runs[-1].error
 
 
 def test_a_location_released_before_the_retry_round_publishes(monkeypatch) -> None:
