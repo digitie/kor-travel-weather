@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -534,12 +535,15 @@ async def stage_grid(
     source_entity_id: str | None = None,
     max_response_rows: int | None = None,
     max_normalized_values: int | None = None,
+    skipped: Counter[str] | None = None,
 ) -> list[StagedResponse]:
     """Fetch one grid with bounded row/value materialization.
 
     Provider iterables are consumed only up to the remaining run budget.  Each
     row is normalized independently so a single malformed or fan-out-heavy
     response cannot allocate an unbounded list before the cap is enforced.
+    A KMA Missing sentinel or out-of-range value drops only that metric and is
+    counted in ``skipped``; it no longer aborts the whole run.
     """
     location = target.location
     assert location.nx is not None and location.ny is not None
@@ -583,6 +587,7 @@ async def stage_grid(
             location_id=location.location_id,
             source_record_key=now_key,
             known_at=fetched,
+            skipped=skipped,
         )
         if values_budget is not None:
             values_budget -= len(now_values)
@@ -619,6 +624,7 @@ async def stage_grid(
             location_id=location.location_id,
             source_record_key=ultra_key,
             known_at=fetched,
+            skipped=skipped,
         )
         if values_budget is not None:
             values_budget -= len(ultra_values)
@@ -653,6 +659,7 @@ async def stage_grid(
             location_id=location.location_id,
             source_record_key=short_key,
             known_at=fetched,
+            skipped=skipped,
         )
         staged.append(
             StagedResponse(
@@ -986,6 +993,9 @@ async def _stage_and_publish_weather(
         alert_values: list[WeatherValue] = []
         response_rows_total = 0
         normalized_values_total = 0
+        #: Metrics dropped as KMA Missing sentinels or out-of-range values,
+        #: keyed ``"{dataset}:{missing|invalid}:{category}"`` (per response).
+        values_skipped: Counter[str] = Counter()
         alert_locations_seen: set[str] = set()
         alert_locations_published: set[str] = set()
         alert_skipped_locations: set[str] = set()
@@ -1060,6 +1070,7 @@ async def _stage_and_publish_weather(
                 source_entity_id=source_entity_id,
                 max_response_rows=remaining_rows,
                 max_normalized_values=per_target_values,
+                skipped=values_skipped,
             )
             for response in responses:
                 payload = response.source_record.get("payload") or {}
@@ -1323,7 +1334,16 @@ async def _stage_and_publish_weather(
             raise RuntimeError(
                 f"sync run ownership was lost before publish completion: {finished.status}"
             )
+        if values_skipped:
+            logger.warning(
+                "KMA run %s skipped %d metric values (missing sentinel / out of range): %s",
+                finished.run_id,
+                sum(values_skipped.values()),
+                dict(values_skipped.most_common()),
+            )
         return {
+            "values_skipped": sum(values_skipped.values()),
+            "values_skipped_by_reason": dict(values_skipped.most_common()),
             "run_id": finished.run_id,
             "status": finished.status,
             "grids_fetched": grids_fetched,
