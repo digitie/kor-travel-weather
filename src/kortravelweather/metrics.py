@@ -16,7 +16,7 @@ import os
 import re
 import signal
 import struct
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from threading import Lock
 from time import perf_counter
@@ -586,12 +586,35 @@ def observe_sync_locations_skipped(provider: object, dataset: object, count: int
         )
 
 
+SYNC_VALUES_SKIPPED_REASONS = ("missing", "invalid", "other")
+
+
+def initialize_sync_values_skipped(provider: object, datasets: Iterable[object]) -> None:
+    """Export every skip child at 0 before the first skip.
+
+    The alert rules compare the counter with its value an hour (3h30m) ago.
+    A child created by its first increment has no earlier value, so that
+    first increment would never page.  Under ``PROMETHEUS_MULTIPROC_DIR`` the
+    child's 0 is written to this process's counter file, so the scrape
+    listener exports it too.
+    """
+    safe_provider = provider_label(provider)
+    safe_datasets = sorted({dataset_label(dataset) for dataset in datasets})
+
+    def create() -> None:
+        for dataset in safe_datasets:
+            for reason in SYNC_VALUES_SKIPPED_REASONS:
+                SYNC_VALUES_SKIPPED.labels(provider=safe_provider, dataset=dataset, reason=reason)
+
+    _safe("sync_values_skipped", create)
+
+
 def observe_sync_values_skipped(
     provider: object, dataset: object, reason: object, count: int
 ) -> None:
     if count > 0:
         safe_provider, safe_dataset = provider_label(provider), dataset_label(dataset)
-        safe_reason = reason if reason in ("missing", "invalid") else "other"
+        safe_reason = reason if reason in SYNC_VALUES_SKIPPED_REASONS[:2] else "other"
         _safe(
             "sync_values_skipped",
             lambda: SYNC_VALUES_SKIPPED.labels(
@@ -698,6 +721,7 @@ def provider_request(provider: object, dataset: object) -> Iterator[None]:
 __all__ = [
     "REGISTRY",
     "change_http_in_flight",
+    "initialize_sync_values_skipped",
     "metrics_content_type",
     "metrics_payload",
     "observe_http_request",

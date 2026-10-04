@@ -504,9 +504,15 @@ def test_skipped_values_alert_below_the_partial_threshold() -> None:
 
     missing = alerts["KorTravelWeatherValuesMissingHigh"]
     expr = " ".join(missing["expr"].split())
-    # Not [3h]: exactly three hourly periods briefly holds two runs and
-    # resets ``for`` (the promtool three-station case fails on it).
-    assert 'ktw_sync_values_skipped_total{reason="missing"}[3h30m]' in expr
+    # A reset-tolerant delta: a dip in the multiprocess sum (a file skipped
+    # for one scrape) reads as a counter reset to increase(), which then
+    # counts the whole counter.  Not 3h: with run end times that vary, a 3h
+    # window briefly holds two runs and resets ``for`` (see the promtool cases).
+    assert "increase(" not in expr
+    assert (
+        'ktw_sync_values_skipped_total{reason="missing"} - '
+        'ktw_sync_values_skipped_total{reason="missing"} offset 3h30m'
+    ) in expr
     assert "sum by (provider, dataset)" in expr
     assert missing["for"] == "1h"
     assert missing["labels"]["severity"] == "warning"
@@ -519,13 +525,55 @@ def test_skipped_values_alert_below_the_partial_threshold() -> None:
     invalid = alerts["KorTravelWeatherValuesInvalid"]
     expr = " ".join(invalid["expr"].split())
     # ``other`` is counted as invalid by the run, so the rule reads both.
-    assert 'reason!="missing"' in expr
-    assert "increase(ktw_sync_values_skipped_total" in expr
-    # The series is created by its first increment, which increase() reads
-    # as 0; the ``unless ... offset`` branch catches that first value.
-    assert "unless" in expr and "offset 1h" in expr
+    # The children start at 0 (kma_weather import), so no ``unless`` branch
+    # for new series: it fired an hour after any scrape gap.
+    assert (
+        'ktw_sync_values_skipped_total{reason!="missing"} - '
+        'ktw_sync_values_skipped_total{reason!="missing"} offset 1h'
+    ) in expr
+    assert "unless" not in expr and "increase(" not in expr
     assert "for" not in invalid
     assert invalid["labels"]["severity"] == "warning"
 
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "test rules /tests/alerts_test.yml" in ci
+
+
+def test_kma_skip_counters_start_at_zero_under_multiprocess(tmp_path) -> None:
+    """Importing the KMA worker exports every skip child at 0.
+
+    The alert rules subtract the value an hour (3h30m) ago.  A child created
+    by its first increment has no earlier value, so that first increment --
+    the first invalid value after a deploy -- would never page.
+    """
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    environment.pop("KOR_TRAVEL_WEATHER_METRICS_PORT", None)
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [
+            os.path.join(root, "src"),
+            os.path.join(root, "packages", "kor-travel-weather-dagster", "src"),
+            environment.get("PYTHONPATH", ""),
+        ]
+    )
+    worker = "import kortravelweather_dagster.kma_weather"
+    subprocess.run([sys.executable, "-c", worker], env=environment, check=True)
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for dataset in ("kma_short_forecast", "kma_ultra_short_forecast", "kma_ultra_short_nowcast"):
+        for reason in ("invalid", "missing", "other"):
+            assert (
+                f'ktw_sync_values_skipped_total{{dataset="{dataset}",'
+                f'provider="python-kma-api",reason="{reason}"}} 0.0'
+            ) in scraper.stdout, (dataset, reason)

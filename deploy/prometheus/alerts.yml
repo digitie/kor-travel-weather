@@ -60,50 +60,58 @@ groups:
           summary: "A weather sync run failed or was partial"
           description: "Inspect the sync-run catalog and provider coverage before the next hourly run."
 
+      # Both skip-value rules take the counter minus its value a window ago,
+      # not increase().  The Dagster sum is merged from per-worker mmap files,
+      # and a file skipped for one scrape (malformed while a live worker
+      # writes it) or removed (a dead worker's malformed file) makes the sum
+      # dip; increase() reads a dip as a counter reset and counts the whole
+      # counter as new.  A plain difference reads it as a drop and stays
+      # quiet.  The children start at 0 (kortravelweather_dagster.kma_weather
+      # creates them on import), so the first skip has a value to subtract.
+      # If either side is missing (a failed scrape exactly a window ago, a
+      # Prometheus gap) the rule returns nothing rather than firing.  Cost:
+      # after a Dagster restart the tmpfs counters start again at 0, the
+      # difference is negative, and skips are not seen for one window.
+
       # A run finishes partial (KorTravelWeatherSyncFailed) on any invalid
       # value, so this rule adds the dataset name rather than a new page.  It
       # reads every reason but missing, as the run does (`other` is invalid).
-      # The series is created by its first increment, which increase() reads
-      # as 0, so the `unless ... offset 1h` branch catches a series that did
-      # not exist an hour ago.  It can also fire once if the Dagster target
-      # was unscraped an hour ago (KorTravelWeatherScrapeDown covers that).
       - alert: KorTravelWeatherValuesInvalid
         expr: |
           sum by (provider, dataset) (
-            increase(ktw_sync_values_skipped_total{reason!="missing"}[1h])
-          ) > 0
-          or
-          sum by (provider, dataset) (
             ktw_sync_values_skipped_total{reason!="missing"}
-            unless ktw_sync_values_skipped_total{reason!="missing"} offset 1h
-          )
+            - ktw_sync_values_skipped_total{reason!="missing"} offset 1h
+          ) > 0
         labels:
           severity: warning
         annotations:
           summary: "KMA returned out-of-range or non-finite values"
           description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped values that are neither valid nor a Missing sentinel in the last hour. The run finishes partial; this names the dataset. Check the provider response contract."
 
-      # Missing sentinels only make a run partial past ~10% of its values
-      # (~137 of ~1,368 per hourly nowcast run, 17-34 offline stations), so a
-      # smaller outage stays success and silent.  One offline station drops 7
-      # of its 8 categories per run.  The 3h30m window holds 3 or 4 hourly
-      # runs: one station is 21-28 (35 with a catch-up run), two are 42-56.
-      # Above 60 means a third station (63-84), held for an hour so a blip
-      # that clears within a run does not page.  The review's 15-station
-      # outage (105 per run) crosses 60 on its first run and pages an hour
-      # later.  Not [3h]: a window of exactly three periods holds only two
-      # runs for a moment each hour (a run lands just after the edge), and
-      # one such evaluation resets `for`, so three stations never paged.  The
-      # first run after a Dagster restart is not counted (new series, see
-      # above); a sustained outage is caught from its second run.
+      # Missing sentinels only make a run partial past ~10% of its values, so
+      # a smaller outage stays success and silent.  The threshold is sized
+      # for the hourly nowcast (~1,368 values per run, partial past ~137, i.e.
+      # 17-34 offline stations): one offline station drops 7 of its 8
+      # categories per run, and the 3h30m window holds 3 or 4 runs, so one
+      # station is 21-28 (35 with a catch-up run) and two are 42-56.  Above
+      # 60 means a third station (63-84).  The review's 15-station outage
+      # (105 per run) crosses 60 on its first run.  The forecasts share the
+      # rule: per run they attempt far more values, so 60 is a small share
+      # there and means a forecast column is blank.
+      # `for: 1h` delays the page by an hour; it does not demand a sustained
+      # outage, since one run stays in the window for 3h30m.
+      # Not 3h: runs finish at varying times after the hour, so four runs can
+      # span more than 3h and a 3h window then holds only two for a few
+      # minutes; one such evaluation resets `for`.  3h30m tolerates 30m.
       - alert: KorTravelWeatherValuesMissingHigh
         expr: |
           sum by (provider, dataset) (
-            increase(ktw_sync_values_skipped_total{reason="missing"}[3h30m])
+            ktw_sync_values_skipped_total{reason="missing"}
+            - ktw_sync_values_skipped_total{reason="missing"} offset 3h30m
           ) > 60
         for: 1h
         labels:
           severity: warning
         annotations:
           summary: "KMA values are missing beyond one routine station outage"
-          description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped more than 60 Missing-sentinel values over 3h30m for an hour (one offline station drops 21-28). Runs stay success until ~10% of a run is missing; check which stations or grids are blank."
+          description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped more than 60 Missing-sentinel values over the last 3h30m, for an hour. For the hourly nowcast that is a third offline station (one drops 21-28); runs stay success until ~10% of a run is missing. Check which stations or grids are blank."
