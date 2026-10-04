@@ -565,6 +565,7 @@ async def stage_grid(
     fetched = fetched_at or kst_now()
     entity_id = source_entity_id or location.location_id
     staged: list[StagedResponse] = []
+    skipped_before = skipped.total() if skipped is not None else 0
     rows_budget = max_response_rows
     values_budget = max_normalized_values
     if rows_budget is not None and rows_budget <= 0:
@@ -768,7 +769,11 @@ async def stage_grid(
                 temp_values,
             )
         )
-    if not any(response.values for response in staged):
+    skipped_here = (skipped.total() if skipped is not None else 0) - skipped_before
+    if not any(response.values for response in staged) and not skipped_here:
+        # A grid whose every value was a skipped sentinel is an outage at that
+        # station, counted by the run; only a response with nothing in it is
+        # a contract failure.
         raise ValueError("KMA 응답에서 normalized weather fact가 생성되지 않았습니다.")
     return staged
 
