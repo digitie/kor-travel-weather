@@ -162,3 +162,86 @@ def test_structural_row_errors_still_fail_loudly() -> None:
         ultra_short_nowcast_to_weather_values(
             [{**_nowcast("REH", "40"), "baseTime": "4"}], location_id="x"
         )
+
+
+# -- review follow-ups ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw", ["NaN", "nan", "Infinity", "-Infinity", "sNaN"])
+def test_non_finite_values_are_counted_invalid_not_raised(raw: str) -> None:
+    skipped: Counter[str] = Counter()
+    values = ultra_short_nowcast_to_weather_values(
+        [_nowcast("T1H", raw), _nowcast("REH", "40")], location_id="x", skipped=skipped
+    )
+    assert [value.metric_key for value in values] == ["REH"]
+    assert skipped == Counter({"kma_ultra_short_nowcast:invalid:T1H": 1})
+
+
+def test_only_value_range_errors_are_skipped_everything_else_still_raises() -> None:
+    from datetime import datetime
+
+    from pydantic import ValidationError
+
+    # Neither a number nor a text: a broken row, not an out-of-range value.
+    with pytest.raises(ValidationError, match="value_number 또는 value_text"):
+        ultra_short_nowcast_to_weather_values([_nowcast("REH", "")], location_id="x")
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        ultra_short_nowcast_to_weather_values(
+            [_nowcast("REH", "40")], location_id="x", known_at=datetime(2026, 10, 5, 4)
+        )
+    with pytest.raises(ValidationError, match="255"):
+        ultra_short_nowcast_to_weather_values(
+            [_nowcast("REH", "40")], location_id="x", source_record_key="k" * 256
+        )
+
+
+def test_skip_details_are_logged_for_the_first_skips_of_a_run_only(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kortravelweather.providers.kma import KMA_SKIP_LOG_DETAILS
+
+    monkeypatch.setattr(logging.getLogger("kortravelweather.providers.kma"), "disabled", False)
+    skipped: Counter[str] = Counter()
+    rows = [_nowcast("REH", "-998") for _ in range(KMA_SKIP_LOG_DETAILS + 30)]
+    with caplog.at_level("WARNING", logger="kortravelweather.providers.kma"):
+        ultra_short_nowcast_to_weather_values(rows, location_id="x", skipped=skipped)
+    assert skipped["kma_ultra_short_nowcast:missing:REH"] == KMA_SKIP_LOG_DETAILS + 30
+    assert len(caplog.records) == KMA_SKIP_LOG_DETAILS
+
+
+@pytest.mark.parametrize(
+    "converter, category",
+    [
+        (short_forecast_to_weather_values, "PCP"),
+        (short_forecast_to_weather_values, "SNO"),
+        (ultra_short_forecast_to_weather_values, "RN1"),
+    ],
+)
+@pytest.mark.parametrize(
+    "raw, number, text",
+    [
+        ("1.0mm", None, "1.0mm"),
+        ("강수없음", Decimal("0"), "강수없음"),
+        ("30.0~50.0mm", None, "30.0~50.0mm"),
+    ],
+)
+def test_precipitation_labels_are_kept(converter, category, raw, number, text) -> None:
+    if category == "SNO" and raw == "강수없음":
+        raw, text = "적설없음", "적설없음"
+    skipped: Counter[str] = Counter()
+    values = converter([_forecast(category, raw)], location_id="x", skipped=skipped)
+    assert [(value.value_number, value.value_text) for value in values] == [(number, text)]
+    assert not skipped
+
+
+@pytest.mark.parametrize(
+    "raw, kept",
+    [("899.9", True), ("-899.9", True), ("-900", False), ("900", False), ("-900.0", False)],
+)
+def test_the_missing_boundary_is_exactly_900(raw: str, kept: bool) -> None:
+    skipped: Counter[str] = Counter()
+    values = ultra_short_nowcast_to_weather_values(
+        [_nowcast("T1H", raw)], location_id="x", skipped=skipped
+    )
+    assert bool(values) is kept
+    assert bool(skipped) is not kept
