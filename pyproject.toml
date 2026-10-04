@@ -12,7 +12,7 @@ license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "digitie" }]
 keywords = ["weather", "korea", "kma", "dagster", "fastapi", "data-source"]
 dependencies = [
-  "kor-travel-common @ git+https://github.com/digitie/kor-travel-common.git@50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common @ git+https://github.com/digitie/kor-travel-common.git@ed47e9af09bcb48ee1507c9a17db392e44e4c3e2#subdirectory=packages/py/kor-travel-common",
   "pydantic>=2.7",
   "pydantic-settings>=2.4",
   "sqlalchemy>=2.0",

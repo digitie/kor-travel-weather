@@ -947,7 +947,7 @@ wheels = [
 [[package]]
 name = "kor-travel-common"
 version = "0.1.0.dev0"
-source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3#50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3" }
+source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=ed47e9af09bcb48ee1507c9a17db392e44e4c3e2#ed47e9af09bcb48ee1507c9a17db392e44e4c3e2" }
 
 [[package]]
 name = "kor-travel-weather"
@@ -998,7 +998,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1" },
-    { name = "kor-travel-common", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3" },
+    { name = "kor-travel-common", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=ed47e9af09bcb48ee1507c9a17db392e44e4c3e2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
