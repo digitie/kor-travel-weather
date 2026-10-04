@@ -15,6 +15,7 @@ common의 `coalescing_schedule`로 동일 job의 미종결 실행이 있으면 t
 
 `0018_sync_run_owner`는 내부 수집 행에 Dagster run ID를 연결한다. recovery sensor는 60초
 간격으로 terminal worker의 `running` 행을 CAS로 회수한다. 재시도 시작 전에도 확인한다.
+`started_at/run_id` keyset으로 bounded page를 순회하여 생존 첫 페이지 뒤의 행도 확인한다.
 살아 있는 worker와 조회 장애 때는 회수하지 않는다. 없는 ID는 heartbeat도 3시간 만료된
 경우에만 회수하며 UPDATE 시 heartbeat를 다시 확인한다. 소유권 없는 기존 행은 3시간 lease로
 정리한다. 늦게 돌아온 worker는 heartbeat·publish CAS에서 실패하고 회수 상태를 덮지 못한다.
@@ -22,7 +23,7 @@ common의 `coalescing_schedule`로 동일 job의 미종결 실행이 있으면 t
 
 ## 메모리와 부분 게시
 
-KMA는 약 5,000 normalized fact가 모이면 location별 짧은 transaction으로 게시하고 버퍼를
+KMA 격자·중기·특보는 약 5,000 normalized fact가 모이면 location별 짧은 transaction으로 게시하고 버퍼를
 비운다. peak는 batch + 한 location의 response이며, 한 응답의 크기는 기존 provider 예산이
 제한한다. 전체 run의 normalized fact 예산은 버퍼를 비워도 감소하지 않는다.
 raw-only 응답도 KMA/외부 provider 모두 25개 source에서 비운다. 외부 provider는 raw payload
@@ -34,6 +35,8 @@ raw-only 응답도 KMA/외부 provider 모두 25개 source에서 비운다. 외�
 재수집은 unique key/upsert로 같은 fact를 중복 저장하지 않는다. 전체 실행을 한 transaction으로
 묶는 all-or-nothing 계약은 사용하지 않는다. ingest batch의 상한은 전체 RSS 보증이 아니므로
 worker·provider response·SQL serialization을 포함한 운영 peak RSS를 후속 실측한다.
+특보의 skip 재시도도 각 batch 안에서 수행한다. 특정 notice가 빠진 location은 이후 notice의
+게시가 성공해도 incomplete로 기록하며, 전체 skip/starved 판정에는 location ID만 유지한다.
 
 동일 192,000 fact를 생성하는 합성 KMA sweep의 `tracemalloc` peak는 전체 누적
 446,740,271 bytes, 5,000개 batch 12,766,381 bytes였다(약 97% 감소).
@@ -65,3 +68,6 @@ run monitoring의 강제 실패 후 OS process가 남는 경우 launcher/contain
 로그인·메뉴·Dagster 표시 UI는 `@kor-travel/ui`를 사용한다. 인증·GraphQL scope·URL과
 job label은 weather에 남긴다. tarball은 frontend `vendor`에 고정하고 Docker dependency
 stage에도 넣는다. 공용 UI에서 HTTP 호출이나 타 앱의 run을 조회하지 않는다.
+실패 로그는 Dagster 서버의 1,000개 page 상한에 맞춰 cursor로 조회한다(최대 20 page,
+조회 시작 후 20초 안에 다음 page를 시작하며 요청마다 10초 상한). 원인 조회 실패는
+FAILURE 목록을 유지하고 원인 미확인으로 표시한다.

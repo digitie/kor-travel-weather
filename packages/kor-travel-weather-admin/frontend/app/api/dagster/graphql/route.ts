@@ -58,6 +58,7 @@ export async function POST(request: NextRequest) {
       headers: { "content-type": "application/json", accept: "application/json" },
       body: scoped.body,
       cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
     return new NextResponse(response.body, {
       status: response.status,

@@ -84,11 +84,7 @@ class _Repository:
         locations = {value.location_id for value in values}
         if locations & self._conflict:
             raise _lock_timeout()
-        held = (
-            self._held
-            if self._held_calls is None or self.calls <= self._held_calls
-            else set()
-        )
+        held = self._held if self._held_calls is None or self.calls <= self._held_calls else set()
         kept = [value for value in values if value.location_id not in held]
         if kept:
             self.batches.append({value.location_id for value in kept})
@@ -171,6 +167,81 @@ def test_alerts_publish_in_location_chunks(monkeypatch) -> None:
     assert set().union(*repository.batches) == {f"loc-{i:02d}" for i in range(5)}
     assert result["alert_locations_skipped"] == 0
     assert repository.runs[-1].error is None
+
+
+def test_multiple_notices_publish_before_full_national_fanout(monkeypatch):
+    repository = _Repository()
+    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 30)
+    original_match = kma_weather._warning_matches_target
+
+    def match(item, target):
+        if target.location.location_id == "loc-40":
+            assert repository._committed > 0
+        return original_match(item, target)
+
+    monkeypatch.setattr(kma_weather, "_warning_matches_target", match)
+
+    class Client(_Client):
+        async def weather_warning_list(self, **kwargs):
+            return [
+                dict((await super().weather_warning_list(**kwargs))[0], tmSeq=str(i))
+                for i in range(3)
+            ]
+
+    result = run_weather_sync(
+        repository=repository,
+        client=_Client(),
+        targets=[],
+        include_base=False,
+        include_alerts=True,
+        data_client=Client(),
+        alert_targets=_targets(100),
+        sync_run=repository.start_sync_run(),
+    )
+    assert result["values_loaded"] == 300
+
+
+def test_later_notice_success_does_not_hide_an_earlier_notice_skip(monkeypatch):
+    repository = _Repository(held={"loc-00"}, held_calls=1)
+    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 20)
+    monkeypatch.setattr(kma_weather, "ALERT_SKIP_RETRY_ROUNDS", 0)
+
+    class Client(_Client):
+        async def weather_warning_list(self, **kwargs):
+            item = (await super().weather_warning_list(**kwargs))[0]
+            return [item, dict(item, tmSeq="2")]
+
+    result = run_weather_sync(
+        repository=repository,
+        client=_Client(),
+        targets=[],
+        include_base=False,
+        include_alerts=True,
+        data_client=Client(),
+        alert_targets=_targets(20),
+        sync_run=repository.start_sync_run(),
+    )
+    assert result["values_loaded"] == 39
+    assert result["alert_locations_skipped"] == 1
+    assert "loc-00" in repository.runs[-1].error
+
+
+def test_alert_flush_keeps_the_total_normalization_budget(monkeypatch):
+    repository = _Repository()
+    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 10)
+    with pytest.raises(ValueError, match="normalized fact"):
+        run_weather_sync(
+            repository=repository,
+            client=_Client(),
+            targets=[],
+            include_base=False,
+            include_alerts=True,
+            data_client=_Client(),
+            alert_targets=_targets(25),
+            max_values=21,
+            sync_run=repository.start_sync_run(),
+        )
+    assert repository.runs[-1].values_loaded == 20
 
 
 def test_a_failed_chunk_keeps_what_was_published_and_reports_it(monkeypatch) -> None:
@@ -276,9 +347,7 @@ def test_the_run_fails_when_no_location_could_be_published(monkeypatch) -> None:
     assert repository.values == []
 
 
-def test_a_location_skipped_three_ticks_running_is_reported_as_starved(
-    monkeypatch, caplog
-) -> None:
+def test_a_location_skipped_three_ticks_running_is_reported_as_starved(monkeypatch, caplog) -> None:
     # Under the share threshold each time, so only starvation turns the third
     # run partial -- and pages through KorTravelWeatherSyncFailed.
     repository = _Repository(held={"loc-03"})

@@ -139,6 +139,29 @@ describe("getDagsterSnapshot", () => {
     expect(snapshot.runs[0].errorMessage).toBe("boom");
   });
 
+  it("follows bounded log pages without retaining earlier events", async () => {
+    const failedRunId = "22222222-2222-2222-2222-222222222222";
+    const cursors: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      if (request.operationName === "WeatherDagsterOverview") return jsonResponse({ data: {
+        repositoryOrError: { __typename: "Repository", schedules: [], jobs: [], assetNodes: [] },
+        runsOrError: { __typename: "Runs", results: [{ runId: failedRunId, status: "FAILURE" }] },
+      } });
+      cursors.push(request.variables.cursor);
+      return jsonResponse({ data: { runsOrError: { results: [{ eventConnection:
+        request.variables.cursor === null
+          ? { events: [{ __typename: "LogMessageEvent" }], cursor: "page-2", hasMore: true }
+          : { events: [{ __typename: "RunFailureEvent", message: "late failure" }], hasMore: false },
+      }] } } });
+    }));
+    expect((await getDagsterSnapshot()).runs[0].errorMessage).toBe("late failure");
+    expect(cursors).toEqual([null, "page-2"]);
+    const query = scopedDagsterRequest({ operationName: "WeatherDagsterRunFailure", variables: { runId: failedRunId, cursor: "page-2" } });
+    expect(query.ok).toBe(true);
+    if (query.ok) expect(JSON.parse(query.body).query).toContain("limit: 1000");
+  });
+
   it("reports a location the webserver does not serve instead of showing an empty page", async () => {
     vi.stubGlobal(
       "fetch",

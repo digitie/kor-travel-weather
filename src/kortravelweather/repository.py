@@ -2704,6 +2704,23 @@ class WeatherRepository:
     def reconcile_interrupted_sync_runs(
         self, is_terminal: Callable[[str], bool | None], *, limit: int = 100
     ) -> int:
+        """bounded page를 keyset으로 순회하여 생존 첫 페이지 뒤의 중단 행도 회수한다."""
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit은 양의 정수여야 합니다.")
+        after = None
+        recovered = 0
+        while True:
+            count, after = self._reconcile_interrupted_sync_runs_page(
+                is_terminal, limit=limit, after=after
+            )
+            recovered += count
+            if after is None:
+                return recovered
+
+    def _reconcile_interrupted_sync_runs_page(
+        self, is_terminal: Callable[[str], bool | None], *, limit: int,
+        after: tuple[datetime, str] | None,
+    ) -> tuple[int, tuple[datetime, str] | None]:
         """terminal worker 또는 metadata 유실 뒤 lease가 만료된 행을 CAS로 회수한다.
 
         orchestrator 조회는 DB 트랜잭션 밖에서 한다. 조회 장애는 호출자에게 전달하며
@@ -2711,27 +2728,33 @@ class WeatherRepository:
         무소유 기존 행은 lease
         reconciler가 처리한다. 늦게 돌아온 worker는 기존 heartbeat/publish CAS에 막힌다.
         """
-        if limit <= 0:
-            raise ValueError("limit은 양수여야 합니다.")
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL statement_timeout = '10s'"))
-            candidates = session.execute(
+            query = (
                 select(
                     SyncRunRow.run_id,
                     SyncRunRow.orchestrator_run_id,
                     func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at),
+                    SyncRunRow.started_at,
                 )
                 .where(
                     SyncRunRow.status == "running",
                     SyncRunRow.orchestrator_run_id.is_not(None),
                 )
-                .order_by(SyncRunRow.started_at)
+                .order_by(SyncRunRow.started_at, SyncRunRow.run_id)
                 .limit(limit)
-            ).all()
+            )
+            if after is not None:
+                query = query.where(or_(
+                    SyncRunRow.started_at > after[0],
+                    (SyncRunRow.started_at == after[0]) & (SyncRunRow.run_id > after[1]),
+                ))
+            candidates = session.execute(query).all()
+        next_cursor = (candidates[-1][3], candidates[-1][0]) if len(candidates) == limit else None
         cutoff = kst_now() - timedelta(minutes=180)
         terminal_ids = []
         missing_ids = []
-        for run_id, owner, heartbeat in candidates:
+        for run_id, owner, heartbeat, _started_at in candidates:
             state = is_terminal(owner)
             # 누락된 metadata만으로 회수하지 않는다. heartbeat lease도 만료된 경우
             # CAS로 소유권을 끊어, 기록 유실 뒤 영구 running이 되는 것을 막는다.
@@ -2740,7 +2763,7 @@ class WeatherRepository:
             elif state is None and heartbeat < cutoff:
                 missing_ids.append(run_id)
         if not terminal_ids and not missing_ids:
-            return 0
+            return 0, next_cursor
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL lock_timeout = '5s'"))
             session.execute(text("SET LOCAL statement_timeout = '10s'"))
@@ -2769,7 +2792,7 @@ class WeatherRepository:
         for provider, dataset in rows:
             observe_sync_finished(provider, dataset, status="failed")
         observe_stale_recovered(len(rows))
-        return len(rows)
+        return len(rows), next_cursor
 
     @staticmethod
     def _reconcile_stale_sync_runs_session(

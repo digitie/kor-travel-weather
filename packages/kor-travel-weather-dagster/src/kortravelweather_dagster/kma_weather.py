@@ -986,11 +986,29 @@ async def _stage_and_publish_weather(
         alert_values: list[WeatherValue] = []
         response_rows_total = 0
         normalized_values_total = 0
+        alert_locations_seen: set[str] = set()
+        alert_locations_published: set[str] = set()
+        alert_skipped_locations: set[str] = set()
         heartbeat = getattr(repository, "heartbeat_sync_run", None)
 
         def keep_alive() -> None:
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+
+        async def flush_alert_batch() -> None:
+            nonlocal published_values
+            batch_locations = {value.location_id for value in alert_values}
+            loaded, skipped = await _publish_alerts(
+                repository, alert_sources, alert_values, keep_alive
+            )
+            published_values += loaded
+            alert_skipped_locations.update(skipped)
+            alert_locations_published.update(batch_locations - set(skipped))
+            empty = uncited_sources(alert_sources, alert_values)
+            if empty:
+                await asyncio.to_thread(repository.ingest_batch, source_records=empty, values=[])
+            alert_sources.clear()
+            alert_values.clear()
 
         async def flush_grid_batch() -> None:
             nonlocal published_values
@@ -1144,6 +1162,8 @@ async def _stage_and_publish_weather(
                 # One source row per notice keeps the immutable fact identity
                 # unique even when several notices share the same issue time.
                 for item in warning_items:
+                    if len(alert_sources) >= KMA_STAGE_SOURCES:
+                        await flush_alert_batch()
                     entity_id = f"kma-alert:{station}"
                     template = weather_warning_to_weather_values(
                         [item], location_id=entity_id, known_at=alert_to
@@ -1171,13 +1191,19 @@ async def _stage_and_publish_weather(
                     for target in station_targets:
                         if not _warning_matches_target(item, target):
                             continue
-                        if normalized_values_total + len(alert_values) >= max_values:
+                        if normalized_values_total >= max_values:
                             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+                        if not alert_sources:
+                            alert_sources.append(source)
                         alert_values.append(
                             template[0].model_copy(
                                 update={"location_id": target.location.location_id}
                             )
                         )
+                        normalized_values_total += 1
+                        alert_locations_seen.add(target.location.location_id)
+                        if len(alert_values) >= KMA_STAGE_VALUES:
+                            await flush_alert_batch()
                 keep_alive()
         grids_fetched = len(grid_groups) if include_base else 0
         base_dataset_count = (
@@ -1198,10 +1224,8 @@ async def _stage_and_publish_weather(
         # and the next run replays the rest (published facts are an
         # idempotent no-op).  Every chunk carries the source records its facts
         # cite, so each one re-checks that the run still owns its lease.
-        # Alerts keep their own location cap: a notice is a few facts per
-        # location, so the value cap never binds them.  The chunks are built
-        # up front, so a chunk citing no source is refused before anything
-        # publishes.
+        # 특보도 제한된 batch 안에서만 skip 재시도한다. source 인용을 먼저 검사하고
+        # chunk 목록은 하나씩 생성한다.
         #
         # Alerts skip a location another writer holds (``_publish_alerts``):
         # the next hourly run fetches the same notices, so a held location
@@ -1213,20 +1237,19 @@ async def _stage_and_publish_weather(
             max_locations=GRID_PUBLISH_LOCATIONS,
             max_values=GRID_PUBLISH_VALUES,
         )
-        alerts_published, alerts_skipped = await _publish_alerts(
-            repository, alert_sources, alert_values, keep_alive
-        )
-        published_values += alerts_published
+        await flush_alert_batch()
+        # 하나라도 notice 게시가 누락된 location은 이후 batch 성공에도 incomplete다.
+        alerts_skipped = sorted(alert_skipped_locations)
         alerts_starved: list[str] = []
         skip_note: str | None = None
         status = "success"
         if alerts_skipped:
-            alert_locations = len({value.location_id for value in alert_values})
+            alert_locations = len(alert_locations_seen)
             observe_sync_locations_skipped(
                 KMA_PROVIDER_NAME, "kma_weather_alerts", len(alerts_skipped)
             )
             skip_note = _alert_skip_note(alerts_skipped)
-            if len(alerts_skipped) == alert_locations >= ALERT_PARTIAL_MIN_SKIPPED:
+            if not alert_locations_published and alert_locations >= ALERT_PARTIAL_MIN_SKIPPED:
                 # The note leads the error so the starvation check reads this
                 # run's skips back like any other's.
                 raise RuntimeError(

@@ -25,8 +25,9 @@ export default function DagsterPage() {
       .finally(() => { if (version === requestVersion.current) setLoading(false); });
   }, []);
   useEffect(() => {
+    const sequence = requestVersion;
     load();
-    return () => { ++requestVersion.current; };
+    return () => { ++sequence.current; };
   }, [load]);
 
   return (

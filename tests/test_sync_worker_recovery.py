@@ -121,3 +121,24 @@ def test_renewed_heartbeat_wins_over_a_missing_metadata_reaper(repository):
     assert repository.reconcile_interrupted_sync_runs(lookup) == 0
     assert repository.heartbeat_sync_run(run.run_id)
     repository.finish_sync_run(run.run_id, status="success")
+
+
+def test_live_first_page_does_not_starve_a_later_terminal_worker(repository):
+    provider = f"pages-{uuid.uuid4().hex}"
+    repository.orchestrator_run_id = "first-live"
+    first = repository.start_sync_run(provider=provider, dataset_key="first")
+    repository.orchestrator_run_id = "later-terminal"
+    later = repository.start_sync_run(provider=provider, dataset_key="later")
+    # 같은 started_at도 run_id tie-breaker로 정확히 순회한다.
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE weather_sync_runs SET started_at = :started_at WHERE run_id = :run_id"),
+            {"started_at": first.started_at, "run_id": later.run_id},
+        )
+    assert (
+        repository.reconcile_interrupted_sync_runs(lambda owner: owner == "later-terminal", limit=1)
+        == 1
+    )
+    assert repository.heartbeat_sync_run(first.run_id)
+    assert not repository.heartbeat_sync_run(later.run_id)
+    repository.finish_sync_run(first.run_id, status="success")

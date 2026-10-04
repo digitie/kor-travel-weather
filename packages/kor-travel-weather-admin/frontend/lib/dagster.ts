@@ -84,7 +84,7 @@ type RunEvent =
 
 type RunEventsResponse = {
   data?: {
-    runsOrError?: { __typename: string; results?: Array<{ eventConnection?: { events: RunEvent[] } }> };
+    runsOrError?: { __typename: string; results?: Array<{ eventConnection?: { events: RunEvent[]; cursor?: string; hasMore?: boolean } }> };
   };
 };
 
@@ -100,6 +100,7 @@ function postDagsterOperation(operationName: DagsterOperationName, variables: Re
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(request),
     cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
   });
 }
 
@@ -112,22 +113,31 @@ function postDagsterOperation(operationName: DagsterOperationName, variables: Re
  */
 async function fetchRunFailureMessage(runId: string): Promise<string | null> {
   try {
-    const response = await postDagsterOperation("WeatherDagsterRunFailure", { runId });
-    if (!response.ok) return null;
-    const payload = (await response.json()) as RunEventsResponse;
-    const events = payload.data?.runsOrError?.results?.[0]?.eventConnection?.events ?? [];
-    const runFailure = events.find(
-      (event): event is Extract<RunEvent, { __typename: "RunFailureEvent" }> =>
-        event.__typename === "RunFailureEvent",
-    );
-    if (runFailure) return runFailure.message;
-    // No run-level message (e.g. still CANCELING when read): fall back to the
-    // last step that actually raised, which is more useful than nothing.
-    const stepFailures = events.filter(
-      (event): event is Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> =>
-        event.__typename === "ExecutionStepFailureEvent",
-    );
-    const lastStepFailure = stepFailures.at(-1);
+    let cursor: string | null = null;
+    let lastStepFailure: Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> | undefined;
+    const deadline = Date.now() + 20_000;
+    // 한 page만 메모리에 두고 요청 수도 제한한다. 상세 조회 실패는 목록을 막지 않는다.
+    for (let page = 0; page < 20 && Date.now() < deadline; page += 1) {
+      const response = await postDagsterOperation("WeatherDagsterRunFailure", { runId, cursor });
+      if (!response.ok) return null;
+      const payload = (await response.json()) as RunEventsResponse;
+      const connection = payload.data?.runsOrError?.results?.[0]?.eventConnection;
+      const events = connection?.events ?? [];
+      const runFailure = events.find(
+        (event): event is Extract<RunEvent, { __typename: "RunFailureEvent" }> =>
+          event.__typename === "RunFailureEvent",
+      );
+      if (runFailure) return runFailure.message;
+      // No run-level message (e.g. still CANCELING when read): fall back to the
+      // last step that actually raised, which is more useful than nothing.
+      const stepFailures = events.filter(
+        (event): event is Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> =>
+          event.__typename === "ExecutionStepFailureEvent",
+      );
+      lastStepFailure = stepFailures.at(-1) ?? lastStepFailure;
+      if (!connection?.hasMore || !connection.cursor || connection.cursor === cursor) break;
+      cursor = connection.cursor;
+    }
     if (!lastStepFailure) return null;
     return lastStepFailure.stepKey
       ? `${jobLabel(lastStepFailure.stepKey)}: ${lastStepFailure.message}`
