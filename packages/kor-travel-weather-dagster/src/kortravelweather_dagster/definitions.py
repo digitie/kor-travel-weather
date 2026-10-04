@@ -9,10 +9,12 @@ from dagster import (
     AssetExecutionContext,
     DefaultScheduleStatus,
     Definitions,
-    ScheduleDefinition,
     asset,
     define_asset_job,
+    multiprocess_executor,
 )
+from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule, reconciliation_sensor
+from kortravelcommon.deadline import DeadlineExceeded
 
 from kortravelweather.metrics import start_metrics_server
 from kortravelweather.providers import (
@@ -360,7 +362,7 @@ def _make_kma_dataset_asset(
     def _kma_dataset_sync(context: AssetExecutionContext) -> dict[str, object]:
         settings = WeatherSettings()
         client_resource = context.resources.kma_client
-        repository = context.resources.weather_repository.create_repository()
+        repository = _run_repository(context)
         targets, merged, disabled_ids, fill = _kma_grid_targets(
             repository, settings, station_fill=include_base
         )
@@ -520,7 +522,7 @@ kma_weather_alerts_sync = _make_kma_dataset_asset(
 )
 def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
-    repository = context.resources.weather_repository.create_repository()
+    repository = _run_repository(context)
     client = context.resources.airkorea_client.create_client(
         settings=runtime, repository=repository
     )
@@ -569,7 +571,59 @@ RUN_MAX_RUNTIME_TAG = "dagster/max_runtime"
 #: the tag, every weather run keeps exactly this bound under either instance.
 #: tests/test_dagster_location_scope.py binds this to deploy/dagster.yaml.
 RUN_MAX_RUNTIME_SECONDS = 57600
-_RUN_LIMIT_TAGS = {RUN_MAX_RUNTIME_TAG: str(RUN_MAX_RUNTIME_SECONDS)}
+
+
+def _job_tags(job_name: str) -> dict[str, str]:
+    # 외부 provider의 실측 13시간 sweep 상한은 유지하고 최신성 작업은 더 일찍 회수한다.
+    seconds = (
+        RUN_MAX_RUNTIME_SECONDS
+        if job_name.startswith(tuple(_external_slug(key) for key in EXTERNAL_PROVIDER_KEYS))
+        else 7200
+    )
+    if job_name == "regional_weather_job":
+        seconds = 21600
+    return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1).tags(
+        project="weather", job_name=job_name
+    )
+
+
+def _weather_schedule(**kwargs):
+    return coalescing_schedule(
+        project="weather", location_name="kortravelweather_dagster.definitions", **kwargs
+    )
+
+
+def _terminal_worker(instance, run_id: str) -> bool | None:
+    run = instance.get_run_by_id(run_id)
+    # metadata DB 누락/조회 장애를 worker 사망으로 해석하지 않는다.
+    return run.is_finished if run is not None else None
+
+
+def _run_repository(context) -> WeatherRepository:
+    repository = context.resources.weather_repository.create_repository()
+    repository.orchestrator_run_id = context.run_id
+    reconcile = getattr(repository, "reconcile_interrupted_sync_runs", None)
+    if callable(reconcile):
+        reconcile(lambda run_id: _terminal_worker(context.instance, run_id))
+    return repository
+
+
+def _reconcile_sync_runs(context) -> int:
+    repository = context.resources.weather_repository.create_repository()
+    try:
+        recovered = repository.reconcile_interrupted_sync_runs(
+            lambda run_id: _terminal_worker(context.instance, run_id)
+        )
+        return recovered + repository.reconcile_stale_sync_runs()
+    finally:
+        repository.engine.dispose()
+
+
+weather_sync_recovery_sensor = reconciliation_sensor(
+    name="weather_sync_recovery",
+    reconcile=_reconcile_sync_runs,
+    required_resource_keys={"weather_repository"},
+)
 
 
 def _external_slug(provider_key: str) -> str:
@@ -635,7 +689,7 @@ def _make_external_provider_asset(provider_key: str):
         if skipped is not None:
             context.add_output_metadata(skipped)
             return skipped
-        repository = context.resources.weather_repository.create_repository()
+        repository = _run_repository(context)
         catalog_targets = _external_targets(repository)
         cap = runtime.provider_location_caps.get(provider_key)
         targets = (
@@ -670,6 +724,7 @@ def _make_external_provider_asset(provider_key: str):
             raise
         results: list[dict[str, object]] = []
         failed: list[dict[str, object]] = []
+        abandoned = False
         try:
             for dataset in spec.datasets:
                 try:
@@ -689,6 +744,11 @@ def _make_external_provider_asset(provider_key: str):
                             ),
                         )
                     )
+                except DeadlineExceeded:
+                    # timeout의 daemon thread는 아직 client를 사용 중일 수 있다.
+                    # 다음 dataset/close와 경합시키지 않고 이 worker 실행을 끝낸다.
+                    abandoned = True
+                    raise
                 except Exception as exc:
                     failed.append(
                         {
@@ -699,7 +759,7 @@ def _make_external_provider_asset(provider_key: str):
                     )
         finally:
             close = getattr(provider, "close", None)
-            if callable(close):
+            if callable(close) and not abandoned:
                 close()
         result = {
             "provider": provider_key,
@@ -743,7 +803,7 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
         # on purpose must not need one.
         context.add_output_metadata(skipped)
         return skipped
-    repository = context.resources.weather_repository.create_repository()
+    repository = _run_repository(context)
     result = run_khoa_beach_index_sync(
         repository=repository,
         api_key=context.resources.khoa_client.api_key(
@@ -778,7 +838,7 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     if skipped is not None:
         context.add_output_metadata(skipped)
         return skipped
-    repository = context.resources.weather_repository.create_repository()
+    repository = _run_repository(context)
     result = run_krforest_mountain_sync(
         repository=repository,
         api_key=context.resources.krforest_client.api_key(
@@ -804,7 +864,7 @@ def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     if skipped is not None:
         context.add_output_metadata(skipped)
         return skipped
-    repository = context.resources.weather_repository.create_repository()
+    repository = _run_repository(context)
     result = run_krforest_dust_sync(
         repository=repository,
         api_key=context.resources.krforest_client.api_key(
@@ -844,10 +904,8 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
         # on purpose must not need one.
         context.add_output_metadata(skipped)
         return skipped
-    repository = context.resources.weather_repository.create_repository()
-    client = context.resources.krex_client.create_client(
-        settings=runtime, repository=repository
-    )
+    repository = _run_repository(context)
+    client = context.resources.krex_client.create_client(settings=runtime, repository=repository)
     # No `client.close()` here -- KrexClient is async-only now, and
     # run_krex_restarea_sync closes it itself, inside the same asyncio.run()
     # that used it.
@@ -877,7 +935,7 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
 )
 def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
-    repository = context.resources.weather_repository.create_repository()
+    repository = _run_repository(context)
     result = run_weather_retention_purge(
         repository=repository,
         retention_days=runtime.retention_days,
@@ -929,33 +987,47 @@ _ASSETS = [
 ]
 
 _unresolved_kma_ultra_short_nowcast_job = define_asset_job(
-    "kma_ultra_short_nowcast_job", selection=[kma_ultra_short_nowcast_sync], tags=_RUN_LIMIT_TAGS
+    "kma_ultra_short_nowcast_job",
+    selection=[kma_ultra_short_nowcast_sync],
+    tags=_job_tags("kma_ultra_short_nowcast_job"),
 )
 _unresolved_kma_ultra_short_forecast_job = define_asset_job(
-    "kma_ultra_short_forecast_job", selection=[kma_ultra_short_forecast_sync], tags=_RUN_LIMIT_TAGS
+    "kma_ultra_short_forecast_job",
+    selection=[kma_ultra_short_forecast_sync],
+    tags=_job_tags("kma_ultra_short_forecast_job"),
 )
 _unresolved_kma_short_forecast_job = define_asset_job(
-    "kma_short_forecast_job", selection=[kma_short_forecast_sync], tags=_RUN_LIMIT_TAGS
+    "kma_short_forecast_job",
+    selection=[kma_short_forecast_sync],
+    tags=_job_tags("kma_short_forecast_job"),
 )
 _unresolved_kma_mid_forecast_job = define_asset_job(
-    "kma_mid_forecast_job", selection=[kma_mid_forecast_sync], tags=_RUN_LIMIT_TAGS
+    "kma_mid_forecast_job",
+    selection=[kma_mid_forecast_sync],
+    tags=_job_tags("kma_mid_forecast_job"),
 )
 _unresolved_kma_weather_alerts_job = define_asset_job(
-    "kma_weather_alerts_job", selection=[kma_weather_alerts_sync], tags=_RUN_LIMIT_TAGS
+    "kma_weather_alerts_job",
+    selection=[kma_weather_alerts_sync],
+    tags=_job_tags("kma_weather_alerts_job"),
 )
 _unresolved_airkorea_job = define_asset_job(
-    "airkorea_weather_job", selection=[airkorea_weather_sync], tags=_RUN_LIMIT_TAGS
+    "airkorea_weather_job",
+    selection=[airkorea_weather_sync],
+    tags=_job_tags("airkorea_weather_job"),
 )
 _unresolved_external_jobs = {
     key: define_asset_job(
         external_job_name(key),
         selection=[asset_def],
-        tags={**_RUN_LIMIT_TAGS, EXTERNAL_RUN_GROUP_TAG: EXTERNAL_RUN_GROUP},
+        tags={**_job_tags(external_job_name(key)), EXTERNAL_RUN_GROUP_TAG: EXTERNAL_RUN_GROUP},
     )
     for key, asset_def in zip(EXTERNAL_PROVIDER_KEYS, _EXTERNAL_PROVIDER_ASSETS, strict=True)
 }
 _unresolved_retention_job = define_asset_job(
-    "weather_retention_job", selection=[weather_retention_purge], tags=_RUN_LIMIT_TAGS
+    "weather_retention_job",
+    selection=[weather_retention_purge],
+    tags=_job_tags("weather_retention_job"),
 )
 _unresolved_regional_job = define_asset_job(
     "regional_weather_job",
@@ -965,7 +1037,7 @@ _unresolved_regional_job = define_asset_job(
         krforest_dust_sync,
         krex_restarea_sync,
     ],
-    tags=_RUN_LIMIT_TAGS,
+    tags=_job_tags("regional_weather_job"),
 )
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
@@ -995,6 +1067,7 @@ def _resolve_job(unresolved):
     )
     return unresolved.resolve(
         asset_defs.resolve_asset_graph(),
+        default_executor_def=multiprocess_executor.configured({"max_concurrent": 1}),
         resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
     )
 
@@ -1011,7 +1084,7 @@ external_weather_jobs = {
 weather_retention_job = _resolve_job(_unresolved_retention_job)
 regional_weather_job = _resolve_job(_unresolved_regional_job)
 
-hourly_kma_ultra_short_nowcast_schedule = ScheduleDefinition(
+hourly_kma_ultra_short_nowcast_schedule = _weather_schedule(
     name="hourly_kma_ultra_short_nowcast",
     cron_schedule="0 * * * *",
     job=kma_ultra_short_nowcast_job,
@@ -1019,7 +1092,7 @@ hourly_kma_ultra_short_nowcast_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-hourly_kma_ultra_short_forecast_schedule = ScheduleDefinition(
+hourly_kma_ultra_short_forecast_schedule = _weather_schedule(
     name="hourly_kma_ultra_short_forecast",
     cron_schedule="0 * * * *",
     job=kma_ultra_short_forecast_job,
@@ -1032,7 +1105,7 @@ hourly_kma_ultra_short_forecast_schedule = ScheduleDefinition(
 # Fetching it hourly like the other two datasets bought nothing but 3x the
 # quota spend -- 16 of every 24 hourly calls would have returned a response
 # identical to the one already staged. :15 clears VILAGE_FCST_DELAY (10min).
-kma_short_forecast_schedule = ScheduleDefinition(
+kma_short_forecast_schedule = _weather_schedule(
     name="kma_short_forecast_publish_hours",
     cron_schedule="15 2,5,8,11,14,17,20,23 * * *",
     job=kma_short_forecast_job,
@@ -1044,7 +1117,7 @@ kma_short_forecast_schedule = ScheduleDefinition(
 # (KST 06/18). Until some target carries mid region codes (env TARGETS or
 # admin metadata) the run records a skip with that reason rather than failing
 # -- kept scheduled so configuring a region later needs no code change.
-kma_mid_forecast_schedule = ScheduleDefinition(
+kma_mid_forecast_schedule = _weather_schedule(
     name="kma_mid_forecast_publish_hours",
     cron_schedule="30 6,18 * * *",
     job=kma_mid_forecast_job,
@@ -1055,7 +1128,7 @@ kma_mid_forecast_schedule = ScheduleDefinition(
 # Advisories can be issued at any time, so this stays hourly like the two
 # ultra-short datasets; offset five minutes past them so all three do not
 # compete for the same concurrency slot at the top of the hour.
-hourly_kma_weather_alerts_schedule = ScheduleDefinition(
+hourly_kma_weather_alerts_schedule = _weather_schedule(
     name="hourly_kma_weather_alerts",
     cron_schedule="5 * * * *",
     job=kma_weather_alerts_job,
@@ -1063,7 +1136,7 @@ hourly_kma_weather_alerts_schedule = ScheduleDefinition(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-hourly_airkorea_weather_schedule = ScheduleDefinition(
+hourly_airkorea_weather_schedule = _weather_schedule(
     name="hourly_airkorea_weather",
     cron_schedule="10 * * * *",
     job=airkorea_job,
@@ -1082,7 +1155,7 @@ hourly_airkorea_weather_schedule = ScheduleDefinition(
 # limit in deploy/dagster.yaml drains them a few at a time, so they cannot take
 # the concurrency slots KMA, AirKorea and the regional sources need.
 external_weather_schedules = [
-    ScheduleDefinition(
+    _weather_schedule(
         name=f"three_hourly_{_external_slug(key)}_weather",
         cron_schedule="15 */3 * * *",
         job=job,
@@ -1097,7 +1170,7 @@ external_weather_schedules = [
 # ingests.  These three sources publish a few times a day at most; asking
 # hourly would multiply an already 3M-fact-per-day pipeline for readings
 # that have not changed.
-regional_weather_schedule = ScheduleDefinition(
+regional_weather_schedule = _weather_schedule(
     name="twice_daily_regional_weather",
     cron_schedule="30 5,17 * * *",
     job=regional_weather_job,
@@ -1107,7 +1180,7 @@ regional_weather_schedule = ScheduleDefinition(
 
 # 03:20 KST: the ingest schedules fire at :00, :10 and :15 of every hour, and
 # the purge holds row locks on what it deletes, so it must not land on one.
-daily_weather_retention_schedule = ScheduleDefinition(
+daily_weather_retention_schedule = _weather_schedule(
     name="daily_weather_retention",
     cron_schedule="20 3 * * *",
     job=weather_retention_job,
@@ -1141,4 +1214,5 @@ defs = Definitions(
         daily_weather_retention_schedule,
     ],
     resources=_resources,
+    sensors=[weather_sync_recovery_sensor],
 )

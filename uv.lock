@@ -945,6 +945,11 @@ wheels = [
 ]
 
 [[package]]
+name = "kor-travel-common"
+version = "0.1.0.dev0"
+source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=270619bd98c21ead62d077bf46f09c92dd946a59#270619bd98c21ead62d077bf46f09c92dd946a59" }
+
+[[package]]
 name = "kor-travel-weather"
 version = "0.1.0.dev0"
 source = { editable = "." }
@@ -953,6 +958,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "kor-travel-common" },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -992,6 +998,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1" },
+    { name = "kor-travel-common", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=270619bd98c21ead62d077bf46f09c92dd946a59" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
