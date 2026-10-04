@@ -474,3 +474,56 @@ def test_a_failed_forward_partition_read_is_counted_and_the_absent_alert_exists(
     }["KorTravelWeatherForwardPartitionsUnknown"]
     assert 'absent(ktw_forward_partition_days{job="kor-travel-weather-api"})' in absent["expr"]
     assert absent["for"] == "30m"
+
+
+def _alert_rules() -> dict[str, dict]:
+    from pathlib import Path
+
+    import yaml
+
+    rules = yaml.safe_load(Path("deploy/prometheus/alerts.yml").read_text(encoding="utf-8"))
+    return {
+        rule["alert"]: rule
+        for group in rules["groups"]
+        for rule in group["rules"]
+        if "alert" in rule
+    }
+
+
+def test_skipped_values_alert_below_the_partial_threshold() -> None:
+    """A run stays ``success`` until ~10% of its values are Missing (~137 per
+    nowcast run), so an outage of 3 to 16 stations is silent without a rule on
+    ``ktw_sync_values_skipped_total`` itself.  The behaviour (one station
+    silent, three paging, the first invalid value paging) is pinned by
+    ``tests/prometheus/alerts_test.yml`` under ``promtool test rules``.
+    """
+    import re
+    from pathlib import Path
+
+    alerts = _alert_rules()
+
+    missing = alerts["KorTravelWeatherValuesMissingHigh"]
+    expr = " ".join(missing["expr"].split())
+    assert 'ktw_sync_values_skipped_total{reason="missing"}[3h]' in expr
+    assert "sum by (provider, dataset)" in expr
+    assert missing["for"] == "1h"
+    assert missing["labels"]["severity"] == "warning"
+    threshold = int(re.search(r">\s*(\d+)\s*$", expr).group(1))
+    # Hourly nowcast, 3 runs per window.  Two fully dark stations (8
+    # categories each) stay silent; the review's 15-station outage
+    # (7 categories each) pages.
+    assert 2 * 8 * 3 <= threshold < 15 * 7 * 3
+
+    invalid = alerts["KorTravelWeatherValuesInvalid"]
+    expr = " ".join(invalid["expr"].split())
+    # ``other`` is counted as invalid by the run, so the rule reads both.
+    assert 'reason!="missing"' in expr
+    assert "increase(ktw_sync_values_skipped_total" in expr
+    # The series is created by its first increment, which increase() reads
+    # as 0; the ``unless ... offset`` branch catches that first value.
+    assert "unless" in expr and "offset 1h" in expr
+    assert "for" not in invalid
+    assert invalid["labels"]["severity"] == "warning"
+
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "test rules /tests/alerts_test.yml" in ci

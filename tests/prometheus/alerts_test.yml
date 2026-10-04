@@ -1,0 +1,113 @@
+# promtool unit tests for deploy/prometheus/alerts.yml (CI: `promtool test rules`).
+#
+# Run locally from the repository root:
+#   docker run --rm --entrypoint promtool \
+#     -v "$PWD/deploy/prometheus:/etc/prometheus:ro" -v "$PWD/tests/prometheus:/tests:ro" \
+#     prom/prometheus:v3.5.0 test rules /tests/alerts_test.yml
+#
+# The KMA nowcast runs hourly ("0 * * * *"); an offline station drops 7 of
+# its 8 categories as Missing sentinels (seen on n150 2026-10-05).  Series
+# are sampled every 15m, so `0x3 7x3` is one hour at 0 and then the run's +7.
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Two offline stations (14/h, 42 per 3h) never page, so one (21 per 3h)
+  # does not either.  Nothing here is invalid.
+  - interval: 15m
+    input_series:
+      - series: 'ktw_sync_values_skipped_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",reason="missing"}'
+        values: '0x3 14x3 28x3 42x3 56x3 70x3 84x3 98x3 112x3 126x3'
+    alert_rule_test:
+      - eval_time: 9h
+        alertname: KorTravelWeatherValuesMissingHigh
+        exp_alerts: []
+      - eval_time: 9h
+        alertname: KorTravelWeatherValuesInvalid
+        exp_alerts: []
+
+  # Three offline stations (21/h, 63 per 3h) held for hours do page: the gap
+  # between one routine outage and the run-level `partial` (~137 per run).
+  - interval: 15m
+    input_series:
+      - series: 'ktw_sync_values_skipped_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",reason="missing"}'
+        values: '0x3 21x3 42x3 63x3 84x3 105x3 126x3 147x3 168x3'
+    alert_rule_test:
+      # Three runs in the window are needed before the 1h `for` starts.
+      - eval_time: 2h
+        alertname: KorTravelWeatherValuesMissingHigh
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: KorTravelWeatherValuesMissingHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              provider: python-kma-api
+              dataset: kma_ultra_short_nowcast
+            exp_annotations:
+              summary: "KMA values are missing beyond one routine station outage"
+              description: "python-kma-api/kma_ultra_short_nowcast dropped more than 60 Missing-sentinel values over 3h for an hour (one offline station drops about 21). Runs stay success until ~10% of a run is missing; check which stations or grids are blank."
+
+  # The 15-station outage from the review: 105 per run, under the 10%
+  # `partial` share, so KorTravelWeatherSyncFailed stays silent.  The first
+  # run already crosses 60; it pages once the 1h `for` has held.
+  - interval: 15m
+    input_series:
+      - series: 'ktw_sync_values_skipped_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",reason="missing"}'
+        values: '0x3 105x3 210x3 315x3 420x3'
+      - series: 'ktw_sync_runs_finished_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",status="success"}'
+        values: '0x3 1x3 2x3 3x3 4x3'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: KorTravelWeatherSyncFailed
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: KorTravelWeatherValuesMissingHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              provider: python-kma-api
+              dataset: kma_ultra_short_nowcast
+            exp_annotations:
+              summary: "KMA values are missing beyond one routine station outage"
+              description: "python-kma-api/kma_ultra_short_nowcast dropped more than 60 Missing-sentinel values over 3h for an hour (one offline station drops about 21). Runs stay success until ~10% of a run is missing; check which stations or grids are blank."
+
+  # An invalid value pages at once, including the first one: the series is
+  # only created by its first increment, so `increase()` alone reads it as 0
+  # (n150 2026-10-05: the missing series sat at 7 with a 3h increase of 0).
+  - interval: 15m
+    input_series:
+      - series: 'ktw_sync_values_skipped_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",reason="invalid"}'
+        values: '_x3 1x15 2x3'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: KorTravelWeatherValuesInvalid
+        exp_alerts: []
+      # First appearance.
+      - eval_time: 1h15m
+        alertname: KorTravelWeatherValuesInvalid
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              provider: python-kma-api
+              dataset: kma_ultra_short_nowcast
+            exp_annotations:
+              summary: "KMA returned out-of-range or non-finite values"
+              description: "python-kma-api/kma_ultra_short_nowcast dropped values that are neither valid nor a Missing sentinel in the last hour. The run finishes partial; this names the dataset. Check the provider response contract."
+      # Quiet once an hour passes with no new invalid value.
+      - eval_time: 3h45m
+        alertname: KorTravelWeatherValuesInvalid
+        exp_alerts: []
+      # A later increment on the existing series.
+      - eval_time: 5h15m
+        alertname: KorTravelWeatherValuesInvalid
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              provider: python-kma-api
+              dataset: kma_ultra_short_nowcast
+            exp_annotations:
+              summary: "KMA returned out-of-range or non-finite values"
+              description: "python-kma-api/kma_ultra_short_nowcast dropped values that are neither valid nor a Missing sentinel in the last hour. The run finishes partial; this names the dataset. Check the provider response contract."
