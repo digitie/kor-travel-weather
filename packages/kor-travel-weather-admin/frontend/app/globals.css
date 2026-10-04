@@ -1,3 +1,9 @@
+@import "tailwindcss/theme.css";
+@import "tailwindcss/utilities.css";
+@import "@kor-travel/ui/dagster.css";
+@import "@kor-travel/tokens/theme.css";
+@source "../node_modules/@kor-travel/ui/dist";
+
 /*
  * kor-travel-map admin visual source
  *
@@ -510,6 +516,7 @@ h3 {
 .main > .api-console,
 .main > .ops-grid,
 .main > .dagster-layout,
+.main > .kt-dagster-operations,
 .main > .dataset-list,
 .main > .credential-grid,
 .main > .settings-note,
@@ -528,6 +535,7 @@ h3 {
 .main > .api-console,
 .main > .ops-grid,
 .main > .dagster-layout,
+.main > .kt-dagster-operations,
 .main > .dataset-list,
 .main > .credential-grid,
 .main > .settings-note {
@@ -2060,6 +2068,7 @@ tbody tr:hover {
   .main > .api-console,
   .main > .ops-grid,
   .main > .dagster-layout,
+.main > .kt-dagster-operations,
   .main > .dataset-list,
   .main > .credential-grid,
   .main > .settings-note,
@@ -2148,6 +2157,7 @@ tbody tr:hover {
   .main > .api-console,
   .main > .ops-grid,
   .main > .dagster-layout,
+.main > .kt-dagster-operations,
   .main > .dataset-list,
   .main > .credential-grid,
   .main > .settings-note,

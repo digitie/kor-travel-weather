@@ -43,9 +43,10 @@ targets)` 한 줄을 남긴다.
 재시도(`PROVIDER_RETRIES`, 기본 3)는 일시 오류에서만 호출을 더 쓰므로 36%는 키를 나눠
 쓰는 다른 사용처와 재시도 몫으로 남긴다. 명시 target은 이 위에 더해진다.
 
-**한 run의 크기.** KMA는 모든 응답이 유효할 때만 publish를 시작하고, publish는
-location chunk 단위의 짧은 transaction으로 나눈다(아래 단락). 크기는 채우기 예산으로
-묶는다. 2026-10-01 운영 catalog(측정소
+**한 run의 크기.** 격자·중기·특보는 5,000 fact 또는 25 source에서 buffer를 게시하고
+비운다. location chunk 단위의 짧은 transaction으로 나누며 실행 전체의 normalized
+예산은 flush 뒤에도 누적한다. 다음 실측은 전체 staging을 사용하던 2026-10-01의
+역사이며 현행 peak 메모리 보증이 아니다. 당시 운영 catalog(측정소
 1,429곳, 1,074격자, 격자당 최대 7곳) 실측으로 150격자는 측정소 196곳, 300격자는 385곳을
 덮는다. 단기예보 응답이 격자당 약 900행이면 150격자 run은 약 18만 fact(fan-out 포함),
 메모리 약 0.36 GiB, 300격자는 약 0.73 GiB다. fact 수는 격자 수 × 격자당 행 수 × 격자당
@@ -65,21 +66,24 @@ location chunk 단위의 짧은 transaction으로 나눈다(아래 단락). 크�
 entity로 추적한다.
 
 각 grid의 nowcast/ultra-short/short (필요하면 mid) 응답을 남은 row/fact budget
-안에서 bounded stage한다. 모든 응답이 유효하고 non-empty일 때만 publish를 시작한다 —
-N번째 grid 실패, quota/4xx, wrong grid, malformed date는 아무 fact도 publish하지 않는다.
+안에서 bounded stage한다. batch 안의 source 인용을 검증한 뒤 게시하고 비운다.
+N번째 grid 실패, quota/4xx, wrong grid, malformed date 때도 이미 commit한 batch는 남는다.
 publish는 **location chunk 단위의 짧은 transaction**이다: 격자·중기 fact는
 `GRID_PUBLISH_LOCATIONS`(50)곳·`GRID_PUBLISH_VALUES`(5,000) fact 이하, 특보 fact는
 `ALERT_PUBLISH_LOCATIONS`(50)곳씩(한 location의 fact는 나누지 않는다). 한 transaction은
 그 chunk의 location lock만 쥔다. 예전에는 run 전체를 한 transaction으로 publish해 그
 동안 run이 닿는 모든 location lock을 쥐었다 — 특보는 2026-10-01에 1,450곳을 한 시간
 넘게, 단기예보는 2026-10-02에 1,103곳을 4시간 3분 동안 쥐고 다른 KMA job을 2시간 넘게
-세웠다. 그래서 publish **도중**의 실패(DB 오류, lease 상실)에 대해서만 all-or-nothing을
-포기한다: 앞 chunk는 publish된 채 남고 run은 그때까지의 `values_loaded`로 failed가 된다.
-publish된 chunk는 그 location들에 대한 온전한 응답의 fact 전부이고, 다음 run의 replay는
+세웠다. 현재는 수집/provider/parse 실패와 DB 오류·lease 상실 모두 부분 게시를 유지한다.
+앞 chunk는 남고 run은 그때까지의 `values_loaded`로 failed가 된다.
+한 fact의 원천 필드와 raw payload를 함께 유지하며 다음 run의 replay는
 이미 있는 fact에 대해 no-op이다. 각 chunk는 자기 fact가 인용하는 source record를 함께
 싣고 가므로 매 transaction이 run row를 잠그고 lease 소유를 다시 확인한다. 어떤 fact도
-인용하지 않는 source(어느 location에도 맞지 않은 특보)는 run을 끝내는 마지막
-transaction에 기록된다.
+인용하지 않는 source(어느 location에도 맞지 않은 특보)도 source buffer를 비울 때
+기록한다. 특보의 skip 재시도는 각 bounded batch 안에서 수행하며, 어느 notice에서라도
+빠진 location은 뒤 batch가 성공해도 run 전체의 incomplete/skip 집합에 남는다.
+전체 판정에는 location ID 집합만 유지한다. 실제 실행 상한·회수·재시도·운영 RSS의
+제한은 [복구 runbook](../runbooks/dagster-recovery.md)을 따른다.
 
 repository 쪽 ingest transaction은 lock 대기를 `3 × deadlock_timeout`(partition DDL과
 같은 `ddl_lock_timeout_ms`)으로 묶고, lock 경합에서 지면 rollback 뒤 3초 간격으로 최대

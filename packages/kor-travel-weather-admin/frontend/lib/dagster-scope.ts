@@ -56,7 +56,7 @@ const OVERVIEW_QUERY = `query WeatherDagsterOverview($limit: Int!, $repositoryLo
   }
   runsOrError(limit: $limit, filter: { ${RUN_TAG_FILTER} }) {
     __typename
-    ... on Runs { results { runId status jobName startTime endTime } }
+    ... on Runs { results { runId status jobName startTime endTime tags { key value } } }
     ... on InvalidPipelineRunsFilterError { message }
     ... on PythonError { message }
   }
@@ -64,12 +64,14 @@ const OVERVIEW_QUERY = `query WeatherDagsterOverview($limit: Int!, $repositoryLo
 
 // Looked up through the same tag filter as the run list rather than
 // `runOrError(runId)`: a run id alone would reach any tenant's run.
-const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: String!, $repositoryTag: String!) {
+const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: String!, $repositoryTag: String!, $cursor: String) {
   runsOrError(limit: 1, filter: { runIds: [$runId], ${RUN_TAG_FILTER} }) {
     __typename
     ... on Runs {
       results {
-        eventConnection(limit: 2000) {
+        eventConnection(limit: 1000, afterCursor: $cursor) {
+          cursor
+          hasMore
           events {
             __typename
             ... on RunFailureEvent { message }
@@ -103,6 +105,7 @@ export const DAGSTER_OPERATIONS = {
     query: RUN_FAILURE_QUERY,
     callerVariables: {
       runId: (value) => typeof value === "string" && RUN_ID_PATTERN.test(value),
+      cursor: (value) => value === null || (typeof value === "string" && value.length <= 512),
     },
   },
 } satisfies Record<string, DagsterOperation>;
@@ -151,6 +154,7 @@ export function scopedDagsterRequest(raw: unknown): ScopedDagsterRequest {
     if (!check(value)) return { ok: false, message: `Dagster 요청 변수 값이 올바르지 않습니다: ${name}` };
   }
   for (const name of Object.keys(operation.callerVariables)) {
+    if (name === "cursor" && !Object.hasOwn(variables, name)) continue;
     if (!Object.hasOwn(variables, name)) return { ok: false, message: `Dagster 요청 변수가 없습니다: ${name}` };
   }
   const scope = Object.fromEntries(

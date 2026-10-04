@@ -482,6 +482,9 @@ class SyncRunRow(Base):
     )
     error: Mapped[str | None] = mapped_column(Text)
 
+    # REST DTO에는 노출하지 않는 worker 소유권. lease만으로 생사를 추측하지 않는다.
+    orchestrator_run_id: Mapped[str | None] = mapped_column(String(64), index=True)
+
 
 class SyncRunSourceRow(Base):
     """한 실행이 관측한 immutable source response association."""
@@ -803,6 +806,7 @@ class WeatherRepository:
     """
 
     def __init__(self, database_url: str) -> None:
+        self.orchestrator_run_id: str | None = None
         if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
             raise ValueError("WeatherRepository는 PostgreSQL DSN만 지원합니다.")
         normalized_url = database_url
@@ -821,6 +825,7 @@ class WeatherRepository:
             max_overflow=10,
             pool_timeout=15,
             pool_pre_ping=True,
+            connect_args={"connect_timeout": 10},
         )
 
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
@@ -2654,6 +2659,8 @@ class WeatherRepository:
         )
         try:
             with self._session_factory.begin() as session:
+                session.execute(text("SET LOCAL lock_timeout = '5s'"))
+                session.execute(text("SET LOCAL statement_timeout = '10s'"))
                 session.execute(
                     text("SELECT pg_advisory_xact_lock(hashtext(:run_scope))"),
                     {"run_scope": f"{provider}:{dataset_key}"},
@@ -2670,7 +2677,9 @@ class WeatherRepository:
                 )
                 if active is not None:
                     raise RuntimeError(f"동일 provider/dataset 실행이 이미 진행 중입니다: {active}")
-                session.add(SyncRunRow(**run.model_dump()))
+                session.add(
+                    SyncRunRow(**run.model_dump(), orchestrator_run_id=self.orchestrator_run_id)
+                )
         except IntegrityError as exc:
             raise RuntimeError(
                 "동일 provider/dataset 실행이 이미 진행 중입니다 (concurrent insert)."
@@ -2679,8 +2688,10 @@ class WeatherRepository:
         return run
 
     def reconcile_stale_sync_runs(self, *, max_age_minutes: int = 180) -> int:
-        """프로세스 중단으로 남은 running row를 failed로 회수한다."""
+        """orchestrator 소유권이 없는 기존 running row를 lease 기준으로 회수한다."""
         with self._session_factory.begin() as session:
+            session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_sync_reconcile'))")
             )
@@ -2690,6 +2701,99 @@ class WeatherRepository:
         observe_stale_recovered(recovered)
         return recovered
 
+    def reconcile_interrupted_sync_runs(
+        self, is_terminal: Callable[[str], bool | None], *, limit: int = 100
+    ) -> int:
+        """bounded page를 keyset으로 순회하여 생존 첫 페이지 뒤의 중단 행도 회수한다."""
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit은 양의 정수여야 합니다.")
+        after = None
+        recovered = 0
+        while True:
+            count, after = self._reconcile_interrupted_sync_runs_page(
+                is_terminal, limit=limit, after=after
+            )
+            recovered += count
+            if after is None:
+                return recovered
+
+    def _reconcile_interrupted_sync_runs_page(
+        self, is_terminal: Callable[[str], bool | None], *, limit: int,
+        after: tuple[datetime, str] | None,
+    ) -> tuple[int, tuple[datetime, str] | None]:
+        """terminal worker 또는 metadata 유실 뒤 lease가 만료된 행을 CAS로 회수한다.
+
+        orchestrator 조회는 DB 트랜잭션 밖에서 한다. 조회 장애는 호출자에게 전달하며
+        살아 있는 실행은 회수하지 않는다. 없는 ID는 lease까지 만료되어야 회수한다.
+        무소유 기존 행은 lease
+        reconciler가 처리한다. 늦게 돌아온 worker는 기존 heartbeat/publish CAS에 막힌다.
+        """
+        with self._session_factory.begin() as session:
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            query = (
+                select(
+                    SyncRunRow.run_id,
+                    SyncRunRow.orchestrator_run_id,
+                    func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at),
+                    SyncRunRow.started_at,
+                )
+                .where(
+                    SyncRunRow.status == "running",
+                    SyncRunRow.orchestrator_run_id.is_not(None),
+                )
+                .order_by(SyncRunRow.started_at, SyncRunRow.run_id)
+                .limit(limit)
+            )
+            if after is not None:
+                query = query.where(or_(
+                    SyncRunRow.started_at > after[0],
+                    (SyncRunRow.started_at == after[0]) & (SyncRunRow.run_id > after[1]),
+                ))
+            candidates = session.execute(query).all()
+        next_cursor = (candidates[-1][3], candidates[-1][0]) if len(candidates) == limit else None
+        cutoff = kst_now() - timedelta(minutes=180)
+        terminal_ids = []
+        missing_ids = []
+        for run_id, owner, heartbeat, _started_at in candidates:
+            state = is_terminal(owner)
+            # 누락된 metadata만으로 회수하지 않는다. heartbeat lease도 만료된 경우
+            # CAS로 소유권을 끊어, 기록 유실 뒤 영구 running이 되는 것을 막는다.
+            if state is True:
+                terminal_ids.append(run_id)
+            elif state is None and heartbeat < cutoff:
+                missing_ids.append(run_id)
+        if not terminal_ids and not missing_ids:
+            return 0, next_cursor
+        with self._session_factory.begin() as session:
+            session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            rows = session.execute(
+                update(SyncRunRow)
+                .where(
+                    SyncRunRow.status == "running",
+                    or_(
+                        SyncRunRow.run_id.in_(terminal_ids),
+                        (
+                            SyncRunRow.run_id.in_(missing_ids)
+                            & (
+                                func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at)
+                                < cutoff
+                            )
+                        ),
+                    ),
+                )
+                .values(
+                    status="failed",
+                    finished_at=kst_now(),
+                    error="worker 종료 또는 metadata 유실·lease 만료로 중단된 실행 회수",
+                )
+                .returning(SyncRunRow.provider, SyncRunRow.dataset_key)
+            ).all()
+        for provider, dataset in rows:
+            observe_sync_finished(provider, dataset, status="failed")
+        observe_stale_recovered(len(rows))
+        return len(rows), next_cursor
+
     @staticmethod
     def _reconcile_stale_sync_runs_session(
         session: Session, *, max_age_minutes: int = 180
@@ -2698,6 +2802,7 @@ class WeatherRepository:
         stale_rows = session.scalars(
             select(SyncRunRow).where(
                 SyncRunRow.status == "running",
+                SyncRunRow.orchestrator_run_id.is_(None),
                 func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at) < cutoff,
             )
         ).all()
@@ -2705,6 +2810,7 @@ class WeatherRepository:
             update(SyncRunRow)
             .where(
                 SyncRunRow.status == "running",
+                SyncRunRow.orchestrator_run_id.is_(None),
                 func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at) < cutoff,
             )
             .values(

@@ -84,10 +84,12 @@ def test_every_run_carries_its_own_max_runtime() -> None:
     # A shared Dagster instance has one instance-wide max_runtime_seconds for
     # every project; weather's measured long sweeps need their own bound on
     # the run itself, not in an instance file.
-    from kortravelweather_dagster.definitions import RUN_MAX_RUNTIME_SECONDS, RUN_MAX_RUNTIME_TAG
+    from kortravelweather_dagster.definitions import RUN_MAX_RUNTIME_TAG, _job_tags
 
     for job in _jobs():
-        assert job.run_tags.get(RUN_MAX_RUNTIME_TAG) == str(RUN_MAX_RUNTIME_SECONDS), job.name
+        assert job.run_tags.get(RUN_MAX_RUNTIME_TAG) == _job_tags(job.name)[RUN_MAX_RUNTIME_TAG]
+        assert job.run_tags.get("dagster/max_retries") == "1", job.name
+        assert job.run_tags.get("kortravelcommon/project") == "weather", job.name
 
 
 def test_external_jobs_keep_their_run_group_next_to_the_runtime_tag() -> None:
@@ -105,12 +107,12 @@ def test_external_jobs_keep_their_run_group_next_to_the_runtime_tag() -> None:
 def test_schedule_runs_inherit_the_runtime_tag() -> None:
     # Job tags reach a run only through the job's run tags; a schedule that
     # set run tags of its own would have to repeat them.
-    from kortravelweather_dagster.definitions import RUN_MAX_RUNTIME_SECONDS, RUN_MAX_RUNTIME_TAG
+    from kortravelweather_dagster.definitions import RUN_MAX_RUNTIME_TAG, _job_tags
 
     repository = defs.get_repository_def()
     for schedule in repository.schedule_defs:
         job = repository.get_job(schedule.job_name)
-        assert job.run_tags.get(RUN_MAX_RUNTIME_TAG) == str(RUN_MAX_RUNTIME_SECONDS), schedule.name
+        assert job.run_tags.get(RUN_MAX_RUNTIME_TAG) == _job_tags(job.name)[RUN_MAX_RUNTIME_TAG]
         assert RUN_MAX_RUNTIME_TAG not in (schedule.tags or {}), schedule.name
 
 

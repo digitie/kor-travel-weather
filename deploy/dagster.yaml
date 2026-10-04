@@ -53,6 +53,7 @@ run_monitoring:
   # simply being restarted. Long enough not to fail healthy runs mid-deploy,
   # short enough that a stalled schedule is noticed within one interval.
   start_timeout_seconds: 300
+  cancel_timeout_seconds: 300
   max_resume_run_attempts: 0
   poll_interval_seconds: 60
   # The liveness check above only fails a run whose *process is gone*. A process
@@ -85,6 +86,13 @@ run_monitoring:
   # fails when they differ.
   max_runtime_seconds: 57600
 
+# 멱등성을 선언한 job의 worker/launcher 장애만 1회 복구한다.
+# op/provider 오류는 provider 자체의 재시도와 다음 정상 스케줄이 소유한다.
+run_retries:
+  enabled: true
+  max_retries: 0
+  retry_on_asset_or_op_failure: false
+
 run_coordinator:
   module: dagster._core.run_coordinator
   class: QueuedRunCoordinator
@@ -101,6 +109,13 @@ run_coordinator:
     # this hour either. Reserving the rest of the pool for them matters more
     # than collecting every external provider on every tick.
     tag_concurrency_limits:
+      - key: "kortravelcommon/project"
+        value: "weather"
+        limit: 6
+      - key: "kortravelcommon/job"
+        value:
+          applyLimitPerUniqueValue: true
+        limit: 1
       - key: "kortravelweather/run_group"
         value: "external_weather"
         limit: 3

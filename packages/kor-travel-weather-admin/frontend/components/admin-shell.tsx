@@ -16,6 +16,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { AppMenu } from "@kor-travel/ui";
 
 type NavigationItem = {
   href: string;
@@ -36,18 +37,10 @@ const NAV_ITEMS: NavigationItem[] = [
   { href: "/api-test", label: "API 테스트", icon: Code2 },
 ];
 
-function isActive(pathname: string, href: string) {
-  if (href === "/") return pathname === href;
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
-
 export function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
-  const activeItem = [...NAV_ITEMS]
-    .filter((item) => isActive(pathname, item.href))
-    .sort((left, right) => right.href.length - left.href.length)[0];
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -83,23 +76,22 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
                 <span className="brand-subtitle">Admin UI</span>
               </Link>
             </div>
-            <nav className="rail-nav" aria-label="주요 메뉴">
-              {NAV_ITEMS.map((item) => {
-                const active = item.href === activeItem?.href;
-                const Icon = item.icon;
-                return (
-                  <Link
-                    aria-current={active ? "page" : undefined}
-                    className={`nav-link${active ? " active" : ""}`}
-                    href={item.href}
-                    key={item.href}
-                  >
-                    <Icon aria-hidden="true" size={16} strokeWidth={1.8} />
-                    <span>{item.label}</span>
-                  </Link>
-                );
-              })}
-            </nav>
+            <div className="rail-nav">
+              <AppMenu
+                label="주요 메뉴"
+                pathname={pathname}
+                linkComponent={Link}
+                groups={[{ id: "weather", items: NAV_ITEMS.map((item) => {
+                  const Icon = item.icon;
+                  return {
+                    id: item.href,
+                    href: item.href,
+                    label: item.label,
+                    icon: <Icon size={16} strokeWidth={1.8} />,
+                  };
+                }) }]}
+              />
+            </div>
             <div className="rail-footer">
               <button
                 aria-busy={loggingOut}

@@ -94,7 +94,10 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0017_forward_partitions"
+            assert version == "0018_sync_run_owner"
+            assert "orchestrator_run_id" in {
+                column["name"] for column in inspect(engine).get_columns("weather_sync_runs")
+            }
             weather_value_indexes = {
                 item["name"] for item in inspect(engine).get_indexes("weather_values")
             }
