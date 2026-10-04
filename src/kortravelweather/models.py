@@ -64,6 +64,39 @@ class WeatherLocation(BaseModel):
         return float(Decimal(str(value)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
 
 
+#: Physical bounds per metric, inclusive; ``None`` means unbounded on that side.
+METRIC_VALUE_RANGES: dict[str, tuple[Decimal | None, Decimal | None]] = {
+    "REH": (Decimal("0"), Decimal("100")),
+    "POP": (Decimal("0"), Decimal("100")),
+    "VEC": (Decimal("0"), Decimal("360")),
+    "WSD": (Decimal("0"), None),
+    "WSDM": (Decimal("0"), None),
+    "RN1": (Decimal("0"), None),
+    "PCP": (Decimal("0"), None),
+    "SNO": (Decimal("0"), None),
+}
+
+
+def value_range_error(metric_key: str, value: Decimal | None) -> str | None:
+    """Why ``value`` is impossible for ``metric_key``, or ``None`` when it is not.
+
+    The single rule ``WeatherValue`` enforces; providers call it first to skip
+    one impossible measurement instead of failing a whole response.
+    """
+    if value is None:
+        return None
+    if not value.is_finite():
+        return "value_number는 유한한 숫자여야 합니다."
+    # Compare at the NUMERIC(14, 4) precision WeatherValue stores.
+    value = value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    lower, upper = METRIC_VALUE_RANGES.get(metric_key, (None, None))
+    if lower is not None and value < lower:
+        return f"{metric_key} 값은 {lower} 이상이어야 합니다."
+    if upper is not None and value > upper:
+        return f"{metric_key} 값은 {upper} 이하여야 합니다."
+    return None
+
+
 class WeatherValue(BaseModel):
     """한 위치·metric·시각의 immutable weather fact."""
 
@@ -127,22 +160,9 @@ class WeatherValue(BaseModel):
             raise ValueError("value_number 또는 value_text 중 하나는 필요합니다.")
         if self.valid_from and self.valid_until and self.valid_until < self.valid_from:
             raise ValueError("valid_until은 valid_from보다 빠를 수 없습니다.")
-        ranges: dict[str, tuple[Decimal | None, Decimal | None]] = {
-            "REH": (Decimal("0"), Decimal("100")),
-            "POP": (Decimal("0"), Decimal("100")),
-            "VEC": (Decimal("0"), Decimal("360")),
-            "WSD": (Decimal("0"), None),
-            "WSDM": (Decimal("0"), None),
-            "RN1": (Decimal("0"), None),
-            "PCP": (Decimal("0"), None),
-            "SNO": (Decimal("0"), None),
-        }
-        if self.value_number is not None and self.metric_key in ranges:
-            lower, upper = ranges[self.metric_key]
-            if lower is not None and self.value_number < lower:
-                raise ValueError(f"{self.metric_key} 값은 {lower} 이상이어야 합니다.")
-            if upper is not None and self.value_number > upper:
-                raise ValueError(f"{self.metric_key} 값은 {upper} 이하여야 합니다.")
+        error = value_range_error(self.metric_key, self.value_number)
+        if error is not None:
+            raise ValueError(error)
         return self
 
     def identity(

@@ -18,11 +18,19 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from pydantic import ValidationError
-
-from kortravelweather.models import KST, ForecastStyle, TimelineBucket, WeatherValue
+from kortravelweather.models import (
+    KST,
+    ForecastStyle,
+    TimelineBucket,
+    WeatherValue,
+    value_range_error,
+)
 
 logger = logging.getLogger(__name__)
+
+#: With a run counter, only the first this-many skips are logged one by one;
+#: the run logs the per-reason totals once at the end.
+KMA_SKIP_LOG_DETAILS = 20
 
 KMA_PROVIDER_NAME = "python-kma-api"
 
@@ -236,7 +244,8 @@ def _derived_source_key(dataset_key: str, location_id: str, payload: Mapping[str
 
 
 def _is_missing(number: Decimal | None) -> bool:
-    return number is not None and abs(number) >= KMA_MISSING_ABS_THRESHOLD
+    # NaN/Infinity are not sentinels; value_range_error reports them invalid.
+    return number is not None and number.is_finite() and abs(number) >= KMA_MISSING_ABS_THRESHOLD
 
 
 def _skip(
@@ -251,6 +260,8 @@ def _skip(
     """Count and log one skipped metric; the rest of the response still publishes."""
     if skipped is not None:
         skipped[f"{dataset_key}:{reason}:{row.category}"] += 1
+        if skipped.total() > KMA_SKIP_LOG_DETAILS:
+            return
     logger.warning(
         "%s: skipped %s %s value %r at grid (%s,%s) base %s %s%s",
         dataset_key,
@@ -273,20 +284,20 @@ def _validated(
     row: KmaForecastLike | KmaForecastRow | KmaNowcastLike | KmaNowcastRow,
     raw_value: str,
 ) -> WeatherValue | None:
-    """Build one fact; a value failing range validation skips only this metric."""
-    try:
-        return WeatherValue(**fields)
-    except ValidationError as exc:
-        detail = "; ".join(str(error.get("msg", "")) for error in exc.errors())
+    """Build one fact; an impossible value (out of range, NaN/Infinity) skips only
+    this metric.  Any other validation error is a broken row and still raises."""
+    error = value_range_error(fields["metric_key"], fields["value_number"])
+    if error is not None:
         _skip(
             skipped,
             dataset_key=dataset_key,
             reason="invalid",
             row=row,
             raw_value=raw_value,
-            detail=detail,
+            detail=error,
         )
         return None
+    return WeatherValue(**fields)
 
 
 def _forecast_value(

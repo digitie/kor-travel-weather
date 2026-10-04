@@ -17,7 +17,11 @@ from urllib.parse import quote, unquote
 
 from sqlalchemy.exc import OperationalError
 
-from kortravelweather.metrics import observe_sync_locations_skipped, provider_request
+from kortravelweather.metrics import (
+    observe_sync_locations_skipped,
+    observe_sync_values_skipped,
+    provider_request,
+)
 from kortravelweather.models import WeatherLocation, WeatherValue, kst_now
 from kortravelweather.partitions import is_lock_conflict
 from kortravelweather.providers.kma import (
@@ -86,6 +90,17 @@ ALERT_STARVED_RUNS = 3
 #: same minimum decides whether skipping *every* location fails the run.
 ALERT_PARTIAL_SKIP_SHARE = 0.10
 ALERT_PARTIAL_MIN_SKIPPED = 5
+
+#: Grid values dropped as KMA Missing sentinels finish a run ``partial`` once
+#: there are at least ``VALUE_PARTIAL_MIN_SKIPPED`` of them and they exceed
+#: ``VALUE_PARTIAL_SKIP_SHARE`` of the values attempted.  One offline station
+#: costs at most one nowcast response (8 categories, 7 sentinels on
+#: 2026-10-05), so the minimum is two stations' worth: a single routine outage
+#: stays green, a wider one pages.  Any out-of-range value (``invalid``) is a
+#: contract surprise and always finishes ``partial``; a run whose every value
+#: was skipped fails.
+VALUE_PARTIAL_SKIP_SHARE = 0.10
+VALUE_PARTIAL_MIN_SKIPPED = 16
 
 #: Skipped location IDs listed in the run's note, sorted and percent-escaped,
 #: up to this many characters (the rest is counted, not listed).  A failed
@@ -996,6 +1011,8 @@ async def _stage_and_publish_weather(
         #: Metrics dropped as KMA Missing sentinels or out-of-range values,
         #: keyed ``"{dataset}:{missing|invalid}:{category}"`` (per response).
         values_skipped: Counter[str] = Counter()
+        #: Values the grid/mid responses yielded, before fan-out to locations.
+        values_accepted = 0
         alert_locations_seen: set[str] = set()
         alert_locations_published: set[str] = set()
         alert_skipped_locations: set[str] = set()
@@ -1045,7 +1062,7 @@ async def _stage_and_publish_weather(
             include_mid_for_group: bool,
             source_entity_id: str,
         ) -> None:
-            nonlocal response_rows_total, normalized_values_total
+            nonlocal response_rows_total, normalized_values_total, values_accepted
             if len(sources) >= KMA_STAGE_SOURCES:
                 await flush_grid_batch()
             keep_alive()
@@ -1072,6 +1089,7 @@ async def _stage_and_publish_weather(
                 max_normalized_values=per_target_values,
                 skipped=values_skipped,
             )
+            values_accepted += sum(len(response.values) for response in responses)
             for response in responses:
                 payload = response.source_record.get("payload") or {}
                 row_count = len(payload.get("rows", [])) if isinstance(payload, Mapping) else 0
@@ -1287,6 +1305,37 @@ async def _stage_and_publish_weather(
                 and len(alerts_skipped) > ALERT_PARTIAL_SKIP_SHARE * alert_locations
             ):
                 status = "partial"
+        values_missing = sum(n for key, n in values_skipped.items() if ":missing:" in key)
+        values_invalid = values_skipped.total() - values_missing
+        values_attempted = values_accepted + values_skipped.total()
+        if values_skipped:
+            for key, count in values_skipped.items():
+                dataset_key, reason, _category = key.split(":", 2)
+                observe_sync_values_skipped(KMA_PROVIDER_NAME, dataset_key, reason, count)
+            logger.warning(
+                "KMA run %s skipped %d of %d values (missing sentinel / out of range): %s",
+                run.run_id,
+                values_skipped.total(),
+                values_attempted,
+                dict(values_skipped.most_common()),
+            )
+            if values_accepted == 0:
+                raise RuntimeError(
+                    f"KMA 값 {values_attempted}건을 모두 건너뛰었습니다: "
+                    f"{dict(values_skipped.most_common())}"
+                )
+            if values_invalid or (
+                values_missing >= VALUE_PARTIAL_MIN_SKIPPED
+                and values_missing > VALUE_PARTIAL_SKIP_SHARE * values_attempted
+            ):
+                status = "partial"
+                value_note = (
+                    f"KMA 값 {values_skipped.total()}/{values_attempted}건 건너뜀 "
+                    f"(missing {values_missing}, invalid {values_invalid})"
+                )
+                # The alert note, when present, must lead: the starvation
+                # check reads it back from the start of the error.
+                skip_note = f"{skip_note}; {value_note}" if skip_note else value_note
         for chunk_sources, chunk in grid_publications:
             keep_alive()
             # Off the event loop: a lock race retries with a blocking pause
@@ -1334,15 +1383,9 @@ async def _stage_and_publish_weather(
             raise RuntimeError(
                 f"sync run ownership was lost before publish completion: {finished.status}"
             )
-        if values_skipped:
-            logger.warning(
-                "KMA run %s skipped %d metric values (missing sentinel / out of range): %s",
-                finished.run_id,
-                sum(values_skipped.values()),
-                dict(values_skipped.most_common()),
-            )
         return {
-            "values_skipped": sum(values_skipped.values()),
+            "values_attempted": values_attempted,
+            "values_skipped": values_skipped.total(),
             "values_skipped_by_reason": dict(values_skipped.most_common()),
             "run_id": finished.run_id,
             "status": finished.status,
