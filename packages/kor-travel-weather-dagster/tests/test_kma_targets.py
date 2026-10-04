@@ -390,31 +390,39 @@ _OFFLINE_STATION = {
 
 
 class _MissingStationNowcastClient(_NowcastClient):
-    """The first ``bad_grids`` grids answer with ``answer`` (category -> obsrValue)."""
+    """The first ``bad_grids`` grids answer with ``answer`` (category, obsrValue);
+    every other grid answers ``good_rows`` ordinary T1H rows."""
 
-    def __init__(self, bad_grids: int = 1, answer: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        bad_grids: int = 1,
+        answer: dict[str, str] | list[tuple[str, str]] | None = None,
+        good_rows: int = 1,
+    ) -> None:
         super().__init__()
         self.bad_grids = bad_grids
-        self.answer = _OFFLINE_STATION if answer is None else answer
+        answer = _OFFLINE_STATION if answer is None else answer
+        self.answer = list(answer.items()) if isinstance(answer, dict) else answer
+        self.good_rows = good_rows
 
     async def now(self, *, nx, ny):
         bad = len(self.grids) < self.bad_grids
         snapshot = await super().now(nx=nx, ny=ny)
+        row = snapshot.raw["items"][0]
         if bad:
             snapshot.raw["items"] = [
-                {**snapshot.raw["items"][0], "category": category, "obsrValue": value}
-                for category, value in self.answer.items()
+                {**row, "category": category, "obsrValue": value}
+                for category, value in self.answer
             ]
+        else:
+            snapshot.raw["items"] = [dict(row) for _ in range(self.good_rows)]
         return snapshot
 
 
 def _values_skipped_metric(reason: str) -> float:
     from kortravelweather import metrics
 
-    counter = getattr(metrics, "SYNC_VALUES_SKIPPED", None)
-    if counter is None:  # RED: the counter does not exist yet
-        return 0.0
-    return counter.labels(
+    return metrics.SYNC_VALUES_SKIPPED.labels(
         provider="python-kma-api", dataset="kma_ultra_short_nowcast", reason=reason
     )._value.get()
 
@@ -452,6 +460,20 @@ def test_a_station_whose_every_category_is_missing_does_not_fail_the_run() -> No
     assert result["status"] == "success"
     assert result["values_skipped"] == 8
     assert sorted(value.metric_key for value in repository.values) == ["T1H"] * 4
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_missing_skips_under_the_share_stay_green_past_the_minimum() -> None:
+    # 20 sentinels (>= VALUE_PARTIAL_MIN_SKIPPED) out of 220 attempted (9%):
+    # at prod size the share, not the minimum, decides whether to page.
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(answer=[("REH", "-998")] * 20, good_rows=50)
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["values_skipped"] == 20
+    assert result["values_attempted"] == 220
+    assert result["status"] == "success"
 
 
 @pytest.mark.usefixtures("_station_only_env")

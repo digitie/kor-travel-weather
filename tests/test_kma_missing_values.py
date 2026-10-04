@@ -182,9 +182,6 @@ def test_only_value_range_errors_are_skipped_everything_else_still_raises() -> N
 
     from pydantic import ValidationError
 
-    # Neither a number nor a text: a broken row, not an out-of-range value.
-    with pytest.raises(ValidationError, match="value_number 또는 value_text"):
-        ultra_short_nowcast_to_weather_values([_nowcast("REH", "")], location_id="x")
     with pytest.raises(ValidationError, match="timezone-aware"):
         ultra_short_nowcast_to_weather_values(
             [_nowcast("REH", "40")], location_id="x", known_at=datetime(2026, 10, 5, 4)
@@ -193,6 +190,23 @@ def test_only_value_range_errors_are_skipped_everything_else_still_raises() -> N
         ultra_short_nowcast_to_weather_values(
             [_nowcast("REH", "40")], location_id="x", source_record_key="k" * 256
         )
+
+
+@pytest.mark.parametrize("raw", ["", " ", "	"])
+def test_an_empty_value_is_missing_not_a_failed_run(raw: str) -> None:
+    # An offline station could as well come back with no value at all; that
+    # must not bring the 2026-09-30 outage back through another door.
+    skipped: Counter[str] = Counter()
+    values = ultra_short_nowcast_to_weather_values(
+        [_nowcast("REH", raw), _nowcast("T1H", "3")], location_id="x", skipped=skipped
+    )
+    assert [value.metric_key for value in values] == ["T1H"]
+    assert skipped == Counter({"kma_ultra_short_nowcast:missing:REH": 1})
+    forecast = short_forecast_to_weather_values(
+        [_forecast("TMP", raw)], location_id="x", skipped=skipped
+    )
+    assert forecast == []
+    assert skipped["kma_short_forecast:missing:TMP"] == 1
 
 
 def test_skip_details_are_logged_for_the_first_skips_of_a_run_only(
