@@ -2,6 +2,7 @@ FROM node:22-alpine AS dependencies
 WORKDIR /app
 COPY packages/kor-travel-weather-admin/frontend/package.json \
      packages/kor-travel-weather-admin/frontend/package-lock.json ./
+COPY packages/kor-travel-weather-admin/frontend/vendor ./vendor
 RUN npm ci --ignore-scripts --no-audit --no-fund
 
 FROM dependencies AS builder

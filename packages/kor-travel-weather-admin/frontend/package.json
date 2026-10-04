@@ -13,6 +13,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@kor-travel/tokens": "file:vendor/kor-travel-tokens-0.1.0.tgz",
+    "@kor-travel/ui": "file:vendor/kor-travel-ui-0.1.0-dev.1.tgz",
     "@tanstack/react-query": "^5.66.8",
     "lucide-react": "^0.468.0",
     "maplibre-gl": "^6.9.0",
@@ -22,11 +24,13 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.13.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "eslint": "^9.0.0",
     "eslint-config-next": "^15.5.24",
+    "tailwindcss": "^4.3.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   }
