@@ -504,15 +504,17 @@ def test_skipped_values_alert_below_the_partial_threshold() -> None:
 
     missing = alerts["KorTravelWeatherValuesMissingHigh"]
     expr = " ".join(missing["expr"].split())
-    assert 'ktw_sync_values_skipped_total{reason="missing"}[3h]' in expr
+    # Not [3h]: exactly three hourly periods briefly holds two runs and
+    # resets ``for`` (the promtool three-station case fails on it).
+    assert 'ktw_sync_values_skipped_total{reason="missing"}[3h30m]' in expr
     assert "sum by (provider, dataset)" in expr
     assert missing["for"] == "1h"
     assert missing["labels"]["severity"] == "warning"
     threshold = int(re.search(r">\s*(\d+)\s*$", expr).group(1))
-    # Hourly nowcast, 3 runs per window.  Two fully dark stations (8
-    # categories each) stay silent; the review's 15-station outage
-    # (7 categories each) pages.
-    assert 2 * 8 * 3 <= threshold < 15 * 7 * 3
+    # Hourly nowcast, 3-4 runs per window, 7 of 8 categories per offline
+    # station.  Two stations at their most (4 runs) stay silent; three at
+    # their least (3 runs) page, and so does the review's 15-station outage.
+    assert 2 * 7 * 4 <= threshold < 3 * 7 * 3
 
     invalid = alerts["KorTravelWeatherValuesInvalid"]
     expr = " ".join(invalid["expr"].split())

@@ -86,21 +86,24 @@ groups:
       # Missing sentinels only make a run partial past ~10% of its values
       # (~137 of ~1,368 per hourly nowcast run, 17-34 offline stations), so a
       # smaller outage stays success and silent.  One offline station drops 7
-      # of its 8 categories per run: 21 per 3h window (3 hourly runs), 42 for
-      # two stations, still 56 if a catch-up run lands in the window.  Above
-      # 60 means a third station, held for an hour (so a blip that clears in
-      # a run does not page).  The review's 15-station outage (105 per run)
-      # crosses 60 on its first run and pages an hour later.  The first run
-      # after a Dagster restart is not counted (new series, see above); a
-      # sustained outage is caught from its second run.
+      # of its 8 categories per run.  The 3h30m window holds 3 or 4 hourly
+      # runs: one station is 21-28 (35 with a catch-up run), two are 42-56.
+      # Above 60 means a third station (63-84), held for an hour so a blip
+      # that clears within a run does not page.  The review's 15-station
+      # outage (105 per run) crosses 60 on its first run and pages an hour
+      # later.  Not [3h]: a window of exactly three periods holds only two
+      # runs for a moment each hour (a run lands just after the edge), and
+      # one such evaluation resets `for`, so three stations never paged.  The
+      # first run after a Dagster restart is not counted (new series, see
+      # above); a sustained outage is caught from its second run.
       - alert: KorTravelWeatherValuesMissingHigh
         expr: |
           sum by (provider, dataset) (
-            increase(ktw_sync_values_skipped_total{reason="missing"}[3h])
+            increase(ktw_sync_values_skipped_total{reason="missing"}[3h30m])
           ) > 60
         for: 1h
         labels:
           severity: warning
         annotations:
           summary: "KMA values are missing beyond one routine station outage"
-          description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped more than 60 Missing-sentinel values over 3h for an hour (one offline station drops about 21). Runs stay success until ~10% of a run is missing; check which stations or grids are blank."
+          description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped more than 60 Missing-sentinel values over 3h30m for an hour (one offline station drops 21-28). Runs stay success until ~10% of a run is missing; check which stations or grids are blank."
