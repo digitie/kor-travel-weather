@@ -44,6 +44,10 @@ KMA_ULTRA_SHORT_NOWCAST = "kma_ultra_short_nowcast"
 KMA_ULTRA_SHORT_FORECAST = "kma_ultra_short_forecast"
 KMA_SHORT_FORECAST = "kma_short_forecast"
 
+# 누적 수집량 대신 batch + 한 location의 응답만 유지한다.
+KMA_STAGE_VALUES = 5_000
+KMA_STAGE_SOURCES = 25
+
 #: The three grid-based datasets ``stage_grid`` can fetch per call. Every
 #: caller that does not name a subset gets all three, matching the original
 #: bundled behavior; a caller building one job per dataset (see
@@ -974,19 +978,37 @@ async def _stage_and_publish_weather(
         mid_limit = max_mid_groups if max_mid_groups is not None else max_grids
         if len(mid_groups) > mid_limit:
             raise ValueError(
-                f"중기예보 지역 조합 수가 상한을 초과했습니다: "
-                f"{len(mid_groups)} > {mid_limit}"
+                f"중기예보 지역 조합 수가 상한을 초과했습니다: {len(mid_groups)} > {mid_limit}"
             )
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
         alert_sources: list[dict[str, Any]] = []
         alert_values: list[WeatherValue] = []
         response_rows_total = 0
+        normalized_values_total = 0
         heartbeat = getattr(repository, "heartbeat_sync_run", None)
 
         def keep_alive() -> None:
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+
+        async def flush_grid_batch() -> None:
+            nonlocal published_values
+            for chunk_sources, chunk in chunk_publications(
+                sources,
+                values,
+                max_locations=GRID_PUBLISH_LOCATIONS,
+                max_values=GRID_PUBLISH_VALUES,
+            ):
+                keep_alive()
+                published_values += await asyncio.to_thread(
+                    repository.ingest_batch, source_records=chunk_sources, values=chunk
+                )
+            empty = uncited_sources(sources, values)
+            if empty:
+                await asyncio.to_thread(repository.ingest_batch, source_records=empty, values=[])
+            sources.clear()
+            values.clear()
 
         async def stage_and_append(
             target: WeatherTarget,
@@ -995,10 +1017,12 @@ async def _stage_and_publish_weather(
             include_mid_for_group: bool,
             source_entity_id: str,
         ) -> None:
-            nonlocal response_rows_total
+            nonlocal response_rows_total, normalized_values_total
+            if len(sources) >= KMA_STAGE_SOURCES:
+                await flush_grid_batch()
             keep_alive()
             remaining_rows = max_response_rows - response_rows_total
-            remaining_values = max_values - len(values)
+            remaining_values = max_values - normalized_values_total
             if remaining_rows <= 0:
                 raise ValueError("provider response row 예산이 소진되었습니다.")
             if remaining_values < len(group_targets):
@@ -1033,17 +1057,25 @@ async def _stage_and_publish_weather(
                 # sharing its grid/region. Append one fact at a time so the
                 # aggregate cap is enforced before another object is retained.
                 for target_row in group_targets:
+                    # 이전 target에서 flush한 경우 현재 response의 lineage를 다시 넣는다.
+                    if not any(
+                        source["source_record_key"] == response.source_record["source_record_key"]
+                        for source in sources
+                    ):
+                        sources.append({**response.source_record, "run_id": run.run_id})
                     for value in response.values:
-                        if len(values) >= max_values:
+                        if normalized_values_total >= max_values:
                             raise ValueError(
-                                f"normalized fact 수가 상한을 초과했습니다: "
-                                f">= {max_values}"
+                                f"normalized fact 수가 상한을 초과했습니다: >= {max_values}"
                             )
                         values.append(
                             value.model_copy(
                                 update={"location_id": target_row.location.location_id}
                             )
                         )
+                        normalized_values_total += 1
+                    if len(values) >= KMA_STAGE_VALUES:
+                        await flush_grid_batch()
             keep_alive()
 
         # Grid requests are deduplicated first; each staged response is
@@ -1084,6 +1116,7 @@ async def _stage_and_publish_weather(
                 keep_alive()
                 alert_to = kst_now()
                 alert_from = alert_to - timedelta(days=3)
+
                 def fetch_warnings(
                     station_id: str = station,
                     from_at: datetime = alert_from,
@@ -1138,7 +1171,7 @@ async def _stage_and_publish_weather(
                     for target in station_targets:
                         if not _warning_matches_target(item, target):
                             continue
-                        if len(values) + len(alert_values) >= max_values:
+                        if normalized_values_total + len(alert_values) >= max_values:
                             raise ValueError("normalized fact 수가 상한을 초과했습니다.")
                         alert_values.append(
                             template[0].model_copy(
@@ -1158,11 +1191,9 @@ async def _stage_and_publish_weather(
         # hour on 2026-10-01, a short-forecast run for 4h03m on 2026-10-02,
         # with every other writer queued behind them.
         #
-        # Nothing is published until every response was fetched and
-        # validated above, so a provider failure still publishes nothing.
-        # What chunking gives up is all-or-nothing against a failure *during*
-        # publish (the database, or a lost lease): the chunks before it stay
-        # published and the run is marked failed with what it loaded.  Each
+        # 메모리 상한에 도달한 grid batch는 수집 도중에 게시한다. 이후 provider/DB
+        # 실패 시 이미 commit된 fact는 유지하며 다음 실행이 unique key로 멱등 재수집한다.
+        # Each
         # published chunk is every fact of whole responses for its locations,
         # and the next run replays the rest (published facts are an
         # idempotent no-op).  Every chunk carries the source records its facts

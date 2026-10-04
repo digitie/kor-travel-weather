@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 from collections.abc import Iterable
 from typing import Any
+
+from kortravelcommon.deadline import call_with_deadline
 
 from kortravelweather.metrics import provider_request
 from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
@@ -15,14 +16,16 @@ from kortravelweather.repository import WeatherRepository
 from .chunked_publish import chunk_publications, uncited_sources
 
 #: Normalized values held in memory before a partial publish releases them.
-#: Sized so one batch stays in the low hundreds of MB even for the widest
-#: dataset (open_meteo's forecast yields ~1,350 values per location, so this is
-#: roughly 37 locations).  This bounds memory only: a staged batch publishes in
+#: 5,000개에서 게시하여 수집 결과를 전체 실행 동안 누적하지 않는다.
+#: 한 location의 provider 응답은 분리하지 않으므로 실제 peak는 batch + 한 응답이다.
+#: This bounds memory only: a staged batch publishes in
 #: ``chunked_publish`` location chunks, each its own short transaction.  One
 #: 50,000-fact transaction held its ~37 locations' locks for as long as it took
 #: on a 37 GB fact table, and a KMA chunk queued behind it now gives up after
 #: ``INGEST_LOCK_ATTEMPTS`` instead of waiting.
-_PUBLISH_BATCH_VALUES = 50_000
+_PUBLISH_BATCH_VALUES = 5_000
+_PUBLISH_BATCH_SOURCES = 25
+_PUBLISH_BATCH_PAYLOAD_BYTES = 10_000_000
 
 
 def _fetch_with_deadline(
@@ -48,29 +51,10 @@ def _fetch_with_deadline(
     if timeout_seconds is None:
         return provider.fetch(target, dataset_key=dataset_key)
 
-    outcome: dict[str, Any] = {}
-
-    def _call() -> None:
-        try:
-            outcome["value"] = provider.fetch(target, dataset_key=dataset_key)
-        except BaseException as exc:  # re-raised on the calling thread below
-            outcome["error"] = exc
-
-    worker = threading.Thread(
-        target=_call,
-        name=f"fetch-{provider.provider_key}-{dataset_key}",
-        daemon=True,
+    return call_with_deadline(
+        lambda: provider.fetch(target, dataset_key=dataset_key),
+        timeout_seconds=timeout_seconds,
     )
-    worker.start()
-    worker.join(timeout_seconds)
-    if worker.is_alive():
-        raise TimeoutError(
-            f"provider fetch가 {timeout_seconds:.0f}초 안에 끝나지 않았습니다: "
-            f"{provider.provider_key}/{dataset_key}/{target.location_id}"
-        )
-    if "error" in outcome:
-        raise outcome["error"]
-    return outcome["value"]
 
 
 def run_external_weather_sync(
@@ -123,6 +107,8 @@ def run_external_weather_sync(
     #: this batching exists to avoid.
     source_record_keys: list[str] = []
     published_values = 0
+    normalized_values_total = 0
+    staged_payload_bytes = 0
     sent_at: float | None = None
     try:
         for target in target_list:
@@ -166,7 +152,7 @@ def run_external_weather_sync(
             # The cap counts what the run has produced in total, published
             # batches included; counting only the pending batch would let an
             # unbounded sweep through one flush at a time.
-            if published_values + len(staged_values) + len(response.values) > max_values:
+            if normalized_values_total + len(response.values) > max_values:
                 raise ValueError("external weather normalized value 수가 상한을 초과했습니다.")
             if any(
                 value.provider != provider.provider_key or value.dataset_key != dataset_key
@@ -175,10 +161,16 @@ def run_external_weather_sync(
                 raise ValueError("provider 응답 fact의 provider/dataset 계약이 요청과 다릅니다.")
             staged_sources.append({**response.source_record, "run_id": run.run_id})
             staged_values.extend(response.values)
+            normalized_values_total += len(response.values)
+            staged_payload_bytes += payload_size
             source_record_keys.append(response.source_record["source_record_key"])
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
-            if publish_batch_values > 0 and len(staged_values) >= publish_batch_values:
+            if (
+                (publish_batch_values > 0 and len(staged_values) >= publish_batch_values)
+                or len(staged_sources) >= _PUBLISH_BATCH_SOURCES
+                or staged_payload_bytes >= _PUBLISH_BATCH_PAYLOAD_BYTES
+            ):
                 for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
                     published_values += repository.ingest_batch(
                         source_records=chunk_sources, values=chunk
@@ -188,6 +180,7 @@ def run_external_weather_sync(
                     repository.ingest_batch(source_records=empty, values=[])
                 staged_sources = []
                 staged_values = []
+                staged_payload_bytes = 0
         for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
             published_values += repository.ingest_batch(
                 source_records=chunk_sources, values=chunk

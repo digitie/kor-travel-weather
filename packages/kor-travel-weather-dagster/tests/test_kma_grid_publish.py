@@ -98,6 +98,56 @@ class _Client:
         )
 
 
+def test_grid_batches_publish_before_fetching_the_whole_sweep(monkeypatch):
+    repository = _Repository()
+    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 3)
+    calls = 0
+
+    class Client(_Client):
+        async def now(self, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                assert repository._committed == 3
+            return await super().now(**kwargs)
+
+    result = run_weather_sync(
+        repository=repository,
+        client=Client(),
+        targets=_targets(3, 2),
+        base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+    )
+    assert result["values_loaded"] == 6
+
+
+def test_grid_budget_does_not_reset_after_flushing_memory(monkeypatch):
+    repository = _Repository()
+    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 3)
+
+    class Client(_Client):
+        async def now(self, **kwargs):
+            snapshot = await super().now(**kwargs)
+            snapshot.raw["items"].append(
+                {
+                    **snapshot.raw["items"][0],
+                    "category": "REH",
+                    "obsrValue": "50",
+                }
+            )
+            return snapshot
+
+    with pytest.raises(ValueError, match="상한"):
+        run_weather_sync(
+            repository=repository,
+            client=Client(),
+            targets=_targets(3, 2),
+            max_values=7,
+            base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+        )
+    assert repository.runs[-1].status == "failed"
+    assert repository.runs[-1].values_loaded == 4
+
+
 def _targets(grids: int, per_grid: int) -> list[WeatherTarget]:
     return [
         WeatherTarget(
@@ -213,9 +263,11 @@ def test_a_lease_lost_between_kma_chunks_against_the_real_repository(monkeypatch
         )
     assert calls == [1]
     with repository.engine.connect() as connection:
-        located = connection.execute(
-            text("SELECT DISTINCT location_id FROM weather_values")
-        ).scalars().all()
+        located = (
+            connection.execute(text("SELECT DISTINCT location_id FROM weather_values"))
+            .scalars()
+            .all()
+        )
     assert located == [targets[0].location.location_id]
     run = repository.list_sync_runs(limit=1)[0]
     assert run.status == "failed" and run.error == "reaped"
@@ -228,9 +280,7 @@ def test_publishes_run_off_the_event_loop(monkeypatch) -> None:
     repository = _Repository()
     _run(repository, monkeypatch)
     assert repository.transactions
-    assert all(
-        t["thread"] is not threading.main_thread() for t in repository.transactions
-    )
+    assert all(t["thread"] is not threading.main_thread() for t in repository.transactions)
 
 
 def test_the_default_chunk_bounds_the_locks_a_transaction_holds() -> None:

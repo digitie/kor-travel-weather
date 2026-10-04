@@ -65,27 +65,29 @@ def chunk_publications(
     *,
     max_locations: int | None = None,
     max_values: int | None = None,
-) -> list[tuple[list[Mapping[str, Any]], list[WeatherValue]]]:
+) -> Iterator[tuple[list[Mapping[str, Any]], list[WeatherValue]]]:
     """Pair every location chunk with exactly the source records its facts cite.
 
-    Built whole, up front, so a chunk citing no source is refused before
-    anything publishes.  Holds references only; the facts are not copied.
+    모든 source 인용을 먼저 검사하고 chunk는 하나씩 생성해 반환한다.
+    호출자가 사용하지 않는 다음 chunk의 목록까지 메모리에 유지하지 않는다.
     """
     by_key: dict[str, list[Mapping[str, Any]]] = {}
     for source in sources:
         by_key.setdefault(str(source["source_record_key"]), []).append(source)
-    publications: list[tuple[list[Mapping[str, Any]], list[WeatherValue]]] = []
-    for chunk in location_chunks(
-        values,
-        max_locations=PUBLISH_CHUNK_LOCATIONS if max_locations is None else max_locations,
-        max_values=PUBLISH_CHUNK_VALUES if max_values is None else max_values,
-    ):
-        cited = dict.fromkeys(str(value.source_record_key) for value in chunk)
-        records = [record for key in cited for record in by_key.get(key, [])]
-        if not records:
-            raise ValueError("publish chunk의 fact가 이 run의 source record를 인용하지 않습니다.")
-        publications.append((records, chunk))
-    return publications
+    if any(str(value.source_record_key) not in by_key for value in values):
+        raise ValueError("publish chunk의 fact가 이 run의 source record를 인용하지 않습니다.")
+
+    def chunks():
+        for chunk in location_chunks(
+            values,
+            max_locations=PUBLISH_CHUNK_LOCATIONS if max_locations is None else max_locations,
+            max_values=PUBLISH_CHUNK_VALUES if max_values is None else max_values,
+        ):
+            cited = dict.fromkeys(str(value.source_record_key) for value in chunk)
+            records = [record for key in cited for record in by_key.get(key, [])]
+            yield records, chunk
+
+    return chunks()
 
 
 def uncited_sources(
