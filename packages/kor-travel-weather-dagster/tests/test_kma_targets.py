@@ -375,6 +375,47 @@ def test_nowcast_asset_publishes_filled_stations_and_records_their_grid() -> Non
     assert {value.location_id for value in repository.values} == set(repository.ensured)
 
 
+class _MissingStationNowcastClient(_NowcastClient):
+    """The first grid answers like prod grid (35, 106) did on 2026-10-05 04:00 KST."""
+
+    async def now(self, *, nx, ny):
+        first = not self.grids
+        snapshot = await super().now(nx=nx, ny=ny)
+        if first:
+            sentinels = {
+                "PTY": "0",
+                "REH": "-998",
+                "RN1": "-998.9",
+                "T1H": "-999",
+                "UUU": "-998.9",
+                "VEC": "-998",
+                "VVV": "-998.9",
+                "WSD": "-998.9",
+            }
+            snapshot.raw["items"] = [
+                {**snapshot.raw["items"][0], "category": category, "obsrValue": value}
+                for category, value in sentinels.items()
+            ]
+        return snapshot
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_one_station_reporting_missing_does_not_fail_the_nowcast_run() -> None:
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient()
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["status"] == "success"
+    assert len(client.grids) == 5
+    # The other four grids still publish; the missing grid keeps only PTY.
+    assert sorted(value.metric_key for value in repository.values) == ["PTY"] + ["T1H"] * 4
+    assert all(value.value_number is not None for value in repository.values)
+    assert all(abs(value.value_number) < 900 for value in repository.values)
+    assert result["values_skipped"] == 7
+    assert result["values_skipped_by_reason"]["kma_ultra_short_nowcast:missing:REH"] == 1
+
+
 @pytest.mark.usefixtures("_station_only_env")
 def test_alerts_asset_runs_on_a_station_only_catalog() -> None:
     repository = _CatalogRepository(_station_catalog())
