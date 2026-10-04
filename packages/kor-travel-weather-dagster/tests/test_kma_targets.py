@@ -441,6 +441,20 @@ def test_one_station_reporting_missing_does_not_fail_the_nowcast_run() -> None:
 
 
 @pytest.mark.usefixtures("_station_only_env")
+def test_a_station_whose_every_category_is_missing_does_not_fail_the_run() -> None:
+    # Same outage, but PTY is a sentinel too: the grid yields no fact at all.
+    # That is a skipped grid, not an empty KMA response.
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(answer={**_OFFLINE_STATION, "PTY": "-998"})
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["status"] == "success"
+    assert result["values_skipped"] == 8
+    assert sorted(value.metric_key for value in repository.values) == ["T1H"] * 4
+
+
+@pytest.mark.usefixtures("_station_only_env")
 def test_many_missing_stations_finish_the_run_partial() -> None:
     repository = _CatalogRepository(_station_catalog())
     client = _MissingStationNowcastClient(bad_grids=3)
