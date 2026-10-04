@@ -12,6 +12,7 @@ passed validation, so they would have been stored as -999 °C and -998.9 m/s.
 
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from decimal import Decimal
 
@@ -137,7 +138,12 @@ def test_an_impossible_non_sentinel_value_skips_only_that_metric() -> None:
     )
 
 
-def test_skips_are_logged_even_without_a_counter(caplog: pytest.LogCaptureFixture) -> None:
+def test_skips_are_logged_even_without_a_counter(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Alembic's fileConfig (run by migration tests earlier in the session)
+    # disables loggers that already exist; this test is about our call only.
+    monkeypatch.setattr(logging.getLogger("kortravelweather.providers.kma"), "disabled", False)
     with caplog.at_level("WARNING", logger="kortravelweather.providers.kma"):
         values = ultra_short_nowcast_to_weather_values(
             [_nowcast("REH", "-998"), _nowcast("REH", "105")], location_id="x"
