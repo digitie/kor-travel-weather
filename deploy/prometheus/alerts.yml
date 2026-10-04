@@ -59,3 +59,48 @@ groups:
         annotations:
           summary: "A weather sync run failed or was partial"
           description: "Inspect the sync-run catalog and provider coverage before the next hourly run."
+
+      # A run finishes partial (KorTravelWeatherSyncFailed) on any invalid
+      # value, so this rule adds the dataset name rather than a new page.  It
+      # reads every reason but missing, as the run does (`other` is invalid).
+      # The series is created by its first increment, which increase() reads
+      # as 0, so the `unless ... offset 1h` branch catches a series that did
+      # not exist an hour ago.  It can also fire once if the Dagster target
+      # was unscraped an hour ago (KorTravelWeatherScrapeDown covers that).
+      - alert: KorTravelWeatherValuesInvalid
+        expr: |
+          sum by (provider, dataset) (
+            increase(ktw_sync_values_skipped_total{reason!="missing"}[1h])
+          ) > 0
+          or
+          sum by (provider, dataset) (
+            ktw_sync_values_skipped_total{reason!="missing"}
+            unless ktw_sync_values_skipped_total{reason!="missing"} offset 1h
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: "KMA returned out-of-range or non-finite values"
+          description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped values that are neither valid nor a Missing sentinel in the last hour. The run finishes partial; this names the dataset. Check the provider response contract."
+
+      # Missing sentinels only make a run partial past ~10% of its values
+      # (~137 of ~1,368 per hourly nowcast run, 17-34 offline stations), so a
+      # smaller outage stays success and silent.  One offline station drops 7
+      # of its 8 categories per run: 21 per 3h window (3 hourly runs), 42 for
+      # two stations, still 56 if a catch-up run lands in the window.  Above
+      # 60 means a third station, held for an hour (so a blip that clears in
+      # a run does not page).  The review's 15-station outage (105 per run)
+      # crosses 60 on its first run and pages an hour later.  The first run
+      # after a Dagster restart is not counted (new series, see above); a
+      # sustained outage is caught from its second run.
+      - alert: KorTravelWeatherValuesMissingHigh
+        expr: |
+          sum by (provider, dataset) (
+            increase(ktw_sync_values_skipped_total{reason="missing"}[3h])
+          ) > 60
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "KMA values are missing beyond one routine station outage"
+          description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped more than 60 Missing-sentinel values over 3h for an hour (one offline station drops about 21). Runs stay success until ~10% of a run is missing; check which stations or grids are blank."

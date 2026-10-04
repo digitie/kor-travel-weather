@@ -54,7 +54,7 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_sync_{requests,source_records,values}_total`
 - `ktw_sync_stale_recovered_total`
 - `ktw_sync_locations_skipped_total{provider,dataset}` — lock 경합으로 다음 run에 맡긴 location 수(현재 KMA 특보)
-- `ktw_sync_values_skipped_total{provider,dataset,reason}` — KMA 응답에서 버린 값 수. `reason=missing`은 Missing 센티널(|v| ≥ 900), `invalid`는 범위 밖/NaN. invalid가 하나라도 있거나, missing이 16건 이상이면서 시도한 값의 10%를 넘으면 run이 `partial`(KorTravelWeatherSyncFailed), 모든 값이 버려지면 `failed`. prod 규모(초단기실황 run당 약 1,368값)에서는 10% 비율이 먼저 걸린다: 약 137건, 즉 꺼진 측정소 대략 17~34곳(측정소마다 잃는 category 수에 따라)부터 paging한다. 16건 하한은 작은 run에서 측정소 하나의 결측이 paging하지 않게만 한다. 빈 값(공백)도 missing으로 센다
+- `ktw_sync_values_skipped_total{provider,dataset,reason}` — KMA 응답에서 버린 값 수. `reason=missing`은 Missing 센티널(|v| ≥ 900), `invalid`는 범위 밖/NaN. invalid가 하나라도 있거나, missing이 16건 이상이면서 시도한 값의 10%를 넘으면 run이 `partial`(KorTravelWeatherSyncFailed), 모든 값이 버려지면 `failed`. prod 규모(초단기실황 run당 약 1,368값)에서는 10% 비율이 먼저 걸린다: 약 137건, 즉 꺼진 측정소 대략 17~34곳(측정소마다 잃는 category 수에 따라)부터 paging한다. 16건 하한은 작은 run에서 측정소 하나의 결측이 paging하지 않게만 한다. 빈 값(공백)도 missing으로 센다. 그 아래 구간은 지표 자체의 규칙이 맡는다: `KorTravelWeatherValuesMissingHigh`는 dataset별 3시간 missing 증가가 60을 넘는 상태가 1시간 이어지면 울린다(꺼진 측정소 하나는 run당 7건 = 3시간 21건, 둘이면 42건이라 조용하다. 셋부터, 그리고 리뷰가 지적한 15곳 결측(run당 105건, 10% 미만이라 run은 `success`)은 첫 run 1시간 뒤 울린다). `KorTravelWeatherValuesInvalid`는 지난 1시간에 missing이 아닌 사유(`invalid`·`other`)가 하나라도 늘면 바로 울린다 — run도 `partial`이 되므로 dataset 이름을 붙여 주는 역할이다. series는 첫 증가 때 생기고 `increase()`는 그 첫 값을 0으로 읽으므로, invalid 규칙은 1시간 전에 없던 series를 `unless ... offset 1h`로 따로 잡는다. missing 규칙은 Dagster 재시작 뒤 첫 run을 세지 못하고 둘째 run부터 센다. 동작은 `tests/prometheus/alerts_test.yml`(CI `promtool test rules`)이 고정한다
 - `ktw_metrics_errors_total{operation}`
 - `ktw_metrics_server_up`
 - `ktw_metrics_server_bind_failures_total`
@@ -62,6 +62,35 @@ rule·알람을 새 이름으로 함께 전환한다.
 라벨에는 location id, run/source key, 좌표, URL, credential이 들어가지 않는다. provider와
 dataset은 현재 catalog allow-list 밖의 값이 `other`로 축약된다. `/metrics` 자체 요청은
 HTTP request counter에서 제외해 scrape 주기가 트래픽을 오염시키지 않도록 한다.
+
+## 규칙 변경 배포 (n150)
+
+운영 weather Prometheus는 Manager compose의 `kor-travel-weather-prometheus`(host network
+`:14104`)이고, Manager #452 이후 weather 체크아웃(`/home/digitie/kor-travel-weather`)의
+`deploy/prometheus` 디렉터리를 `/etc/prometheus/weather-rules`로 읽기 전용 bind한다.
+Prometheus는 규칙을 기동·reload 때만 읽으므로 **체크아웃 갱신 + SIGHUP**이 배포의 전부다.
+이미지·컨테이너 재생성이나 weather API/Dagster 재배포는 필요 없다. Manager의 weather
+`ensure`는 init step `weather-prometheus-rules-reload`로 SIGHUP을 자동으로 보낸다. 규칙만
+바뀐 머지는 다음처럼 손으로 반영한다(`--web.enable-lifecycle`은 꺼져 있어 `/-/reload`는 없다).
+
+```bash
+# PR이 main에 머지된 뒤, n150에서
+git -C /home/digitie/kor-travel-weather fetch origin
+git -C /home/digitie/kor-travel-weather merge --ff-only origin/main
+# 컨테이너가 보는 파일이 체크아웃과 같은지
+md5sum /home/digitie/kor-travel-weather/deploy/prometheus/alerts.yml
+docker exec kor-travel-weather-prometheus md5sum /etc/prometheus/weather-rules/alerts.yml
+docker kill --signal=SIGHUP kor-travel-weather-prometheus
+# reload 성공(reloadConfigSuccess=true, lastConfigTime 갱신)과 새 규칙 확인
+curl -fsS http://127.0.0.1:14104/api/v1/status/runtimeinfo \
+  | jq '.data | {reloadConfigSuccess, lastConfigTime}'
+curl -fsS http://127.0.0.1:14104/api/v1/rules \
+  | jq -r '.data.groups[].rules[].name'
+```
+
+규칙 파일이 깨졌으면 Prometheus는 옛 규칙을 지키고 `reloadConfigSuccess=false`를 낸다
+(로그: `docker logs kor-travel-weather-prometheus`). CI의 `promtool check rules`·`test rules`가
+머지 전에 이것을 막는다. 되돌리기는 체크아웃을 이전 커밋으로 돌리고 같은 SIGHUP이다.
 
 ## 운영 확인
 
