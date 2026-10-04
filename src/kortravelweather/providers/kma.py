@@ -243,9 +243,12 @@ def _derived_source_key(dataset_key: str, location_id: str, payload: Mapping[str
     return "sr_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
 
 
-def _is_missing(number: Decimal | None) -> bool:
+def _is_missing(number: Decimal | None, text: str | None) -> bool:
+    """A KMA Missing sentinel, or no value at all (empty/whitespace)."""
+    if number is None:
+        return text is None
     # NaN/Infinity are not sentinels; value_range_error reports them invalid.
-    return number is not None and number.is_finite() and abs(number) >= KMA_MISSING_ABS_THRESHOLD
+    return number.is_finite() and abs(number) >= KMA_MISSING_ABS_THRESHOLD
 
 
 def _skip(
@@ -316,7 +319,7 @@ def _forecast_value(
     issued = _parse_datetime(row.base_date, row.base_time)
     valid = _parse_datetime(row.fcst_date, row.fcst_time)
     number, text = _value(row.fcst_value, row.category)
-    if _is_missing(number):
+    if _is_missing(number, text):
         _skip(
             skipped, dataset_key=dataset_key, reason="missing", row=row, raw_value=row.fcst_value
         )
@@ -372,7 +375,7 @@ def _nowcast_value(
         raise ValueError(f"지원하지 않는 KMA category: {row.category}")
     observed = _parse_datetime(row.base_date, row.base_time)
     number, text = _value(row.obsr_value, row.category)
-    if _is_missing(number):
+    if _is_missing(number, text):
         _skip(
             skipped,
             dataset_key="kma_ultra_short_nowcast",

@@ -92,13 +92,15 @@ ALERT_PARTIAL_SKIP_SHARE = 0.10
 ALERT_PARTIAL_MIN_SKIPPED = 5
 
 #: Grid values dropped as KMA Missing sentinels finish a run ``partial`` once
-#: there are at least ``VALUE_PARTIAL_MIN_SKIPPED`` of them and they exceed
-#: ``VALUE_PARTIAL_SKIP_SHARE`` of the values attempted.  One offline station
-#: costs at most one nowcast response (8 categories, 7 sentinels on
-#: 2026-10-05), so the minimum is two stations' worth: a single routine outage
-#: stays green, a wider one pages.  Any out-of-range value (``invalid``) is a
-#: contract surprise and always finishes ``partial``; a run whose every value
-#: was skipped fails.
+#: there are at least ``VALUE_PARTIAL_MIN_SKIPPED`` of them *and* they exceed
+#: ``VALUE_PARTIAL_SKIP_SHARE`` of the values attempted.  At prod size the
+#: share is what binds: a nowcast run attempts ~1,368 values (171 grids x 8
+#: categories), so it pages past ~137 skips -- roughly 17 to 34 offline
+#: stations, depending on how many categories each loses (7 of 8 on
+#: 2026-10-05).  The minimum (two stations' worth) only matters for small
+#: runs, where it keeps one routine outage from paging.  Any out-of-range
+#: value (``invalid``) is a contract surprise and always finishes ``partial``;
+#: a run whose every value was skipped fails.
 VALUE_PARTIAL_SKIP_SHARE = 0.10
 VALUE_PARTIAL_MIN_SKIPPED = 16
 
