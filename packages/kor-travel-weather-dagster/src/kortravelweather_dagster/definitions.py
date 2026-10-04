@@ -425,6 +425,13 @@ def _make_kma_dataset_asset(
                 retries=0,
                 sync_run=run,
             )
+            if result.get("values_skipped"):
+                # KMA reports a station without an observation as Missing
+                # sentinels (|v| >= 900); those metrics are skipped, not failed.
+                context.log.warning(
+                    f"KMA 값 {result['values_skipped']}건을 건너뜀(Missing 센티널/범위 밖): "
+                    f"{result['values_skipped_by_reason']}"
+                )
             if result.get("alert_locations_skipped"):
                 # Also in the run's own log: the module logger reaches only
                 # the compute log's stderr.

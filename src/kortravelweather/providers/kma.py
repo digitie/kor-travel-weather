@@ -10,15 +10,35 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
-from kortravelweather.models import KST, ForecastStyle, TimelineBucket, WeatherValue
+from kortravelweather.models import (
+    KST,
+    ForecastStyle,
+    TimelineBucket,
+    WeatherValue,
+    value_range_error,
+)
+
+logger = logging.getLogger(__name__)
+
+#: With a run counter, only the first this-many skips are logged one by one;
+#: the run logs the per-reason totals once at the end.
+KMA_SKIP_LOG_DETAILS = 20
 
 KMA_PROVIDER_NAME = "python-kma-api"
+
+#: KMA 단기예보 조회서비스(초단기실황/초단기예보/단기예보) 활용가이드: +900 이상,
+#: -900 이하 값은 Missing(관측장비 없음·결측)이다. 실제 응답은 -998, -998.9, -999
+#: (2026-10-05 격자 35,106). 측정값이 아니므로 그 metric만 건너뛴다 -- 범위 검사를
+#: 통과해 버리는 T1H/UUU/VVV(-999 °C 등)도 같다.
+KMA_MISSING_ABS_THRESHOLD = Decimal("900")
 
 KMA_METRIC_UNITS: dict[str, str] = {
     "T1H": "deg_c",
@@ -223,6 +243,66 @@ def _derived_source_key(dataset_key: str, location_id: str, payload: Mapping[str
     return "sr_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
 
 
+def _is_missing(number: Decimal | None, text: str | None) -> bool:
+    """A KMA Missing sentinel, or no value at all (empty/whitespace)."""
+    if number is None:
+        return text is None
+    # NaN/Infinity are not sentinels; value_range_error reports them invalid.
+    return number.is_finite() and abs(number) >= KMA_MISSING_ABS_THRESHOLD
+
+
+def _skip(
+    skipped: Counter[str] | None,
+    *,
+    dataset_key: str,
+    reason: str,
+    row: KmaForecastLike | KmaForecastRow | KmaNowcastLike | KmaNowcastRow,
+    raw_value: str,
+    detail: str = "",
+) -> None:
+    """Count and log one skipped metric; the rest of the response still publishes."""
+    if skipped is not None:
+        skipped[f"{dataset_key}:{reason}:{row.category}"] += 1
+        if skipped.total() > KMA_SKIP_LOG_DETAILS:
+            return
+    logger.warning(
+        "%s: skipped %s %s value %r at grid (%s,%s) base %s %s%s",
+        dataset_key,
+        reason,
+        row.category,
+        raw_value,
+        row.nx,
+        row.ny,
+        row.base_date,
+        row.base_time,
+        f": {detail}" if detail else "",
+    )
+
+
+def _validated(
+    fields: dict[str, Any],
+    skipped: Counter[str] | None,
+    *,
+    dataset_key: str,
+    row: KmaForecastLike | KmaForecastRow | KmaNowcastLike | KmaNowcastRow,
+    raw_value: str,
+) -> WeatherValue | None:
+    """Build one fact; an impossible value (out of range, NaN/Infinity) skips only
+    this metric.  Any other validation error is a broken row and still raises."""
+    error = value_range_error(fields["metric_key"], fields["value_number"])
+    if error is not None:
+        _skip(
+            skipped,
+            dataset_key=dataset_key,
+            reason="invalid",
+            row=row,
+            raw_value=raw_value,
+            detail=error,
+        )
+        return None
+    return WeatherValue(**fields)
+
+
 def _forecast_value(
     row: KmaForecastLike | KmaForecastRow,
     *,
@@ -232,12 +312,18 @@ def _forecast_value(
     bucket: TimelineBucket | None,
     source_record_key: str | None = None,
     known_at: datetime | None = None,
-) -> WeatherValue:
+    skipped: Counter[str] | None = None,
+) -> WeatherValue | None:
     if row.category not in KMA_METRIC_UNITS:
         raise ValueError(f"지원하지 않는 KMA category: {row.category}")
     issued = _parse_datetime(row.base_date, row.base_time)
     valid = _parse_datetime(row.fcst_date, row.fcst_time)
     number, text = _value(row.fcst_value, row.category)
+    if _is_missing(number, text):
+        _skip(
+            skipped, dataset_key=dataset_key, reason="missing", row=row, raw_value=row.fcst_value
+        )
+        return None
     payload = {
         "base_date": row.base_date,
         "base_time": row.base_time,
@@ -249,25 +335,31 @@ def _forecast_value(
         "fcst_value": row.fcst_value,
     }
     source_key = source_record_key or _derived_source_key(dataset_key, location_id, payload)
-    return WeatherValue(
-        location_id=location_id,
-        provider=KMA_PROVIDER_NAME,
+    return _validated(
+        {
+            "location_id": location_id,
+            "provider": KMA_PROVIDER_NAME,
+            "dataset_key": dataset_key,
+            "weather_domain": dataset_key,
+            "forecast_style": style,
+            "timeline_bucket": bucket,
+            "metric_key": row.category,
+            "source_metric_key": row.category,
+            "metric_name": KMA_METRIC_NAMES.get(row.category),
+            "unit": KMA_METRIC_UNITS.get(row.category),
+            "issued_at": issued,
+            "valid_at": valid,
+            "target_at": valid,
+            "known_at": known_at or datetime.now(KST),
+            "value_number": number,
+            "value_text": text,
+            "payload": payload,
+            "source_record_key": source_key,
+        },
+        skipped,
         dataset_key=dataset_key,
-        weather_domain=dataset_key,
-        forecast_style=style,
-        timeline_bucket=bucket,
-        metric_key=row.category,
-        source_metric_key=row.category,
-        metric_name=KMA_METRIC_NAMES.get(row.category),
-        unit=KMA_METRIC_UNITS.get(row.category),
-        issued_at=issued,
-        valid_at=valid,
-        target_at=valid,
-        known_at=known_at or datetime.now(KST),
-        value_number=number,
-        value_text=text,
-        payload=payload,
-        source_record_key=source_key,
+        row=row,
+        raw_value=row.fcst_value,
     )
 
 
@@ -277,11 +369,21 @@ def _nowcast_value(
     location_id: str,
     source_record_key: str | None = None,
     known_at: datetime | None = None,
-) -> WeatherValue:
+    skipped: Counter[str] | None = None,
+) -> WeatherValue | None:
     if row.category not in KMA_METRIC_UNITS:
         raise ValueError(f"지원하지 않는 KMA category: {row.category}")
     observed = _parse_datetime(row.base_date, row.base_time)
     number, text = _value(row.obsr_value, row.category)
+    if _is_missing(number, text):
+        _skip(
+            skipped,
+            dataset_key="kma_ultra_short_nowcast",
+            reason="missing",
+            row=row,
+            raw_value=row.obsr_value,
+        )
+        return None
     payload = {
         "base_date": row.base_date,
         "base_time": row.base_time,
@@ -293,24 +395,30 @@ def _nowcast_value(
     source_key = source_record_key or _derived_source_key(
         "kma_ultra_short_nowcast", location_id, payload
     )
-    return WeatherValue(
-        location_id=location_id,
-        provider=KMA_PROVIDER_NAME,
+    return _validated(
+        {
+            "location_id": location_id,
+            "provider": KMA_PROVIDER_NAME,
+            "dataset_key": "kma_ultra_short_nowcast",
+            "weather_domain": "kma_ultra_short_nowcast",
+            "forecast_style": ForecastStyle.NOWCAST,
+            "timeline_bucket": TimelineBucket.ULTRA_SHORT,
+            "metric_key": row.category,
+            "source_metric_key": row.category,
+            "metric_name": KMA_METRIC_NAMES.get(row.category),
+            "unit": KMA_METRIC_UNITS.get(row.category),
+            "observed_at": observed,
+            "target_at": observed,
+            "known_at": known_at or datetime.now(KST),
+            "value_number": number,
+            "value_text": text,
+            "payload": payload,
+            "source_record_key": source_key,
+        },
+        skipped,
         dataset_key="kma_ultra_short_nowcast",
-        weather_domain="kma_ultra_short_nowcast",
-        forecast_style=ForecastStyle.NOWCAST,
-        timeline_bucket=TimelineBucket.ULTRA_SHORT,
-        metric_key=row.category,
-        source_metric_key=row.category,
-        metric_name=KMA_METRIC_NAMES.get(row.category),
-        unit=KMA_METRIC_UNITS.get(row.category),
-        observed_at=observed,
-        target_at=observed,
-        known_at=known_at or datetime.now(KST),
-        value_number=number,
-        value_text=text,
-        payload=payload,
-        source_record_key=source_key,
+        row=row,
+        raw_value=row.obsr_value,
     )
 
 
@@ -326,13 +434,21 @@ def ultra_short_nowcast_to_weather_values(
     location_id: str,
     source_record_key: str | None = None,
     known_at: datetime | None = None,
+    skipped: Counter[str] | None = None,
 ) -> list[WeatherValue]:
-    return [
+    """KMA Missing 센티널(|v| >= 900)과 범위 밖 값은 그 metric만 건너뛰고
+    ``skipped``에 ``"{dataset}:{missing|invalid}:{category}"``로 센다."""
+    values = (
         _nowcast_value(
-            row, location_id=location_id, source_record_key=source_record_key, known_at=known_at
+            row,
+            location_id=location_id,
+            source_record_key=source_record_key,
+            known_at=known_at,
+            skipped=skipped,
         )
         for row in _rows(items, kind="nowcast")
-    ]
+    )
+    return [value for value in values if value is not None]
 
 
 def ultra_short_forecast_to_weather_values(
@@ -341,8 +457,11 @@ def ultra_short_forecast_to_weather_values(
     location_id: str,
     source_record_key: str | None = None,
     known_at: datetime | None = None,
+    skipped: Counter[str] | None = None,
 ) -> list[WeatherValue]:
-    return [
+    """KMA Missing 센티널(|v| >= 900)과 범위 밖 값은 그 metric만 건너뛰고
+    ``skipped``에 ``"{dataset}:{missing|invalid}:{category}"``로 센다."""
+    values = (
         _forecast_value(
             row,
             location_id=location_id,
@@ -351,9 +470,11 @@ def ultra_short_forecast_to_weather_values(
             bucket=TimelineBucket.ULTRA_SHORT,
             source_record_key=source_record_key,
             known_at=known_at,
+            skipped=skipped,
         )
         for row in _rows(items, kind="forecast")
-    ]
+    )
+    return [value for value in values if value is not None]
 
 
 def short_forecast_to_weather_values(
@@ -362,8 +483,11 @@ def short_forecast_to_weather_values(
     location_id: str,
     source_record_key: str | None = None,
     known_at: datetime | None = None,
+    skipped: Counter[str] | None = None,
 ) -> list[WeatherValue]:
-    return [
+    """KMA Missing 센티널(|v| >= 900)과 범위 밖 값은 그 metric만 건너뛰고
+    ``skipped``에 ``"{dataset}:{missing|invalid}:{category}"``로 센다."""
+    values = (
         _forecast_value(
             row,
             location_id=location_id,
@@ -372,9 +496,11 @@ def short_forecast_to_weather_values(
             bucket=TimelineBucket.SHORT,
             source_record_key=source_record_key,
             known_at=known_at,
+            skipped=skipped,
         )
         for row in _rows(items, kind="forecast")
-    ]
+    )
+    return [value for value in values if value is not None]
 
 
 _MID_LAND_PERIODS: tuple[tuple[int, str | None, int, int], ...] = (

@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -16,7 +17,11 @@ from urllib.parse import quote, unquote
 
 from sqlalchemy.exc import OperationalError
 
-from kortravelweather.metrics import observe_sync_locations_skipped, provider_request
+from kortravelweather.metrics import (
+    observe_sync_locations_skipped,
+    observe_sync_values_skipped,
+    provider_request,
+)
 from kortravelweather.models import WeatherLocation, WeatherValue, kst_now
 from kortravelweather.partitions import is_lock_conflict
 from kortravelweather.providers.kma import (
@@ -85,6 +90,19 @@ ALERT_STARVED_RUNS = 3
 #: same minimum decides whether skipping *every* location fails the run.
 ALERT_PARTIAL_SKIP_SHARE = 0.10
 ALERT_PARTIAL_MIN_SKIPPED = 5
+
+#: Grid values dropped as KMA Missing sentinels finish a run ``partial`` once
+#: there are at least ``VALUE_PARTIAL_MIN_SKIPPED`` of them *and* they exceed
+#: ``VALUE_PARTIAL_SKIP_SHARE`` of the values attempted.  At prod size the
+#: share is what binds: a nowcast run attempts ~1,368 values (171 grids x 8
+#: categories), so it pages past ~137 skips -- roughly 17 to 34 offline
+#: stations, depending on how many categories each loses (7 of 8 on
+#: 2026-10-05).  The minimum (two stations' worth) only matters for small
+#: runs, where it keeps one routine outage from paging.  Any out-of-range
+#: value (``invalid``) is a contract surprise and always finishes ``partial``;
+#: a run whose every value was skipped fails.
+VALUE_PARTIAL_SKIP_SHARE = 0.10
+VALUE_PARTIAL_MIN_SKIPPED = 16
 
 #: Skipped location IDs listed in the run's note, sorted and percent-escaped,
 #: up to this many characters (the rest is counted, not listed).  A failed
@@ -534,18 +552,22 @@ async def stage_grid(
     source_entity_id: str | None = None,
     max_response_rows: int | None = None,
     max_normalized_values: int | None = None,
+    skipped: Counter[str] | None = None,
 ) -> list[StagedResponse]:
     """Fetch one grid with bounded row/value materialization.
 
     Provider iterables are consumed only up to the remaining run budget.  Each
     row is normalized independently so a single malformed or fan-out-heavy
     response cannot allocate an unbounded list before the cap is enforced.
+    A KMA Missing sentinel or out-of-range value drops only that metric and is
+    counted in ``skipped``; it no longer aborts the whole run.
     """
     location = target.location
     assert location.nx is not None and location.ny is not None
     fetched = fetched_at or kst_now()
     entity_id = source_entity_id or location.location_id
     staged: list[StagedResponse] = []
+    skipped_before = skipped.total() if skipped is not None else 0
     rows_budget = max_response_rows
     values_budget = max_normalized_values
     if rows_budget is not None and rows_budget <= 0:
@@ -583,6 +605,7 @@ async def stage_grid(
             location_id=location.location_id,
             source_record_key=now_key,
             known_at=fetched,
+            skipped=skipped,
         )
         if values_budget is not None:
             values_budget -= len(now_values)
@@ -619,6 +642,7 @@ async def stage_grid(
             location_id=location.location_id,
             source_record_key=ultra_key,
             known_at=fetched,
+            skipped=skipped,
         )
         if values_budget is not None:
             values_budget -= len(ultra_values)
@@ -653,6 +677,7 @@ async def stage_grid(
             location_id=location.location_id,
             source_record_key=short_key,
             known_at=fetched,
+            skipped=skipped,
         )
         staged.append(
             StagedResponse(
@@ -746,7 +771,11 @@ async def stage_grid(
                 temp_values,
             )
         )
-    if not any(response.values for response in staged):
+    skipped_here = (skipped.total() if skipped is not None else 0) - skipped_before
+    if not any(response.values for response in staged) and not skipped_here:
+        # A grid whose every value was a skipped sentinel is an outage at that
+        # station, counted by the run; only a response with nothing in it is
+        # a contract failure.
         raise ValueError("KMA 응답에서 normalized weather fact가 생성되지 않았습니다.")
     return staged
 
@@ -986,6 +1015,11 @@ async def _stage_and_publish_weather(
         alert_values: list[WeatherValue] = []
         response_rows_total = 0
         normalized_values_total = 0
+        #: Metrics dropped as KMA Missing sentinels or out-of-range values,
+        #: keyed ``"{dataset}:{missing|invalid}:{category}"`` (per response).
+        values_skipped: Counter[str] = Counter()
+        #: Values the grid/mid responses yielded, before fan-out to locations.
+        values_accepted = 0
         alert_locations_seen: set[str] = set()
         alert_locations_published: set[str] = set()
         alert_skipped_locations: set[str] = set()
@@ -1035,7 +1069,7 @@ async def _stage_and_publish_weather(
             include_mid_for_group: bool,
             source_entity_id: str,
         ) -> None:
-            nonlocal response_rows_total, normalized_values_total
+            nonlocal response_rows_total, normalized_values_total, values_accepted
             if len(sources) >= KMA_STAGE_SOURCES:
                 await flush_grid_batch()
             keep_alive()
@@ -1060,7 +1094,9 @@ async def _stage_and_publish_weather(
                 source_entity_id=source_entity_id,
                 max_response_rows=remaining_rows,
                 max_normalized_values=per_target_values,
+                skipped=values_skipped,
             )
+            values_accepted += sum(len(response.values) for response in responses)
             for response in responses:
                 payload = response.source_record.get("payload") or {}
                 row_count = len(payload.get("rows", [])) if isinstance(payload, Mapping) else 0
@@ -1276,6 +1312,37 @@ async def _stage_and_publish_weather(
                 and len(alerts_skipped) > ALERT_PARTIAL_SKIP_SHARE * alert_locations
             ):
                 status = "partial"
+        values_missing = sum(n for key, n in values_skipped.items() if ":missing:" in key)
+        values_invalid = values_skipped.total() - values_missing
+        values_attempted = values_accepted + values_skipped.total()
+        if values_skipped:
+            for key, count in values_skipped.items():
+                dataset_key, reason, _category = key.split(":", 2)
+                observe_sync_values_skipped(KMA_PROVIDER_NAME, dataset_key, reason, count)
+            logger.warning(
+                "KMA run %s skipped %d of %d values (missing sentinel / out of range): %s",
+                run.run_id,
+                values_skipped.total(),
+                values_attempted,
+                dict(values_skipped.most_common()),
+            )
+            if values_accepted == 0:
+                raise RuntimeError(
+                    f"KMA 값 {values_attempted}건을 모두 건너뛰었습니다: "
+                    f"{dict(values_skipped.most_common())}"
+                )
+            if values_invalid or (
+                values_missing >= VALUE_PARTIAL_MIN_SKIPPED
+                and values_missing > VALUE_PARTIAL_SKIP_SHARE * values_attempted
+            ):
+                status = "partial"
+                value_note = (
+                    f"KMA 값 {values_skipped.total()}/{values_attempted}건 건너뜀 "
+                    f"(missing {values_missing}, invalid {values_invalid})"
+                )
+                # The alert note, when present, must lead: the starvation
+                # check reads it back from the start of the error.
+                skip_note = f"{skip_note}; {value_note}" if skip_note else value_note
         for chunk_sources, chunk in grid_publications:
             keep_alive()
             # Off the event loop: a lock race retries with a blocking pause
@@ -1324,6 +1391,9 @@ async def _stage_and_publish_weather(
                 f"sync run ownership was lost before publish completion: {finished.status}"
             )
         return {
+            "values_attempted": values_attempted,
+            "values_skipped": values_skipped.total(),
+            "values_skipped_by_reason": dict(values_skipped.most_common()),
             "run_id": finished.run_id,
             "status": finished.status,
             "grids_fetched": grids_fetched,

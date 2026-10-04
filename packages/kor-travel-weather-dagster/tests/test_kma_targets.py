@@ -375,6 +375,145 @@ def test_nowcast_asset_publishes_filled_stations_and_records_their_grid() -> Non
     assert {value.location_id for value in repository.values} == set(repository.ensured)
 
 
+#: getUltraSrtNcst for prod grid (35, 106) on 2026-10-05 04:00 KST: the station
+#: reported nothing, so every category but PTY came back as a Missing sentinel.
+_OFFLINE_STATION = {
+    "PTY": "0",
+    "REH": "-998",
+    "RN1": "-998.9",
+    "T1H": "-999",
+    "UUU": "-998.9",
+    "VEC": "-998",
+    "VVV": "-998.9",
+    "WSD": "-998.9",
+}
+
+
+class _MissingStationNowcastClient(_NowcastClient):
+    """The first ``bad_grids`` grids answer with ``answer`` (category, obsrValue);
+    every other grid answers ``good_rows`` ordinary T1H rows."""
+
+    def __init__(
+        self,
+        bad_grids: int = 1,
+        answer: dict[str, str] | list[tuple[str, str]] | None = None,
+        good_rows: int = 1,
+    ) -> None:
+        super().__init__()
+        self.bad_grids = bad_grids
+        answer = _OFFLINE_STATION if answer is None else answer
+        self.answer = list(answer.items()) if isinstance(answer, dict) else answer
+        self.good_rows = good_rows
+
+    async def now(self, *, nx, ny):
+        bad = len(self.grids) < self.bad_grids
+        snapshot = await super().now(nx=nx, ny=ny)
+        row = snapshot.raw["items"][0]
+        if bad:
+            snapshot.raw["items"] = [
+                {**row, "category": category, "obsrValue": value}
+                for category, value in self.answer
+            ]
+        else:
+            snapshot.raw["items"] = [dict(row) for _ in range(self.good_rows)]
+        return snapshot
+
+
+def _values_skipped_metric(reason: str) -> float:
+    from kortravelweather import metrics
+
+    return metrics.SYNC_VALUES_SKIPPED.labels(
+        provider="python-kma-api", dataset="kma_ultra_short_nowcast", reason=reason
+    )._value.get()
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_one_station_reporting_missing_does_not_fail_the_nowcast_run() -> None:
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient()
+    before = _values_skipped_metric("missing")
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    # One offline station (7 sentinels an hour) is routine: it stays green.
+    assert result["status"] == "success"
+    assert len(client.grids) == 5
+    # The other four grids still publish; the missing grid keeps only PTY.
+    assert sorted(value.metric_key for value in repository.values) == ["PTY"] + ["T1H"] * 4
+    assert all(value.value_number is not None for value in repository.values)
+    assert all(abs(value.value_number) < 900 for value in repository.values)
+    assert result["values_skipped"] == 7
+    assert result["values_attempted"] == 12
+    assert result["values_skipped_by_reason"]["kma_ultra_short_nowcast:missing:REH"] == 1
+    assert _values_skipped_metric("missing") - before == 7
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_a_station_whose_every_category_is_missing_does_not_fail_the_run() -> None:
+    # Same outage, but PTY is a sentinel too: the grid yields no fact at all.
+    # That is a skipped grid, not an empty KMA response.
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(answer={**_OFFLINE_STATION, "PTY": "-998"})
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["status"] == "success"
+    assert result["values_skipped"] == 8
+    assert sorted(value.metric_key for value in repository.values) == ["T1H"] * 4
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_missing_skips_under_the_share_stay_green_past_the_minimum() -> None:
+    # 20 sentinels (>= VALUE_PARTIAL_MIN_SKIPPED) out of 220 attempted (9%):
+    # at prod size the share, not the minimum, decides whether to page.
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(answer=[("REH", "-998")] * 20, good_rows=50)
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["values_skipped"] == 20
+    assert result["values_attempted"] == 220
+    assert result["status"] == "success"
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_many_missing_stations_finish_the_run_partial() -> None:
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(bad_grids=3)
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["status"] == "partial"
+    assert result["values_skipped"] == 21
+    # Everything that was not a sentinel still published.
+    assert sorted(value.metric_key for value in repository.values) == ["PTY"] * 3 + ["T1H"] * 2
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_any_out_of_range_value_finishes_the_run_partial() -> None:
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(answer={"REH": "105", "T1H": "3"})
+    before = _values_skipped_metric("invalid")
+
+    result = _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert result["status"] == "partial"
+    assert result["values_skipped_by_reason"] == {"kma_ultra_short_nowcast:invalid:REH": 1}
+    assert _values_skipped_metric("invalid") - before == 1
+
+
+@pytest.mark.usefixtures("_station_only_env")
+def test_a_run_whose_every_value_was_skipped_fails() -> None:
+    repository = _CatalogRepository(_station_catalog())
+    client = _MissingStationNowcastClient(bad_grids=5, answer={"REH": "-998", "T1H": "-999"})
+
+    with pytest.raises(Exception, match="건너뛰"):
+        _run_asset(kma_ultra_short_nowcast_sync, repository, client)
+
+    assert repository.values == []
+    assert repository.runs[-1].status == "failed"
+
+
 @pytest.mark.usefixtures("_station_only_env")
 def test_alerts_asset_runs_on_a_station_only_catalog() -> None:
     repository = _CatalogRepository(_station_catalog())

@@ -54,6 +54,7 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_sync_{requests,source_records,values}_total`
 - `ktw_sync_stale_recovered_total`
 - `ktw_sync_locations_skipped_total{provider,dataset}` — lock 경합으로 다음 run에 맡긴 location 수(현재 KMA 특보)
+- `ktw_sync_values_skipped_total{provider,dataset,reason}` — KMA 응답에서 버린 값 수. `reason=missing`은 Missing 센티널(|v| ≥ 900), `invalid`는 범위 밖/NaN. invalid가 하나라도 있거나, missing이 16건 이상이면서 시도한 값의 10%를 넘으면 run이 `partial`(KorTravelWeatherSyncFailed), 모든 값이 버려지면 `failed`. prod 규모(초단기실황 run당 약 1,368값)에서는 10% 비율이 먼저 걸린다: 약 137건, 즉 꺼진 측정소 대략 17~34곳(측정소마다 잃는 category 수에 따라)부터 paging한다. 16건 하한은 작은 run에서 측정소 하나의 결측이 paging하지 않게만 한다. 빈 값(공백)도 missing으로 센다
 - `ktw_metrics_errors_total{operation}`
 - `ktw_metrics_server_up`
 - `ktw_metrics_server_bind_failures_total`
