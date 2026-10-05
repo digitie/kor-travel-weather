@@ -18,6 +18,7 @@ from urllib.parse import quote, unquote
 from sqlalchemy.exc import OperationalError
 
 from kortravelweather.metrics import (
+    initialize_sync_values_skipped,
     observe_sync_locations_skipped,
     observe_sync_values_skipped,
     provider_request,
@@ -61,6 +62,11 @@ KMA_STAGE_SOURCES = 25
 BASE_GRID_DATASETS = frozenset(
     {KMA_ULTRA_SHORT_NOWCAST, KMA_ULTRA_SHORT_FORECAST, KMA_SHORT_FORECAST}
 )
+
+# The skip-value alert rules subtract the counter's value an hour (3h30m)
+# ago; a child that only appears on its first skip has no such value, so
+# every worker exports the children at 0 from import on.
+initialize_sync_values_skipped(KMA_PROVIDER_NAME, BASE_GRID_DATASETS)
 
 #: Locations per alert publish transaction.  Each transaction holds the
 #: advisory locks of only these locations, so an ingest for any other location
