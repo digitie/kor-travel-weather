@@ -509,9 +509,11 @@ def test_skipped_values_alert_below_the_partial_threshold() -> None:
     # counts the whole counter.  Not 3h: with run end times that vary, a 3h
     # window briefly holds two runs and resets ``for`` (see the promtool cases).
     assert "increase(" not in expr
+    # Each side smoothed over 10m: one stale scrape or a one-scrape dip on
+    # either side must not resolve a firing alert or restart ``for``.
     assert (
-        'ktw_sync_values_skipped_total{reason="missing"} - '
-        'ktw_sync_values_skipped_total{reason="missing"} offset 3h30m'
+        'max_over_time(ktw_sync_values_skipped_total{reason="missing"}[10m]) - '
+        'max_over_time(ktw_sync_values_skipped_total{reason="missing"}[10m] offset 3h30m)'
     ) in expr
     assert "sum by (provider, dataset)" in expr
     assert missing["for"] == "1h"
@@ -528,8 +530,8 @@ def test_skipped_values_alert_below_the_partial_threshold() -> None:
     # The children start at 0 (kma_weather import), so no ``unless`` branch
     # for new series: it fired an hour after any scrape gap.
     assert (
-        'ktw_sync_values_skipped_total{reason!="missing"} - '
-        'ktw_sync_values_skipped_total{reason!="missing"} offset 1h'
+        'max_over_time(ktw_sync_values_skipped_total{reason!="missing"}[10m]) - '
+        'max_over_time(ktw_sync_values_skipped_total{reason!="missing"}[10m] offset 1h)'
     ) in expr
     assert "unless" not in expr and "increase(" not in expr
     assert "for" not in invalid

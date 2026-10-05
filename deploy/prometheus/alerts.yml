@@ -68,10 +68,17 @@ groups:
       # counter as new.  A plain difference reads it as a drop and stays
       # quiet.  The children start at 0 (kortravelweather_dagster.kma_weather
       # creates them on import), so the first skip has a value to subtract.
-      # If either side is missing (a failed scrape exactly a window ago, a
-      # Prometheus gap) the rule returns nothing rather than firing.  Cost:
-      # after a Dagster restart the tmpfs counters start again at 0, the
-      # difference is negative, and skips are not seen for one window.
+      # Each side is max_over_time over 10m, so a single stale scrape or a
+      # one-scrape dip on either side (now, or a window ago) changes nothing:
+      # a firing alert does not resolve and `for` does not restart.  A gap
+      # longer than 10m returns nothing rather than firing.
+      # Costs, each for one window (1h invalid, 3h30m missing):
+      # - after a Dagster restart the tmpfs counters start again at 0, the
+      #   difference is negative, and skips are not seen;
+      # - a lasting drop of D (a dead worker's file removed) hides a rise of
+      #   up to D;
+      # - a changed scrape target or instance label starts new series with
+      #   nothing a window ago, so both rules are silent.
 
       # A run finishes partial (KorTravelWeatherSyncFailed) on any invalid
       # value, so this rule adds the dataset name rather than a new page.  It
@@ -79,8 +86,8 @@ groups:
       - alert: KorTravelWeatherValuesInvalid
         expr: |
           sum by (provider, dataset) (
-            ktw_sync_values_skipped_total{reason!="missing"}
-            - ktw_sync_values_skipped_total{reason!="missing"} offset 1h
+            max_over_time(ktw_sync_values_skipped_total{reason!="missing"}[10m])
+            - max_over_time(ktw_sync_values_skipped_total{reason!="missing"}[10m] offset 1h)
           ) > 0
         labels:
           severity: warning
@@ -106,8 +113,8 @@ groups:
       - alert: KorTravelWeatherValuesMissingHigh
         expr: |
           sum by (provider, dataset) (
-            ktw_sync_values_skipped_total{reason="missing"}
-            - ktw_sync_values_skipped_total{reason="missing"} offset 3h30m
+            max_over_time(ktw_sync_values_skipped_total{reason="missing"}[10m])
+            - max_over_time(ktw_sync_values_skipped_total{reason="missing"}[10m] offset 3h30m)
           ) > 60
         for: 1h
         labels:
