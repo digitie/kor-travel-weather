@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
 
+from kma import is_missing
+
 from kortravelweather.models import (
     KST,
     ForecastStyle,
@@ -34,11 +36,11 @@ KMA_SKIP_LOG_DETAILS = 20
 
 KMA_PROVIDER_NAME = "python-kma-api"
 
-#: KMA 단기예보 조회서비스(초단기실황/초단기예보/단기예보) 활용가이드: +900 이상,
-#: -900 이하 값은 Missing(관측장비 없음·결측)이다. 실제 응답은 -998, -998.9, -999
-#: (2026-10-05 격자 35,106). 측정값이 아니므로 그 metric만 건너뛴다 -- 범위 검사를
-#: 통과해 버리는 T1H/UUU/VVV(-999 °C 등)도 같다.
-KMA_MISSING_ABS_THRESHOLD = Decimal("900")
+# KMA 단기예보 조회서비스(초단기실황/초단기예보/단기예보) 활용가이드: +900 이상,
+# -900 이하 값은 Missing(관측장비 없음·결측)이다. 실제 응답은 -998, -998.9, -999
+# (2026-10-05 격자 35,106). 측정값이 아니므로 그 metric만 건너뛴다 -- 범위 검사를
+# 통과해 버리는 T1H/UUU/VVV(-999 °C 등)도 같다. 판정 정본은 python-kma-api의
+# ``kma.is_missing``이다(빈 값·공백 포함, NaN/Infinity는 센티널이 아니다).
 
 KMA_METRIC_UNITS: dict[str, str] = {
     "T1H": "deg_c",
@@ -243,14 +245,6 @@ def _derived_source_key(dataset_key: str, location_id: str, payload: Mapping[str
     return "sr_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
 
 
-def _is_missing(number: Decimal | None, text: str | None) -> bool:
-    """A KMA Missing sentinel, or no value at all (empty/whitespace)."""
-    if number is None:
-        return text is None
-    # NaN/Infinity are not sentinels; value_range_error reports them invalid.
-    return number.is_finite() and abs(number) >= KMA_MISSING_ABS_THRESHOLD
-
-
 def _skip(
     skipped: Counter[str] | None,
     *,
@@ -318,12 +312,14 @@ def _forecast_value(
         raise ValueError(f"지원하지 않는 KMA category: {row.category}")
     issued = _parse_datetime(row.base_date, row.base_time)
     valid = _parse_datetime(row.fcst_date, row.fcst_time)
-    number, text = _value(row.fcst_value, row.category)
-    if _is_missing(number, text):
+    # NaN/Infinity are not sentinels (is_missing is False); value_range_error
+    # reports them invalid in _validated.
+    if is_missing(row.fcst_value):
         _skip(
             skipped, dataset_key=dataset_key, reason="missing", row=row, raw_value=row.fcst_value
         )
         return None
+    number, text = _value(row.fcst_value, row.category)
     payload = {
         "base_date": row.base_date,
         "base_time": row.base_time,
@@ -374,8 +370,7 @@ def _nowcast_value(
     if row.category not in KMA_METRIC_UNITS:
         raise ValueError(f"지원하지 않는 KMA category: {row.category}")
     observed = _parse_datetime(row.base_date, row.base_time)
-    number, text = _value(row.obsr_value, row.category)
-    if _is_missing(number, text):
+    if is_missing(row.obsr_value):
         _skip(
             skipped,
             dataset_key="kma_ultra_short_nowcast",
@@ -384,6 +379,7 @@ def _nowcast_value(
             raw_value=row.obsr_value,
         )
         return None
+    number, text = _value(row.obsr_value, row.category)
     payload = {
         "base_date": row.base_date,
         "base_time": row.base_time,
