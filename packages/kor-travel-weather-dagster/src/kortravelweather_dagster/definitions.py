@@ -9,6 +9,7 @@ from dagster import (
     AssetExecutionContext,
     DefaultScheduleStatus,
     Definitions,
+    Failure,
     asset,
     define_asset_job,
     multiprocess_executor,
@@ -28,7 +29,7 @@ from kortravelweather.providers.khoa import KHOA_PROVIDER
 from kortravelweather.providers.krex import KREX_PROVIDER
 from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
-from kortravelweather.repository import WeatherRepository
+from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 from .airkorea_weather import run_airkorea_weather_sync
@@ -43,6 +44,7 @@ from .kma_weather import (
     run_weather_sync,
     targets_from_settings,
 )
+from .overlap import log_overlap_skip, overlap_skip_result, skips_live_overlap
 from .regional_sources import (
     run_khoa_beach_index_sync,
     run_krex_restarea_sync,
@@ -59,10 +61,7 @@ from .resources import (
     KrforestResource,
     WeatherRepositoryResource,
 )
-from .retention import run_weather_retention_purge
-
-#: Same threshold as the KorTravelWeatherForwardPartitionsLow alert.
-FORWARD_PARTITION_ALERT_DAYS = 3
+from .retention import FORWARD_PARTITION_ALERT_DAYS, run_weather_retention_purge
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +358,7 @@ def _make_kma_dataset_asset(
         required_resource_keys={"kma_client", "weather_repository"},
         description=description,
     )
+    @skips_live_overlap
     def _kma_dataset_sync(context: AssetExecutionContext) -> dict[str, object]:
         settings = WeatherSettings()
         client_resource = context.resources.kma_client
@@ -447,6 +447,9 @@ def _make_kma_dataset_asset(
                 )
             context.add_output_metadata(result)
             return result
+        except SyncRunAlreadyActive:
+            # Nothing was opened, so nothing to finish; see overlap.py.
+            raise
         except Exception:
             if run is None:
                 # Target parsing failed before a normal run could be opened.
@@ -527,6 +530,7 @@ kma_weather_alerts_sync = _make_kma_dataset_asset(
     required_resource_keys={"airkorea_client", "weather_repository"},
     description="AirKorea 측정소 catalog와 최신 대기질 관측을 hourly publish한다.",
 )
+@skips_live_overlap
 def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     repository = _run_repository(context)
@@ -690,6 +694,7 @@ def _make_external_provider_asset(provider_key: str):
         required_resource_keys={"weather_repository"},
         description=f"{spec.label}의 응답을 atomic publish한다.",
     )
+    @skips_live_overlap
     def _external_provider_sync(context: AssetExecutionContext) -> dict[str, object]:
         runtime = WeatherSettings()
         skipped = skipped_when_disabled(provider_key, runtime)
@@ -731,6 +736,7 @@ def _make_external_provider_asset(provider_key: str):
             raise
         results: list[dict[str, object]] = []
         failed: list[dict[str, object]] = []
+        skipped_datasets: list[dict[str, object]] = []
         abandoned = False
         try:
             for dataset in spec.datasets:
@@ -751,6 +757,10 @@ def _make_external_provider_asset(provider_key: str):
                             ),
                         )
                     )
+                except SyncRunAlreadyActive as overlap:
+                    skip = overlap_skip_result(overlap)
+                    log_overlap_skip(context, skip)
+                    skipped_datasets.append(skip)
                 except DeadlineExceeded:
                     # timeout의 daemon thread는 아직 client를 사용 중일 수 있다.
                     # 다음 dataset/close와 경합시키지 않고 이 worker 실행을 끝낸다.
@@ -768,11 +778,18 @@ def _make_external_provider_asset(provider_key: str):
             close = getattr(provider, "close", None)
             if callable(close) and not abandoned:
                 close()
+        if failed:
+            status = "partial"
+        elif skipped_datasets and not results:
+            status = "skipped"
+        else:
+            status = "success"
         result = {
             "provider": provider_key,
-            "status": "partial" if failed else "success",
+            "status": status,
             "datasets": results,
             "failed_datasets": failed,
+            "skipped_datasets": skipped_datasets,
             "locations_total": len(targets),
             "locations_available": len(catalog_targets),
         }
@@ -801,6 +818,7 @@ _EXTERNAL_PROVIDER_ASSETS = tuple(
     required_resource_keys={"khoa_client", "weather_repository"},
     description="국립해양조사원 해수욕장 해양지수(파고·수온·기온·풍속)를 publish한다.",
 )
+@skips_live_overlap
 def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KHOA_PROVIDER, runtime)
@@ -839,6 +857,7 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림청 산악기상관측망 관측값을 publish한다.",
 )
+@skips_live_overlap
 def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
@@ -865,6 +884,7 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림 청정넷(AICAN) 미세먼지 PM10·PM2.5·PM1.0과 기상값을 publish한다.",
 )
+@skips_live_overlap
 def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
@@ -902,6 +922,7 @@ def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krex_client", "weather_repository"},
     description="한국도로공사 고속도로 휴게소 기상 관측값을 publish한다.",
 )
+@skips_live_overlap
 def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KREX_PROVIDER, runtime)
@@ -969,6 +990,27 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
         context.log.warning(
             "only %s day(s) of forward partitions remain; facts dated past them are refused",
             days,
+        )
+    if result["partitions_deferred"] or result["partitions_not_created"]:
+        # Lost lock races against ingestion, which never pauses: retried by
+        # the next run.  One night of it is normal; see ``retention_status``.
+        context.log.warning(
+            "retention %s: deferred to the next run -- not dropped %s (overdue %s), "
+            "not created %s",
+            result["status"],
+            result["partitions_deferred"],
+            result["partitions_overdue"],
+            result["partitions_not_created"],
+        )
+    if result["status"] == "failed":
+        raise Failure(
+            description=(
+                "retention made no progress on work already missed on an earlier run: "
+                f"overdue {result['partitions_overdue']}, "
+                f"not created {result['partitions_not_created']} "
+                f"(forward window {days} day(s))"
+            ),
+            metadata=result,
         )
     context.add_output_metadata(result)
     return result
@@ -1185,11 +1227,18 @@ regional_weather_schedule = _weather_schedule(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-# 03:20 KST: the ingest schedules fire at :00, :10 and :15 of every hour, and
-# the purge holds row locks on what it deletes, so it must not land on one.
+# 01:45 KST, the measured low point.  Every partition step needs the fact
+# table to itself for a moment, so the job goes where the fewest ingest
+# transactions are.  Shared Dagster run history 2026-10-04..07: 01:45-02:55 KST
+# averaged 0.3-1.0 concurrent weather runs, and nothing heavy starts until the
+# three-hourly external sweep at 03:15 -- which is where the old 03:20 slot sat
+# (about four concurrent runs; four of its last six runs failed: three lock
+# timeouts and one deadlock).  The hourly
+# KMA/AirKorea ticks at 02:00-02:10 are short (p50 1-7 min) and the job's
+# spaced retries wait them out.
 daily_weather_retention_schedule = _weather_schedule(
     name="daily_weather_retention",
-    cron_schedule="20 3 * * *",
+    cron_schedule="45 1 * * *",
     job=weather_retention_job,
     execution_timezone="Asia/Seoul",
     default_status=DefaultScheduleStatus.RUNNING,

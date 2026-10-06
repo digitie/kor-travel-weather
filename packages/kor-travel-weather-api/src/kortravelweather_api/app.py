@@ -22,6 +22,7 @@ from kortravelweather.metrics import (
     metrics_payload,
     observe_http_request,
     observe_metric_error,
+    oldest_partition_age_exposition,
 )
 from kortravelweather.repository import WeatherRepository, repository_from_settings
 from kortravelweather.settings import WeatherSettings, get_settings
@@ -188,15 +189,21 @@ def create_app(
                     },
                 )
         forward_days = getattr(runtime_repository, "forward_partition_days", None)
+        oldest_age = getattr(runtime_repository, "oldest_partition_age_days", None)
         forward_sample = b""
         if callable(forward_days):
             # A catalog read, refreshed per scrape so the alert sees the
             # partitions that exist now rather than at the last nightly run.
             # Only this scrape carries the sample; see the function's docstring.
+            # The retention staleness gauge reads the same catalog and is
+            # omitted with it, so one absent() rule covers both.
             try:
-                forward_sample = forward_partition_days_exposition(
-                    await run_in_threadpool(forward_days)
-                )
+                sample = forward_partition_days_exposition(await run_in_threadpool(forward_days))
+                if callable(oldest_age):
+                    sample += oldest_partition_age_exposition(
+                        await run_in_threadpool(oldest_age)
+                    )
+                forward_sample = sample
             except Exception:
                 # The sample is omitted, so the scrape still succeeds and `up`
                 # stays 1; KorTravelWeatherForwardPartitionsUnknown catches the

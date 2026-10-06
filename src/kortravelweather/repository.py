@@ -49,7 +49,7 @@ from sqlalchemy import (
     values,
 )
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -62,6 +62,7 @@ from .metrics import (
 )
 from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
+    VALUES_TABLE,
     add_default_floor,
     dated_partition_bounds,
     ddl_lock_timeout_ms,
@@ -69,20 +70,28 @@ from .partitions import (
     default_partition_is_empty,
     default_partition_rows,
     delete_dangling_projection_rows,
+    detach_partition,
+    detached_leftovers,
+    drop_detached_partition,
     drop_foreign_keys_into_facts,
-    drop_partitions_before,
     drop_unvalidated_floor,
     ensure_default_partition,
-    ensure_forward_partitions,
     ensure_partitions,
     existing_partitions,
+    expired_partitions,
     floor_constraint_present,
     forward_partition_days,
     is_lock_conflict,
     kst_midnight,
+    lock_for_detached_drop,
     lock_for_partition_ddl,
+    mark_deferred,
     missing_forward_days,
+    oldest_partition_age_days,
+    other_sessions_locking,
+    partition_name,
     readd_foreign_keys_not_valid,
+    unvalidated_foreign_keys_into_facts,
     validate_default_floor,
     validate_foreign_keys_into_facts,
 )
@@ -653,9 +662,31 @@ def _metric_source_key(value: WeatherValue) -> str:
 SCHEMA_PARTITION_PAST_DAYS = 3
 SCHEMA_PARTITION_FUTURE_DAYS = 3
 
-#: Lock-race retries for one partition-DDL step: about a minute in all.
-PARTITION_DDL_ATTEMPTS = 20
-PARTITION_DDL_RETRY_SECONDS = 3.0
+#: Attempts for one partition-DDL step (one day created, one day detached,
+#: one detached day dropped) before it is deferred to the next nightly run.
+PARTITION_DDL_ATTEMPTS = 6
+#: The longest pause between two attempts.  It is spent watching for a moment
+#: when no other session holds the fact table or its source records
+#: (``_await_quiet_tables``), and ends as soon as one comes: an attempt made
+#: then usually succeeds at once, while one made blind queues behind every
+#: open ingest transaction and makes each newcomer queue behind it for a
+#: whole lock timeout.  2026-10-02..05 the blind attempts, twenty in two
+#: minutes, all lost; collectors publish in overlapping transactions of up to
+#: about a minute, with quiet gaps of seconds between bursts.
+PARTITION_DDL_RETRY_SECONDS = 30.0
+#: How often ``_await_quiet_tables`` looks at ``pg_locks``.
+PARTITION_DDL_QUIET_POLL_SECONDS = 0.2
+#: What a partition-DDL step waits to find unlocked by anyone else: every
+#: ingest transaction holds both for its whole length.
+_PARTITION_DDL_HOT_TABLES = (VALUES_TABLE, "weather_source_records")
+#: The drop of a detached day also needs ACCESS EXCLUSIVE on the locations the
+#: API reads, so only that step waits for them too.  Create and detach take
+#: SHARE ROW EXCLUSIVE there, which readers do not block: waiting on them
+#: would only slow every retry and trip the circuit breaker sooner.
+_DETACHED_DROP_HOT_TABLES = (*_PARTITION_DDL_HOT_TABLES, "weather_locations")
+#: Consecutive deferred steps after which a run stops trying (and reports the
+#: rest as deferred), so a backlog of lost races cannot eat the run's 2h cap.
+PARTITION_DDL_DEFERRAL_LIMIT = 3
 
 #: Lock-race retries for one ingest transaction.  Every ingest runs under
 #: ``ddl_lock_timeout_ms`` (three ``deadlock_timeout``s), the same bound the
@@ -670,6 +701,42 @@ INGEST_LOCK_RETRY_SECONDS = 3.0
 PROJECTION_UPSERT_ROWS = 1000
 
 _T = TypeVar("_T")
+
+#: A running sync row whose heartbeat is older than this is presumed dead:
+#: the reconcilers recover it, and an overlapping start fails rather than
+#: skips (see ``SyncRunAlreadyActive``).
+SYNC_RUN_LEASE_MINUTES = 180
+
+
+class SyncRunAlreadyActive(RuntimeError):
+    """A live run of the same provider/dataset holds the slot.
+
+    Raised by ``start_sync_run`` when the running row's heartbeat is inside
+    the lease: the earlier run is doing the work, so the new one has nothing
+    to add and the Dagster boundary ends it as a recorded skip.  A row whose
+    lease has expired raises a plain ``RuntimeError`` instead -- that run is
+    not doing the work any more, which is a failure somebody should see.
+    Still a ``RuntimeError``, so a caller that knows only that one stops as
+    before.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        dataset_key: str,
+        active_run_id: str | None,
+        heartbeat_at: datetime | None,
+    ) -> None:
+        self.provider = provider
+        self.dataset_key = dataset_key
+        self.active_run_id = active_run_id
+        self.heartbeat_at = heartbeat_at
+        super().__init__(
+            "동일 provider/dataset 실행이 이미 진행 중입니다: "
+            f"{active_run_id or '(concurrent insert)'}"
+        )
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -2666,28 +2733,45 @@ class WeatherRepository:
                     {"run_scope": f"{provider}:{dataset_key}"},
                 )
                 self._reconcile_stale_sync_runs_session(session)
-                active = session.scalar(
-                    select(SyncRunRow.run_id)
+                active = session.execute(
+                    select(
+                        SyncRunRow.run_id,
+                        func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at),
+                    )
                     .where(
                         SyncRunRow.provider == provider,
                         SyncRunRow.dataset_key == dataset_key,
                         SyncRunRow.status == "running",
                     )
                     .limit(1)
-                )
+                ).first()
                 if active is not None:
-                    raise RuntimeError(f"동일 provider/dataset 실행이 이미 진행 중입니다: {active}")
+                    active_id, heartbeat = active
+                    if heartbeat >= kst_now() - timedelta(minutes=SYNC_RUN_LEASE_MINUTES):
+                        raise SyncRunAlreadyActive(
+                            provider=provider,
+                            dataset_key=dataset_key,
+                            active_run_id=active_id,
+                            heartbeat_at=heartbeat,
+                        )
+                    raise RuntimeError(
+                        "동일 provider/dataset 실행이 이미 진행 중입니다 "
+                        f"(lease 만료, 회수 대기): {active_id}"
+                    )
                 session.add(
                     SyncRunRow(**run.model_dump(), orchestrator_run_id=self.orchestrator_run_id)
                 )
         except IntegrityError as exc:
-            raise RuntimeError(
-                "동일 provider/dataset 실행이 이미 진행 중입니다 (concurrent insert)."
+            # The partial unique index on running rows: another start of the
+            # same provider/dataset committed between the check and the insert,
+            # so that run is as live as a run can be.
+            raise SyncRunAlreadyActive(
+                provider=provider, dataset_key=dataset_key, active_run_id=None, heartbeat_at=None
             ) from exc
         observe_sync_started(provider, dataset_key)
         return run
 
-    def reconcile_stale_sync_runs(self, *, max_age_minutes: int = 180) -> int:
+    def reconcile_stale_sync_runs(self, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES) -> int:
         """orchestrator 소유권이 없는 기존 running row를 lease 기준으로 회수한다."""
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL lock_timeout = '5s'"))
@@ -2751,7 +2835,7 @@ class WeatherRepository:
                 ))
             candidates = session.execute(query).all()
         next_cursor = (candidates[-1][3], candidates[-1][0]) if len(candidates) == limit else None
-        cutoff = kst_now() - timedelta(minutes=180)
+        cutoff = kst_now() - timedelta(minutes=SYNC_RUN_LEASE_MINUTES)
         terminal_ids = []
         missing_ids = []
         for run_id, owner, heartbeat, _started_at in candidates:
@@ -2796,7 +2880,7 @@ class WeatherRepository:
 
     @staticmethod
     def _reconcile_stale_sync_runs_session(
-        session: Session, *, max_age_minutes: int = 180
+        session: Session, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES
     ) -> int:
         cutoff = kst_now() - timedelta(minutes=max_age_minutes)
         stale_rows = session.scalars(
@@ -2835,27 +2919,35 @@ class WeatherRepository:
         tombstone and a WAL record per row and then needed a vacuum -- hours
         every night on this disk to remove data nobody wanted.
 
-        Short transactions, not one.  Inside one long transaction the
-        partition DDL held ACCESS EXCLUSIVE on the fact table through the
-        pointer delete and the source purge as well, and on 2026-09-30 it
-        deadlocked an ingest.  Each DDL step now takes its locks up front in
-        the ingest's order, with a lock timeout longer than the deadlock
-        timeout (so an autovacuum in the way is cancelled) and a statement
-        timeout, and is retried on a lost race (``_partition_ddl``).
+        Ingestion never pauses, so every step that needs the fact table
+        exclusively is one short transaction for one day, takes its locks up
+        front in the ingest's order, waits for a quiet moment between a few
+        attempts (``_try_partition_ddl``) -- and when it still loses, is
+        *deferred*: named in the report and retried by the next run, while the
+        rest of this run carries on.  Until 2026-10-05 one lost race failed the
+        whole run, night after night, and retention stopped without anybody
+        seeing it; the report's ``partitions_overdue`` and the
+        ``ktw_oldest_partition_age_days`` gauge are what make that visible now.
 
-        1. Create the forward partitions -- tomorrow's before yesterday's go,
-           because a missing partition is an insert that fails.  Only days at
-           or after DEFAULT's floor are created, so DEFAULT is never scanned.
+        1. Create the forward partitions, one day per transaction -- tomorrow's
+           before yesterday's go, because a missing partition is an insert that
+           fails.  Only days at or after DEFAULT's floor are created, so DEFAULT
+           is never scanned.  The window is ``ahead_days`` long, so a night
+           that creates nothing still leaves days of slack.
         2. Delete the projection's pointers into the expiring days.  Its
            foreign key is ``ON DELETE RESTRICT``, so a pointer left behind makes
            step 3 refuse -- a fact must never vanish from under one.  A location
            that stopped reporting therefore loses its current value once its
            last reading ages out, which is what "we keep N days" means.
-        3. Drop the expired dated partitions.  The projection's foreign key is
-           dropped and re-added ``NOT VALID`` around the detach in the same
-           transaction -- otherwise the detach checks every projection row
-           while holding the whole tree -- and validated afterwards under
-           SHARE UPDATE EXCLUSIVE, while writers carry on.
+        3. Detach the expired dated partitions, oldest first, one per
+           transaction, and drop each in a transaction of its own (the drop
+           locks the source-record and location tables exclusively; see
+           ``lock_for_detached_drop``).  The projection's foreign key is
+           dropped and re-added ``NOT VALID`` around each detach -- otherwise
+           the detach checks every projection row while holding the whole
+           tree -- and validated once afterwards under SHARE UPDATE EXCLUSIVE,
+           while writers carry on.  A detached table whose drop was deferred
+           is found again by name (``detached_leftovers``).
         4. Delete the source records nothing cites any more.  They are not
            partitioned -- they are small -- so they are still deleted.
         """
@@ -2863,10 +2955,9 @@ class WeatherRepository:
             raise ValueError("retention_days는 1 이상이어야 합니다.")
         cutoff = kst_now() - timedelta(days=retention_days)
         today = kst_now().date()
-        created, floor = self._partition_ddl(
-            lambda connection: self._ensure_forward_window(
-                connection, start=today, end=today + timedelta(days=ahead_days)
-            )
+        self._deferrals_in_a_row = 0
+        created, not_created, floor = self._extend_forward_window(
+            start=today, end=today + timedelta(days=ahead_days)
         )
         with self.engine.connect() as connection:
             forward_days = forward_partition_days(connection, today=today)
@@ -2878,24 +2969,37 @@ class WeatherRepository:
                 text("DELETE FROM weather_current_values WHERE known_at < :cutoff"),
                 {"cutoff": cutoff},
             ).rowcount
-        dropped = self._partition_ddl(
-            lambda connection: self._drop_expired_partitions(connection, cutoff.date())
-        )
-        self._validate_fact_foreign_keys()
+        dropped, deferred, overdue = self._drop_expired_partitions(cutoff.date())
+        validation_deferred = not self._validate_fact_foreign_keys()
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
+            # A detached table whose drop was deferred still holds facts that
+            # cite source records (ON DELETE RESTRICT), and the purge looks
+            # only at weather_values: those sources wait for the run that
+            # drops the table; every other expired source goes now.  The names
+            # come from the catalog and match weather_values_[0-9]{8}.
+            held = "".join(
+                f' AND NOT EXISTS (SELECT 1 FROM "{name}" lv '
+                "WHERE lv.source_record_key = sr.source_record_key)"
+                for name, _ in detached_leftovers(session.connection())
+            )
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
             sources = session.execute(
-                text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": cutoff}
+                text(PURGE_SOURCE_RECORDS_SQL + held), {"cutoff": cutoff}
             ).rowcount
             stranded = default_partition_rows(session.connection())
         report = PurgeReport(
             cutoff=cutoff,
             partitions_created=tuple(created),
+            partitions_not_created=tuple(not_created),
             partitions_dropped=tuple(dropped),
+            partitions_deferred=tuple(deferred),
+            partitions_overdue=tuple(overdue),
+            foreign_key_validation_deferred=validation_deferred,
+            partition_ddl_stopped=self._ddl_stopped(),
             pointers_deleted=int(pointers or 0),
             sources_deleted=int(sources or 0),
             rows_outside_any_partition=stranded,
@@ -2912,98 +3016,300 @@ class WeatherRepository:
         up after ``ddl_lock_timeout_ms``.  Losing that race is normal on a busy
         table -- an ingest holding the fact table for a few seconds -- so it is
         retried, with the transaction rolled back in between so nothing is
-        held while waiting.
+        held while waiting.  The last loss is raised; ``_try_partition_ddl`` is
+        the variant that defers instead.
         """
+        done, result, error = self._attempt_partition_ddl(step)
+        if not done:
+            assert error is not None
+            raise error
+        return result  # type: ignore[return-value]
+
+    def _try_partition_ddl(
+        self,
+        step: Callable[[Connection], _T],
+        *,
+        quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+    ) -> tuple[bool, _T | None]:
+        """``_partition_ddl`` that returns ``(False, None)`` instead of raising
+        when every attempt lost its lock race: the step is deferred.
+
+        After ``PARTITION_DDL_DEFERRAL_LIMIT`` deferrals in a row the run
+        stops trying: every later step is deferred without an attempt.
+        """
+        if self._ddl_stopped():
+            return False, None
+        done, result, _ = self._attempt_partition_ddl(step, quiet_on=quiet_on)
+        self._deferrals_in_a_row = 0 if done else getattr(self, "_deferrals_in_a_row", 0) + 1
+        return done, result
+
+    def _ddl_stopped(self) -> bool:
+        return getattr(self, "_deferrals_in_a_row", 0) >= PARTITION_DDL_DEFERRAL_LIMIT
+
+    def _attempt_partition_ddl(
+        self,
+        step: Callable[[Connection], _T],
+        *,
+        quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+    ) -> tuple[bool, _T | None, OperationalError | None]:
+        last: OperationalError | None = None
         for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
+            if attempt > 1:
+                self._await_quiet_tables(PARTITION_DDL_RETRY_SECONDS, quiet_on)
             try:
                 with self.engine.begin() as connection:
                     connection.execute(
                         text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
                     )
-                    return step(connection)
+                    return True, step(connection), None
             except OperationalError as exc:
-                if not is_lock_conflict(exc) or attempt == PARTITION_DDL_ATTEMPTS:
+                if not is_lock_conflict(exc):
                     raise
-                time.sleep(PARTITION_DDL_RETRY_SECONDS)
-        raise AssertionError("unreachable")
+                last = exc
+        return False, None, last
+
+    def _await_quiet_tables(
+        self, max_seconds: float, tables: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES
+    ) -> None:
+        """Wait, up to ``max_seconds``, for no other session to lock the hot tables.
+
+        Polls ``pg_locks`` on its own connection, holding no table lock, so the
+        wait itself blocks no writer.
+        """
+        deadline = time.monotonic() + max_seconds
+        with self.engine.connect() as connection:
+            while True:
+                busy = other_sessions_locking(connection, tables)
+                connection.rollback()
+                if not busy or time.monotonic() >= deadline:
+                    return
+                time.sleep(PARTITION_DDL_QUIET_POLL_SECONDS)
+
+    def _extend_forward_window(
+        self, *, start: date, end: date
+    ) -> tuple[list[str], list[str], datetime | None]:
+        """Create ``[start, end]``'s missing partitions, one day per transaction.
+
+        Returns ``(created, not_created, floor)``.  A day that loses its lock
+        race is ``not_created`` and left to the next run; the window is days
+        long, so that costs slack, not facts.
+        """
+        done, floor = self._try_partition_ddl(
+            lambda connection: self._forward_floor(connection, start=start)
+        )
+        if not done:
+            # Only reachable while DEFAULT has no floor yet (a fresh database):
+            # once it has one, reading it takes no table lock at all.
+            days: list[str] = []
+            day = start
+            while day <= end:
+                days.append(partition_name(day))
+                day += timedelta(days=1)
+            return [], days, None
+        if floor is None:
+            return [], [], None
+        with self.engine.connect() as connection:
+            missing = missing_forward_days(connection, floor=floor, start=start, end=end)
+        created: list[str] = []
+        not_created: list[str] = []
+        for day in missing:
+            done, _ = self._try_partition_ddl(
+                lambda connection, day=day: self._create_forward_day(connection, day)
+            )
+            (created if done else not_created).append(partition_name(day))
+        return created, not_created, floor
+
+    @staticmethod
+    def _forward_floor(connection: Connection, *, start: date) -> datetime | None:
+        """DEFAULT's validated floor, establishing it on an empty DEFAULT.
+
+        A DEFAULT with no floor gets one only while it is empty, where
+        validating it reads nothing.  A non-empty DEFAULT without a floor is
+        left alone and reported (``None``): validating it is a full scan,
+        which is an operator's call, not a nightly job's --
+        ``scripts/weather_values_forward_partitions.py`` does it.
+        """
+        ensure_default_partition(connection)
+        floor = default_partition_floor(connection)
+        if floor is not None:
+            return floor
+        # An unvalidated floor here is a leftover: the operator script that
+        # adds one holds this job's advisory lock for as long as it runs, so
+        # while this transaction holds it no script is mid-way.  Left in place
+        # it would refuse every fact from its date on.
+        if floor_constraint_present(connection):
+            lock_for_partition_ddl(connection)
+            drop_unvalidated_floor(connection)
+        if not default_partition_is_empty(connection):
+            return None
+        lock_for_partition_ddl(connection)
+        add_default_floor(connection, kst_midnight(start))
+        validate_default_floor(connection)
+        floor = default_partition_floor(connection)
+        assert floor is not None
+        return floor
+
+    @staticmethod
+    def _create_forward_day(connection: Connection, day: date) -> list[str]:
+        lock_for_partition_ddl(connection)
+        return ensure_partitions(connection, start=day, end=day)
 
     @staticmethod
     def _ensure_forward_window(
         connection: Connection, *, start: date, end: date
     ) -> tuple[list[str], datetime | None]:
-        """Create ``[start, end]``'s missing partitions without scanning DEFAULT.
+        """Create ``[start, end]``'s missing partitions in one transaction.
 
-        A DEFAULT with no floor gets one only while it is empty, where
-        validating it reads nothing.  A non-empty DEFAULT without a floor is
-        left alone and reported (``default_floor=None``): validating it is a
-        full scan, which is an operator's call, not a nightly job's --
-        ``scripts/weather_values_forward_partitions.py`` does it.
+        The nightly job uses ``_extend_forward_window`` (a transaction per
+        day); this is the same work for a caller that already holds one.
         """
-        ensure_default_partition(connection)
-        floor = default_partition_floor(connection)
+        floor = WeatherRepository._forward_floor(connection, start=start)
         if floor is None:
-            # An unvalidated floor here is a leftover: the operator script that
-            # adds one holds this job's advisory lock for as long as it runs,
-            # so while this transaction holds it no script is mid-way.  Left in
-            # place it would refuse every fact from its date on.
-            if floor_constraint_present(connection):
-                lock_for_partition_ddl(connection)
-                drop_unvalidated_floor(connection)
-            if not default_partition_is_empty(connection):
-                return [], None
-            lock_for_partition_ddl(connection)
-            add_default_floor(connection, kst_midnight(start))
-            validate_default_floor(connection)
-            floor = default_partition_floor(connection)
-            assert floor is not None
-        if not missing_forward_days(connection, floor=floor, start=start, end=end):
+            return [], None
+        missing = missing_forward_days(connection, floor=floor, start=start, end=end)
+        if not missing:
             return [], floor
         lock_for_partition_ddl(connection)
-        return ensure_forward_partitions(connection, floor=floor, start=start, end=end), floor
+        created: list[str] = []
+        for day in missing:
+            created.extend(ensure_partitions(connection, start=day, end=day))
+        return created, floor
+
+    def _drop_expired_partitions(
+        self, cutoff: date
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Detach and drop each expired day; return ``(dropped, deferred, overdue)``.
+
+        Oldest first.  A detached table whose drop was deferred (this run or
+        an earlier one) is retried first, and while one is left no further
+        day is detached: at most one detached table ever waits, and the rest
+        stay attached where the staleness gauge and the queries see them.
+        Days held back that way, or by the circuit breaker, are deferred
+        without an attempt.  A day deferred after an attempt is marked
+        (``mark_deferred``); it is *overdue* when an earlier run had marked it.
+        """
+        with self.engine.connect() as connection:
+            leftovers = [
+                name
+                for name, day in detached_leftovers(connection)
+                if day + timedelta(days=1) <= cutoff
+            ]
+            expired = [name for name, _ in expired_partitions(connection, cutoff)]
+        dropped: list[str] = []
+        deferred: list[str] = []
+        overdue: list[str] = []
+        held = False
+
+        def missed(name: str, *, attempted: bool) -> None:
+            deferred.append(name)
+            if attempted and self._mark_deferred(name):
+                overdue.append(name)
+
+        for name in leftovers:
+            attempted = not self._ddl_stopped()
+            done, _ = self._try_partition_ddl(
+                lambda connection, name=name: self._drop_detached(connection, name),
+                quiet_on=_DETACHED_DROP_HOT_TABLES,
+            )
+            if done:
+                dropped.append(name)
+            else:
+                missed(name, attempted=attempted)
+                held = True
+        for name in expired:
+            if held or self._ddl_stopped():
+                missed(name, attempted=False)
+                continue
+            done, detached = self._try_partition_ddl(
+                lambda connection, name=name: self._detach_expired(connection, name)
+            )
+            if done and not detached:
+                continue  # gone already: not this run's to report
+            if not done:
+                missed(name, attempted=True)
+                continue
+            attempted = not self._ddl_stopped()
+            done, _ = self._try_partition_ddl(
+                lambda connection, name=name: self._drop_detached(connection, name),
+                quiet_on=_DETACHED_DROP_HOT_TABLES,
+            )
+            if done:
+                dropped.append(name)
+            else:
+                missed(name, attempted=attempted)
+                held = True
+        return dropped, deferred, overdue
+
+    def _mark_deferred(self, name: str) -> bool:
+        """``mark_deferred`` in its own short transaction; ``False`` if it could not."""
+        try:
+            with self.engine.begin() as connection:
+                return mark_deferred(connection, name)
+        except OperationalError as exc:
+            if not is_lock_conflict(exc):
+                raise
+            return False
+        except ProgrammingError as exc:
+            # UndefinedTable: another run dropped the day meanwhile.  Nothing
+            # left to mark, and no reason to fail this run.
+            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "42P01":
+                raise
+            return False
 
     @staticmethod
-    def _drop_expired_partitions(connection: Connection, cutoff: date) -> list[str]:
-        if not any(
-            lower is not None and lower + timedelta(days=1) <= cutoff
-            for _, lower in existing_partitions(connection)
-        ):
-            return []
+    def _detach_expired(connection: Connection, name: str) -> bool:
+        if name not in {partition for partition, _ in existing_partitions(connection)}:
+            return False  # another run got there first
         lock_for_partition_ddl(connection, drop_foreign_keys=True)
         keys = drop_foreign_keys_into_facts(connection)
-        dropped = drop_partitions_before(connection, cutoff)
+        detach_partition(connection, name)
         readd_foreign_keys_not_valid(connection, keys)
-        return dropped
+        return True
 
-    def _validate_fact_foreign_keys(self) -> None:
-        """Validate the foreign keys ``_drop_expired_partitions`` re-added.
+    @staticmethod
+    def _drop_detached(connection: Connection, name: str) -> bool:
+        if name not in {table for table, _ in detached_leftovers(connection)}:
+            return False
+        lock_for_detached_drop(connection)
+        drop_detached_partition(connection, name)
+        return True
+
+    def _validate_fact_foreign_keys(self) -> bool:
+        """Validate the keys ``_detach_expired`` re-added; ``False`` if deferred.
 
         SHARE UPDATE EXCLUSIVE on the projection: writers carry on.  A pointer
         written to an expiring fact between the pointer delete and the drop
         would fail validation; such dangling rows are deleted and validation
-        retried once.
+        retried.  A validation that keeps losing its lock race is left to the
+        next run -- new rows are checked by the ``NOT VALID`` key meanwhile.
         """
-        for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
+        with self.engine.connect() as connection:
+            if not unvalidated_foreign_keys_into_facts(connection):
+                return True
+        for _ in range(2):
             try:
-                with self.engine.begin() as connection:
-                    validate_foreign_keys_into_facts(connection)
-                return
+                done, _validated = self._try_partition_ddl(validate_foreign_keys_into_facts)
+                return done
             except OperationalError as exc:
-                if not is_lock_conflict(exc) or attempt == PARTITION_DDL_ATTEMPTS:
-                    raise
-                time.sleep(PARTITION_DDL_RETRY_SECONDS)
+                # VALIDATE_STATEMENT_TIMEOUT: the key stays NOT VALID (new rows
+                # are still checked) and the next run validates it.
+                if getattr(getattr(exc, "orig", None), "sqlstate", None) == "57014":
+                    return False
+                raise
             except IntegrityError:
                 with self.engine.begin() as connection:
                     delete_dangling_projection_rows(connection)
-                break
-        for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
-            try:
-                with self.engine.begin() as connection:
-                    validate_foreign_keys_into_facts(connection)
-                return
-            except OperationalError as exc:
-                if not is_lock_conflict(exc) or attempt == PARTITION_DDL_ATTEMPTS:
-                    raise
-                time.sleep(PARTITION_DDL_RETRY_SECONDS)
+        return False
+
+    def oldest_partition_age_days(self) -> int | None:
+        """Days since the oldest dated partition's first day (see ``partitions``).
+
+        The retention staleness signal, read on every metrics scrape and
+        bounded like ``forward_partition_days``.
+        """
+        with self.engine.begin() as connection:
+            connection.execute(text("SET LOCAL statement_timeout = '5s'"))
+            return oldest_partition_age_days(connection, today=kst_now().date())
 
     def forward_partition_days(self) -> int | None:
         """Days of dated partitions ahead of today (see ``partitions``).

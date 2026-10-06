@@ -173,10 +173,36 @@ catalog change, so nothing is scanned, nothing is vacuumed, and the space comes
 back at once. That difference is why the table could reach 33 GB with no way to
 shed anything.
 
-The Dagster `daily_weather_retention` schedule (03:20 Asia/Seoul, after the
-hourly ingests) keeps `KOR_TRAVEL_WEATHER_RETENTION_DAYS` days, default 2. Each
-run also creates the coming week's partitions: a missing partition sends rows to
-DEFAULT, where retention can never reach them.
+The Dagster `daily_weather_retention` schedule (01:45 Asia/Seoul, the measured
+low point of the ingest schedules) keeps `KOR_TRAVEL_WEATHER_RETENTION_DAYS`
+days, default 2 (16 in production). Each run also creates the coming week's
+partitions: a missing partition sends rows to DEFAULT, where retention can never
+reach them.
+
+Ingestion never pauses, and creating, detaching or dropping a partition needs
+the fact table to itself for a moment. So each of those steps is one short
+transaction for one day, takes its locks in the ingest's order (source records
+and locations, then facts, then the projection), and gets a few attempts spaced
+by waits for a moment when nobody holds the fact table. A day that still loses
+is **deferred**: listed in the run's metadata (`partitions_deferred`,
+`partitions_not_created`) and retried by the next run, while the run stays
+green. The run turns `partial` -- or fails, if it also made no progress -- only
+for work missed on consecutive nights (`partitions_overdue`, or a forward
+window down to three days). A miss is counted from real attempts: a deferred
+day is marked with a table comment, and is overdue only when an earlier run
+had marked it -- a night the job did not run is not a miss. Detach and drop
+are separate transactions; while a detached day waits for its drop no further
+day is detached, so at most one ever waits, and only the source records it
+cites are held back from the source purge. After three deferred steps in a row
+the run stops trying (`partition_ddl_stopped`) rather than spend its 2h cap. `KorTravelWeatherRetentionStale` pages when the
+oldest dated partition (`ktw_oldest_partition_age_days`) is more than
+retention + 2 days old.
+
+`DETACH PARTITION ... CONCURRENTLY` would avoid the exclusive lock on the
+parent, but PostgreSQL refuses it while the table has a DEFAULT partition, and
+this one keeps DEFAULT on purpose (its floor is what lets a partition be created
+without scanning it, and what the replay skip reads). Retention uses a plain
+`DETACH`, one day per transaction.
 
 Two consequences worth stating plainly.
 

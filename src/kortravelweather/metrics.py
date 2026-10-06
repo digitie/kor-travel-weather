@@ -294,6 +294,15 @@ SYNC_FINISHED = Counter(
     ("provider", "dataset", "status"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+#: Starts that found a live run of the same provider/dataset and ended as a
+#: skip.  Not a failure and not in ``ktw_sync_runs_finished_total``: the live
+#: run is doing the work.  A steady rate means runs outlast their schedule.
+SYNC_OVERLAP_SKIPPED = Counter(
+    "ktw_sync_runs_overlap_skipped_total",
+    "Weather sync starts skipped because a live run of the same dataset was in progress.",
+    ("provider", "dataset"),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 SYNC_ACTIVE = Gauge(
     "ktw_sync_runs_active",
     "Currently running weather sync runs.",
@@ -575,6 +584,14 @@ def observe_sync_finished(
     _safe("sync_finished", update)
 
 
+def observe_sync_overlap_skipped(provider: object, dataset: object) -> None:
+    safe_provider, safe_dataset = provider_label(provider), dataset_label(dataset)
+    _safe(
+        "sync_overlap_skipped",
+        lambda: SYNC_OVERLAP_SKIPPED.labels(provider=safe_provider, dataset=safe_dataset).inc(),
+    )
+
+
 def observe_sync_locations_skipped(provider: object, dataset: object, count: int) -> None:
     if count > 0:
         safe_provider, safe_dataset = provider_label(provider), dataset_label(dataset)
@@ -666,6 +683,33 @@ def forward_partition_days_exposition(days: int | None) -> bytes:
             )
 
     registry.register(_ForwardPartitionDays())
+    return generate_latest(registry)
+
+
+OLDEST_PARTITION_AGE_METRIC = "ktw_oldest_partition_age_days"
+
+
+def oldest_partition_age_exposition(days: int | None) -> bytes:
+    """One scrape's ``ktw_oldest_partition_age_days`` sample, for the API only.
+
+    Retention's staleness signal: right after a nightly drop it equals the
+    retention window, and it grows by one for every night nothing is dropped.
+    Built per scrape like ``forward_partition_days_exposition`` and for the same
+    reason (a shared-registry gauge would be exported as 0 by the code-server).
+    ``-1`` means no dated partition exists.
+    """
+    registry = CollectorRegistry(auto_describe=False)
+    value = -1 if days is None else days
+
+    class _OldestPartitionAge:
+        def collect(self) -> Iterator[GaugeMetricFamily]:
+            yield GaugeMetricFamily(
+                OLDEST_PARTITION_AGE_METRIC,
+                "Days since the oldest dated weather_values partition's first day (-1: none).",
+                value=value,
+            )
+
+    registry.register(_OldestPartitionAge())
     return generate_latest(registry)
 
 
