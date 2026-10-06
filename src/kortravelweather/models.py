@@ -268,6 +268,18 @@ class PurgeReport(BaseModel):
     #: Names rather than a count: which day went is the useful fact when a run
     #: drops nothing, and a zero says nothing about whether that was correct.
     partitions_dropped: tuple[str, ...] = ()
+    #: Forward days whose creation lost its lock race every attempt; the next
+    #: run tries again, and ``forward_partition_days`` says how much slack is left.
+    partitions_not_created: tuple[str, ...] = ()
+    #: Expired days whose detach or drop lost its lock race every attempt;
+    #: the next run tries again.  One night's miss is not a failure.
+    partitions_deferred: tuple[str, ...] = ()
+    #: The deferred days that were already due on the previous night: the
+    #: second miss in a row, which is what makes a run partial or failed.
+    partitions_overdue: tuple[str, ...] = ()
+    #: The projection's foreign key is still ``NOT VALID`` after this run (new
+    #: rows are checked; old ones are validated by the next run).
+    foreign_key_validation_deferred: bool = False
     #: Current-value pointers into the dropped days.  A location that stops
     #: reporting loses its current value once its last reading ages out.
     pointers_deleted: int = 0

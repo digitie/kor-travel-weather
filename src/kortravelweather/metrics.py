@@ -669,6 +669,33 @@ def forward_partition_days_exposition(days: int | None) -> bytes:
     return generate_latest(registry)
 
 
+OLDEST_PARTITION_AGE_METRIC = "ktw_oldest_partition_age_days"
+
+
+def oldest_partition_age_exposition(days: int | None) -> bytes:
+    """One scrape's ``ktw_oldest_partition_age_days`` sample, for the API only.
+
+    Retention's staleness signal: right after a nightly drop it equals the
+    retention window, and it grows by one for every night nothing is dropped.
+    Built per scrape like ``forward_partition_days_exposition`` and for the same
+    reason (a shared-registry gauge would be exported as 0 by the code-server).
+    ``-1`` means no dated partition exists.
+    """
+    registry = CollectorRegistry(auto_describe=False)
+    value = -1 if days is None else days
+
+    class _OldestPartitionAge:
+        def collect(self) -> Iterator[GaugeMetricFamily]:
+            yield GaugeMetricFamily(
+                OLDEST_PARTITION_AGE_METRIC,
+                "Days since the oldest dated weather_values partition's first day (-1: none).",
+                value=value,
+            )
+
+    registry.register(_OldestPartitionAge())
+    return generate_latest(registry)
+
+
 def metrics_payload() -> bytes:
     """Serialize the isolated registry for an HTTP scrape."""
     cleanup_dead_multiprocess_gauges()

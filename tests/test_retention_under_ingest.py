@@ -186,14 +186,17 @@ def test_retention_defers_instead_of_failing_while_ingest_never_pauses(
     today = kst_now().date()
     beyond = [partition_name(today + timedelta(days=n)) for n in (8, 9)]
 
-    with Ingest(repository, hold=2.0) as ingest:
+    # Each transaction outlasts the DDL lock timeout (three deadlock_timeouts,
+    # 3 s here), as production publishes of up to a minute do; shorter ones
+    # are simply waited out by a queued request and prove nothing.
+    with Ingest(repository, hold=8.0) as ingest:
         report = repository.purge_expired_history(retention_days=2, ahead_days=9)
         commits_during = ingest.commits
 
     assert ingest.errors == []
     assert commits_during > 0
     # A writer waits for at most one attempt's lock timeout, never the run.
-    assert ingest.longest_wait < 6.0, ingest.longest_wait
+    assert ingest.longest_wait < 5.0, ingest.longest_wait
     assert report.partitions_dropped == ()
     assert report.partitions_deferred == (expired,)
     # 30 days old against a 2-day window: it was due long before tonight.
@@ -247,13 +250,13 @@ def test_one_partition_at_a_time_so_a_backlog_drains_partially(
     expired = [_stage_expired_partition(repository, days_ago=n) for n in (12, 11, 10)]
     statements: list[str] = []
 
-    original = repository_module.drop_partition
+    original = repository_module.detach_partition
 
     def recording(connection, name):
         statements.append(name)
         return original(connection, name)
 
-    monkeypatch.setattr(repository_module, "drop_partition", recording)
+    monkeypatch.setattr(repository_module, "detach_partition", recording)
     report = repository.purge_expired_history(retention_days=2, ahead_days=7)
     assert report.partitions_dropped == tuple(expired)
     assert statements == expired

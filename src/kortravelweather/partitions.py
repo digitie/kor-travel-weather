@@ -171,23 +171,62 @@ def ddl_lock_timeout_ms(connection: Connection) -> int:
     return max(2000, 3 * deadlock_ms)
 
 
+#: The order an ingest transaction takes the fact table's referenced tables in:
+#: it inserts the source records its facts cite before the facts.
+_INGEST_REFERENCE_ORDER = ("weather_source_records", "weather_locations")
+
+
+def referenced_tables(connection: Connection) -> list[str]:
+    """Tables the fact table's own foreign keys point at, in the ingest's order.
+
+    Partition DDL locks them too, mid statement, unless they are taken first:
+    ``CREATE TABLE ... PARTITION OF`` and ``DETACH`` take SHARE ROW EXCLUSIVE
+    on each (they clone or create the foreign keys' triggers), and dropping a
+    detached partition takes ACCESS EXCLUSIVE on each (it removes them) --
+    measured on PostgreSQL 16.  Taken lazily after the fact table, that is
+    the reverse of an ingest, which writes source records before facts: the
+    ingest then waits for the fact table, the DDL for the source records, and
+    the deadlock check kills whichever waited first -- usually the ingest.
+    """
+    tables = connection.execute(
+        text(
+            "SELECT DISTINCT confrelid::regclass::text FROM pg_constraint "
+            "WHERE contype = 'f' AND conrelid = to_regclass(:t) AND conparentid = 0"
+        ),
+        {"t": VALUES_TABLE},
+    ).scalars().all()
+    order = {name: index for index, name in enumerate(_INGEST_REFERENCE_ORDER)}
+    return sorted(
+        (str(table) for table in tables if table != VALUES_TABLE),
+        key=lambda table: (order.get(table, len(order)), table),
+    )
+
+
+def set_ddl_timeouts(connection: Connection) -> None:
+    timeout = ddl_lock_timeout_ms(connection)
+    connection.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
+    connection.execute(text(f"SET LOCAL statement_timeout = '{DDL_STATEMENT_TIMEOUT}'"))
+
+
 def lock_for_partition_ddl(connection: Connection, *, drop_foreign_keys: bool = False) -> None:
     """Take every lock partition DDL needs, in the ingest's order, up front.
 
-    An ingest writes facts first and the projection second, so the DDL takes
-    the fact table first and ``weather_current_values`` second.  Taken lazily,
+    An ingest writes source records, then facts, then the projection, so the
+    DDL takes the fact table's referenced tables first (``referenced_tables``),
+    the fact table second and ``weather_current_values`` last.  Taken lazily,
     mid statement, the projection lock is what deadlocked the retention run of
-    2026-09-30 against an ingest.
+    2026-09-30 against an ingest, and the referenced tables are what made the
+    DDL kill an ingest in ``tests/test_retention_under_ingest.py``.
 
     ``CREATE TABLE ... PARTITION OF`` needs SHARE ROW EXCLUSIVE on the
     projection (it clones the foreign key's triggers).  Dropping that foreign
     key -- what keeps a DETACH from checking every projection row while it
-    holds the whole tree -- needs ACCESS EXCLUSIVE on it.  Both are held only
+    holds the whole tree -- needs ACCESS EXCLUSIVE on it.  All are held only
     for the catalog changes that follow, bounded by ``DDL_STATEMENT_TIMEOUT``.
     """
-    timeout = ddl_lock_timeout_ms(connection)
-    connection.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
-    connection.execute(text(f"SET LOCAL statement_timeout = '{DDL_STATEMENT_TIMEOUT}'"))
+    set_ddl_timeouts(connection)
+    for table in referenced_tables(connection):
+        connection.execute(text(f"LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE"))
     connection.execute(text(f"LOCK TABLE {VALUES_TABLE} IN ACCESS EXCLUSIVE MODE"))
     has_projection = connection.execute(
         text("SELECT to_regclass('weather_current_values') IS NOT NULL")
@@ -481,10 +520,109 @@ def drop_partitions_before(connection: Connection, cutoff: date) -> list[str]:
         # table, and the detach itself checks that nothing still references it
         # -- which is the guard we want, and why the caller clears the
         # projection's pointers before getting here.
-        connection.execute(text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {name}"))
-        connection.execute(text(f"DROP TABLE {name}"))
+        detach_partition(connection, name)
+        drop_detached_partition(connection, name)
         dropped.append(name)
     return dropped
+
+
+def expired_partitions(connection: Connection, cutoff: date) -> list[tuple[str, date]]:
+    """Dated partitions whose whole range precedes ``cutoff``, oldest first."""
+    return [
+        (name, lower)
+        for name, lower in existing_partitions(connection)
+        if lower is not None and lower + timedelta(days=1) <= cutoff
+    ]
+
+
+def detach_partition(connection: Connection, name: str) -> None:
+    """Detach one dated partition.  A plain DETACH, not ``CONCURRENTLY``.
+
+    ``DETACH ... CONCURRENTLY`` would take only SHARE UPDATE EXCLUSIVE on the
+    parent, which no writer conflicts with -- but PostgreSQL refuses it while
+    the table has a DEFAULT partition ("cannot detach partitions concurrently
+    when a default partition exists", PostgreSQL 14-16), and this table has
+    one by design: DEFAULT's floor is what lets a partition be created without
+    scanning it, and what the ingest's expired-replay skip reads.  So the
+    detach takes ACCESS EXCLUSIVE on the parent and the caller keeps that
+    window to one partition, after locking in the ingest's order.
+    """
+    connection.execute(text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {name}"))
+
+
+def lock_for_detached_drop(connection: Connection) -> None:
+    """Dropping a detached partition removes the foreign-key triggers DETACH
+    gave it on the referenced tables, under ACCESS EXCLUSIVE on each: take
+    them up front, in the ingest's order, with the DDL timeouts."""
+    set_ddl_timeouts(connection)
+    for table in referenced_tables(connection):
+        connection.execute(text(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+
+
+def drop_detached_partition(connection: Connection, name: str) -> None:
+    connection.execute(text(f"DROP TABLE {name}"))
+
+
+_DATED_NAME = rf"^{VALUES_TABLE}_[0-9]{{8}}$"
+
+
+def detached_leftovers(connection: Connection) -> list[tuple[str, date]]:
+    """Dated tables no longer attached: a drop that lost its lock race.
+
+    Retention detaches and drops in separate transactions, so a run can stop
+    in between.  The table is then invisible to ``existing_partitions``; this
+    is how the next run finds it.
+    """
+    rows = connection.execute(
+        text(
+            "SELECT c.relname FROM pg_class c "
+            "WHERE c.relkind = 'r' AND NOT c.relispartition "
+            "AND c.relnamespace = current_schema()::regnamespace "
+            "AND c.relname ~ :pattern ORDER BY 1"
+        ),
+        {"pattern": _DATED_NAME},
+    ).scalars().all()
+    leftovers: list[tuple[str, date]] = []
+    for name in rows:
+        try:
+            day = datetime.strptime(str(name)[len(VALUES_TABLE) + 1 :], "%Y%m%d").date()
+        except ValueError:
+            continue
+        leftovers.append((str(name), day))
+    return leftovers
+
+
+def other_sessions_locking(connection: Connection, tables: tuple[str, ...]) -> int:
+    """How many other sessions hold or await a lock on any of ``tables``.
+
+    A partition-DDL attempt made while this is non-zero queues behind those
+    sessions and makes every newcomer queue behind it for up to a lock
+    timeout; made while it is zero, it usually just succeeds.
+    """
+    return int(
+        connection.execute(
+            text(
+                "SELECT count(DISTINCT l.pid) FROM pg_locks l "
+                "WHERE l.locktype = 'relation' AND l.pid <> pg_backend_pid() "
+                "AND l.relation = ANY ("
+                "  SELECT to_regclass(t) FROM unnest(CAST(:tables AS text[])) t)"
+            ),
+            {"tables": list(tables)},
+        ).scalar_one()
+    )
+
+
+def oldest_partition_age_days(connection: Connection, *, today: date) -> int | None:
+    """Whole days from the oldest dated partition's first day to ``today``.
+
+    The retention staleness signal.  Right after a nightly drop it equals
+    the retention window; it grows by one for every night nothing is dropped.
+    ``None`` when there is no dated partition.
+    """
+    days = [day for _, day in existing_partitions(connection) if day is not None]
+    if not days:
+        return None
+    return (today - min(days)).days
 
 
 #: ``default_partition_rows`` stops counting here: it runs nightly, and a full
