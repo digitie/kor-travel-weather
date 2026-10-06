@@ -693,6 +693,41 @@ PROJECTION_UPSERT_ROWS = 1000
 
 _T = TypeVar("_T")
 
+#: A running sync row whose heartbeat is older than this is presumed dead:
+#: the reconcilers recover it, and an overlapping start fails rather than
+#: skips (see ``SyncRunAlreadyActive``).
+SYNC_RUN_LEASE_MINUTES = 180
+
+
+class SyncRunAlreadyActive(RuntimeError):
+    """A live run of the same provider/dataset holds the slot.
+
+    Raised by ``start_sync_run`` when the running row's heartbeat is inside
+    the lease: the earlier run is doing the work, so the new one has nothing
+    to add and the Dagster boundary ends it as a recorded skip.  A row whose
+    lease has expired raises a plain ``RuntimeError`` instead -- that run is
+    not doing the work any more, which is a failure somebody should see.
+    Still a ``RuntimeError``, so a caller that knows only that one stops as
+    before.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        dataset_key: str,
+        active_run_id: str | None,
+        heartbeat_at: datetime | None,
+    ) -> None:
+        self.provider = provider
+        self.dataset_key = dataset_key
+        self.active_run_id = active_run_id
+        self.heartbeat_at = heartbeat_at
+        super().__init__(
+            "동일 provider/dataset 실행이 이미 진행 중입니다: "
+            f"{active_run_id or '(concurrent insert)'}"
+        )
+
 
 def _dated_name_day(name: str) -> date | None:
     """The KST day a ``weather_values_YYYYMMDD`` partition is named for."""
@@ -2711,28 +2746,45 @@ class WeatherRepository:
                     {"run_scope": f"{provider}:{dataset_key}"},
                 )
                 self._reconcile_stale_sync_runs_session(session)
-                active = session.scalar(
-                    select(SyncRunRow.run_id)
+                active = session.execute(
+                    select(
+                        SyncRunRow.run_id,
+                        func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at),
+                    )
                     .where(
                         SyncRunRow.provider == provider,
                         SyncRunRow.dataset_key == dataset_key,
                         SyncRunRow.status == "running",
                     )
                     .limit(1)
-                )
+                ).first()
                 if active is not None:
-                    raise RuntimeError(f"동일 provider/dataset 실행이 이미 진행 중입니다: {active}")
+                    active_id, heartbeat = active
+                    if heartbeat >= kst_now() - timedelta(minutes=SYNC_RUN_LEASE_MINUTES):
+                        raise SyncRunAlreadyActive(
+                            provider=provider,
+                            dataset_key=dataset_key,
+                            active_run_id=active_id,
+                            heartbeat_at=heartbeat,
+                        )
+                    raise RuntimeError(
+                        "동일 provider/dataset 실행이 이미 진행 중입니다 "
+                        f"(lease 만료, 회수 대기): {active_id}"
+                    )
                 session.add(
                     SyncRunRow(**run.model_dump(), orchestrator_run_id=self.orchestrator_run_id)
                 )
         except IntegrityError as exc:
-            raise RuntimeError(
-                "동일 provider/dataset 실행이 이미 진행 중입니다 (concurrent insert)."
+            # The partial unique index on running rows: another start of the
+            # same provider/dataset committed between the check and the insert,
+            # so that run is as live as a run can be.
+            raise SyncRunAlreadyActive(
+                provider=provider, dataset_key=dataset_key, active_run_id=None, heartbeat_at=None
             ) from exc
         observe_sync_started(provider, dataset_key)
         return run
 
-    def reconcile_stale_sync_runs(self, *, max_age_minutes: int = 180) -> int:
+    def reconcile_stale_sync_runs(self, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES) -> int:
         """orchestrator 소유권이 없는 기존 running row를 lease 기준으로 회수한다."""
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL lock_timeout = '5s'"))
@@ -2796,7 +2848,7 @@ class WeatherRepository:
                 ))
             candidates = session.execute(query).all()
         next_cursor = (candidates[-1][3], candidates[-1][0]) if len(candidates) == limit else None
-        cutoff = kst_now() - timedelta(minutes=180)
+        cutoff = kst_now() - timedelta(minutes=SYNC_RUN_LEASE_MINUTES)
         terminal_ids = []
         missing_ids = []
         for run_id, owner, heartbeat, _started_at in candidates:
@@ -2841,7 +2893,7 @@ class WeatherRepository:
 
     @staticmethod
     def _reconcile_stale_sync_runs_session(
-        session: Session, *, max_age_minutes: int = 180
+        session: Session, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES
     ) -> int:
         cutoff = kst_now() - timedelta(minutes=max_age_minutes)
         stale_rows = session.scalars(

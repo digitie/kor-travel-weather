@@ -29,7 +29,7 @@ from kortravelweather.providers.khoa import KHOA_PROVIDER
 from kortravelweather.providers.krex import KREX_PROVIDER
 from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
-from kortravelweather.repository import WeatherRepository
+from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 from .airkorea_weather import run_airkorea_weather_sync
@@ -44,6 +44,7 @@ from .kma_weather import (
     run_weather_sync,
     targets_from_settings,
 )
+from .overlap import log_overlap_skip, overlap_skip_result, skips_live_overlap
 from .regional_sources import (
     run_khoa_beach_index_sync,
     run_krex_restarea_sync,
@@ -357,6 +358,7 @@ def _make_kma_dataset_asset(
         required_resource_keys={"kma_client", "weather_repository"},
         description=description,
     )
+    @skips_live_overlap
     def _kma_dataset_sync(context: AssetExecutionContext) -> dict[str, object]:
         settings = WeatherSettings()
         client_resource = context.resources.kma_client
@@ -445,6 +447,9 @@ def _make_kma_dataset_asset(
                 )
             context.add_output_metadata(result)
             return result
+        except SyncRunAlreadyActive:
+            # Nothing was opened, so nothing to finish; see overlap.py.
+            raise
         except Exception:
             if run is None:
                 # Target parsing failed before a normal run could be opened.
@@ -525,6 +530,7 @@ kma_weather_alerts_sync = _make_kma_dataset_asset(
     required_resource_keys={"airkorea_client", "weather_repository"},
     description="AirKorea 측정소 catalog와 최신 대기질 관측을 hourly publish한다.",
 )
+@skips_live_overlap
 def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     repository = _run_repository(context)
@@ -688,6 +694,7 @@ def _make_external_provider_asset(provider_key: str):
         required_resource_keys={"weather_repository"},
         description=f"{spec.label}의 응답을 atomic publish한다.",
     )
+    @skips_live_overlap
     def _external_provider_sync(context: AssetExecutionContext) -> dict[str, object]:
         runtime = WeatherSettings()
         skipped = skipped_when_disabled(provider_key, runtime)
@@ -729,6 +736,7 @@ def _make_external_provider_asset(provider_key: str):
             raise
         results: list[dict[str, object]] = []
         failed: list[dict[str, object]] = []
+        skipped_datasets: list[dict[str, object]] = []
         abandoned = False
         try:
             for dataset in spec.datasets:
@@ -749,6 +757,10 @@ def _make_external_provider_asset(provider_key: str):
                             ),
                         )
                     )
+                except SyncRunAlreadyActive as overlap:
+                    skip = overlap_skip_result(overlap)
+                    log_overlap_skip(context, skip)
+                    skipped_datasets.append(skip)
                 except DeadlineExceeded:
                     # timeout의 daemon thread는 아직 client를 사용 중일 수 있다.
                     # 다음 dataset/close와 경합시키지 않고 이 worker 실행을 끝낸다.
@@ -766,11 +778,18 @@ def _make_external_provider_asset(provider_key: str):
             close = getattr(provider, "close", None)
             if callable(close) and not abandoned:
                 close()
+        if failed:
+            status = "partial"
+        elif skipped_datasets and not results:
+            status = "skipped"
+        else:
+            status = "success"
         result = {
             "provider": provider_key,
-            "status": "partial" if failed else "success",
+            "status": status,
             "datasets": results,
             "failed_datasets": failed,
+            "skipped_datasets": skipped_datasets,
             "locations_total": len(targets),
             "locations_available": len(catalog_targets),
         }
@@ -799,6 +818,7 @@ _EXTERNAL_PROVIDER_ASSETS = tuple(
     required_resource_keys={"khoa_client", "weather_repository"},
     description="국립해양조사원 해수욕장 해양지수(파고·수온·기온·풍속)를 publish한다.",
 )
+@skips_live_overlap
 def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KHOA_PROVIDER, runtime)
@@ -837,6 +857,7 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림청 산악기상관측망 관측값을 publish한다.",
 )
+@skips_live_overlap
 def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
@@ -863,6 +884,7 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림 청정넷(AICAN) 미세먼지 PM10·PM2.5·PM1.0과 기상값을 publish한다.",
 )
+@skips_live_overlap
 def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KRFOREST_PROVIDER, runtime)
@@ -900,6 +922,7 @@ def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krex_client", "weather_repository"},
     description="한국도로공사 고속도로 휴게소 기상 관측값을 publish한다.",
 )
+@skips_live_overlap
 def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     skipped = skipped_when_disabled(KREX_PROVIDER, runtime)

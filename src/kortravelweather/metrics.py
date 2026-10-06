@@ -294,6 +294,15 @@ SYNC_FINISHED = Counter(
     ("provider", "dataset", "status"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+#: Starts that found a live run of the same provider/dataset and ended as a
+#: skip.  Not a failure and not in ``ktw_sync_runs_finished_total``: the live
+#: run is doing the work.  A steady rate means runs outlast their schedule.
+SYNC_OVERLAP_SKIPPED = Counter(
+    "ktw_sync_runs_overlap_skipped_total",
+    "Weather sync starts skipped because a live run of the same dataset was in progress.",
+    ("provider", "dataset"),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 SYNC_ACTIVE = Gauge(
     "ktw_sync_runs_active",
     "Currently running weather sync runs.",
@@ -573,6 +582,14 @@ def observe_sync_finished(
             SYNC_VALUES.labels(provider=safe_provider, dataset=safe_dataset).inc(value_count)
 
     _safe("sync_finished", update)
+
+
+def observe_sync_overlap_skipped(provider: object, dataset: object) -> None:
+    safe_provider, safe_dataset = provider_label(provider), dataset_label(dataset)
+    _safe(
+        "sync_overlap_skipped",
+        lambda: SYNC_OVERLAP_SKIPPED.labels(provider=safe_provider, dataset=safe_dataset).inc(),
+    )
 
 
 def observe_sync_locations_skipped(provider: object, dataset: object, count: int) -> None:

@@ -75,7 +75,9 @@ def test_an_external_dataset_overlap_is_skipped_not_failed(monkeypatch) -> None:
         result = definitions._make_external_provider_asset("open_meteo")(context)
     assert result["failed_datasets"] == []
     assert result["status"] == "skipped"
-    assert [entry["reason"] for entry in result["skipped_datasets"]] == ["already_running"]
+    # Each of the provider's datasets overlapped, and each is a skip.
+    reasons = [entry["reason"] for entry in result["skipped_datasets"]]
+    assert reasons and set(reasons) == {"already_running"}
 
 
 def test_every_collector_asset_turns_an_overlap_into_a_skip() -> None:
