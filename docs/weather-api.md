@@ -188,7 +188,13 @@ is **deferred**: listed in the run's metadata (`partitions_deferred`,
 `partitions_not_created`) and retried by the next run, while the run stays
 green. The run turns `partial` -- or fails, if it also made no progress -- only
 for work missed on consecutive nights (`partitions_overdue`, or a forward
-window down to three days). `KorTravelWeatherRetentionStale` pages when the
+window down to three days). A miss is counted from real attempts: a deferred
+day is marked with a table comment, and is overdue only when an earlier run
+had marked it -- a night the job did not run is not a miss. Detach and drop
+are separate transactions; while a detached day waits for its drop no further
+day is detached, so at most one ever waits, and only the source records it
+cites are held back from the source purge. After three deferred steps in a row
+the run stops trying (`partition_ddl_stopped`) rather than spend its 2h cap. `KorTravelWeatherRetentionStale` pages when the
 oldest dated partition (`ktw_oldest_partition_age_days`) is more than
 retention + 2 days old.
 
