@@ -503,3 +503,47 @@ def test_a_validation_that_times_out_leaves_the_key_not_valid(
     monkeypatch.undo()
     assert repository._validate_fact_foreign_keys() is True
     assert _foreign_keys_valid(repository)
+
+
+def test_only_the_drop_waits_for_location_readers(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review LOW3 (6c88c01): create and detach take SHARE ROW EXCLUSIVE on
+    ``weather_locations``, which API readers do not block, so their retries
+    must not wait for those readers; the drop (ACCESS EXCLUSIVE) must."""
+    import time as clock
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import OperationalError
+
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 2)
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_RETRY_SECONDS", 4.0)
+
+    def lose_once():
+        calls: list[int] = []
+
+        def step(connection):
+            calls.append(1)
+            if len(calls) == 1:
+                raise OperationalError("LOCK", {}, SimpleNamespace(sqlstate="55P03"))
+            return True
+
+        return step
+
+    with _LocationReader(repository):
+        began = clock.monotonic()
+        assert repository._try_partition_ddl(lose_once()) == (True, True)
+        default_wait = clock.monotonic() - began
+        began = clock.monotonic()
+        assert repository._try_partition_ddl(
+            lose_once(), quiet_on=repository_module._DETACHED_DROP_HOT_TABLES
+        ) == (True, True)
+        drop_wait = clock.monotonic() - began
+    assert default_wait < 2.0, default_wait
+    assert drop_wait >= 3.5, drop_wait
+
+
+def test_marking_a_day_another_run_dropped_is_skipped(repository: WeatherRepository) -> None:
+    """Review LOW2 (6c88c01): the day can vanish between the deferral and the
+    mark; that is no reason to fail the run."""
+    assert repository._mark_deferred("weather_values_19990101") is False
