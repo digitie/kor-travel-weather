@@ -49,7 +49,7 @@ from sqlalchemy import (
     values,
 )
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -676,10 +676,14 @@ PARTITION_DDL_ATTEMPTS = 6
 PARTITION_DDL_RETRY_SECONDS = 30.0
 #: How often ``_await_quiet_tables`` looks at ``pg_locks``.
 PARTITION_DDL_QUIET_POLL_SECONDS = 0.2
-#: What a partition-DDL step waits to find unlocked by anyone else.  Every
-#: ingest transaction holds the first two for its whole length; the API reads
-#: locations, and dropping a detached day needs it exclusively.
-_PARTITION_DDL_HOT_TABLES = (VALUES_TABLE, "weather_source_records", "weather_locations")
+#: What a partition-DDL step waits to find unlocked by anyone else: every
+#: ingest transaction holds both for its whole length.
+_PARTITION_DDL_HOT_TABLES = (VALUES_TABLE, "weather_source_records")
+#: The drop of a detached day also needs ACCESS EXCLUSIVE on the locations the
+#: API reads, so only that step waits for them too.  Create and detach take
+#: SHARE ROW EXCLUSIVE there, which readers do not block: waiting on them
+#: would only slow every retry and trip the circuit breaker sooner.
+_DETACHED_DROP_HOT_TABLES = (*_PARTITION_DDL_HOT_TABLES, "weather_locations")
 #: Consecutive deferred steps after which a run stops trying (and reports the
 #: rest as deferred), so a backlog of lost races cannot eat the run's 2h cap.
 PARTITION_DDL_DEFERRAL_LIMIT = 3
@@ -3021,7 +3025,12 @@ class WeatherRepository:
             raise error
         return result  # type: ignore[return-value]
 
-    def _try_partition_ddl(self, step: Callable[[Connection], _T]) -> tuple[bool, _T | None]:
+    def _try_partition_ddl(
+        self,
+        step: Callable[[Connection], _T],
+        *,
+        quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+    ) -> tuple[bool, _T | None]:
         """``_partition_ddl`` that returns ``(False, None)`` instead of raising
         when every attempt lost its lock race: the step is deferred.
 
@@ -3030,7 +3039,7 @@ class WeatherRepository:
         """
         if self._ddl_stopped():
             return False, None
-        done, result, _ = self._attempt_partition_ddl(step)
+        done, result, _ = self._attempt_partition_ddl(step, quiet_on=quiet_on)
         self._deferrals_in_a_row = 0 if done else getattr(self, "_deferrals_in_a_row", 0) + 1
         return done, result
 
@@ -3038,12 +3047,15 @@ class WeatherRepository:
         return getattr(self, "_deferrals_in_a_row", 0) >= PARTITION_DDL_DEFERRAL_LIMIT
 
     def _attempt_partition_ddl(
-        self, step: Callable[[Connection], _T]
+        self,
+        step: Callable[[Connection], _T],
+        *,
+        quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
     ) -> tuple[bool, _T | None, OperationalError | None]:
         last: OperationalError | None = None
         for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
             if attempt > 1:
-                self._await_quiet_tables(PARTITION_DDL_RETRY_SECONDS)
+                self._await_quiet_tables(PARTITION_DDL_RETRY_SECONDS, quiet_on)
             try:
                 with self.engine.begin() as connection:
                     connection.execute(
@@ -3056,7 +3068,9 @@ class WeatherRepository:
                 last = exc
         return False, None, last
 
-    def _await_quiet_tables(self, max_seconds: float) -> None:
+    def _await_quiet_tables(
+        self, max_seconds: float, tables: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES
+    ) -> None:
         """Wait, up to ``max_seconds``, for no other session to lock the hot tables.
 
         Polls ``pg_locks`` on its own connection, holding no table lock, so the
@@ -3065,7 +3079,7 @@ class WeatherRepository:
         deadline = time.monotonic() + max_seconds
         with self.engine.connect() as connection:
             while True:
-                busy = other_sessions_locking(connection, _PARTITION_DDL_HOT_TABLES)
+                busy = other_sessions_locking(connection, tables)
                 connection.rollback()
                 if not busy or time.monotonic() >= deadline:
                     return
@@ -3194,7 +3208,8 @@ class WeatherRepository:
         for name in leftovers:
             attempted = not self._ddl_stopped()
             done, _ = self._try_partition_ddl(
-                lambda connection, name=name: self._drop_detached(connection, name)
+                lambda connection, name=name: self._drop_detached(connection, name),
+                quiet_on=_DETACHED_DROP_HOT_TABLES,
             )
             if done:
                 dropped.append(name)
@@ -3215,7 +3230,8 @@ class WeatherRepository:
                 continue
             attempted = not self._ddl_stopped()
             done, _ = self._try_partition_ddl(
-                lambda connection, name=name: self._drop_detached(connection, name)
+                lambda connection, name=name: self._drop_detached(connection, name),
+                quiet_on=_DETACHED_DROP_HOT_TABLES,
             )
             if done:
                 dropped.append(name)
@@ -3231,6 +3247,12 @@ class WeatherRepository:
                 return mark_deferred(connection, name)
         except OperationalError as exc:
             if not is_lock_conflict(exc):
+                raise
+            return False
+        except ProgrammingError as exc:
+            # UndefinedTable: another run dropped the day meanwhile.  Nothing
+            # left to mark, and no reason to fail this run.
+            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "42P01":
                 raise
             return False
 
