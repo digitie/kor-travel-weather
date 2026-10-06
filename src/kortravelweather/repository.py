@@ -2987,11 +2987,17 @@ class WeatherRepository:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
-            # Only for this transaction, and only DELETE: see PURGE_GUC.
-            session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
-            sources = session.execute(
-                text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": cutoff}
-            ).rowcount
+            sources = 0
+            # A detached table whose drop was deferred still holds facts that
+            # cite source records (ON DELETE RESTRICT), and the purge below
+            # looks only at weather_values: it would fail on them.  Their
+            # sources wait for the run that drops the table.
+            if not detached_leftovers(session.connection()):
+                # Only for this transaction, and only DELETE: see PURGE_GUC.
+                session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+                sources = session.execute(
+                    text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": cutoff}
+                ).rowcount
             stranded = default_partition_rows(session.connection())
         report = PurgeReport(
             cutoff=cutoff,
@@ -3178,9 +3184,11 @@ class WeatherRepository:
             )
             (dropped if done else deferred).append(name)
         for name in expired:
-            done, _ = self._try_partition_ddl(
+            done, detached = self._try_partition_ddl(
                 lambda connection, name=name: self._detach_expired(connection, name)
             )
+            if done and not detached:
+                continue  # gone already: not this run's to report
             if done:
                 done, _ = self._try_partition_ddl(
                     lambda connection, name=name: self._drop_detached(connection, name)

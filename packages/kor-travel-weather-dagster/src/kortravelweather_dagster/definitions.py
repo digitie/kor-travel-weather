@@ -1232,7 +1232,8 @@ regional_weather_schedule = _weather_schedule(
 # transactions are.  Shared Dagster run history 2026-10-04..07: 01:45-02:55 KST
 # averaged 0.3-1.0 concurrent weather runs, and nothing heavy starts until the
 # three-hourly external sweep at 03:15 -- which is where the old 03:20 slot sat
-# (about four concurrent runs; three of its last six runs failed).  The hourly
+# (about four concurrent runs; four of its last six runs failed: three lock
+# timeouts and one deadlock).  The hourly
 # KMA/AirKorea ticks at 02:00-02:10 are short (p50 1-7 min) and the job's
 # spaced retries wait them out.
 daily_weather_retention_schedule = _weather_schedule(
