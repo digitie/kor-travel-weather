@@ -21,6 +21,15 @@ common의 `coalescing_schedule`로 동일 job의 미종결 실행이 있으면 t
 정리한다. 늦게 돌아온 worker는 heartbeat·publish CAS에서 실패하고 회수 상태를 덮지 못한다.
 수집 시작/reconcile의 DB lock·statement·connection 대기에도 상한을 둔다.
 
+같은 provider/dataset의 `running` 행이 있을 때 새 수집의 시작은 앞 run의 lease로 갈린다
+(소유자 결정 2026-10-06). heartbeat가 3시간 lease 안이면 앞 run이 일을 하고 있으므로 새
+run은 `SyncRunAlreadyActive`를 받아 **SUCCESS(skip)**로 끝난다 — 로그 한 줄과 metadata
+(`reason=already_running`, 앞 run ID, heartbeat)를 남기고, `weather_sync_runs` 행은 만들지 않으며
+실패 지표에도 세지 않는다(`ktw_sync_runs_overlap_skipped_total`만 는다). 모든 수집 asset을
+`skips_live_overlap`이 감싸므로 새 수집 asset도 자동으로 따른다. 외부 provider는 dataset별로
+skip을 남긴다. lease가 만료된 앞 행과 겹치면 지금처럼 `RuntimeError`로 실패한다 — 그 run은
+더 이상 일하지 않으므로 누군가 봐야 한다(회수는 recovery sensor가 한다).
+
 ## 메모리와 부분 게시
 
 KMA 격자·중기·특보는 약 5,000 normalized fact가 모이면 location별 짧은 transaction으로 게시하고 버퍼를
