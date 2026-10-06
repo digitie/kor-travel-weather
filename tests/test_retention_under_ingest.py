@@ -335,3 +335,170 @@ def test_a_deferred_drop_leaves_the_sources_it_cites_for_the_next_run(
         assert connection.execute(
             text("SELECT to_regclass(:t)"), {"t": expired}
         ).scalar_one() is None
+
+
+class _LocationReader:
+    """A session that keeps reading ``weather_locations`` -- the API does.
+
+    It holds ACCESS SHARE on the table, which only the drop of a detached
+    partition conflicts with (ACCESS EXCLUSIVE on the referenced tables).
+    """
+
+    def __init__(self, repository: WeatherRepository) -> None:
+        self._connection = repository.engine.connect()
+
+    def __enter__(self) -> _LocationReader:
+        self._transaction = self._connection.begin()
+        self._connection.execute(text("SELECT count(*) FROM weather_locations"))
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._transaction.rollback()
+        self._connection.close()
+
+
+def _stage_fact(repository: WeatherRepository, key: str, *, days_ago: int, fact: bool) -> None:
+    at = kst_now() - timedelta(days=days_ago)
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO weather_source_records (source_record_key, provider, "
+                "dataset_key, source_entity_type, source_entity_id, raw_payload_hash, "
+                "payload, fetched_at, imported_at) VALUES (:key, 'p', 'd', "
+                "'weather_response', 'ingest', :key, '{}', :at, :at)"
+            ),
+            {"key": key, "at": at},
+        )
+        if fact:
+            connection.execute(
+                text(
+                    "INSERT INTO weather_values (value_id, location_id, provider, "
+                    "dataset_key, weather_domain, forecast_style, metric_key, target_at, "
+                    "known_at, normalization_version, payload, collected_at, "
+                    "source_record_key, value_number) VALUES (:key, 'ingest', 'p', 'd', "
+                    "'weather', 'short', 'TMP', :at, :at, 'test', '{}', :at, :key, 1)"
+                ),
+                {"key": key, "at": at},
+            )
+
+
+def _source_exists(repository: WeatherRepository, key: str) -> bool:
+    with repository.engine.connect() as connection:
+        return bool(
+            connection.execute(
+                text("SELECT count(*) FROM weather_source_records WHERE source_record_key = :k"),
+                {"k": key},
+            ).scalar_one()
+        )
+
+
+def _leftovers(repository: WeatherRepository) -> list[str]:
+    from kortravelweather.partitions import detached_leftovers
+
+    with repository.engine.connect() as connection:
+        return [name for name, _ in detached_leftovers(connection)]
+
+
+def test_a_drop_held_by_a_location_reader_does_not_pile_up_detached_days(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review MED (db10c64): detach succeeds, the drop keeps losing.
+
+    Before: every expired day was detached anyway, the detached tables piled
+    up out of sight of the staleness gauge, the whole source purge stopped,
+    and the run stayed green.  Now no further day is detached behind a
+    deferred drop, the gauge counts the leftover, only the sources the
+    leftover cites wait, and a second consecutive miss is overdue -- counted
+    from real attempts, not from the calendar (both days are weeks past due
+    by date, but the job never tried them before).
+    """
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 2)
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_RETRY_SECONDS", 0.3)
+    older = _stage_expired_partition(repository, days_ago=12)
+    newer = _stage_expired_partition(repository, days_ago=11)
+    _stage_fact(repository, "cited", days_ago=12, fact=True)
+    _stage_fact(repository, "loose", days_ago=12, fact=False)
+
+    with _LocationReader(repository):
+        first = repository.purge_expired_history(retention_days=2, ahead_days=7)
+        assert first.partitions_dropped == ()
+        assert first.partitions_deferred == (older, newer)
+        assert first.partitions_overdue == ()  # never attempted before tonight
+        assert _leftovers(repository) == [older]
+        assert newer in _names(repository)  # not detached behind the deferred drop
+        assert repository.oldest_partition_age_days() == 12
+        assert _source_exists(repository, "cited")
+        assert not _source_exists(repository, "loose")
+
+        second = repository.purge_expired_history(retention_days=2, ahead_days=7)
+        assert second.partitions_deferred == (older, newer)
+        # The leftover's drop lost on the previous run too; the newer day was
+        # never attempted, so it is not a miss.
+        assert second.partitions_overdue == (older,)
+
+    third = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert third.partitions_dropped == (older, newer)
+    assert third.partitions_deferred == ()
+    assert _leftovers(repository) == []
+    assert not _source_exists(repository, "cited")
+    assert _foreign_keys_valid(repository)
+
+
+def test_three_deferrals_in_a_row_stop_the_run(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backlog of lost races must not eat the run's 2h cap: after three
+    consecutive deferred steps the run stops trying and reports the rest."""
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 2)
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_RETRY_SECONDS", 0.2)
+    calls: list[int] = []
+    original = repository_module.lock_for_partition_ddl
+
+    def counting(connection, **kwargs):
+        calls.append(1)
+        return original(connection, **kwargs)
+
+    monkeypatch.setattr(repository_module, "lock_for_partition_ddl", counting)
+    today = kst_now().date()
+    beyond = tuple(partition_name(today + timedelta(days=n)) for n in range(8, 13))
+    holder = repository.engine.connect()
+    transaction = holder.begin()
+    holder.execute(text("LOCK TABLE weather_values IN ROW EXCLUSIVE MODE"))
+    try:
+        report = repository.purge_expired_history(retention_days=2, ahead_days=12)
+    finally:
+        transaction.rollback()
+        holder.close()
+    assert report.partitions_not_created == beyond
+    assert report.partition_ddl_stopped is True
+    assert len(calls) == 3 * 2  # three steps of two attempts, then nothing
+
+
+def test_a_validation_that_times_out_leaves_the_key_not_valid(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The end-of-run VALIDATE scans the projection; past its statement
+    timeout it gives up and the next run validates instead."""
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import OperationalError
+
+    from kortravelweather.partitions import (
+        VALIDATE_STATEMENT_TIMEOUT,
+        drop_foreign_keys_into_facts,
+        readd_foreign_keys_not_valid,
+    )
+
+    assert VALIDATE_STATEMENT_TIMEOUT == "10min"
+    with repository.engine.begin() as connection:
+        readd_foreign_keys_not_valid(connection, drop_foreign_keys_into_facts(connection))
+
+    def timed_out(connection):
+        raise OperationalError("VALIDATE", {}, SimpleNamespace(sqlstate="57014"))
+
+    monkeypatch.setattr(repository_module, "validate_foreign_keys_into_facts", timed_out)
+    assert repository._validate_fact_foreign_keys() is False
+    assert not _foreign_keys_valid(repository)
+    monkeypatch.undo()
+    assert repository._validate_fact_foreign_keys() is True
+    assert _foreign_keys_valid(repository)
