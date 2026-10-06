@@ -579,3 +579,45 @@ def test_kma_skip_counters_start_at_zero_under_multiprocess(tmp_path) -> None:
                 f'ktw_sync_values_skipped_total{{dataset="{dataset}",'
                 f'provider="python-kma-api",reason="{reason}"}} 0.0'
             ) in scraper.stdout, (dataset, reason)
+
+
+def test_the_oldest_partition_age_is_exported_by_the_api_scrape_only() -> None:
+    """Retention's staleness signal rides on the forward-window catalog read.
+
+    Same contract as ``ktw_forward_partition_days``: computed per scrape by
+    the API, never served from the shared payload the code-server writes to.
+    """
+    from types import SimpleNamespace
+
+    assert b"ktw_oldest_partition_age_days" not in metrics_payload()
+    admin_token = "admin-token-for-metrics-tests-1234"
+    metrics_token = "metrics-token-for-scrape-tests-5678"
+    settings = WeatherSettings(
+        _env_file=None,
+        environment="production",
+        database_url="postgresql+psycopg://weather@127.0.0.1:15432/weather_test",
+        admin_token=admin_token,
+        metrics_token=metrics_token,
+    )
+    repository = SimpleNamespace(
+        forward_partition_days=lambda: 7, oldest_partition_age_days=lambda: 17
+    )
+    client = TestClient(create_app(settings, repository=repository))
+    scraped = client.get("/metrics", headers={"authorization": f"Bearer {metrics_token}"})
+    assert scraped.status_code == 200
+    lines = scraped.text.splitlines()
+    assert "ktw_oldest_partition_age_days 17.0" in lines
+    assert "ktw_forward_partition_days 7.0" in lines
+    assert b"ktw_oldest_partition_age_days" not in metrics_payload()
+
+
+def test_the_retention_stale_alert_is_retention_plus_two_days_on_the_api() -> None:
+    """Production keeps 16 days (KOR_TRAVEL_WEATHER_RETENTION_DAYS on the
+    code-server); the API, which computes the sample, does not carry that
+    setting, so the threshold lives in the rule: 16 + 2."""
+    rule = _alert_rules()["KorTravelWeatherRetentionStale"]
+    assert (
+        'max(ktw_oldest_partition_age_days{job="kor-travel-weather-api"}) > 18'
+        in " ".join(rule["expr"].split())
+    )
+    assert rule["for"] == "30m"

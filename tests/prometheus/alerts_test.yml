@@ -284,3 +284,42 @@ tests:
             exp_annotations:
               summary: "KMA values are missing beyond one routine station outage"
               description: "python-kma-api/kma_ultra_short_nowcast dropped more than 60 Missing-sentinel values over the last 3h30m, for an hour. For the hourly nowcast that is a third offline station (one drops 21-28); runs stay success until ~10% of a run is missing. Check which stations or grids are blank."
+
+  # Retention staleness.  The oldest dated partition is 16 days old right
+  # after a nightly drop (RETENTION_DAYS=16 in production) and 17 just before
+  # the next one; one missed night makes it 18.  Over 18 is two consecutive
+  # nights without a drop.  Only the API computes the sample.
+  - interval: 1m
+    input_series:
+      - series: 'ktw_oldest_partition_age_days{job="kor-travel-weather-api"}'
+        values: '16x59 17x59 18x59 19x59'
+      - series: 'ktw_oldest_partition_age_days{job="kor-travel-weather-dagster"}'
+        values: '40x239'
+    alert_rule_test:
+      - eval_time: 2h30m
+        alertname: KorTravelWeatherRetentionStale
+        exp_alerts: []
+      - eval_time: 3h20m
+        alertname: KorTravelWeatherRetentionStale
+        exp_alerts: []
+      - eval_time: 3h45m
+        alertname: KorTravelWeatherRetentionStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "weather_values retention has not dropped a day for two nights"
+              description: "The oldest dated weather_values partition is 19 days old; RETENTION_DAYS is 16 and the nightly weather_retention_job keeps it at 16-17. Check that job's runs: deferred or overdue partitions are listed in its metadata."
+
+  # Before production's first day expires (about 2026-10-19) the oldest
+  # partition is younger than the window: nothing to page.  The sample
+  # disappearing is KorTravelWeatherForwardPartitionsUnknown's job, since
+  # both come from the same catalog read.
+  - interval: 1m
+    input_series:
+      - series: 'ktw_oldest_partition_age_days{job="kor-travel-weather-api"}'
+        values: '4x239'
+    alert_rule_test:
+      - eval_time: 3h59m
+        alertname: KorTravelWeatherRetentionStale
+        exp_alerts: []
