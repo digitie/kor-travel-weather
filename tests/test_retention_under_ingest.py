@@ -275,3 +275,63 @@ def test_the_oldest_partition_age_is_observable(repository: WeatherRepository) -
     assert b"ktw_oldest_partition_age_days 20.0" in exposition
     repository.purge_expired_history(retention_days=16, ahead_days=7)
     assert repository.oldest_partition_age_days() == 1
+
+
+def test_a_deferred_drop_leaves_the_sources_it_cites_for_the_next_run(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Detach and drop are separate transactions, so a drop can be deferred.
+
+    The detached table still holds its facts and their foreign key to the
+    source records (``ON DELETE RESTRICT``), while the source purge looks only
+    at ``weather_values``: purging those sources would fail the run.  They wait
+    for the run that drops the table.
+    """
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import OperationalError
+
+    expired = _stage_expired_partition(repository, days_ago=10)
+    known_at = kst_now() - timedelta(days=10)
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO weather_source_records (source_record_key, provider, "
+                "dataset_key, source_entity_type, source_entity_id, raw_payload_hash, "
+                "payload, fetched_at, imported_at) VALUES ('old', 'p', 'd', "
+                "'weather_response', 'ingest', 'old', '{}', :at, :at)"
+            ),
+            {"at": known_at},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO weather_values (value_id, location_id, provider, dataset_key, "
+                "weather_domain, forecast_style, metric_key, target_at, known_at, "
+                "normalization_version, payload, collected_at, source_record_key, "
+                "value_number) VALUES ('old', 'ingest', 'p', 'd', 'weather', 'short', "
+                "'TMP', :at, :at, 'test', '{}', :at, 'old', 1)"
+            ),
+            {"at": known_at},
+        )
+
+    def lost_race(connection):
+        raise OperationalError("LOCK TABLE", {}, SimpleNamespace(sqlstate="55P03"))
+
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
+    monkeypatch.setattr(repository_module, "lock_for_detached_drop", lost_race)
+    report = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert report.partitions_deferred == (expired,)
+    assert report.sources_deleted == 0
+    assert expired not in _names(repository)  # detached, not dropped
+
+    monkeypatch.undo()
+    report = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert report.partitions_dropped == (expired,)
+    assert report.sources_deleted >= 1
+    with repository.engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT count(*) FROM weather_source_records WHERE source_record_key = 'old'")
+        ).scalar_one() == 0
+        assert connection.execute(
+            text("SELECT to_regclass(:t)"), {"t": expired}
+        ).scalar_one() is None
