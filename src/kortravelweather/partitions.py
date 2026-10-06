@@ -620,9 +620,35 @@ def oldest_partition_age_days(connection: Connection, *, today: date) -> int | N
     ``None`` when there is no dated partition.
     """
     days = [day for _, day in existing_partitions(connection) if day is not None]
+    # A detached table whose drop keeps losing still holds the day's rows and
+    # the space: it counts, or a drop failing every night would look healthy.
+    days += [day for _, day in detached_leftovers(connection)]
     if not days:
         return None
     return (today - min(days)).days
+
+
+#: Retention's mark on a day it tried and could not finish.  Kept on the
+#: relation itself (a table comment): it survives the detach, goes with the
+#: drop, and needs no table of its own.  ``partitions_overdue`` is "deferred
+#: tonight and marked by an earlier run" -- a miss is counted only for a run
+#: that actually tried.
+DEFERRAL_MARK = "kortravelweather retention: deferred"
+
+
+def mark_deferred(connection: Connection, name: str) -> bool:
+    """Mark ``name`` deferred; return whether an earlier run had marked it.
+
+    ``COMMENT`` takes SHARE UPDATE EXCLUSIVE on the table: on an expired day
+    nobody writes to, that is free.  Bounded all the same; a mark that cannot
+    be written just costs the next run its "overdue".
+    """
+    prior = connection.execute(
+        text("SELECT obj_description(to_regclass(:t), 'pg_class')"), {"t": name}
+    ).scalar_one_or_none()
+    connection.execute(text(f"SET LOCAL lock_timeout = '{ddl_lock_timeout_ms(connection)}ms'"))
+    connection.execute(text(f"COMMENT ON TABLE {name} IS '{DEFERRAL_MARK}'"))
+    return bool(prior) and str(prior).startswith(DEFERRAL_MARK)
 
 
 #: ``default_partition_rows`` stops counting here: it runs nightly, and a full
@@ -649,6 +675,12 @@ def default_partition_rows(connection: Connection) -> int:
     )
 
 
+#: The end-of-run VALIDATE reads the whole projection.  Past this it is
+#: cancelled and the key stays ``NOT VALID`` (new rows are still checked);
+#: the next run validates it.
+VALIDATE_STATEMENT_TIMEOUT = "10min"
+
+
 def validate_foreign_keys_into_facts(connection: Connection) -> list[str]:
     """Validate what ``readd_foreign_keys_not_valid`` left unvalidated.
 
@@ -658,6 +690,7 @@ def validate_foreign_keys_into_facts(connection: Connection) -> list[str]:
     points at a fact that is gone (see ``delete_dangling_projection_rows``).
     """
     connection.execute(text(f"SET LOCAL lock_timeout = '{ddl_lock_timeout_ms(connection)}ms'"))
+    connection.execute(text(f"SET LOCAL statement_timeout = '{VALIDATE_STATEMENT_TIMEOUT}'"))
     validated: list[str] = []
     for table, name in unvalidated_foreign_keys_into_facts(connection):
         connection.execute(text(f"ALTER TABLE {table} VALIDATE CONSTRAINT {name}"))

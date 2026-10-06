@@ -85,6 +85,7 @@ from .partitions import (
     kst_midnight,
     lock_for_detached_drop,
     lock_for_partition_ddl,
+    mark_deferred,
     missing_forward_days,
     oldest_partition_age_days,
     other_sessions_locking,
@@ -675,9 +676,13 @@ PARTITION_DDL_ATTEMPTS = 6
 PARTITION_DDL_RETRY_SECONDS = 30.0
 #: How often ``_await_quiet_tables`` looks at ``pg_locks``.
 PARTITION_DDL_QUIET_POLL_SECONDS = 0.2
-#: What a partition-DDL step must find unlocked by anyone else: every ingest
-#: transaction holds both for its whole length.
-_PARTITION_DDL_HOT_TABLES = (VALUES_TABLE, "weather_source_records")
+#: What a partition-DDL step waits to find unlocked by anyone else.  Every
+#: ingest transaction holds the first two for its whole length; the API reads
+#: locations, and dropping a detached day needs it exclusively.
+_PARTITION_DDL_HOT_TABLES = (VALUES_TABLE, "weather_source_records", "weather_locations")
+#: Consecutive deferred steps after which a run stops trying (and reports the
+#: rest as deferred), so a backlog of lost races cannot eat the run's 2h cap.
+PARTITION_DDL_DEFERRAL_LIMIT = 3
 
 #: Lock-race retries for one ingest transaction.  Every ingest runs under
 #: ``ddl_lock_timeout_ms`` (three ``deadlock_timeout``s), the same bound the
@@ -728,28 +733,6 @@ class SyncRunAlreadyActive(RuntimeError):
             f"{active_run_id or '(concurrent insert)'}"
         )
 
-
-def _dated_name_day(name: str) -> date | None:
-    """The KST day a ``weather_values_YYYYMMDD`` partition is named for."""
-    try:
-        return datetime.strptime(name.rsplit("_", 1)[1], "%Y%m%d").date()
-    except (IndexError, ValueError):
-        return None
-
-
-def _overdue(deferred: Sequence[str], cutoff: date) -> tuple[str, ...]:
-    """Deferred days that were already due on the previous night's run.
-
-    A day is due once it ends before the cutoff, and the cutoff moves one day
-    per nightly run, so a deferred day that ended two days before it was
-    deferred last night too: the second miss in a row.
-    """
-    overdue: list[str] = []
-    for name in deferred:
-        day = _dated_name_day(name)
-        if day is not None and day + timedelta(days=2) <= cutoff:
-            overdue.append(name)
-    return tuple(overdue)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2968,6 +2951,7 @@ class WeatherRepository:
             raise ValueError("retention_days는 1 이상이어야 합니다.")
         cutoff = kst_now() - timedelta(days=retention_days)
         today = kst_now().date()
+        self._deferrals_in_a_row = 0
         created, not_created, floor = self._extend_forward_window(
             start=today, end=today + timedelta(days=ahead_days)
         )
@@ -2981,23 +2965,27 @@ class WeatherRepository:
                 text("DELETE FROM weather_current_values WHERE known_at < :cutoff"),
                 {"cutoff": cutoff},
             ).rowcount
-        dropped, deferred = self._drop_expired_partitions(cutoff.date())
+        dropped, deferred, overdue = self._drop_expired_partitions(cutoff.date())
         validation_deferred = not self._validate_fact_foreign_keys()
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
-            sources = 0
             # A detached table whose drop was deferred still holds facts that
-            # cite source records (ON DELETE RESTRICT), and the purge below
-            # looks only at weather_values: it would fail on them.  Their
-            # sources wait for the run that drops the table.
-            if not detached_leftovers(session.connection()):
-                # Only for this transaction, and only DELETE: see PURGE_GUC.
-                session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
-                sources = session.execute(
-                    text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": cutoff}
-                ).rowcount
+            # cite source records (ON DELETE RESTRICT), and the purge looks
+            # only at weather_values: those sources wait for the run that
+            # drops the table; every other expired source goes now.  The names
+            # come from the catalog and match weather_values_[0-9]{8}.
+            held = "".join(
+                f' AND NOT EXISTS (SELECT 1 FROM "{name}" lv '
+                "WHERE lv.source_record_key = sr.source_record_key)"
+                for name, _ in detached_leftovers(session.connection())
+            )
+            # Only for this transaction, and only DELETE: see PURGE_GUC.
+            session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+            sources = session.execute(
+                text(PURGE_SOURCE_RECORDS_SQL + held), {"cutoff": cutoff}
+            ).rowcount
             stranded = default_partition_rows(session.connection())
         report = PurgeReport(
             cutoff=cutoff,
@@ -3005,8 +2993,9 @@ class WeatherRepository:
             partitions_not_created=tuple(not_created),
             partitions_dropped=tuple(dropped),
             partitions_deferred=tuple(deferred),
-            partitions_overdue=_overdue(deferred, cutoff.date()),
+            partitions_overdue=tuple(overdue),
             foreign_key_validation_deferred=validation_deferred,
+            partition_ddl_stopped=self._ddl_stopped(),
             pointers_deleted=int(pointers or 0),
             sources_deleted=int(sources or 0),
             rows_outside_any_partition=stranded,
@@ -3034,9 +3023,19 @@ class WeatherRepository:
 
     def _try_partition_ddl(self, step: Callable[[Connection], _T]) -> tuple[bool, _T | None]:
         """``_partition_ddl`` that returns ``(False, None)`` instead of raising
-        when every attempt lost its lock race: the step is deferred."""
+        when every attempt lost its lock race: the step is deferred.
+
+        After ``PARTITION_DDL_DEFERRAL_LIMIT`` deferrals in a row the run
+        stops trying: every later step is deferred without an attempt.
+        """
+        if self._ddl_stopped():
+            return False, None
         done, result, _ = self._attempt_partition_ddl(step)
+        self._deferrals_in_a_row = 0 if done else getattr(self, "_deferrals_in_a_row", 0) + 1
         return done, result
+
+    def _ddl_stopped(self) -> bool:
+        return getattr(self, "_deferrals_in_a_row", 0) >= PARTITION_DDL_DEFERRAL_LIMIT
 
     def _attempt_partition_ddl(
         self, step: Callable[[Connection], _T]
@@ -3162,12 +3161,18 @@ class WeatherRepository:
             created.extend(ensure_partitions(connection, start=day, end=day))
         return created, floor
 
-    def _drop_expired_partitions(self, cutoff: date) -> tuple[list[str], list[str]]:
-        """Detach and drop each expired day; return ``(dropped, deferred)``.
+    def _drop_expired_partitions(
+        self, cutoff: date
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Detach and drop each expired day; return ``(dropped, deferred, overdue)``.
 
-        Oldest first, and a detached day is dropped before the next is
-        detached, so a run cut short leaves at most one detached table behind
-        -- which the next run drops first.
+        Oldest first.  A detached table whose drop was deferred (this run or
+        an earlier one) is retried first, and while one is left no further
+        day is detached: at most one detached table ever waits, and the rest
+        stay attached where the staleness gauge and the queries see them.
+        Days held back that way, or by the circuit breaker, are deferred
+        without an attempt.  A day deferred after an attempt is marked
+        (``mark_deferred``); it is *overdue* when an earlier run had marked it.
         """
         with self.engine.connect() as connection:
             leftovers = [
@@ -3178,23 +3183,56 @@ class WeatherRepository:
             expired = [name for name, _ in expired_partitions(connection, cutoff)]
         dropped: list[str] = []
         deferred: list[str] = []
+        overdue: list[str] = []
+        held = False
+
+        def missed(name: str, *, attempted: bool) -> None:
+            deferred.append(name)
+            if attempted and self._mark_deferred(name):
+                overdue.append(name)
+
         for name in leftovers:
+            attempted = not self._ddl_stopped()
             done, _ = self._try_partition_ddl(
                 lambda connection, name=name: self._drop_detached(connection, name)
             )
-            (dropped if done else deferred).append(name)
+            if done:
+                dropped.append(name)
+            else:
+                missed(name, attempted=attempted)
+                held = True
         for name in expired:
+            if held or self._ddl_stopped():
+                missed(name, attempted=False)
+                continue
             done, detached = self._try_partition_ddl(
                 lambda connection, name=name: self._detach_expired(connection, name)
             )
             if done and not detached:
                 continue  # gone already: not this run's to report
+            if not done:
+                missed(name, attempted=True)
+                continue
+            attempted = not self._ddl_stopped()
+            done, _ = self._try_partition_ddl(
+                lambda connection, name=name: self._drop_detached(connection, name)
+            )
             if done:
-                done, _ = self._try_partition_ddl(
-                    lambda connection, name=name: self._drop_detached(connection, name)
-                )
-            (dropped if done else deferred).append(name)
-        return dropped, deferred
+                dropped.append(name)
+            else:
+                missed(name, attempted=attempted)
+                held = True
+        return dropped, deferred, overdue
+
+    def _mark_deferred(self, name: str) -> bool:
+        """``mark_deferred`` in its own short transaction; ``False`` if it could not."""
+        try:
+            with self.engine.begin() as connection:
+                return mark_deferred(connection, name)
+        except OperationalError as exc:
+            if not is_lock_conflict(exc):
+                raise
+            return False
 
     @staticmethod
     def _detach_expired(connection: Connection, name: str) -> bool:
@@ -3230,6 +3268,12 @@ class WeatherRepository:
             try:
                 done, _validated = self._try_partition_ddl(validate_foreign_keys_into_facts)
                 return done
+            except OperationalError as exc:
+                # VALIDATE_STATEMENT_TIMEOUT: the key stays NOT VALID (new rows
+                # are still checked) and the next run validates it.
+                if getattr(getattr(exc, "orig", None), "sqlstate", None) == "57014":
+                    return False
+                raise
             except IntegrityError:
                 with self.engine.begin() as connection:
                     delete_dangling_projection_rows(connection)

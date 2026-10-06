@@ -42,6 +42,7 @@ def retention_status(report: PurgeReport) -> RetentionStatus:
         report.partitions_deferred
         or report.partitions_not_created
         or report.foreign_key_validation_deferred
+        or report.partition_ddl_stopped
     ):
         return "deferred"
     return "ok"
@@ -73,6 +74,7 @@ def run_weather_retention_purge(
         "partitions_deferred": list(report.partitions_deferred),
         "partitions_overdue": list(report.partitions_overdue),
         "foreign_key_validation_deferred": report.foreign_key_validation_deferred,
+        "partition_ddl_stopped": report.partition_ddl_stopped,
         "pointers_deleted": report.pointers_deleted,
         "sources_deleted": report.sources_deleted,
         "rows_outside_any_partition": report.rows_outside_any_partition,

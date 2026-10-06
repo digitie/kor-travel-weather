@@ -199,8 +199,9 @@ def test_retention_defers_instead_of_failing_while_ingest_never_pauses(
     assert ingest.longest_wait < 5.0, ingest.longest_wait
     assert report.partitions_dropped == ()
     assert report.partitions_deferred == (expired,)
-    # 30 days old against a 2-day window: it was due long before tonight.
-    assert report.partitions_overdue == (expired,)
+    # 30 days past due by the calendar, but tonight is the first attempt: a
+    # miss is counted from real attempts (review of db10c64).
+    assert report.partitions_overdue == ()
     assert report.partitions_created == ()
     assert report.partitions_not_created == tuple(beyond)
     assert expired in _names(repository)
