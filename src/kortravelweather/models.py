@@ -274,13 +274,18 @@ class PurgeReport(BaseModel):
     #: Expired days whose detach or drop lost its lock race every attempt;
     #: the next run tries again.  One night's miss is not a failure.
     partitions_deferred: tuple[str, ...] = ()
-    #: Deferred days -- after a lost race, or held behind one -- whose earlier
-    #: attempt on a previous run was deferred too: the second real miss in a
-    #: row, which is what makes a run partial or failed.  A night the job did
-    #: not run, or a day it did not get to, is not a miss.
+    #: Deferred days that an earlier run had missed too -- tried and lost, or
+    #: skipped by the circuit breaker: the second miss in a row, which is what
+    #: makes a run partial or failed.  A night the job did not run, or a day
+    #: held back behind a waiting drop, is not a miss.
     partitions_overdue: tuple[str, ...] = ()
-    #: The run stopped trying after consecutive deferred steps (the circuit
-    #: breaker); whatever was left is reported as deferred / not created.
+    #: Missed days whose deferral mark (a table comment) kept losing its lock
+    #: race.  The next run is handed this list (``prior_unmarked``) so their
+    #: second miss is still overdue.
+    partitions_unmarked: tuple[str, ...] = ()
+    #: The run stopped trying after consecutive deferred steps of one kind
+    #: (forward creation, or detach/drop -- a circuit breaker each); whatever
+    #: was left is reported as deferred / not created.
     partition_ddl_stopped: bool = False
     #: The projection's foreign key is still ``NOT VALID`` after this run (new
     #: rows are checked; old ones are validated by the next run).

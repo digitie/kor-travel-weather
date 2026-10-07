@@ -628,27 +628,39 @@ def oldest_partition_age_days(connection: Connection, *, today: date) -> int | N
     return (today - min(days)).days
 
 
-#: Retention's mark on a day it tried and could not finish.  Kept on the
-#: relation itself (a table comment): it survives the detach, goes with the
-#: drop, and needs no table of its own.  ``partitions_overdue`` is "deferred
-#: tonight and marked by an earlier run" -- a miss is counted only for a run
-#: that actually tried.
+#: Retention's mark on a day that was due and not done: tried and lost, or
+#: skipped by the circuit breaker.  Kept on the relation itself (a table
+#: comment): it survives the detach, goes with the drop, and needs no table
+#: of its own.  ``partitions_overdue`` is "missed tonight and marked by an
+#: earlier run"; a day held back behind a waiting drop is not marked.
 DEFERRAL_MARK = "kortravelweather retention: deferred"
 
 
-def mark_deferred(connection: Connection, name: str) -> bool:
-    """Mark ``name`` deferred; return whether an earlier run had marked it.
+def deferral_marked(connection: Connection, name: str) -> bool | None:
+    """Whether an earlier run marked ``name``; ``None`` if the table is gone.
 
-    ``COMMENT`` takes SHARE UPDATE EXCLUSIVE on the table: on an expired day
-    nobody writes to, that is free.  Bounded all the same; a mark that cannot
-    be written just costs the next run its "overdue".
+    A catalog read: no lock on the table.
     """
-    prior = connection.execute(
-        text("SELECT obj_description(to_regclass(:t), 'pg_class')"), {"t": name}
-    ).scalar_one_or_none()
-    connection.execute(text(f"SET LOCAL lock_timeout = '{ddl_lock_timeout_ms(connection)}ms'"))
+    row = connection.execute(
+        text(
+            "SELECT to_regclass(:t) IS NOT NULL, obj_description(to_regclass(:t), 'pg_class')"
+        ),
+        {"t": name},
+    ).one()
+    if not row[0]:
+        return None
+    return bool(row[1]) and str(row[1]).startswith(DEFERRAL_MARK)
+
+
+def write_deferral_mark(connection: Connection, name: str, *, lock_timeout_ms: int) -> None:
+    """Mark ``name`` deferred.
+
+    ``COMMENT`` takes SHARE UPDATE EXCLUSIVE on the table -- free on an
+    expired day nobody writes to, but autovacuum holds the same lock, so it
+    can lose; the caller retries and records a mark that never lands.
+    """
+    connection.execute(text(f"SET LOCAL lock_timeout = '{int(lock_timeout_ms)}ms'"))
     connection.execute(text(f"COMMENT ON TABLE {name} IS '{DEFERRAL_MARK}'"))
-    return bool(prior) and str(prior).startswith(DEFERRAL_MARK)
 
 
 #: ``default_partition_rows`` stops counting here: it runs nightly, and a full

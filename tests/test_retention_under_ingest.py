@@ -643,7 +643,10 @@ class _CommentBlocker:
         self._held.set()
         waiting = False
         with self._engine.connect() as watcher:
-            while not self._stop.is_set():
+            while True:
+                # Read once more after the stop: the run may have returned
+                # within one poll of its last lost attempt.
+                stopping = self._stop.is_set()
                 now_waiting = bool(
                     watcher.execute(
                         text(
@@ -661,6 +664,8 @@ class _CommentBlocker:
                     ):
                         break
                 waiting = now_waiting
+                if stopping:
+                    break
                 time.sleep(0.02)
         transaction.rollback()
         holder.close()
