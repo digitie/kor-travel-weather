@@ -188,13 +188,20 @@ is **deferred**: listed in the run's metadata (`partitions_deferred`,
 `partitions_not_created`) and retried by the next run, while the run stays
 green. The run turns `partial` -- or fails, if it also made no progress -- only
 for work missed on consecutive nights (`partitions_overdue`, or a forward
-window down to three days). A miss is counted from real attempts: a deferred
-day is marked with a table comment, and is overdue only when an earlier run
-had marked it -- a night the job did not run is not a miss. Detach and drop
+window down to three days). A miss is a day that was due and not done -- tried
+and lost, or skipped by the circuit breaker: it is marked with a table comment,
+and is overdue only when an earlier run had marked it -- a night the job did
+not run is not a miss. The comment gets three short tries; one that still loses
+its lock race is listed in `partitions_unmarked`, recorded as an asset
+observation (no table lock, written even when the run fails) and handed to the
+next run, which counts it as marked. Detach and drop
 are separate transactions; while a detached day waits for its drop no further
-day is detached, so at most one ever waits, and only the source records it
+day is detached (those held-back days are not marked: the waiting drop is the
+miss), so at most one ever waits, and only the source records it
 cites are held back from the source purge. After three deferred steps in a row
-the run stops trying (`partition_ddl_stopped`) rather than spend its 2h cap. `KorTravelWeatherRetentionStale` pages when the
+of one kind -- forward creation, or detach/drop, each with its own breaker, so
+a stuck forward step cannot starve retention -- the run stops trying that kind
+(`partition_ddl_stopped`) rather than spend its 2h cap. `KorTravelWeatherRetentionStale` pages when the
 oldest dated partition (`ktw_oldest_partition_age_days`) is more than
 retention + 2 days old.
 

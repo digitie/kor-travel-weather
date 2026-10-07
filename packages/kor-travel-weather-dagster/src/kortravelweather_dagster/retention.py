@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 from kortravelweather.models import PurgeReport
@@ -14,7 +15,11 @@ RetentionStatus = Literal["ok", "deferred", "partial", "failed"]
 
 class _PurgeableRepository(Protocol):
     def purge_expired_history(
-        self, *, retention_days: int, ahead_days: int = ...
+        self,
+        *,
+        retention_days: int,
+        ahead_days: int = ...,
+        prior_unmarked: Sequence[str] = ...,
     ) -> PurgeReport: ...
 
 
@@ -53,6 +58,7 @@ def run_weather_retention_purge(
     repository: _PurgeableRepository,
     retention_days: int,
     ahead_days: int = 7,
+    prior_unmarked: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Drop the days past the window and describe what went.
 
@@ -60,9 +66,14 @@ def run_weather_retention_purge(
     says what retention did; that one says whether retention can still reach the
     data at all -- rows in the DEFAULT partition are never dropped, so a
     non-zero value is the table quietly starting to grow again.
+
+    ``prior_unmarked`` is the previous run's ``partitions_unmarked``: days it
+    missed whose table mark could not be written (see ``PurgeReport``).
     """
     report = repository.purge_expired_history(
-        retention_days=retention_days, ahead_days=ahead_days
+        retention_days=retention_days,
+        ahead_days=ahead_days,
+        prior_unmarked=tuple(prior_unmarked),
     )
     return {
         "status": retention_status(report),
@@ -73,6 +84,7 @@ def run_weather_retention_purge(
         "partitions_dropped": list(report.partitions_dropped),
         "partitions_deferred": list(report.partitions_deferred),
         "partitions_overdue": list(report.partitions_overdue),
+        "partitions_unmarked": list(report.partitions_unmarked),
         "foreign_key_validation_deferred": report.foreign_key_validation_deferred,
         "partition_ddl_stopped": report.partition_ddl_stopped,
         "pointers_deleted": report.pointers_deleted,

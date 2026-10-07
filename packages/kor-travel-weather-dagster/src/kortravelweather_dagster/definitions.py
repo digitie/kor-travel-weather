@@ -7,9 +7,11 @@ from dataclasses import dataclass
 
 from dagster import (
     AssetExecutionContext,
+    AssetObservation,
     DefaultScheduleStatus,
     Definitions,
     Failure,
+    MetadataValue,
     asset,
     define_asset_job,
     multiprocess_executor,
@@ -956,6 +958,21 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     return result
 
 
+#: Days a retention run missed but could not mark on their table (the
+#: ``COMMENT`` kept losing its lock race).  Kept in the run's own Dagster
+#: record -- an asset observation, which needs no table lock and no migration
+#: and is written even when the run then fails -- and handed to the next run.
+_UNMARKED_KEY = "partitions_unmarked"
+
+
+def _previous_unmarked(context: AssetExecutionContext) -> tuple[str, ...]:
+    """The previous retention run's ``partitions_unmarked``, from its observation."""
+    records = context.instance.fetch_observations(context.asset_key, limit=1).records
+    observation = records[0].asset_observation if records else None
+    value = observation.metadata.get(_UNMARKED_KEY) if observation else None
+    return tuple(str(name) for name in (getattr(value, "value", None) or ()))
+
+
 @asset(
     name="weather_retention_purge",
     required_resource_keys={"weather_repository"},
@@ -968,6 +985,17 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
         repository=repository,
         retention_days=runtime.retention_days,
         ahead_days=runtime.retention_ahead_days,
+        prior_unmarked=_previous_unmarked(context),
+    )
+    # Recorded before any Failure below: a failed run materializes nothing,
+    # and its lost marks must still reach the next run.
+    context.log_event(
+        AssetObservation(
+            asset_key=context.asset_key,
+            metadata={
+                _UNMARKED_KEY: MetadataValue.json(list(result[_UNMARKED_KEY])),
+            },
+        )
     )
     if result["default_floor"] is None:
         # No forward partition could be created: DEFAULT holds rows and has no
