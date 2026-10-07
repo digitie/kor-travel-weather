@@ -682,7 +682,7 @@ def test_a_mark_that_loses_its_lock_race_is_retried(
     expired = _stage_expired_partition(repository, days_ago=10)
 
     with _CommentBlocker(repository, expired, release_after=1) as blocker:
-        first = repository.purge_expired_history(retention_days=2, ahead_days=7)
+        first = repository.purge_expired_history(retention_days=2, ahead_days=0)
     assert blocker.lost_attempts == 1
     assert first.partitions_deferred == (expired,)
     assert first.partitions_unmarked == ()
@@ -703,7 +703,7 @@ def test_a_mark_that_never_lands_is_carried_by_the_run_record(
     expired = _stage_expired_partition(repository, days_ago=10)
 
     with _CommentBlocker(repository, expired, release_after=None) as blocker:
-        first = repository.purge_expired_history(retention_days=2, ahead_days=7)
+        first = repository.purge_expired_history(retention_days=2, ahead_days=0)
     assert blocker.lost_attempts == repository_module.DEFERRAL_MARK_ATTEMPTS
     assert first.partitions_deferred == (expired,)
     assert first.partitions_unmarked == (expired,)

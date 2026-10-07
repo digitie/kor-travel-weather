@@ -694,8 +694,10 @@ PARTITION_DDL_DEFERRAL_LIMIT = 3
 PARTITION_DDL_BREAKERS = ("forward", "retention")
 #: The deferral mark (``COMMENT ON TABLE``) gets a few short tries: it needs
 #: SHARE UPDATE EXCLUSIVE on the expired day, which only autovacuum or other
-#: DDL hold, and those briefly.  A mark that still loses is reported
-#: (``partitions_unmarked``) and handed to the next run instead.
+#: DDL hold.  The timeout is deliberately below ``deadlock_timeout`` (unlike
+#: ``ddl_lock_timeout_ms``): a longer autovacuum on that day wins all three
+#: tries rather than being cancelled for a comment.  A mark that still loses
+#: is reported (``partitions_unmarked``) and handed to the next run instead.
 DEFERRAL_MARK_ATTEMPTS = 3
 DEFERRAL_MARK_LOCK_TIMEOUT_MS = 500
 DEFERRAL_MARK_RETRY_SECONDS = 1.0
