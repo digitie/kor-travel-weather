@@ -532,11 +532,13 @@ def test_only_the_drop_waits_for_location_readers(
 
     with _LocationReader(repository):
         began = clock.monotonic()
-        assert repository._try_partition_ddl(lose_once()) == (True, True)
+        assert repository._try_partition_ddl(lose_once(), breaker="retention") == (True, True)
         default_wait = clock.monotonic() - began
         began = clock.monotonic()
         assert repository._try_partition_ddl(
-            lose_once(), quiet_on=repository_module._DETACHED_DROP_HOT_TABLES
+            lose_once(),
+            breaker="retention",
+            quiet_on=repository_module._DETACHED_DROP_HOT_TABLES,
         ) == (True, True)
         drop_wait = clock.monotonic() - began
     assert default_wait < 2.0, default_wait
@@ -545,5 +547,168 @@ def test_only_the_drop_waits_for_location_readers(
 
 def test_marking_a_day_another_run_dropped_is_skipped(repository: WeatherRepository) -> None:
     """Review LOW2 (6c88c01): the day can vanish between the deferral and the
-    mark; that is no reason to fail the run."""
-    assert repository._mark_deferred("weather_values_19990101") is False
+    mark; that is no reason to fail the run.  Nothing is left to mark, so no
+    mark is lost either: ``(marked before, written)`` is ``(False, True)``."""
+    assert repository._mark_deferred("weather_values_19990101") == (False, True)
+
+
+def _lost_race(*_: object) -> None:
+    from types import SimpleNamespace
+
+    from sqlalchemy.exc import OperationalError
+
+    raise OperationalError("LOCK TABLE", {}, SimpleNamespace(sqlstate="55P03"))
+
+
+def test_a_stuck_forward_step_does_not_starve_retention(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review LOW1 (dd99edd): the breaker counter was shared across steps.
+
+    Forward creation runs first, so three forward days lost in a row tripped
+    the breaker before any expired day was tried; those days were skipped
+    unmarked, never became overdue, and the run stayed ``deferred`` night
+    after night while nothing was dropped.  Forward creation and detach/drop
+    now keep a breaker each.
+    """
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
+    monkeypatch.setattr(WeatherRepository, "_create_forward_day", staticmethod(_lost_race))
+    expired = _stage_expired_partition(repository, days_ago=10)
+    today = kst_now().date()
+    beyond = tuple(partition_name(today + timedelta(days=n)) for n in range(8, 13))
+
+    report = repository.purge_expired_history(retention_days=2, ahead_days=12)
+
+    assert report.partitions_not_created == beyond
+    assert report.partition_ddl_stopped is True  # the forward breaker
+    assert report.partitions_dropped == (expired,)
+    assert report.partitions_deferred == ()
+    assert expired not in _names(repository)
+
+
+def test_days_the_breaker_skipped_on_consecutive_runs_are_overdue(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review LOW1 (dd99edd): a day that was due and skipped by the breaker
+    is a miss like one that was tried, so two runs in a row make it overdue.
+
+    Only a day held behind a waiting drop is still no miss (the leftover in
+    front of it is the one counted, see the pile-up test above).
+    """
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
+    monkeypatch.setattr(WeatherRepository, "_detach_expired", staticmethod(_lost_race))
+    days = tuple(_stage_expired_partition(repository, days_ago=n) for n in (14, 13, 12, 11))
+
+    first = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert first.partitions_deferred == days
+    assert first.partition_ddl_stopped is True  # three tried, the fourth skipped
+    assert first.partitions_overdue == ()
+
+    second = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert second.partitions_deferred == days
+    assert second.partitions_overdue == days
+
+
+class _CommentBlocker:
+    """Holds SHARE UPDATE EXCLUSIVE on one table -- what autovacuum holds --
+    so a ``COMMENT ON TABLE`` there loses its lock race.
+
+    ``release_after`` lost mark attempts, the hold ends (``None``: never,
+    until the block exits).  A lost attempt is seen as a waiter on the table
+    in ``pg_locks`` that went away again.
+    """
+
+    def __init__(self, repository: WeatherRepository, table: str, *, release_after: int | None):
+        self._engine = repository.engine
+        self._table = table
+        self._release_after = release_after
+        self._stop = threading.Event()
+        self._held = threading.Event()
+        self.lost_attempts = 0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> _CommentBlocker:
+        self._thread.start()
+        assert self._held.wait(30)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(60)
+
+    def _run(self) -> None:
+        holder = self._engine.connect()
+        transaction = holder.begin()
+        holder.execute(text(f"LOCK TABLE {self._table} IN SHARE UPDATE EXCLUSIVE MODE"))
+        self._held.set()
+        waiting = False
+        with self._engine.connect() as watcher:
+            while not self._stop.is_set():
+                now_waiting = bool(
+                    watcher.execute(
+                        text(
+                            "SELECT count(*) FROM pg_locks WHERE NOT granted "
+                            "AND relation = to_regclass(:t)"
+                        ),
+                        {"t": self._table},
+                    ).scalar_one()
+                )
+                watcher.rollback()
+                if waiting and not now_waiting:
+                    self.lost_attempts += 1
+                    if self._release_after is not None and (
+                        self.lost_attempts >= self._release_after
+                    ):
+                        break
+                waiting = now_waiting
+                time.sleep(0.02)
+        transaction.rollback()
+        holder.close()
+
+
+def test_a_mark_that_loses_its_lock_race_is_retried(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review LOW2 (dd99edd): one lost ``COMMENT ON TABLE`` race lost the mark,
+    and the next run undercounted "overdue".  The mark is retried a few times
+    with a short lock timeout."""
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
+    monkeypatch.setattr(WeatherRepository, "_detach_expired", staticmethod(_lost_race))
+    expired = _stage_expired_partition(repository, days_ago=10)
+
+    with _CommentBlocker(repository, expired, release_after=1) as blocker:
+        first = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert blocker.lost_attempts == 1
+    assert first.partitions_deferred == (expired,)
+    assert first.partitions_unmarked == ()
+
+    second = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert second.partitions_overdue == (expired,)
+
+
+def test_a_mark_that_never_lands_is_carried_by_the_run_record(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review LOW2 (dd99edd): when every retry loses, the run reports the day as
+    ``partitions_unmarked``; the next run is handed that list (the Dagster
+    asset reads it back from the previous run's record) and counts the day as
+    marked."""
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
+    monkeypatch.setattr(WeatherRepository, "_detach_expired", staticmethod(_lost_race))
+    expired = _stage_expired_partition(repository, days_ago=10)
+
+    with _CommentBlocker(repository, expired, release_after=None) as blocker:
+        first = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert blocker.lost_attempts == repository_module.DEFERRAL_MARK_ATTEMPTS
+    assert first.partitions_deferred == (expired,)
+    assert first.partitions_unmarked == (expired,)
+
+    second = repository.purge_expired_history(
+        retention_days=2, ahead_days=7, prior_unmarked=first.partitions_unmarked
+    )
+    assert second.partitions_overdue == (expired,)
+    assert second.partitions_unmarked == ()  # written tonight
+
+    # And from here on the mark itself carries it.
+    third = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert third.partitions_overdue == (expired,)

@@ -124,6 +124,71 @@ def test_the_asset_fails_only_on_consecutive_misses_with_no_progress() -> None:
     assert "weather_values_20260920" in str(caught.value.description)
 
 
+class _RecordingRepository:
+    """Hands out one report per run and records what each run was given."""
+
+    def __init__(self, *reports: PurgeReport) -> None:
+        self.reports = list(reports)
+        self.calls: list[dict[str, object]] = []
+
+    def purge_expired_history(self, **kwargs: object) -> PurgeReport:
+        self.calls.append(kwargs)
+        return self.reports.pop(0)
+
+
+def test_the_result_names_the_days_whose_mark_was_lost() -> None:
+    repository = _RecordingRepository(
+        _report(
+            partitions_deferred=("weather_values_20260920",),
+            partitions_unmarked=("weather_values_20260920",),
+        )
+    )
+    result = run_weather_retention_purge(
+        repository=repository,
+        retention_days=16,
+        prior_unmarked=("weather_values_20260919",),
+    )
+    assert result["partitions_unmarked"] == ["weather_values_20260920"]
+    assert repository.calls[0]["prior_unmarked"] == ("weather_values_20260919",)
+
+
+def test_a_lost_mark_reaches_the_next_run_through_the_run_record() -> None:
+    """Review LOW2 (dd99edd): a deferral mark that could not be written
+    (``COMMENT ON TABLE`` kept losing its lock race) is recorded in the run's
+    own Dagster record, which needs no table lock and no migration, and the
+    next run is handed it.  It must survive a run that ends ``failed`` --
+    that one materializes nothing."""
+    from dagster import DagsterInstance, materialize
+
+    repository = _RecordingRepository(
+        # failed: overdue and nothing dropped; one more day lost its mark.
+        _report(
+            partitions_deferred=("weather_values_20260920", "weather_values_20260921"),
+            partitions_overdue=("weather_values_20260920",),
+            partitions_unmarked=("weather_values_20260921",),
+        ),
+        _report(partitions_dropped=("weather_values_20260920", "weather_values_20260921")),
+        _report(),
+    )
+    resources = {"weather_repository": SimpleNamespace(create_repository=lambda: repository)}
+    with DagsterInstance.ephemeral() as instance:
+        runs = [
+            materialize(
+                [definitions.weather_retention_purge],
+                instance=instance,
+                resources=resources,
+                raise_on_error=False,
+            )
+            for _ in range(3)
+        ]
+    assert [run.success for run in runs] == [False, True, True]
+    assert [call["prior_unmarked"] for call in repository.calls] == [
+        (),
+        ("weather_values_20260921",),
+        (),
+    ]
+
+
 def test_retention_runs_in_the_quiet_hour() -> None:
     """01:45 KST: the measured low point of the ingest schedules.
 
