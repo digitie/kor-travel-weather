@@ -387,6 +387,12 @@ _KNOWN_PROVIDERS = frozenset(
         "weatherstack",
         "accuweather",
         "wttr_in",
+        # The nationwide observation networks.  Before these were listed every
+        # one of them reported as provider="other", so no rule could say which
+        # network failed or was blocked.
+        "python-khoa-api",
+        "python-krforest-api",
+        "python-krex-api",
     }
 )
 _KNOWN_DATASETS = frozenset(
@@ -416,6 +422,10 @@ _KNOWN_DATASETS = frozenset(
         "accuweather_forecast",
         "wttr_in_current",
         "wttr_in_forecast",
+        "khoa_beach_index",
+        "krforest_mountain_weather",
+        "krforest_dust",
+        "krex_restarea_weather",
     }
 )
 _SAFE_LABEL = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -515,12 +525,36 @@ def change_http_in_flight(method: str, delta: float) -> None:
     _safe("http_in_flight", lambda: HTTP_IN_FLIGHT.labels(method=safe_method).inc(delta))
 
 
+#: ``blocked``: the provider's edge refused the request before it reached the
+#: API (a WAF page, not an API error).  Separate from ``error`` so
+#: KorTravelWeatherProviderBlocked can name it and a run that skips the source
+#: still counts it.
+PROVIDER_OUTCOMES = ("success", "error", "blocked")
+
+
+def initialize_provider_blocked(provider: object, datasets: Iterable[object]) -> None:
+    """Export the ``outcome="blocked"`` children at 0 before the first block.
+
+    KorTravelWeatherProviderBlocked subtracts the value 13h ago, and a child
+    created by its first increment has no earlier value -- the first block
+    would never page.  Same reason as ``initialize_sync_values_skipped``.
+    """
+    safe_provider = provider_label(provider)
+    safe_datasets = sorted({dataset_label(dataset) for dataset in datasets})
+
+    def create() -> None:
+        for dataset in safe_datasets:
+            PROVIDER_REQUESTS.labels(provider=safe_provider, dataset=dataset, outcome="blocked")
+
+    _safe("provider", create)
+
+
 def observe_provider_request(
     provider: object, dataset: object, *, outcome: str, duration_seconds: float
 ) -> None:
     safe_provider = provider_label(provider)
     safe_dataset = dataset_label(dataset)
-    safe_outcome = outcome if outcome in {"success", "error"} else "error"
+    safe_outcome = outcome if outcome in PROVIDER_OUTCOMES else "error"
     _safe(
         "provider",
         lambda: (
@@ -746,14 +780,25 @@ def start_metrics_server(port: int, *, address: str = "0.0.0.0") -> bool:
 
 
 @contextmanager
-def provider_request(provider: object, dataset: object) -> Iterator[None]:
-    """Observe one logical provider call without changing its exception path."""
+def provider_request(
+    provider: object,
+    dataset: object,
+    *,
+    blocked: Callable[[BaseException], bool] | None = None,
+) -> Iterator[None]:
+    """Observe one logical provider call without changing its exception path.
+
+    ``blocked`` lets a caller that can recognise its provider's edge refusal
+    count it as ``outcome="blocked"`` instead of ``error``.  The exception is
+    re-raised either way; what to do about it is the caller's decision.
+    """
     started = perf_counter()
     try:
         yield
-    except Exception:
+    except Exception as exc:
+        outcome = "blocked" if blocked is not None and _is_blocked(blocked, exc) else "error"
         observe_provider_request(
-            provider, dataset, outcome="error", duration_seconds=perf_counter() - started
+            provider, dataset, outcome=outcome, duration_seconds=perf_counter() - started
         )
         raise
     else:
@@ -762,9 +807,20 @@ def provider_request(provider: object, dataset: object) -> Iterator[None]:
         )
 
 
+def _is_blocked(blocked: Callable[[BaseException], bool], exc: BaseException) -> bool:
+    # A classifier bug must not replace the provider's own exception.
+    try:
+        return bool(blocked(exc))
+    except Exception:
+        observe_metric_error("provider_blocked_classifier")
+        return False
+
+
 __all__ = [
+    "PROVIDER_OUTCOMES",
     "REGISTRY",
     "change_http_in_flight",
+    "initialize_provider_blocked",
     "initialize_sync_values_skipped",
     "metrics_content_type",
     "metrics_payload",

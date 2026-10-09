@@ -30,6 +30,28 @@ groups:
           summary: "Weather provider requests are failing"
           description: "At least one provider request has failed for 10 minutes."
 
+      # A provider's edge refusing requests (a WAF page, not an API error).
+      # The collector skips that source instead of failing its run, so this is
+      # the signal that the block is there.  Only python-krex-api classifies
+      # blocks today (twice daily, 08:30Z/20:30Z); 13h holds one run plus 1h
+      # of slack, so a lasting block keeps firing and the first unblocked run
+      # resolves it about an hour later.  Counter difference rather than
+      # increase(), for the reasons given at KorTravelWeatherValuesInvalid below;
+      # the blocked child starts at 0 (kortravelweather_dagster.regional_sources
+      # creates it on import).  Costs: for 13h after a Dagster restart or a
+      # new scrape target, nothing a window ago, so silent.
+      - alert: KorTravelWeatherProviderBlocked
+        expr: |
+          sum by (provider, dataset) (
+            max_over_time(ktw_provider_requests_total{outcome="blocked"}[10m])
+            - max_over_time(ktw_provider_requests_total{outcome="blocked"}[10m] offset 13h)
+          ) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "A weather provider is refusing requests at its edge"
+          description: "{{ $labels.provider }}/{{ $labels.dataset }} answered with a block page (not an API error) within the last 13h. The collector skips that source and the rest of its job still publishes; nothing is collected from it until the block lifts. The step metadata carries failure_kind=upstream_blocked."
+
       - alert: KorTravelWeatherForwardPartitionsLow
         expr: |
           max(ktw_forward_partition_days{job="kor-travel-weather-api"}) <= 3

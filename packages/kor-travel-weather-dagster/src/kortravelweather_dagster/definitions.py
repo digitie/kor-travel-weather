@@ -28,7 +28,7 @@ from kortravelweather.providers import (
     redact_secrets,
 )
 from kortravelweather.providers.khoa import KHOA_PROVIDER
-from kortravelweather.providers.krex import KREX_PROVIDER
+from kortravelweather.providers.krex import KREX_PROVIDER, UPSTREAM_BLOCKED
 from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
@@ -946,7 +946,12 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
         max_values=runtime.max_values_per_run,
         settings=runtime,
     )
-    if result.get("produced_nothing"):
+    if result.get("failure_kind") == UPSTREAM_BLOCKED:
+        # A skip, not a failure: KHOA, the mountain network and 청정넷 run in
+        # the same job and have published.  KorTravelWeatherProviderBlocked
+        # is what pages while the block lasts.
+        context.log.warning("%s: %s", result["provider"], result["reason"])
+    elif result.get("produced_nothing"):
         # Distinguishable from a healthy run only here: the counts
         # alone cannot tell an empty upstream from a broken adapter.
         context.log.warning(

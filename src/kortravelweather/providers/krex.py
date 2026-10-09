@@ -20,6 +20,7 @@ from decimal import Decimal
 from typing import Any
 
 from krex import KrexClient, RestAreaWeather
+from krex.exceptions import KrexError
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.providers.base import (
@@ -30,6 +31,38 @@ from kortravelweather.providers.base import (
 
 KREX_PROVIDER = "python-krex-api"
 KREX_RESTAREA_DATASET = "krex_restarea_weather"
+
+#: ``failure_kind`` of a request the data.ex.co.kr edge refused before it
+#: reached the API.
+UPSTREAM_BLOCKED = "upstream_blocked"
+
+#: The edge's refusal page, as served 2026-10-08..10 to every data.ex.co.kr
+#: call from n150 (weather's rest-area weather and transport's fuel prices
+#: alike): ``HTTP 400`` with an HTML body titled "400 Bad Request" whose only
+#: heading is ``<H1>Request Blocked</H1>``.  ``python-krex-api`` raises that
+#: as ``KrexBadRequestError`` with the first 200 characters of the body.
+_BLOCK_PAGE_MARKER = "request blocked"
+
+
+def upstream_block(exc: BaseException) -> dict[str, Any] | None:
+    """Describe ``exc`` if it is the data.ex.co.kr edge refusing the request.
+
+    Deliberately narrow: only a krex error carrying HTTP 400/403 *and* the
+    block page.  A real bad request from the API itself is a JSON body with a
+    result code (``INVALID_REQUEST_PARAMETER`` and friends, served as 200), an
+    authentication failure has no block page, and both stay failures -- the
+    first means this adapter is wrong, the second that the key is, and
+    neither is fixed by waiting.  Anything not recognised here is not
+    reclassified.
+    """
+    if not isinstance(exc, KrexError):
+        return None
+    status = getattr(exc, "http_status", None)
+    if status not in (400, 403):
+        return None
+    if _BLOCK_PAGE_MARKER not in str(exc).lower():
+        return None
+    return {"failure_kind": UPSTREAM_BLOCKED, "http_status": status}
 
 _METRIC_FIELDS: tuple[tuple[str, str, str | None, str], ...] = (
     ("TEMP", "temperature", "℃", "기온"),

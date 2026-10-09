@@ -323,3 +323,51 @@ tests:
       - eval_time: 3h59m
         alertname: KorTravelWeatherRetentionStale
         exp_alerts: []
+
+  # data.ex.co.kr blocking krex (2026-10-08..): the regional job runs twice a
+  # day and a blocked run counts one request as outcome="blocked".  Blocks at
+  # 14h05 and 26h05, then the 38h05 run gets through.  It pages from the first
+  # block, keeps paging between the two, and resolves 13h after the last one
+  # (an hour after the run that got through).  The provider errors that also
+  # rise here are KorTravelWeatherProviderErrors', not this rule's.
+  - interval: 5m
+    input_series:
+      - series: 'ktw_provider_requests_total{job="kor-travel-weather-dagster",provider="python-krex-api",dataset="krex_restarea_weather",outcome="blocked"}'
+        values: '0x168 1x143 2x200'
+      - series: 'ktw_provider_requests_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",outcome="error"}'
+        values: '0+1x513'
+    alert_rule_test:
+      - eval_time: 14h
+        alertname: KorTravelWeatherProviderBlocked
+        exp_alerts: []
+      - eval_time: 14h10m
+        alertname: KorTravelWeatherProviderBlocked
+        exp_alerts: &krex_blocked
+          - exp_labels:
+              severity: warning
+              provider: python-krex-api
+              dataset: krex_restarea_weather
+            exp_annotations:
+              summary: "A weather provider is refusing requests at its edge"
+              description: "python-krex-api/krex_restarea_weather answered with a block page (not an API error) within the last 13h. The collector skips that source and the rest of its job still publishes; nothing is collected from it until the block lifts. The step metadata carries failure_kind=upstream_blocked."
+      - eval_time: 26h
+        alertname: KorTravelWeatherProviderBlocked
+        exp_alerts: *krex_blocked
+      - eval_time: 38h55m
+        alertname: KorTravelWeatherProviderBlocked
+        exp_alerts: *krex_blocked
+      - eval_time: 39h10m
+        alertname: KorTravelWeatherProviderBlocked
+        exp_alerts: []
+
+  # The blocked child exported at 0 on import, with errors rising: no page.
+  - interval: 5m
+    input_series:
+      - series: 'ktw_provider_requests_total{job="kor-travel-weather-dagster",provider="python-krex-api",dataset="krex_restarea_weather",outcome="blocked"}'
+        values: '0x400'
+      - series: 'ktw_provider_requests_total{job="kor-travel-weather-dagster",provider="python-krex-api",dataset="krex_restarea_weather",outcome="error"}'
+        values: '0+1x400'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: KorTravelWeatherProviderBlocked
+        exp_alerts: []
