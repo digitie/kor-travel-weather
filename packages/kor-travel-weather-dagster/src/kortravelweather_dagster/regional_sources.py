@@ -20,7 +20,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from kortravelweather.metrics import initialize_provider_blocked, provider_request
+from kortravelweather.metrics import provider_request
 from kortravelweather.models import WeatherLocation, WeatherValue
 from kortravelweather.providers import redact_secrets
 from kortravelweather.providers.khoa import (
@@ -34,6 +34,7 @@ from kortravelweather.providers.khoa import (
 from kortravelweather.providers.krex import (
     KREX_PROVIDER,
     KREX_RESTAREA_DATASET,
+    UpstreamBlocked,
     fetch_restarea_weather,
     restarea_location,
     restarea_source_record,
@@ -65,10 +66,6 @@ from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 from .chunked_publish import chunk_publications, uncited_sources
-
-# KorTravelWeatherProviderBlocked subtracts the counter's value 13h ago; the
-# child has to exist at 0 before the first block or that block never pages.
-initialize_provider_blocked(KREX_PROVIDER, (KREX_RESTAREA_DATASET,))
 
 
 def skipped_when_disabled(provider: str, settings: WeatherSettings) -> dict[str, Any] | None:
@@ -359,7 +356,9 @@ def run_krex_restarea_sync(
         block = upstream_block(exc)
         if block is None:
             raise
-        return upstream_blocked_result(block)
+        # Still a failure -- the step goes red, as it should while nothing is
+        # collected -- but one that says what it is.
+        raise UpstreamBlocked(KREX_PROVIDER, KREX_RESTAREA_DATASET, block) from exc
     return publish_regional_records(
         repository=repository,
         provider=KREX_PROVIDER,
@@ -370,41 +369,6 @@ def run_krex_restarea_sync(
         build_source_record=restarea_source_record,
         max_values=max_values,
     )
-
-
-def upstream_blocked_result(block: dict[str, Any]) -> dict[str, Any]:
-    """The skip a refused krex request ends as.
-
-    Since 2026-10-08 the data.ex.co.kr edge answers every request from n150
-    with a "Request Blocked" page.  The step used to fail on it, which turned
-    ``regional_weather_job`` red twice a day although KHOA, the mountain
-    network and 청정넷 -- separate assets in the same run -- had all
-    published.  Nothing in this repository can lift the block, and a run that
-    is red for someone else's firewall trains people to ignore red.
-
-    It is not silent: the request counts as
-    ``ktw_provider_requests_total{outcome="blocked"}``, which
-    KorTravelWeatherProviderBlocked pages on, and the step's metadata carries
-    ``failure_kind``.  No sync-run row is written -- nothing was fetched, the
-    same as the dust catalog skip -- so it is not a ``failed`` run either.
-
-    No retry or backoff beyond the schedule: the client does not retry a 400,
-    ``latest_weather`` stops its walk at the first such error, so a blocked
-    run costs exactly one request, twice a day.  Asking again sooner would
-    only add to whatever the edge is counting.
-    """
-    return {
-        "provider": KREX_PROVIDER,
-        "dataset_key": KREX_RESTAREA_DATASET,
-        "skipped": True,
-        **block,
-        "reason": (
-            f"data.ex.co.kr가 요청을 차단했습니다(HTTP {block['http_status']} "
-            "Request Blocked). 다음 스케줄에 다시 시도합니다."
-        ),
-        "records_fetched": 0,
-        "values_loaded": 0,
-    }
 
 
 def _is_upstream_block(exc: BaseException) -> bool:

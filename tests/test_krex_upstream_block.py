@@ -1,9 +1,10 @@
-"""data.ex.co.kr의 edge 차단은 krex만 건너뛰고, 다른 실패는 그대로 실패한다.
+"""data.ex.co.kr의 edge 차단은 여전히 실패지만, 실패 종류가 붙는다.
 
-From 2026-10-08 every krex request from n150 got the edge's block page, and
-``regional_weather_job`` went red twice a day although its other three
-assets had published.  These pin both halves of the fix: the block is a
-counted, visible skip, and nothing else is mistaken for one.
+From 2026-10-08 04:35Z the krex WAF refused requests carrying a common
+HTTP-library User-Agent, and ``krex_restarea_sync`` failed with a bare HTML
+page.  It still fails -- a lasting block must stay red -- but the error, the
+step metadata and ``ktw_provider_requests_total{outcome="blocked"}`` now say
+``upstream_blocked``.  Nothing else is labelled as a block.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from kortravelweather.providers.krex import (
     KREX_PROVIDER,
     KREX_RESTAREA_DATASET,
     UPSTREAM_BLOCKED,
+    UpstreamBlocked,
     upstream_block,
 )
 from kortravelweather.settings import WeatherSettings
@@ -52,8 +54,27 @@ def test_the_edge_block_page_is_classified() -> None:
 
 
 @pytest.mark.parametrize(
+    "body",
+    [
+        "<H1>Request&nbsp;Blocked</H1>",
+        "<h1>REQUEST
+   BLOCKED</h1>",
+        "<p>Request <b>Blocked</b></p>",
+        "Request&#32;Blocked",
+        "<title>Request	Blocked</title>",
+    ],
+    ids=["nbsp", "case-newline", "inner-tag", "numeric-entity", "tab"],
+)
+def test_block_page_variants_are_classified(body: str) -> None:
+    exc = KrexBadRequestError(body, http_status=400)
+    assert upstream_block(exc) == {"failure_kind": UPSTREAM_BLOCKED, "http_status": 400}
+
+
+@pytest.mark.parametrize(
     "exc",
     [
+        # "blocked" alone, or the words apart, is not the page.
+        KrexBadRequestError("<H1>Request</H1><p>was Blocked</p>", http_status=400),
         # The API's own refusal of a bad parameter: JSON, a result code, 200.
         KrexInvalidParameterError(
             "data.ex.co.kr returned INVALID_PARAMETER_VALUE: stdHour",
@@ -71,7 +92,7 @@ def test_the_edge_block_page_is_classified() -> None:
         # Not a krex error at all.
         RuntimeError("Request Blocked"),
     ],
-    ids=["api-invalid-parameter", "plain-400", "auth-401", "auth-403", "server-502", "not-krex"],
+    ids=["words-apart", "api-invalid-parameter", "plain-400", "auth-401", "auth-403", "server-502", "not-krex"],
 )
 def test_nothing_else_is_taken_for_a_block(exc: BaseException) -> None:
     assert upstream_block(exc) is None
@@ -128,23 +149,28 @@ def _run(client: _Client) -> dict[str, Any]:
     )
 
 
-def test_a_blocked_run_is_a_counted_skip_not_a_failure() -> None:
+def test_a_blocked_run_still_fails_and_says_why() -> None:
     client = _Client(_blocked())
     blocked_before, errors_before = _requests("blocked"), _requests("error")
 
-    result = _run(client)
+    with pytest.raises(UpstreamBlocked) as raised:
+        _run(client)
 
-    assert result["skipped"] is True
-    assert result["failure_kind"] == UPSTREAM_BLOCKED
-    assert result["http_status"] == 400
-    assert result["provider"] == KREX_PROVIDER
-    assert result["dataset_key"] == KREX_RESTAREA_DATASET
-    assert result["records_fetched"] == 0 and result["values_loaded"] == 0
-    assert "Request Blocked" in result["reason"]
+    error = raised.value
+    assert error.failure_kind == UPSTREAM_BLOCKED
+    assert str(error).startswith("failure_kind=upstream_blocked:")
+    assert error.metadata == {
+        "provider": KREX_PROVIDER,
+        "dataset_key": KREX_RESTAREA_DATASET,
+        "failure_kind": UPSTREAM_BLOCKED,
+        "http_status": 400,
+    }
+    # The library error stays attached for whoever reads the traceback.
+    assert isinstance(error.__cause__, KrexBadRequestError)
     # One request, then stop: retrying a block only feeds the edge's count.
     assert client.restarea.calls == 1
     assert client.closed is True
-    # Visible as its own outcome, and not as an error.
+    # Counted as its own outcome, not twice.
     assert _requests("blocked") == blocked_before + 1
     assert _requests("error") == errors_before
 
@@ -182,9 +208,9 @@ def test_a_classifier_that_raises_leaves_the_provider_error_intact() -> None:
         raise KrexServerError("HTTP 500", http_status=500)
 
 
-def test_the_asset_finishes_green_and_says_why(monkeypatch) -> None:
-    """The asset boundary, where the step's colour and metadata are decided."""
-    from dagster import build_asset_context
+def test_the_asset_fails_with_the_failure_kind_in_its_metadata(monkeypatch) -> None:
+    """The asset boundary decides the step's colour: red, and labelled."""
+    from dagster import Failure, build_asset_context
 
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS", f'["{KREX_PROVIDER}"]')
     from kortravelweather_dagster.definitions import krex_restarea_sync
@@ -207,10 +233,14 @@ def test_the_asset_finishes_green_and_says_why(monkeypatch) -> None:
     context = build_asset_context(
         resources={"krex_client": _KrexResource(), "weather_repository": _RepositoryResource()}
     )
-    result = krex_restarea_sync(context)
+    with pytest.raises(Failure) as raised:
+        krex_restarea_sync(context)
 
-    assert result["failure_kind"] == UPSTREAM_BLOCKED
-    assert result["skipped"] is True
+    failure = raised.value
+    assert "failure_kind=upstream_blocked" in (failure.description or "")
+    assert failure.metadata["failure_kind"].value == UPSTREAM_BLOCKED
+    assert failure.metadata["http_status"].value == 400
+    assert isinstance(failure.__cause__, UpstreamBlocked)
     assert client.closed is True
 
 

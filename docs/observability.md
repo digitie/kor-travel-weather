@@ -53,21 +53,17 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_http_request_duration_seconds{method,route}`
 - `ktw_http_requests_in_flight{method}`
 - `ktw_provider_requests_total{provider,dataset,outcome}` — `outcome`은 `success`·`error`·`blocked`.
-  `blocked`는 provider의 edge(WAF)가 API에 닿기 전에 요청을 거절한 것이다. 지금은
-  `python-krex-api`만 분류한다: HTTP 400/403이면서 본문이 "Request Blocked" 차단 페이지일 때만
-  (`kortravelweather.providers.krex.upstream_block`). 2026-10-08부터 n150의 모든 data.ex.co.kr
-  요청이 이 페이지를 받았다. 그 run은 krex 단계만 SUCCESS(skip)로 끝내고 metadata에
-  `failure_kind=upstream_blocked`·`http_status`를 남긴다 — 같은 `regional_weather_job`의
-  KHOA·산악·청정넷은 원래 별도 asset이라 이미 적재되고 있었고, 차단 하나로 job 전체가 빨개지던 것만
-  바뀐다. sync-run 행은 만들지 않는다(가져온 것이 없다, 청정넷 카탈로그 skip과 같다). 재시도는 없다:
-  client는 400을 재시도하지 않고 `latest_weather`는 첫 오류에서 멈추므로 차단된 run은 요청 1건,
-  하루 2번이다. API 자신의 오류(JSON result code), 인증 실패, 5xx, 그 밖의 모든 오류는 그대로
-  `error`이고 단계도 실패한다. `KorTravelWeatherProviderBlocked`는 지난 13시간(하루 2번 run 하나 +
-  1시간)에 `blocked`가 늘면 바로 울리고, 차단이 계속되면 계속 울리며, 통과한 run 뒤 약 1시간에
-  풀린다. 차이 방식이라 krex `blocked` child는 `kortravelweather_dagster.regional_sources` import 때
-  0으로 만들어진다; Dagster 재시작 뒤 13시간은 침묵한다. 동작은 `tests/prometheus/alerts_test.yml`이
-  고정한다. 지역 관측망 provider(`python-khoa-api`·`python-krforest-api`·`python-krex-api`)와
-  그 dataset은 allow-list에 들어 있다(전에는 모두 `other`였다)
+  `blocked`는 provider의 edge(WAF)가 API에 닿기 전에 요청을 거절한 것이고, **여전히 실패다** —
+  실패의 종류를 구분할 뿐이다. 지금은 `python-krex-api`만 분류한다: HTTP 400/403이면서 본문이
+  "Request Blocked" 차단 페이지일 때만(`kortravelweather.providers.krex.upstream_block`; 태그·
+  HTML entity·공백·대소문자 차이는 무시). 2026-10-08 04:35Z부터 krex WAF가 흔한 HTTP 라이브러리
+  User-Agent(`python-httpx`, curl)를 이 페이지로 거절했다. 그 경우 `krex_restarea_sync` 단계는
+  예전처럼 실패하고(job도 빨갛다), 오류와 step metadata에 `failure_kind=upstream_blocked`·
+  `http_status`가 붙는다. 재시도는 없다: client는 400을 재시도하지 않고 `latest_weather`는 첫
+  오류에서 멈추므로 차단된 run은 요청 1건이다. `KorTravelWeatherProviderErrors`는
+  `outcome=~"error|blocked"`를 본다 — 분리 전처럼 차단도 provider 오류로 센다. 지역 관측망
+  provider(`python-khoa-api`·`python-krforest-api`·`python-krex-api`)와 그 dataset은 label
+  allow-list에 들어 있다(전에는 모두 `other`였다)
 - `ktw_provider_request_duration_seconds{provider,dataset}`
 - `ktw_sync_runs_{started,finished,active}`
 - `ktw_sync_{requests,source_records,values}_total`

@@ -526,27 +526,9 @@ def change_http_in_flight(method: str, delta: float) -> None:
 
 
 #: ``blocked``: the provider's edge refused the request before it reached the
-#: API (a WAF page, not an API error).  Separate from ``error`` so
-#: KorTravelWeatherProviderBlocked can name it and a run that skips the source
-#: still counts it.
+#: API (a WAF page, not an API error).  Still a failed request and a failed
+#: step; the separate outcome only says which kind of failure it was.
 PROVIDER_OUTCOMES = ("success", "error", "blocked")
-
-
-def initialize_provider_blocked(provider: object, datasets: Iterable[object]) -> None:
-    """Export the ``outcome="blocked"`` children at 0 before the first block.
-
-    KorTravelWeatherProviderBlocked subtracts the value 13h ago, and a child
-    created by its first increment has no earlier value -- the first block
-    would never page.  Same reason as ``initialize_sync_values_skipped``.
-    """
-    safe_provider = provider_label(provider)
-    safe_datasets = sorted({dataset_label(dataset) for dataset in datasets})
-
-    def create() -> None:
-        for dataset in safe_datasets:
-            PROVIDER_REQUESTS.labels(provider=safe_provider, dataset=dataset, outcome="blocked")
-
-    _safe("provider", create)
 
 
 def observe_provider_request(
@@ -820,7 +802,6 @@ __all__ = [
     "PROVIDER_OUTCOMES",
     "REGISTRY",
     "change_http_in_flight",
-    "initialize_provider_blocked",
     "initialize_sync_values_skipped",
     "metrics_content_type",
     "metrics_payload",

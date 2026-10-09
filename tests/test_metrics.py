@@ -582,7 +582,7 @@ def test_kma_skip_counters_start_at_zero_under_multiprocess(tmp_path) -> None:
 
 
 def test_regional_networks_are_named_not_collapsed_to_other() -> None:
-    """KorTravelWeatherProviderBlocked has to say which network is blocked."""
+    """Rules and dashboards have to say which network failed, not "other"."""
     from kortravelweather.metrics import dataset_label, provider_label
 
     for provider in ("python-khoa-api", "python-krforest-api", "python-krex-api"):
@@ -619,49 +619,15 @@ def test_an_unknown_provider_outcome_is_an_error() -> None:
     ) is None
 
 
-def test_krex_blocked_counter_starts_at_zero_under_multiprocess(tmp_path) -> None:
-    """Importing the regional worker exports the krex blocked child at 0.
+def test_a_blocked_provider_request_still_counts_as_a_provider_error() -> None:
+    """``outcome="blocked"`` only names the kind of failure.
 
-    KorTravelWeatherProviderBlocked subtracts the value 13h ago; without the
-    0 the first block after a deploy would have nothing to subtract from.
+    Before it existed a WAF refusal was an ``error`` and fed
+    KorTravelWeatherProviderErrors; splitting the outcome must not take it
+    out of that rule.
     """
-    environment = os.environ.copy()
-    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
-    environment.pop("KOR_TRAVEL_WEATHER_METRICS_PORT", None)
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [
-            os.path.join(root, "src"),
-            os.path.join(root, "packages", "kor-travel-weather-dagster", "src"),
-            environment.get("PYTHONPATH", ""),
-        ]
-    )
-    worker = "import kortravelweather_dagster.regional_sources"
-    subprocess.run([sys.executable, "-c", worker], env=environment, check=True)
-    scraper = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from kortravelweather.metrics import metrics_payload; "
-            "print(metrics_payload().decode())",
-        ],
-        env=environment,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert (
-        'ktw_provider_requests_total{dataset="krex_restarea_weather",'
-        'outcome="blocked",provider="python-krex-api"} 0.0'
-    ) in scraper.stdout
-
-
-def test_the_blocked_alert_reads_the_blocked_outcome_only() -> None:
-    rule = _alert_rules()["KorTravelWeatherProviderBlocked"]
-    assert 'outcome="blocked"' in rule["expr"]
-    assert "offset 13h" in rule["expr"]
-    errors = _alert_rules()["KorTravelWeatherProviderErrors"]
-    assert 'outcome="error"' in errors["expr"]
+    expr = _alert_rules()["KorTravelWeatherProviderErrors"]["expr"]
+    assert 'outcome=~"error|blocked"' in expr
 
 
 def test_the_oldest_partition_age_is_exported_by_the_api_scrape_only() -> None:

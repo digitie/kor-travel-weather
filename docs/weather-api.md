@@ -158,13 +158,13 @@ data.go.kr one and is not a fallback. It is off by default; add it to
 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS` with the key to turn it on. A provider
 that is not in that list is skipped before its credential is even requested.
 
-**A data.ex.co.kr edge block is a skip, not a failure.** When the edge answers
-with its "Request Blocked" page (HTTP 400/403, HTML) the krex step ends SUCCESS
-with `skipped`, `failure_kind=upstream_blocked` and `http_status` in its
-metadata, counts the request as `ktw_provider_requests_total{outcome="blocked"}`
-and pages through `KorTravelWeatherProviderBlocked` (`docs/observability.md`).
-The other regional assets were never gated on it; only the job's colour
-changes. Every other krex error still fails the step.
+**A data.ex.co.kr edge block still fails the krex step, labelled.** When the
+edge answers with its "Request Blocked" page (HTTP 400/403, HTML) the step fails
+as before, but its error and metadata carry `failure_kind=upstream_blocked` and
+`http_status`, and the request counts as
+`ktw_provider_requests_total{outcome="blocked"}` (`docs/observability.md`).
+The other regional assets are separate steps and are not affected by it. Every
+other krex error fails the step unlabelled, as it always did.
 
 `KOR_TRAVEL_WEATHER_REGIONAL_MAX_RECORDS` bounds one run; a run that hits the
 value budget cuts between stations, never inside one, and reports
