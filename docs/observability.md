@@ -52,7 +52,18 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_http_requests_total{method,route,status_class}`
 - `ktw_http_request_duration_seconds{method,route}`
 - `ktw_http_requests_in_flight{method}`
-- `ktw_provider_requests_total{provider,dataset,outcome}`
+- `ktw_provider_requests_total{provider,dataset,outcome}` — `outcome`은 `success`·`error`·`blocked`.
+  `blocked`는 provider의 edge(WAF)가 API에 닿기 전에 요청을 거절한 것이고, **여전히 실패다** —
+  실패의 종류를 구분할 뿐이다. 지금은 `python-krex-api`만 분류한다: HTTP 400/403이면서 본문이
+  "Request Blocked" 차단 페이지일 때만(`kortravelweather.providers.krex.upstream_block`; 태그·
+  HTML entity·공백·대소문자 차이는 무시). 2026-10-08 04:35Z부터 krex WAF가 흔한 HTTP 라이브러리
+  User-Agent(`python-httpx`, curl)를 이 페이지로 거절했다. 그 경우 `krex_restarea_sync` 단계는
+  예전처럼 실패하고(job도 빨갛다), 오류와 step metadata에 `failure_kind=upstream_blocked`·
+  `http_status`가 붙는다. 재시도는 없다: client는 400을 재시도하지 않고 `latest_weather`는 첫
+  오류에서 멈추므로 차단된 run은 요청 1건이다. `KorTravelWeatherProviderErrors`는
+  `outcome=~"error|blocked"`를 본다 — 분리 전처럼 차단도 provider 오류로 센다. 지역 관측망
+  provider(`python-khoa-api`·`python-krforest-api`·`python-krex-api`)와 그 dataset은 label
+  allow-list에 들어 있다(전에는 모두 `other`였다)
 - `ktw_provider_request_duration_seconds{provider,dataset}`
 - `ktw_sync_runs_{started,finished,active}`
 - `ktw_sync_{requests,source_records,values}_total`

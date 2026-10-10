@@ -27,7 +27,7 @@ dependencies = [
   "python-airkorea-api",
   "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@38a2b74aabc1c077ebd2e1aa5ad3b2a70ffc8dd5",
   "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@270ef7a9884bef1f995e2f8fb43c5fb1e9da7905",
-  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@d153f3cdd87c9cfacceeb94310bbe6067a1bbfa8",
+  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@1a37a0108fa837351aa6bb6644052f325ae76daf",
   "pyproj>=3.5",
 ]
 

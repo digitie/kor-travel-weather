@@ -14,12 +14,15 @@ asking for "now" and getting an empty page.
 
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from krex import KrexClient, RestAreaWeather
+from krex.exceptions import KrexError
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.providers.base import (
@@ -30,6 +33,74 @@ from kortravelweather.providers.base import (
 
 KREX_PROVIDER = "python-krex-api"
 KREX_RESTAREA_DATASET = "krex_restarea_weather"
+
+#: ``failure_kind`` of a request the data.ex.co.kr edge refused before it
+#: reached the API.
+UPSTREAM_BLOCKED = "upstream_blocked"
+
+#: The edge's refusal page, as served from 2026-10-08 04:35Z to data.ex.co.kr
+#: calls that carry a common HTTP-library User-Agent (``python-httpx``, curl):
+#: ``HTTP 400`` with an HTML body titled "400 Bad Request" whose only heading
+#: is ``<H1>Request Blocked</H1>``.  ``python-krex-api`` raises that as
+#: ``KrexBadRequestError`` with the first 200 characters of the body.
+_BLOCK_PAGE_MARKER = "request blocked"
+_TAG = re.compile(r"<[^>]*>")
+_SPACE = re.compile(r"\s+")
+
+
+def _block_page_text(text: str) -> str:
+    """Lower-case text with tags dropped, entities decoded, spaces collapsed.
+
+    So ``Request&nbsp;Blocked``, ``REQUEST\\n  BLOCKED`` and
+    ``Request <b>Blocked</b>`` read the same as the page seen in production.
+    """
+    return _SPACE.sub(" ", html.unescape(_TAG.sub(" ", text))).strip().lower()
+
+
+def upstream_block(exc: BaseException) -> dict[str, Any] | None:
+    """Label ``exc`` if it is the data.ex.co.kr edge refusing the request.
+
+    A label only: the caller still fails.  Deliberately narrow -- a krex error
+    carrying HTTP 400/403 *and* the block page.  A real bad request from the
+    API itself is a JSON body with a result code (``INVALID_REQUEST_PARAMETER``
+    and friends, served as 200) and an authentication failure has no block
+    page; neither is labelled.
+    """
+    if not isinstance(exc, KrexError):
+        return None
+    status = getattr(exc, "http_status", None)
+    if status not in (400, 403):
+        return None
+    if _BLOCK_PAGE_MARKER not in _block_page_text(str(exc)):
+        return None
+    return {"failure_kind": UPSTREAM_BLOCKED, "http_status": status}
+
+
+class UpstreamBlocked(RuntimeError):
+    """A krex request the data.ex.co.kr edge refused; still a failure.
+
+    Raised from the library error (kept as ``__cause__``) so the step's error
+    names the failure kind instead of a bare HTML page.
+    """
+
+    def __init__(self, provider: str, dataset_key: str, block: Mapping[str, Any]) -> None:
+        self.provider = provider
+        self.dataset_key = dataset_key
+        self.failure_kind = str(block["failure_kind"])
+        self.http_status = block.get("http_status")
+        super().__init__(
+            f"failure_kind={self.failure_kind}: data.ex.co.kr edge refused the "
+            f"{provider}/{dataset_key} request (HTTP {self.http_status} Request Blocked)"
+        )
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "dataset_key": self.dataset_key,
+            "failure_kind": self.failure_kind,
+            "http_status": self.http_status,
+        }
 
 _METRIC_FIELDS: tuple[tuple[str, str, str | None, str], ...] = (
     ("TEMP", "temperature", "℃", "기온"),

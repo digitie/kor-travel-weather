@@ -34,10 +34,12 @@ from kortravelweather.providers.khoa import (
 from kortravelweather.providers.krex import (
     KREX_PROVIDER,
     KREX_RESTAREA_DATASET,
+    UpstreamBlocked,
     fetch_restarea_weather,
     restarea_location,
     restarea_source_record,
     restarea_weather_to_weather_values,
+    upstream_block,
 )
 from kortravelweather.providers.krforest import (
     KRFOREST_MOUNTAIN_DATASET,
@@ -344,11 +346,19 @@ def run_krex_restarea_sync(
     skipped = skipped_when_disabled(KREX_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
         return skipped
-    records = asyncio.run(
-        _fetch_restarea_weather(
-            client, max_records=max_records, lookback_hours=lookback_hours
+    try:
+        records = asyncio.run(
+            _fetch_restarea_weather(
+                client, max_records=max_records, lookback_hours=lookback_hours
+            )
         )
-    )
+    except Exception as exc:
+        block = upstream_block(exc)
+        if block is None:
+            raise
+        # Still a failure -- the step goes red, as it should while nothing is
+        # collected -- but one that says what it is.
+        raise UpstreamBlocked(KREX_PROVIDER, KREX_RESTAREA_DATASET, block) from exc
     return publish_regional_records(
         repository=repository,
         provider=KREX_PROVIDER,
@@ -361,11 +371,17 @@ def run_krex_restarea_sync(
     )
 
 
+def _is_upstream_block(exc: BaseException) -> bool:
+    return upstream_block(exc) is not None
+
+
 async def _fetch_restarea_weather(
     client: Any, *, max_records: int, lookback_hours: int
 ) -> list[Any]:
     async with client:
-        with provider_request(KREX_PROVIDER, KREX_RESTAREA_DATASET):
+        with provider_request(
+            KREX_PROVIDER, KREX_RESTAREA_DATASET, blocked=_is_upstream_block
+        ):
             return await fetch_restarea_weather(
                 client, max_records=max_records, lookback_hours=lookback_hours
             )

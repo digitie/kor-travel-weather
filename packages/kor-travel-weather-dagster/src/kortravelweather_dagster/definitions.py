@@ -28,7 +28,7 @@ from kortravelweather.providers import (
     redact_secrets,
 )
 from kortravelweather.providers.khoa import KHOA_PROVIDER
-from kortravelweather.providers.krex import KREX_PROVIDER
+from kortravelweather.providers.krex import KREX_PROVIDER, UpstreamBlocked
 from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
@@ -939,13 +939,21 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     # No `client.close()` here -- KrexClient is async-only now, and
     # run_krex_restarea_sync closes it itself, inside the same asyncio.run()
     # that used it.
-    result = run_krex_restarea_sync(
-        repository=repository,
-        client=client,
-        max_records=runtime.regional_max_records,
-        max_values=runtime.max_values_per_run,
-        settings=runtime,
-    )
+    try:
+        result = run_krex_restarea_sync(
+            repository=repository,
+            client=client,
+            max_records=runtime.regional_max_records,
+            max_values=runtime.max_values_per_run,
+            settings=runtime,
+        )
+    except UpstreamBlocked as blocked:
+        # The step fails -- nothing was collected, and a block can last days
+        # -- but with failure_kind in its error and metadata rather than a
+        # bare HTML page.  The other regional assets are separate steps and
+        # are not affected.
+        context.log.error(str(blocked))
+        raise Failure(description=str(blocked), metadata=blocked.metadata) from blocked
     if result.get("produced_nothing"):
         # Distinguishable from a healthy run only here: the counts
         # alone cannot tell an empty upstream from a broken adapter.

@@ -581,6 +581,55 @@ def test_kma_skip_counters_start_at_zero_under_multiprocess(tmp_path) -> None:
             ) in scraper.stdout, (dataset, reason)
 
 
+def test_regional_networks_are_named_not_collapsed_to_other() -> None:
+    """Rules and dashboards have to say which network failed, not "other"."""
+    from kortravelweather.metrics import dataset_label, provider_label
+
+    for provider in ("python-khoa-api", "python-krforest-api", "python-krex-api"):
+        assert provider_label(provider) == provider
+    for dataset in (
+        "khoa_beach_index",
+        "krforest_mountain_weather",
+        "krforest_dust",
+        "krex_restarea_weather",
+    ):
+        assert dataset_label(dataset) == dataset
+
+
+def test_an_unknown_provider_outcome_is_an_error() -> None:
+    from kortravelweather.metrics import REGISTRY
+
+    labels = {"provider": "python-krex-api", "dataset": "krex_restarea_weather"}
+
+    def value(outcome: str) -> float:
+        return (
+            REGISTRY.get_sample_value(
+                "ktw_provider_requests_total", {**labels, "outcome": outcome}
+            )
+            or 0.0
+        )
+
+    before = value("error")
+    observe_provider_request(
+        "python-krex-api", "krex_restarea_weather", outcome="weird", duration_seconds=0.0
+    )
+    assert value("error") == before + 1
+    assert REGISTRY.get_sample_value(
+        "ktw_provider_requests_total", {**labels, "outcome": "weird"}
+    ) is None
+
+
+def test_a_blocked_provider_request_still_counts_as_a_provider_error() -> None:
+    """``outcome="blocked"`` only names the kind of failure.
+
+    Before it existed a WAF refusal was an ``error`` and fed
+    KorTravelWeatherProviderErrors; splitting the outcome must not take it
+    out of that rule.
+    """
+    expr = _alert_rules()["KorTravelWeatherProviderErrors"]["expr"]
+    assert 'outcome=~"error|blocked"' in expr
+
+
 def test_the_oldest_partition_age_is_exported_by_the_api_scrape_only() -> None:
     """Retention's staleness signal rides on the forward-window catalog read.
 

@@ -20,9 +20,11 @@ groups:
           summary: "Weather API is returning server errors"
           description: "5xx responses have been observed for at least 10 minutes."
 
+      # `blocked` (a provider's edge refused the request, e.g. the krex WAF)
+      # is a failed request too; it has its own outcome only to say which kind.
       - alert: KorTravelWeatherProviderErrors
         expr: |
-          sum(rate(ktw_provider_requests_total{outcome="error"}[10m])) > 0
+          sum(rate(ktw_provider_requests_total{outcome=~"error|blocked"}[10m])) > 0
         for: 10m
         labels:
           severity: warning
