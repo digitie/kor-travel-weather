@@ -260,3 +260,41 @@ def test_the_fetch_is_one_event_loop_even_when_blocked() -> None:
     with pytest.raises(KrexBadRequestError):
         asyncio.run(_fetch_restarea_weather(client, max_records=1, lookback_hours=1))
     assert client.closed is True
+
+
+def test_the_weather_krex_client_does_not_send_the_httpx_user_agent(monkeypatch) -> None:
+    """The block's trigger: the WAF refuses ``python-httpx/*`` (and curl).
+
+    ``KrexResource`` passes no session, so the library builds one with its own
+    ``python-krex-api/<version>`` User-Agent (python-krex-api #17).  A resource
+    that started passing its own ``httpx.AsyncClient`` would quietly bring the
+    httpx default back; this sends one request through a mock transport and
+    reads the header off it.
+    """
+    import httpx
+    from kortravelweather_dagster.regional_sources import _fetch_restarea_weather
+    from kortravelweather_dagster.resources import KrexResource
+
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent"))
+        return httpx.Response(200, json={"code": "SUCCESS", "count": 0, "list": []})
+
+    real_client = httpx.AsyncClient
+
+    class _Recording(real_client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            kwargs["transport"] = httpx.MockTransport(handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Recording)
+    client = KrexResource().create_client(
+        settings=WeatherSettings(_env_file=None, krex_api_key="test-key-not-real")
+    )
+    rows = asyncio.run(_fetch_restarea_weather(client, max_records=1, lookback_hours=0))
+
+    assert rows == []
+    assert len(seen) == 1
+    assert seen[0] is not None and seen[0].startswith("python-krex-api"), seen
+    assert "python-httpx" not in seen[0]

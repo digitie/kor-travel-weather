@@ -1010,7 +1010,7 @@ requires-dist = [
     { name = "python-airkorea-api", directory = "packages/python-airkorea-api" },
     { name = "python-khoa-api", git = "https://github.com/digitie/python-khoa-api.git?rev=38a2b74aabc1c077ebd2e1aa5ad3b2a70ffc8dd5" },
     { name = "python-kma-api", git = "https://github.com/digitie/python-kma-api.git?rev=12e7f1f15f259f5710d217e3e1f681b7b3086710" },
-    { name = "python-krex-api", git = "https://github.com/digitie/python-krex-api.git?rev=d153f3cdd87c9cfacceeb94310bbe6067a1bbfa8" },
+    { name = "python-krex-api", git = "https://github.com/digitie/python-krex-api.git?rev=1a37a0108fa837351aa6bb6644052f325ae76daf" },
     { name = "python-krforest-api", git = "https://github.com/digitie/python-krforest-api.git?rev=270ef7a9884bef1f995e2f8fb43c5fb1e9da7905" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
@@ -2094,7 +2094,7 @@ dependencies = [
 [[package]]
 name = "python-krex-api"
 version = "0.1.0"
-source = { git = "https://github.com/digitie/python-krex-api.git?rev=d153f3cdd87c9cfacceeb94310bbe6067a1bbfa8#d153f3cdd87c9cfacceeb94310bbe6067a1bbfa8" }
+source = { git = "https://github.com/digitie/python-krex-api.git?rev=1a37a0108fa837351aa6bb6644052f325ae76daf#1a37a0108fa837351aa6bb6644052f325ae76daf" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
