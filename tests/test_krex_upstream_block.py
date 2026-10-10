@@ -57,11 +57,10 @@ def test_the_edge_block_page_is_classified() -> None:
     "body",
     [
         "<H1>Request&nbsp;Blocked</H1>",
-        "<h1>REQUEST
-   BLOCKED</h1>",
+        "<h1>REQUEST\n   BLOCKED</h1>",
         "<p>Request <b>Blocked</b></p>",
         "Request&#32;Blocked",
-        "<title>Request	Blocked</title>",
+        "<title>Request\tBlocked</title>",
     ],
     ids=["nbsp", "case-newline", "inner-tag", "numeric-entity", "tab"],
 )
@@ -92,7 +91,15 @@ def test_block_page_variants_are_classified(body: str) -> None:
         # Not a krex error at all.
         RuntimeError("Request Blocked"),
     ],
-    ids=["words-apart", "api-invalid-parameter", "plain-400", "auth-401", "auth-403", "server-502", "not-krex"],
+    ids=[
+        "words-apart",
+        "api-invalid-parameter",
+        "plain-400",
+        "auth-401",
+        "auth-403",
+        "server-502",
+        "not-krex",
+    ],
 )
 def test_nothing_else_is_taken_for_a_block(exc: BaseException) -> None:
     assert upstream_block(exc) is None
