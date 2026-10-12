@@ -5,7 +5,7 @@
 #     -v "$PWD/deploy/prometheus:/etc/prometheus:ro" -v "$PWD/tests/prometheus:/tests:ro" \
 #     prom/prometheus:v3.5.0 test rules /tests/alerts_test.yml
 #
-# The KMA nowcast runs hourly ("0 * * * *"); an offline station drops 7 of
+# The KMA nowcast runs hourly ("20 * * * *"); an offline station drops 7 of
 # its 8 categories as Missing sentinels (seen on n150 2026-10-05).  Series
 # are sampled every 30s like the n150 scrape, so `0x119 7x119` is one hour
 # at 0 and then the run's +7.  Skip counters start at 0: the KMA worker
@@ -34,10 +34,12 @@ tests:
 
   # Three offline stations (21/h) held for hours do page: the gap between
   # one routine outage and the run-level `partial` (~137 per run).  Runs
-  # finish 30s or 5m after the hour, alternately, so four runs can span
-  # more than 3h: a 3h window then holds only two for a few minutes, which
-  # resets the 1h `for` every two hours.  The rule's 3h30m window always
-  # holds three.
+  # start at :20 and finish a few minutes later, but how many minutes
+  # varies (p50 2.5m, max 12.5m), so successive increments land 55 to 64
+  # minutes apart (modelled here as alternating 110/128 samples) and four
+  # runs can span more than 3h: a 3h window then holds only two for a few
+  # minutes, which resets the 1h `for` every two hours.  The rule's 3h30m
+  # window always holds three.
   - interval: 30s
     input_series:
       - series: 'ktw_sync_values_skipped_total{job="kor-travel-weather-dagster",provider="python-kma-api",dataset="kma_ultra_short_nowcast",reason="missing"}'

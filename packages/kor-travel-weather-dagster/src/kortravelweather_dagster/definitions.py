@@ -1169,9 +1169,30 @@ external_weather_jobs = {
 weather_retention_job = _resolve_job(_unresolved_retention_job)
 regional_weather_job = _resolve_job(_unresolved_regional_job)
 
+# The three hourly jobs that publish into the AirKorea station anchors run one
+# after another, not together: 초단기예보 at :00, 초단기실황 at :20, AirKorea at
+# :35.  They take the same ``location:<id>`` advisory locks, and the KMA two
+# also walk the same targets in the same order -- started on one tick, the
+# second ran a few seconds behind the first and lost a lock wait on the same
+# station.  Shared Dagster 2026-10-08..12 (96 runs each): all 13 nowcast
+# failures were that ``LockNotAvailable`` with the ultra-short forecast still
+# running, and both AirKorea lock failures were inside its tail.  The owner
+# chose on 2026-10-06 not to add per-location skip to more jobs, so the jobs
+# are kept apart instead of taught to skip.
+#
+# Measured then (start to end, success): ultra-short forecast p50 6.4 /
+# p95 13.9 / max 24.3 min, ended past :20 once in 95 runs; nowcast p50 2.5 /
+# p95 7.1 / max 12.5 min; AirKorea p50 1.7 / p95 12.0 / max 18.4 min.
+#
+# :20 costs the nowcast no data.  python-kma-api serves 초단기실황 base HH:00
+# from HH:40 (ULTRA_SRT_NCST_DELAY), so any tick in :00-:39 asks for the
+# previous hour's observation -- the one the :00 tick fetched -- and it has
+# been published for 40 minutes by then.  The run finishes (max 12.5 min)
+# well before :40; if one ever ran past it, the client asks for the newer base
+# only once the library considers it published.
 hourly_kma_ultra_short_nowcast_schedule = _weather_schedule(
     name="hourly_kma_ultra_short_nowcast",
-    cron_schedule="0 * * * *",
+    cron_schedule="20 * * * *",
     job=kma_ultra_short_nowcast_job,
     execution_timezone="Asia/Seoul",
     default_status=DefaultScheduleStatus.RUNNING,
@@ -1211,8 +1232,10 @@ kma_mid_forecast_schedule = _weather_schedule(
 )
 
 # Advisories can be issued at any time, so this stays hourly like the two
-# ultra-short datasets; offset five minutes past them so all three do not
-# compete for the same concurrency slot at the top of the hour.
+# ultra-short datasets; offset five minutes past the ultra-short forecast so
+# the two do not start on the same tick.  It still overlaps that run's tail;
+# its station publishes skip a held location (ingest_skip_locked) instead of
+# waiting on it.
 hourly_kma_weather_alerts_schedule = _weather_schedule(
     name="hourly_kma_weather_alerts",
     cron_schedule="5 * * * *",
@@ -1221,9 +1244,16 @@ hourly_kma_weather_alerts_schedule = _weather_schedule(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
+# :35, after the nowcast (see the ultra-short schedules above).  It is also
+# fresher than the old :10: AirKorea posts a station's HH:00 reading somewhere
+# around HH:10-HH:13, and on 2026-10-11..12 a :10-:11 fetch got the previous
+# hour for about half the sampled stations while a :13-:14 fetch got the
+# current hour for all of them.  Of the :30 jobs, the mid forecast (06/18)
+# took at most 1.4 min and the regional sweep (05/17) writes its own
+# khoa-/krforest-/krex- anchors, not stations.
 hourly_airkorea_weather_schedule = _weather_schedule(
     name="hourly_airkorea_weather",
-    cron_schedule="10 * * * *",
+    cron_schedule="35 * * * *",
     job=airkorea_job,
     execution_timezone="Asia/Seoul",
     default_status=DefaultScheduleStatus.RUNNING,
@@ -1270,8 +1300,9 @@ regional_weather_schedule = _weather_schedule(
 # three-hourly external sweep at 03:15 -- which is where the old 03:20 slot sat
 # (about four concurrent runs; four of its last six runs failed: three lock
 # timeouts and one deadlock).  The hourly
-# KMA/AirKorea ticks at 02:00-02:10 are short (p50 1-7 min) and the job's
-# spaced retries wait them out.
+# ticks around it are short and the job's spaced retries wait them out:
+# AirKorea at 01:35 (p50 1.7 min, so usually done before 01:45) and the
+# 02:00/02:05/02:20 KMA ticks (p50 1.4-6.4 min).
 daily_weather_retention_schedule = _weather_schedule(
     name="daily_weather_retention",
     cron_schedule="45 1 * * *",
