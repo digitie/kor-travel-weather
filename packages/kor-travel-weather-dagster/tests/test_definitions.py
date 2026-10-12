@@ -50,20 +50,18 @@ def _hourly_minute(name: str) -> int:
     return int(minute)
 
 
-def test_station_lock_jobs_take_turns_within_the_hour() -> None:
+def test_station_lock_jobs_run_at_staggered_minutes() -> None:
     # 초단기예보, 초단기실황 and AirKorea publish into the same station
     # anchors under ``location:<id>`` advisory locks.  On one tick the second
     # KMA job trailed the first by seconds and lost the lock wait on the same
-    # station (13 of 96 nowcast runs, 2026-10-08..12).  Each slot leaves the
-    # previous job's measured p95 (13.9 / 7.1 / 12.0 min) plus margin.
-    forecast = _hourly_minute("hourly_kma_ultra_short_forecast")
-    nowcast = _hourly_minute("hourly_kma_ultra_short_nowcast")
-    airkorea = _hourly_minute("hourly_airkorea_weather")
-    assert (forecast, nowcast, airkorea) == (0, 20, 35)
-    assert nowcast - forecast >= 15
-    assert airkorea - nowcast >= 15
-    # and AirKorea's run ends before the next hour's forecast tick
-    assert 60 - airkorea >= 15
+    # station (13 of 96 nowcast runs, 2026-10-08..12).  The minutes leave
+    # each previous job's measured p95 (13.9 / 7.1 / 12.0 min) plus margin;
+    # this pins the minutes, not the run durations.
+    assert (
+        _hourly_minute("hourly_kma_ultra_short_forecast"),
+        _hourly_minute("hourly_kma_ultra_short_nowcast"),
+        _hourly_minute("hourly_airkorea_weather"),
+    ) == (0, 20, 35)
 
 
 def test_nowcast_tick_fetches_the_published_base_the_top_of_hour_did() -> None:

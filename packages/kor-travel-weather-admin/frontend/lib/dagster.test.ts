@@ -116,7 +116,7 @@ describe("getDagsterSnapshot", () => {
             __typename: "Repository",
             name: "__repository__",
             location: { name: DAGSTER_LOCATION_NAME },
-            schedules: [{ name: "hourly_airkorea_weather", cronSchedule: "10 * * * *", pipelineName: "airkorea_weather_job", scheduleState: { status: "RUNNING" } }],
+            schedules: [{ name: "hourly_airkorea_weather", cronSchedule: "35 * * * *", pipelineName: "airkorea_weather_job", scheduleState: { status: "RUNNING" } }],
             jobs: [{ name: "airkorea_weather_job" }],
             assetNodes: [],
           },
