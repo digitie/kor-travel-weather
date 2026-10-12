@@ -152,6 +152,12 @@ export async function clearDurableLoginFailures(
   return postDurableLoginRateLimit("success", bucketHash, env);
 }
 
+// The failure/success calls write a row and commit. On a host whose disk is busy (n150: IO
+// pressure ~90% during bulk loads) that commit takes 0.5-3.5s, and a 750ms cap turned every
+// login into a 503 even though the credentials and the API were fine. 5s keeps the fail-closed
+// behaviour (an unreachable API still blocks login) without tripping on a slow fsync.
+const DURABLE_LOGIN_RATE_LIMIT_TIMEOUT_MS = 5000;
+
 async function postDurableLoginRateLimit(
   action: "check" | "failure" | "success",
   bucketHash: string,
@@ -164,7 +170,7 @@ async function postDurableLoginRateLimit(
     return { available: false };
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 750);
+  const timeout = setTimeout(() => controller.abort(), DURABLE_LOGIN_RATE_LIMIT_TIMEOUT_MS);
   try {
     const response = await fetch(
       `${apiBase.replace(/\/$/, "")}/v1/admin/login-rate-limit/${action}`,

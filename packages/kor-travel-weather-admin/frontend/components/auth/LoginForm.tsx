@@ -15,10 +15,13 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...credentials, next: destination }),
       });
-      const payload = (await response.json().catch(() => ({}))) as { next?: string };
+      const payload = (await response.json().catch(() => ({}))) as { next?: string; detail?: unknown };
       if (!response.ok) {
+        // 503 has several causes (missing config, rate-limit store unavailable); show the
+        // server's own reason instead of always blaming configuration.
+        const serverDetail = typeof payload.detail === "string" ? payload.detail : null;
         const messages: Record<number, string> = {
-          503: "로그인 환경변수가 설정되지 않았습니다.",
+          503: serverDetail ?? "로그인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
           429: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
           403: "허용되지 않은 요청입니다. 로그인 화면을 새로고침하세요.",
         };
