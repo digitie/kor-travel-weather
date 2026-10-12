@@ -96,12 +96,15 @@ and severity badge. It is safe to refresh on every map viewport update.
 
 ## Hourly ingestion and providers
 
-KMA runs one schedule per dataset, each in Asia/Seoul: `hourly_kma_ultra_short_nowcast`
-and `hourly_kma_ultra_short_forecast` (`0 * * * *`), `kma_short_forecast_publish_hours`
-(`15 2,5,8,11,14,17,20,23 * * *`, matching KMA's real 단기예보 publish times),
-`kma_mid_forecast_publish_hours` (`30 6,18 * * *`), and `hourly_kma_weather_alerts`
-(`5 * * * *`). `hourly_airkorea_weather` refreshes AirKorea's station catalog and
-measurements independently at the ten-minute mark; a `three_hourly_<provider>_weather`
+KMA runs one schedule per dataset, each in Asia/Seoul: `hourly_kma_ultra_short_forecast`
+(`0 * * * *`), `hourly_kma_ultra_short_nowcast` (`20 * * * *`),
+`kma_short_forecast_publish_hours` (`15 2,5,8,11,14,17,20,23 * * *`, matching KMA's
+real 단기예보 publish times), `kma_mid_forecast_publish_hours` (`30 6,18 * * *`), and
+`hourly_kma_weather_alerts` (`5 * * * *`). `hourly_airkorea_weather` refreshes
+AirKorea's station catalog and measurements independently at `35 * * * *`. The
+ultra-short forecast, nowcast and AirKorea take turns because they lock the same
+station anchors; see [Dagster boundary](architecture/dagster-boundary.md#매시-station-lock-job의-시간-분리).
+A `three_hourly_<provider>_weather`
 schedule per external provider then collects every enabled non-KMA provider from the
 latest enabled AirKorea station anchors. An AirKorea quota or provider outage must
 not prevent already-known anchors from receiving external updates. Providers

@@ -35,13 +35,62 @@ def test_kma_is_split_into_one_job_per_dataset() -> None:
 
 
 def test_ultra_short_datasets_stay_hourly() -> None:
-    for name, job_name in (
-        ("hourly_kma_ultra_short_nowcast", "kma_ultra_short_nowcast_job"),
-        ("hourly_kma_ultra_short_forecast", "kma_ultra_short_forecast_job"),
+    for name, job_name, cron in (
+        ("hourly_kma_ultra_short_forecast", "kma_ultra_short_forecast_job", "0 * * * *"),
+        ("hourly_kma_ultra_short_nowcast", "kma_ultra_short_nowcast_job", "20 * * * *"),
     ):
         schedule = _schedule(name)
-        assert schedule.cron_schedule == "0 * * * *"
+        assert schedule.cron_schedule == cron
         assert schedule.job_name == job_name
+
+
+def _hourly_minute(name: str) -> int:
+    minute, *rest = _schedule(name).cron_schedule.split()
+    assert rest == ["*", "*", "*", "*"], name
+    return int(minute)
+
+
+def test_station_lock_jobs_take_turns_within_the_hour() -> None:
+    # 초단기예보, 초단기실황 and AirKorea publish into the same station
+    # anchors under ``location:<id>`` advisory locks.  On one tick the second
+    # KMA job trailed the first by seconds and lost the lock wait on the same
+    # station (13 of 96 nowcast runs, 2026-10-08..12).  Each slot leaves the
+    # previous job's measured p95 (13.9 / 7.1 / 12.0 min) plus margin.
+    forecast = _hourly_minute("hourly_kma_ultra_short_forecast")
+    nowcast = _hourly_minute("hourly_kma_ultra_short_nowcast")
+    airkorea = _hourly_minute("hourly_airkorea_weather")
+    assert (forecast, nowcast, airkorea) == (0, 20, 35)
+    assert nowcast - forecast >= 15
+    assert airkorea - nowcast >= 15
+    # and AirKorea's run ends before the next hour's forecast tick
+    assert 60 - airkorea >= 15
+
+
+def test_nowcast_tick_fetches_the_published_base_the_top_of_hour_did() -> None:
+    # Moving the nowcast off :00 must not make it ask for an observation KMA
+    # has not served yet, nor fall a base behind.  The base choice is
+    # python-kma-api's (AGENTS: do not reimplement KMA publish times).
+    from datetime import datetime, timedelta, timezone
+
+    from kma import KmaEndpoint, base_available_at
+    from kma.time_utils import latest_ultra_srt_ncst_base
+
+    kst = timezone(timedelta(hours=9))
+    minute = _hourly_minute("hourly_kma_ultra_short_nowcast")
+    for hour in range(24):
+        top = datetime(2026, 10, 12, hour, 0, tzinfo=kst)
+        tick = top.replace(minute=minute)
+        base = latest_ultra_srt_ncst_base(tick)
+        assert base == latest_ultra_srt_ncst_base(top), tick
+        assert base_available_at(KmaEndpoint.ULTRA_SRT_NCST, *base) <= tick, tick
+
+
+def test_airkorea_waits_for_the_current_hours_station_readings() -> None:
+    # AirKorea posts HH:00 station readings around HH:10-HH:13 (2026-10-11..12:
+    # a :10 fetch got the previous hour for about half the stations, a :13
+    # fetch got the current hour for all).  There is no library constant for
+    # it, so this pins the measured floor.
+    assert _hourly_minute("hourly_airkorea_weather") >= 15
 
 
 def test_short_forecast_follows_kmas_real_publish_hours() -> None:

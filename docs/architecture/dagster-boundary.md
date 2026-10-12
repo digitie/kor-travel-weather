@@ -1,7 +1,7 @@
 # Dagster boundary
 
 KMA는 **dataset마다 하나씩** asset/job/schedule 경계를 갖는다: `kma_ultra_short_nowcast_sync`
-(초단기실황, hourly `0 * * * *`), `kma_ultra_short_forecast_sync`(초단기예보, hourly
+(초단기실황, hourly `20 * * * *`), `kma_ultra_short_forecast_sync`(초단기예보, hourly
 `0 * * * *`), `kma_short_forecast_sync`(단기예보, KMA 실제 발표시각인
 `15 2,5,8,11,14,17,20,23 * * *`), `kma_mid_forecast_sync`(중기예보,
 `30 6,18 * * *`), `kma_weather_alerts_sync`(특보, hourly `5 * * * *`). 예전에는 다섯
@@ -134,9 +134,10 @@ source·projection lock은 여전히 ingest `lock_timeout`과 재시도 아래�
 - **마지막 재시도 pass는 두지 않았다**: 특보 job에는 특보 publish와 run 종료 사이에 다른
   일이 없어서(격자 chunk 없음) "종료 직전 pass"는 재시도 라운드 하나를 더 두는 것과 같고,
   2026-10-03의 holder chunk는 수 분씩 쥐었으므로 몇십 초 뒤 pass로는 잘 풀리지 않는다.
-  매시 같은 location이 잡혀 starvation 경고가 이어지면, 특보 schedule을 매시 `:00`~`:20`에
-  시작하는 초단기예보·AirKorea·외부 provider job과 덜 겹치는 분(예: `:40`)으로 옮기거나
-  `PUBLISH_CHUNK_VALUES`를 줄여 holder chunk를 짧게 하는 것이 먼저다.
+  매시 같은 location이 잡혀 starvation 경고가 이어지면, 특보 schedule을 측정소 lock job
+  (`:00` 초단기예보, `:20` 초단기실황, `:35` AirKorea — 아래 절)과 외부 provider job
+  (3시간마다 `:15`)이 비는 분(예: `:50`)으로 옮기거나 `PUBLISH_CHUNK_VALUES`를 줄여 holder
+  chunk를 짧게 하는 것이 먼저다.
 
 response metadata(endpoint, request
 params, status when available)도 raw payload에 포함한다. durable cursor는 아직
@@ -151,6 +152,48 @@ run 안에서 함께 멈췄고, 그 run이 동시 실행 슬롯을 계속 점유
 job들은 같은 `:15` tick에 **3시간마다** 예약되지만 `kortravelweather/run_group`
 태그와 `deploy/dagster.yaml`의 `tag_concurrency_limits`가 동시 실행 수를
 제한하므로 한꺼번에 슬롯을 가져가지 않는다.
+
+## 매시 station lock job의 시간 분리
+
+초단기예보·초단기실황·AirKorea는 같은 측정소 anchor에 fact를 쓰므로 같은
+`location:<id>` advisory lock을 잡는다. 그래서 **같은 분에 시작하지 않고 차례로 돈다**
+(Asia/Seoul):
+
+| schedule | 이전 | 지금 | 측정 소요(성공 run, 분) p50 / p95 / max |
+| --- | --- | --- | --- |
+| `hourly_kma_ultra_short_forecast` | `0 * * * *` | `0 * * * *` (그대로) | 6.4 / 13.9 / 24.3 |
+| `hourly_kma_ultra_short_nowcast` | `0 * * * *` | `20 * * * *` | 2.5 / 7.1 / 12.5 |
+| `hourly_airkorea_weather` | `10 * * * *` | `35 * * * *` | 1.7 / 12.0 / 18.4 |
+
+측정은 공용 Dagster 2026-10-08~12의 job별 96 run이다. 같은 `:00`에 시작하면 초단기실황이
+초단기예보보다 몇 초~수십 초 늦게 같은 target을 같은 순서로 따라가며 같은 측정소에서 lock
+대기에 졌다 — 그 96 run 중 초단기실황 실패 13건이 모두 이 `LockNotAvailable`이었고 모두
+초단기예보가 돌던 중이었다. AirKorea의 lock 실패 2건(2026-10-11 18:10, 22:10)도
+초단기예보 꼬리 안이었다(나머지 AirKorea 실패는 `AirKoreaNetworkError`). 같은 기간
+초단기예보가 `:20`을 넘겨 끝난 run은 95건 중 1건, `:25`를 넘긴 run은 없었다.
+2026-10-06 소유자 결정으로 per-location skip(특보의 `ingest_skip_locked`)은 더 넓히지 않고,
+시간을 떼어 놓는 것으로 푼다 — lock·skip 의미는 그대로다.
+
+**신선도.**
+
+- 초단기실황: python-kma-api는 base `HH:00`을 `HH:40`부터 조회 가능하다고 본다
+  (`ULTRA_SRT_NCST_DELAY` 40분, `base_available_at`). `:00`~`:39` tick은 모두 직전 시각
+  base를 요청하므로 `:20`은 `:00`이 받던 것과 **같은 관측**을 받는다 — 발표 전 요청은 없고
+  base가 뒤로 밀리지도 않는다. DB에 들어오는 시각만 약 20분 늦다. run(최대 12.5분)은
+  `:40` 전에 끝나며, 넘기더라도 client는 라이브러리가 발표됐다고 보는 base만 요청한다.
+  `test_nowcast_tick_fetches_the_published_base_the_top_of_hour_did`가 24시간 모두에 대해
+  고정한다.
+- AirKorea: 측정소별 `HH:00` 측정값은 대략 `HH:10`~`HH:13`에 올라온다. 2026-10-11~12
+  표본 측정소에서 `:10`~`:11` fetch는 약 절반이 직전 시각 값을 받았고 `:13`~`:14`
+  fetch는 모두 현재 시각 값을 받았다. `:35`는 모든 측정소의 현재 시각 값을 받으므로 예전
+  `:10`보다 신선하다. 라이브러리 상수가 없어 테스트는 측정 하한(`>= :15`)만 고정한다.
+
+**남는 겹침.** 특보(`:05`)는 초단기예보 꼬리와 겹치지만 잡힌 location을 건너뛴다(위 절).
+단기예보(`:15`, 발표시각 8회/일, p50 33분·최대 100분)와 3시간마다 `:15`의 외부 provider
+sweep은 그 시간대의 모든 job과 겹친다 — 이 기간 그것만으로 난 lock 실패는 없었다.
+`:30`의 중기예보(최대 1.4분)와 지역 sweep(khoa-/krforest-/krex- anchor)은 측정소 lock과
+겹치지 않는다. AirKorea `01:35`는 retention(`01:45`) 앞이고 p50 1.7분이라 대개 먼저
+끝나며, 남는 겹침은 retention의 간격 둔 재시도가 기다린다.
 
 ## 무료 quota가 수집 범위를 정한다
 
