@@ -14,7 +14,7 @@ import math
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypeVar
 
@@ -763,6 +763,11 @@ class _ResolvedFact:
     target_at: datetime | None
     known_at: datetime | None
     collected_at: datetime | None
+    #: The source record existed before this batch: the fact is a replay of
+    #: a response seen earlier, dated by that first fetch (see
+    #: ``_redate_forgotten_replays_session``).  ``False`` for a source this
+    #: batch inserted, however old its ``fetched_at``.
+    replayed: bool = False
 
     @property
     def logical_key(self) -> tuple[Any, ...]:
@@ -1291,8 +1296,11 @@ class WeatherRepository:
                 )
             return int(session.scalar(stmt) or 0)
 
-    def _record_source_session(self, session: Session, record: Mapping[str, Any]) -> str:
-        """Insert a source response and return its canonical primary key.
+    def _record_source_session(
+        self, session: Session, record: Mapping[str, Any]
+    ) -> tuple[str, bool]:
+        """Insert a source response; return its canonical primary key and
+        whether this call inserted it (``False``: a replay of a stored one).
 
         The immutable source identity constraint is intentionally independent
         of ``source_record_key``.  Provider adapters can change the way that
@@ -1349,8 +1357,8 @@ class WeatherRepository:
                     imported_at=kst_now(),
                 )
             )
-            return source_record_key
-        return row.source_record_key
+            return source_record_key, True
+        return row.source_record_key, False
 
     @staticmethod
     def _validate_source_lineage(
@@ -1409,6 +1417,7 @@ class WeatherRepository:
         session: Session,
         value: WeatherValue,
         source_rows: dict[str, SourceRecordRow],
+        inserted_sources: set[str],
     ) -> _ResolvedFact:
         """Validate a fact against its source record and fix its canonical identity.
 
@@ -1452,8 +1461,9 @@ class WeatherRepository:
             )
             session.add(fallback)
             # Cached so a second fact citing the same fallback source finds
-            # it instead of adding it twice.
+            # it instead of adding it twice -- and is not taken for a replay.
             source_rows[source_key] = fallback
+            inserted_sources.add(source_key)
             canonical_known = _canonical_datetime(value.known_at or value.collected_at)
             canonical_collected = _canonical_datetime(value.collected_at)
         elif source.provider != value.provider or source.dataset_key != value.dataset_key:
@@ -1463,6 +1473,8 @@ class WeatherRepository:
             # A response key is stable across re-fetches. Preserve the first
             # source observation clock so a later transport timestamp cannot
             # turn an identical response into a false immutable conflict.
+            # Once retention has dropped that clock's day the batch re-dates
+            # the fact instead (``_redate_forgotten_replays_session``).
             canonical_known = _canonical_datetime(source.fetched_at)
             canonical_collected = _canonical_datetime(source.fetched_at)
         return _ResolvedFact(
@@ -1472,6 +1484,7 @@ class WeatherRepository:
             target_at=canonical_target,
             known_at=canonical_known,
             collected_at=canonical_collected,
+            replayed=source is not None and source_key not in inserted_sources,
         )
 
     @staticmethod
@@ -1524,7 +1537,7 @@ class WeatherRepository:
             and canonical_known is not None
             and expired_window[0] <= canonical_known < expired_window[1]
         ):
-            # Already past retention on arrival: see ``_expired_fact_window``.
+            # Already past retention on arrival: see ``_retention_bounds``.
             return None
         # The primary key is composite now that the table is partitioned by
         # ``known_at``; ``value_id`` alone no longer identifies a row.
@@ -1655,6 +1668,7 @@ class WeatherRepository:
         # foreign keys and WeatherValue identity stable when a provider emits a
         # new deterministic key for a raw payload already stored in the DB.
         source_aliases: dict[str, str] = {}
+        inserted_sources: set[str] = set()
         identity_aliases: dict[tuple[str, str, str, str, str], str] = {}
         normalized_records: list[Mapping[str, Any]] = []
         for record in records:
@@ -1673,7 +1687,9 @@ class WeatherRepository:
             )
             canonical_key = identity_aliases.get(identity)
             if canonical_key is None:
-                canonical_key = self._record_source_session(session, record)
+                canonical_key, inserted = self._record_source_session(session, record)
+                if inserted:
+                    inserted_sources.add(canonical_key)
                 identity_aliases[identity] = canonical_key
             source_aliases[original_key] = canonical_key
             if canonical_key == original_key:
@@ -1740,10 +1756,17 @@ class WeatherRepository:
                 skipped.add(location_id)
         if skipped:
             facts = [value for value in facts if value.location_id not in skipped]
-        expired_window = self._expired_fact_window(session) if facts else None
+        expired_window, horizon = self._retention_bounds(session) if facts else (None, None)
         source_rows: dict[str, SourceRecordRow] = {}
-        resolved = [self._resolve_fact_session(session, value, source_rows) for value in facts]
+        resolved = [
+            self._resolve_fact_session(session, value, source_rows, inserted_sources)
+            for value in facts
+        ]
         stored_facts = self._existing_facts_session(session, resolved)
+        if horizon is not None:
+            resolved = self._redate_forgotten_replays_session(
+                session, resolved, stored_facts, horizon
+            )
         loaded = 0
         candidates: list[_ResolvedFact] = []
         for fact in resolved:
@@ -1961,28 +1984,121 @@ class WeatherRepository:
         )
 
     @staticmethod
-    def _expired_fact_window(session: Session) -> tuple[datetime, datetime] | None:
-        """``[floor, oldest dated partition)``: facts here have no home and are expired.
+    def _retention_bounds(
+        session: Session,
+    ) -> tuple[tuple[datetime, datetime] | None, datetime | None]:
+        """``(expired window, horizon)`` from the partition catalog.
 
-        A replayed source keeps its first fetch time as ``known_at`` (see
-        ``_insert_value_session``), so replaying a response first seen weeks
-        ago dates its facts weeks ago.  Below DEFAULT's floor they land in
-        DEFAULT, as any backfill does.  At or after the floor their day's
-        partition is the one retention already dropped -- the window here --
-        so no partition takes them and DEFAULT's floor refuses them, which used
-        to fail the whole batch.  They are past retention by construction, so
-        they are skipped like an idempotent replay (``False``: not loaded)
-        instead; resurrecting them would also put an expired value back in
-        the projection.  Two catalog reads per batch.
+        The **horizon** is the lower bound of the oldest dated partition at or
+        after DEFAULT's floor: below it, retention has dropped the day (or the
+        operator purged DEFAULT), so a fact dated there may be gone.  ``None``
+        without a floor (a fresh database: nothing is ever dropped).
+
+        The **expired window** is ``[floor, horizon)`` when it is not empty:
+        no partition takes a fact dated there and DEFAULT's floor refuses it.
+        A fact that still arrives dated there -- a response fetched before
+        retention dropped its day and only now published -- is past retention
+        on arrival, so it is skipped like an idempotent replay (``False``: not
+        loaded) instead of failing the batch; resurrecting it would also put an
+        expired value back in the projection.
+
+        A *replay* -- a response the store already holds, fetched again now --
+        is different: it is dated by its first fetch (``_resolve_fact_session``)
+        and is re-dated to this fetch when that first date is below the
+        horizon and its fact is gone (``_redate_forgotten_replays_session``).
+        Two catalog reads per batch.
         """
         connection = session.connection()
         floor = default_partition_floor(connection)
         if floor is None:
-            return None
+            return None, None
         lowers = [lower for lower, _ in dated_partition_bounds(connection) if lower >= floor]
-        if not lowers or min(lowers) <= floor:
-            return None
-        return floor, min(lowers)
+        if not lowers:
+            return None, None
+        horizon = min(lowers)
+        window = (floor, horizon) if horizon > floor else None
+        return window, horizon
+
+    @staticmethod
+    def _redate_forgotten_replays_session(
+        session: Session,
+        facts: list[_ResolvedFact],
+        stored: dict[tuple[str, datetime | None], WeatherValueRow],
+        horizon: datetime,
+    ) -> list[_ResolvedFact]:
+        """Re-date replays whose first fetch retention has already forgotten.
+
+        A replayed response keeps its first fetch time as ``known_at`` so an
+        identical re-fetch is a no-op rather than a new row.  Retention drops
+        days, not responses: a response the provider still serves -- an alert
+        still in force, a forecast nobody revised -- outlives the partition of
+        its first fetch, and its source record outlives it too (every run that
+        fetches it cites it in ``weather_sync_run_sources``).  Dated by that
+        first fetch, the re-fetched fact would be skipped as expired (or sunk
+        into DEFAULT, below the floor) and the value would vanish from the
+        projection although the provider still serves it.
+
+        So a replayed fact (``_ResolvedFact.replayed``) dated below ``horizon``
+        whose stored row is gone is dated by *this* fetch
+        (``WeatherValue.known_at``, else ``collected_at``) for both ``known_at``
+        and ``collected_at``, as a first fetch would be.  Bitemporally that is
+        exact: ``known_at`` is when this store knew the fact, and the earliest
+        knowledge it still holds is this fetch.  Facts stay append-only (a new
+        row; the source record is untouched) and ``known_at`` only moves
+        forward for a ``value_id``.  The next replay finds that row here -- the
+        earliest at or above the horizon -- and replays against it, so a
+        response re-fetched every hour makes one new row per retention period,
+        not one per fetch.
+
+        Not re-dated: a fact whose stored row still exists (it replays as
+        before) and a source this batch inserted (an old response arriving late
+        is past retention, see ``_retention_bounds``).  A replay whose own fetch
+        time is below the horizon too (an old batch published again) is past
+        retention and dropped from the batch -- below the floor it would
+        otherwise go back into DEFAULT, where retention never reaches it.
+        """
+        stale = [
+            index
+            for index, fact in enumerate(facts)
+            if fact.replayed
+            and fact.known_at is not None
+            and fact.known_at < horizon
+            and (fact.value_id, fact.known_at) not in stored
+        ]
+        if not stale:
+            return facts
+        value_ids = list(dict.fromkeys(facts[index].value_id for index in stale))
+        redated: dict[str, tuple[datetime, datetime | None]] = {}
+        for offset in range(0, len(value_ids), 1000):
+            rows = session.scalars(
+                select(WeatherValueRow)
+                .where(
+                    WeatherValueRow.value_id.in_(value_ids[offset : offset + 1000]),
+                    WeatherValueRow.known_at >= horizon,
+                )
+                .order_by(WeatherValueRow.known_at)
+            ).all()
+            for row in rows:
+                known = _canonical_row_datetime(row.known_at)
+                assert known is not None
+                stored[(row.value_id, known)] = row
+                redated.setdefault(
+                    row.value_id, (known, _canonical_row_datetime(row.collected_at))
+                )
+        result: list[_ResolvedFact | None] = list(facts)
+        for index in stale:
+            fact = facts[index]
+            clock = redated.get(fact.value_id)
+            if clock is None:
+                fetched = _canonical_datetime(fact.value.known_at or fact.value.collected_at)
+                if fetched is None or fetched < horizon:
+                    result[index] = None
+                    continue
+                clock = (fetched, fetched)
+                # A duplicate later in the batch replays against this one.
+                redated[fact.value_id] = clock
+            result[index] = replace(fact, known_at=clock[0], collected_at=clock[1])
+        return [fact for fact in result if fact is not None]
 
     def _refresh_current_projection_session(
         self, session: Session, facts: Sequence[_ResolvedFact]
