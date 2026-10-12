@@ -52,23 +52,24 @@ groups:
           summary: "The API has not reported the weather_values forward partition window"
           description: "The API omits ktw_forward_partition_days (and ktw_oldest_partition_age_days, read from the same catalog) when its catalog read fails (see ktw_metrics_errors_total{operation=\"forward_partitions\"}), which would silence KorTravelWeatherForwardPartitionsLow and KorTravelWeatherRetentionStale."
 
-      # Retention staleness.  The oldest dated partition is RETENTION_DAYS (16
-      # in production) old right after the nightly drop and 17 just before
-      # the next one; each night without a drop adds one.  Over 18 is the
-      # second night in a row.  The API computes the sample but does not carry
-      # RETENTION_DAYS (only the code-server does), so 16 + 2 lives here;
+      # Retention staleness.  The oldest dated partition is RETENTION_DAYS (7
+      # in production since 2026-10-13, owner decision; was 16) old right after
+      # the nightly drop and 8 just before the next one; each night without a
+      # drop adds one.  Over 9 is the second night in a row.  The API computes
+      # the sample but does not carry RETENTION_DAYS (only the code-server
+      # does), so 7 + 2 lives here;
       # tests/test_metrics.py pins it.  A retention run that defers a day
       # (lost lock races) is still green; this is what notices the deferrals
       # piling up.  Forward-window failures are ForwardPartitionsLow's.
       - alert: KorTravelWeatherRetentionStale
         expr: |
-          max(ktw_oldest_partition_age_days{job="kor-travel-weather-api"}) > 18
+          max(ktw_oldest_partition_age_days{job="kor-travel-weather-api"}) > 9
         for: 30m
         labels:
           severity: warning
         annotations:
           summary: "weather_values retention has not dropped a day for two nights"
-          description: "The oldest dated weather_values partition is {{ $value }} days old; RETENTION_DAYS is 16 and the nightly weather_retention_job keeps it at 16-17. Check that job's runs: deferred or overdue partitions are listed in its metadata."
+          description: "The oldest dated weather_values partition is {{ $value }} days old; RETENTION_DAYS is 7 and the nightly weather_retention_job keeps it at 7-8. Check that job's runs: deferred or overdue partitions are listed in its metadata."
 
       - alert: KorTravelWeatherSyncFailed
         expr: |

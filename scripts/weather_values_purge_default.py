@@ -1,10 +1,10 @@
 """Destructive (owner-approved 2026-10-01): remove what is past retention from DEFAULT.
 
 Dry run is the default and changes nothing.  It prints DEFAULT's size and row
-estimate, the retention cutoff (``KOR_TRAVEL_WEATHER_RETENTION_DAYS``, 16 in
-production; ``--retention-days`` overrides it), how many rows are before the
-cutoff (planner statistics; ``--exact`` counts them, a full read), and the
-foreign-key impact on ``weather_current_values``.
+estimate, the retention cutoff (``KOR_TRAVEL_WEATHER_RETENTION_DAYS``, 7 in
+production since 2026-10-13; ``--retention-days`` overrides it), how many rows
+are before the cutoff (planner statistics; ``--exact`` counts them, a full
+read), and the foreign-key impact on ``weather_current_values``.
 
 ``--execute`` picks the strategy from DEFAULT's floor (added by
 ``weather_values_forward_partitions.py``, which must run first):

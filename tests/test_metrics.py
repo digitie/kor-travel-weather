@@ -661,12 +661,13 @@ def test_the_oldest_partition_age_is_exported_by_the_api_scrape_only() -> None:
 
 
 def test_the_retention_stale_alert_is_retention_plus_two_days_on_the_api() -> None:
-    """Production keeps 16 days (KOR_TRAVEL_WEATHER_RETENTION_DAYS on the
-    code-server); the API, which computes the sample, does not carry that
-    setting, so the threshold lives in the rule: 16 + 2."""
+    """Production keeps 7 days (KOR_TRAVEL_WEATHER_RETENTION_DAYS on the
+    code-server, owner decision 2026-10-13; was 16); the API, which computes
+    the sample, does not carry that setting, so the threshold lives in the
+    rule: 7 + 2."""
     rule = _alert_rules()["KorTravelWeatherRetentionStale"]
     assert (
-        'max(ktw_oldest_partition_age_days{job="kor-travel-weather-api"}) > 18'
+        'max(ktw_oldest_partition_age_days{job="kor-travel-weather-api"}) > 9'
         in " ".join(rule["expr"].split())
     )
     assert rule["for"] == "30m"
