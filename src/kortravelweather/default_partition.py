@@ -115,7 +115,7 @@ def _with_lock_retries(
     step: Callable[[Connection], Any],
     log: Log,
     *,
-    attempts: int = LOCK_RETRY_ATTEMPTS,
+    attempts: int | None = None,
     quiet_on: tuple[str, ...] | None = None,
 ) -> Any:
     """Run ``step`` in its own transaction, retrying a lost lock race.
@@ -123,7 +123,11 @@ def _with_lock_retries(
     With ``quiet_on`` each retry first waits for a moment when no other
     session locks those tables (``_await_quiet``); otherwise it sleeps.  The
     failed transaction is rolled back before the wait, so nothing is held.
+    ``attempts`` defaults to ``LOCK_RETRY_ATTEMPTS`` read at call time, so a
+    test that lowers the module constant changes every default caller.
     """
+    if attempts is None:
+        attempts = LOCK_RETRY_ATTEMPTS
     for attempt in range(1, attempts + 1):
         if attempt > 1:
             if quiet_on is None:
