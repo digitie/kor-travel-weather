@@ -84,6 +84,13 @@ export async function durableSessionRevoked(
 }
 
 /** Persist a logout marker in the shared backend store. */
+// 로그인 경로의 쓰기 호출(rate-limit failure/success, 세션 폐기)은 행을 쓰고 commit한다.
+// n150처럼 디스크가 바쁜 호스트(대량 적재 중 IO pressure ~90%)에서는 그 commit이 0.5~3.5초
+// 걸려, 750ms/1000ms 상한이 자격증명과 API가 정상인데도 로그인·로그아웃을 503으로 만들었다.
+// 5초로 두되 API에 닿지 못하면 막는 fail-closed는 유지한다. 모든 요청에서 도는 읽기 검사
+// (durableSessionRevoked)는 지연을 늘리지 않도록 1000ms 그대로 둔다.
+const DURABLE_AUTH_WRITE_TIMEOUT_MS = 5000;
+
 export async function durableRevokeSession(
   session: string,
   env: Env = process.env,
@@ -93,7 +100,7 @@ export async function durableRevokeSession(
   const adminToken = env.WEATHER_ADMIN_TOKEN?.trim();
   if (!apiBase || !adminToken) return false;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1000);
+  const timeout = setTimeout(() => controller.abort(), DURABLE_AUTH_WRITE_TIMEOUT_MS);
   try {
     const response = await fetch(
       `${apiBase.replace(/\/$/, "")}/v1/admin/session-revocations/revoke`,
@@ -152,12 +159,6 @@ export async function clearDurableLoginFailures(
   return postDurableLoginRateLimit("success", bucketHash, env);
 }
 
-// The failure/success calls write a row and commit. On a host whose disk is busy (n150: IO
-// pressure ~90% during bulk loads) that commit takes 0.5-3.5s, and a 750ms cap turned every
-// login into a 503 even though the credentials and the API were fine. 5s keeps the fail-closed
-// behaviour (an unreachable API still blocks login) without tripping on a slow fsync.
-const DURABLE_LOGIN_RATE_LIMIT_TIMEOUT_MS = 5000;
-
 async function postDurableLoginRateLimit(
   action: "check" | "failure" | "success",
   bucketHash: string,
@@ -170,7 +171,7 @@ async function postDurableLoginRateLimit(
     return { available: false };
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), DURABLE_LOGIN_RATE_LIMIT_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), DURABLE_AUTH_WRITE_TIMEOUT_MS);
   try {
     const response = await fetch(
       `${apiBase.replace(/\/$/, "")}/v1/admin/login-rate-limit/${action}`,

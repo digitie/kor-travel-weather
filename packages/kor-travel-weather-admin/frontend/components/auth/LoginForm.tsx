@@ -17,8 +17,8 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
       });
       const payload = (await response.json().catch(() => ({}))) as { next?: string; detail?: unknown };
       if (!response.ok) {
-        // 503 has several causes (missing config, rate-limit store unavailable); show the
-        // server's own reason instead of always blaming configuration.
+        // 503은 원인이 여러 가지다(설정 누락, rate-limit 저장소 응답 지연 등) — 늘 설정 탓으로
+        // 표시하지 말고 서버가 준 사유를 보여 준다.
         const serverDetail = typeof payload.detail === "string" ? payload.detail : null;
         const messages: Record<number, string> = {
           503: serverDetail ?? "로그인 서비스를 사용할 수 없습니다. 잠시 후 다시 시도해 주세요.",
