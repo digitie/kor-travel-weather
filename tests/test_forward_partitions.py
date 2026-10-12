@@ -34,7 +34,7 @@ from kortravelweather.partitions import (
     lock_for_partition_ddl,
     partition_name,
 )
-from kortravelweather.repository import WeatherRepository
+from kortravelweather.repository import PURGE_GUC, WeatherRepository
 from kortravelweather.settings import get_settings
 
 TEST_DATABASE_URL = os.environ.get(
@@ -579,6 +579,186 @@ def test_a_replayed_expired_source_is_skipped_not_fatal(monkeypatch) -> None:
     with repository.engine.connect() as connection:
         keys = connection.execute(text("SELECT source_record_key FROM weather_values")).scalars()
         assert list(keys) == ["fresh"]
+
+
+def _alert_refetch(
+    repository: WeatherRepository, *, fetched: datetime, issued: datetime, valid_until: datetime
+) -> int:
+    """One KMA warning-list fetch in its own run, the way the collector publishes it."""
+    from kortravelweather.models import ForecastStyle, WeatherValue
+
+    run = repository.start_sync_run(provider="python-kma-api", dataset_key="kma_weather_alerts")
+    payload = {"stn_id": "108", "tm_fc": "202610010900", "seq": "1", "title": "태풍주의보 발표"}
+    try:
+        return repository.ingest_batch(
+            source_records=[
+                {
+                    "source_record_key": "alert-108-1",
+                    "provider": "python-kma-api",
+                    "dataset_key": "kma_weather_alerts",
+                    "source_entity_type": "weather_response",
+                    "source_entity_id": "kma-alert:108",
+                    "payload": {"rows": [payload]},
+                    "fetched_at": fetched,
+                    "run_id": run.run_id,
+                }
+            ],
+            values=[
+                WeatherValue(
+                    location_id="typhoon",
+                    provider="python-kma-api",
+                    dataset_key="kma_weather_alerts",
+                    weather_domain="weather_alert",
+                    forecast_style=ForecastStyle.OBSERVED,
+                    metric_key="ALERT",
+                    value_text=payload["title"],
+                    severity="advisory",
+                    issued_at=issued,
+                    observed_at=issued,
+                    target_at=issued,
+                    valid_until=valid_until,
+                    known_at=fetched,
+                    collected_at=fetched,
+                    payload=payload,
+                    source_record_key="alert-108-1",
+                )
+            ],
+        )
+    finally:
+        repository.finish_sync_run(run.run_id, status="success")
+
+
+def _alert_rows(repository: WeatherRepository) -> list[tuple[datetime, datetime]]:
+    with repository.engine.connect() as connection:
+        return [
+            (known, collected)
+            for known, collected in connection.execute(
+                text(
+                    "SELECT known_at, collected_at FROM weather_values "
+                    "WHERE dataset_key = 'kma_weather_alerts' ORDER BY known_at"
+                )
+            ).all()
+        ]
+
+
+def test_an_active_alert_older_than_retention_is_visible_again_after_a_refetch(
+    monkeypatch,
+) -> None:
+    """A replay keeps its first fetch time; retention drops days, not responses.
+
+    A typhoon advisory in force for longer than the retention period is
+    re-fetched every hour, identical.  Its source record survives retention
+    (every run cites it), so the re-fetch is a replay dated by the first
+    fetch -- a day retention dropped.  It used to be skipped as expired, and
+    the advisory vanished from the map while KMA still served it.  Now it is
+    re-dated to the re-fetch, once, and later re-fetches replay against that.
+    """
+    from kortravelweather.models import WeatherLocation
+    from kortravelweather.partitions import ensure_partitions
+
+    repository = _fresh_database(monkeypatch, "head")
+    now = kst_now()
+    old_day = now.date() - timedelta(days=10)
+    with repository.engine.begin() as connection:
+        ensure_partitions(connection, start=old_day, end=old_day)
+    repository.upsert_location(
+        WeatherLocation(location_id="typhoon", name="typhoon", latitude=37.5, longitude=127.0)
+    )
+    first = kst_midnight(old_day) + timedelta(hours=9)
+    valid_until = now + timedelta(days=2)
+
+    def visible() -> list[str | None]:
+        rows = repository.alert_values_many(["typhoon"]).get("typhoon", [])
+        return [row.value_text for row in rows]
+
+    assert _alert_refetch(repository, fetched=first, issued=first, valid_until=valid_until) == 1
+    assert visible() == ["태풍주의보 발표"]
+    # While the first fetch's day is kept, a re-fetch is a plain replay.
+    assert _alert_refetch(repository, fetched=now, issued=first, valid_until=valid_until) == 0
+    assert [known for known, _ in _alert_rows(repository)] == [first]
+
+    report = repository.purge_expired_history(retention_days=7, ahead_days=7)
+    assert partition_name(old_day) in report.partitions_dropped
+    assert visible() == []
+    with repository.engine.connect() as connection:
+        sources = connection.execute(
+            text("SELECT count(*) FROM weather_source_records WHERE source_record_key = :k"),
+            {"k": "alert-108-1"},
+        ).scalar_one()
+    assert sources == 1, "the runs that cite it keep the source record"
+
+    # A re-published old batch (its own fetch time is past retention too)
+    # stays expired: nothing is resurrected with an old clock.
+    assert _alert_refetch(repository, fetched=first, issued=first, valid_until=valid_until) == 0
+    assert _alert_rows(repository) == []
+
+    refetched = kst_now()
+    assert (
+        _alert_refetch(repository, fetched=refetched, issued=first, valid_until=valid_until)
+        == 1
+    )
+    assert visible() == ["태풍주의보 발표"]
+    assert _alert_rows(repository) == [(refetched, refetched)]
+
+    # Later re-fetches replay against the re-dated row: one row per retention
+    # period, not one per fetch.
+    later = refetched + timedelta(minutes=30)
+    assert _alert_refetch(repository, fetched=later, issued=first, valid_until=valid_until) == 0
+    assert _alert_rows(repository) == [(refetched, refetched)]
+    assert visible() == ["태풍주의보 발표"]
+    with repository.engine.connect() as connection:
+        pointer = connection.execute(
+            text(
+                "SELECT known_at FROM weather_current_values "
+                "WHERE dataset_key = 'kma_weather_alerts'"
+            )
+        ).scalar_one()
+    assert pointer == refetched
+
+
+def test_a_replay_below_the_floor_is_re_dated_once_default_lost_it(monkeypatch) -> None:
+    """The same for a response first fetched below DEFAULT's floor.
+
+    After the operator purges DEFAULT, such a replay used to go back into the
+    new DEFAULT with its old clock, where retention never reaches it and the
+    nightly pointer purge hides it again.  It is re-dated like any other.
+    """
+    from kortravelweather.models import WeatherLocation
+
+    repository = _fresh_database(monkeypatch, "head")
+    now = kst_now()
+    with repository.engine.connect() as connection:
+        floor = default_partition_floor(connection)
+    assert floor is not None
+    repository.upsert_location(
+        WeatherLocation(location_id="typhoon", name="typhoon", latitude=37.5, longitude=127.0)
+    )
+    first = floor - timedelta(days=3)
+    valid_until = now + timedelta(days=2)
+    assert _alert_refetch(repository, fetched=first, issued=first, valid_until=valid_until) == 1
+    with repository.engine.connect() as connection:
+        in_default = connection.execute(
+            text(f"SELECT count(*) FROM ONLY {DEFAULT_PARTITION}")
+        ).scalar_one()
+    assert in_default == 1
+    # Still in DEFAULT: an ordinary replay.
+    assert _alert_refetch(repository, fetched=now, issued=first, valid_until=valid_until) == 0
+    with repository.engine.begin() as connection:
+        connection.execute(text("DELETE FROM weather_current_values"))
+        connection.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+        connection.execute(text(f"DELETE FROM {DEFAULT_PARTITION}"))
+
+    refetched = kst_now()
+    assert (
+        _alert_refetch(repository, fetched=refetched, issued=first, valid_until=valid_until)
+        == 1
+    )
+    assert _alert_rows(repository) == [(refetched, refetched)]
+    with repository.engine.connect() as connection:
+        in_default = connection.execute(
+            text(f"SELECT count(*) FROM ONLY {DEFAULT_PARTITION}")
+        ).scalar_one()
+    assert in_default == 0
 
 
 def test_the_forward_window_is_observable(monkeypatch) -> None:

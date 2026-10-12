@@ -186,8 +186,10 @@ shed anything.
 
 The Dagster `daily_weather_retention` schedule (01:45 Asia/Seoul, the measured
 low point of the ingest schedules) keeps `KOR_TRAVEL_WEATHER_RETENTION_DAYS`
-days, default 2 (16 in production). Each run also creates the coming week's
-partitions: a missing partition sends rows to DEFAULT, where retention can never
+days, default 2. Production (n150) runs 7 since 2026-10-13 (owner decision; it
+was 16). PinVi's minimum history requirement moved to 7 days at the same time,
+so 7 is also the floor for production: going lower breaks PinVi. Each run also
+creates the coming week's partitions: a missing partition sends rows to DEFAULT, where retention can never
 reach them.
 
 Ingestion never pauses, and creating, detaching or dropping a partition needs
@@ -222,13 +224,35 @@ this one keeps DEFAULT on purpose (its floor is what lets a partition be created
 without scanning it, and what the replay skip reads). Retention uses a plain
 `DETACH`, one day per transaction.
 
+**A replay outlives its first fetch's day.** A response the store already holds
+is replayed with its first fetch time as `known_at`, so an identical re-fetch is
+a no-op instead of a new row. Retention drops days, not responses: an alert in
+force for longer than the window, or a forecast nobody revised, is still served
+by the provider after its first fetch's partition is gone, and its source record
+survives too (every run that fetches it cites it). Such a replay -- source
+stored before this batch, first-fetch date below the oldest kept partition
+(the *horizon*), stored fact gone -- is **re-dated to this fetch**: a new row
+with `known_at = collected_at =` the re-fetch time, as a first fetch would get.
+Later replays find that row (the earliest at or above the horizon) and replay
+against it, so a response re-fetched hourly makes one row per retention period.
+This keeps the bitemporal rules: facts stay append-only, source records are
+untouched, and `known_at` only moves forward for a `value_id` -- it is when the
+store knew the fact, and the oldest knowledge it still holds is the re-fetch.
+A replay whose own fetch time is below the horizon too (an old batch published
+again) and a response first stored by a late batch with an old `fetched_at` are
+past retention and skipped, as before. The accepted cost: if a provider serves
+an old response again after a newer revision of the same logical point, the
+re-dated old one becomes the projection's newest -- it is what the provider
+serves now.
+
 Two consequences worth stating plainly.
 
 **A location that stops reporting loses its current value** once its last
 reading ages out. A partition cannot be dropped selectively, so the projection's
-pointers into it are deleted first — which is what "we keep two days" actually
-means. The previous batched delete spared any fact a pointer named, and so kept
-stale readings for ever.
+pointers into it are deleted first — which is what "we keep N days" actually
+means (until a re-fetch re-dates a value the provider still serves, above). The
+previous batched delete spared any fact a pointer named, and so kept stale
+readings for ever.
 
 **`rows_outside_any_partition` is the field to watch.** Rows in the DEFAULT
 partition are never dropped, so a non-zero count is the table quietly starting

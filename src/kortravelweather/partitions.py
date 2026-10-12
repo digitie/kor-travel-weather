@@ -563,6 +563,26 @@ def drop_detached_partition(connection: Connection, name: str) -> None:
     connection.execute(text(f"DROP TABLE {name}"))
 
 
+#: The old DEFAULT between the operator swap's two transactions
+#: (``default_partition.purge_execute``): detached and renamed in the first,
+#: dropped in the second.  Found again by this name when the second one did
+#: not commit; until then its facts still cite source records.
+DETACHED_DEFAULT = f"{DEFAULT_PARTITION}_detached"
+
+
+def detached_default_present(connection: Connection) -> bool:
+    return (
+        connection.execute(
+            text(
+                "SELECT 1 FROM pg_class WHERE relname = :name AND relkind = 'r' "
+                "AND NOT relispartition AND relnamespace = current_schema()::regnamespace"
+            ),
+            {"name": DETACHED_DEFAULT},
+        ).first()
+        is not None
+    )
+
+
 _DATED_NAME = rf"^{VALUES_TABLE}_[0-9]{{8}}$"
 
 
