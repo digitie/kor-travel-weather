@@ -62,6 +62,7 @@ from .metrics import (
 )
 from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
+    DETACHED_DEFAULT,
     VALUES_TABLE,
     add_default_floor,
     dated_partition_bounds,
@@ -72,6 +73,7 @@ from .partitions import (
     deferral_marked,
     delete_dangling_projection_rows,
     detach_partition,
+    detached_default_present,
     detached_leftovers,
     drop_detached_partition,
     drop_foreign_keys_into_facts,
@@ -3120,11 +3122,16 @@ class WeatherRepository:
             # cite source records (ON DELETE RESTRICT), and the purge looks
             # only at weather_values: those sources wait for the run that
             # drops the table; every other expired source goes now.  The names
-            # come from the catalog and match weather_values_[0-9]{8}.
+            # come from the catalog and match weather_values_[0-9]{8}.  The
+            # operator swap's old DEFAULT, left detached when its drop did not
+            # commit, holds its sources the same way until the script is re-run.
+            holding = [name for name, _ in detached_leftovers(session.connection())]
+            if detached_default_present(session.connection()):
+                holding.append(DETACHED_DEFAULT)
             held = "".join(
                 f' AND NOT EXISTS (SELECT 1 FROM "{name}" lv '
                 "WHERE lv.source_record_key = sr.source_record_key)"
-                for name, _ in detached_leftovers(session.connection())
+                for name in holding
             )
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))

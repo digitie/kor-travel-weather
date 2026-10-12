@@ -32,11 +32,14 @@ from .models import KST, kst_now
 from .partitions import (
     DEFAULT_FLOOR_CONSTRAINT,
     DEFAULT_PARTITION,
+    DETACHED_DEFAULT,
     VALUES_TABLE,
     add_default_floor,
     ddl_lock_timeout_ms,
     default_partition_floor,
     delete_dangling_projection_rows,
+    detached_default_present,
+    drop_detached_partition,
     drop_foreign_keys_into_facts,
     drop_unvalidated_floor,
     ensure_default_partition,
@@ -44,8 +47,10 @@ from .partitions import (
     existing_partitions,
     is_lock_conflict,
     kst_midnight,
+    lock_for_detached_drop,
     lock_for_partition_ddl,
     missing_forward_days,
+    other_sessions_locking,
     readd_foreign_keys_not_valid,
     validate_default_floor,
     validate_foreign_keys_into_facts,
@@ -57,6 +62,17 @@ Log = Callable[[str], None]
 #: minutes at the default ``deadlock_timeout``.
 LOCK_RETRY_ATTEMPTS = 120
 LOCK_RETRY_SECONDS = 2.0
+#: The DEFAULT swap's two transactions take ACCESS EXCLUSIVE on what every
+#: ingest holds, so they retry like the nightly job's partition DDL: a few
+#: attempts, each after waiting -- holding nothing -- for a moment when no other
+#: session locks the hot tables (``_await_quiet``), instead of 120 blind tries.
+SWAP_LOCK_ATTEMPTS = 20
+SWAP_QUIET_SECONDS = 30.0
+QUIET_POLL_SECONDS = 0.2
+#: What each swap transaction waits to find unlocked, as the nightly job's
+#: detach (``_PARTITION_DDL_HOT_TABLES``) and drop (``_DETACHED_DROP_HOT_TABLES``).
+SWAP_HOT_TABLES = (VALUES_TABLE, "weather_source_records")
+DROP_HOT_TABLES = (*SWAP_HOT_TABLES, "weather_locations")
 #: Refuse to add a floor this close to it.  Until its partitions exist, an
 #: unvalidated floor refuses every row dated from it on.
 MIN_HOURS_BEFORE_FLOOR = 3.0
@@ -94,18 +110,51 @@ def maintenance_lock(engine: Engine, log: Log) -> Iterator[None]:
             connection.close()
 
 
-def _with_lock_retries(engine: Engine, step: Callable[[Connection], Any], log: Log) -> Any:
-    for attempt in range(1, LOCK_RETRY_ATTEMPTS + 1):
+def _with_lock_retries(
+    engine: Engine,
+    step: Callable[[Connection], Any],
+    log: Log,
+    *,
+    attempts: int = LOCK_RETRY_ATTEMPTS,
+    quiet_on: tuple[str, ...] | None = None,
+) -> Any:
+    """Run ``step`` in its own transaction, retrying a lost lock race.
+
+    With ``quiet_on`` each retry first waits for a moment when no other
+    session locks those tables (``_await_quiet``); otherwise it sleeps.  The
+    failed transaction is rolled back before the wait, so nothing is held.
+    """
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            if quiet_on is None:
+                time.sleep(LOCK_RETRY_SECONDS)
+            else:
+                _await_quiet(engine, quiet_on, SWAP_QUIET_SECONDS)
         try:
             with engine.begin() as connection:
                 return step(connection)
         except OperationalError as exc:
-            if not is_lock_conflict(exc) or attempt == LOCK_RETRY_ATTEMPTS:
+            if not is_lock_conflict(exc) or attempt == attempts:
                 raise
-            if attempt == 1 or attempt % 10 == 0:
-                log(f"  lock busy, retrying ({attempt}/{LOCK_RETRY_ATTEMPTS}): {_blockers(engine)}")
-            time.sleep(LOCK_RETRY_SECONDS)
+            if attempt == 1 or attempt % 10 == 0 or quiet_on is not None:
+                log(f"  lock busy, retrying ({attempt}/{attempts}): {_blockers(engine)}")
     raise AssertionError("unreachable")
+
+
+def _await_quiet(engine: Engine, tables: tuple[str, ...], max_seconds: float) -> None:
+    """Wait, up to ``max_seconds``, for no other session to lock ``tables``.
+
+    The nightly job's ``_await_quiet_tables``: it polls ``pg_locks`` on its own
+    connection, holding no table lock, so the wait itself blocks no writer.
+    """
+    deadline = time.monotonic() + max_seconds
+    with engine.connect() as connection:
+        while True:
+            busy = other_sessions_locking(connection, tables)
+            connection.rollback()
+            if not busy or time.monotonic() >= deadline:
+                return
+            time.sleep(QUIET_POLL_SECONDS)
 
 
 def _blockers(engine: Engine) -> str:
@@ -584,6 +633,68 @@ def _validate_foreign_keys(engine: Engine, log: Log) -> None:
     log(f"validated {validated} in {time.monotonic() - started:.1f}s")
 
 
+def swap_default(connection: Connection, floor: datetime) -> None:
+    """First swap transaction: DEFAULT out, an empty DEFAULT with ``floor`` in.
+
+    Every lock is taken up front by ``lock_for_partition_ddl``, in the
+    ingest's order -- the referenced tables (SHARE ROW EXCLUSIVE), the fact
+    tree (ACCESS EXCLUSIVE, DEFAULT included), the projection (ACCESS
+    EXCLUSIVE) -- and nothing after that asks for more: dropping the
+    projection's foreign key, the DETACH and the ``CREATE TABLE ... PARTITION
+    OF`` (both SHARE ROW EXCLUSIVE on the referenced tables), the rename, the
+    floor and the ``NOT VALID`` foreign key are catalog changes under locks
+    already held.  The old DEFAULT is renamed, not dropped: dropping it needs
+    ACCESS EXCLUSIVE on the referenced tables, which taken here would be an
+    upgrade mid-transaction -- a deadlock with any ingest or API read that
+    holds ACCESS SHARE on them and waits for the fact table.
+    """
+    lock_for_partition_ddl(connection, drop_foreign_keys=True)
+    keys = drop_foreign_keys_into_facts(connection)
+    connection.execute(text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {DEFAULT_PARTITION}"))
+    connection.execute(text(f"ALTER TABLE {DEFAULT_PARTITION} RENAME TO {DETACHED_DEFAULT}"))
+    ensure_default_partition(connection)
+    add_default_floor(connection, floor)
+    validate_default_floor(connection)
+    readd_foreign_keys_not_valid(connection, keys)
+
+
+def lock_for_old_default_drop(connection: Connection) -> None:
+    """Every lock the old DEFAULT's DROP needs, up front, in the ingest's order.
+
+    The referenced tables first (ACCESS EXCLUSIVE: the drop removes the
+    foreign-key triggers the table has on them; ``lock_for_detached_drop``),
+    then the detached table itself.  The fact tree and the projection are not
+    touched: the table is no longer a partition and nothing references it.
+    """
+    lock_for_detached_drop(connection)
+    connection.execute(text(f"LOCK TABLE {DETACHED_DEFAULT} IN ACCESS EXCLUSIVE MODE"))
+
+
+def drop_old_default(connection: Connection) -> bool:
+    """Second swap transaction: drop the detached old DEFAULT, if still there."""
+    if not detached_default_present(connection):
+        return False
+    lock_for_old_default_drop(connection)
+    drop_detached_partition(connection, DETACHED_DEFAULT)
+    return True
+
+
+def _drop_old_default(engine: Engine, log: Log) -> None:
+    started = time.monotonic()
+    try:
+        _with_lock_retries(
+            engine, drop_old_default, log, attempts=SWAP_LOCK_ATTEMPTS, quiet_on=DROP_HOT_TABLES
+        )
+    except BaseException:
+        log(
+            f"!!! {DETACHED_DEFAULT} is detached but not dropped. Ingest is unaffected and "
+            "the nightly job keeps the source records it cites. Re-run this script with "
+            "--execute to drop it."
+        )
+        raise
+    log(f"dropped {DETACHED_DEFAULT} ({time.monotonic() - started:.2f}s)")
+
+
 def purge_execute(
     engine: Engine,
     *,
@@ -597,19 +708,33 @@ def purge_execute(
     """Remove what is past retention from DEFAULT.  Destructive.
 
     * Whole partition expired (floor <= cutoff, so every row is): delete the
-      projection rows pointing before the cutoff, then one DDL transaction,
-      locks taken up front in the ingest's order with a lock timeout and a
-      statement timeout: drop the projection's foreign key, detach and drop
-      DEFAULT, create a new empty DEFAULT with the same floor, re-add the
-      foreign key ``NOT VALID``.  Every statement is a catalog change, so
-      writers wait milliseconds, not the minutes-to-hours a DETACH spends
-      checking a live foreign key against 3.6M projection rows.  The foreign
-      key is then validated under SHARE UPDATE EXCLUSIVE while writers carry
-      on.  All the space comes back at once; no dead tuples, no vacuum.
+      projection rows pointing before the cutoff, then two DDL transactions
+      like the nightly job's detach and drop -- each with every lock taken up
+      front in the ingest's order and none upgraded later, a lock timeout, a
+      statement timeout, and retries spaced by waits for a quiet moment:
+      ``swap_default`` (drop the projection's foreign key, detach DEFAULT and
+      rename it ``DETACHED_DEFAULT``, create a new empty DEFAULT with the same
+      floor, re-add the foreign key ``NOT VALID``), then ``drop_old_default``.
+      A run that stops in between leaves the old table detached; the next run
+      drops it first and does nothing else.  Every statement is a catalog
+      change, so writers wait milliseconds, not the minutes-to-hours a DETACH
+      spends checking a live foreign key against 3.6M projection rows.  The
+      foreign key is then validated under SHARE UPDATE EXCLUSIVE while writers
+      carry on.  The space comes back when the second transaction commits; no
+      dead tuples, no vacuum.
     * Some rows still inside retention: delete only the expired rows, batch
       by batch, then a throttled VACUUM.  Refused when nothing is expired.
     """
     with maintenance_lock(engine, log):
+        with engine.connect() as connection:
+            leftover = detached_default_present(connection)
+        if leftover:
+            # A previous run swapped DEFAULT out but did not get to drop it.
+            log(f"found {DETACHED_DEFAULT} from an interrupted swap; dropping it")
+            _drop_old_default(engine, log)
+            _validate_foreign_keys(engine, log)
+            describe(engine, log)
+            return
         report = purge_report(engine, retention_days=retention_days, log=log, exact=False)
         floor = report["floor"]
         if floor is None:
@@ -619,25 +744,19 @@ def purge_execute(
         cutoff: datetime = report["cutoff"]
         if report["whole_partition_expired"]:
             _delete_expired_pointers(engine, cutoff, log)
-
-            def swap(connection: Connection) -> None:
-                lock_for_partition_ddl(connection, drop_foreign_keys=True)
-                keys = drop_foreign_keys_into_facts(connection)
-                connection.execute(
-                    text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {DEFAULT_PARTITION}")
-                )
-                connection.execute(text(f"DROP TABLE {DEFAULT_PARTITION}"))
-                ensure_default_partition(connection)
-                add_default_floor(connection, floor)
-                validate_default_floor(connection)
-                readd_foreign_keys_not_valid(connection, keys)
-
             started = time.monotonic()
-            _with_lock_retries(engine, swap, log)
-            log(
-                "detached and dropped the old DEFAULT; a new empty DEFAULT with the same "
-                f"floor is in place ({time.monotonic() - started:.2f}s under ACCESS EXCLUSIVE)"
+            _with_lock_retries(
+                engine,
+                lambda connection: swap_default(connection, floor),
+                log,
+                attempts=SWAP_LOCK_ATTEMPTS,
+                quiet_on=SWAP_HOT_TABLES,
             )
+            log(
+                f"detached the old DEFAULT as {DETACHED_DEFAULT}; a new empty DEFAULT with "
+                f"the same floor is in place ({time.monotonic() - started:.2f}s)"
+            )
+            _drop_old_default(engine, log)
             _validate_foreign_keys(engine, log)
         else:
             if report["expired_rows_estimate"] == 0 and start_block == 0:

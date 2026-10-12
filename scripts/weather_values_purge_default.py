@@ -9,14 +9,21 @@ read), and the foreign-key impact on ``weather_current_values``.
 ``--execute`` picks the strategy from DEFAULT's floor (added by
 ``weather_values_forward_partitions.py``, which must run first):
 
-* every row past retention (floor <= cutoff): one short DDL transaction, locks
-  taken up front (weather_values then weather_current_values, ACCESS
-  EXCLUSIVE) with a statement timeout: drop the projection's foreign key,
-  detach and drop DEFAULT, create a new empty one with the same floor, re-add
-  the foreign key NOT VALID -- catalog changes only, so writers wait
-  milliseconds.  The foreign key is then validated under SHARE UPDATE EXCLUSIVE
-  (one read of the 3.6M-row projection; writers carry on).  All the space comes
-  back at once; no dead tuples, no vacuum.
+* every row past retention (floor <= cutoff): two short DDL transactions, as
+  the nightly job detaches and drops a day.  Each takes every lock up front in
+  the ingest's order and never upgrades one, with a lock timeout, a statement
+  timeout and retries spaced by waits for a moment nobody locks the hot tables.
+  First: SHARE ROW EXCLUSIVE on weather_source_records and weather_locations,
+  ACCESS EXCLUSIVE on weather_values and weather_current_values; drop the
+  projection's foreign key, detach DEFAULT and rename it
+  weather_values_default_detached, create a new empty DEFAULT with the same
+  floor, re-add the foreign key NOT VALID.  Second: ACCESS EXCLUSIVE on
+  weather_source_records, weather_locations and the detached table; drop it.
+  Catalog changes only, so writers wait milliseconds.  The foreign key is then
+  validated under SHARE UPDATE EXCLUSIVE (one read of the projection; writers
+  carry on).  The space comes back when the drop commits; no dead tuples, no
+  vacuum.  A run interrupted between the two drops the detached table first
+  when re-run, and does nothing else.
 * some rows still inside retention: delete only the expired ones, walking the
   heap 2,048 pages (16 MB) per short transaction with ROW EXCLUSIVE -- readers
   and writers carry on -- then a throttled VACUUM (SHARE UPDATE EXCLUSIVE,
