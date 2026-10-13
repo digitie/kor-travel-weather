@@ -37,10 +37,14 @@
    인터넷에 직접 publish하지 않는다.
 5. `/health`, `/version`, admin sync-runs에서 smoke를 확인한다. n150 운영 endpoint는
    API `https://weather-api.digitie.mywire.org`, Basic Auth로 보호된 Dagster
-   `https://weather-dagster.digitie.mywire.org`, web
+   `https://weather-dagster.digitie.mywire.org`(2026-09-30 공용 plane 전환 뒤에는
+   `https://dagster.digitie.mywire.org` — Manager ADR-54; `14102`는 legacy profile로 운영에서
+   기동하지 않는다, `deploy/n150.md`), web
    `https://weather.digitie.mywire.org`를 사용한다. 로컬 loopback 포트는 각각
    `14101`, `14102`, `14105`이며 PostgreSQL은 `14100`이다.
-   Prometheus는 `14104` loopback에서만 동작한다. `curl -H
+   Prometheus는 `14104` loopback에서만 동작한다(standalone compose 기준; Manager compose는
+   `:14104` 전 인터페이스 bind — Manager `docker-compose.yml:3189` — 이고 `14103`도 `0.0.0.0` 기본,
+   `src/kortravelweather/metrics.py:746`; LAN 경계는 호스트 방화벽, 아래 "odroid 운영 메모"). `curl -H
    "Authorization: Bearer $KOR_TRAVEL_WEATHER_METRICS_TOKEN"
    http://127.0.0.1:14101/metrics`와 `curl http://127.0.0.1:14104/-/ready`로 scrape를
    확인하고 public gateway에는 14104를 연결하지 않는다.
@@ -63,3 +67,26 @@ server-side 환경변수로만 주입한다. Next proxy가 브라우저에 backe
 서비스 key가 없거나 target이 비어 있으면 Dagster run은 실패해야 하며, 기존
 immutable facts를 삭제하거나 부분 publish하지 않는다. MVP는 durable cursor 없이
 매 실행에서 provider 응답을 재검증한다.
+
+## odroid 운영 메모(계획, Manager ADR-58 proposed, 미구현)
+
+- 위 1~5의 **로컬 compose 절차는 그대로다** — `compose.yaml`·`deploy/deploy.sh`·loopback 포트
+  (`14100`/`14101`/`14102`/`14104`/`14105`)는 호스트와 무관하다. 운영은 이 저장소 compose가 아니라
+  Manager compose(host network)이고 호스트는 Manager registry의 `weather` target이 정한다 — 지금
+  n150, 계획은 odroid `192.168.1.13`. 운영 값(포트 동일·web `12205`·공용/자체 Dagster plane·전용
+  PG `11000`·fresh DB·메모리·시계·전환 절차·odroid 상태)은 `deploy/n150.md` "계획: odroid 호스트"
+  한 곳에 두고 여기 복제하지 않는다.
+- 5의 운영 endpoint(`weather-api.`·`weather.`)는 HAProxy backend만 `.13`으로 바뀌고 이름은
+  같다. odroid 자체 plane의 공개 host는 ADR-58 열린 결정 §14-4(`weather-dagster.` 재사용 또는
+  새 이름; Manager `KTDM_PROD_URL_DAGSTER` 선행)로 아직 정해지지 않았다 — 결정 전에는 URL을 쓰지
+  않고, 5의 Dagster 주소는 n150 공용 plane 링크(`dagster.`)를 쓴다. smoke는 `/version`의 `git_commit`과 odroid access log의 peer(`192.168.1.14` =
+  PinVi)로 확인한다 — 200만으로 판단하지 않는다.
+- 운영자가 odroid에서 손으로 하는 것(계획): 규칙 변경 SIGHUP(`docs/observability.md`, 같은 절차를
+  odroid 체크아웃에서), `scripts/weather_values_forward_partitions.py`·`weather_values_purge_default.py`
+  (`deploy/n150.md` "0017" 절, 컨테이너명 동일). 접속은 WSL에서 `ssh digitie@192.168.1.13`(직접,
+  2026-10-13부터), root 작업은 `sudo -n`(NOPASSWD 설정 완료). 긴 작업은 ssh timeout 밖(tmux/nohup)에서.
+- 보류된 소유자 결정 중 이 runbook에 닿는 것: `KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS=7`
+  축소 여부(ADR-58 열린 결정 §14-17; `compose.yaml:66` 기본 7, 운영 `.env`로만 바뀐다) — 결정
+  전에는 7 유지.
+  `KOR_TRAVEL_WEATHER_RETENTION_DAYS`는 운영 7(2026-10-13 결정, `deploy/n150.md`)을 odroid root
+  `.env`에도 명시한다.

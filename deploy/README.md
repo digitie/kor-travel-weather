@@ -42,8 +42,33 @@ open http://127.0.0.1:14105
 curl http://127.0.0.1:14104/-/ready
 ```
 
-n150 배포는 다음처럼 gateway가 접근할 LAN 주소를 명시한다. LAN 방화벽에서는
-HAProxy 호스트에서 오는 `14101`, `14102`, `14105`만 허용한다.
+**운영 호스트 규칙(2026-10-13).** 운영 배포는 이 저장소의 compose가 아니라 Manager
+compose(host network)이고, 호스트는 Manager registry의 `weather` target이 정한다 — 지금은
+n150(`192.168.1.14`), odroid(`192.168.1.13`)로 옮기는 계획은 Manager ADR-58(proposed, 미구현)과
+`deploy/n150.md` "계획: odroid 호스트"에 있다. 포트·컨테이너명·경로는 호스트와 무관하게 같고
+바뀌는 것은 호스트 주소뿐이다. LAN에서 `14101`(API)에 닿아야 하는 것은 HAProxy(OPNsense)와
+n150(PinVi ETL code-server·pinvi-api 런타임)뿐이고, `12205`(web, Manager ADR-57)는 HAProxy만,
+`14103`·`14104`는 n150 Prometheus만이다. 그 경계는 bind 주소가 아니라 호스트 방화벽이다
+(odroid는 nftables 정책 (가) "우리 포트만 제한, 그 외는 accept" — ADR-58 "열린 결정" §14-28의
+추천이며 소유자 결정 전, 절차는 Manager `docs/prod-deployment.md` §9.1; 오늘 odroid에 방화벽은
+없음). 아래 standalone override의 `14102`·`14105`는 Manager 운영에서 쓰지 않는다(Dagster는
+공용/자체 plane `11001`, web은 `12205`).
+
+**base image digest와 arm64(odroid 현지 빌드 전제).** `deploy/Dockerfile.python:6`의
+`python:3.12-slim@sha256:f77ac9e4…` 핀(그리고 `:1`의 `ghcr.io/astral-sh/uv:0.11.21`)은 그 참조가
+manifest list(`linux/arm64` 포함)인지 확인한 뒤에만 odroid에서 그대로 쓴다 — Dockerfile에서 파생한
+참조로
+`docker buildx imagetools inspect "$(grep -o 'python:3.12-slim@sha256:[0-9a-f]*' deploy/Dockerfile.python)"`
+의 platform 목록에 `linux/arm64`가 있어야 한다. 이 확인은 binfmt와 무관해 buildx가 있는 n150에서
+지금 할 수 있다(읽기 전용) — 2026-10-13 문서 PR에서는 **실행하지 않았다**(ADR-58 결정 9 끝 "남은
+미검증 = 이미지 내용물"의 open 항목, T-WEA-02가 결과를 기록한다). amd64 단일 manifest로 판명되면
+이 Dockerfile에는 base를 바꾸는 build arg가 **없으므로**(`ARG`는 `INSTALL_DAGSTER`·`GIT_COMMIT`뿐)
+`ARG PYTHON_BASE` 도입이 필요한 코드 변경이다(`deploy/n150.md` "후속 작업" T-WEA-03 후보) — 문서
+PR은 핀을 바꾸지 않는다. 빌드 결과는
+`docker image inspect <img> --format '{{.Os}}/{{.Architecture}}'` = `linux/arm64`로 확인한다.
+
+n150 배포(standalone override, 역사 기록)는 다음처럼 gateway가 접근할 LAN 주소를 명시한다.
+LAN 방화벽에서는 HAProxy 호스트에서 오는 `14101`, `14102`, `14105`만 허용한다.
 
 ```bash
 GIT_COMMIT=$(git describe --always --dirty --abbrev=7) docker compose --env-file .env \
