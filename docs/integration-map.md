@@ -19,6 +19,36 @@ PinVi의 소비 표면과 호출 순서는 PinVi 저장소의 `docs/integrations
 `ResolvedWeatherOut`) — 별도 호출 순서가 아니다. 이 프로젝트는 `/v1/features/*` feature
 identity를 소유하지 않지만 weather alerts를 KMA `alerts` bundle로 소유한다.
 
+## PinVi → weather 호출 호스트(계획, Manager ADR-58 proposed, 미구현)
+
+오늘 PinVi는 weather를 같은 호스트(n150) loopback으로 부른다. weather 스택이 odroid
+(`192.168.1.13`)로 옮겨가면(`deploy/n150.md` "계획: odroid 호스트") 그 호출이 LAN을 건넌다.
+본 서비스 쪽 계약은 **바뀌지 않는다** — 공개 read(`/v1/weather/*`)는 여전히 무인증이고 포트
+`14101`도 같다. 바뀌는 것은 PinVi가 들고 있는 base URL의 **값**이며, 그 값의 자리는 Manager
+compose다(PinVi 저장소 `.env.example`은 개발용 기본값만 가진다). 아래 행 번호는 PinVi
+`origin/main@97f2baf2`, Manager `origin/main@094d397`(2026-10-13) 기준이고 심볼·env 키 이름이 정본이다.
+
+| PinVi 호출자 | 값의 자리(운영 정본) | 지금 | 계획 |
+| --- | --- | --- | --- |
+| ETL code-server(Dagster resource `kor_travel_weather` = `KorTravelWeatherResource(base_url=EnvVar("PINVI_KOR_TRAVEL_WEATHER_BASE_URL"))`, `apps/etl/pinvi/etl/definitions.py:66-68`) | Manager `docker-compose.yml:2134` 리터럴(`PINVI_KOR_TRAVEL_WEATHER_BASE_URL`) | `http://127.0.0.1:14101` | `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:14101}` — registry에서 계산한 커밋된 파생물(ADR-58 결정 4 R2·결정 5; weather 플립 PR, Manager T-MGR-01c/06) |
+| **pinvi-api 런타임**(trip 날씨·weather card·location resolver·admin weather values; `apps/api/app/core/config.py:903` `pinvi_kor_travel_weather_base_url` 기본 `http://localhost:14101`) | **없음** — Manager compose의 pinvi-api 블록에 이 변수가 주입되지 않아 코드 기본값으로 돈다 | `localhost:14101`(같은 호스트라 동작) | 같은 변수를 pinvi-api 블록에도 주입(T-MGR-01c, ADR-58 결정 4 R2). 없으면 이전 뒤 PinVi 여행 날씨가 **조용히 빈다** — pinvi-api는 `KorTravelWeatherError`를 삼켜 빈 날씨로 응답한다 |
+
+- 전환 게이트(ADR-58 결정 13; Manager `docs/prod-deployment.md` §9.2 **순서 7**(target당 절차 ③·④),
+  HAProxy 전환표 §9.4; weather 행만 추린 표는 `deploy/n150.md` "전환 절차"): **n150 weather-api가
+  stop인 상태에서** PinVi ETL 1 run 성공 **+** PinVi trip view weather card가 비어 있지 않음 + odroid
+  weather access log의 peer가 `192.168.1.14` — 이것이 ③이고, HAProxy `.13` 전환(④)은 그 뒤다. "200이면
+  통과"로 보지 않는다.
+- 장애 의미의 변화: 지금은 피호출자가 같은 호스트라 다운 시 커널이 RST를 즉시 돌려주지만,
+  odroid가 꺼지거나 링크가 끊기면 SYN이 **connect timeout까지** 기다린다 — PinVi 클라이언트는
+  timeout 10 s × `max_attempts` 3회 + backoff(`config.py:904-905`
+  `pinvi_kor_travel_weather_timeout_seconds`/`_max_attempts`; `apps/api/app/clients/kor_travel_weather.py:464-473`
+  `__init__` 기본값 `max_attempts=3`·`backoff_base_seconds=0.2`, 재시도 루프 `:486-499`)라
+  trip 화면의 weather card 하나가 ≈30 s를 블록한다. 대응은 PinVi 쪽 과제(T-PNV-02: connect
+  ≤ 2 s 분리 + 짧은 회로차단, 목표 trip view p95 < 3 s — PinVi 저장소 백로그가 정의한다, 예정)이고
+  본 서비스는 바꾸지 않는다.
+- 본 서비스가 geo를 호출하지 않으므로 Track 1(아래 kor-travel-geo 절)과 이 이전은 서로 닿지
+  않는다 — geo가 odroid로 옮겨도 weather의 저장 데이터·공개 계약은 그대로다.
+
 ## kor-travel-geo
 
 본 서비스는 kor-travel-geo를 호출하지 않으며, geo 주소 데이터셋 릴리스(kor-travel-geo

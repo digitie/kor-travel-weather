@@ -18,6 +18,8 @@ Alertmanager receiver를 별도로 연결한다(이 Compose는 Alertmanager를 �
 `config/kor-travel-weather/prometheus.yml`에 `alerting:` 절(Alertmanager 대상)이 없어서, 규칙은
 평가되고 `/api/v1/alerts`·`ALERTS` series로만 보인다. 전달이 필요하면 그 파일에
 `alerting: {alertmanagers: [...]}`를 더하는 것이 Manager 쪽 작업이다.
+odroid 이전 뒤의 관측(federate)은 아래 "odroid 이전 뒤 관측" 절에 있다.
+
 Dagster는 `/var/run/kor-travel-weather-metrics` tmpfs를
 `PROMETHEUS_MULTIPROC_DIR`로 공유해 multiprocess executor의 모든 worker 샘플을
 14103 listener에서 합산한다. listener bind 충돌은
@@ -85,6 +87,8 @@ HTTP request counter에서 제외해 scrape 주기가 트래픽을 오염시키�
 운영 weather Prometheus는 Manager compose의 `kor-travel-weather-prometheus`(host network
 `:14104`)이고, Manager #452 이후 weather 체크아웃(`/home/digitie/kor-travel-weather`)의
 `deploy/prometheus` 디렉터리를 `/etc/prometheus/weather-rules`로 읽기 전용 bind한다.
+(odroid 이전 뒤에는 같은 경로·같은 절차를 **odroid에서** 한다 — 체크아웃과 Prometheus가 같은
+호스트에 있다는 전제만 바뀌지 않으면 된다. 아래 "odroid 이전 뒤 관측" 참조.)
 Prometheus는 규칙을 기동·reload 때만 읽으므로 `alerts.yml`만 바뀐 머지는 **체크아웃 갱신 +
 SIGHUP**이면 된다. Manager의 weather `ensure`는 init step `weather-prometheus-rules-reload`로
 SIGHUP을 자동으로 보낸다. `--web.enable-lifecycle`은 꺼져 있어 `/-/reload`는 없다.
@@ -122,6 +126,59 @@ curl -fsS http://127.0.0.1:14104/api/v1/rules \
 머지 전에 이것을 막는다. 되돌리기는 체크아웃을 이전 커밋으로 돌리고 같은 SIGHUP이다.
 firing alert는 아직 어디에도 전달되지 않는다(위 `alerting:` 참고). 확인은
 `curl -fsS http://127.0.0.1:14104/api/v1/alerts`로 한다.
+
+## odroid 이전 뒤 관측 — 중앙 scrape + federate(계획, Manager ADR-58 proposed, 미구현)
+
+weather 스택이 odroid(`192.168.1.13`)로 옮겨가면(`deploy/n150.md` "계획: odroid 호스트")
+관측은 Manager ADR-58 결정 11(관측 (b)) — **Prometheus·Grafana는 n150 하나**, odroid에는
+exporter만 — 를 따른다. weather 자신의 Prometheus `14104`는 그 예외로 **1단계에서 odroid에
+그대로 남고**, n150의 Manager Prometheus(`12102`)가 거기서 federate한다. ADR-58 본문의 소제목은
+컨텍스트 / 결정(1~13) / 근거 / 결과(긍정·부정) / 관계 / 바뀌는 테스트 / 열린 결정(설계 §14 번호)이고
+운영 절차는 Manager `docs/prod-deployment.md` §9다 — 아래 인용은 "결정 N"·"§14-N"을 쓴다. 두 호스트
+Prometheus가 LAN에서 서로 닿는 전제는 bind가 loopback이 아니라는 것이다 — Manager compose의
+weather Prometheus는 `--web.listen-address=:14104`(`docker-compose.yml:3189`, 전 인터페이스),
+code-server metrics `14103`은 `0.0.0.0` 기본(`src/kortravelweather/metrics.py:746`); `deploy/n150.md`
+머리의 "loopback에만"은 standalone compose 기준이다. LAN 경계는 odroid 호스트 방화벽이다.
+
+- 1단계(플립 PR과 함께, Manager T-MGR-04/06): n150 `config/prometheus/prometheus.yml`에
+  `weather-federate` job — `192.168.1.13:14104/federate`에서 `{__name__=~"ktw_.*"}`와
+  `{__name__="ALERTS"}`를 가져온다. **match 값 주의**: 이 서비스의 지표 네임스페이스는 `ktw_`이고
+  `kor_travel_weather_`·`weather_*`는 emit하지 않는다(위 "지표 계약"; 규칙 파일
+  `deploy/prometheus/alerts.yml`의 `ktw_forward_partition_days` 등). Manager ADR-58 결정 11·
+  `docs/tasks.md` T-MGR-04·`docs/prod-deployment.md` §9.5 본문과 설계 §10.2에 적힌 `weather_*`는
+  설계 단계의 오기이며 그대로 구현하면 `/federate`가 빈 집합을 돌려준다(`up`은 1인데 weather
+  series 0 — 조용한 실패). 구현 값은 `ktw_.*`이고 이 저장소 지표 계약이 정본이다; T-MGR-04
+  구현 시 Manager 쪽 세 곳을 정정하고 수용 기준에
+  `count({__name__=~"ktw_.*",host="odroid"}) > 0`을 둔다. 더해 `weather-code-server` job이
+  `192.168.1.13:14103`을 **직접** scrape한다(무인증, 방화벽으로 n150만). weather API
+  `14101`/`metrics`는 1단계에서 n150이 직접 scrape하지 **않는다** — bearer token
+  (`KOR_TRAVEL_WEATHER_METRICS_TOKEN`)을 두 호스트 Prometheus에 중복 주입하지 않기 위해서다
+  (odroid `14104`가 지금처럼 secret 파일로 읽고, n150은 그 결과를 federate로 받는다). 타깃은
+  Manager registry에서 계산한 **커밋된 파생물**이고 결박 테스트가 지킨다(ADR-58 결정 5·Manager
+  `docs/bindings.md` B-8).
+- 왜 `14104`를 바로 퇴역시키지 않는가: 이 저장소의 `deploy/prometheus/alerts.yml`(규칙 9개)은
+  Manager compose가 weather **체크아웃 디렉터리**를 bind해 읽는다(Manager
+  `config/docker-targets.yml:969-971`, 위 "규칙 변경 배포"). 체크아웃·규칙·SIGHUP 경로가 전부
+  호스트 로컬이라 odroid로 옮겨도 그대로 성립하고, n150에서 체크아웃을 지우는 해체(Manager
+  `docs/prod-deployment.md` §9.6) 뒤에는 n150에 규칙 정본이 없다. 2단계 퇴역(시점은 소유자 결정,
+  ADR-58 열린 결정 §14-11)에서 token·규칙 자리를 n150 Prometheus로 옮긴 뒤에만 `14104`를 내린다.
+- **federate는 샘플 타임스탬프에 의존한다.** `/federate` 응답은 odroid Prometheus가 scrape한
+  시각을 달고 오므로 odroid 시계가 틀리면 n150 Prometheus가 out-of-bounds로 **조용히 버린다**
+  (`up`은 1인데 `ktw_*`가 비는 모양). 직접 scrape(`14103`)는 n150 시각을 쓰므로 영향이 없다.
+  그래서 n150 쪽 시계 rule이 먼저 설명한다: `node_timex_sync_status{host="odroid"} == 0` 또는
+  `abs(node_time_seconds - timestamp(node_time_seconds)) > 5`. node_exporter는 두 호스트 모두 아직
+  없고 추가 예정이다(포트는 Manager `docs/ports.md` 절차, 후보 `12106`); timesyncd 부팅 순서
+  영속화(Manager `docs/prod-deployment.md` §9.1 1단계 ⓪~④ — drop-in, 2026-10-13 현재 미완)
+  전까지 이 rule의 첫 상태는 firing이 정상이다. odroid 시계가 weather 자체에 미치는 영향(파티션
+  바닥·forward window)은 `deploy/n150.md` "시계" 절.
+- Alertmanager는 여전히 없다. 이 저장소 규칙의 firing은 federate된 `ALERTS` series로 n150
+  Grafana에서 보이지만 **전달되지 않는다**(문서 첫 절의 `alerting:` 단락과 같은 상태). 최소
+  신호는 n150 Prometheus의 `count(up{host="odroid"}) == N ∧ 전부 1` — `up{host="odroid"}`가 전부
+  0이면 odroid 다운뿐 아니라 DHCP 임대 변경(주소 이동)도 의심한다. odroid Prometheus에도
+  `--web.enable-lifecycle`은 없다(변경 없음).
+- 이 저장소에서 바뀌는 것: 없음. `deploy/prometheus/prometheus.yml`(standalone, compose DNS 타깃)과
+  `alerts.yml`은 그대로이고, Manager의 `config/kor-travel-weather/prometheus.yml` override도
+  `127.0.0.1` 타깃이라 호스트와 무관하다.
 
 ## 운영 확인
 
