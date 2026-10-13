@@ -270,7 +270,7 @@ failed finish가 no-op이 돼도 row에는 실제로 commit된 수가 남는다.
 경합 재시도의 pause도 blocking이므로, event loop 위에서 publish하는 collector(KMA,
 AirKorea)는 `asyncio.to_thread`로 부른다.
 
-raw payload의 실행 전체 UTF-8 예산은 JSONEncoder 조각을 순회해 계산한다. JSON 형식·한글·이스케이프·
+raw payload의 응답별 UTF-8 예산은 JSONEncoder 조각을 순회해 계산한다. JSON 형식·한글·이스케이프·
 `default=str` 의미는 기존과 같고, 예산 초과가 확인되면 뒤 행을 직렬화하지 않고 run을 실패 처리한다.
 검사를 위해 전체 JSON 문자열과 UTF-8 복사본을 함께 만들던 추가 메모리를 줄인다. 이미 provider가
 반환한 payload 객체와 encoder가 만드는 단일 문자열 조각은 남으므로 전체 RSS의 절대 상한이나

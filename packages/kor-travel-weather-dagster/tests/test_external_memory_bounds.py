@@ -131,3 +131,23 @@ def test_payload_budget_check_does_not_copy_entire_large_json():
     finally:
         tracemalloc.stop()
     assert peak < 256 * 1024
+
+
+def test_accepted_aggregate_payload_does_not_copy_entire_json():
+    payload = [{"raw": "x" * 1024} for _ in range(6000)]
+    expected = 6000 * (len('{"raw":""}') + 1024) + 5999 + 2
+    tracemalloc.start()
+    try:
+        assert external_weather._bounded_payload_size(payload, max_bytes=expected) == expected
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 256 * 1024
+
+
+@pytest.mark.parametrize("character", ["x", "\x00"])
+def test_single_large_scalar_is_rejected_without_claiming_rss_bound(character):
+    # encoder는 거대 문자열 한 조각을 만들 수 있다. 결과 거절은 검증하되
+    # 이 입력의 추가 메모리가 max_bytes 안에 든다고 주장하지 않는다.
+    with pytest.raises(ValueError, match="raw payload"):
+        external_weather._bounded_payload_size({"raw": character * (128 * 1024)}, max_bytes=1024)
