@@ -1,5 +1,8 @@
 """raw-only 수집과 재게시도 실행 전체 예산을 우회하지 못한다."""
 
+import json
+import tracemalloc
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -95,3 +98,36 @@ def test_replayed_batches_cannot_reset_normalized_value_budget(monkeypatch):
         )
     assert repository.flushes == [1, 1]
     assert repository.failed
+
+
+@pytest.mark.parametrize("payload", [
+    {}, {"한글": ["서울", "🌧", "\\", "\n", 1, True, None]},
+    {"timestamp": datetime(2026, 10, 14, tzinfo=UTC)},
+])
+def test_streamed_payload_size_preserves_json_utf8_budget(payload):
+    encoded = json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":")).encode()
+    assert external_weather._bounded_payload_size(payload, max_bytes=len(encoded)) == len(encoded)
+    with pytest.raises(ValueError, match="raw payload"):
+        external_weather._bounded_payload_size(payload, max_bytes=len(encoded) - 1)
+
+
+def test_oversized_payload_stops_before_serializing_later_rows():
+    class Later:
+        def __str__(self):
+            raise AssertionError("예산 초과 뒤의 행을 직렬화하면 안 된다")
+
+    with pytest.raises(ValueError, match="raw payload"):
+        external_weather._bounded_payload_size(["한글" * 100, Later()], max_bytes=50)
+
+
+def test_payload_budget_check_does_not_copy_entire_large_json():
+    # 입력 자체는 계측 전에 만들고 검사 과정의 추가 할당만 잰다.
+    payload = [{"raw": "x" * 1024} for _ in range(6000)]
+    tracemalloc.start()
+    try:
+        with pytest.raises(ValueError, match="raw payload"):
+            external_weather._bounded_payload_size(payload, max_bytes=2048)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 256 * 1024

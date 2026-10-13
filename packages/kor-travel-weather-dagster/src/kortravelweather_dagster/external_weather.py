@@ -28,6 +28,23 @@ _PUBLISH_BATCH_SOURCES = 25
 _PUBLISH_BATCH_PAYLOAD_BYTES = 10_000_000
 
 
+def _bounded_payload_size(payload: Any, *, max_bytes: int) -> int:
+    """JSON 전체 문자열·UTF-8 복사본을 누적하지 않고 raw 예산을 확인한다.
+
+    provider가 이미 만든 payload 객체와 encoder의 단일 문자열 조각은 남지만,
+    목록 전체의 직렬화 결과를 추가로 보관하지 않는다. 초과 시 후속 행을 읽지 않는다.
+    """
+    encoder = json.JSONEncoder(ensure_ascii=False, default=str, separators=(",", ":"))
+    size = 0
+    for part in encoder.iterencode(payload):
+        # 큰 문자열 조각도 UTF-8 바이트 전체를 한 번 더 복사하지 않는다.
+        for offset in range(0, len(part), 4096):
+            size += len(part[offset : offset + 4096].encode("utf-8"))
+            if size > max_bytes:
+                raise ValueError(f"provider raw payload가 상한을 초과했습니다: 최소 {size} bytes")
+    return size
+
+
 def _fetch_with_deadline(
     provider: WeatherProvider,
     target: ProviderLocation,
@@ -137,18 +154,9 @@ def run_external_weather_sync(
                 raise ValueError(
                     f"provider 응답 row 수가 상한을 초과했습니다: {response.response_rows}"
                 )
-            payload_size = len(
-                json.dumps(
-                    response.source_record.get("payload", {}),
-                    ensure_ascii=False,
-                    default=str,
-                    separators=(",", ":"),
-                ).encode("utf-8")
+            payload_size = _bounded_payload_size(
+                response.source_record.get("payload", {}), max_bytes=max_payload_bytes
             )
-            if payload_size > max_payload_bytes:
-                raise ValueError(
-                    f"provider raw payload가 상한을 초과했습니다: {payload_size} bytes"
-                )
             # The cap counts what the run has produced in total, published
             # batches included; counting only the pending batch would let an
             # unbounded sweep through one flush at a time.

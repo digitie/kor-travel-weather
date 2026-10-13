@@ -254,7 +254,8 @@ resource가 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`와 provider별 secret/base UR
 `source_record_key`로 식별되므로 부분 sweep은 단지 갱신된 지점이 적다는 뜻이며, 재시도는
 빠진 것만 채운다. 실패한 run은 그때까지 적재한 건수를 기록한다.
 
-`_PUBLISH_BATCH_VALUES`(50,000)는 **메모리** 상한일 뿐이다. stage된 배치는 KMA와 같은
+`_PUBLISH_BATCH_VALUES`(5,000)는 **메모리** 배치 상한일 뿐이다. source 25건·raw JSON 10 MB도
+배치 게시 기준으로 사용하며 한 provider 응답 자체는 분리하지 않는다. stage된 배치는 KMA와 같은
 `chunked_publish` location chunk(50곳·5,000 fact 이하, location 단위로만 나눔)로
 publish한다 — 50,000 fact 한 transaction은 그 ~37곳의 lock을 37 GB fact table 위에서
 끝날 때까지 쥐었고, ingest lock timeout이 생긴 뒤로는 그 뒤에 선 KMA chunk가 기다리는
@@ -268,6 +269,12 @@ failed finish가 no-op이 돼도 row에는 실제로 commit된 수가 남는다.
 `values_loaded`를 생략하면 그 기록을 유지한다. publish는 동기 repository 호출이고 lock
 경합 재시도의 pause도 blocking이므로, event loop 위에서 publish하는 collector(KMA,
 AirKorea)는 `asyncio.to_thread`로 부른다.
+
+raw payload의 실행 전체 UTF-8 예산은 JSONEncoder 조각을 순회해 계산한다. JSON 형식·한글·이스케이프·
+`default=str` 의미는 기존과 같고, 예산 초과가 확인되면 뒤 행을 직렬화하지 않고 run을 실패 처리한다.
+검사를 위해 전체 JSON 문자열과 UTF-8 복사본을 함께 만들던 추가 메모리를 줄인다. 이미 provider가
+반환한 payload 객체와 encoder가 만드는 단일 문자열 조각은 남으므로 전체 RSS의 절대 상한이나
+HTTP 응답 스트리밍으로 해석하지 않는다. 이미 게시한 배치와 source lineage·재실행 idempotency는 유지한다.
 
 중간 target의 timeout·429·4xx·schema 오류는 여전히 run을 실패시킨다.
 provider가 반환한 `source_record_key`는 response payload와 redacted request
