@@ -229,6 +229,169 @@ def test_ingest_retries_a_lock_race_it_can_win(monkeypatch) -> None:
     assert _pointer(repo) == "sr-race"
 
 
+def test_independent_publishers_share_an_anchor_until_commit(monkeypatch) -> None:
+    monkeypatch.setattr(repository_module, "INGEST_LOCK_ATTEMPTS", 1)
+    repo = _repository("loc")
+    _record(repo, "source-a")
+    _record(repo, "source-b")
+    held = threading.Event()
+    release = threading.Event()
+    second_done = threading.Event()
+    outcomes = {}
+
+    def hold_first(conn, cursor, statement, parameters, context, executemany):
+        if (
+            threading.current_thread().name == "first-publisher"
+            and statement.lstrip().startswith("INSERT INTO weather_current_values")
+        ):
+            held.set()
+            assert release.wait(10), "시험의 첫 publisher release가 누락됐습니다."
+
+    def publish(name, source, hour):
+        try:
+            outcomes[name] = repo.ingest_batch(values=[_fact(source, hour=hour)])
+        except BaseException as exc:
+            outcomes[name] = exc
+        finally:
+            if name == "second":
+                second_done.set()
+
+    event.listen(repo.engine, "after_cursor_execute", hold_first)
+    first = threading.Thread(target=publish, args=("first", "source-a", 0), name="first-publisher")
+    second = threading.Thread(target=publish, args=("second", "source-b", 1))
+    try:
+        first.start()
+        assert held.wait(10), "첫 publisher가 열린 transaction에 도달하지 못했습니다."
+        second.start()
+        completed_with_first_still_open = second_done.wait(2)
+    finally:
+        release.set()
+        first.join(10)
+        if second.ident is not None:
+            second.join(10)
+        event.remove(repo.engine, "after_cursor_execute", hold_first)
+    assert not first.is_alive() and not second.is_alive()
+    assert completed_with_first_still_open, "서로 다른 fact 게시가 공용 anchor에서 직렬화됐습니다."
+    assert outcomes == {"first": 1, "second": 1}
+
+
+@pytest.mark.parametrize("mutation", ["upsert", "patch", "grid", "create"])
+def test_catalog_mutations_wait_for_a_shared_publisher(mutation: str) -> None:
+    repo = _repository("loc")
+    holder = repo._session_factory()
+    holder.begin()
+    repo._lock_location_session(holder, "loc", shared=True)
+    dispatched = threading.Event()
+    writer_pid = []
+    outcome = []
+
+    def observe(conn, cursor, statement, parameters, context, executemany):
+        if (
+            threading.current_thread().name == "catalog-writer"
+            and "pg_advisory_xact_lock(" in statement
+        ):
+            cursor.execute("SELECT pg_backend_pid()")
+            writer_pid.append(cursor.fetchone()[0])
+            dispatched.set()
+
+    def mutate():
+        try:
+            if mutation == "upsert":
+                repo.upsert_location(repo.get_location("loc"))
+            elif mutation == "patch":
+                repo.patch_location("loc", {"enabled": False})
+            elif mutation == "grid":
+                repo.ensure_location_grid("loc", nx=1, ny=1)
+            else:
+                repo.create_location(repo.get_location("loc"))
+            outcome.append("done")
+        except BaseException as exc:
+            outcome.append(exc)
+
+    writer = threading.Thread(target=mutate, name="catalog-writer")
+    event.listen(repo.engine, "before_cursor_execute", observe)
+    try:
+        writer.start()
+        assert dispatched.wait(10)
+        # writer가 아직 실행되지 않은 상태를 성공으로 오인하지 않고 실제 PG 대기를 확인한다.
+        until = time.monotonic() + 3
+        with repo.engine.connect() as observer:
+            while not observer.scalar(text(
+                "SELECT count(*) FROM pg_locks WHERE pid=:pid "
+                "AND locktype='advisory' AND NOT granted"
+            ), {"pid": writer_pid[0]}):
+                assert time.monotonic() < until, "catalog変更がshared publisherを待ちませんでした。"
+                time.sleep(0.01)
+        assert outcome == []
+    finally:
+        holder.rollback()
+        holder.close()
+        writer.join(10)
+        event.remove(repo.engine, "before_cursor_execute", observe)
+    assert not writer.is_alive()
+    if mutation == "create":
+        assert len(outcome) == 1 and isinstance(outcome[0], ValueError)
+    else:
+        assert outcome == ["done"]
+
+
+def test_shared_lock_cache_never_satisfies_exclusive_or_the_next_transaction() -> None:
+    repo = _repository("loc")
+    first, second = repo._session_factory(), repo._session_factory()
+    try:
+        first.begin()
+        second.begin()
+        repo._lock_location_session(first, "loc", shared=True)
+        repo._lock_location_session(second, "loc", shared=True)
+        first.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        with pytest.raises(OperationalError) as conflict:
+            repo._lock_location_session(first, "loc")
+        assert repository_module.is_lock_conflict(conflict.value)
+        first.rollback()
+        second.rollback()
+
+        first.begin()
+        repo._lock_location_session(first, "loc", shared=True)
+        repo._lock_location_session(first, "loc")
+        modes = set(first.scalars(text(
+            "SELECT mode FROM pg_locks WHERE pid=pg_backend_pid() AND locktype='advisory'"
+        )))
+        assert "ExclusiveLock" in modes
+        first.commit()
+
+        first.begin()
+        repo._lock_location_session(first, "loc", shared=True)
+        assert set(first.scalars(text(
+            "SELECT mode FROM pg_locks WHERE pid=pg_backend_pid() AND locktype='advisory'"
+        ))) == {"ShareLock"}
+    finally:
+        first.rollback()
+        second.rollback()
+        first.close()
+        second.close()
+
+
+def test_shared_publisher_keeps_the_anchor_key_and_skip_locked_accepts_other_publishers() -> None:
+    repo = _repository("loc")
+    _record(repo, "source-shared")
+    holder = repo._session_factory()
+    holder.begin()
+    repo._lock_location_session(holder, "loc", shared=True)
+    try:
+        # 다른 publisher의 shared lock은 수집을 건너뛸 이유가 아니다.
+        assert repo.ingest_skip_locked(values=[_fact("source-shared", hour=0)]) == (1, [])
+        with repo.engine.connect() as deleter:
+            deleter.execute(text("SET LOCAL lock_timeout = '200ms'"))
+            with pytest.raises(OperationalError) as conflict:
+                deleter.execute(text("DELETE FROM weather_locations WHERE location_id='loc'"))
+            assert repository_module.is_lock_conflict(conflict.value)
+            deleter.rollback()
+    finally:
+        holder.rollback()
+        holder.close()
+    assert repo.get_location("loc") is not None
+
+
 @pytest.mark.parametrize("chunk_locations", [1, 3])
 def test_location_locks_held_are_only_the_batchs_own(chunk_locations: int) -> None:
     # A batch's transaction holds exactly its own locations' advisory locks,

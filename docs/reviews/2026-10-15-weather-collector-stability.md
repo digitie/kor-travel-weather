@@ -50,3 +50,24 @@ sources2000·values18000·최종 digest가 전후 동일했다.
 이는 정규화 중 추적한 Python 할당의 peak이며 운영 RSS·DB 지연·원천 HTTP 시간의
 측정이 아니다. CPU 차이는 작아 CPU 개선으로 판정하지 않는다. 별도 비공개
 재현 도구와 원본 측정3회 값은 인계 증거에 보존한다.
+
+## 공용 anchor의 게시 잠금과 catalog 잠금 분리
+
+기존 fact 게시가 location advisory exclusive와 행 FOR UPDATE를 잡아, 같은 anchor에
+서로 다른 원천·시각의 fact를 쓰는 작업도 전체 transaction 동안 직렬화됐다.
+게시 경로와 skip-locked 게시는 advisory shared + 행 FOR KEY SHARE를 사용한다.
+catalog upsert/create/patch/grid 변경은 기존 exclusive + FOR UPDATE를 유지한다.
+소스 record의 배타 잠금, fact/projection unique/upsert, 정렬된 잠금 획득 순서와
+기존 유한 rollback/retry 예산은 유지한다. SQL schema·pool·메모리·동시성 설정은 바꾸지 않는다.
+
+동일 source/projection 자체가 겹치면 해당 고유 행의 직렬화는 여전히 필요하다.
+이 변경은 서로 독립적인 게시가 공유 anchor만으로 기다리는 경우를 줄이는 것이다.
+앱의 catalog 변경 경로는 advisory 규칙을 따르며, 이를 우회한 임의 SQL 쓰기까지
+동일한 행 갱신 배타성을 보장하지 않는다. FK key 삭제 보호는 행 KEY SHARE가 유지한다.
+
+실제 PostgreSQL에서 첫 publisher를 commit 직전 정지해 두고, 두 번째 독립 fact를
+게시하는 새 회귀가 원본에서는 실패하고 수정 후 통과했다. catalog 4경로의 배타 대기는
+thread 시작 여부 대신 실제 pg_locks의 ungranted advisory로 확인한다.
+shared 캐시가 exclusive 승격이나 다음 transaction을 대신하지 않는지, shared publisher가
+skip 이유가 되지 않는지, FK key 삭제 보호와 기존 admin 충돌 skip을 검증한다.
+실제 운영 job의 lock 실패율·처리량·CPU 개선과 live E2E는 아직 검증하지 않았다.
