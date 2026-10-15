@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import sys
 
+import pytest
+
 from kortravelweather.providers.base import _normalized_key, redact_secrets
 
 
@@ -52,3 +54,51 @@ def test_nested_secret_redaction_keeps_aliases_and_independent_payloads() -> Non
     assert payload["main"]["temp"] == 14
     assert payload["rows"][0]["appid"] == "credential"
     assert payload["tuple"][0]["password"] == "credential"
+
+
+class _SelfReturningKey(str):
+    def __str__(self) -> str:
+        return self
+
+
+class _SpoofedPredicateKey(_SelfReturningKey):
+    def isascii(self) -> bool:
+        return True
+
+    def islower(self) -> bool:
+        return True
+
+
+class _CustomHashKey(_SelfReturningKey):
+    def __hash__(self) -> int:
+        return 1
+
+
+class _CustomContainsKey(_SelfReturningKey):
+    def __contains__(self, item: object) -> bool:
+        return False
+
+
+class _CustomEqualityKey(_SelfReturningKey):
+    __hash__ = str.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        return False
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        _SpoofedPredicateKey("apiKey"),
+        _CustomHashKey("api_key"),
+        _CustomContainsKey("api-key"),
+        _CustomEqualityKey("api_key"),
+    ],
+    ids=["spoofed-predicate", "custom-hash", "custom-contains", "custom-equality"],
+)
+def test_string_subclass_keys_cannot_bypass_secret_redaction(key: str) -> None:
+    result = redact_secrets({key: "credential"})
+    assert result[key] == "[REDACTED]"
+    # 키 객체는 보존하지만 secret 집합 비교는 이전처럼 기본 str 결과여야 한다.
+    assert next(iter(result)) is key
+    assert type(_normalized_key(key)) is str
