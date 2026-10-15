@@ -90,11 +90,20 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
         assert "ix_weather_sync_runs_heartbeat" in {
             item["name"] for item in inspector.get_indexes("weather_sync_runs")
         }
+        catalog_index = next(
+            item for item in inspector.get_indexes("weather_locations")
+            if item["name"] == "ix_weather_locations_enabled_name_id"
+        )
+        assert catalog_index["column_names"] == ["name", "location_id"]
+        assert set(catalog_index["include_columns"]) == {
+            "latitude", "longitude", "nx", "ny", "region_code", "enabled",
+        }
+        assert "enabled IS TRUE" in catalog_index["dialect_options"]["postgresql_where"]
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0018_sync_run_owner"
+            assert version == "0019_location_catalog_index"
             assert "orchestrator_run_id" in {
                 column["name"] for column in inspect(engine).get_columns("weather_sync_runs")
             }
