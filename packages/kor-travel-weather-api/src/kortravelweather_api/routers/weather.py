@@ -433,7 +433,12 @@ async def list_locations(
 ) -> dict[str, Any]:
     started = perf_counter()
     rows = await run_in_threadpool(
-        repo.list_locations, enabled_only=True, search=search, limit=limit, offset=offset
+        repo.list_locations,
+        enabled_only=True,
+        search=search,
+        limit=limit,
+        offset=offset,
+        include_metadata=False,
     )
     total = await run_in_threadpool(repo.count_locations, enabled_only=True, search=search)
     return envelope(
