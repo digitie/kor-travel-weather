@@ -628,3 +628,15 @@ def test_retention_settings_actually_reach_the_dagster_container(
             "service; the nightly retention job would silently run on the "
             "code default"
         )
+
+
+
+def test_web_public_dagster_url_is_baked_before_next_build() -> None:
+    """런타임 env만 바꿔 잘못된 제어 평면 링크가 번들에 남는 회귀를 막는다."""
+    web = _load(BASE_COMPOSE)["services"]["web"]
+    public_url = web["environment"]["NEXT_PUBLIC_DAGSTER_URL"]
+    assert web["build"]["args"]["NEXT_PUBLIC_DAGSTER_URL"] == public_url
+    source = (REPO_ROOT / "deploy" / "Dockerfile.web").read_text()
+    assert source.index("ARG NEXT_PUBLIC_DAGSTER_URL=") < source.index(
+        "ENV NEXT_PUBLIC_DAGSTER_URL=$NEXT_PUBLIC_DAGSTER_URL"
+    ) < source.index("RUN npm run build")

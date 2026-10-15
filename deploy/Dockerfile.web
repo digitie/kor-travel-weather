@@ -12,6 +12,9 @@ COPY packages/kor-travel-weather-admin/frontend ./
 # rather than relying on a runtime-only container environment.
 ARG NEXT_PUBLIC_VWORLD_API_KEY=
 ENV NEXT_PUBLIC_VWORLD_API_KEY=$NEXT_PUBLIC_VWORLD_API_KEY
+# 공개 Dagster 링크도 Next.js 브라우저 번들 생성 시점에 고정한다.
+ARG NEXT_PUBLIC_DAGSTER_URL=https://weather-dagster.digitie.mywire.org
+ENV NEXT_PUBLIC_DAGSTER_URL=$NEXT_PUBLIC_DAGSTER_URL
 RUN npm run build
 
 FROM node:22-alpine AS runner

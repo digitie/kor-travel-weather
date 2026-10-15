@@ -10,6 +10,9 @@ Geo에서 사용하는 공통 UI dev.6를 동일하게 설치해 검색, 페이�
 - API·인증 계약 변경 없음. 실행 이력 조회 한도와 공통 UI 페이지 크기를 유지해 전체 행을 DOM에 쌓지 않는다.
 - Geo 자원·배치·동시성 튜닝값을 변경하지 않는다.
 
+공개 Dagster URL은 runtime 환경값만으로 Next.js 번들을 바꿀 수 없어 Docker 빌드 인자로도 전달한다.
+Compose의 build/runtime 값이 같고 build 전에 적용되는지 회귀 검사한다.
+
 ## 검증 상태
 
 - 변경 전 live UI: 전체 79 PASS / 5 FAIL. 이 앱의 실행 검색 부재가 실제 실패 중 하나다.
