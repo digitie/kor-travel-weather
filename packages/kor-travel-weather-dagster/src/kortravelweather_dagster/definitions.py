@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import cache
 
 from dagster import (
     AssetExecutionContext,
@@ -1052,10 +1053,7 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
     return result
 
 
-#: Every asset, named once.  Each ``_resolve_*`` below builds a throwaway
-#: ``Definitions`` to resolve its job against, and each needs the *whole* graph.
-#: When this was four hand-copied lists, adding an asset meant remembering all
-#: four -- and a resolution site that missed one still worked, silently.
+#: 모든 작업이 같은 asset graph를 사용하도록 자산을 한 번만 선언한다.
 _ASSETS = [
     kma_ultra_short_nowcast_sync,
     kma_ultra_short_forecast_sync,
@@ -1139,21 +1137,26 @@ _resources = {
 }
 
 
-def _resolve_job(unresolved):
-    """Resolve one asset job without exposing a second module-level Definitions.
-
-    Every job needs the *whole* asset graph to resolve against, so each call
-    builds a throwaway ``Definitions``.  This was five hand-copied functions
-    before the external sources became nine jobs of their own.
-    """
+@cache
+def _job_resolution_context():
+    """프로세스마다 전체 graph와 resource 정의를 한 번만 구성한다."""
     asset_defs = Definitions(
         assets=_ASSETS,
         resources=_resources,
     )
-    return unresolved.resolve(
+    return (
         asset_defs.resolve_asset_graph(),
+        asset_defs.get_repository_def().get_top_level_resources(),
+    )
+
+
+def _resolve_job(unresolved):
+    """같은 graph에서 작업을 resolve하며 별도의 module Definitions는 노출하지 않는다."""
+    asset_graph, resource_defs = _job_resolution_context()
+    return unresolved.resolve(
+        asset_graph,
         default_executor_def=multiprocess_executor.configured({"max_concurrent": 1}),
-        resource_defs=asset_defs.get_repository_def().get_top_level_resources(),
+        resource_defs=resource_defs,
     )
 
 
