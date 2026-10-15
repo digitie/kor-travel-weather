@@ -76,8 +76,8 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
                     },
                 )
         command.upgrade(config, "head")
-        # A second PostgreSQL upgrade is a no-op because the revision is
-        # committed transactionally with the schema.
+        # 재실행 시 이미 기록된 head는 no-op이다. CONCURRENTLY DDL과
+        # revision 기록 사이 중단의 수동 정산은 migration 가이드를 따른다.
         command.upgrade(config, "head")
 
         inspector = inspect(engine)

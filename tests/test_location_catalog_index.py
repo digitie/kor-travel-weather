@@ -6,14 +6,13 @@ from alembic.config import Config
 from sqlalchemy import text
 
 from alembic import command
+from conftest import TEST_DATABASE_URL
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import get_settings
 
 
 def test_catalog_index_avoids_sort_and_preserves_upgrade_downgrade_rows(monkeypatch) -> None:
-    import os
-
-    database_url = os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"]
+    database_url = TEST_DATABASE_URL
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", database_url)
     get_settings.cache_clear()
     engine = WeatherRepository(database_url).engine
