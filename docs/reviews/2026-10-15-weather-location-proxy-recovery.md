@@ -8,17 +8,18 @@
 원인까지 확정한 것은 아니다. 기존 BFF는 fetch 예외를 처리하지 않아
 Next500으로 전파했다.
 
-정확한 `GET /v1/weather/locations`만 응답 헤더 전의
+정확한 `GET /v1/weather/locations`와
+`GET /v1/admin/provider-credentials`만 응답 헤더 전의
 `UND_ERR_SOCKET`/`ECONNRESET`/`EPIPE`가 TypeError의 cause로 확인될 때
 최대2회 시도한다. 쿼리·헤더·no-store 의미를 그대로 유지한다.
 HTTP4xx/5xx는 원래 body/status로 전달하며 재시도하지 않는다.
 POST/PATCH/PUT/DELETE/HEAD와 다른 GET에는 새 재시도 정책을 적용하지 않는다.
 
-위치 GET의 헤더 수신 총예산은20초이며 재시도마다 초기화하지 않는다.
+허용한 두 GET의 헤더 수신 총예산은20초이며 재시도마다 초기화하지 않는다.
 이는 관측된 약9.76초 실패에 대해 최대 두 시도를 약10초씩 수용하는
 초기 복구 예산이다. 정상 응답의 p95/p99 분포를 측정해 최적화한 값이나
 연결 종료의 원인을 해결했다는 의미는 아니다. 기존 frontend 요청에는
-별도의 전체 timeout이 없으므로 위치 목록에만 새 유한 경계를 둔다.
+별도의 전체 timeout이 없으므로 허용한 두 읽기에 새 유한 경계를 둔다.
 브라우저 취소는 이 예산보다 우선하며 timer callback이 밀려도
 monotonic 시각을 다시 확인한다.
 
@@ -27,7 +28,7 @@ monotonic 시각을 다시 확인한다.
 누적하지 않고 backpressure에 따라 전달하며 완료·실패·소비자/요청 취소에서
 upstream reader를 정리한다. 일부 body가 전달된 뒤 실패하면 재전송하지 않는다.
 
-복구되지 않는 헤더 전 전송 실패는 일반503, 위치 헤더 예산 소진은504,
+복구되지 않는 헤더 전 전송 실패는 일반503, 읽기 헤더 예산 소진은504,
 호출자 취소는499로 끝낸다. 오류 body는 no-store이며 빈 위치 목록으로
 대체하지 않는다. 원래 error/cause·URL·주소·키·cookie를 기록하지 않고
 고정 allowlist category와 attempt만 남긴다. 인증 middleware와 durable
@@ -62,3 +63,21 @@ listener를 종결하도록 수정했다. 진행 중 pull 및 downstream/caller�
 최종 위치 BFF 회귀27개와 frontend 전체159개, type-check·lint·production
 build가 통과했다. 최초 리뷰 원문과 실패 결과는 보존하며 이 수정의 독립
 재검토 및 운영 검증은 별도로 수행한다.
+
+## 공급자 키 상태 읽기 보강
+
+후속 실제 Weather UI R10은 31 PASS / 1 FAIL이었다. 공급자 키 상태 GET의
+비주입503과 페이지 이동 중 두 요청의 ERR_ABORTED가 마지막 검증에서 검출됐다.
+해당503의 body/전송 category는 저장되지 않아 원인을 socket 종료로 확정할 수 없다.
+독립적인 후속 같은 GET 세 번은 모두200(1.200/0.978/0.550초)이었지만, 이를 기존
+실패의 수정 또는 전체 live PASS로 집계하지 않는다. 실패 원문은 보존한다.
+
+공급자 키 상태는 키 원문을 반환하지 않는 읽기 전용 API다. 이 정확한 경로에도
+기존 위치 GET과 같은 제한된 **헤더 전 전송 장애** 복구를 적용한다. 이미 받은
+HTTP503/401/403/429는 재시도하지 않는다. 관리 write·다른 GET/export·body 오류는
+계속 제외한다. 이 변경은 미확정503 원인의 해결을 주장하지 않는다.
+
+이전 소스에서 공급자 상태 socket 복구 회귀는1 FAIL/기존27 PASS였다. 수정 후
+관련33개를 포함한 frontend 전체173개가 통과했다. 공급자 상태의 실제 HTTP 오류
+보존과 두 시도 합계20초 예산도 확인했다. 이 후속 delta의 독립 리뷰·배포와
+UI 재검증은 별도 gate이며, 페이지 이동 취소의 설명 가능성도 추가로 확인한다.

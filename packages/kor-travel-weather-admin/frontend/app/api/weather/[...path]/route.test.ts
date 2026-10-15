@@ -69,6 +69,41 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("공급자 키 상태 GET도 헤더 전 socket 종료만 한 번 복구한다", async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(socketFailure())
+      .mockResolvedValueOnce(Response.json({ data: [{ provider: "p", configured: false }] }));
+    vi.stubGlobal("fetch", fetcher);
+    const response = await GET(request(), context(["v1", "admin", "provider-credentials"]));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: [{ provider: "p", configured: false }] });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(String(fetcher.mock.calls[0][0])).toContain("/v1/admin/provider-credentials?");
+    expect(String(fetcher.mock.calls[1][0])).toBe(String(fetcher.mock.calls[0][0]));
+  });
+
+  it.each([401, 403, 429, 503])("공급자 키 상태의 HTTP%s 응답도 재시도하지 않는다", async (status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("original", { status })));
+    const response = await GET(request(), context(["v1", "admin", "provider-credentials"]));
+    expect(response.status).toBe(status);
+    expect(await response.text()).toBe("original");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("공급자 키 상태 재시도도 같은20초 총예산을 사용한다", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise((_, reject) => {
+      setTimeout(() => reject(socketFailure()), 12_000);
+    })).mockImplementationOnce((_url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    const pending = GET(request(), context(["v1", "admin", "provider-credentials"]));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect((await pending).status).toBe(504);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("이미 취소된 요청은 upstream을 호출하지 않는다", async () => {
     const client = new AbortController();
     client.abort();

@@ -2,9 +2,13 @@ import { NextRequest } from "next/server";
 
 const apiBase = () => process.env.WEATHER_API_INTERNAL_URL ?? "http://127.0.0.1:14101";
 const MAX_PROXY_BODY_BYTES = 1_048_576;
-// 위치 목록의 실제 pre-header socket 실패 약9.76초를 두 번까지 수용한다.
-// 위치 GET에만 적용하며 headers 이후 stream/다른 GET/관리 write에는 새 상한을 두지 않는다.
-const LOCATION_HEADERS_BUDGET_MS = 20_000;
+// 위치 목록과 공급자 키 상태의 읽기만 헤더 전 전송 장애를 한 번 복구한다.
+// headers 이후 stream·다른 GET·관리 write에는 새 상한을 두지 않는다.
+const READ_HEADERS_BUDGET_MS = 20_000;
+const RECOVERABLE_READ_PATHS = new Set([
+  "v1/weather/locations",
+  "v1/admin/provider-credentials",
+]);
 const TRANSIENT_CODES = new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
 
 function transientCode(error: unknown): string | null {
@@ -79,17 +83,17 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       { status: 413, headers: { "cache-control": "no-store" } },
     );
   }
-  const recoverLocations = request.method === "GET" && path.join("/") === "v1/weather/locations";
+  const recoverRead = request.method === "GET" && RECOVERABLE_READ_PATHS.has(path.join("/"));
   const upstream = new AbortController();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let timedOut = false;
-  const deadline = performance.now() + LOCATION_HEADERS_BUDGET_MS;
+  const deadline = performance.now() + READ_HEADERS_BUDGET_MS;
   // event-loop가 밀려 timer callback보다 fetch가 먼저 재개돼도 총예산을 지킨다.
-  const expired = () => timedOut || (recoverLocations && performance.now() >= deadline);
-  const timer = recoverLocations ? setTimeout(() => {
+  const expired = () => timedOut || (recoverRead && performance.now() >= deadline);
+  const timer = recoverRead ? setTimeout(() => {
     timedOut = true;
     upstream.abort();
-  }, LOCATION_HEADERS_BUDGET_MS) : undefined;
+  }, READ_HEADERS_BUDGET_MS) : undefined;
   const cleanup = () => {
     clearTimeout(timer);
     request.signal.removeEventListener("abort", abort);
@@ -109,7 +113,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   request.signal.addEventListener("abort", abort, { once: true });
   if (request.signal.aborted) abort();
 
-  for (let attempt = 1; attempt <= (recoverLocations ? 2 : 1); attempt += 1) {
+  for (let attempt = 1; attempt <= (recoverRead ? 2 : 1); attempt += 1) {
     try {
       if (request.signal.aborted) { cleanup(); return unavailable(499); }
       if (expired()) { upstream.abort(); cleanup(); return unavailable(504); }
@@ -167,7 +171,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         return unavailable(request.signal.aborted ? 499 : 504);
       }
       const code = transientCode(error);
-      if (recoverLocations && attempt === 1 && code !== null) continue;
+      if (recoverRead && attempt === 1 && code !== null) continue;
       // Error/cause/URL/header는 기록하지 않는다. 고정 allowlist category만 남긴다.
       console.warn("weather_proxy_transport_failure", { category: code ?? "unclassified", attempt });
       cleanup();
