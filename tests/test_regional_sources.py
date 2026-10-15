@@ -710,7 +710,9 @@ def test_the_mountain_fetch_walks_back_past_marks_with_no_readings() -> None:
     now = datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
     fake = _FakeForestClient(
         {
-            "202609100900": [_mountain(temperature_2m=None, temperature_10m=None)],
+            "202609100900": [
+                _mountain(**{attribute: None for _, attribute, _, _ in krforest._METRIC_FIELDS})
+            ],
             "202609100850": [_mountain(obs_id="M050")],
         }
     )
@@ -719,6 +721,36 @@ def test_the_mountain_fetch_walks_back_past_marks_with_no_readings() -> None:
         rows = krforest.fetch_mountain_weather(api_key="k", now=now)
     assert [r.obs_id for r in rows] == ["M050"]
     assert fake.asked == ["202609100900", "202609100850"]
+
+
+@pytest.mark.parametrize(
+    ("attribute", "reading", "metric"),
+    [
+        ("wind_speed_2m", 1.8, "WIND_SPEED"),
+        ("humidity_2m", 71.0, "HUMIDITY"),
+        ("temperature_10m", 0.0, "TEMP_10M"),
+        ("rainfall_tipping", 0.0, "RAINFALL"),
+        ("temperature_2m", 0.0, "TEMP"),
+    ],
+)
+def test_mountain_fetch_keeps_the_latest_mark_with_any_supported_reading(
+    monkeypatch, attribute: str, reading: float, metric: str
+) -> None:
+    empty = {field: None for _, field, _, _ in krforest._METRIC_FIELDS}
+    latest = _mountain(**{**empty, attribute: reading})
+    fake = _FakeForestClient({"202609100900": [latest], "202609100850": [_mountain()]})
+    monkeypatch.setattr(krforest, "ForestClient", lambda **_: fake)
+    rows = krforest.fetch_mountain_weather(
+        api_key="k", now=datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
+    )
+    assert rows == [latest]
+    assert fake.asked == ["202609100900"]
+    values = krforest.mountain_weather_to_weather_values(
+        rows[0], location_id="krforest-M001", source_record_key="latest", known_at=KNOWN_AT
+    )
+    assert [(value.metric_key, float(value.value_number)) for value in values] == [
+        (metric, reading)
+    ]
 
 
 def test_the_walk_back_reaches_no_further_than_a_couple_of_hours() -> None:
