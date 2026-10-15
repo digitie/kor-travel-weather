@@ -2,6 +2,24 @@ import { NextRequest } from "next/server";
 
 const apiBase = () => process.env.WEATHER_API_INTERNAL_URL ?? "http://127.0.0.1:14101";
 const MAX_PROXY_BODY_BYTES = 1_048_576;
+// 위치 목록의 실제 pre-header socket 실패 약9.76초를 두 번까지 수용한다.
+// 위치 GET에만 적용하며 headers 이후 stream/다른 GET/관리 write에는 새 상한을 두지 않는다.
+const LOCATION_HEADERS_BUDGET_MS = 20_000;
+const TRANSIENT_CODES = new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
+
+function transientCode(error: unknown): string | null {
+  if (!(error instanceof TypeError) || !("cause" in error)) return null;
+  const cause = error.cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return null;
+  return typeof cause.code === "string" && TRANSIENT_CODES.has(cause.code) ? cause.code : null;
+}
+
+function unavailable(status: 499 | 503 | 504) {
+  return Response.json(
+    { detail: status === 499 ? "요청이 취소되었습니다." : "날씨 서버 응답을 받지 못했습니다. 잠시 후 다시 시도하세요." },
+    { status, headers: { "cache-control": "no-store, private", ...(status === 499 ? {} : { "retry-after": "1" }) } },
+  );
+}
 
 async function readBody(request: NextRequest): Promise<ArrayBuffer | null | undefined> {
   if (request.method === "GET" || request.method === "HEAD") return undefined;
@@ -37,6 +55,7 @@ async function readBody(request: NextRequest): Promise<ArrayBuffer | null | unde
 
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
+  if (request.signal.aborted) return unavailable(499);
   const target = new URL(`${apiBase()}/${path.join("/")}`);
   // Preserve repeated query keys such as marker batches (`location_id`);
   // `set()` would silently forward only the last requested location.
@@ -60,15 +79,96 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       { status: 413, headers: { "cache-control": "no-store" } },
     );
   }
-  const response = await fetch(target, { method: request.method, headers, body, cache: "no-store" });
-  return new Response(response.body, {
-    status: response.status,
-    headers: {
-      "content-type": response.headers.get("content-type") ?? "application/json",
-      "cache-control": "no-store, private",
-      "x-request-id": response.headers.get("x-request-id") ?? "",
-    },
-  });
+  const recoverLocations = request.method === "GET" && path.join("/") === "v1/weather/locations";
+  const upstream = new AbortController();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let timedOut = false;
+  const deadline = performance.now() + LOCATION_HEADERS_BUDGET_MS;
+  // event-loop가 밀려 timer callback보다 fetch가 먼저 재개돼도 총예산을 지킨다.
+  const expired = () => timedOut || (recoverLocations && performance.now() >= deadline);
+  const timer = recoverLocations ? setTimeout(() => {
+    timedOut = true;
+    upstream.abort();
+  }, LOCATION_HEADERS_BUDGET_MS) : undefined;
+  const cleanup = () => {
+    clearTimeout(timer);
+    request.signal.removeEventListener("abort", abort);
+  };
+  const abort = () => {
+    upstream.abort();
+    // 헤더 뒤 취소도 upstream body를 회수한다. 이미 오류난 stream의 cancel 예외는 버린다.
+    void reader?.cancel().catch(() => {});
+  };
+  request.signal.addEventListener("abort", abort, { once: true });
+  if (request.signal.aborted) abort();
+
+  for (let attempt = 1; attempt <= (recoverLocations ? 2 : 1); attempt += 1) {
+    try {
+      if (request.signal.aborted) { cleanup(); return unavailable(499); }
+      if (expired()) { upstream.abort(); cleanup(); return unavailable(504); }
+      const response = await fetch(target, {
+        method: request.method, headers, body, cache: "no-store", signal: upstream.signal,
+      });
+      // HTTP status는 재시도하지 않는다. body를 받은 뒤에도 새 제한을 부과하지 않는다.
+      clearTimeout(timer);
+      if (request.signal.aborted || expired()) {
+        upstream.abort();
+        await response.body?.cancel().catch(() => {});
+        cleanup();
+        return unavailable(request.signal.aborted ? 499 : 504);
+      }
+      let forwardedBody: ReadableStream<Uint8Array> | null = null;
+      if (response.body) {
+        reader = response.body.getReader();
+        const bodyReader = reader;
+        forwardedBody = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const result = await bodyReader.read();
+              if (request.signal.aborted) throw new DOMException("Request cancelled", "AbortError");
+              if (result.done) {
+                controller.close();
+                bodyReader.releaseLock();
+                cleanup();
+              } else controller.enqueue(result.value);
+            } catch {
+              // 일부 body가 이미 전달됐을 수 있어 재시도하거나503 body로 바꾸지 않는다.
+              controller.error(new TypeError("날씨 서버 응답 전송이 중단됐습니다."));
+              await bodyReader.cancel().catch(() => {});
+              bodyReader.releaseLock();
+              cleanup();
+            }
+          },
+          async cancel() {
+            upstream.abort();
+            try { await bodyReader.cancel(); } finally { bodyReader.releaseLock(); cleanup(); }
+          },
+        });
+      } else cleanup();
+      return new Response(forwardedBody, {
+        status: response.status,
+        headers: {
+          "content-type": response.headers.get("content-type") ?? "application/json",
+          "cache-control": "no-store, private",
+          "x-request-id": response.headers.get("x-request-id") ?? "",
+        },
+      });
+    } catch (error) {
+      if (request.signal.aborted || expired()) {
+        upstream.abort();
+        cleanup();
+        return unavailable(request.signal.aborted ? 499 : 504);
+      }
+      const code = transientCode(error);
+      if (recoverLocations && attempt === 1 && code !== null) continue;
+      // Error/cause/URL/header는 기록하지 않는다. 고정 allowlist category만 남긴다.
+      console.warn("weather_proxy_transport_failure", { category: code ?? "unclassified", attempt });
+      cleanup();
+      return unavailable(503);
+    }
+  }
+  cleanup();
+  return unavailable(503);
 }
 
 export const GET = proxy;
