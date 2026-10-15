@@ -177,6 +177,65 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("응답 소비가 멈춘 뒤 caller 취소만으로 reader와 listener를 해제한다", async () => {
+    const client = new AbortController();
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1])); },
+      cancel: cancelled,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
+    const incoming = request("GET", client.signal);
+    const remove = vi.spyOn(incoming.signal, "removeEventListener");
+    const response = await GET(incoming, context());
+    // 한 chunk가 downstream queue를 채워 이후 pull이 없는 상태를 만든다.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(body.locked).toBe(true);
+    client.abort();
+    // response의 소비/cancel 없이 취소 자체가 자원을 해제해야 한다.
+    await vi.waitFor(() => expect(body.locked).toBe(false), { timeout: 200 });
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    void response;
+  });
+
+  it("진행 중 pull과 caller 취소가 겹쳐도 reader를 해제한다", async () => {
+    const client = new AbortController();
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel: cancelled });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
+    const incoming = request("GET", client.signal);
+    const remove = vi.spyOn(incoming.signal, "removeEventListener");
+    const response = await GET(incoming, context());
+    const pending = response.text();
+    const rejected = expect(pending).rejects.toThrow("날씨 서버 응답 전송이 중단됐습니다.");
+    client.abort();
+    await rejected;
+    await vi.waitFor(() => expect(body.locked).toBe(false));
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("downstream 취소와 caller 취소가 겹쳐도 한 번만 upstream을 취소한다", async () => {
+    const client = new AbortController();
+    let finishCancel!: () => void;
+    const cancelled = vi.fn(() => new Promise<void>((resolve) => { finishCancel = resolve; }));
+    const body = new ReadableStream<Uint8Array>({ cancel: cancelled });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
+    const incoming = request("GET", client.signal);
+    const remove = vi.spyOn(incoming.signal, "removeEventListener");
+    const response = await GET(incoming, context());
+    const pending = response.body!.cancel();
+    client.abort();
+    finishCancel();
+    await pending;
+    await vi.waitFor(() => expect(body.locked).toBe(false));
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("headers 이후 caller 취소도 upstream body를 닫는다", async () => {
     const client = new AbortController();
     const cancelled = vi.fn();

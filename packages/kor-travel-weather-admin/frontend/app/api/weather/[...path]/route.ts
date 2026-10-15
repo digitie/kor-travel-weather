@@ -96,8 +96,15 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   };
   const abort = () => {
     upstream.abort();
-    // 헤더 뒤 취소도 upstream body를 회수한다. 이미 오류난 stream의 cancel 예외는 버린다.
-    void reader?.cancel().catch(() => {});
+    // downstream이 더 읽지 않아도 취소 자체가 reader와 listener를 회수한다.
+    const activeReader = reader;
+    if (activeReader) {
+      void activeReader.cancel().catch(() => {}).finally(() => {
+        activeReader.releaseLock();
+        if (reader === activeReader) reader = undefined;
+        cleanup();
+      });
+    } else cleanup();
   };
   request.signal.addEventListener("abort", abort, { once: true });
   if (request.signal.aborted) abort();

@@ -37,7 +37,7 @@ revocation/rate-limit의 fail-closed 계약은 변경하지 않았다.
 
 - 원본a7 소스에서 socket 재시도·최종503·취소3개 회귀를 실행해3FAIL을
   재현했다. 나머지 선택 제외 테스트를 실패 건수에 합산하지 않았다.
-- 수정 후 위치 BFF 회귀24개를 포함한 frontend 전체156개 PASS.
+- 초기 수정 후 위치 BFF 회귀24개를 포함한 frontend 전체156개 PASS.
 - type-check, lint, production build PASS.
 - 재시도 총예산이20초에서 초기화되지 않음, event-loop timer 지연,
   취소와 첫 socket 실패의 경쟁, 대기 중/헤더 뒤 취소, HTTP 오류 보존,
@@ -49,3 +49,16 @@ revocation/rate-limit의 fail-closed 계약은 변경하지 않았다.
 live UI E2E, 두 독립 코드 리뷰 및 PR merge는 별도 후속 단계다.
 기존 운영a7의 E2E 결과를 이 변경의 live 검증으로 사용하지 않는다.
 Python/API DTO 변경이 없어 OpenAPI export 변경은 없다.
+
+
+## 추가 취소 회귀 보강
+
+독립 리뷰에서 body queue가 찬 뒤 소비가 멈추면 caller 취소만으로
+reader 잠금 해제가 끝나지 않는 경로를 발견했다. 추가 소비 없이 취소하는
+회귀를 기존 구현에 실행해1FAIL을 직접 확인했고, 취소 자체가 reader와
+listener를 종결하도록 수정했다. 진행 중 pull 및 downstream/caller의
+동시 취소 회귀도 추가했다. upstream cancel은 한 번이며 자동 재시도는 없다.
+
+최종 위치 BFF 회귀27개와 frontend 전체159개, type-check·lint·production
+build가 통과했다. 최초 리뷰 원문과 실패 결과는 보존하며 이 수정의 독립
+재검토 및 운영 검증은 별도로 수행한다.
