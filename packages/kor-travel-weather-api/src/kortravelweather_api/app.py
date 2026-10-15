@@ -211,7 +211,8 @@ def create_app(
                 observe_metric_error("forward_partitions")
                 logger.warning("forward partition gauge refresh failed", exc_info=True)
         try:
-            payload = metrics_payload() + forward_sample
+            # mmap 병합/정리가 느려져도 생존·일반 API의 이벤트 루프를 막지 않는다.
+            payload = await run_in_threadpool(metrics_payload) + forward_sample
         except Exception:
             logger.exception("Prometheus metrics collection failed")
             return Response(

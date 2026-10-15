@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -59,6 +61,40 @@ def test_metrics_endpoint_is_authenticated_and_not_cached() -> None:
     assert "request-id-must-not-be-a-label" not in scraped.text
     # Scraping itself is deliberately excluded from the HTTP request counter.
     assert 'route="/metrics"' not in scraped.text
+
+
+
+def test_slow_metrics_collection_does_not_block_liveness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """느린 mmap 수집이 동일 API 이벤트 루프의 생존 응답을 막지 않는다."""
+    entered = Event()
+    release = Event()
+    payload = b"weather_test_isolated 1\n"
+
+    def slow_metrics() -> bytes:
+        entered.set()
+        assert release.wait(timeout=5), "테스트 수집기 해제 신호 누락"
+        return payload
+
+    monkeypatch.setattr(sys.modules[create_app.__module__], "metrics_payload", slow_metrics)
+    client, _, metrics_token = _metrics_client()
+    with client, ThreadPoolExecutor(max_workers=2) as executor:
+        scrape = executor.submit(
+            client.get, "/metrics", headers={"authorization": f"Bearer {metrics_token}"}
+        )
+        try:
+            assert entered.wait(timeout=5), "테스트 수집기 미진입"
+            assert not scrape.done()
+            health = executor.submit(client.get, "/health")
+            response = health.result(timeout=0.5)
+            assert response.status_code == 200
+            assert response.json()["status"] == "ok"
+            assert not scrape.done(), "생존 응답 전에 수집이 이미 완료됨"
+        finally:
+            release.set()
+            scraped = scrape.result(timeout=5)
+        assert scraped.status_code == 200
+        assert scraped.content == payload
+        assert scraped.headers["cache-control"] == "no-store, private"
 
 
 def test_metrics_labels_collapse_unregistered_provider_and_dataset() -> None:
