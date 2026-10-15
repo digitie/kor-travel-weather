@@ -7,7 +7,7 @@ import { sanitizeLocalPath } from "@/lib/navigation";
 import {
   adminUsername,
   SESSION_COOKIE,
-  durableSessionRevoked,
+  checkDurableSession,
   sessionSecret,
   verifySessionValue,
 } from "@/lib/session";
@@ -38,7 +38,7 @@ export default async function LoginPage({ searchParams }: { searchParams?: Searc
       const secret = sessionSecret(username, password);
       validSession =
         (await verifySessionValue(session, secret, headerStore, username)) === username &&
-        !(await durableSessionRevoked(session));
+        (await checkDurableSession(session)) === "active";
     } catch {
       // Keep the form available so the login endpoint can report a useful configuration error.
     }
