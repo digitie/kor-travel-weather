@@ -416,6 +416,7 @@ services:
       dockerfile: deploy/Dockerfile.web
       args:
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+        NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
     restart: unless-stopped
     depends_on:
       api:

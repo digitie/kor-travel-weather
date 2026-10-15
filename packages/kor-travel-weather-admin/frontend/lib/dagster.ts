@@ -84,23 +84,27 @@ type RunEvent =
 
 type RunEventsResponse = {
   data?: {
-    runsOrError?: { __typename: string; results?: Array<{ eventConnection?: { events: RunEvent[]; cursor?: string; hasMore?: boolean } }> };
+    runsOrError?: { __typename: string; message?: string; results?: Array<{ eventConnection?: { events: RunEvent[]; cursor?: string; hasMore?: boolean } }> };
   };
+  errors?: Array<{ message?: string }>;
 };
+
+export type DagsterRunFailureDetail = { message: string | null; complete: boolean };
 
 /**
  * POST one named operation to the proxy. The proxy owns the query text and
  * scopes it to this project's code location (lib/dagster-scope.ts), so the
  * browser never sends a GraphQL document of its own.
  */
-function postDagsterOperation(operationName: DagsterOperationName, variables: Record<string, unknown>): Promise<Response> {
+function postDagsterOperation(operationName: DagsterOperationName, variables: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  signal?.throwIfAborted();
   const request: DagsterOperationRequest = { operationName, variables };
   return fetch("/api/dagster/graphql", {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify(request),
     cache: "no-store",
-    signal: AbortSignal.timeout(10_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
   });
 }
 
@@ -108,52 +112,62 @@ function postDagsterOperation(operationName: DagsterOperationName, variables: Re
  * The run/schedule list says a run failed; it does not say why. The actual
  * reason lives in that run's own event log, one GraphQL round trip away, and
  * an operator should not have to open the separate Dagster UI just to read
- * one line of exception text. Best-effort: a run whose event log this cannot
- * fetch still shows its FAILURE badge, just without the detail line.
+ * one line of exception text. 사용자가 선택한 실행만 조회하며 목록 오류와 분리한다.
  */
-async function fetchRunFailureMessage(runId: string): Promise<string | null> {
-  try {
-    let cursor: string | null = null;
-    let lastStepFailure: Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> | undefined;
-    const deadline = Date.now() + 20_000;
-    // 한 page만 메모리에 두고 요청 수도 제한한다. 상세 조회 실패는 목록을 막지 않는다.
-    for (let page = 0; page < 20 && Date.now() < deadline; page += 1) {
-      const response = await postDagsterOperation("WeatherDagsterRunFailure", { runId, cursor });
-      if (!response.ok) return null;
-      const payload = (await response.json()) as RunEventsResponse;
-      const connection = payload.data?.runsOrError?.results?.[0]?.eventConnection;
-      const events = connection?.events ?? [];
-      const runFailure = events.find(
-        (event): event is Extract<RunEvent, { __typename: "RunFailureEvent" }> =>
-          event.__typename === "RunFailureEvent",
-      );
-      if (runFailure) return runFailure.message;
-      // No run-level message (e.g. still CANCELING when read): fall back to the
-      // last step that actually raised, which is more useful than nothing.
-      const stepFailures = events.filter(
-        (event): event is Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> =>
-          event.__typename === "ExecutionStepFailureEvent",
-      );
-      lastStepFailure = stepFailures.at(-1) ?? lastStepFailure;
-      if (!connection?.hasMore || !connection.cursor || connection.cursor === cursor) break;
-      cursor = connection.cursor;
+export async function getDagsterRunFailure(runId: string, signal?: AbortSignal): Promise<DagsterRunFailureDetail> {
+  signal?.throwIfAborted();
+  let cursor: string | null = null;
+  let lastStepFailure: Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> | undefined;
+  const deadline = performance.now() + 20_000;
+  const totalSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000);
+  const message = () => lastStepFailure
+    ? (lastStepFailure.stepKey ? `${jobLabel(lastStepFailure.stepKey)}: ${lastStepFailure.message}` : lastStepFailure.message)
+    : null;
+  // 한 page만 메모리에 두고 요청 수도 제한한다. 상세 조회 실패는 목록을 막지 않는다.
+  for (let page = 0; page < 20; page += 1) {
+    totalSignal.throwIfAborted();
+    if (performance.now() >= deadline) throw new Error("실패 원인 조회 시간이 초과됐습니다.");
+    const response = await postDagsterOperation("WeatherDagsterRunFailure", { runId, cursor }, totalSignal);
+    if (!response.ok) {
+      const body = await readBody<RunEventsResponse>(response);
+      throw new Error(failureMessage(response, body, "실패 원인 조회에 실패했습니다."));
     }
-    if (!lastStepFailure) return null;
-    return lastStepFailure.stepKey
-      ? `${jobLabel(lastStepFailure.stepKey)}: ${lastStepFailure.message}`
-      : lastStepFailure.message;
-  } catch {
-    return null;
+    const payload = (await response.json()) as RunEventsResponse;
+    totalSignal.throwIfAborted();
+    if (performance.now() >= deadline) throw new Error("실패 원인 조회 시간이 초과됐습니다.");
+    if (payload?.errors?.length) throw new Error(payload.errors[0].message ?? "실행 로그 조회 오류입니다.");
+    const runs = payload?.data?.runsOrError;
+    if (runs?.__typename !== "Runs") throw new Error(runs?.message ?? "실행 로그를 읽지 못했습니다.");
+    const connection = runs.results?.[0]?.eventConnection;
+    if (!connection) throw new Error("선택한 실행의 로그를 찾지 못했습니다.");
+    const events = connection.events;
+    const runFailure = events.find(
+      (event): event is Extract<RunEvent, { __typename: "RunFailureEvent" }> =>
+        event.__typename === "RunFailureEvent",
+    );
+    if (runFailure) return { message: runFailure.message, complete: true };
+    // No run-level message (e.g. still CANCELING when read): fall back to the
+    // last step that actually raised, which is more useful than nothing.
+    const stepFailures = events.filter(
+      (event): event is Extract<RunEvent, { __typename: "ExecutionStepFailureEvent" }> =>
+        event.__typename === "ExecutionStepFailureEvent",
+    );
+    lastStepFailure = stepFailures.at(-1) ?? lastStepFailure;
+    if (!connection.hasMore) return { message: message(), complete: true };
+    if (!connection.cursor || connection.cursor === cursor) throw new Error("실행 로그의 다음 페이지를 확인하지 못했습니다.");
+    cursor = connection.cursor;
   }
+  return { message: message(), complete: false };
 }
 
-export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
-  const response = await postDagsterOperation("WeatherDagsterOverview", { limit });
+export async function getDagsterSnapshot(limit = 12, signal?: AbortSignal): Promise<DagsterSnapshot> {
+  const response = await postDagsterOperation("WeatherDagsterOverview", { limit }, signal);
   // A cross-origin POST is refused by the middleware with a plain-text 403, and
   // the Dagster gateway answers 502/504 with HTML. Parsing before checking the
   // status reported those as "unexpected token '교' ... is not valid json",
   // which tells a reader nothing and hides a message that was already clear.
   const body = await readBody<GraphqlResponse>(response);
+  signal?.throwIfAborted();
   if (!response.ok) throw new Error(failureMessage(response, body, "Dagster 연결 실패"));
   const payload = body.data;
   if (!payload) throw new Error(`Dagster 응답을 해석하지 못했습니다 (${response.status})`);
@@ -167,13 +181,6 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
   const runs = payload.data?.runsOrError;
   if (!runs || runs.__typename !== "Runs") throw new Error(runs?.message ?? "Dagster 실행 기록을 읽지 못했습니다.");
   const results = runs.results ?? [];
-  const failureMessages = new Map<string, string | null>(
-    await Promise.all(
-      results
-        .filter((run) => run.status === "FAILURE")
-        .map(async (run) => [run.runId, await fetchRunFailureMessage(run.runId)] as const),
-    ),
-  );
   return {
     checkedAt: new Date().toISOString(),
     repositories: [
@@ -191,7 +198,8 @@ export async function getDagsterSnapshot(limit = 12): Promise<DagsterSnapshot> {
       jobName: run.jobName,
       startTime: run.startTime,
       endTime: run.endTime,
-      errorMessage: failureMessages.get(run.runId) ?? null,
+      // null은 아직 상세 미조회다. UI에서 조회 실패와 구별해 표시한다.
+      errorMessage: null,
       ...(runtimeLimit(run.tags) !== undefined ? { maxRuntimeSeconds: runtimeLimit(run.tags) } : {}),
     })),
   };

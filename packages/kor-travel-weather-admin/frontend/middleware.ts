@@ -3,7 +3,7 @@ import { isAllowedOrigin } from "@/lib/origin";
 import { sanitizeLocalPath } from "@/lib/navigation";
 import {
   adminUsername,
-  durableSessionRevoked,
+  checkDurableSession,
   SESSION_COOKIE,
   sessionSecret,
   verifySessionValue,
@@ -12,6 +12,13 @@ import {
 function unauthorized() {
   return new NextResponse("관리자 UI 인증이 필요합니다.", {
     status: 401,
+  });
+}
+
+function sessionStoreUnavailable() {
+  return new NextResponse("인증 저장소 응답을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.", {
+    status: 503,
+    headers: { "cache-control": "no-store", "retry-after": "5" },
   });
 }
 
@@ -27,12 +34,13 @@ async function redirectAuthenticatedLogin(request: NextRequest) {
   if ((!password && !passwordHash) || !session) return null;
   try {
     const secret = sessionSecret(username, password);
-    if (
-      (await verifySessionValue(session, secret, request, username)) === username &&
-      !(await durableSessionRevoked(session))
-    ) {
-      const nextPath = sanitizeLocalPath(request.nextUrl.searchParams.get("next"));
-      return NextResponse.redirect(new URL(nextPath, request.url));
+    if ((await verifySessionValue(session, secret, request, username)) === username) {
+      const state = await checkDurableSession(session);
+      if (state === "unavailable") return sessionStoreUnavailable();
+      if (state === "active") {
+        const nextPath = sanitizeLocalPath(request.nextUrl.searchParams.get("next"));
+        return NextResponse.redirect(new URL(nextPath, request.url));
+      }
     }
   } catch {
     // The login page remains visible so the API can return a useful 503.
@@ -77,7 +85,9 @@ export async function middleware(request: NextRequest) {
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (session && (await verifySessionValue(session, secret, request, username)) === username) {
-    if (!(await durableSessionRevoked(session))) return NextResponse.next();
+    const state = await checkDurableSession(session);
+    if (state === "active") return NextResponse.next();
+    if (state === "unavailable") return sessionStoreUnavailable();
   }
   // Keep the web surface session-only, matching kor-travel-geo. Basic Auth is
   // reserved for the separately protected Dagster gateway; accepting it here

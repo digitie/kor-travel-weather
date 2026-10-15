@@ -52,16 +52,19 @@ function pruneRevocations(now = Date.now()) {
  * production when the internal API contract is unavailable; development keeps
  * the local-only workflow usable.
  */
-export async function durableSessionRevoked(
+export type DurableSessionState = "active" | "revoked" | "unavailable";
+const DURABLE_AUTH_READ_TIMEOUT_MS = 5000;
+
+export async function checkDurableSession(
   session: string,
   env: Env = process.env,
-): Promise<boolean> {
-  if (env.NODE_ENV !== "production") return false;
+): Promise<DurableSessionState> {
+  if (env.NODE_ENV !== "production") return "active";
   const apiBase = env.WEATHER_API_INTERNAL_URL?.trim();
   const adminToken = env.WEATHER_ADMIN_TOKEN?.trim();
-  if (!apiBase || !adminToken) return true;
+  if (!apiBase || !adminToken) return "unavailable";
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 1000);
+  const timeout = setTimeout(() => controller.abort(), DURABLE_AUTH_READ_TIMEOUT_MS);
   try {
     const response = await fetch(
       `${apiBase.replace(/\/$/, "")}/v1/admin/session-revocations/check`,
@@ -73,22 +76,24 @@ export async function durableSessionRevoked(
         signal: controller.signal,
       },
     );
-    if (!response.ok) return true;
-    const payload = (await response.json()) as { revoked?: unknown };
-    return payload.revoked === true;
+    if (response.status !== 200) return "unavailable";
+    const payload: unknown = await response.json();
+    if (
+      !payload || typeof payload !== "object" || Array.isArray(payload) ||
+      !("revoked" in payload) || typeof payload.revoked !== "boolean"
+    ) return "unavailable";
+    return payload.revoked ? "revoked" : "active";
   } catch {
-    return true;
+    return "unavailable";
   } finally {
     clearTimeout(timeout);
   }
 }
 
 /** Persist a logout marker in the shared backend store. */
-// 로그인 경로의 쓰기 호출(rate-limit failure/success, 세션 폐기)은 행을 쓰고 commit한다.
-// n150처럼 디스크가 바쁜 호스트(대량 적재 중 IO pressure ~90%)에서는 그 commit이 0.5~3.5초
-// 걸려, 750ms/1000ms 상한이 자격증명과 API가 정상인데도 로그인·로그아웃을 503으로 만들었다.
-// 5초로 두되 API에 닿지 못하면 막는 fail-closed는 유지한다. 모든 요청에서 도는 읽기 검사
-// (durableSessionRevoked)는 지연을 늘리지 않도록 1000ms 그대로 둔다.
+// 읽기·쓰기 모두 유한한 5초 예산을 사용한다. CPU가 바쁜 호스트의 일시 지연을
+// 세션 폐기로 해석하지 않으며, 저장소를 확인하지 못하면 접근은 계속 차단한다.
+// 자동 재시도나 권한 허용 캐시는 두지 않는다.
 const DURABLE_AUTH_WRITE_TIMEOUT_MS = 5000;
 
 export async function durableRevokeSession(
@@ -112,7 +117,12 @@ export async function durableRevokeSession(
         signal: controller.signal,
       },
     );
-    return response.ok;
+    if (response.status !== 200) return false;
+    const payload: unknown = await response.json();
+    return Boolean(
+      payload && typeof payload === "object" && !Array.isArray(payload) &&
+      "revoked" in payload && payload.revoked === true,
+    );
   } catch {
     return false;
   } finally {
@@ -183,13 +193,27 @@ async function postDurableLoginRateLimit(
         signal: controller.signal,
       },
     );
-    if (!response.ok) return { available: false };
-    const payload = (await response.json()) as { retry_after?: unknown };
-    const retryAfter =
-      typeof payload.retry_after === "number" && Number.isInteger(payload.retry_after)
-        ? Math.max(1, Math.min(payload.retry_after, 24 * 60 * 60))
-        : null;
-    return { available: true, retryAfter };
+    if (response.status !== 200) return { available: false };
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { available: false };
+    }
+    if (action === "success") {
+      return "cleared" in payload && payload.cleared === true
+        ? { available: true, retryAfter: null }
+        : { available: false };
+    }
+    if (!("allowed" in payload) || typeof payload.allowed !== "boolean" ||
+        !("retry_after" in payload)) return { available: false };
+    if (payload.allowed && payload.retry_after === null) {
+      return { available: true, retryAfter: null };
+    }
+    if (!payload.allowed && typeof payload.retry_after === "number" &&
+        Number.isInteger(payload.retry_after) && payload.retry_after > 0 &&
+        payload.retry_after <= 24 * 60 * 60) {
+      return { available: true, retryAfter: payload.retry_after };
+    }
+    return { available: false };
   } catch {
     return { available: false };
   } finally {
