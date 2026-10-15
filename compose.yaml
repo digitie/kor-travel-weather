@@ -269,7 +269,8 @@ services:
     oom_score_adj: -500
     pids_limit: 2048
     healthcheck:
-      test: ["CMD", "dagster", "api", "grpc-health-check", "-h", "127.0.0.1", "-p", "14106"]
+      # 표준 DagsterApi SERVING만 확인한다. 정의 준비/실행 복구는 별도 계약이다.
+      test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
       interval: 30s
       timeout: 10s
       retries: 5
