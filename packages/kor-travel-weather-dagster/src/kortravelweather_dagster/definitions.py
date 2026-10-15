@@ -19,6 +19,7 @@ from dagster import (
 )
 from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule, reconciliation_sensor
 from kortravelcommon.deadline import DeadlineExceeded
+from kortravelcommon.scheduling import staggered_cron
 
 from kortravelweather.metrics import start_metrics_server
 from kortravelweather.providers import (
@@ -1269,13 +1270,26 @@ hourly_airkorea_weather_schedule = _weather_schedule(
 # sustain -- a sweep that is throttled into taking hours cannot usefully be
 # asked for again sixty minutes later.
 #
-# They still share one tick. They no longer *run* together: the run-group tag
-# limit in deploy/dagster.yaml drains them a few at a time, so they cannot take
-# the concurrency slots KMA, AirKorea and the regional sources need.
+# 동일 분에 아홉 작업의 시작 비용이 몰리지 않도록 3시간 주기 안에서 분산한다.
+# provider 순서나 활성화 여부가 바뀌어도 다른 provider의 phase는 움직이지 않는다.
+# 각 provider의 하루 8회 예약과 run-group 제한·중복 예약 병합은 유지한다.
+_EXTERNAL_PHASE_MINUTES = {
+    "weatherapi": 7,
+    "openweathermap": 27,
+    "open_meteo": 47,
+    "visual_crossing": 67,
+    "tomorrow_io": 87,
+    "weatherbit": 107,
+    "weatherstack": 127,
+    "accuweather": 147,
+    "wttr_in": 167,
+}
 external_weather_schedules = [
     _weather_schedule(
         name=f"three_hourly_{_external_slug(key)}_weather",
-        cron_schedule="15 */3 * * *",
+        cron_schedule=staggered_cron(
+            interval_minutes=180, phase_minutes=_EXTERNAL_PHASE_MINUTES[key]
+        ),
         job=job,
         execution_timezone="Asia/Seoul",
         default_status=DefaultScheduleStatus.RUNNING,
@@ -1296,16 +1310,10 @@ regional_weather_schedule = _weather_schedule(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-# 01:45 KST, the measured low point.  Every partition step needs the fact
-# table to itself for a moment, so the job goes where the fewest ingest
-# transactions are.  Shared Dagster run history 2026-10-04..07: 01:45-02:55 KST
-# averaged 0.3-1.0 concurrent weather runs, and nothing heavy starts until the
-# three-hourly external sweep at 03:15 -- which is where the old 03:20 slot sat
-# (about four concurrent runs; four of its last six runs failed: three lock
-# timeouts and one deadlock).  The hourly
-# ticks around it are short and the job's spaced retries wait them out:
-# AirKorea at 01:35 (p50 1.7 min, so usually done before 01:45) and the
-# 02:00/02:05/02:20 KMA ticks (p50 1.4-6.4 min).
+# 01:45 KST는 기존 실측(2026-10-04..07)의 저부하 시각으로 유지한다.
+# 외부 수집의 phase 분산 후에는 이 시간에도 실행이 시작될 수 있다.
+# retention의 짧은 lock/재시도·다음 실행으로 연기하는 계약을 유지하고,
+# 새 시간표의 실제 부하를 측정한 뒤 필요할 때 별도로 조정한다.
 daily_weather_retention_schedule = _weather_schedule(
     name="daily_weather_retention",
     cron_schedule="45 1 * * *",
