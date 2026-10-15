@@ -46,3 +46,11 @@ Weather의 저장소 조회는 실제 폐기와 timeout/비정상 응답을 같�
 교차 origin 차단을 확인한다. 첫 검사 중 2건은 테스트용 공개 origin 설정 누락으로
 403을 받아 실패했고 fixture를 완성한 뒤 전체 96건을 통과했다.
 최종 후보의 두 독립 수정 후 리뷰·운영 배포·live 재검증을 이어서 기록한다.
+
+
+수정 후 리뷰에서 같은 로그인 rate-limit 응답의 손상된 200을 무제한 허용으로
+취급하는 기존 공백도 확인했다. check/failure는 allowed와 retry_after의 타입·일관성을,
+success는 cleared=true ACK를 확인한다. 읽기·폐기·로그인 제한 모두 응답 계약을
+확인하지 못하면 허용하지 않는다. 이 변경도 실제 API 응답 형식 안에서 수행한다.
+
+rate-limit 보강 뒤 frontend 전체 132 PASS·type-check·lint·production build PASS를 확인했다.

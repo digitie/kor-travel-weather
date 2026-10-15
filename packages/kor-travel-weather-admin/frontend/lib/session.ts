@@ -193,13 +193,27 @@ async function postDurableLoginRateLimit(
         signal: controller.signal,
       },
     );
-    if (!response.ok) return { available: false };
-    const payload = (await response.json()) as { retry_after?: unknown };
-    const retryAfter =
-      typeof payload.retry_after === "number" && Number.isInteger(payload.retry_after)
-        ? Math.max(1, Math.min(payload.retry_after, 24 * 60 * 60))
-        : null;
-    return { available: true, retryAfter };
+    if (response.status !== 200) return { available: false };
+    const payload: unknown = await response.json();
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { available: false };
+    }
+    if (action === "success") {
+      return "cleared" in payload && payload.cleared === true
+        ? { available: true, retryAfter: null }
+        : { available: false };
+    }
+    if (!("allowed" in payload) || typeof payload.allowed !== "boolean" ||
+        !("retry_after" in payload)) return { available: false };
+    if (payload.allowed && payload.retry_after === null) {
+      return { available: true, retryAfter: null };
+    }
+    if (!payload.allowed && typeof payload.retry_after === "number" &&
+        Number.isInteger(payload.retry_after) && payload.retry_after > 0 &&
+        payload.retry_after <= 24 * 60 * 60) {
+      return { available: true, retryAfter: payload.retry_after };
+    }
+    return { available: false };
   } catch {
     return { available: false };
   } finally {
