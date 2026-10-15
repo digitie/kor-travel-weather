@@ -60,6 +60,18 @@ def _record(repo: WeatherRepository, key: str, *, hours_ago: float = 0) -> None:
     )
 
 
+def _grid_record(repo: WeatherRepository, key: str, entity_id: str = "grid:1:1") -> None:
+    repo.record_source(
+        source_record_key=key,
+        provider="p",
+        dataset_key="d",
+        source_entity_type="weather_response",
+        source_entity_id=entity_id,
+        payload={"rows": [key]},
+        fetched_at=kst_now(),
+    )
+
+
 def _fact(source_key: str, *, hour: int, location_id: str = "loc", number: int = 1) -> WeatherValue:
     target = kst_now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=hour)
     return WeatherValue(
@@ -89,13 +101,18 @@ def _pointer(repo: WeatherRepository, *, hour: int = 0) -> str:
         ).scalar_one()
 
 
-def test_ingest_statement_count_does_not_grow_with_the_facts() -> None:
+@pytest.mark.parametrize("grid_source", [False, True])
+def test_ingest_statement_count_does_not_grow_with_the_facts(grid_source: bool) -> None:
     # The old ingest took the location lock (advisory + SELECT FOR UPDATE),
     # the source lock and a primary-key lookup once per fact, then re-read
     # every candidate and updated each pointer with its own UPDATE: thousands
     # of statements for 300 facts.  Now it is a constant handful per batch.
     repo = _repository("loc")
-    _record(repo, "sr-count")
+    if grid_source:
+        # 실제 KMA grid lineage도 같은 anchor를 fact마다 다시 조회하지 않아야 한다.
+        _grid_record(repo, "sr-count")
+    else:
+        _record(repo, "sr-count")
     facts = [_fact("sr-count", hour=hour) for hour in range(300)]
     statements: list[str] = []
 
@@ -111,6 +128,54 @@ def test_ingest_statement_count_does_not_grow_with_the_facts() -> None:
     projection_writes = [s for s in statements if "weather_current_values" in s]
     assert len(projection_writes) == 1
     assert projection_writes[0].lstrip().startswith("INSERT INTO weather_current_values")
+
+
+def test_grid_lineage_checks_each_source_and_rolls_back_the_batch() -> None:
+    repo = _repository("loc")
+    _grid_record(repo, "matching")
+    _grid_record(repo, "different", "grid:2:2")
+    with pytest.raises(ValueError, match="entity가 location과 일치하지"):
+        repo.ingest_batch(
+            values=[_fact("matching", hour=0), _fact("different", hour=1)]
+        )
+    with repo.engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM weather_values")).scalar_one() == 0
+    assert repo.ingest_batch(values=[_fact("matching", hour=0)]) == 1
+    assert repo.ingest_batch(values=[_fact("matching", hour=0)]) == 0
+
+
+def test_grid_lineage_refreshes_after_rollback_in_the_same_session() -> None:
+    repo = _repository("loc")
+    _grid_record(repo, "old-grid")
+    _grid_record(repo, "new-grid", "grid:2:2")
+    with repo._session_factory() as session:
+        repo._ingest_batch_session(session, [], [_fact("old-grid", hour=0)])
+        session.rollback()
+        # 실제 catalog 변경 이후 같은 Session 재사용에도 이전 격자를 참조하면 안 된다.
+        repo.upsert_location(
+            WeatherLocation(
+                location_id="loc", name="loc", latitude=37, longitude=127, nx=2, ny=2
+            )
+        )
+        with pytest.raises(ValueError, match="entity가 location과 일치하지"):
+            repo._ingest_batch_session(session, [], [_fact("old-grid", hour=1)])
+        session.rollback()
+        assert repo._ingest_batch_session(session, [], [_fact("new-grid", hour=1)]) == 1
+        session.commit()
+
+
+def test_grid_lineage_cache_keeps_locations_separate() -> None:
+    repo = _repository("loc", "other")
+    _grid_record(repo, "grid")
+    repo.upsert_location(
+        WeatherLocation(
+            location_id="other", name="other", latitude=37, longitude=127, nx=2, ny=2
+        )
+    )
+    with pytest.raises(ValueError, match="entity가 location과 일치하지"):
+        repo.ingest_batch(
+            values=[_fact("grid", hour=0), _fact("grid", hour=0, location_id="other")]
+        )
 
 
 def test_projection_upsert_keeps_the_newest_revision_whatever_the_arrival_order() -> None:
