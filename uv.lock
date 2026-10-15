@@ -962,6 +962,7 @@ version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "anyio" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -999,6 +1000,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2" },
+    { name = "anyio", specifier = ">=4,<5" },
     { name = "cryptography", specifier = ">=42" },
     { name = "dagster", marker = "extra == 'dagster'", specifier = "==1.13.24" },
     { name = "dagster-postgres", marker = "extra == 'dagster'", specifier = "==0.29.24" },
