@@ -1,0 +1,163 @@
+{
+  "phase": "LOCAL_PG_SAME_INPUT_5000_FACTS_3_PAIRS",
+  "baseline": "388866903ce9b18b4650b709e4cfccb145390169",
+  "source": "7f6b417d392a5c7d32f837625f3a332399dd73f43c6f728bfdac7f2e8e722012",
+  "values": 5000,
+  "sources": 10,
+  "rows": [
+    {
+      "pair": 0,
+      "variant": "baseline",
+      "wall_seconds": 2.3477822029963136,
+      "python_process_cpu_seconds": 1.9489502820000002,
+      "tracemalloc_peak_bytes": 38242670,
+      "fact_select_count": 5,
+      "fact_select_statement_chars": 203050,
+      "result": {
+        "weather_values": {
+          "rows": 5000,
+          "sha256": "327812d770da546358c3e24e7d5de30fca5da83ebdaa0b8811e4a42fa56eae07"
+        },
+        "weather_current_values": {
+          "rows": 5000,
+          "sha256": "7cb681c1c8b42e8e350ea525ca0e0ae2a86299ba8e65d91c85850dc8c023a9e9"
+        },
+        "weather_source_records": {
+          "rows": 10,
+          "sha256": "cf277d716c0ff987c10e5ca1de2186e89980c72aefd73d2bea025f5a81dfccfa"
+        }
+      }
+    },
+    {
+      "pair": 0,
+      "variant": "candidate",
+      "wall_seconds": 1.875820301938802,
+      "python_process_cpu_seconds": 1.5536705149999999,
+      "tracemalloc_peak_bytes": 37686123,
+      "fact_select_count": 0,
+      "fact_select_statement_chars": 0,
+      "result": {
+        "weather_values": {
+          "rows": 5000,
+          "sha256": "327812d770da546358c3e24e7d5de30fca5da83ebdaa0b8811e4a42fa56eae07"
+        },
+        "weather_current_values": {
+          "rows": 5000,
+          "sha256": "7cb681c1c8b42e8e350ea525ca0e0ae2a86299ba8e65d91c85850dc8c023a9e9"
+        },
+        "weather_source_records": {
+          "rows": 10,
+          "sha256": "cf277d716c0ff987c10e5ca1de2186e89980c72aefd73d2bea025f5a81dfccfa"
+        }
+      }
+    },
+    {
+      "pair": 1,
+      "variant": "candidate",
+      "wall_seconds": 1.876953728031367,
+      "python_process_cpu_seconds": 1.566361111,
+      "tracemalloc_peak_bytes": 37683317,
+      "fact_select_count": 0,
+      "fact_select_statement_chars": 0,
+      "result": {
+        "weather_values": {
+          "rows": 5000,
+          "sha256": "327812d770da546358c3e24e7d5de30fca5da83ebdaa0b8811e4a42fa56eae07"
+        },
+        "weather_current_values": {
+          "rows": 5000,
+          "sha256": "7cb681c1c8b42e8e350ea525ca0e0ae2a86299ba8e65d91c85850dc8c023a9e9"
+        },
+        "weather_source_records": {
+          "rows": 10,
+          "sha256": "cf277d716c0ff987c10e5ca1de2186e89980c72aefd73d2bea025f5a81dfccfa"
+        }
+      }
+    },
+    {
+      "pair": 1,
+      "variant": "baseline",
+      "wall_seconds": 2.246000039856881,
+      "python_process_cpu_seconds": 1.876279726,
+      "tracemalloc_peak_bytes": 37797241,
+      "fact_select_count": 5,
+      "fact_select_statement_chars": 203050,
+      "result": {
+        "weather_values": {
+          "rows": 5000,
+          "sha256": "327812d770da546358c3e24e7d5de30fca5da83ebdaa0b8811e4a42fa56eae07"
+        },
+        "weather_current_values": {
+          "rows": 5000,
+          "sha256": "7cb681c1c8b42e8e350ea525ca0e0ae2a86299ba8e65d91c85850dc8c023a9e9"
+        },
+        "weather_source_records": {
+          "rows": 10,
+          "sha256": "cf277d716c0ff987c10e5ca1de2186e89980c72aefd73d2bea025f5a81dfccfa"
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "variant": "baseline",
+      "wall_seconds": 2.2838309588842094,
+      "python_process_cpu_seconds": 1.9113754679999992,
+      "tracemalloc_peak_bytes": 37797836,
+      "fact_select_count": 5,
+      "fact_select_statement_chars": 203050,
+      "result": {
+        "weather_values": {
+          "rows": 5000,
+          "sha256": "327812d770da546358c3e24e7d5de30fca5da83ebdaa0b8811e4a42fa56eae07"
+        },
+        "weather_current_values": {
+          "rows": 5000,
+          "sha256": "7cb681c1c8b42e8e350ea525ca0e0ae2a86299ba8e65d91c85850dc8c023a9e9"
+        },
+        "weather_source_records": {
+          "rows": 10,
+          "sha256": "cf277d716c0ff987c10e5ca1de2186e89980c72aefd73d2bea025f5a81dfccfa"
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "variant": "candidate",
+      "wall_seconds": 2.1167467548511922,
+      "python_process_cpu_seconds": 1.7494668840000003,
+      "tracemalloc_peak_bytes": 37682241,
+      "fact_select_count": 0,
+      "fact_select_statement_chars": 0,
+      "result": {
+        "weather_values": {
+          "rows": 5000,
+          "sha256": "327812d770da546358c3e24e7d5de30fca5da83ebdaa0b8811e4a42fa56eae07"
+        },
+        "weather_current_values": {
+          "rows": 5000,
+          "sha256": "7cb681c1c8b42e8e350ea525ca0e0ae2a86299ba8e65d91c85850dc8c023a9e9"
+        },
+        "weather_source_records": {
+          "rows": 10,
+          "sha256": "cf277d716c0ff987c10e5ca1de2186e89980c72aefd73d2bea025f5a81dfccfa"
+        }
+      }
+    }
+  ],
+  "medians": {
+    "baseline": {
+      "wall_seconds": 2.2838309588842094,
+      "python_process_cpu_seconds": 1.9113754679999992,
+      "tracemalloc_peak_bytes": 37797836
+    },
+    "candidate": {
+      "wall_seconds": 1.876953728031367,
+      "python_process_cpu_seconds": 1.566361111,
+      "tracemalloc_peak_bytes": 37683317
+    }
+  },
+  "all_fact_source_projection_digests_equal": true,
+  "clock": "2026-10-16T08:52:57+09:00",
+  "operating_calls": 0,
+  "notes": "\ub85c\uceec PG \uce21\uc815; \uce21\uc815\ubc94\uc704\ub294 \uc0ac\uc804 \uc0dd\uc131 \uc785\ub825\uc744 \ubc1b\uc740 ingest_batch. RSS/PG CPU/37GB table/\uc2e4\uc6b4\uc601 \uac1c\uc120\uc740 \ubbf8\uce21\uc815."
+}

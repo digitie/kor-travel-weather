@@ -30,9 +30,24 @@ loaded0을 유지한다. PostgreSQL에서 새 source/혼합 배치/동일 배치
 fallback 중복/typed 값 충돌/강제 PK 충돌 rollback을 확인한다. 기존 core와 retention
 검증을 포함한 focused58건이 통과했다.
 
-동일5000facts·10sources의 구 구현/후보3쌍 로컬 측정 및 전체 회귀 결과는 검증 후
-이 문서에 기록한다. SQL 횟수뿐 아니라 source/fact/current projection의 내용 digest,
-Python CPU/wall/tracemalloc peak를 비교한다. 입력 객체 생성은 측정 밖에 둔다.
+동일5000facts·10sources를 자기 UUID 로컬 PG에서 구 구현/후보3쌍 비교했다.
+실행 순서는 구/후, 후/구, 구/후로 번갈았고 입력 시각·객체를 고정했다.
+source/fact/current projection의 내용 digest는6회 모두 같았다.
+
+| 측정 | 구 구현 중앙값 | 후보 중앙값 |
+| --- | ---: | ---: |
+| fact SELECT 수/회 |5|0|
+| Python process CPU |1.911초|1.566초|
+| ingest wall |2.284초|1.877초|
+| tracemalloc peak |37797836B|37683317B|
+
+입력 객체 생성·결과 digest 조회는 측정 밖이다. 메모리 차이는 작으며 입력5000개와
+resolved batch를 보관하는 구조를 바꾸지 않았다. PG CPU/RSS/37GB 실데이터 비용은
+측정하지 않았다. raw6회는 `reviews/evidence/2026-10-16-fresh-source-probes-benchmark.json`에
+보존한다. 초기 측정 준비는 retention 시험이 남긴 DEFAULT row와 새 partition이
+충돌해 중단됐다. 자기 DB만 비운 후 별도 r2 측정을 했고 원 실패 로그는 보존했다.
+
+ruff 및 frontend type-check/140tests도 통과했다. 전체 Python 회귀는 실행 중이다.
 
 ## 남는 문제와 한계
 
