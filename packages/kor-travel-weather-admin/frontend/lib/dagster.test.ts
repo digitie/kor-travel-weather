@@ -5,6 +5,7 @@ import {
   STALLED_RUN_THRESHOLD_SECONDS,
   formatElapsed,
   getDagsterSnapshot,
+  getDagsterRunFailure,
   isStalledRun,
   jobLabel,
   runElapsedSeconds,
@@ -96,12 +97,34 @@ describe("formatElapsed", () => {
 
 describe("getDagsterSnapshot", () => {
   afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
   function jsonResponse(payload: unknown): Response {
     return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
   }
+
+  it("실패6개가 있어도 초기 snapshot은 overview1회만 조회한다", async () => {
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+      const operation = JSON.parse(String(init.body)).operationName;
+      if (operation === "WeatherDagsterOverview") return jsonResponse({ data: {
+        repositoryOrError: { __typename: "Repository", schedules: [], jobs: [], assetNodes: [] },
+        runsOrError: { __typename: "Runs", results: Array.from({ length: 6 }, (_, i) => ({
+          runId: `22222222-2222-2222-2222-${String(i).padStart(12, "0")}`,
+          status: "FAILURE", jobName: "airkorea_weather_job", startTime: 1, endTime: 2,
+        })) },
+      } });
+      return jsonResponse({ data: { runsOrError: { __typename: "Runs", results: [{
+        eventConnection: { events: [{ __typename: "RunFailureEvent", message: "detail" }], hasMore: false },
+      }] } } });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const snapshot = await getDagsterSnapshot();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(snapshot.runs).toHaveLength(6);
+  });
 
   it("sends only named operations, and every one is one the proxy accepts", async () => {
     const failedRunId = "22222222-2222-2222-2222-222222222222";
@@ -128,7 +151,7 @@ describe("getDagsterSnapshot", () => {
 
     const snapshot = await getDagsterSnapshot(12);
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/dagster/graphql", "/api/dagster/graphql"]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/dagster/graphql"]);
     for (const [, init] of fetchMock.mock.calls) {
       const request = JSON.parse(String(init.body));
       expect(request).not.toHaveProperty("query");
@@ -136,7 +159,10 @@ describe("getDagsterSnapshot", () => {
     }
     expect(snapshot.repositories).toHaveLength(1);
     expect(snapshot.repositories[0].locationName).toBe(DAGSTER_LOCATION_NAME);
-    expect(snapshot.runs[0].errorMessage).toBe("boom");
+    expect(snapshot.runs[0].errorMessage).toBeNull();
+    expect(await getDagsterRunFailure(failedRunId)).toEqual({ message: "boom", complete: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(scopedDagsterRequest(JSON.parse(String(fetchMock.mock.calls[1][1].body))).ok).toBe(true);
   });
 
   it("follows bounded log pages without retaining earlier events", async () => {
@@ -149,13 +175,13 @@ describe("getDagsterSnapshot", () => {
         runsOrError: { __typename: "Runs", results: [{ runId: failedRunId, status: "FAILURE" }] },
       } });
       cursors.push(request.variables.cursor);
-      return jsonResponse({ data: { runsOrError: { results: [{ eventConnection:
+      return jsonResponse({ data: { runsOrError: { __typename: "Runs", results: [{ eventConnection:
         request.variables.cursor === null
           ? { events: [{ __typename: "LogMessageEvent" }], cursor: "page-2", hasMore: true }
           : { events: [{ __typename: "RunFailureEvent", message: "late failure" }], hasMore: false },
       }] } } });
     }));
-    expect((await getDagsterSnapshot()).runs[0].errorMessage).toBe("late failure");
+    expect(await getDagsterRunFailure(failedRunId)).toEqual({ message: "late failure", complete: true });
     expect(cursors).toEqual([null, "page-2"]);
     const query = scopedDagsterRequest({ operationName: "WeatherDagsterRunFailure", variables: { runId: failedRunId, cursor: "page-2" } });
     expect(query.ok).toBe(true);
@@ -193,5 +219,78 @@ describe("getDagsterSnapshot", () => {
       ),
     );
     await expect(getDagsterSnapshot()).rejects.toThrow(message);
+  });
+
+  it("미조회와 조회했지만 실패 이벤트 없음은 구분한다", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ data: { runsOrError: {
+      __typename: "Runs", results: [{ eventConnection: { events: [], hasMore: false } }],
+    } } })));
+    expect(await getDagsterRunFailure("22222222-2222-2222-2222-222222222222"))
+      .toEqual({ message: null, complete: true });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("상세 HTTP 실패는 예외이며 빈 상세로 위장하지 않는다", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("unavailable", { status: 503 })));
+    await expect(getDagsterRunFailure("22222222-2222-2222-2222-222222222222")).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("상세 GraphQL 오류와 scoped run 부재는 빈 성공으로 바꾸지 않는다", async () => {
+    for (const payload of [
+      { errors: [{ message: "operation failed" }] },
+      { data: { runsOrError: { __typename: "PythonError", message: "query failed" } } },
+      { data: { runsOrError: { __typename: "Runs", results: [] } } },
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(payload)));
+      await expect(getDagsterRunFailure("22222222-2222-2222-2222-222222222222")).rejects.toThrow();
+    }
+  });
+
+  it("20page 상한에서 incomplete를 표시하고21번째 요청은 만들지 않는다", async () => {
+    let page = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ data: { runsOrError: {
+      __typename: "Runs", results: [{ eventConnection: {
+        events: [{ __typename: "ExecutionStepFailureEvent", stepKey: "krforest_mountain_sync", message: `step-${++page}` }],
+        hasMore: true, cursor: `page-${page}`,
+      } }],
+    } } })));
+    expect(await getDagsterRunFailure("22222222-2222-2222-2222-222222222222"))
+      .toEqual({ message: "산악 날씨 수집: step-20", complete: false });
+    expect(fetch).toHaveBeenCalledTimes(20);
+  });
+
+  it("상세 총20초가 지나면 다른page를 시작하지 않는다", async () => {
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      now += 11_000;
+      return jsonResponse({ data: { runsOrError: { __typename: "Runs", results: [{ eventConnection: {
+        events: [], hasMore: true, cursor: String(now),
+      } }] } } });
+    }));
+    await expect(getDagsterRunFailure("22222222-2222-2222-2222-222222222222")).rejects.toThrow("시간이 초과");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("caller 취소는 overview와 상세 모두 fetch 전에 적용한다", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    vi.stubGlobal("fetch", vi.fn());
+    await expect(getDagsterSnapshot(12, controller.signal)).rejects.toThrow();
+    await expect(getDagsterRunFailure("22222222-2222-2222-2222-222222222222", controller.signal)).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("상세 대기 중 caller 취소를 전달하고 다음page를 조회하지 않는다", async () => {
+    const controller = new AbortController();
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      expect(init.signal.aborted).toBe(false);
+      controller.abort();
+      expect(init.signal.aborted).toBe(true);
+      return jsonResponse({ data: { runsOrError: { __typename: "Runs", results: [{ eventConnection: { events: [], hasMore: true, cursor: "next" } }] } } });
+    }));
+    await expect(getDagsterRunFailure("22222222-2222-2222-2222-222222222222", controller.signal)).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
