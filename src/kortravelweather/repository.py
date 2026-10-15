@@ -1540,9 +1540,12 @@ class WeatherRepository:
 
         One query per thousand facts instead of one ``session.get`` each.  The
         primary key includes ``known_at``, so every probe prunes to the one
-        partition that can hold it.
+        partition that can hold it. 이번 transaction에서 삽입한 source는 FK상
+        기존 fact가 있을 수 없다. 같은 배치 중복은 삽입 단계의 사전에서 검증한다.
         """
-        keys = list(dict.fromkeys((fact.value_id, fact.known_at) for fact in facts))
+        keys = list(
+            dict.fromkeys((fact.value_id, fact.known_at) for fact in facts if fact.replayed)
+        )
         found: dict[tuple[str, datetime | None], WeatherValueRow] = {}
         for offset in range(0, len(keys), 1000):
             rows = session.scalars(
