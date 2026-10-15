@@ -1,0 +1,525 @@
+{
+  "schema_version": 2,
+  "initial_rejected_candidate": {
+    "phase": "AUTHOR_LOCAL_SYNTHETIC_NOT_INDEPENDENT_OR_PRODUCTION",
+    "baseline": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+    "product": "2429c99b2f23d2d75335f36d436108d1a4f8c448",
+    "fixture": {
+      "anchors": 350,
+      "forecast_rows_per_anchor": 40,
+      "facts_per_anchor": 330,
+      "raw_bytes_per_response": 15019,
+      "requests": 350,
+      "http": "mock/no_network",
+      "pacing_seconds": 0,
+      "pacing_override": "fixture_only",
+      "data_clock": "fixed identical UTC clock",
+      "database": "owned UUID local PostgreSQL; prior databases untouched",
+      "batch_values": 5000
+    },
+    "method": {
+      "paired_trials": 3,
+      "execution_order": [
+        "old",
+        "new",
+        "new",
+        "old",
+        "old",
+        "new"
+      ],
+      "separate_process_per_trial": true,
+      "cProfile_enabled": false,
+      "client_cpu": "time.process_time; PostgreSQL server CPU excluded",
+      "wall": "time.perf_counter",
+      "rss": "Linux VmHWM, not PSS",
+      "same_timing_instrumentation": true,
+      "background": "desktop load uncontrolled; own full test suites run after benchmark"
+    },
+    "median": {
+      "old": {
+        "wall_s": 53.25043824873865,
+        "client_cpu_s": 23.011652286,
+        "peak_rss_kib": 167448
+      },
+      "new": {
+        "wall_s": 51.51058772299439,
+        "client_cpu_s": 21.242560726,
+        "peak_rss_kib": 167292
+      }
+    },
+    "trials": [
+      {
+        "trial": 0,
+        "mode": "old",
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "result_sha256": "9341b3a853b8c6bec2603e2138ccaf039069dae36655273c6afd769d79616e0a",
+        "wall_s": 53.25043824873865,
+        "client_cpu_s": 23.011652286,
+        "peak_rss_kib": 167556,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 0,
+        "mode": "new",
+        "revision": "2429c99b2f23d2d75335f36d436108d1a4f8c448",
+        "result_sha256": "c966fcc231a3e00095ec1436713149dcf19bd9989e0f9417fd339e7d5b300c4c",
+        "wall_s": 51.51058772299439,
+        "client_cpu_s": 21.220127078,
+        "peak_rss_kib": 167672,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 1,
+        "mode": "new",
+        "revision": "2429c99b2f23d2d75335f36d436108d1a4f8c448",
+        "result_sha256": "1576294fac9e489ecbd8cb86d383801e83973c05bb5cf17aa72dbb24404baeb3",
+        "wall_s": 52.34434187691659,
+        "client_cpu_s": 21.394527118,
+        "peak_rss_kib": 166812,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 1,
+        "mode": "old",
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "result_sha256": "f589a92a7813fd157e075d3ba35920b6f94cc8db16e4507b33ec9cc43bc26ac6",
+        "wall_s": 54.6176296249032,
+        "client_cpu_s": 23.44786654,
+        "peak_rss_kib": 167448,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 2,
+        "mode": "old",
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "result_sha256": "0182d3e38b3731298356bd675e819de3b51f8548c1a7eaa182d8261ca7369ba6",
+        "wall_s": 52.05222886009142,
+        "client_cpu_s": 22.811929022999998,
+        "peak_rss_kib": 167308,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 2,
+        "mode": "new",
+        "revision": "2429c99b2f23d2d75335f36d436108d1a4f8c448",
+        "result_sha256": "5b0607b0ac74f59dd1e2692c6b6a2693c540b477ba6e7c420cb3bd6302095187",
+        "wall_s": 51.04627740383148,
+        "client_cpu_s": 21.242560726,
+        "peak_rss_kib": 167292,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      }
+    ],
+    "equality": {
+      "fact_digest": true,
+      "source_digest": true,
+      "fact_count": 115500,
+      "source_count": 350,
+      "current_projection_count": 115500,
+      "current_projection_content_digest": "NOT_CAPTURED",
+      "sql_counts": true
+    },
+    "source_proof": {
+      "old": {
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "actual_files_match_git": true,
+        "sha256": {
+          "src/kortravelweather/providers/base.py": "5f37092daefa0385637b302e13a5a3e26a60ebe8d69595abb6aae3258919320a",
+          "src/kortravelweather/repository.py": "b8ae3116cce871cda723521cbdb810b0ed2aa0552a44d49f32a1bc6cd013f513",
+          "packages/kor-travel-weather-dagster/src/kortravelweather_dagster/external_weather.py": "0badf71201537cbe9b807a864d2a39114882b89302ec08588d0d0a5739f2e9eb"
+        }
+      },
+      "new": {
+        "revision": "2429c99b2f23d2d75335f36d436108d1a4f8c448",
+        "actual_files_match_git": true,
+        "sha256": {
+          "src/kortravelweather/providers/base.py": "ff01ffe0ff47ff3399b49c7ffc58219fe5dd705e5266aefbf7c7abc73f13abfa",
+          "src/kortravelweather/repository.py": "b8ae3116cce871cda723521cbdb810b0ed2aa0552a44d49f32a1bc6cd013f513",
+          "packages/kor-travel-weather-dagster/src/kortravelweather_dagster/external_weather.py": "0badf71201537cbe9b807a864d2a39114882b89302ec08588d0d0a5739f2e9eb"
+        }
+      }
+    },
+    "pure_redaction": {
+      "unicode_singletons": 1114112,
+      "random_strings": 100000,
+      "trials": [
+        {
+          "trial": 0,
+          "mode": "old",
+          "wall_s": 3.8090486698783934,
+          "cpu_s": 3.805965168
+        },
+        {
+          "trial": 0,
+          "mode": "new",
+          "wall_s": 1.9544630548916757,
+          "cpu_s": 1.9510859819999995
+        },
+        {
+          "trial": 1,
+          "mode": "new",
+          "wall_s": 1.9652755321003497,
+          "cpu_s": 1.959696975
+        },
+        {
+          "trial": 1,
+          "mode": "old",
+          "wall_s": 3.752726017963141,
+          "cpu_s": 3.7526050059999996
+        },
+        {
+          "trial": 2,
+          "mode": "old",
+          "wall_s": 3.821548435371369,
+          "cpu_s": 3.8213129729999977
+        },
+        {
+          "trial": 2,
+          "mode": "new",
+          "wall_s": 1.9293756843544543,
+          "cpu_s": 1.9292178210000017
+        }
+      ],
+      "limits": "Only redaction; do not extrapolate percentage to pipeline or operating CPU"
+    },
+    "evidence": {
+      "weather-owm-paired-c-20261016.json": "57bc45e47714f77fb08cd0627765a5866ee885ba910e36df46ebca61289029d0",
+      "weather-owm-profile-c-20261016.py": "03aac1d5d6ba3442ea28c1cbfef24b6d289fd4613085a222537e82a556f91b99",
+      "weather-owm-paired-c-20261016.py": "9c5ff123c5d7e73f625418c0a4aa44423874f5d4d6236768952e4b280e6556c4",
+      "weather-owm-profile-baseline-c-20261016.json": "e91a43d123d86d6b32860ca658876324554d9cb2eb76fe1cb338c47b95b010d1",
+      "weather-owm-profile-baseline-source-c-r1-20261016.py": "d3b389adaf05cc27c1693bd43fc616424d46040c5db39d417971a0272446268c",
+      "weather-owm-normalization-pure-c-20261016.py": "01fc7e12546da572ba1960dede9f75d9f38f18606decc0fd63127d6775a5b278",
+      "weather-owm-normalization-pure-c-20261016.json": "89bc7b8e2ef3b8feb8c0518d3d8d3b97975f8f2072208736270715e5f73d7672"
+    },
+    "limitations": [
+      "No Odroid or provider request, ARM or operation effect not measured",
+      "No meaningful memory improvement established",
+      "Original baseline cProfile field names self_cpu_profile_s/cumulative_profile_s were misnamed wall values; original unchanged",
+      "Inclusive SQL/method/flush/commit times overlap; not additive"
+    ]
+  },
+  "initial_public_file_sha256": "f763fedc2ad572e7b3340eff7acdcc0766dba739f204d6f9baf11a3f66358db1",
+  "final_postfix_candidate": {
+    "phase": "AUTHOR_LOCAL_SYNTHETIC_NOT_INDEPENDENT_OR_PRODUCTION",
+    "baseline": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+    "product": "81816d29615325957f0fcfe9971abc422a5c6343",
+    "fixture": {
+      "anchors": 350,
+      "forecast_rows_per_anchor": 40,
+      "facts_per_anchor": 330,
+      "raw_bytes_per_response": 15019,
+      "requests": 350,
+      "http": "mock/no_network",
+      "pacing_seconds": 0,
+      "pacing_override": "fixture_only",
+      "data_clock": "fixed identical UTC clock",
+      "database": "owned UUID local PostgreSQL; prior databases untouched",
+      "batch_values": 5000
+    },
+    "method": {
+      "paired_trials": 3,
+      "execution_order": [
+        "old",
+        "new",
+        "new",
+        "old",
+        "old",
+        "new"
+      ],
+      "separate_process_per_trial": true,
+      "cProfile_enabled": false,
+      "client_cpu": "time.process_time; PostgreSQL server CPU excluded",
+      "wall": "time.perf_counter",
+      "rss": "Linux VmHWM, not PSS",
+      "same_timing_instrumentation": true,
+      "background": "desktop load uncontrolled; own full test suites run after benchmark",
+      "peak_rss_scope": "VmHWM read after untimed streaming digest verification; startup/instrumentation/verification included, not pipeline-only peak"
+    },
+    "median": {
+      "old": {
+        "wall_s": 52.1376369278878,
+        "client_cpu_s": 22.543693645999998,
+        "peak_rss_kib": 167228
+      },
+      "new": {
+        "wall_s": 51.57281042728573,
+        "client_cpu_s": 21.359756597,
+        "peak_rss_kib": 167336
+      }
+    },
+    "reduction_percent": {
+      "client_cpu": 5.2517438694438034,
+      "wall": 1.08333736218863
+    },
+    "trials": [
+      {
+        "trial": 0,
+        "mode": "old",
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "result_sha256": "c23080217948bd76c429c1b8c15407add93e71c027931b4cf1feef1c0c769048",
+        "wall_s": 52.83602482499555,
+        "client_cpu_s": 22.914098437,
+        "peak_rss_kib": 167672,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 0,
+        "mode": "new",
+        "revision": "81816d29615325957f0fcfe9971abc422a5c6343",
+        "result_sha256": "5d8ad9294b161bf866a9f34d08e95db07a7f8abfd2e0f2974e84f4e49d26c14f",
+        "wall_s": 49.95909387804568,
+        "client_cpu_s": 20.544144188,
+        "peak_rss_kib": 167336,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 1,
+        "mode": "new",
+        "revision": "81816d29615325957f0fcfe9971abc422a5c6343",
+        "result_sha256": "2144b318df458960e405a5af5b36bbc29926aba592a9449dbf046256b5f25b66",
+        "wall_s": 53.11075157485902,
+        "client_cpu_s": 21.466766841000002,
+        "peak_rss_kib": 167244,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 1,
+        "mode": "old",
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "result_sha256": "73e8b02e939316acfd0c02ada1dff5e978a2b540dc4e07063591101c9fc91ba4",
+        "wall_s": 52.1376369278878,
+        "client_cpu_s": 22.543693645999998,
+        "peak_rss_kib": 167200,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 2,
+        "mode": "old",
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "result_sha256": "854c0db8da92ff99cf7fe13f7dfa7ccb88151eeeaa77b3ea24b486c626221c8c",
+        "wall_s": 51.16509234486148,
+        "client_cpu_s": 22.386051189,
+        "peak_rss_kib": 167228,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      },
+      {
+        "trial": 2,
+        "mode": "new",
+        "revision": "81816d29615325957f0fcfe9971abc422a5c6343",
+        "result_sha256": "105cf6f13499d8111f4d3c8cfac394fb8bba69aa3e3666263861b09b2437e7d4",
+        "wall_s": 51.57281042728573,
+        "client_cpu_s": 21.359756597,
+        "peak_rss_kib": 167712,
+        "sql_counts": {
+          "set": 46,
+          "advisory": 701,
+          "select": 2015,
+          "run_update": 745,
+          "insert": 351,
+          "source_insert": 43,
+          "fact_insert": 43,
+          "projection_upsert": 131
+        },
+        "values_sha256": "448ac62a668ffcd98aa98775ff79c85631a8d2ac2f481863f86850f372d4220a",
+        "sources_sha256": "0a0761774cae2ad2c991df13957adaaa4e355c360d42b3494c3d298ad4ad7aac"
+      }
+    ],
+    "equality": {
+      "fact_digest": true,
+      "source_digest": true,
+      "fact_count": 115500,
+      "source_count": 350,
+      "current_projection_count": 115500,
+      "current_projection_content_digest": "NOT_CAPTURED",
+      "sql_counts": true,
+      "same_fact_source_digests_as_initial": true
+    },
+    "source_proof": {
+      "old": {
+        "revision": "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+        "actual_files_match_git": true,
+        "sha256": {
+          "src/kortravelweather/providers/base.py": "5f37092daefa0385637b302e13a5a3e26a60ebe8d69595abb6aae3258919320a",
+          "src/kortravelweather/repository.py": "b8ae3116cce871cda723521cbdb810b0ed2aa0552a44d49f32a1bc6cd013f513",
+          "packages/kor-travel-weather-dagster/src/kortravelweather_dagster/external_weather.py": "0badf71201537cbe9b807a864d2a39114882b89302ec08588d0d0a5739f2e9eb"
+        }
+      },
+      "new": {
+        "revision": "81816d29615325957f0fcfe9971abc422a5c6343",
+        "actual_files_match_git": true,
+        "sha256": {
+          "src/kortravelweather/providers/base.py": "27a8723e157afcb836739d78ba2baf771bc84ee30bf3726092a5fd81d89492b9",
+          "src/kortravelweather/repository.py": "b8ae3116cce871cda723521cbdb810b0ed2aa0552a44d49f32a1bc6cd013f513",
+          "packages/kor-travel-weather-dagster/src/kortravelweather_dagster/external_weather.py": "0badf71201537cbe9b807a864d2a39114882b89302ec08588d0d0a5739f2e9eb"
+        }
+      }
+    },
+    "security_regressions": {
+      "finding": "W91-D-P2-01",
+      "initial_red": "4 failed, 2 deselected",
+      "postfix_green": "6 passed",
+      "cases": [
+        "overridden isascii/islower",
+        "custom hash",
+        "custom contains",
+        "custom equality"
+      ],
+      "old_full_python_local": 479,
+      "postfix_targeted_local": 46,
+      "postfix_ci": [
+        {
+          "bucket": "pass",
+          "name": "frontend",
+          "state": "SUCCESS"
+        },
+        {
+          "bucket": "pass",
+          "name": "python",
+          "state": "SUCCESS"
+        }
+      ],
+      "postfix_full_python_count": "NOT_EXTRACTED_FROM_CI",
+      "disposition": "AUTHOR_FIXED_PENDING_TWO_INDEPENDENT_FULL_REVIEWS"
+    },
+    "evidence": {
+      "weather91-postfix-paired-c-20261016.json": "4636c180be02424cc0c2415d7294119035ceb233bd34e52d6a738abfc241e958",
+      "weather91-postfix-profile-c-20261016.py": "de2521194bc8a42eb71d844174158e1744db1f3341c5f40208b9c6591c440437",
+      "weather91-postfix-paired-c-20261016.py": "e53da9bdee6c339cfebeeddc4c894f6b5a234119887eb3e73c10af9c63ab5fdf",
+      "weather91-postfix-subclass-red-c-20261016.log": "8c1e550edd1b1ee6d484ddb9b8acc582ca93b4a4f5a58e82702716c48579539a",
+      "weather91-postfix-subclass-green-c-20261016.log": "f5ad3865f5349fb6a818fe452e3703dfa4f1d9d98923abf0c2b06a9f7d048654",
+      "weather91-postfix-targeted-c-20261016.json": "4592f3a4203ee0f77c6ad048a94f6174e1de0e0d67ad115b3fbb8725ee2dea2d",
+      "weather91-postfix-targeted-c-20261016.log": "0a1543d067e33a1e30170d2b1241f17915a1084075e2b32dd2a815066232980a",
+      "weather91-postfix-ruff-c-20261016.log": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "weather91-postfix-ci-818-c-20261016.json": "28b3a8a2011b45b6ae3e94ab20a89a3cbf3e472fec292ac08a22be713c892f71"
+    },
+    "limitations": [
+      "No Odroid or provider request, ARM or operation effect not measured",
+      "No meaningful memory improvement established",
+      "Original baseline cProfile field names self_cpu_profile_s/cumulative_profile_s were misnamed wall values; original unchanged",
+      "Inclusive SQL/method/flush/commit times overlap; not additive",
+      "Initial 7.7% CPU and 3.3% wall claims apply to 2429 candidate only, not this postfix",
+      "One paired new wall trial slower than old; 3 pairs and uncontrolled background do not establish operating gain"
+    ]
+  },
+  "history": "Original measurements/source/docs preserved in e4d1846 and separate private originals; no raw measurement overwritten"
+}

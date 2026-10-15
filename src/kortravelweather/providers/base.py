@@ -122,7 +122,11 @@ _SECRET_KEYS = {
 
 
 def _normalized_key(key: Any) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).lower().replace("-", "_")
+    text = str(key)
+    # 흔한 JSON 소문자 키는 이미 같은 결과다. 캐시나 payload 공유는 추가하지 않는다.
+    if type(text) is str and text.isascii() and text.islower() and "-" not in text:
+        return text
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", text).lower().replace("-", "_")
 
 
 def redact_secrets(value: Any) -> Any:
