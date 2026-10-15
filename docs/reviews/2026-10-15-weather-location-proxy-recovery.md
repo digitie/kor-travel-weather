@@ -81,3 +81,16 @@ HTTP503/401/403/429는 재시도하지 않는다. 관리 write·다른 GET/expor
 관련33개를 포함한 frontend 전체173개가 통과했다. 공급자 상태의 실제 HTTP 오류
 보존과 두 시도 합계20초 예산도 확인했다. 이 후속 delta의 독립 리뷰·배포와
 UI 재검증은 별도 gate이며, 페이지 이동 취소의 설명 가능성도 추가로 확인한다.
+
+## 빌드 worker 수 제한
+
+동일 로컬 ARM64 빌드에서 BuildKit의 2CPU/2GiB 제한만으로 Next 정적 빌드의
+worker 수가 줄지 않았다. 실제 소유 builder의 Docker process 목록에는
+`jest-worker/processChild.js` 15개가 있었고, Docker stats는 약1.99GiB/2GiB였다.
+컴파일 후 page data 수집 단계에 머물러 소유 로컬 build client를 정상 취소했다.
+이 결과를 성공이나 OOM으로 집계하지 않는다. 운영 서비스는 변경하지 않았다.
+
+설치된 Next의 `getNumberOfWorkers`는 명시한 `experimental.cpus`를 우선한다.
+이를2로 지정해 정적 빌드 worker를 제한한다. API/Dagster의 작업 동시성이나
+운영 HTTP worker 설정을 바꾸는 항목이 아니다. 기존 실패 로그와 source c2e6은
+보존하며, 실제 새 ARM64 빌드의 worker/메모리·완료 여부는 후속 실측으로 확인한다.
