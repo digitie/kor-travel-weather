@@ -1372,7 +1372,10 @@ class WeatherRepository:
 
     @staticmethod
     def _validate_source_lineage(
-        session: Session, source: SourceRecordRow, value: WeatherValue
+        session: Session,
+        source: SourceRecordRow,
+        value: WeatherValue,
+        location_grids: dict[str, tuple[int | None, int | None] | None],
     ) -> None:
         """Ensure a known KMA response entity can serve this location.
 
@@ -1414,8 +1417,14 @@ class WeatherRepository:
                     source_nx, source_ny = int(parts[1]), int(parts[2])
                 except ValueError:
                     source_nx = source_ny = -1
-                location = session.get(WeatherLocationRow, value.location_id)
-                if location is not None and (location.nx, location.ny) == (source_nx, source_ny):
+                if value.location_id not in location_grids:
+                    row = session.execute(
+                        select(WeatherLocationRow.nx, WeatherLocationRow.ny).where(
+                            WeatherLocationRow.location_id == value.location_id
+                        )
+                    ).one_or_none()
+                    location_grids[value.location_id] = None if row is None else (row.nx, row.ny)
+                if location_grids[value.location_id] == (source_nx, source_ny):
                     return
         raise ValueError(
             f"source record entity가 location과 일치하지 않습니다: "
@@ -1428,6 +1437,7 @@ class WeatherRepository:
         value: WeatherValue,
         source_rows: dict[str, SourceRecordRow],
         inserted_sources: set[str],
+        location_grids: dict[str, tuple[int | None, int | None] | None],
     ) -> _ResolvedFact:
         """Validate a fact against its source record and fix its canonical identity.
 
@@ -1479,7 +1489,7 @@ class WeatherRepository:
         elif source.provider != value.provider or source.dataset_key != value.dataset_key:
             raise ValueError(f"immutable source record 충돌: {source_key}")
         else:
-            self._validate_source_lineage(session, source, value)
+            self._validate_source_lineage(session, source, value, location_grids)
             # A response key is stable across re-fetches. Preserve the first
             # source observation clock so a later transport timestamp cannot
             # turn an identical response into a false immutable conflict.
@@ -1768,8 +1778,13 @@ class WeatherRepository:
             facts = [value for value in facts if value.location_id not in skipped]
         expired_window, horizon = self._retention_bounds(session) if facts else (None, None)
         source_rows: dict[str, SourceRecordRow] = {}
+        # 위치 잠금으로 보호된 배치 안에서만 격자 두 값을 재사용한다. ORM row나
+        # session/global 캐시를 보관하지 않아 메모리와 다음 배치의 정합성을 지킨다.
+        location_grids: dict[str, tuple[int | None, int | None] | None] = {}
         resolved = [
-            self._resolve_fact_session(session, value, source_rows, inserted_sources)
+            self._resolve_fact_session(
+                session, value, source_rows, inserted_sources, location_grids
+            )
             for value in facts
         ]
         stored_facts = self._existing_facts_session(session, resolved)
