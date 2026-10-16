@@ -326,3 +326,90 @@ def test_manual_default_guard_runs_before_any_destructive_ddl(monkeypatch, opera
         else:
             default.drop_old_default(None)
     assert calls[0] == "lock" and len(calls) == 2
+
+
+def _protected_fact(clock, *, replayed=False, source="future-source", **changes):
+    item = value(known_at=clock, collected_at=clock, valid_at=NOW + timedelta(days=10), **changes)
+    return _ResolvedFact(item, source, source, item.valid_at, clock, clock, replayed)
+
+
+class ReentrySession:
+    def __init__(self, rows=()):
+        self.rows = rows
+        self.queries = []
+
+    def scalars(self, statement):
+        self.queries.append(str(statement.compile(dialect=postgresql.dialect())))
+        return SimpleNamespace(all=lambda: list(self.rows))
+
+
+@pytest.mark.parametrize(("clock", "replayed", "expected"), [
+    (NOW - timedelta(days=31), False, NOW - timedelta(days=31)),
+    (NOW - timedelta(days=31), True, NOW - timedelta(days=31)),
+    (NOW - timedelta(days=20), False, NOW),
+    (NOW - timedelta(days=20), True, NOW),
+    (NOW - timedelta(days=1), False, NOW - timedelta(days=1)),
+])
+def test_protected_clock_routing_and_original_fields(clock, replayed, expected):
+    fact = _protected_fact(clock, replayed=replayed)
+    session = ReentrySession()
+    floor = NOW - timedelta(days=30)
+    bounds = [(NOW - timedelta(days=7), NOW + timedelta(days=1))]
+    result = WeatherRepository._readmit_retained_short_session(
+        session, [fact], {}, catalog=(floor, bounds), admitted_at=NOW, short_cutoff=CUTOFF,
+    )[0]
+    assert result.known_at == expected
+    assert result.collected_at == clock
+    assert result.value is fact.value
+    assert fact.value.known_at == clock
+    assert result.source_key == fact.source_key
+    # 별도 재입장 처리 후 기존 forgotten 경로가 다시 버리지 않아야 한다.
+    assert WeatherRepository._redate_forgotten_replays_session(
+        session, [result], {}, NOW - timedelta(days=7), short_cutoff=CUTOFF,
+    ) == [result]
+
+
+def test_prior_retained_pair_is_reused_and_checked_not_retimed():
+    clock = NOW - timedelta(days=20)
+    fact = _protected_fact(clock, replayed=True)
+    prior = SimpleNamespace(value_id=fact.value_id, known_at=NOW - timedelta(days=1),
+                            collected_at=clock)
+    session = ReentrySession([prior])
+    stored = {}
+    for admitted_at in [NOW, NOW + timedelta(hours=1)]:
+        result = WeatherRepository._readmit_retained_short_session(
+            session, [fact], stored, catalog=(NOW - timedelta(days=30), []),
+            admitted_at=admitted_at, short_cutoff=CUTOFF,
+        )[0]
+        assert result.known_at == prior.known_at and result.collected_at == clock
+    assert (fact.value_id, prior.known_at) in stored
+    assert all("DISTINCT ON" in sql for sql in session.queries)
+
+
+def test_non_short_clock_and_missing_current_partition_are_not_silently_changed():
+    clock = NOW - timedelta(days=20)
+    other = _protected_fact(clock, provider="other")
+    session = ReentrySession()
+    assert WeatherRepository._readmit_retained_short_session(
+        session, [other], {}, catalog=(NOW - timedelta(days=30), []),
+        admitted_at=NOW, short_cutoff=CUTOFF,
+    ) == [other]
+    assert not session.queries
+    with pytest.raises(ValueError, match="partition"):
+        WeatherRepository._readmit_retained_short_session(
+            session, [_protected_fact(clock)], {}, catalog=(NOW - timedelta(days=30), []),
+            admitted_at=NOW, short_cutoff=CUTOFF,
+        )
+
+
+def test_isolated_old_partition_does_not_hide_another_clock_gap():
+    floor = NOW - timedelta(days=30)
+    old = NOW - timedelta(days=20)
+    gap = NOW - timedelta(days=10)
+    bounds = [(old, old + timedelta(days=1)), (NOW - timedelta(days=3), NOW + timedelta(days=1))]
+    first, second = _protected_fact(old, source="old"), _protected_fact(gap, source="gap")
+    result = WeatherRepository._readmit_retained_short_session(
+        ReentrySession(), [first, second], {}, catalog=(floor, bounds),
+        admitted_at=NOW, short_cutoff=CUTOFF,
+    )
+    assert result[0].known_at == old and result[1].known_at == NOW

@@ -124,12 +124,8 @@ def test_old_known_partition_keeps_future_fact_pointer_and_source(repository, mo
     monkeypatch.setattr(module, "kst_now", lambda: old)
     with repository.engine.begin() as connection:
         ensure_partitions(connection, start=old.date(), end=old.date() + timedelta(days=1))
-    # 기존 floor 이전부터 보유하던 fact를 구성한다. 과거 replay 입장 정책은
-    # 이 전역 retention 보호 회귀의 검증 대상이 아니므로 seed 때만 분리한다.
-    with monkeypatch.context() as seed:
-        seed.setattr(repository, "_retention_bounds", lambda session: (None, None))
-        _record(repository, future)
-        assert repository.upsert_values([future]) == 1
+    _record(repository, future)
+    assert repository.upsert_values([future]) == 1
     name = partition_name(old.date())
     # 실제 old-known fact를 보유한 dated partition의 DETACH/DROP 모두 거절한다.
     monkeypatch.setattr(module, "kst_now", lambda: NOW)
@@ -148,3 +144,74 @@ def test_old_known_partition_keeps_future_fact_pointer_and_source(repository, mo
         assert session.scalar(select(func.count()).select_from(WeatherCurrentValueRow)) == 1
         assert session.scalar(select(func.count()).select_from(SourceRecordRow)) == 1
     assert kst_midnight(old.date()) < NOW - timedelta(days=7)
+
+
+def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, monkeypatch):
+    from kortravelweather.partitions import (
+        DEFAULT_FLOOR_CONSTRAINT,
+        DEFAULT_PARTITION,
+        add_default_floor,
+        dated_partition_bounds,
+        default_partition_floor,
+        validate_default_floor,
+    )
+
+    repository.upsert_location(WeatherLocation(
+        location_id="retention-local", name="재입장시험", latitude=37, longitude=127,
+    ))
+    with repository.engine.begin() as connection:
+        original_floor = default_partition_floor(connection)
+        bounds = dated_partition_bounds(connection)
+        floor = min(lower for lower, _ in bounds) - timedelta(days=30)
+        connection.execute(text(
+            f"ALTER TABLE {DEFAULT_PARTITION} DROP CONSTRAINT IF EXISTS "
+            f"{DEFAULT_FLOOR_CONSTRAINT}"
+        ))
+        add_default_floor(connection, floor)
+        validate_default_floor(connection)
+    monkeypatch.setattr(module, "kst_now", lambda: NOW)
+    try:
+        for label, clock, replay, reentered in (
+            ("first-default", floor - timedelta(days=1), False, False),
+            ("old-replay", floor - timedelta(days=2), True, False),
+            ("first-gap", floor + timedelta(days=10), False, True),
+            ("replay-gap", floor + timedelta(days=11), True, True),
+        ):
+            item = _value(
+                NOW + timedelta(days=100), source_record_key=label, known_at=clock,
+                collected_at=clock, issued_at=clock - timedelta(hours=1), payload={"raw": label},
+            )
+            record = dict(
+                source_record_key=label, provider=item.provider, dataset_key=item.dataset_key,
+                source_entity_type="retention-fixture", source_entity_id=item.location_id,
+                payload={"raw": label}, fetched_at=clock,
+            )
+            if replay:
+                repository.record_source(**record)
+            assert repository.ingest_batch(
+                source_records=[] if replay else [record], values=[item],
+            ) == 1
+            expected = NOW if reentered else clock
+            # 새 wall clock이나 늦은 replay도 동일 pair를 재사용해야 한다.
+            monkeypatch.setattr(module, "kst_now", lambda: NOW + timedelta(hours=1))
+            assert repository.upsert_values([item]) == 0
+            with repository._session_factory() as session:
+                rows = session.scalars(select(WeatherValueRow).where(
+                    WeatherValueRow.source_record_key == label,
+                )).all()
+                assert len(rows) == 1
+                row = rows[0]
+                assert row.known_at == expected and row.collected_at == clock
+                assert row.issued_at == item.issued_at and row.valid_at == item.valid_at
+                assert row.payload == item.payload
+                source = session.get(SourceRecordRow, label)
+                assert source.fetched_at == clock and source.payload == record["payload"]
+            monkeypatch.setattr(module, "kst_now", lambda: NOW)
+    finally:
+        with repository.engine.begin() as connection:
+            connection.execute(text(
+                f"ALTER TABLE {DEFAULT_PARTITION} DROP CONSTRAINT {DEFAULT_FLOOR_CONSTRAINT}"
+            ))
+            if original_floor is not None:
+                add_default_floor(connection, original_floor)
+                validate_default_floor(connection)

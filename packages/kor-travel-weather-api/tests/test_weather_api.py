@@ -903,6 +903,8 @@ def test_revisions_are_deduped_for_public_latest(tmp_path) -> None:
     repo.upsert_location(
         WeatherLocation(location_id="x", name="X", latitude=37, longitude=127, nx=1, ny=1)
     )
+    # latest의 과거 대상 선택과6시간 보존 안에서 revision만 비교한다.
+    now = datetime.now(UTC)
     common = dict(
         location_id="x",
         provider="python-kma-api",
@@ -910,9 +912,9 @@ def test_revisions_are_deduped_for_public_latest(tmp_path) -> None:
         weather_domain="kma_short_forecast",
         forecast_style=ForecastStyle.SHORT,
         metric_key="TMP",
-        issued_at=datetime(2026, 1, 1, tzinfo=UTC),
-        valid_at=datetime(2026, 1, 1, 1, tzinfo=UTC),
-        target_at=datetime(2026, 1, 1, 1, tzinfo=UTC),
+        issued_at=now - timedelta(hours=2),
+        valid_at=now - timedelta(hours=1),
+        target_at=now - timedelta(hours=1),
     )
     first = WeatherValue(
         **common, value_number=Decimal("1"), payload={"v": 1}, source_record_key="sr-1"

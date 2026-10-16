@@ -84,3 +84,16 @@ partition 검사는5초 안에 확정 False일 때만 DDL을 허용한다. timeo
 10분 schedule은 queue 대기·worker 중단·처리량 부족으로 늦어질 수 있어 물리 삭제의
 정확한 wall-clock SLA를 보장하지 않는다. 새 만료 fact 유입 차단과 유한 정리 작업을 함께
 제공하며 초기 backlog는 root가 disk/WAL·계획·배치 결과를 보고 별도 완주해야 한다.
+
+
+## 늦은 미래 응답의 재입장
+
+원 known_at이 DEFAULT 또는 실제 dated partition에 수용되면 그대로 저장한다.
+원 fact가 없고 그 clock이 retention gap으로 수용 불가하면 보존할 단기예보만 실제 재입장
+시각을 known_at으로 사용한다. 기존 source의 earliest retained row가 있으면 그 pair가 우선이며,
+다음 replay도 같은 pair를 재사용한다. source.fetched_at에 원 canonical clock을 남기고
+collected_at/issued_at/valid_at/payload/source_record_key는 바꾸지 않는다.
+배치당 기존 catalog 조회를 공유하고, 원 source를 이미 가진 재입장 후보만 value_id별 최초 row를
+최대1000개씩 조회한다. row별 query, DEFAULT CHECK 변경, 과거 partition ingest DDL은 없다.
+현재 재입장 시각 자체도 수용할 partition이 없으면 schema 오류를 숨기지 않고 실패한다.
+새 예외는 [ADR-072](adr/072-weather-bitemporal.md)와 data-model에 명시했다.

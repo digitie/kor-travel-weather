@@ -44,16 +44,23 @@ def short_forecast_cutoff(now: datetime) -> datetime:
     return now.astimezone(UTC) - timedelta(hours=SHORT_FORECAST_HOURS)
 
 
-def expired_short_forecast(value: WeatherValue, cutoff: datetime) -> bool:
-    """정확한 KMA 단기예보만 검사하며 미래/NULL·다른 원천은 보존한다."""
+def _short_forecast(value: WeatherValue) -> bool:
     return (
         value.provider == "python-kma-api"
         and value.dataset_key == "kma_short_forecast"
         and value.weather_domain == "kma_short_forecast"
         and value.forecast_style.value == "short"
-        and value.valid_at is not None
-        and value.valid_at < cutoff
     )
+
+
+def expired_short_forecast(value: WeatherValue, cutoff: datetime) -> bool:
+    """정확한 KMA 단기예보만 검사하며 미래/NULL·다른 원천은 보존한다."""
+    return _short_forecast(value) and value.valid_at is not None and value.valid_at < cutoff
+
+
+def retained_short_forecast(value: WeatherValue, cutoff: datetime) -> bool:
+    """최근6시간과 미래 대상시각은 잊힌 수신 clock 때문에 제외하지 않는다."""
+    return _short_forecast(value) and value.valid_at is not None and value.valid_at >= cutoff
 
 
 class _ShortForecastRepository(Protocol):
