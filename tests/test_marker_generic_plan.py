@@ -32,6 +32,10 @@ def _statements(location_id="marker-fixture"):
         def get_bind(self):
             return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
+        def execute(self, stmt):
+            statements.append(stmt)
+            return SimpleNamespace(all=lambda: [])
+
         def scalars(self, stmt):
             statements.append(stmt)
             return Result()
