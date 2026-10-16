@@ -3,7 +3,7 @@
 ## 소스 범위와 현재 상태
 
 기준은 Weather97 `1c968f324e204d632a9588794de0e9e07a424d0d`이며
-Common `eaf83e965ee837a277d5d7b370ecde0d4897f1cd`를 정확히 고정한다.
+Common `c48595880aaad4367802ad71af2525a8a5e17c6a`를 정확히 고정한다.
 17개 job의 자산 선택·태그·run timeout, 17개 예약의 cron/KST·상태,
 resource와 기존 `weather_sync_recovery` 앱 DB 정산은 유지한다.
 이 문서는 소스 채택과 후속 운영 조건을 구분한다. 이미지 제작·배포·센서 활성화와

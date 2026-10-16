@@ -86,7 +86,7 @@ services:
       - weather-postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
+      interval: 15s
       timeout: 5s
       retries: 12
 
@@ -137,8 +137,8 @@ services:
     command: ["uvicorn", "kortravelweather_api.app:app", "--host", "0.0.0.0", "--port", "14101"]
     working_dir: /app
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14101/health', timeout=3)"]
-      interval: 10s
+      test: ["CMD", "python", "-I", "-m", "kortravelcommon.http_health", "--port", "14101", "--path", "/health", "--timeout-seconds", "3"]
+      interval: 30s
       timeout: 5s
       retries: 12
 
@@ -271,7 +271,7 @@ services:
     healthcheck:
       # 표준 DagsterApi SERVING만 확인한다. 정의 준비/실행 복구는 별도 계약이다.
       test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       start_period: 30s
@@ -314,7 +314,7 @@ services:
           "-c",
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14102/server_info', timeout=3)",
         ]
-      interval: 15s
+      interval: 45s
       timeout: 5s
       retries: 8
       start_period: 30s
@@ -349,7 +349,7 @@ services:
     mem_swappiness: 10
     healthcheck:
       test: ["CMD", "dagster-daemon", "liveness-check"]
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       start_period: 60s
@@ -407,7 +407,7 @@ services:
       - "127.0.0.1:14104:9090"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9090/-/ready"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 12
 
