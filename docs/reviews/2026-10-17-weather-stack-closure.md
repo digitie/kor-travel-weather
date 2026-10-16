@@ -38,10 +38,11 @@ A의 독립15묶음과 D의276조건은 별도 합성 범위이며 실제 PG 경
 39e 두 CI SUCCESS와86 실제 MERGED(369ee5e5)를 확인했다.
 root는 위 새 A/D87 원문을 모두 직접 읽었으므로 두 source blocker는 해소됐다.
 
-현재87~106의 실제 merge는 순차 실행 대상이다. 완료되지 않은 PR을 이 문서가
-MERGED라고 표시하지 않는다.86→87→…→106 순서로 main retarget/ready/merge commit하며
+현재86~105는 순차 main merge commit으로 실제 MERGED를 확인했다.106은 이 마지막
+운영 기록 HEAD의 CI 확인 후 머지한다. 미완료106을 미리 MERGED라고 표시하지 않는다.86→87→…→106 순서로 main retarget/ready/merge commit하며
 squash/rebase/후속 base branch 조기 삭제를 하지 않는다. 감사의21단계 가상 merge는
 충돌0/최종39e tree exact였으며 실제 최종main에서 제품 tree를 다시 대조한다.
 
-초기 단기예보 삭제·미래 보존 사후 검증과 같은 서비스 집합 idle CPU 측정,
-수집 job 성공·freshness는 별도 운영 범위이며 R25를 이들 증거로 대신하지 않는다.
+초기 단기예보55,987건 삭제·미래 표본 보존·현재 경계 만료0건을 확인했고,
+삭제 뒤R26도36PASS다. [초기 정리 결과](2026-10-17-weather-short-forecast-initial-purge.md)를 연결한다.
+같은 서비스 집합 idle CPU 측정과 수집 job 성공·freshness는 별도 운영 범위다.

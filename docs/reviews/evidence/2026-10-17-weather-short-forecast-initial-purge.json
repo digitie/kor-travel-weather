@@ -1,0 +1,125 @@
+{
+  "source_git": "58230797b1b3c932537b28fc8ca5139e8075c49e",
+  "cutoff": "2026-10-16T10:12:41.557564+00:00",
+  "dry_run": {
+    "status": "dry_run",
+    "matched_in_batches": 100,
+    "pointers_deleted": 0,
+    "facts_deleted": 0
+  },
+  "operations": [
+    {
+      "stage": "commit100",
+      "phase": "PURGE_BUDGET_EXHAUSTED",
+      "status": "budget_exhausted",
+      "batches": 1,
+      "matched_in_batches": 100,
+      "pointers_deleted": 100,
+      "facts_deleted": 100,
+      "remaining": true,
+      "elapsed_seconds": 0.5597859010158572
+    },
+    {
+      "stage": "bulk1",
+      "phase": "PURGE_BUDGET_EXHAUSTED",
+      "status": "budget_exhausted",
+      "batches": 24,
+      "matched_in_batches": 24000,
+      "pointers_deleted": 10579,
+      "facts_deleted": 24000,
+      "remaining": true,
+      "elapsed_seconds": 60.43591559998458
+    },
+    {
+      "stage": "bulk2",
+      "phase": "PURGE_BUDGET_EXHAUSTED",
+      "status": "budget_exhausted",
+      "batches": 25,
+      "matched_in_batches": 25000,
+      "pointers_deleted": 7716,
+      "facts_deleted": 25000,
+      "remaining": true,
+      "elapsed_seconds": 62.2588638580055
+    },
+    {
+      "stage": "bulk3",
+      "phase": "PURGE_COMPLETE",
+      "status": "complete_snapshot",
+      "batches": 7,
+      "matched_in_batches": 6887,
+      "pointers_deleted": 2867,
+      "facts_deleted": 6887,
+      "remaining": false,
+      "elapsed_seconds": 17.877382562001003
+    }
+  ],
+  "facts_deleted_total": 55987,
+  "pointers_deleted_total": 21262,
+  "final_remaining": false,
+  "catalog_unchanged": {
+    "constraints_sha256": "0be667532b399114564ca50a80366235c7dfc5a2f726cfc85919ed1e8f6069a6",
+    "existing_index_count": 99,
+    "existing_indexes_sha256": "2b5bef2ce9b11ee6ec19d77e9b5158f5c9b4bf3f5ad12a56473958cdeefe5f42",
+    "partial_index_count": 11,
+    "partial_index_sha256": "5db20a3866ff5a4401c7f209be03782110dc019debdc6511cb70322b63793648",
+    "tree_sha256": "403040603795d4691ba23ef434e7553b6931a629c42f03499b03364f07525737"
+  },
+  "protected_samples_unchanged": {
+    "category_counts": {
+      "equality": 0,
+      "future": 8,
+      "nonshort": 0,
+      "null": 0
+    },
+    "sample_count": 8,
+    "sample_sha256": "62dd70ea2695bd365d39025b5f8d5c5646877345ff601869ba3dba69640d0161"
+  },
+  "current_cutoff_postverify": {
+    "cutoff": "2026-10-16T10:43:47.750501+00:00",
+    "queries": [
+      {
+        "kind": "expired_count",
+        "result": {
+          "count": 0
+        },
+        "elapsed_s": 0.023325537011260167
+      },
+      {
+        "kind": "boundary_count",
+        "result": {
+          "count": 0
+        },
+        "elapsed_s": 0.012178178003523499
+      }
+    ],
+    "future_sample_count": 8,
+    "active_other_sessions": 0,
+    "schema": [
+      "0020_short_forecast_retention"
+    ],
+    "all_containers_unchanged": true,
+    "database_writes": 0
+  },
+  "storage_before": {
+    "root_free_bytes": 1319178240,
+    "pg_data_free_bytes": 508427636736,
+    "pg_data_total_bytes": 1006980812800,
+    "pg_data_free_inodes": 62502946,
+    "wal_segment_bytes": 1325400064,
+    "wal_segment_count": 79
+  },
+  "storage_after": {
+    "root_free_bytes": 1317937152,
+    "pg_data_free_bytes": 508427304960,
+    "pg_data_total_bytes": 1006980812800,
+    "pg_data_free_inodes": 62502946,
+    "wal_segment_bytes": 1325400064,
+    "wal_segment_count": 79
+  },
+  "limitations": [
+    "future exact-pair sample8, equality/null/nonshort categories0; full source/raw invariant not proven by sample",
+    "WAL segment allocation counts are not WAL bytes generated",
+    "deletion does not immediately shrink filesystem files",
+    "Dagster daemon remains OFF during CPU isolation; schedule definition is not execution proof"
+  ]
+}
