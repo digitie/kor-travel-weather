@@ -23,6 +23,7 @@ from kortravelcommon.deadline import DeadlineExceeded
 from kortravelcommon.scheduling import staggered_cron
 
 from kortravelweather.metrics import start_metrics_server
+from kortravelweather.models import kst_now
 from kortravelweather.providers import (
     PROVIDER_CATALOG,
     ProviderLocation,
@@ -35,6 +36,7 @@ from kortravelweather.providers.krex import KREX_PROVIDER, UpstreamBlocked
 from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
+from kortravelweather.retention import run_short_forecast_retention, short_forecast_cutoff
 from kortravelweather.settings import WeatherSettings
 
 from .airkorea_weather import run_airkorea_weather_sync
@@ -599,6 +601,8 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
     )
     if job_name == "regional_weather_job":
         seconds = 21600
+    if job_name == "weather_short_forecast_retention_job":
+        seconds = 300
     return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1)
 
 
@@ -1058,6 +1062,25 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
     return result
 
 
+@asset(
+    name="weather_short_forecast_retention",
+    required_resource_keys={"weather_repository"},
+    description="단기예보의 지난 대상시각6시간 밖을 유한 batch로 정리한다.",
+)
+def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str, object]:
+    repository = context.resources.weather_repository.create_repository()
+    try:
+        result = run_short_forecast_retention(
+            repository, cutoff=short_forecast_cutoff(kst_now()), dry_run=False,
+        )
+    finally:
+        repository.engine.dispose()
+    context.add_output_metadata(result)
+    if result["status"] != "complete_snapshot":
+        raise Failure(description="단기예보 정리가 유한 예산 안에 완료되지 않았습니다.")
+    return result
+
+
 #: 모든 작업이 같은 asset graph를 사용하도록 자산을 한 번만 선언한다.
 _ASSETS = [
     kma_ultra_short_nowcast_sync,
@@ -1072,6 +1095,7 @@ _ASSETS = [
     krforest_dust_sync,
     krex_restarea_sync,
     weather_retention_purge,
+    weather_short_forecast_retention,
 ]
 
 _unresolved_kma_ultra_short_nowcast_job = define_asset_job(
@@ -1116,6 +1140,11 @@ _unresolved_retention_job = define_asset_job(
     "weather_retention_job",
     selection=[weather_retention_purge],
     tags=_job_tags("weather_retention_job"),
+)
+_unresolved_short_retention_job = define_asset_job(
+    "weather_short_forecast_retention_job",
+    selection=[weather_short_forecast_retention],
+    tags=_job_tags("weather_short_forecast_retention_job"),
 )
 _unresolved_regional_job = define_asset_job(
     "regional_weather_job",
@@ -1179,6 +1208,7 @@ external_weather_jobs = {
     key: _resolve_job(unresolved) for key, unresolved in _unresolved_external_jobs.items()
 }
 weather_retention_job = _resolve_job(_unresolved_retention_job)
+weather_short_forecast_retention_job = _resolve_job(_unresolved_short_retention_job)
 regional_weather_job = _resolve_job(
     _unresolved_regional_job, executor_def=_BOUNDED_MULTIPROCESS_EXECUTOR
 )
@@ -1333,6 +1363,15 @@ daily_weather_retention_schedule = _weather_schedule(
 )
 
 
+short_forecast_retention_schedule = _weather_schedule(
+    name="short_forecast_retention_every_ten_minutes",
+    cron_schedule="*/10 * * * *",
+    job=weather_short_forecast_retention_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+
 _COLLECTION_JOBS = [
     kma_ultra_short_nowcast_job,
     kma_ultra_short_forecast_job,
@@ -1343,6 +1382,7 @@ _COLLECTION_JOBS = [
     *external_weather_jobs.values(),
     regional_weather_job,
     weather_retention_job,
+    weather_short_forecast_retention_job,
 ]
 
 
@@ -1359,6 +1399,7 @@ defs = Definitions(
         *external_weather_schedules,
         regional_weather_schedule,
         daily_weather_retention_schedule,
+        short_forecast_retention_schedule,
     ],
     resources=_resources,
     executor=_BOUNDED_MULTIPROCESS_EXECUTOR,

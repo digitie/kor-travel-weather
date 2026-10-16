@@ -55,6 +55,7 @@ from .partitions import (
     validate_default_floor,
     validate_foreign_keys_into_facts,
 )
+from .retention import SHORT_FORECAST_PREDICATE, short_forecast_cutoff
 
 Log = Callable[[str], None]
 
@@ -554,8 +555,18 @@ def _delete_expired_pointers(engine: Engine, cutoff: datetime, log: Log) -> int:
     deleted = _walk_delete(
         engine,
         table="weather_current_values",
-        predicate="known_at < :cutoff",
-        params={"cutoff": cutoff},
+        predicate=(
+            "known_at < :cutoff AND NOT EXISTS (SELECT 1 FROM weather_values wv "
+            "WHERE wv.value_id = weather_current_values.value_id "
+            "AND wv.known_at = weather_current_values.known_at AND "
+            + SHORT_FORECAST_PREDICATE.replace("provider =", "wv.provider =")
+            .replace("dataset_key =", "wv.dataset_key =")
+            .replace("weather_domain =", "wv.weather_domain =")
+            .replace("forecast_style =", "wv.forecast_style =")
+            .replace("valid_at IS", "wv.valid_at IS")
+            + " AND wv.valid_at >= :short_cutoff)"
+        ),
+        params={"cutoff": cutoff, "short_cutoff": short_forecast_cutoff(kst_now())},
         log=lambda _: None,
         batch_blocks=4096,
         pause_seconds=0,
@@ -586,8 +597,11 @@ def purge_expired_rows(
             deleted = _walk_delete(
                 engine,
                 table=DEFAULT_PARTITION,
-                predicate="known_at < :cutoff",
-                params={"cutoff": cutoff},
+                predicate=(
+                    "known_at < :cutoff AND NOT (" + SHORT_FORECAST_PREDICATE
+                    + " AND valid_at >= :short_cutoff)"
+                ),
+                params={"cutoff": cutoff, "short_cutoff": short_forecast_cutoff(kst_now())},
                 log=log,
                 batch_blocks=batch_blocks,
                 pause_seconds=pause_seconds,
@@ -652,7 +666,10 @@ def swap_default(connection: Connection, floor: datetime) -> None:
     upgrade mid-transaction -- a deadlock with any ingest or API read that
     holds ACCESS SHARE on them and waits for the fact table.
     """
+    from .repository import WeatherRepository
+
     lock_for_partition_ddl(connection, drop_foreign_keys=True)
+    WeatherRepository._preserve_short_forecast_partition(connection, DEFAULT_PARTITION)
     keys = drop_foreign_keys_into_facts(connection)
     connection.execute(text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {DEFAULT_PARTITION}"))
     connection.execute(text(f"ALTER TABLE {DEFAULT_PARTITION} RENAME TO {DETACHED_DEFAULT}"))
@@ -678,7 +695,10 @@ def drop_old_default(connection: Connection) -> bool:
     """Second swap transaction: drop the detached old DEFAULT, if still there."""
     if not detached_default_present(connection):
         return False
+    from .repository import WeatherRepository
+
     lock_for_old_default_drop(connection)
+    WeatherRepository._preserve_short_forecast_partition(connection, DETACHED_DEFAULT)
     drop_detached_partition(connection, DETACHED_DEFAULT)
     return True
 
