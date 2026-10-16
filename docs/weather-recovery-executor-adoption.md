@@ -38,7 +38,8 @@ job으로 확대하지 않는다. 장기 run의 자연 완료 또는 기존 승�
 17개 job mapping을 한 FAILURE page/cursor로 조회한다. 17개 센서를 추가하지 않는다.
 기준 소스에는 인프라 재시도 센서가 없었으며 기존 센서 17개를 교체한 변경이 아니다.
 
-현재 instance 설정은 `run_retries.enabled=true`, `max_retries=0`이다.
+저장소 `deploy/dagster.yaml` 선언은 `run_retries.enabled=true`, `max_retries=0`이다.
+운영 공유 instance의 실제 mounted 설정은 별도로 확인해야 한다.
 각 job의 기존 `RecoveryPolicy.tags()`가 `dagster/max_retries=1`과
 `dagster/retry_on_asset_or_op_failure=false`를 이미 제공한다.
 SDK 1.13.24는 run 태그를 instance 기본 상한보다 우선하므로 인프라 재시도 예산은
@@ -54,7 +55,8 @@ Common은 명시적 infrastructure failure만 처리하며 partial asset/op/plan
 선행 provider 실패, 이미 있는 child·active run, 비멱등 policy를 제외한다.
 앱 DB 정산 센서는 native run을 새로 실행하지 않으므로 역할을 혼동하지 않는다.
 
-**운영 완료 gate:** 새 Common이 설치된 이미지와 17개 실제 태그를 확인하고
+**운영 완료 gate:** 실제 instance의 native retry 설정, 새 Common이 설치된 이미지와
+17개 실제 태그를 확인하고
 `KOR_TRAVEL_WEATHER_INFRA_RETRY_ENABLED=true`를 실제 CS 환경에 반영한다.
 등록·실제 상태·native 소유권·첫 평가를 확인하기 전에는 재시도 채택을 완료했다고
 표시하지 않는다. 기존 동일 목적 센서가 별도로 있다면 중복 RUNNING 상태를 해소한다.
