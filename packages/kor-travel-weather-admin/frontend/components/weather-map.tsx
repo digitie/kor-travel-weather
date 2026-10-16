@@ -354,6 +354,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   useEffect(() => {
     if (!mapLocations.length || mode !== "map") return;
     let cancelled = false;
+    const controller = new AbortController();
     if (markerRefreshRef.current !== refreshToken) {
       markerRefreshRef.current = refreshToken;
       summariesRef.current = {};
@@ -377,7 +378,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           const responses = await Promise.allSettled(
             chunks
               .slice(index, index + MARKER_BATCH_CONCURRENCY)
-              .map((chunk) => getMarkerSummaries(chunk)),
+              .map((chunk) => getMarkerSummaries(chunk, controller.signal)),
           );
           if (cancelled) return;
           for (const response of responses) {
@@ -393,6 +394,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     void loadChunks();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [mapLocations, mode, refreshToken]);
 

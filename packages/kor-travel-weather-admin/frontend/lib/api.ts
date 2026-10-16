@@ -298,10 +298,13 @@ export function getWeatherResolve(
   return request<ResolvedWeather>(`/v1/weather/resolve?${query}`);
 }
 
-export function getMarkerSummaries(locationIds: string[]): Promise<ApiEnvelope<WeatherMarker[]>> {
+export function getMarkerSummaries(
+  locationIds: string[],
+  signal?: AbortSignal,
+): Promise<ApiEnvelope<WeatherMarker[]>> {
   const query = new URLSearchParams();
   for (const locationId of locationIds) query.append("location_id", locationId);
-  return request<WeatherMarker[]>(`/v1/weather/markers?${query.toString()}`);
+  return request<WeatherMarker[]>(`/v1/weather/markers?${query.toString()}`, { signal });
 }
 
 export function getSyncRuns(limit = 50): Promise<ApiEnvelope<SyncRun[]>> {
