@@ -1,0 +1,194 @@
+{
+  "runtime": "WSL Linux Chromium software WebGL",
+  "started_at": "2026-10-16T16:07:34.657Z",
+  "finished_at": "2026-10-16T16:08:26.523Z",
+  "exit_code": 0,
+  "cases": [
+    {
+      "service": "weather",
+      "name": "anonymous-protected-redirect",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "public-login-screen",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "anonymous-monitor-api-denied",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "invalid-login-rejected",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "browser-login-form",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "authenticated-page-and-menu",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/weather",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "weather-markers-live-settle",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/locations",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/datasets",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/sync-runs",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/settings/providers",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "navigate:/admin/dagster",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "dagster-monitor-native-identity",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "default-overview-no-detail-fanout",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "failure-detail-not-fetched-before-selection",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "selected-failure-detail-live",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "history-auxiliary-strict-network",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "dagster-external-links-use-current-plane",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "run-search-empty-and-clear",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "schedule-expand-collapse",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "monitor-fault:http-503",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "monitor-recovery:http-503",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "monitor-fault:network-abort",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "monitor-recovery:network-abort",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "stylesheet-ready",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "viewport:320",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "viewport:375",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "viewport:414",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "viewport:768",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "viewport:1440",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "logout-and-protected-redirect",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "weather-marker-abort-signal-evidence",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "browser-runtime-errors",
+      "status": "PASS"
+    },
+    {
+      "service": "weather",
+      "name": "same-origin-api-responses",
+      "status": "PASS"
+    }
+  ],
+  "counts": {
+    "PASS": 36,
+    "FAIL": 0,
+    "NOT_RUN": 0,
+    "NOT_EXERCISED": 0
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "phase": "RETENTION_JIT_ON_OFF_READONLY_COMPARISON",
+  "cutoff": "2026-10-16T07:27:20.014702+00:00",
+  "database_writes": 0,
+  "ddl": 0,
+  "permanent_config_changes": 0,
+  "index_0020_applied": true,
+  "runs": [
+    {
+      "jit": "on",
+      "wall_s": 0.09407620300771669,
+      "planning_ms": 77.116,
+      "execution_ms": 4.755,
+      "jit_detail": null,
+      "estimated_cost": 83.29,
+      "returned_rows": 1000,
+      "plan_sha256": "3858f6ef908f09d887ff275ba8a6e69083fea70b32db62280799c5177b6a5807"
+    },
+    {
+      "jit": "off",
+      "wall_s": 0.0797066020022612,
+      "planning_ms": 62.59,
+      "execution_ms": 3.614,
+      "jit_detail": null,
+      "estimated_cost": 83.29,
+      "returned_rows": 1000,
+      "plan_sha256": "8c0074f2b4f445699d0646913b4928b666837f2f598e6ec0057de5f2e7099d1d"
+    },
+    {
+      "jit": "on",
+      "wall_s": 0.07751166800153442,
+      "planning_ms": 60.236,
+      "execution_ms": 3.439,
+      "jit_detail": null,
+      "estimated_cost": 83.29,
+      "returned_rows": 1000,
+      "plan_sha256": "8ead850c43fe1314e72c8fc9dc24a04972a4a842be8042b625a2ff9d02c2952a"
+    },
+    {
+      "jit": "off",
+      "wall_s": 0.07977718999609351,
+      "planning_ms": 62.588,
+      "execution_ms": 3.485,
+      "jit_detail": null,
+      "estimated_cost": 83.29,
+      "returned_rows": 1000,
+      "plan_sha256": "e1f6890549ce5350b431012f488e2095dcdc5ec9ac4df207c610e55669210be0"
+    }
+  ],
+  "server": {
+    "server_version": "16.10 (Debian 16.10-1.pgdg12+1)",
+    "jit_above_cost": "100000",
+    "jit_inline_above_cost": "500000",
+    "jit_optimize_above_cost": "500000",
+    "jit_available": true
+  }
+}

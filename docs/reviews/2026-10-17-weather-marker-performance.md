@@ -68,3 +68,14 @@ EXPLAIN ANALYZE 실행시간은 7.189/7.128ms였다.
 
 보존한 JSON과 각 독립 원문은 비밀·DSN·인증자료를 포함하지 않는 명시적 안전 투영이다.
 운영 인덱스·기존 행 삭제 및 최종 머지/배포 결과는 후속 실제 증거로 추가한다.
+
+
+## 실제 배포와 live UI R25
+
+API·Dagster code server·UI의 제품 소스58230797b1b3c932537b28fc8ca5139e8075c49e를 실제 arm64 호스트에 배포했다. API와 code server는 native health healthy/restart0/OOM0이며 90초 점검주기를 유지한다. UI는 원래 native healthcheck가 없어 /login 전체 HTML을 3초 전체예산으로 확인했다. API /version의 git_commit도582다. 기존 컨테이너·이미지·실패 증거는 보관했다. Geo5개 컨테이너의 Config/HostConfig/Mount·PID/startticks·재시작 횟수는 유지했다.
+
+R25는 2026-10-16T16:07:34.657Z~16:08:26.523Z에 기존과 같은36개 케이스를 실행하여36PASS/0FAIL이었다. 제한25초와 batch60/max3/전체692위치는 유지했다. 최종 poll에서 canvas 표시, loading0, pending read0, body task0, document task0이었다. 12개 HTTP200/본문12개/본문오류0이며 692개 요청 identity가 모두 서로 다르고 배치 크기는60×11+32다. 첫 미완 요청의 navigation abort1개와 완료 요청 cleanup signal12개를 구별한다. 마지막 marker body는 첫 정상 요청으로부터22.055초에 수신했다. 이는 지도 전체 대기시간과 같은 지표가 아니다.
+
+로그인·7개 메뉴·Dagster native history/선택 실패 상세·기본 상세 fanout 방지·503/abort 뒤 복구·320/375/414/768/1440px·logout·runtime 오류 검증이 모두 포함된다. 실제375/1440 지도 PNG를 root가 직접 열어 지도와 선택 상세 표시를 확인했다. 이 검증은 domain write를 막은 읽기 중심 UI 검증이며 수집 job 실행 성공이나 whole-host CPU 개선을 증명하지 않는다. 이전 R24의35PASS/1FAIL은 그대로 유지한다.
+
+[36개 결과](evidence/2026-10-17-weather-live-ui-r25.json), [마커 시간·개수](evidence/2026-10-17-weather-live-ui-r25-marker-timing.json)를 공개 안전 투영으로 보관한다. 이 R25는 기존 단기예보 초기 삭제를 실행하기 전 결과다.

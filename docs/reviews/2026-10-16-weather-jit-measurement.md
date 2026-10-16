@@ -28,3 +28,12 @@ JIT 사용 실행에서 59개 함수를 생성했고 생성 비용만 약 0.8초
 PostgreSQL 공식 문서도 JIT가 주로 오래 실행되는 CPU 중심 쿼리에 유리하고,
 짧은 쿼리에서는 생성 비용이 절감 효과를 넘을 수 있다고 설명한다.
 [PostgreSQL 16: When to JIT?](https://www.postgresql.org/docs/16/jit-decision.html)
+
+
+## 2026-10-17 인덱스 설치 후 동일 조건 재측정
+
+0020 부분 인덱스 설치는 단일 transaction COMMITTED로 확인했다. parent/leaf11개가 valid/ready이며 기존99개 인덱스와 FK·partition tree는 유지했다. 이 시점 데이터 삭제는0건이다.
+
+기존과 같은 고정 cutoff 2026-10-16T07:27:20.014702+00:00와 LIMIT1000을 on/off/on/off로 조회했다. 실행시간은 각각4.755/3.614/3.439/3.485ms, planning은77.116/62.590/60.236/62.588ms였다. 전체 관측 wall은94.076/79.707/77.512/79.777ms다. 실행시간만을 전체 응답시간으로 표시하지 않는다.
+
+예상비용은120820.36에서83.29로 낮아졌고 네 실행 모두 JIT detail이 없다. jit_above_cost=100000은 변경하지 않았다. 이 쿼리에 전역 JIT 변경은 필요하지 않다. [안전 실측](evidence/2026-10-17-weather-jit-after-index.json)을 보관한다. 설치 전 실패/비교값은 그대로 유지한다.
