@@ -33,6 +33,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     and_,
+    bindparam,
     case,
     column,
     create_engine,
@@ -49,6 +50,7 @@ from sqlalchemy import (
     update,
     values,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -2604,15 +2606,19 @@ class WeatherRepository:
             # predicate is intentionally repeated inside the lateral query so
             # PostgreSQL can prove the partial marker index predicate even
             # though the metric value is supplied by a VALUES row.
-            requested_locations = values(
-                column("location_id", String), name="marker_locations"
-            ).data([(location_id,) for location_id in location_ids]).alias(
-                "marker_locations"
+            # VALUES.data()는 요청마다 전체 SQL을 다시 컴파일한다. 배열 bind로
+            # 위치 개수와 무관한 구조를 유지해 엔진의 제한된 statement cache를 쓴다.
+            requested_locations = (
+                select(func.unnest(bindparam(
+                    "marker_location_ids", list(location_ids), type_=ARRAY(String)
+                )).label("location_id"))
+                .subquery("marker_locations")
             )
-            requested_metrics = values(
-                column("metric_key", String), name="marker_metrics"
-            ).data([(metric_key,) for metric_key in _MARKER_METRIC_KEYS]).alias(
-                "marker_metrics"
+            requested_metrics = (
+                select(func.unnest(bindparam(
+                    "marker_metric_keys", list(_MARKER_METRIC_KEYS), type_=ARRAY(String)
+                )).label("metric_key"))
+                .subquery("marker_metrics")
             )
 
             # 고정 부분 인덱스 조건은 generic plan에서도 증명할 수 있어야 한다.
@@ -2698,11 +2704,18 @@ class WeatherRepository:
                 if (location_id, metric_key) not in selected
             ]
             if missing_pairs:
-                missing_locations = values(
-                    column("location_id", String),
-                    column("metric_key", String),
-                    name="marker_missing_pairs",
-                ).data(missing_pairs).alias("marker_missing_pairs")
+                # PostgreSQL의 다중 unnest는 같은 인덱스의 두 배열을 한 pair로
+                # 묶는다. 각 pair를 보존하고 위치×metric의 추가 조합은 만들지 않는다.
+                missing_locations = (
+                    func.unnest(
+                        bindparam("marker_missing_locations",
+                                  [pair[0] for pair in missing_pairs], type_=ARRAY(String)),
+                        bindparam("marker_missing_metrics",
+                                  [pair[1] for pair in missing_pairs], type_=ARRAY(String)),
+                    )
+                    .table_valued("location_id", "metric_key")
+                    .render_derived(name="marker_missing_pairs")
+                )
                 fallback_candidates = (
                     select(
                         WeatherValueRow.value_id.label("value_id"),
