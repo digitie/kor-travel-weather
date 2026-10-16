@@ -80,3 +80,40 @@ stage에도 넣는다. 공용 UI에서 HTTP 호출이나 타 앱의 run을 조�
 실패 로그는 Dagster 서버의 1,000개 page 상한에 맞춰 cursor로 조회한다(최대 20 page,
 조회 시작 후 20초 안에 다음 page를 시작하며 요청마다 10초 상한). 원인 조회 실패는
 FAILURE 목록을 유지하고 원인 미확인으로 표시한다.
+
+
+## 공용 gRPC liveness 채택
+
+Common `ad988a5dac252d710d41f9937b6d567c5d3398ae`에는 기존 예약 분산과
+HTTP health 및 gRPC health가 함께 들어 있다. Weather는 이 pin을 root와 독립
+Dagster 패키지에서 같이 사용한다. Docker의 `INSTALL_DAGSTER=1` 경로가 설치하는
+root `dagster` extra에 `kor-travel-common[grpc-health]`를 명시한다. API-only 설치에는
+이 extra를 요구하지 않으며 API HTTP healthcheck는 이번 변경에서 유지한다.
+
+코드서버 Docker healthcheck는 다음의 조회 전용 CLI를 사용한다.
+
+```bash
+python -m kortravelcommon.grpc_health 14106 --check live
+```
+
+이 점검은 loopback의 표준 `DagsterApi` HealthCheck가 SERVING인지 한 번 조회한다.
+Dagster Python package/Weather 정의/provider/DB를 import하거나 수집 run을 실행하지 않는다.
+proxy 환경변수와 gRPC 자동 재시도를 비활성화하며 성공 0/조회 실패 1/인자 오류 2로
+조용히 종료한다. 내부 4초는 모듈 호출 이후의 공유 논리 예산이며 Python 시작 시간의
+4초 보장이 아니다. Docker의 기존 interval30s/timeout10s/retries5/start_period30s를
+그대로 두었다. 높은 부하에서 이 상한이 적절한지는 운영 실측으로 확인해야 한다.
+
+SERVING은 프로세스 응답성만 뜻한다. 정의 load·scheduler tick·worker/DB 준비와
+수집 성공을 보장하지 않는다. Compose의 `service_healthy` 시작 의존성도 이 의미로
+읽어야 한다. 배포 검증에서 별도로 정의 준비가 필요하면 지원 버전 1.13.24/1.13.25에
+한해 `python -m kortravelcommon.grpc_health 14106 --check ready --repository __repository__`
+또는 실제 native workspace/정의 응답을 확인한다. live는 Dagster 버전 검사를 하지 않는다.
+
+복구는 별도 계층이다. 기존 run monitoring·bounded retry·recovery sensor와 부모/자식
+run 소유권·원천 보존 정책은 유지한다. 이 health CLI는 kill/reap/restart/metadata 변경을
+하지 않는다. 저장소 밖 Manager의 기존 health 종료 정책까지 수정·배포된 것으로 해석하지
+않는다. CPU/메모리 개선과 장애 후 실제 복구·UI E2E는 배포 후 별도로 측정한다.
+
+로컬 회귀는 설치된 pin과 grpc-health extra, 가짜 표준 gRPC 서버에서 SERVING/NOT_SERVING,
+단일 RPC·quiet exit·Dagster import 차단·proxy 무시·closed port·인자 오류를 확인한다.
+이것은 실제 공유 plane이나 Odroid의 부하·수집 상태에 대한 검증이 아니다.
