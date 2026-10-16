@@ -12,4 +12,11 @@ Weather99의 복합 fact 키 JOIN과 후보 한도 4를 보존한다. 내부 고
 
 전용 UUID PostgreSQL DB에서 psycopg PREPARE로 3개 쿼리를 각각 force_custom_plan/force_generic_plan 실행해 결과 행 전체가 같은지 확인했다. 각 쿼리의 generic_plans/custom_plans 계수는 1/1이었다. 기존 Weather99 복합 키 회귀를 포함한 선택 검사는 16통과다. 이 작은 fixture의 결과 동등성은 운영 속도 개선 측정과 다르다.
 
-기존 저장소 전체 Python 검사와 frontend 검사는 별도로 수행한다. 운영 적용과 UI 504 해결은 별도 검증 전까지 미검증이다. 실제 API의 prepared statement 선택 여부, 운영 SQL 실행 시간, CPU·RSS 감소는 아직 입증하지 않았다. 고정 조건 이외의 입력을 SQL literal로 바꾸거나 전역 prepared statement를 끄지 않는다.
+전체 Python 검사 548통과(49warnings,601.87초), Ruff 통과, frontend type-check 및189회귀 통과를 확인했다. 운영 적용과 UI 504 해결은 별도 검증 전까지 미검증이다. 실제 API의 prepared statement 선택 여부, 운영 SQL 실행 시간, CPU·RSS 감소는 아직 입증하지 않았다. 고정 조건 이외의 입력을 SQL literal로 바꾸거나 전역 prepared statement를 끄지 않는다.
+
+
+## 동일 대표 입력의 후속 계획 검증
+
+root가 같은 실제 대표60·동일시각으로 새 고정 조건 쿼리3개에 custom/generic EXPLAIN을 각각 수행해6개 모두 성공했다. observed는 cost4268.97/1630.45와 IndexOnlyScan10개, fallback은3003.12/1901.63과 IndexOnlyScan10개를 두 모드 모두 유지했다. alerts는5512.68/5980.63과 IndexScan19/SeqScan1을 두 모드 모두 유지했다. 각 prepared query의 custom/generic 계수는1/1이었다. 기존 generic cost56682/56669/29756에서 발생하던 부분 인덱스 소실이 이 강제 계획 비교에서는 재현되지 않았다.
+
+이 값은 EXPLAIN 추정 비용이며 실행 latency가 아니다. ANALYZE·실제 API pool의 generic 선택·배포 이후504 해결·CPU/RSS 개선은 이 결과로 증명하지 않는다. root 후속 원문 weather100-literal-custom-generic-plans-root-r1-20261016.private.json(SHA de17130dab60aaea2341082bbeffd919765bf2d1a44c22e3f499d58e6bb36c45)과 작성자 로컬 결과를 구분해 기록했다.
