@@ -84,11 +84,12 @@ FAILURE 목록을 유지하고 원인 미확인으로 표시한다.
 
 ## 공용 gRPC liveness 채택
 
-Common `ad988a5dac252d710d41f9937b6d567c5d3398ae`에는 기존 예약 분산과
+Common `c48595880aaad4367802ad71af2525a8a5e17c6a`에는 기존 예약 분산과
 HTTP health 및 gRPC health가 함께 들어 있다. Weather는 이 pin을 root와 독립
 Dagster 패키지에서 같이 사용한다. Docker의 `INSTALL_DAGSTER=1` 경로가 설치하는
 root `dagster` extra에 `kor-travel-common[grpc-health]`를 명시한다. API-only 설치에는
-이 extra를 요구하지 않으며 API HTTP healthcheck는 이번 변경에서 유지한다.
+이 extra를 요구하지 않는다. API HTTP healthcheck와 stdlib cache 준비는
+[별도 도입 문서](../weather-health-bytecode.md)의 경량 CLI를 사용한다.
 
 코드서버 Docker healthcheck는 다음의 조회 전용 CLI를 사용한다.
 
@@ -100,8 +101,8 @@ python -m kortravelcommon.grpc_health 14106 --check live
 Dagster Python package/Weather 정의/provider/DB를 import하거나 수집 run을 실행하지 않는다.
 proxy 환경변수와 gRPC 자동 재시도를 비활성화하며 성공 0/조회 실패 1/인자 오류 2로
 조용히 종료한다. 내부 4초는 모듈 호출 이후의 공유 논리 예산이며 Python 시작 시간의
-4초 보장이 아니다. Docker의 기존 interval30s/timeout10s/retries5/start_period30s를
-그대로 두었다. 높은 부하에서 이 상한이 적절한지는 운영 실측으로 확인해야 한다.
+4초 보장이 아니다. Docker interval은 사용자 요청으로 30s→90s로 조정하고
+timeout10s/retries5/start_period30s는 유지한다. 높은 부하에서 이 상한이 적절한지는 운영 실측으로 확인해야 한다.
 
 SERVING은 프로세스 응답성만 뜻한다. 정의 load·scheduler tick·worker/DB 준비와
 수집 성공을 보장하지 않는다. Compose의 `service_healthy` 시작 의존성도 이 의미로

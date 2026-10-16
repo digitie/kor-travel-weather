@@ -22,7 +22,7 @@ import yaml
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMON_COMMIT = "eaf83e965ee837a277d5d7b370ecde0d4897f1cd"
+COMMON_COMMIT = "c48595880aaad4367802ad71af2525a8a5e17c6a"
 COMMAND = ["python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
 
 # SERVING이 성공하려면 CLI가 Dagster 없이 실행돼야 한다. 예외를 숨긴 경우도 exit1로 실패한다.
@@ -93,7 +93,7 @@ def test_code_server_health_is_liveness_without_changing_monitoring() -> None:
     compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
     check = compose["services"]["dagster-code-server"]["healthcheck"]
     assert check == {
-        "test": ["CMD", *COMMAND], "interval": "30s", "timeout": "10s",
+        "test": ["CMD", *COMMAND], "interval": "90s", "timeout": "10s",
         "retries": 5, "start_period": "30s",
     }
     instance = yaml.safe_load((ROOT / "deploy/dagster.yaml").read_text())
