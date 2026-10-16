@@ -2663,12 +2663,19 @@ class WeatherRepository:
                     )
                 )
 
-            def fetch_candidates(candidate_query: Any) -> list[WeatherValueRow]:
+            def fetch_candidates(candidate_query: Any) -> list[Any]:
                 # 선택한 partition key를 보존해 다른 known_at의 같은 UUID를 읽지 않는다.
                 candidate_keys = candidate_query.subquery("marker_fact_keys")
                 return list(
-                    session.scalars(
-                        select(WeatherValueRow).join(
+                    session.execute(
+                        # 비교에서 버릴 후보의 raw JSON과 전체 ORM은 읽지 않는다.
+                        select(
+                            WeatherValueRow.location_id,
+                            WeatherValueRow.metric_key,
+                            WeatherValueRow.known_at,
+                            WeatherValueRow.source_record_key,
+                            WeatherValueRow.value_id,
+                        ).join(
                             candidate_keys,
                             and_(
                                 WeatherValueRow.value_id == candidate_keys.c.value_id,
@@ -2679,7 +2686,7 @@ class WeatherRepository:
                 )
 
             observed_rows = fetch_candidates(candidate_ids(observed_only=True))
-            selected: dict[tuple[str, str], WeatherValueRow] = {}
+            selected: dict[tuple[str, str], Any] = {}
             for row in observed_rows:
                 pair = (row.location_id, row.metric_key)
                 previous = selected.get(pair)
@@ -2756,7 +2763,44 @@ class WeatherRepository:
                     ):
                         selected[pair] = row
 
-            current_rows = list(selected.values())
+            # 기존 top4 안에서 같은 Python 비교로 고른 승자만 전체 fact로 읽는다.
+            # 두 배열은 같은 위치의 (value_id, known_at)이며 곱집합이 아니다.
+            current_rows = []
+            if selected:
+                selected_keys = list(selected.values())
+                winner_keys = (
+                    func.unnest(
+                        bindparam(
+                            "marker_winner_value_ids",
+                            [row.value_id for row in selected_keys],
+                            type_=ARRAY(String),
+                        ),
+                        bindparam(
+                            "marker_winner_known_ats",
+                            [row.known_at for row in selected_keys],
+                            type_=ARRAY(AwareDateTime()),
+                        ),
+                    )
+                    .table_valued("value_id", "known_at")
+                    .render_derived(name="marker_winner_keys")
+                )
+                winners = session.scalars(
+                    select(WeatherValueRow).join(
+                        winner_keys,
+                        and_(
+                            WeatherValueRow.value_id == winner_keys.c.value_id,
+                            WeatherValueRow.known_at == winner_keys.c.known_at,
+                        ),
+                    )
+                ).all()
+                by_key = {(row.value_id, row.known_at): row for row in winners}
+                # READ COMMITTED의 다음 읽기 전에 retention으로 사라진 fact를
+                # 다른 partition이나 차순위 fact로 대신하지 않는다.
+                current_rows = [
+                    by_key[(row.value_id, row.known_at)]
+                    for row in selected_keys
+                    if (row.value_id, row.known_at) in by_key
+                ]
             alert_station = func.coalesce(
                 WeatherValueRow.payload["stn_id"].as_string(),
                 WeatherValueRow.payload["stnId"].as_string(),
