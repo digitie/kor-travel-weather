@@ -37,6 +37,10 @@ PostgreSQL 16.14의 독립 임시 컨테이너에 65일 partition, 32,500행,
 
 각 3회, PostgreSQL EXPLAIN ANALYZE로 로컬 후보만 측정했다. 같은 시각은
 1개 partition, 다양한 시각은 해당 범위의 65개 partition을 읽었다.
+작은 혼합 fixture의 실제 계획은 Hash Join과 각 partition의 Seq Scan이었다.
+JOIN 자체가 index lookup을 보장하지 않으며, 희소한 시각의 min/max 사이에 있는
+partition도 읽을 수 있다. 큰 운영 테이블에서는 같은 키 분포의 실제 계획·읽기량을
+추가 확인해야 하며, 이 작은 fixture로 대규모 scan 비용 개선을 보장하지 않는다.
 Python traced peak는 SQL 구성과 계측 중의 Python allocation이며 backend RSS와
 같은 지표가 아니다. 클라이언트 wall time에는 compile/tracemalloc 계측도 들어가므로
 서버 실행 시간·운영 지연의 개선율로 해석하지 않는다.
@@ -57,6 +61,9 @@ Python traced peak는 SQL 구성과 계측 중의 Python allocation이며 backen
 운영 PostgreSQL은 별도 3GiB 제한과 별도 관측에서 OOM counter 0이므로 이 로컬
 실패로 운영 OOM이나 전체 장시간 작업의 원인을 단정할 수 없다.
 
+벤치마크의 각 표본과 반환 digest는
+[로컬 계측 원문](reviews/evidence/2026-10-16-replay-fact-lookup-benchmark.json)에 보존한다.
+
 ## 검증
 
 안전한 SQL 형태 모형으로 기존 구현 3 FAIL/1 PASS를 확인했고, 변경 후
@@ -64,11 +71,20 @@ Python traced peak는 SQL 구성과 계측 중의 Python allocation이며 backen
 같은 value_id의 다른 known_at, UTC/KST 동등 시각·일 경계, NULL clock,
 중복·새 source 필터 및 1,000개 chunk를 검사한다.
 
-전체 Python 회귀의 첫 시도는 측정 서버의 max_connections=10 및
+전체 Python 회귀의 초기 시도는 측정 서버의 max_connections=10 및
 statement_timeout=2s 때문에 연결 슬롯과 의도적 lock 대기 시험에 실패하여
-중단했다. 이를 제품 회귀로 판정하거나 PASS로 집계하지 않는다.
-독립 시험 환경에서 전체 검증을 마친 결과를 후속 기록한다.
-frontend type-check와 시험은 통과했다.
+중단했다. 연결 30개 시험도 누적 pool로 슬롯이 소진됐다. 이후 전체 시험용
+1GiB/연결 100개 환경에서는 PGDATA 임시 파일시스템 256MiB가 WAL로 가득 차
+ENOSPC/PANIC으로 중단됐다. Docker OOM은 아니었다. 이 환경 오류와 원문은
+각각 보존하며 제품 회귀 또는 PASS로 집계하지 않는다.
+
+최종 전체 시험은 CPU 1개·메모리 1GiB·shared_buffers 64MB·연결 100개,
+전용 디스크 볼륨의 별도 PostgreSQL에서 실행해 전체 513개가 통과했다
+(전체 command wall 544.12초). 이 환경은 위의 후보 512MiB 벤치마크와 다르다.
+2초 간격 관측에서 observer 포함 client backend 최대 41개였고,
+cgroup 누적 memory.peak 760,709,120B, max/oom/oom_kill counter 0이었다.
+순간 동시 필요량의 정확한 상한이나 제품 pool leak 유무를 증명한 수치는 아니다.
+frontend type-check와 140개 시험, 최종 Ruff도 통과했다.
 
 실제 Odroid의 수집 중 DB 부하, 지도 목록 지연, OWM 장시간 실행 개선은
 아직 미검증이다. 운영 비교에서는 같은 입력의 planning/execution, DB CPU/메모리,
