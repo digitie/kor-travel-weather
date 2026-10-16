@@ -307,6 +307,12 @@ class WeatherValueRow(Base):
         # whole purge transaction, and with it every lock the transaction had
         # taken, for as long as the scan ran.
         Index("ix_weather_values_source_record_key", "source_record_key"),
+        # valid_at 순서로 최대1000개만 고르는 단기예보 정리 전용 부분 인덱스.
+        Index(
+            "ix_weather_values_short_forecast_retention",
+            "valid_at", "known_at", "value_id",
+            postgresql_where=text(SHORT_FORECAST_PREDICATE),
+        ),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",
             name="ck_weather_values_has_value",
