@@ -125,3 +125,21 @@ collected_at/issued_at/valid_at/payload/source_record_key는 바꾸지 않는다
 TEMP partition에서는 기존 Sort→새 Index Scan 계열/no Sort, 동일25개 복합키, 새 leaf 상속,
 downgrade/reapply의 동일 결과를 확인했다. 이 로컬 소표본은 운영 실행시간·CPU/WAL 절감 증거가 아니다.
 최종 통합 전체 시험과 두 독립 source 리뷰, root 운영 설치·초기 정리는 별도 gate다.
+
+## 운영 사전 실측과 JIT
+
+인덱스 적용 전 실제 정리 후보1000개 쿼리는2.92초였고,
+domain 전체 건수 조회는5초 제한으로 취소됐다. 이는 인덱스 설치 전
+읽기 전용 사전값이며 정리 완료나 설치 후 성능 수치가 아니다.
+
+동일 쿼리·고정 cutoff를 PostgreSQL16.10에서 JIT on/off/on/off로 비교하면
+실행1541/747/1735/778ms였다. JIT 컴파일 자체는 약792/845ms였다.
+이 workload에서는 JIT 추가 사용보다 반복 스캔과 정렬을 줄이는 정적
+부분 인덱스를 우선한다. 전역 JIT 설정을 이 기능이 변경하지 않으며,
+실제 인덱스 설치 후 비용·JIT 사용 여부·처리시간을 다시 확인한다.
+JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서는 컴파일
+오버헤드가 더 클 수 있다.
+[PostgreSQL16 공식 설명](https://www.postgresql.org/docs/16/jit-decision.html)
+
+독립 리뷰의 최초 반례·수정·시험 이력은
+[closure](reviews/2026-10-16-weather-shortterm-retention-closure.md)에 보관한다.

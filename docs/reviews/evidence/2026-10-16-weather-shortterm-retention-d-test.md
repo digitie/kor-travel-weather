@@ -1,0 +1,10 @@
+# Weather103 migration 시험 head 후속 독립 closure D
+
+판정 SOURCE_PASS/OPEN P0·P1·P2=0.
+대상08373c27a0eb8f3280386e51f9396695ca56c6b0. parent대비 tests/test_migration.py 한파일18추가/1삭제뿐이고 product/migration/dependency변경0이다. 기존103최종d0a source리뷰824f8cb3c3af7007a9f99781bd3be0caec4989fa20c2293ba5e739bb042b4b8c를계승한다.
+
+원시schema계약의version19기대값을 새정식20으로수정하고, parent부분index 이름/열순서(valid_at,known_at,value_id)/4discriminator와nonnull·4AND/noOR/실제pg_index valid+ready를확인한다. 다른schema계약은삭제하지않는다. 기존19실패를제품migration실패인듯분류하지않고 새시험으로회피하지않는다.
+
+새실제assert구간만AST로추출해metadata·connection대역에실행했다. 정상20/index양성과old19/invalid/notready/잘못된열순서/nonnull누락거절6조건PASS. SQL·SDK·conftest·DB접속0. 실제PG시험이나author/root전체재실행으로세지않는다.
+통합 9f962848cfd8bb016a16ad4421f45067b169ac9e는 b708과대조해이시험파일하나만바뀌었고08373의해당blob과byteexact다. root b708620P1F의oldassert이력과통합6PGPASS는root별도실행범위이며본인PASS에합산하지않는다.
+model safeJSON SHA8c89d5e951be08363ced46aa0c1964d763c5610f080181943be03e15437f0090. peer raw미열람/제품·공유소스수정0/운영0/모든도구terminal.
