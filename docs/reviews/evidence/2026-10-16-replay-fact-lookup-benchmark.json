@@ -1,0 +1,319 @@
+{
+  "measurement_scope": "독립 로컬 합성 PostgreSQL; 운영 효과 미측정",
+  "source_base": "984d50f272f7720a75be240da929302cdae9dc7c",
+  "server_version": "16.14 (Debian 16.14-1.pgdg13+1)",
+  "fixture": {
+    "partitions": 65,
+    "rows": 32500,
+    "payload_body_characters": 192
+  },
+  "limits": {
+    "cpu": 1,
+    "memory_bytes": 536870912,
+    "memory_swap_total_bytes": 536870912,
+    "shared_buffers": "64MB",
+    "max_connections": 10,
+    "default_statement_timeout_ms": 2000
+  },
+  "equivalence": {
+    "same_clock": {
+      "requested_unique": 1000,
+      "returned_rows": 500,
+      "digest_by_variant": {
+        "values_join": "d25529d9b3a0eb915235e55e3719eadf9a3fdc98f0a7ed581c8fe3d9177e0a0d",
+        "same_clock_id_in": "d25529d9b3a0eb915235e55e3719eadf9a3fdc98f0a7ed581c8fe3d9177e0a0d"
+      }
+    },
+    "diverse_clocks": {
+      "requested_unique": 1000,
+      "returned_rows": 1000,
+      "digest_by_variant": {
+        "values_join": "38ed5f90f4010d5655e6c93e7389a9f50c2459c96dab819e84b3aed8cb763dee"
+      }
+    }
+  },
+  "samples": [
+    {
+      "workload": "same_clock",
+      "variant": "values_join",
+      "trial": 0,
+      "sql_bytes": 68362,
+      "bound_parameters": 2002,
+      "client_wall_s": 0.13632317492738366,
+      "client_statement_build_s": 0.09500719327479601,
+      "client_cpu_s": 0.13361092799999996,
+      "python_traced_peak_bytes": 2544608,
+      "process_max_rss_kib": 90512,
+      "server_planning_ms": 0.421,
+      "server_execution_ms": 0.324,
+      "returned_rows": 500,
+      "relation_count": 1,
+      "node_counts": {
+        "Hash Join": 1,
+        "Values Scan": 1,
+        "Hash": 1,
+        "Seq Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "809133d606eeb47e5a78ff1df3eec68467734a4fa2e73cfaff540f76b4b0af29"
+    },
+    {
+      "workload": "same_clock",
+      "variant": "same_clock_id_in",
+      "trial": 0,
+      "sql_bytes": 29135,
+      "bound_parameters": 1001,
+      "client_wall_s": 0.026363858953118324,
+      "client_statement_build_s": 0.009017616976052523,
+      "client_cpu_s": 0.02464264500000002,
+      "python_traced_peak_bytes": 756519,
+      "process_max_rss_kib": 90512,
+      "server_planning_ms": 0.358,
+      "server_execution_ms": 0.119,
+      "returned_rows": 500,
+      "relation_count": 1,
+      "node_counts": {
+        "Seq Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "c4c39216cb62186a64b0e20d1ae21bfc65034ad9cbdf480ef84e87d6a9191ba3"
+    },
+    {
+      "workload": "same_clock",
+      "variant": "same_clock_id_in",
+      "trial": 1,
+      "sql_bytes": 29135,
+      "bound_parameters": 1001,
+      "client_wall_s": 0.025743873789906502,
+      "client_statement_build_s": 0.008437891956418753,
+      "client_cpu_s": 0.02392124799999995,
+      "python_traced_peak_bytes": 756207,
+      "process_max_rss_kib": 90512,
+      "server_planning_ms": 0.389,
+      "server_execution_ms": 0.122,
+      "returned_rows": 500,
+      "relation_count": 1,
+      "node_counts": {
+        "Seq Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "6cb122259a35cde0fc70b6250d66c90a63c61671109ae9bd87f40ce7a4121de5"
+    },
+    {
+      "workload": "same_clock",
+      "variant": "values_join",
+      "trial": 1,
+      "sql_bytes": 68362,
+      "bound_parameters": 2002,
+      "client_wall_s": 0.12797720218077302,
+      "client_statement_build_s": 0.09120510425418615,
+      "client_cpu_s": 0.12558397600000004,
+      "python_traced_peak_bytes": 2515656,
+      "process_max_rss_kib": 90768,
+      "server_planning_ms": 0.29,
+      "server_execution_ms": 0.361,
+      "returned_rows": 500,
+      "relation_count": 1,
+      "node_counts": {
+        "Hash Join": 1,
+        "Values Scan": 1,
+        "Hash": 1,
+        "Seq Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "5c97c368e17ddfe1306be885fca17f5dc340d72d2844b4e5e9d465addcda6286"
+    },
+    {
+      "workload": "same_clock",
+      "variant": "values_join",
+      "trial": 2,
+      "sql_bytes": 68362,
+      "bound_parameters": 2002,
+      "client_wall_s": 0.1260449206456542,
+      "client_statement_build_s": 0.09085183078423142,
+      "client_cpu_s": 0.12376737100000001,
+      "python_traced_peak_bytes": 2404816,
+      "process_max_rss_kib": 91152,
+      "server_planning_ms": 0.288,
+      "server_execution_ms": 0.306,
+      "returned_rows": 500,
+      "relation_count": 1,
+      "node_counts": {
+        "Hash Join": 1,
+        "Values Scan": 1,
+        "Hash": 1,
+        "Seq Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "40ed505a1094ba79bb048c223c5cfb9bd6b686fbafb46d69392122344a648fe6"
+    },
+    {
+      "workload": "same_clock",
+      "variant": "same_clock_id_in",
+      "trial": 2,
+      "sql_bytes": 29135,
+      "bound_parameters": 1001,
+      "client_wall_s": 0.02648146264255047,
+      "client_statement_build_s": 0.008980954997241497,
+      "client_cpu_s": 0.02476738700000003,
+      "python_traced_peak_bytes": 755935,
+      "process_max_rss_kib": 91152,
+      "server_planning_ms": 0.327,
+      "server_execution_ms": 0.12,
+      "returned_rows": 500,
+      "relation_count": 1,
+      "node_counts": {
+        "Seq Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "188f8c0fffb51716098e3bb9c12eeea7f79a07812b9f3409f79b42a7b91cf942"
+    },
+    {
+      "workload": "diverse_clocks",
+      "variant": "values_join",
+      "trial": 0,
+      "sql_bytes": 68362,
+      "bound_parameters": 2002,
+      "client_wall_s": 0.14209071127697825,
+      "client_statement_build_s": 0.0948318438604474,
+      "client_cpu_s": 0.13157810199999997,
+      "python_traced_peak_bytes": 2543160,
+      "process_max_rss_kib": 91536,
+      "server_planning_ms": 1.347,
+      "server_execution_ms": 6.644,
+      "returned_rows": 1000,
+      "relation_count": 65,
+      "node_counts": {
+        "Hash Join": 1,
+        "Append": 1,
+        "Seq Scan": 65,
+        "Hash": 1,
+        "Values Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "405b7827cbe992e3061de5f5ce1aa0d5355e4ccd6e2a4b0e5e9593444e8b2132"
+    },
+    {
+      "workload": "diverse_clocks",
+      "variant": "values_join",
+      "trial": 1,
+      "sql_bytes": 68362,
+      "bound_parameters": 2002,
+      "client_wall_s": 0.14860495692119002,
+      "client_statement_build_s": 0.1029398781247437,
+      "client_cpu_s": 0.13842865000000004,
+      "python_traced_peak_bytes": 2406080,
+      "process_max_rss_kib": 91792,
+      "server_planning_ms": 1.551,
+      "server_execution_ms": 6.083,
+      "returned_rows": 1000,
+      "relation_count": 65,
+      "node_counts": {
+        "Hash Join": 1,
+        "Append": 1,
+        "Seq Scan": 65,
+        "Hash": 1,
+        "Values Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "cf6221a11a046cbd959a484a8412a648674a60fc7c2d9a124c8110777e3ff1e7"
+    },
+    {
+      "workload": "diverse_clocks",
+      "variant": "values_join",
+      "trial": 2,
+      "sql_bytes": 68362,
+      "bound_parameters": 2002,
+      "client_wall_s": 0.13499791314825416,
+      "client_statement_build_s": 0.09080181689932942,
+      "client_cpu_s": 0.12432829699999992,
+      "python_traced_peak_bytes": 2403216,
+      "process_max_rss_kib": 91792,
+      "server_planning_ms": 1.285,
+      "server_execution_ms": 6.612,
+      "returned_rows": 1000,
+      "relation_count": 65,
+      "node_counts": {
+        "Hash Join": 1,
+        "Append": 1,
+        "Seq Scan": 65,
+        "Hash": 1,
+        "Values Scan": 1
+      },
+      "jit_in_plan": false,
+      "plan_sha256": "cf42874b1564c93c9abf6218a4ae21e230585d648e8cb9b4c288e6acb7715b3d"
+    }
+  ],
+  "backend_samples": [
+    {
+      "workload": "same_clock",
+      "variant": "values_join",
+      "rows": 500,
+      "client_wall_including_stats_s": 0.07409274904057384,
+      "client_cpu_s": 0.030018237000000003,
+      "backend_before": {
+        "cpu_ticks": 0,
+        "rss_kib": 16036,
+        "high_water_rss_kib": 16036,
+        "start_ticks": 278336855
+      },
+      "backend_after": {
+        "cpu_ticks": 1,
+        "rss_kib": 20616,
+        "high_water_rss_kib": 20824,
+        "start_ticks": 278336855
+      },
+      "backend_cpu_ticks_delta": 1
+    },
+    {
+      "workload": "same_clock",
+      "variant": "same_clock_id_in",
+      "rows": 500,
+      "client_wall_including_stats_s": 0.039502381812781096,
+      "client_cpu_s": 0.005783545000000001,
+      "backend_before": {
+        "cpu_ticks": 1,
+        "rss_kib": 20616,
+        "high_water_rss_kib": 20824,
+        "start_ticks": 278336855
+      },
+      "backend_after": {
+        "cpu_ticks": 1,
+        "rss_kib": 20004,
+        "high_water_rss_kib": 20824,
+        "start_ticks": 278336855
+      },
+      "backend_cpu_ticks_delta": 0
+    },
+    {
+      "workload": "diverse_clocks",
+      "variant": "values_join",
+      "rows": 1000,
+      "client_wall_including_stats_s": 0.07671166909858584,
+      "client_cpu_s": 0.02676292400000002,
+      "backend_before": {
+        "cpu_ticks": 1,
+        "rss_kib": 20004,
+        "high_water_rss_kib": 20824,
+        "start_ticks": 278336855
+      },
+      "backend_after": {
+        "cpu_ticks": 2,
+        "rss_kib": 35168,
+        "high_water_rss_kib": 35168,
+        "start_ticks": 278336855
+      },
+      "backend_cpu_ticks_delta": 1
+    }
+  ],
+  "backend_clock_ticks_per_second": 100,
+  "cgroup_memory_peak_bytes": 211529728,
+  "memory_events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+  "memory_limits_note": "Backend high-water is cumulative for one connection, sampling is before/after, not per-query peak allocation. CPU tick resolution may yield zero; startup/fixture memory included in cgroup peak.",
+  "old_dangerous_query_repeated": false,
+  "production_calls": 0,
+  "private_measurement_sha256": {
+    "weather96-pair-lookup-benchmark-c-r2-20261016.private.json": "579d3bcb5a69eaec53149d473211fc5fbf5827f2af13862594538e28470ad5d1",
+    "weather96-candidate-backend-c-r3-20261016.private.json": "9d98ff65f9fb5d08f19054d8d0b8bd1164a68e78c96e57a63f5db7c402e95427"
+  }
+}
