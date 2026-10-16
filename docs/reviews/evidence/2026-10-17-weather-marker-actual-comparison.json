@@ -1,0 +1,146 @@
+{
+  "phase": "READONLY_MARKER_PROFILE_TERMINAL_ALL_CONTAINERS_UNCHANGED",
+  "source_base": "b7082e8d63763653c3a791649d81c69d4875001d",
+  "candidate_commit": "049488fb9453e7c7648023b3478da9a48ea4cf7d",
+  "location_count": 60,
+  "database_writes": 0,
+  "ddl": 0,
+  "runs": [
+    {
+      "mode": "old",
+      "wall_ms": 3264.8040530038998,
+      "cpu_ms": 2760.789818000001,
+      "fact_count": 170,
+      "body_bytes": 142144,
+      "body_sha256": "ef4df47f1b6ed9a619b21fe58f73abf3a87ec66623c61a98348edce5bbdb9fd7",
+      "raw_values_sha256": "ad77e712192f40d0cbc124bf1bce8b23e59b870ff5854e1ef6488896573f0eca",
+      "sql": [
+        {
+          "ms": 20.616944995708764,
+          "rows": 60,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 171.54778199619614,
+          "rows": 288,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 103.24602399487048,
+          "rows": 136,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 234.07066002255306,
+          "rows": 1380,
+          "statement_kind": "SELECT"
+        }
+      ]
+    },
+    {
+      "mode": "candidate",
+      "wall_ms": 2564.743841008749,
+      "cpu_ms": 2139.2702870000003,
+      "fact_count": 170,
+      "body_bytes": 142144,
+      "body_sha256": "ef4df47f1b6ed9a619b21fe58f73abf3a87ec66623c61a98348edce5bbdb9fd7",
+      "raw_values_sha256": "ad77e712192f40d0cbc124bf1bce8b23e59b870ff5854e1ef6488896573f0eca",
+      "sql": [
+        {
+          "ms": 11.799279018305242,
+          "rows": 60,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 100.37787599139847,
+          "rows": 288,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 95.49242802313529,
+          "rows": 136,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 32.54894001292996,
+          "rows": 110,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 220.46671900898218,
+          "rows": 1380,
+          "statement_kind": "SELECT"
+        }
+      ]
+    },
+    {
+      "mode": "old",
+      "wall_ms": 3021.899390994804,
+      "cpu_ms": 2534.0177730000005,
+      "fact_count": 170,
+      "body_bytes": 142144,
+      "body_sha256": "ef4df47f1b6ed9a619b21fe58f73abf3a87ec66623c61a98348edce5bbdb9fd7",
+      "raw_values_sha256": "ad77e712192f40d0cbc124bf1bce8b23e59b870ff5854e1ef6488896573f0eca",
+      "sql": [
+        {
+          "ms": 11.859949008794501,
+          "rows": 60,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 117.47912998544052,
+          "rows": 288,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 131.00781402317807,
+          "rows": 136,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 240.65867700846866,
+          "rows": 1380,
+          "statement_kind": "SELECT"
+        }
+      ]
+    },
+    {
+      "mode": "candidate",
+      "wall_ms": 2545.565780979814,
+      "cpu_ms": 2107.663219999999,
+      "fact_count": 170,
+      "body_bytes": 142144,
+      "body_sha256": "ef4df47f1b6ed9a619b21fe58f73abf3a87ec66623c61a98348edce5bbdb9fd7",
+      "raw_values_sha256": "ad77e712192f40d0cbc124bf1bce8b23e59b870ff5854e1ef6488896573f0eca",
+      "sql": [
+        {
+          "ms": 12.56349601317197,
+          "rows": 60,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 102.07811300642788,
+          "rows": 288,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 95.44517600443214,
+          "rows": 136,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 29.951186006655917,
+          "rows": 110,
+          "statement_kind": "SELECT"
+        },
+        {
+          "ms": 229.46114698424935,
+          "rows": 1380,
+          "statement_kind": "SELECT"
+        }
+      ]
+    }
+  ],
+  "container_fp_and_incarnations_unchanged": true,
+  "whole_host_CPU_or_HTTP_E2E_test": false
+}

@@ -1,0 +1,918 @@
+{
+  "reviews": {
+    "86": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather86-969cf-product-review-b-20261015.md",
+        "sha256": "a63ff23607e88948f0aae6b2a660def0d59a6fd4a914c4dde0ad233cd6f016f0",
+        "head_tokens": [
+          "074e0a68a56de7d97beb80ae855da5c0e86457fe",
+          "969cf51370e0893908a32b5736c0d1946138f6ec"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "**verdict PASS — 열린 P1 0 / P2 0 / P3 0 (이 delta 범위).**",
+          "peer raw NOT_READ. 운영/SSH/Docker daemon/API/PG/HTTP 0, source 편집·ARM build·install 0.",
+          "HEAD 969cf51370e0893908a32b5736c0d1946138f6ec",
+          "실제 선택 UUID와 응답 runId/jobName/status를 대조할 수 있게 한다. tag 범위는 여전히 서버가 주입하며 caller가 선택하지 못한다. 이미 같은 schema Run에 쓰는 overview 필드들이며 새 mutation이나 목록 범위 확장은 없다. 응답 식별자가 추가된 것 자체는 응답이 기대 UUID/job인지 소비자가 검증하는 행위의 대체 증명이 아니다. live harness의 matching 계약은 별도 검토 대상이다.",
+          "immutable parent/child TypeScript를 기존 readonly TypeScript compiler API로 transpile해 격리 vm에서 scopedDagsterRequest를 실행했다. 네트워크/서버/운영 호출 없음. **13조건 PASS**:",
+          "추가한 작성자 회귀는 식별 필드뿐 아니라 tenant 필터와 paging 변수를 함께 고정한다. 작성자 전체174 PASS는 본인 실행 수에 합산하지 않았다. 전체 frontend/typecheck/build/실제 Dagster schema/live E2E는 이번 좁은 independent review에서 실행하지 않았다. source-only delta PASS이며 현재 배포나 운영 준비 완료를 주장하지 않는다. 모형 실행 tool은 terminal exit0를 회수했다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather86-969-identity-product-review-c-20261015.md",
+        "sha256": "78b52c7c190b8f221b7d7f5dcb1f108f2130daf35927c8357872b5bacd3d82c3",
+        "head_tokens": [],
+        "exact_head_mentioned": true,
+        "summary": [
+          "결론: PASS. P1/P2 발견 없음. 운영·브라우저·ARM 실행0이며 작성자174 PASS에 본인 검증을 합산하지 않는다. peer 리뷰 원문/모델을 읽지 않았다.",
+          "대상은 immutable969cf51370e0893908a32b5736c0d1946138f6ec 및 base074e0a68a56de7d97beb80ae855da5c0e86457fe의 전체2파일/11추가줄이다. dagster-scope.ts와 test.ts 전체를 읽고 object-only diff를 확인했다. 제품 파일에서 runId/jobName/status 세 줄을 제거하면 parent 원문과 byte 동일하다.",
+          "새 테스트는 식별 필드와 기존 paging/filter/서버 scope 변수를 함께 확인한다. 실제 TypeScript 모듈을 Git immutable scratch로 내보내 Node strip-types로 직접 실행한 독립12조건 PASS: 정상 failure/no/null/512 cursor, 초과cursor·raw document·scope override·주입runId/array·미등록launch·overview limit 경계다. 새 query의 세 식별 필드와 기존 고정한도를 확인했다. 출력 query를 설치된 Dagster GraphQL1.13.24 schema에 offline parse/validate하여 오류0을 확인했다. DagsterInstance/DB/native endpoint는 호출하지 않았다."
+        ]
+      }
+    ],
+    "87": [],
+    "88": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather88-runtime-review-b-20261015.md",
+        "sha256": "c0cc53f8a88fa9bfad73f284c0e316d231d6b794910ffc5be6ee381b0cea6042",
+        "head_tokens": [
+          "41b672c562c059a1f41f459925364459e320bc16",
+          "974a76ba560c89a95cf8dadf69abb491a8de9d47",
+          "acc8c71fb2dfb60f10654403081b7b4b21d75f62",
+          "ed47e9af09bcb48ee1507c9a17db392e44e4c3e2"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 전문 관점: 그래프·resource 수명과 메모리, job 계약·복구·동시성, 예약 달력·의존 pin·실증 범위",
+          "- 기준: `acc8c71fb2dfb60f10654403081b7b4b21d75f62`",
+          "- 대상: `974a76ba560c89a95cf8dadf69abb491a8de9d47` (`4db7` 그래프 재사용 + `974` 분산)",
+          "- Common 기준/후보: `ed47e9af09bcb48ee1507c9a17db392e44e4c3e2` → `41b672c562c059a1f41f459925364459e320bc16`",
+          "- 판정: **PASS / OPEN 0**. 신규 P0·P1·P2·P3 finding 없음.",
+          "고정 대상의 전체 5파일(definitions, definitions 시험, pyproject, uv.lock, 한국어 설명 문서) diff를",
+          "직접 확인했다. 공유 원본의 시작·종료 HEAD가 같고 status가 clean이다. 별도 Git archive 사본에서",
+          "`_job_resolution_context`는 인자 없는 cache 하나에 전체 asset graph와 resource **정의**를 저장한다.",
+          "module 수준 Definitions 객체를 노출하지 않는다. 기존 `_ASSETS` 및 `_resources` 집합과 각 job"
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather88-runtime-review-geo-20261015.md",
+        "sha256": "b3d5fa807c5a8e5f4e70d8d3d82b5662e3b5c1875d1327d12064eeceb5747821",
+        "head_tokens": [
+          "acc8c71fb2dfb60f10654403081b7b4b21d75f62"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "최종 verdict: **PASS — 이 고정 delta에서 수정이 필요한 결함을 발견하지 않았다.**",
+          "## 정의·resource 계약",
+          "_job_resolution_context는 프로세스 내 단일 key의 graph와 ResourceDefinition을 보유한다.",
+          "현재 import 순서에서 _ASSETS/_resources가 모두 정의된 다음 17번 resolve하므로 cache cold",
+          "실제 Dagster1.13.24에서 resolve_asset_graph를 계측하고 resource의 create_* 및 metrics",
+          "선택하고 기존 executor/resource defs를 전달한다. Resource 클래스는 실행 시 create_client/",
+          "create_repository에서 client·DB를 생성한다. ConfigurableResource 정의의 재사용을 실제",
+          "max runtime 태그/KMA 발표·대상·regional 게시/retention의 실제 구현은 바뀌지 않는다."
+        ]
+      }
+    ],
+    "89": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather89-grid-lineage-review-b-20261015.md",
+        "sha256": "df47336ada91fe095bd207838ed7347adf4b7d3c51bc2b53445776869963d7ac",
+        "head_tokens": [
+          "974a76ba560c89a95cf8dadf69abb491a8de9d47",
+          "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 기준: `974a76ba560c89a95cf8dadf69abb491a8de9d47`",
+          "- 대상: `e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4`",
+          "- 판정: **PASS / OPEN 0**. 신규 P0·P1·P2·P3 finding 없음.",
+          "provider/dataset 일치, source identity/관측 시각, fact identity/upsert, current projection 및 source payload를"
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather89-grid-lineage-review-geo-20261015.md",
+        "sha256": "bf4a9cc9517642b1596ed4f2cbd305e07f5d740c330e004023fe7eb5127823d8",
+        "head_tokens": [
+          "974a76ba560c89a95cf8dadf69abb491a8de9d47",
+          "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 대상: e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4",
+          "- 비교 기준: 974a76ba560c89a95cf8dadf69abb491a8de9d47",
+          "- 판정: **PASS — 현재 변경에서 수정이 필요한 P1/P2를 발견하지 못함.**",
+          "1. src/kortravelweather/repository.py:1420의 캐시는 location_id별 (nx, ny)와 없음을 나타내는 None만 저장한다. ORM row·원천 payload·Session·traceback을 보유하지 않는다. 동일 위치/서로 다른 원천에서도 매 fact마다 새 source_nx/source_ny와 비교하므로 첫 원천 검증을 나머지 원천의 승인으로 재사용하지 않는다.",
+          "4. 원천 provider/dataset 검증, canonical key 및 immutable identity, 날짜, fact/projection, run count, source alias·rollback 경계는 변경하지 않았다. grid 이외 generic/직접 entity/특보/중기 분기는 캐시를 채우지 않는다. private 호출부 두 곳도 새 인자를 모두 전달한다.",
+          "실제 불변 Git 객체의 _validate_source_lineage 메서드 AST를 읽어 SQLAlchemy ORM과 본인 소유 sqlite:///:memory:에 실행했다. 소스의 SELECT를 그대로 사용했으며 제품 코드를 수정하지 않았다.",
+          "- 독립 모델 6조건 PASS. 이는 PostgreSQL 잠금 경쟁/실제 ingest upsert 통과를 대신하지 않는다."
+        ]
+      }
+    ],
+    "90": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather90-public-location-review-a-20261016.md",
+        "sha256": "72aa92e90d5558947f29ecc5eff341fedf25c234329c46799b9ffe6a2a0e9d9c",
+        "head_tokens": [
+          "df7ee3294764cd0f8e5e5c2eec69020a414c00ba",
+          "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 판정: **SOURCE PASS / 열린 P1·P2 0건**.",
+          "DDL·index·COLLATE·pool·timeout·트랜잭션 쓰기·수집은 바꾸지 않는다. 이름 정렬의 비용이나 CPU 경쟁이 사라지지 않으므로 실제504 해소·운영 메모리/RSS·동일 부하 성능 개선을 이 source만으로 확정할 수 없다. 문서의 비통제 순차 표본도 개선율로 쓰지 않는다고 명시돼 있다. frontend의 기존 전체 페이지 누적 방식 자체는 바뀌지 않으며 API 한 요청의 최대1000개 제한과 별개다.",
+          "## 독립 source-only 모형"
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather90-public-locations-review-manager-b-20261016.md",
+        "sha256": "ea18f4656db35d9acf322e1928b54daf96c6cb5f5f2c9c8674d43e3c6f12aa03",
+        "head_tokens": [
+          "df7ee3294764cd0f8e5e5c2eec69020a414c00ba",
+          "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "불변 Git archive를 본인 ext4 /home/digitie/dev/weather90-public-locations-review-manager-b-20261016/source에 만들었다.",
+          "## 최종 판정",
+          "SOURCE_PASS_WITH_LIMITATIONS. 새 P1 0 / P2 0 / P3 0. 구현상 병합을 막을 확정 결함을 찾지 못했다.",
+          "이 판정은 실제 PostgreSQL 회귀·계획·실측 성능·전체 gate·운영 적용 승인을 대체하지 않는다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather90-projection-doc-delta-review-a-20261016.md",
+        "sha256": "137f7d8cdb080cf2b91724b6f7633b88daaa2efb4689bdf5bc56f786c80d3b0d",
+        "head_tokens": [
+          "40caeaba5752c55503d5273ecab415c0eaefb18a",
+          "df7ee3294764cd0f8e5e5c2eec69020a414c00ba"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 판정 **SOURCE/DOCUMENT PASS / 열린 P1·P2 0건**.",
+          "repository/public route/새 회귀3개 Python 파일은 df7과 바이트 동일하다. 공개 metadata 빈 객체·8scalar/defaultTrue 관리자·수집 metadata 보존과 기존 검색/정렬/page/count 계약에 대한 본인 이전 source 검토는 그대로 적용된다. 이번 문서 추가가 새 생산 SQL/index/timeout/pool 변경을 숨기지 않는다.",
+          "체크포인트에 있는 작성자 원자료7개 SHA를 모두 대조했다. 저장된 full 로그의483 PASS/49 warnings/503.65초, frontend12 files/140 tests 및 type-check stdout은 문서 수치와 맞는다. 이는 저장된 작성자 실행을 검토한 결과이며 본인이 suite를 새로 실행한 수가 아니다. 기존 별도 원문 파일이 없는 작성자 Ruff는 tool stdout 보존이라는 root 설명의 범위를 유지한다. 다른 리뷰어가 별도로 실행했다는 새 Ruff 원문을 읽거나 독립 검증으로 대신 합산하지 않았다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather90-doc40-review-manager-b-20261016.md",
+        "sha256": "22fdf9b1fa0e66c1b271bb93a307a4ed3a9ba18a1d198f4967d89ae163ad52df",
+        "head_tokens": [
+          "df7ee3294764cd0f8e5e5c2eec69020a414c00ba"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "기존FULL source리뷰 df7ee3294764cd0f8e5e5c2eec69020a414c00ba → 새40caeaba5752c55503d5273ecab415c0eaefb18a.",
+          "peer review raw NOT_READ. C작성자 handoff/checkpoint/실행증거는 source증거로만 읽고 독립승인으로취급하지않는다.",
+          "본인 source수정/DB/운영/SSH/provider/서비스실행0. TransportARM 별도20259진행은별개.",
+          "## 결론",
+          "DOC_DELTA_SOURCE_PASS_WITH_LIMITATIONS / 새P1 0·P2 0.",
+          "기존FULL PASS_WITH_LIMITATIONS를 제품Python3파일 byte동일로 새HEAD에연결한다.",
+          "  frontend 원문은12files/140tests PASS, type로그는tsc noEmit·오류없음과작성자인계의exit0결과가정합한다.",
+          "  환경설치·appimport·DB접속0. source-only정적검사다."
+        ]
+      }
+    ],
+    "91": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather91-full-review-a-20261016.md",
+        "sha256": "f410b6e8d408bb3742b1c5325fc8f7f21aca316e12b71cf1d5ac9e4cd6ce6ddb",
+        "head_tokens": [
+          "32c63ddc5f4c4bdc7eb03a10cf0bab455550a11a",
+          "81816d29615325957f0fcfe9971abc422a5c6343",
+          "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 대상 HEAD: `32c63ddc5f4c4bdc7eb03a10cf0bab455550a11a`",
+          "- 기준: `e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4`",
+          "- 판정: **SOURCE PASS / OPEN P1=0, P2=0**",
+          "- 운영 배포·ARM 성능·운영 E2E 판정과 분리한다.",
+          "작업 시작과 종료 UTC, 원문 및 모형 SHA는 별도 A 증거 manifest에 고정한다. 정확한 git HEAD와 clean 상태를 확인하고 git object로 base→HEAD 전체 4파일을 읽었다. 저장소 AGENTS를 읽었다. 작성자 설명·측정 producer·합성 측정 원문은 검토했지만 다른 독립 리뷰어의 raw/모형은 읽지 않았다. 작성자 결과를 본인 실행 수에 합산하지 않았다.",
+          "초기 후보에서 predicate/hash/contains/equality를 재정의하는 str 하위 클래스 네 개로 credential이 남는 반례를 본인 실행으로 확인했다. 최종본과 e25 기준은 네 개 모두 `[REDACTED]`를 반환했다. predicate를 호출하면 예외를 내는 추가 하위 클래스도 fastpath에서 호출되지 않았다. 기존 finding W91-D-P2-01의 재현 가능한 회귀는 최종 고정본에서 닫혀 있다. 실제 provider 반환값이나 운영 credential 유출을 입증하는 반례로 해석하지 않는다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather91-owm-postfix-review-d-20261016.md",
+        "sha256": "2fe277734ea69688af2ecf7a0efc0ecac6359863ef53be86b1990d497a60f464",
+        "head_tokens": [
+          "32c63ddc5f4c4bdc7eb03a10cf0bab455550a11a",
+          "81816d29615325957f0fcfe9971abc422a5c6343",
+          "e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 판정: **SOURCE PASS / 신규 OPEN 0 / W91-D-P2-01 FIXED**. 운영 배포·성능 개선의 실증 판정은 포함하지 않는다.",
+          "- HEAD `32c63ddc5f4c4bdc7eb03a10cf0bab455550a11a`, base `e25e6ca7bc7cca8d5348036b0fa831a41c4e66a4`.",
+          "최종 `base.py`, `test_provider_redaction.py`, 한국어 성능 문서, 공개 측정 JSON 전부를 기준선부터 검토했다. 제품 변경은 `_normalized_key`의 빠른 반환 조건뿐이며 최종 HEAD의 제품 blob은 최종 측정 제품 `81816d29615325957f0fcfe9971abc422a5c6343`와 같다. 신규 의존성, 전역 캐시, payload 공유, 호출·저장·동시성·인증 계약 변경은 없다.",
+          "독립 조건 **47 PASS / 0 FAIL**. 실제 신규 테스트 함수는 import와 pytest decorator만 제거해 AST로 실행했고 기존 2개와 parameterized 4개를 모두 확인했다. 이는 pytest 전체 suite 실행 수를 의미하지 않는다. 모든 Unicode 단일 문자, ASCII 두 문자 16,384개, 고정 seed 혼합 Unicode 20,000개, secret alias 및 유사 키, 독립 payload 복사, 네 OLD RED, immutable source/diff/checkpoint, 공개 수치와 원문 연결을 포함한다. DB conftest 및 제품 패키지는 import하지 않았다.",
+          "작성자 paired 원문 SHA `4636c180be02424cc0c2415d7294119035ceb233bd34e52d6a738abfc241e958`와 연결된 여섯 개 결과 원문을 메모리에서 읽고 파일 SHA를 확인했다. 공개 여섯 trial은 경로를 뺀 원문 필드와 정확히 같았다. old/new 소스 3개씩의 SHA를 Git blob에 대조했고 fact/source digest 및 SQL 종류별 개수 동일성, 중앙값과 비율을 독립 재계산했다. 최초 공개 측정 내용과 원 SHA도 최종 JSON에 보존되어 있다."
+        ]
+      }
+    ],
+    "92": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather92-health-adoption-review-c-20261016.md",
+        "sha256": "1943070e71a0fb34d6372036afe22e0d978f7413e3d93ab4d11c0c8bf459aa9d",
+        "head_tokens": [
+          "575d830a332e65c63d2d6247f9f62b54cacb3e1a",
+          "ad619efdd4497d0aa9ab5818b920e38c21258259"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 판정: **PASS_SCOPED_SOURCE_REVIEW**, P0/P1/P2/P3 모두0, 미해결 finding0.",
+          "- 대상: ad619efdd4497d0aa9ab5818b920e38c21258259.",
+          "  이번 판정은 A가 작성한 **Common 소비자 설치·설정·회귀·문서 채택 delta**만의 독립 리뷰다.",
+          "실제 checkpoint에 포함된10개 blob과 PR 전체 base40→HEAD diff SHA도 재계산해 일치했다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather92-common-health-review-d-20261016.md",
+        "sha256": "8364cd4748c5521268437fef816d9456d94e3881b69e983b856b41e34798e855",
+        "head_tokens": [
+          "575d830a332e65c63d2d6247f9f62b54cacb3e1a",
+          "ad619efdd4497d0aa9ab5818b920e38c21258259"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 판정: **SOURCE PASS / 신규 OPEN 0**. 제품 수정·운영·DB 호출 0.",
+          "- HEAD ad619efdd4497d0aa9ab5818b920e38c21258259, 채택 기준선 575d830a332e65c63d2d6247f9f62b54cacb3e1a.",
+          "base575d830은 구분한다. 575d830은 Weather90+91 통합 기준선이고, 위 diff는 health 채택만이다.",
+          "독립 Dagster package는 dagster/grpc-health를 함께 설치한다. lock의 git source와 optional",
+          "설치된 /home/digitie/.local/bin/uv를 명시한 두 번째 export는 EXIT0였다. source/lock 변경 0.",
+          "Weather의 runtime Python source는 채택 기준선부터 전부 unchanged다.",
+          "Weather90 repository.py는 source40cae와 exact이고, Weather91 base.py는 본인 승인한"
+        ]
+      }
+    ],
+    "93": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather93-full-review-a-20261016.md",
+        "sha256": "8c7c496bb306255de9515917a68902f5206032b6a7b31f0763d3c212cf49daaf",
+        "head_tokens": [
+          "574c6699b29937314a9532161b9b7f7e1561bc58",
+          "ad619efdd4497d0aa9ab5818b920e38c21258259"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 검토 HEAD: `574c6699b29937314a9532161b9b7f7e1561bc58`",
+          "- 기준: `ad619efdd4497d0aa9ab5818b920e38c21258259`",
+          "- 판정: **REQUEST_CHANGES / OPEN P1=0, P2=1**",
+          "저장소 AGENTS를 읽었고 최초 확인 당시 해당 HEAD/working tree clean이었다. 후속 author 편집은 검토 범위가 아니다.",
+          "기준 app의 collector peak는 **1**, 후보574의 peak는 **2**였고 두 collector가 해제 전 모두 진입했다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather93-postfix-review-a-20261016.md",
+        "sha256": "b5ee8b85ac13a237293a278a4006601d73739ca202b7c72d9d3a7384370c8b14",
+        "head_tokens": [
+          "574c6699b29937314a9532161b9b7f7e1561bc58",
+          "ad619efdd4497d0aa9ab5818b920e38c21258259",
+          "ee434cb63b19a2112fd24d8f505123bd8a08be26"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 판정: **SOURCE PASS / OPEN P1=0, P2=0**.",
+          "- HEAD: `ee434cb63b19a2112fd24d8f505123bd8a08be26`; clean 확인.",
+          "app.py, root/API pyproject, uv.lock, tests/test_metrics.py, 한국어 문서의 전체 diff와 실제 호출 문맥을 읽었다. checkpoint의 6개 blob SHA 및 전체 diff를 Git object와 대조했다. 패키지 105개의 이름·버전·source identity는 그대로이고 AnyIO의 기존 간접 의존성을 직접 의존성으로 명시했다. 전용 immutable archive에서 독립 검증했다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather93-metrics-review-d-20261016.md",
+        "sha256": "e44520681171ae4ab00592748114736e6a3ec0810ae805411fd20fba3ab4a7eb",
+        "head_tokens": [
+          "ad619efdd4497d0aa9ab5818b920e38c21258259",
+          "ee434cb63b19a2112fd24d8f505123bd8a08be26"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- HEAD ee434cb63b19a2112fd24d8f505123bd8a08be26, base ad619efdd4497d0aa9ab5818b920e38c21258259.",
+          "- 판정: **SOURCE PASS / 신규 P0~P3 OPEN 0**. 작성 참여·peer review 원문 열람·제품 변경 0.",
+          "name/version/source identity는 기준선과 exact다.",
+          "OpenAPI를 repository-free 두 factory로 생성해 기준선과 전체 동일성을 확인했다.",
+          "실제 metrics 구현과 source/배포 설정도 byte 동일하다."
+        ]
+      }
+    ],
+    "94": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather94-catalog-index-final-review-c-20261016.md",
+        "sha256": "88a14d36d6c2c75f63ac089deac57a207c0ff81e6547f38f0f830e0e8db99d41",
+        "head_tokens": [
+          "388866903ce9b18b4650b709e4cfccb145390169",
+          "75b49d7a12f6d72d23c5d909bef7e19ce4fc0066",
+          "d0ba4a81fd8198221b061d472c512c10dcaeda5c"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "최종 HEAD: 388866903ce9b18b4650b709e4cfccb145390169",
+          "최초 FULL 대상: 75b49d7a12f6d72d23c5d909bef7e19ce4fc0066",
+          "결론: **PASS — 현재 전체6파일 범위 새 P1/P2 open 0건**.",
+          "최종 source/선언 비교 등9조건도 통과했다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather94-catalog-index-fixture-final-review-d-20261016.md",
+        "sha256": "21ce5b4ce499cd7fa1e7b9a90a9e68a5156596d7b31de881a54679748df09e09",
+        "head_tokens": [
+          "388866903ce9b18b4650b709e4cfccb145390169",
+          "d0ba4a81fd8198221b061d472c512c10dcaeda5c"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- verdict: SOURCE PASS / P0=0, P1=0, P2=0 OPEN",
+          "- immutable HEAD 388866903ce9b18b4650b709e4cfccb145390169.",
+          "각각 실제 pytest 3 PASS를 확인했다. 같은 구조의 구 direct import는 하위 먼저 수집할 때",
+          "- inert 모형 16조건 PASS."
+        ]
+      }
+    ],
+    "95": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather95-fresh-source-review-c-20261016.md",
+        "sha256": "f916143263514ad72090505f08f0b22c0367265ad26352297d2774b8d7071548",
+        "head_tokens": [
+          "388866903ce9b18b4650b709e4cfccb145390169",
+          "984d50f272f7720a75be240da929302cdae9dc7c"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "판정: SOURCE PASS. P1/P2 OPEN 0. 운영 배포·부하 개선 승인은 아니다.",
+          "## 불변 대상과 독립성",
+          "- head: 984d50f272f7720a75be240da929302cdae9dc7c",
+          "- 전체 4파일 diff와 source 삽입/alias/resolve/retention/strict insert/FK 주변 경계를 읽었다.",
+          "  이 리뷰 대상으로 섞지 않았다. 타 리뷰 원문을 읽지 않았다.",
+          "1. fresh 판정은 사용자 key/날짜 추정이 아니라 같은 transaction에서 삽입한",
+          "   canonical inserted_sources 집합과 기존 replayed 필드로 정해진다.",
+          "2. source FK(RESTRICT)와 사전 source flush가 있으므로 새 canonical source를 참조하는",
+          "   기존 fact는 정상 DB 계약 아래 존재하지 않는다. 새 source key를 통한 삭제/덮어쓰기는 없다.",
+          "   다른 transaction의 같은 source는 source advisory lock과 기존 조회 경계를 유지한다.",
+          "4. 인위적 value_id 충돌의 새 source는 PK 충돌/IntegrityError로 transaction을 rollback한다.",
+          "   새로 늦게 도착한 오래된 source는 retention 분기에서 기존대로 제외되며 신규 시각으로 승격하지 않는다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather95-fresh-source-review-d-20261016.md",
+        "sha256": "950e39c307515559de40a86066074d146225d5be658bc39a4736865fe92df143",
+        "head_tokens": [
+          "388866903ce9b18b4650b709e4cfccb145390169",
+          "984d50f272f7720a75be240da929302cdae9dc7c"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "# Weather95 새 source fact 조회 생략 독립 FULL 리뷰 D",
+          "- 판정: **SOURCE_PASS / OPEN P0·P1·P2 0**.",
+          "- execution ID: `/root/review_finish_b/weather95-fresh-source-20261016`.",
+          "- 기준 HEAD `984d50f272f7720a75be240da929302cdae9dc7c`, base `388866903ce9b18b4650b709e4cfccb145390169`.",
+          "repository.py 제품 delta, 신규 PostgreSQL 시험7개, 적용/측정 문서, committed6회 paired 측정 JSON을 전부 읽었다. 제품 변경은 `_existing_facts_session`에서 query key를 만들 때 `fact.replayed`만 포함하는 필터다. source/fact/retention/projection 전체 문맥도 읽어 이 flag가 어디서 결정되고 조회 생략 뒤 중복 검사가 어디에 남는지 추적했다. Weather96은 이 기준선에 포함하지 않았다.",
+          "| 새 source 판정 | `repository.py:1334`의 `_record_source_session`이 DB에 존재하던 canonical row를 반환할 때 inserted=false, 실제 새 row 추가 때만 true를 반환한다. 입력 시각/새 key 모양만으로 판정하지 않는다. |",
+          "| fact FK | `repository.py:348–351`의 source_record_key FK/RESTRICT가 유지된다. 이번 transaction이 새로 삽입한 canonical source를 참조하는 기존 committed fact가 있을 수 없다는 최적화 근거가 성립한다. source unique/FK를 제거하거나 integrity 오류를 삼키지 않는다. |",
+          "| alias | `:1718`가 identity_aliases/source_aliases로 먼저 canonical key를 통일하고 inserted_sources는 canonical key를 저장한다. 같은 배치 새 alias는 새 source에 귀속하며, 저장돼 있던 alias·기존 canonical은 replay로 조회한다. |",
+          "| fallback·중복 | `_resolve_fact_session`(`:1459–1533`)의 fallback도 inserted_sources에 추가하고 배치 source cache에 남긴다. `_insert_value_session`(`:1563–1678`)은 최초 새 fact를 stored_facts에 넣어 다음 동일 배치 중복의 typed/payload 비교를 유지한다. 조회 생략이 곧 비교 생략은 아니다. |",
+          "| 이전 chunk·재수집 | `_ingest_batch_session`의 inserted_sources는 매 호출 새 집합이다. 이전 transaction/chunk의 source는 DB에서 발견돼 replay=true가 된다. 별도 record_source 후 upsert도 같은 경계다. |",
+          "| skip-locked | `:1805`에서 현재 skip 위치의 fact를 뺀다. source만 먼저 게시된 뒤 다음 transaction에서 다시 수집할 때는 그 source가 이미 존재하므로 replay 조회를 거친다. skipped fact를 새 source로 영구 분류하지 않는다. |",
+          "| retention | `_redate_forgotten_replays_session:2076–2157`은 이전부터 replay=true·기존 fact 없음·horizon 아래 조건만 재일자한다. 새 오래된 source는 false여서 임의 재일자되지 않고 expired_window의 기존 skip을 따른다. replay의 기존 조회를 없애지 않아 남아 있는 immutable row도 그대로 비교한다. |",
+          "| PK collision·rollback | value_id는 일부 digest라 강제 collision이 가능하다. 새 source에 대한 사전 row 조회를 생략하면 기존 ValueError 대신 DB IntegrityError가 발생할 수 있으나 unique PK와 하나의 `_session_factory.begin()` 경계(`:1897` 이후)가 source/fact/projection 전체 rollback을 유지한다. 문서가 오류 타입 변화와 자동 재시도 없음도 명시한다. |"
+        ]
+      }
+    ],
+    "96": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather96-replay-fact-review-a-20261016.md",
+        "sha256": "7e0baf6cd57730de22ac5b0e92e8d91a8743ea446145f5380ecddd53d345088b",
+        "head_tokens": [
+          "984d50f272f7720a75be240da929302cdae9dc7c",
+          "aecfc9afa3cb89a68bd5ae9641f4132243d7b806"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 고정 HEAD: `aecfc9afa3cb89a68bd5ae9641f4132243d7b806`; base: `984d50f272f7720a75be240da929302cdae9dc7c`",
+          "## 판정",
+          "OPEN P0/P1/P2 0, **SOURCE PASS**. 같은 시각의 equality+ID IN은 요청한 같은 clock pair만 조회한다. 혼합 시각의 typed VALUES는 value_id와 known_at 두 칼럼으로 동등 JOIN하고 min/max를 함께 바인딩한다. 두 개 IN의 cross product로 바꾸지 않았다. 원래 NOT NULL PK와 맞을 수 없는 NULL clock만 조회에서 제외한다.",
+          "내부 `_resolve_fact_session`은 aware datetime을 UTC로 canonicalize하며 source의 최초 관측시각을 유지한다. UTC/KST 동등 시각의 dedup/min/max 선택이 같은 instant를 의미한다. source alias·새 source 제외·same-batch existing dictionary·retention 재시각화는 변경하지 않았다. 모든 기존 행을 ORM으로 반환하여 immutable typed field/payload 검증을 생략하지 않는다. DTO/OpenAPI/schema/index/pool/provider·수집 주기는 변경하지 않는다.",
+          "초기 `pytest -k 'not postgresql'` 4개 실행에서 root conftest의 autouse DB fixture를 잘못 실행했다. 이는 요청 경계를 위반한 로컬 DB 작업이며 **순수 모형 PASS로 집계하지 않는다**. 상세 명령/시각/범위/횟수 불확실성은 `weather96-review-a-db-fixture-incident-20261016.md` SHA `3fc79bf27299f0d9175235ddad729821142d5c4a2b905b6b31bbeb6474f5382d`에 고정했다. 기본 `weather_test`와 root UUID DB는 다르며, 운영 DB가 아니다. 이후 DB 연결/정리/재실행은 하지 않았다.",
+          "혼합 시각의 min/max는 범위 바깥 partition을 줄이는 조건이다. 성긴 두 시각 사이의 모든 partition을 반드시 없앤다는 보장은 없으며 PostgreSQL의 JOIN 전략·통계·runtime pruning에 따라 달라진다. 실제 대표 sparse/mixed clock plan·넓은 행 payload·동시 writer 환경은 후속 측정 대상이다. 같은 시각 synthetic1000의 root EXPLAIN 결과를 모든 혼합 workload의 개선으로 일반화하지 않는다. 전체 입력/반환 fact 수에 따른 기존 memory 크기는 그대로이고, 새 전역 캐시/무제한 동시 쿼리를 넣지 않았다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather96-replay-fact-review-d-20261016.md",
+        "sha256": "21632265cc631040c6cdca0efa1217f7f34f995b4ce2927458f899fd543da20c",
+        "head_tokens": [
+          "984d50f272f7720a75be240da929302cdae9dc7c",
+          "aecfc9afa3cb89a68bd5ae9641f4132243d7b806"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 판정: **SOURCE_PASS / OPEN P0·P1·P2 0**. 운영 적용·full suite 완료를 이 판정에 포함하지 않는다.",
+          "- immutable HEAD `aecfc9afa3cb89a68bd5ae9641f4132243d7b806`, base95 `984d50f272f7720a75be240da929302cdae9dc7c`.",
+          "- 제품 repository/test2파일과 해당 고정 문서75줄 전체를 직접 읽었다. 이후 C의 문서/시험 결과 갱신은 별도 기준선이다. peer 원문·모형 NOT_READ.",
+          "`repository.py:1535`의 `_existing_facts_session`이 기존 replay·dedup·1000개 page를 유지하고 같은 clock/혼합 clock을 분기한다. source 판정·alias·삽입·retention·projection/트랜잭션은95와 동일하다.",
+          "- **95와 결합:** 새 source의 skip 조건은 유지한다. 기존 source/alias/fallback replay·이전 chunk·skip-locked 후 재수집은 여전히 조회한다. 같은 배치의 typed 중복 비교와 PK collision 시 rollback도 그대로다.",
+          "- **retention:** horizon 재일자 함수가 입력 stored dict에서 정확한 pair만 보는 계약을 유지한다. 다른 clock row를 과다 반환하면 retention 판정에 영향을 줄 수 있지만 새 JOIN은 두 컬럼을 모두 비교해 그 반례를 차단한다. 해당 함수/lineage/schema는 변경하지 않았다.",
+          "**16조건 PASS**: 같은 ID의 서로 다른 clock cross-product 과다 조회 방지, 같은 ID 두 clock 모두 요청 시 반환, UTC/KST 동등 clock의 scalar 분기/dedup, typed timestamptz bind, inclusive lower/upper, fresh/None 제외,1001+중복 배치의2query/2002parameter 상한, naive bind 거절 등이다. 이는 PostgreSQL planner/execution/pruning의 독립 실측은 아니다."
+        ]
+      }
+    ],
+    "97": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather97-integrated-review-c-20261016.md",
+        "sha256": "c3e072f94832002db58a47419061f5eb76fdf5117b66d19b32a7de5e71b8db38",
+        "head_tokens": [
+          "1c968f324e204d632a9588794de0e9e07a424d0d"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "# Weather97 UI 기준선 통합 독립 재검토 C",
+          "판정: **SOURCE_PASS / P1 0 / P2 0 OPEN**. 운영·이미지 제작·효과·live UI 검증은 아니다.",
+          "대상 1c968f324e204d632a9588794de0e9e07a424d0d, 원 진단66f6efa4f70db4717c81b461b80288a0986df669, 배포 UI 기준969cf51370e0893908a32b5736c0d1946138f6ec. 기존 본인97 진단 코드 독립 리뷰에 이어 Git object로 통합 delta 전체6파일을 직접 비교했다. 다른 리뷰 원문은 읽지 않았다.",
+          "- 체크 시 소유 WT HEAD가1c968이고 git status --porcelain은 비어 있었다. WT/제품 소스 편집0, Node/Python/DB/SSH/HTTP/Docker/빌드/운영 호출0.",
+          "- root가 수행한189 frontend/type/lint PASS는 작성자/통합 검증으로 별도이며 본인 재실행 수에 합산하지 않았다. 같은 Python runtime이 보존되므로 이번 좁은 재검토에서 새 Python full suite를 호출하지 않았다.",
+          "독립 object 증거: weather97-integrated-review-c-20261016.json SHA b81588461e3f24b6c05626336f575baa7deb9c4de21b48270404ae6031c37d8a. source+base+배포기준/각복원blob/전체frontend diff/진단2file equality/clean을 보존했다. 모든 도구 terminal."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather97-ui-integration-review-d-20261016.md",
+        "sha256": "6fe524d5f012b73284a90f08a9590fe96373ad5378bed72d2dabb486e83ab757",
+        "head_tokens": [],
+        "exact_head_mentioned": true,
+        "summary": [
+          "# Weather97 배포 UI 기준선 통합 독립 리뷰 D",
+          "- HEAD1c968f324e204d632a9588794de0e9e07a424d0d, 직전66f6efa4f70db4717c81b461b80288a0986df669.",
+          "- 판정 SOURCE PASS/OPEN0. 운영·제품 변경0, peer review 원문 미열람.",
+          "  보존한다. 이번 통합 delta6파일 전체와 배포969cf 기준 전체 frontend diff를 읽었다.",
+          "  회귀 위험은 이 복원으로 닫혔다. source97의 API/수집기 변경을 frontend에 임의로 섞지 않는다.",
+          "  이2개는 본인이 검토한66f6와 byte 동일하다. 원Node34조건 결과를 source 동일성으로 연결하되",
+          "  새로운34시험으로 합산하지 않았다. 인증 helper 외 byte와 외부 계약 보존 판정은 유지된다.",
+          "- root 통합 로그 실제189PASS/type/lint를 읽었다. 과거155개와 합산하지 않고 작성자 시험으로",
+          "- 문서는 원인 해결을 주장하지 않고 기준선 누락 발견·복원과 기존 검증의 한계를 기록한다.",
+          "- 아직 builder 승인/두 번째 독립 리뷰/새HEAD CI 확인·실제 ARM artifact·운영 live는 후속이다."
+        ]
+      }
+    ],
+    "98": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather98-recovery-executor-review-c-20261016.md",
+        "sha256": "d7f8f1db77dc4925a15bf9d3f3bb3933fccefd5bbf7857ee92e7fc5ace8a04ef",
+        "head_tokens": [
+          "f4ee82c160d9f48bcff9834c1263d48204cc6910"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "판정: **SOURCE_PASS / OPEN P1=0·P2=0**. 최종 f4ee82c160d9f48bcff9834c1263d48204cc6910, base1c968f324e204d632a9588794de0e9e07a424d0d, 제품d6b798063f604c1a657f0a48e37212714bfef300, Common eaf83e965ee837a277d5d7b370ecde0d4897f1cd를 고정했다. AGENTS와 전체7파일·관련 기존 실행/복구/외부 timeout 경로를 읽었다. 다른 리뷰 raw·작성자 시험 결과를 읽지 않았다. 본인은 Common35 작성자였으므로 Common35를 새 독립 리뷰했다고 세지 않으며, 이번 판정은 Weather 채택 전체7파일에 대한 독립 검토다.",
+          "Weather97/98을 각각 격리 process에서 실제 SDK로 읽어 explicit job17의 tags/자산 선택/op graph/resources, schedule17의 이름/job/cron/timezone/default상태, 기존 앱 정산 sensor1의 이름/상태/resource/interval 및 implicit 포함 job18이 동일함을 확인했다. 차이는 명시16job executor뿐이다. 기존 provider 원천·요청 수·동시 HTTP·Settings·DB/pool/schema·reconciliation 코드는 수정하지 않았다.",
+          "external_weather._fetch_with_deadline의 daemon thread와 definitions의 DeadlineExceeded 시 다음 dataset/close를 건너뛰는 기존 동작을 읽었다. 단일 asset의 실패 뒤 같은 process에서 새 dataset/op를 실행하는 정책을 추가하지 않는다. 정상 취소·살아 있는 provider thread·run-worker 물리 소멸은 운영 검증 대상이다. step child 제거만으로 실제 CPU/RSS 감소를 주장할 수 없으며 가이드도 이를 명시한다. 기존 저장 execution.config가 새 in_process schema와 다른 경우 사전 검증/기존 run drain을 요구한 문구도 적절하다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather98-common-pin-test-postfix-review-c-20261016.md",
+        "sha256": "4fa0af73242aa04e9835812aa5a5f2455726871a6ea595f0d22df415cb64597c",
+        "head_tokens": [
+          "ad988a5dac252d710d41f9937b6d567c5d3398ae"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "판정: SOURCE_PASS / P1·P2 OPEN0. 최종 HEADfd737d56a043dead878efc535a77a140cd4fd412을 기존 본인 FULL7 리뷰 f4ee82c에 연결한다. 초기 원문 weather98-recovery-executor-review-c-20261016.md(SHA d7f8f1db77dc4925a15bf9d3f3bb3933fccefd5bbf7857ee92e7fc5ace8a04ef)는 변경하지 않았다.",
+          "실제 Git diff는 tests/test_common_health_adoption.py의 COMMON_COMMIT 한 literal만 ad988a5dac252d710d41f9937b6d567c5d3398ae→eaf83e965ee837a277d5d7b370ecde0d4897f1cd으로 바뀐다. old source를 그 문자열 하나만 교체하면 new source와 byte동일하다. AST 상수도 root core/extra·standalone Dagster·uv.lock의 실제 Common exact pin과 같다. 초기 FULL7의 모든 blob과 신규 recovery19회귀·가이드·의존성·제품이 unchanged임을 각각 SHA로 확인했다.",
+          "본인은 이 delta에서 새로운 installed-wheel health7을 재실행하지 않았다. 본인 기존19PASS/자체SQLite8PASS는 byte동일 제품의 독립 검증이며 새 전체532PASS로 합산하지 않는다. parent가 제공한 최초 full531PASS/1FAIL 및 author 후속 health7PASS도 본인 실행으로 세지 않는다. 최신 HEAD CI/전체 required checks는 parent가 따로 회수해야 한다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather98-recovery-executor-review-d-20261016.md",
+        "sha256": "f2b233fbb81607089f065e5bfd4db723675acb943c7d39eb45f614a197e48439",
+        "head_tokens": [
+          "1c968f324e204d632a9588794de0e9e07a424d0d",
+          "eaf83e965ee837a277d5d7b370ecde0d4897f1cd",
+          "fd737d56a043dead878efc535a77a140cd4fd412"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 검토 종료: 2026-10-16T03:50Z 이후, 아래 고정 증거 기준",
+          "- 기준: `1c968f324e204d632a9588794de0e9e07a424d0d`",
+          "- 최종 HEAD: `fd737d56a043dead878efc535a77a140cd4fd412`",
+          "- 판정: **SOURCE PASS / P0·P1·P2·P3 신규 finding 0 / OPEN 0**. 운영 채택·성능·실제 복구 완료 판정은 아니다.",
+          "immutable Git archive를 별도 D 경로에 추출하여 제품 2파일, 신규 회귀, 두 pyproject, lock, 기존 health pin 회귀 한 줄 및 한국어 문서를 전부 검토했다. Common34는 D가 작성했으므로 해당 공통 제품의 독립 승인 수를 새로 만들지 않는다. 이번 판정은 A가 작성한 Weather 소비자/실행기 전체 delta에 대한 독립 판정이다. 기존 Common35 전체 판정 역시 여기서 중복 집계하지 않는다.",
+          "`definitions.py:593`의 정책 분리는 기존 17개 job의 timeout/idempotent/retry 태그를 보존한다. `:1145-1185`의 단일 자산 16개는 in_process, 지역 4-op job은 multiprocess1, `:1364`의 Definitions 기본 실행기는 암묵적 asset job의 step 동시성도 1로 제한한다. 두 별도 Python process에서 실제 SDK로 기준/최종 정의를 읽은 결과, 명시 17개와 암묵적 1개를 포함한 18개 job의 이름·태그·자산 선택·graph node, 모든 예약의 cron/KST/job/status, resource key와 기존 앱 정산 센서가 같았다. 실행기 변경은 명시 single-op 16개와 implicit job 1개다. 지역 job의 process 경계는 유지된다.",
+          "- immutable 기준/최종 전체 Git archive의 별도 로컬 추출 및 위 정의 계약 비교."
+        ]
+      }
+    ],
+    "99": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather99-marker-query-review-a-r1-20261016.md",
+        "sha256": "4007b1b3a2ce4f855cba418aa90e3af24d3b2032ae6f77a871efa3c4b31f4988",
+        "head_tokens": [
+          "79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0",
+          "fd737d56a043dead878efc535a77a140cd4fd412"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 판정: **SOURCE_PASS / OPEN P1=0, P2=0**. 성능·운영 ready 판정은 아니다.",
+          "- 고정 HEAD 79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0, 기준98 fd737d56a043dead878efc535a77a140cd4fd412.",
+          "- checkpoint weather99-marker-source-checkpoint-c-r1-20261016.json SHA0d658e2e61a753fffaec3f7aa1a2a20f76758a3a2e464451496b0fce916c43ed와3파일 SHA를 git object/own archive로 직접 대조했다.",
+          "- own archive /home/digitie/dev/weather99-review-a-79cb349-20261016. 작성자/peer 리뷰 원문·모형은 읽지 않았다. source·다른 WT 수정0.",
+          "변경 method는 marker_values_many 하나이며 나머지 repository method AST와 WeatherValueRow schema/index는 기준과 같다.",
+          "API route/weather model/active_alert_values/pyproject/lock의 Git blob도 기준과 byte exact다.",
+          "- observed/fallback: lateral 내부의 location/metric allowlist·observed/nowcast 조건·4개 후보 제한·known_at/source_record_key/value_id tie-break는 AST상 동일하다.",
+          "- alerts: source station/sequence·revision partition/정렬과 최신 revision 선택을 유지한다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather99-marker-final-doc-review-a-r1-20261016.md",
+        "sha256": "e79e7c48b6b28df612e46aa8021a0028a59e575f52dc549fb9c00ba16cba8f5b",
+        "head_tokens": [
+          "79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0",
+          "f1d59f79bb722f2ca1255b02074f586ce47809eb"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "판정 SOURCE_PASS / P1·P2=0. 고정 최종 f1d59f79bb722f2ca1255b02074f586ce47809eb, 기준 제품 79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0.",
+          "source/다른WT 수정·DB·운영·builder0. 이 최종tree를98+99 artifact context의 정본으로 사용할 수 있다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather99-marker-review-d-r1-20261016.md",
+        "sha256": "f170d7cd9ee66bfacffccb58bbbb941202f14d5dc53da2b45c381773c6ee81a5",
+        "head_tokens": [
+          "79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0",
+          "fd737d56a043dead878efc535a77a140cd4fd412"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 기준 HEAD: `fd737d56a043dead878efc535a77a140cd4fd412`",
+          "- 검토 HEAD: `79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0`",
+          "- source checkpoint SHA256: `0d658e2e61a753fffaec3f7aa1a2a20f76758a3a2e464451496b0fce916c43ed`",
+          "- 판정: **SOURCE PASS / 신규 P0·P1·P2·P3 finding 0 / OPEN 0**.",
+          "독립 검토자 D는 작성자가 아니다. 작성자 C의 source checkpoint와 시험 결과만 확인했고 다른 독립 리뷰 원문은 읽지 않았다. 불변 Git archive를 D 전용 별도 경로에 추출하여 3파일 전체 diff와 marker 함수·PK·API 경계를 검토했다. 원 WT·제품·다른 작업자 파일 변경은 0이다.",
+          "`WeatherValueRow`의 실제 primary key는 `(value_id, known_at)`이고 known_at은 nullable false다. observed LATERAL 및 fallback LATERAL은 기존 필터·known/source/value 내림차순·후보 수 제한을 그대로 사용하고 선택한 known_at을 후보 relation에 추가한다. 마지막 fact 조회는 두 키의 AND 동등 JOIN이다. 같은 UUID의 다른 partition fact가 재조회되는 기존 오류를 차단한다. known_at이 null이라 사라지는 유효 fact 경계는 스키마상 없다.",
+          "alert 쪽도 기존 revision rank와 location rank 계산을 바꾸지 않고, 제한 relation에서 known_at을 전달하여 최종 JOIN을 정확한 pair로 바꾼다. location/provider/dataset/domain/metric/target/station/sequence grouping, source/value tie-break, valid_until 및 max-age 필터, 위치별 alert 상한과 최종 정렬은 보존된다. observed/nowcast 우선 후 누락 metric에만 fallback하는 Python 선택 경로와 DTO 변환도 같다. 요청하지 않은 위치의 동일 UUID fact가 결과에 섞이는 문제를 세 경로 모두 같은 방식으로 수정한다.",
+          "기존 ID IN은 후보 중복을 집합으로 축약하고 새 JOIN은 후보 수량을 보존한다. 정상 API는 `marker_summaries`에서 원 요청 500개 상한을 적용한 뒤 `dict.fromkeys`로 ID를 중복 제거하여 repo에 전달한다. 각 fact는 하나의 위치/metric과 유일한 복합 PK에 속하므로 이 경로에서는 새 JOIN이 같은 fact를 여러 요청 위치로 복제하지 않는다. 직접 repository 호출에서 중복 ID를 넣으면 관측/fallback 중간 결과량이 늘 수 있으나 최종 선택 dict는 기존 pair 기준이며 API 경계는 변경하지 않았다. 이를 전체 DB 메모리 개선으로 주장하지 않는다.",
+          "빈 ID는 기존처럼 session을 열지 않는다. SQLite/기타 dialect fallback은 손대지 않았으며 API/수집/upsert/raw/source/retention/인덱스/스키마/타임아웃/인증/클라이언트 병렬도 변경도 없다. 합성 1·60·500 위치의 SQLAlchemy PostgreSQL 컴파일에서 observed/fallback/alert 세 SQL 모두 outer fact JOIN의 value_id/known_at 양쪽 조건과 후보 relation known_at 전달을 확인했다. 문자열로 SQL 값을 조립하는 변경은 아니다.",
+          "`weather99-independent-checks-d-r1-20261016.py` 및 결과 JSON을 새 D namespace에 고정했다. source checkpoint의 3개 blob을 git object와 대조했고 git diff check exit0을 확인했다.",
+          "- 기준 소스: **3 FAIL / 1 PASS / 0.34초**. observed/fallback/alert 복합키 구조 회귀가 각각 실패했다.",
+          "- 새 소스: **4 PASS / 0.30초**."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather99-final-doc-review-d-r2-20261016.md",
+        "sha256": "3d22853ce735234ba790a3ccb72d94069245e2ff1db4efd4e3e3aacc69bf2b0d",
+        "head_tokens": [
+          "79cb34987e9aa6768dfbe8c02f3cee07de6e1ed0",
+          "f1d59f79bb722f2ca1255b02074f586ce47809eb"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "작성자 전용 UUID 전체 r2 결과는 exit0/source_import_exact true이고 로그는 539 PASS/49warnings/594.61초다(프로세스 wrapper wall597.70초와 구분). 초기 다른 Common venv collection 실패·fixture fetched_at 불일치·old RED를 정직하게 보존했다. 작성자 full은 본인 재실행 수에 합산하지 않는다.",
+          "최종 doc delta **PASS / 기존 제품 SOURCE PASS 유지 / OPEN0**. 실제 배포/운영 효과/merging PASS는 아니다. 다른 리뷰 원문 미열람, 운영·SQL·HTTP·SSH·빌더·제품 변경0. 모든 도구 terminal 회수."
+        ]
+      }
+    ],
+    "100": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather100-marker-plan-review-a-r1-20261016.md",
+        "sha256": "5379b0ba5382e4c9aed8c16c6c2423338588ea6953dcebe293d8ac01aa81ba7a",
+        "head_tokens": [
+          "f1d59f79bb722f2ca1255b02074f586ce47809eb"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "판정: **SOURCE_PASS, OPEN P1/P2=0**. 성능 개선·운영 504 해결 승인과는 분리한다.",
+          "초기 전체 검토 HEAD12083c0e393ed0ac4c9e22c4c3025d4f2a16bb0b /",
+          "최종 HEAD43efb28d87ea6daabac346b6b50c74c4e3c579a6의 단일 docs delta도 직접 읽었다.",
+          "- source-only standalone script weather100-source-model-a-r1-20261016.py 실행: **96조건 PASS**."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather100-marker-generic-review-d-r1-20261016.md",
+        "sha256": "b7c3efb8e874d63c28f9b025b1d18a6211ae4a1637fb775ed2f855cfcc30628c",
+        "head_tokens": [
+          "12083c0e393ed0ac4c9e22c4c3025d4f2a16bb0b",
+          "f1d59f79bb722f2ca1255b02074f586ce47809eb"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- immutable HEAD `12083c0e393ed0ac4c9e22c4c3025d4f2a16bb0b`, base `f1d59f79bb722f2ca1255b02074f586ce47809eb`.",
+          "- 판정: **SOURCE PASS / P1·P2 OPEN 0**. 운영 latency·504 해결 승인으로 확장하지 않는다.",
+          "독립 검증은 Git archive를 별도 디렉터리에 풀고 `--noconftest -c /dev/null` 및 plugin autoload 비활성으로 수행했다. 새 순수 회귀를 old에 적용하면 **4 FAIL/4 PASS**, new에는 **8 PASS/실제PG1 deselect**(각 pytest 0.46/0.43초). conftest/공유·기본DB는 읽거나 접속하지 않았다. 별도 compile 모형 결과 `weather100-independent-model-d-r1-20261016.json` SHA `e27f95b3dc4942a2e64543ab31a5427c7b72f12e405ba0e19ef2d426e5fcfd71`. 초기 독립 모형에서 모든 쿼리가 시각 bind를 포함한다고 잘못 가정했던 assert는 실제 계약인 alert 시각에만 한정해 정정했다. 제품 변경은 하지 않았다.",
+          "문서는 forced custom/generic PREPARE 비교와 실제 API의 generic 선택을 명확히 구별한다. cost는 실행 시간이 아니고 작은 UUID PG fixture의 결과 동등성은 운영 성능 증거가 아니다. author 전용PG16건·root 최신548 PASS/CI2 PASS는 전달된 별도 증거이며 본인의 새 독립 실행 건수로 세지 않았다. 실제 markers504·현재 API prepared 선택·운영 CPU/RSS 개선은 미입증이라는 한계가 타당하다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather100-final-doc-review-d-r2-20261016.md",
+        "sha256": "a2c1b8b5524f2f6bd01a23a1ee481881e86e2f3735eb107434b02d2ebefde588",
+        "head_tokens": [
+          "12083c0e393ed0ac4c9e22c4c3025d4f2a16bb0b",
+          "43efb28d87ea6daabac346b6b50c74c4e3c579a6"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 대상 HEAD `43efb28d87ea6daabac346b6b50c74c4e3c579a6`, 이전 FULL 리뷰 HEAD `12083c0e393ed0ac4c9e22c4c3025d4f2a16bb0b`.",
+          "- 판정 **DOC DELTA PASS / P1·P2 OPEN0**. 초기 FULL 원문 `weather100-marker-generic-review-d-r1-20261016.md` SHA `b7c3efb8e874d63c28f9b025b1d18a6211ae4a1637fb775ed2f855cfcc30628c`는 변경하지 않았다.",
+          "delta는 `docs/weather-marker-generic-plan-performance.md` 1개8삽입/1삭제뿐이고 제품 repository.py와 테스트 blob은12083과 byte exact다. 추가 전체548 PASS/49warnings/601.87초와 frontend189/type/Ruff는 작성자/root 별도 실행 근거로 구별하며 본인 재실행으로 합산하지 않는다.",
+          "fresh GitHub 조회는 정확43ef에서 frontend **SUCCESS**, python **IN_PROGRESS**다. 따라서 최신 HEAD의 CI2 SUCCESS를 아직 주장하지 않는다. 원문 `weather100-final-doc-ci-d-r1-20261016.json` SHA `534894c81b38f9aceed5f596a34800aa8499b63559e5f49d432e46b8f6ec3f70`에 조회 시각과 응답을 보존했다. 후속 CI·build·운영 적용·live gate는 root가 별도로 확인해야 한다."
+        ]
+      }
+    ],
+    "101": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather101-marker-abort-review-a-r1-20261016.md",
+        "sha256": "8fc0424828c63840118d4477169bacf48349a4925ff56d6c0a99857b41dd6a98",
+        "head_tokens": [
+          "43efb28d87ea6daabac346b6b50c74c4e3c579a6",
+          "916715d7ca9414e259adb60ea22c73543a891af6"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "판정: **SOURCE_PASS / 열린 P0·P1·P2 0**.",
+          "고정 HEAD 916715d7ca9414e259adb60ea22c73543a891af6, base 43efb28d87ea6daabac346b6b50c74c4e3c579a6. 전체4파일 object delta·API request/readBody·marker effect/의존성과 cache/publication 경로를 직접 읽었다. WT clean/HEAD exact/diffcheck PASS. 독립 archive /home/digitie/dev/weather101-review-a-916715d-20261016, peer 원문 미열람/제품 수정0.",
+          "- immutable frontend source의 신규 기존7회귀: **7 PASS**. 실제 API helper+effect AST 실행이며 DOM/MapLibre mount가 아니다.",
+          "- 독립 archive에만 A 반례2개를 추가: 2번째 wave 뒤 취소 시3번째 발행0/이전 게시 유지, cancel무시 늦은 old응답과 refresh새응답의 공유ref race. 기존7을 포함해 **9 PASS**,0.840초. 합산16개로 세지 않는다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather101-marker-abort-review-c-r1-20261016.md",
+        "sha256": "90b5101db8a9effdf9d1dfd21c1dbdfb1bc7b1c320dfa5cb11a5c0df6281473a",
+        "head_tokens": [],
+        "exact_head_mentioned": true,
+        "summary": [
+          "- 판정: SOURCE_PASS / 열린 P0·P1·P2 0 / 제품 수정 요구 없음.",
+          "- 대상916715d7ca9414e259adb60ea22c73543a891af6, base43efb28d87ea6daabac346b6b50c74c4e3c579a6, 전체4파일 검토.",
+          "WeatherMap marker effect별 AbortController 하나를 만들고 그 effect의 모든 최대3개 fetch에 같은 signal을 전달한다. cleanup은 기존 cancelled=true를 먼저 설정하고 abort한다. Promise.allSettled 뒤 cancelled 확인, 후속 wave 중단, 공유 cache와 화면의 stale publication guard를 그대로 유지한다. 취소가 fetch가 진행되는 동안뿐 아니라 headers 뒤 response.text 대기 중 발생하더라도 실제 브라우저 signal이 body 읽기를 중단하며 guard가 늦은 성공을 막는다.",
+          "고정 batch60·effect별 최대3동시·부분 실패의 성공분 반영·refresh cache 초기화와 기존 viewport/선택 상세 요청 동작은 변경하지 않았다. effect 취소를 서버 SQL 즉시 종료·전체 host 요청 수의 엄격 상한·504 해소로 주장하지 않는다. AbortController 생성 전 조기 return과 cache가 이미 채워진 경우 후속 요청이 없다는 점도 확인했다. UI source97와 base43ef의 전체 frontend tree가 같아 이전 UI 통합을 되돌리는 변경이 아니다.",
+          "- headers 수신 뒤 body가 대기 중일 때 cleanup→abort가 body 오류를 만들고 cache/화면을 갱신하지 않음.",
+          "결과 **10 PASS / 2 test files**, test818ms/wrapper1.152초. 이 중 새 독립3개이며 저자196개 전체를 독립 재실행한 것으로 세지 않는다. 실제 React mount/MapLibre/browser 및 운영 요청 감소·DB CPU/RSS·504 개선은 NOT_RUN이다. Python 코드0변경이며 Weather conftest/기본PG에 접속하지 않았다.",
+          "시험/자체 archive 경로는 weather101-review-workspace-c-r1-20261016.json에 보존한다. test harness의 cacheDir만 자체 scratch로 지정했고 원 작성자 파일은 변경하지 않았다. source 현재HEAD/clean을 검토 후 재확인했다."
+        ]
+      }
+    ],
+    "102": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather102-health-review-c-r1-20261016.md",
+        "sha256": "cb34d2df08a37adfe0258268970deebb911d0f4ce291433e4a5b79cee04de2f4",
+        "head_tokens": [
+          "916715d7ca9414e259adb60ea22c73543a891af6"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 검토 요청: root의 Weather102 health/Common pin/Compose interval 변경 FULL 독립 검토. 운영 원문 접근 없이 public Git/source와 격리 fixture만 사용.",
+          "- 기준: 916715d7ca9414e259adb60ea22c73543a891af6 → 최종37b3dd58632094af64a180644bde25160eabe807, 제품074f5694fe4706739ae14f463ea78278fcb36859.",
+          "- 판정: SOURCE_PASS. P0/P1/P2 OPEN 0. 실제 빌드·배포·성능 성공 판정은 아니다.",
+          "기존 최종 Docker interpreter의 uv 설치·source COPY 뒤 helper RUN이1회이며, 뒤에 새 interpreter/COPY가 없고"
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather102-health-bytecode-review-d-r1-20261016.md",
+        "sha256": "d23620b90e3664e60e51b6fc0d3735c442ce58a89f9c118d54396254b0701e00",
+        "head_tokens": [
+          "074f5694fe4706739ae14f463ea78278fcb36859",
+          "916715d7ca9414e259adb60ea22c73543a891af6"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 판정: SOURCE_PASS. 열린 P0/P1/P2/P3=0.",
+          "- HEAD: 074f5694fe4706739ae14f463ea78278fcb36859 / base: 916715d7ca9414e259adb60ea22c73543a891af6",
+          "1. deploy/Dockerfile.python:42의 stdlib compile은 최종 Python3.12 stage의 uv sync 및 모든 source COPY 이후 root에서 정확히 한 번 실행한다. venv PATH가 선택한 실제 interpreter의 stdlib을 사용하며 실패를 RUN 성공으로 삼키지 않는다. API/CS 공용 이미지에 API HEALTHCHECK를 추가하지 않았다.",
+          "자기 Git archive + 설치 Common c485의 Python3.13.14 환경에서 --noconftest/--confcutdir로 신규 test_image_health_bytecode.py와 수정 test_common_health_adoption.py 전체 **16 PASS /1.34s**. Weather 원본 conftest/DB/SDK instance/provider/SSH/Docker 실행0. 두 파일은 loopback 가짜 HTTP/gRPC 서버와 소형 임시 compile fixture만 사용한다.",
+          "실제 HTTP 및 gRPC CLI subprocess는 설치된 Common으로 실행했다. 별도 직접 작성한 전체 Compose 투영/lock/소스 불변 모형도 PASS다. 원문 로그: weather102-review-d-focused-20261016.log."
+        ]
+      }
+    ],
+    "103": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather103-shortterm-retention-review-a-r3-20261016.md",
+        "sha256": "1a12961e92bc352d0f261ebb715b73c84d71c4befc818fa7f3c0bd26cd8040a6",
+        "head_tokens": [
+          "d0a4312edc8de51372b214be9c75e064fb576d7c"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "판정 SOURCE_PASS / P0·P1·P2 열린 지적0. 기존 W103-A-P2-01 미래 재입장 closure를 유지한다.",
+          "Exact HEAD d0a4312edc8de51372b214be9c75e064fb576d7c, 이전 독립 검토6fa7b5947dda7dfb486de47f08921485cf0a6e62. CP weather103-shortterm-retention-c-r3-20261016.checkpoint.json SHA66d8ad931a5d7b9bf6167b9985ea4b51e404ca84826f6c32935e9924ea4eb0f1. 전체5파일 delta SHA c02ae163e3bc8e18a14f5699f16e721e54c9cfdcf705b62358ba243ffb17be46를 직접 읽었다. CP 최종18파일의 size/SHA 모두 Git blob과 대조, Python15개 compile PASS.",
+          "기존 future 재입장/ingest/insert/forgotten-replay 네 실제 함수는 6fa와 AST 동일하다. source/raw/원 fetched·collected/valid 및 earliest retained pair 정책을 변경하지 않는다.",
+          "immutable git archive와 inert connection에서 기존 재입장36 + transaction/policy23 + 신규 delta23 = 82조건 PASS/EXIT0. 새23에는0/60s/2s/50ms 예산·복원, 잘못된 타입·음수·boolean 거절, True/unknown/timeout 전파 및 모형 transaction rollback, 식별자 선행 거절, 실제 SQLAlchemy metadata/CreateIndex와 실제 offline Alembic upgrade/downgrade SQL 정합, 새 index만 생성/삭제·정적 parent형식·revision chain·4함수 AST 동일이 포함된다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather103-testonly-review-a-r4-20261016.md",
+        "sha256": "43f8d3d040f8a29b15cd6381a8d6bcc438708378da19d8fd10eadedb80b08b65",
+        "head_tokens": [
+          "9f962848cfd8bb016a16ad4421f45067b169ac9e"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "판정 SOURCE_PASS / 열린 P0·P1·P2 없음.",
+          "대상08373c27a0eb8f3280386e51f9396695ca56c6b0는 이전 검토 d0a4312edc8de51372b214be9c75e064fb576d7c에서 tests/test_migration.py만18+/1-다. 변경 전체와 기존 시험 문맥을 읽고 실제 Git diff로 제품 코드 변경0을 확인했다. 통합 b7082e8→9f962848cfd8bb016a16ad4421f45067b169ac9e 역시 그 시험파일 하나만 달라 제품 전체 tree 내용은 그대로다.",
+          "독립 inert AST 검증: 실제 새 version assertion의20수용/19거절, index 정상수용·순서변경·누락discriminator·OR추가·NOTNULL누락·invalid·notready 거절7조건을 실행했다. version2와 source변경범위 등은 이미지 검토 묶음37조건에도 들어 있으므로 실제 PG7회라거나 전체 suite로 집계하지 않는다.",
+          "root가 전달한 b708 전체620PASS1FAIL의 유일 oldversion 기대값 실패는 그 회차의 원문으로 유지하며, 이 test-only closure가 그 전체 회차를621PASS로 재분류하지 않는다. 새 exact focused/index 시험 결과·최종CI는 root 결과와 구분한다. DB/SDK/Docker/SSH/HTTP/운영/privateauth 접근0·제품 수정0·모든 소유 도구 terminal."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather103-shortterm-retention-review-d-r3-20261016.md",
+        "sha256": "824f8cb3c3af7007a9f99781bd3be0caec4989fa20c2293ba5e739bb042b4b8c",
+        "head_tokens": [
+          "6fa7b5947dda7dfb486de47f08921485cf0a6e62",
+          "d0a4312edc8de51372b214be9c75e064fb576d7c"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "판정 SOURCE_PASS/OPEN P0·P1·P2·P3=0. 기존 W103-D-P2-01 FIXED 유지.",
+          "기존 f64 FULL12/6fa postfix9 원문·판정을 계승하며 이번5파일 전체와 보호 조회의 DDL transaction caller, 정리 SQL 본문을 추가 검토했다. peer review 미열람/제품 수정0.",
+          "- immutable archive/--noconftest/-c /dev/null: 순수50 PASS/0.37초.",
+          "- 자체 actual 함수 모형: cap/원문복원4, unknown/True/예외/비정수·음수 metadata6 거절, migration operation stub·metadata/SQLpredicate/key/create/drop 정확 일치 PASS.",
+          "- 운영/공유DB/PG 접속/SDK instance/Docker/HTTP/SSH/DDL0. 저자6fa 전체599와 최종50pure+5PG, root 통합전체는 서로 다른 source/range로 구분하며 본인시험에 합산하지 않는다. 실제 계획·동시 ingest/DDL/WAL·runtime 물리정리 완료는 본인 미검증이다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather103-migration-test-review-d-r1-20261016.md",
+        "sha256": "b2ecc370738d272a2363ba3c214ef0c4c8b16432409c917cd9a3dfcd046d9d6c",
+        "head_tokens": [],
+        "exact_head_mentioned": false,
+        "summary": [
+          "# Weather103 migration 시험 head 후속 독립 closure D",
+          "판정 SOURCE_PASS/OPEN P0·P1·P2=0.",
+          "대상08373c27a0eb8f3280386e51f9396695ca56c6b0. parent대비 tests/test_migration.py 한파일18추가/1삭제뿐이고 product/migration/dependency변경0이다. 기존103최종d0a source리뷰824f8cb3c3af7007a9f99781bd3be0caec4989fa20c2293ba5e739bb042b4b8c를계승한다.",
+          "새실제assert구간만AST로추출해metadata·connection대역에실행했다. 정상20/index양성과old19/invalid/notready/잘못된열순서/nonnull누락거절6조건PASS. SQL·SDK·conftest·DB접속0. 실제PG시험이나author/root전체재실행으로세지않는다.",
+          "통합 9f962848cfd8bb016a16ad4421f45067b169ac9e는 b708과대조해이시험파일하나만바뀌었고08373의해당blob과byteexact다. root b708620P1F의oldassert이력과통합6PGPASS는root별도실행범위이며본인PASS에합산하지않는다."
+        ]
+      }
+    ],
+    "104": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather104-marker-cpu-review-a-r1-20261016.md",
+        "sha256": "80c3b4fda94d7077071930ff80aa993fcce97484493e07f424611dd76374d998",
+        "head_tokens": [],
+        "exact_head_mentioned": false,
+        "summary": [
+          "대상568ae8544ecf7296e430cfbd396c4b1765e321de / 기준10237b3dd58632094af64a180644bde25160eabe807.",
+          "SOURCE_PASS / 열린 P0·P1·P2 없음. root 작성자 및 다른 reviewer의 모형·원문을 읽지 않았다.",
+          "공개 immutable Git5파일 전체 diff와 repository.marker_values_many/route 분기/특보 판정/",
+          "- 후보4개·known_at/source/id 정렬·관측 우선/없는 pair의 forecast fallback·station/sequence 경보",
+          "fallback을 유지한다. 이 변경은 API의 반복 판정을 줄인 것이며 repository 내부 특보판정까지",
+          "전체1회가 되었다고 주장하지 않는다. 실제시각 경계의 별도 source/DB snapshot을 추가하지 않는다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather104-marker-cpu-review-d-r1-20261016.md",
+        "sha256": "b8d026fab57c020150359f26b23dd4634def1087280eca15141117cee3817a4e",
+        "head_tokens": [
+          "37b3dd58632094af64a180644bde25160eabe807",
+          "568ae8544ecf7296e430cfbd396c4b1765e321de"
+        ],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 판정: SOURCE_PASS. 열린 P0/P1/P2/P3 = 0/0/0/0.",
+          "- 대상 HEAD: 568ae8544ecf7296e430cfbd396c4b1765e321de",
+          "- 독립 archive + --noconftest/-c /dev/null: test_marker_cpu/test_marker_generic_plan 중 순수 **12 PASS, 실제 PG 1 deselect**, 1.22초.",
+          "- 자체 실제 함수/SQLAlchemy 모형: partial pair zip, composite PK, partial literal, request cache key, 새 bind 값, quoted/Unicode 입력, empty-no-query **7경계 PASS**.",
+          "저자 16순수/3RED1PASS는 본인 재검증 수와 합산하지 않았다. 문서의 3.28~3.94초는 프로파일 오버헤드가 있는 Python 측정이며 HTTP 전후 효과가 아니다. 운영 marker 25초/504 해결, 실제 PostgreSQL custom/generic 실행 결과, 최종 전후 CPU·메모리·동시성 효과는 **미검증**이다. 이 소스 승인은 운영 배포·성능 개선 증명이 아니다."
+        ]
+      }
+    ],
+    "105": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather105-marker-queue-review-d-r1-20261017.md",
+        "sha256": "6fa56855b31b7b5ead845236db08b4e04952cc8d84f305b573b7560ad4a5f2a2",
+        "head_tokens": [
+          "0acb11fc94d1427f7e920d3feed8a69fac515c21",
+          "270a4e5388cd55bd31008cfc60f30e00fe3a93c6"
+        ],
+        "exact_head_mentioned": true,
+        "summary": [
+          "판정: **SOURCE_PASS**, 열린 P0/P1/P2/P3 없음. D의 backend PR106 구현과 분리한 A 작성 frontend PR105 독립 리뷰다.",
+          "## 고정 대상",
+          "- HEAD: 270a4e5388cd55bd31008cfc60f30e00fe3a93c6",
+          "- source2: frontend/components/weather-map.tsx 및 weather-map.test.ts",
+          "Git 고정 blob 및 checkpoint/diff SHA를 재확인했다. 두 변경 파일 전체와 관련 API signal/JSON 경로, cluster의 markers→useMemo GeoJSON/setData 경로 및 author source-only handoff를 읽었다. peer review 원문은 읽지 않았다. 원 WT 및 제품 변경0.",
+          "1. **배정·상한·종료** — weather-map.tsx:391–410의 nextChunk 선택/증가는 await 전 동기 구간이므로 같은 JS event loop에서 중복 배정되지 않는다. min(3,chunks.length) worker만 만들고 각 worker는 하나의 요청을 await한 뒤 다음 chunk를 가져간다. 60개 상한/전체 대상은 동일하며 빠른 슬롯은 느린 두 슬롯을 기다리지 않는다. 성공·실패 양쪽에서 nextChunk는 전진하므로 정상적인 finite 입력에 재시도·무한 loop가 추가되지 않는다.",
+          "4. **memo·렌더** — 265–279의 markers useMemo는 mapLocations/selectedId/summaries를 정확히 의존한다. 위치·summary·선택이 바뀌면 새 모델을 만들고, detail/provider 등 무관한 state만 변하면 같은 marker 배열을 유지한다. marker id/좌표/온도/condition/특보 수/선택/aria/title/클릭 대상의 기존 필드 정의는 유지된다. 현재 cluster 수신 코드는 markers 참조로 GeoJSON을 memo하므로 이 참조 보존에 의미가 있다. in-place mutation을 새로 도입하지 않았다.",
+          "5. **CPU·메모리 한계** — queue는 최대 3개의 active client 요청만 유지하지만 기존 wave 사이 유휴 시간이 줄어 DB 부하가 더 연속될 수 있다. chunk/캐시 저장량은 대상·방문 위치 수에 비례하며 기존 전체 범위를 줄이지 않는다. 성공별 state snapshot 및 marker 재구성이 발생하므로 692개/12요청에서는 기존 wave publication 최대4 대신 최대12 state publication이 가능하다. 실제 React render 수/CPU가 정확히 3배라는 뜻은 아니다. 무관 렌더 memo 절감과 더 잦은 partial publication의 순효과는 실제 측정 전에는 알 수 없다.",
+          "6. **scope·기존 경계** — selected detail의 loading/getLatest/getForecast effect, API/BFF DTO/timeout, 요청 대상/배치60/동시3/25초 gate는 변경하지 않았다. detail loading 원인의 해결 또는 R24 해결을 이 diff로 확정하지 않는다. 잘못된 API shape·중복 location 입력의 일반 방어는 기존 계약에 의존하며 이번 diff가 이를 새로 완화하지 않는다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather-finish-performance-review-c-r1-20261017.md",
+        "sha256": "225020ab60cc4670288d81cafb39f421c96634b6f8fe64dd1da6e2c45732a0fe",
+        "head_tokens": [],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 원 요청 범위: 통합 HEAD58230797b1b3c932537b28fc8ca5139e8075c49e, fixed base0acb11fc94d1427f7e920d3feed8a69fac515c21 대비 A270(frontend2파일)+D049(repository/tests5파일)의 독립 적대적 FULL 검토.",
+          "- 판정: **두 제품 모두 SOURCE_PASS, OPEN P0/P1/P2=0**.",
+          "정확 Git 객체의 변경7파일 전체 diff와 최종 파일을 읽었다. root WT HEAD가5823079임을 확인하고 old/new 각각 git archive를 별도 C 임시 폴더로 추출했다. AGENTS 규칙, marker API→repository 및 getMarkerSummaries→request 실행 경로, DTO 변환과 AwareDateTime을 함께 확인했다."
+        ]
+      }
+    ],
+    "106": [
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather-marker-winner-review-a-r1-20261017.md",
+        "sha256": "ca15668f30a090910be24bb80222f4582a186e9b29910d1774e64a843c60e3a7",
+        "head_tokens": [],
+        "exact_head_mentioned": false,
+        "summary": [
+          "## 판정과 고정 대상",
+          "SOURCE_PASS, 열린 P0/P1/P2 = 0. 제품 source 동등성 검토 결과이며 실제 성능/운영 UI 완료 승인이 아니다.",
+          "- 대상 HEAD049488fb9453e7c7648023b3478da9a48ea4cf7d, base0acb11fc94d1427f7e920d3feed8a69fac515c21.",
+          "- source checkpoint weather-marker-winner-source-d-r1-20261017.checkpoint.json SHA fe8d01dfa8a3a30d95473545e8efbef83dc1dbf0c489c3a2be69a0ead1e52edb 직접 확인.",
+          "- 본인 frontend PR105 작성분은 이 독립 리뷰 대상/집계에 포함하지 않는다. 다른 reviewer 원문·author 모델/결과 파일은 열람하지 않았다. 작성자 handoff는 source/tradeoff 안내로만 읽고 아래 검증을 새로 수행했다.",
+          "1. repository.py:2666–2685 후보 outer SELECT만 location_id/metric_key/known_at/source_record_key/value_id 다섯 필드로 줄였다. top4 lateral SQL/observed 우선·missing pair·고정 partial predicate·기존 Python tuple 비교가 보존된다. SQL collation 최대값이나 limit1로 바꾸지 않는다. 실제 SQLAlchemy Row attribute를 사용하는 자체 모델에서도 동등했다.",
+          "3. 2796–2803은 전체 ORM 조회의 DB 반환 순서를 selected_keys 삽입 순서로 되돌린다. winner 전체 행만 기존 _value_model로 변환해 payload 원형·source_record_key·시각·숫자/normalization을 보존한다. 기존 API/DTO/models.py/alerts.py는 Git blob byte 동일하다."
+        ]
+      },
+      {
+        "path": "/mnt/f/dev/kor-travel-weather/.playwright-mcp/weather-finish-performance-review-c-r1-20261017.md",
+        "sha256": "225020ab60cc4670288d81cafb39f421c96634b6f8fe64dd1da6e2c45732a0fe",
+        "head_tokens": [],
+        "exact_head_mentioned": false,
+        "summary": [
+          "- 원 요청 범위: 통합 HEAD58230797b1b3c932537b28fc8ca5139e8075c49e, fixed base0acb11fc94d1427f7e920d3feed8a69fac515c21 대비 A270(frontend2파일)+D049(repository/tests5파일)의 독립 적대적 FULL 검토.",
+          "- 판정: **두 제품 모두 SOURCE_PASS, OPEN P0/P1/P2=0**.",
+          "정확 Git 객체의 변경7파일 전체 diff와 최종 파일을 읽었다. root WT HEAD가5823079임을 확인하고 old/new 각각 git archive를 별도 C 임시 폴더로 추출했다. AGENTS 규칙, marker API→repository 및 getMarkerSummaries→request 실행 경로, DTO 변환과 AwareDateTime을 함께 확인했다."
+        ]
+      }
+    ]
+  },
+  "archived_evidence": [
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-health-bytecode-c.md",
+      "sha256": "cb34d2df08a37adfe0258268970deebb911d0f4ce291433e4a5b79cee04de2f4",
+      "bytes": 3397
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-health-bytecode-d.md",
+      "sha256": "d23620b90e3664e60e51b6fc0d3735c442ce58a89f9c118d54396254b0701e00",
+      "bytes": 3415
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-marker-cpu-a.md",
+      "sha256": "80c3b4fda94d7077071930ff80aa993fcce97484493e07f424611dd76374d998",
+      "bytes": 4818
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-marker-cpu-d.md",
+      "sha256": "b8d026fab57c020150359f26b23dd4634def1087280eca15141117cee3817a4e",
+      "bytes": 3205
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-a-full.md",
+      "sha256": "aa0caac3689bc56153b2f3ba8d9f1d511398375b1f26f3b6f685278976208404",
+      "bytes": 6329
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-a-future.md",
+      "sha256": "b26f86a5bfbe1b8a317079440c0d2025cabbe2efdb24a28c618118d17e20b5c3",
+      "bytes": 5635
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-a-index.md",
+      "sha256": "1a12961e92bc352d0f261ebb715b73c84d71c4befc818fa7f3c0bd26cd8040a6",
+      "bytes": 4140
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-a-test.md",
+      "sha256": "43f8d3d040f8a29b15cd6381a8d6bcc438708378da19d8fd10eadedb80b08b65",
+      "bytes": 1934
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-d-full.md",
+      "sha256": "84dc88513da34b47ff78b117d7cffeb9ec6809a63fc5089e9c45ea76c257ec85",
+      "bytes": 4969
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-d-future.md",
+      "sha256": "05962387194528e8a00c5cc1b32017bc2555af93abbf1d1ec3a8ab0d5e081b83",
+      "bytes": 2823
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-d-index.md",
+      "sha256": "824f8cb3c3af7007a9f99781bd3be0caec4989fa20c2293ba5e739bb042b4b8c",
+      "bytes": 2736
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-16-weather-shortterm-retention-d-test.md",
+      "sha256": "b2ecc370738d272a2363ba3c214ef0c4c8b16432409c917cd9a3dfcd046d9d6c",
+      "bytes": 1429
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-17-weather-marker-combined-c.md",
+      "sha256": "225020ab60cc4670288d81cafb39f421c96634b6f8fe64dd1da6e2c45732a0fe",
+      "bytes": 8582
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-17-weather-marker-queue-author.md",
+      "sha256": "4a209bd2c19988843d190961fce37ded97580e270d80c77fd9790d5a3fc2fcf7",
+      "bytes": 3903
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-17-weather-marker-queue-d.md",
+      "sha256": "6fa56855b31b7b5ead845236db08b4e04952cc8d84f305b573b7560ad4a5f2a2",
+      "bytes": 6902
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-17-weather-marker-winner-a.md",
+      "sha256": "ca15668f30a090910be24bb80222f4582a186e9b29910d1774e64a843c60e3a7",
+      "bytes": 7156
+    },
+    {
+      "path": "docs/reviews/evidence/2026-10-17-weather-marker-winner-author.md",
+      "sha256": "09d9f9a293f16e98c7bf096c894fe8ebc286615dd3268cde06ad1573f5b3c42b",
+      "bytes": 9245
+    }
+  ],
+  "note": "공개 source 리뷰 내용과 binding 감사이며 신규 독립 제품 리뷰로 합산하지 않음"
+}
