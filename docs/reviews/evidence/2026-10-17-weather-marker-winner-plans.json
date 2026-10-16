@@ -1,0 +1,199 @@
+{
+  "phase": "ACTUAL_READONLY_WINNER_GENERIC_CUSTOM_PLANS",
+  "database_writes": 0,
+  "ddl": 0,
+  "location_count": 60,
+  "winner_pairs": 110,
+  "runs": [
+    {
+      "mode": "force_custom_plan",
+      "rows": 110,
+      "result_sha256": "f214cec4a7643bd119ee186a516e0fe2d3a486012d654a49937b6e9666e0b7b4",
+      "planning_ms": 6.953,
+      "execution_ms": 7.189,
+      "nodes": [
+        {
+          "Node Type": "Nested Loop",
+          "Actual Rows": 110,
+          "Actual Loops": 1
+        },
+        {
+          "Node Type": "Function Scan",
+          "Actual Rows": 110,
+          "Actual Loops": 1
+        },
+        {
+          "Node Type": "Append",
+          "Actual Rows": 1,
+          "Actual Loops": 110
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261014",
+          "Index Name": "weather_values_20261014_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 1,
+          "Actual Loops": 26,
+          "Relation Name": "weather_values_20261015",
+          "Index Name": "weather_values_20261015_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 1,
+          "Actual Loops": 84,
+          "Relation Name": "weather_values_20261016",
+          "Index Name": "weather_values_20261016_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261017",
+          "Index Name": "weather_values_20261017_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261018",
+          "Index Name": "weather_values_20261018_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261019",
+          "Index Name": "weather_values_20261019_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261020",
+          "Index Name": "weather_values_20261020_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261021",
+          "Index Name": "weather_values_20261021_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261022",
+          "Index Name": "weather_values_20261022_pkey"
+        },
+        {
+          "Node Type": "Seq Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_default"
+        }
+      ]
+    },
+    {
+      "mode": "force_generic_plan",
+      "rows": 110,
+      "result_sha256": "f214cec4a7643bd119ee186a516e0fe2d3a486012d654a49937b6e9666e0b7b4",
+      "planning_ms": 0.594,
+      "execution_ms": 7.128,
+      "nodes": [
+        {
+          "Node Type": "Nested Loop",
+          "Actual Rows": 110,
+          "Actual Loops": 1
+        },
+        {
+          "Node Type": "Function Scan",
+          "Actual Rows": 110,
+          "Actual Loops": 1
+        },
+        {
+          "Node Type": "Append",
+          "Actual Rows": 1,
+          "Actual Loops": 110
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261014",
+          "Index Name": "weather_values_20261014_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 1,
+          "Actual Loops": 26,
+          "Relation Name": "weather_values_20261015",
+          "Index Name": "weather_values_20261015_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 1,
+          "Actual Loops": 84,
+          "Relation Name": "weather_values_20261016",
+          "Index Name": "weather_values_20261016_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261017",
+          "Index Name": "weather_values_20261017_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261018",
+          "Index Name": "weather_values_20261018_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261019",
+          "Index Name": "weather_values_20261019_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261020",
+          "Index Name": "weather_values_20261020_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261021",
+          "Index Name": "weather_values_20261021_pkey"
+        },
+        {
+          "Node Type": "Index Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_20261022",
+          "Index Name": "weather_values_20261022_pkey"
+        },
+        {
+          "Node Type": "Seq Scan",
+          "Actual Rows": 0,
+          "Actual Loops": 0,
+          "Relation Name": "weather_values_default"
+        }
+      ]
+    }
+  ],
+  "prepared_counts": [
+    2,
+    2
+  ]
+}
