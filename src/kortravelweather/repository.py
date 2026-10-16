@@ -65,6 +65,7 @@ from .metrics import (
 )
 from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
+    DEFAULT_PARTITION,
     DETACHED_DEFAULT,
     VALUES_TABLE,
     add_default_floor,
@@ -100,6 +101,15 @@ from .partitions import (
     validate_default_floor,
     validate_foreign_keys_into_facts,
     write_deferral_mark,
+)
+from .retention import (
+    SHORT_FORECAST_CANDIDATES_SQL,
+    SHORT_FORECAST_EXISTS_SQL,
+    SHORT_FORECAST_PREDICATE,
+    ShortForecastPartitionRetained,
+    expired_short_forecast,
+    retained_short_forecast,
+    short_forecast_cutoff,
 )
 from .settings import WeatherSettings, get_settings
 
@@ -1595,6 +1605,7 @@ class WeatherRepository:
         *,
         allow_replay_payload_mismatch: bool = False,
         expired_window: tuple[datetime, datetime] | None = None,
+        short_cutoff: datetime | None = None,
     ) -> bool | None:
         """Insert one fact: ``True`` inserted, ``False`` replayed, ``None`` expired.
 
@@ -1611,6 +1622,9 @@ class WeatherRepository:
             expired_window is not None
             and canonical_known is not None
             and expired_window[0] <= canonical_known < expired_window[1]
+            and not (
+                short_cutoff is not None and retained_short_forecast(value, short_cutoff)
+            )
         ):
             # Already past retention on arrival: see ``_retention_bounds``.
             return None
@@ -1671,11 +1685,14 @@ class WeatherRepository:
                 # representation rather than turning a harmless replay into a
                 # failed sync.  All typed identity/value fields remain strict.
                 if allow_replay_payload_mismatch and changed == ["payload"]:
-                    return False
+                    return None if short_cutoff is not None and expired_short_forecast(
+                        value, short_cutoff
+                    ) else False
                 raise ValueError(f"immutable weather fact 충돌: {value_id} ({', '.join(changed)})")
-            return False
+            return None if short_cutoff is not None and expired_short_forecast(
+                value, short_cutoff
+            ) else False
         row = WeatherValueRow(value_id=value_id)
-        session.add(row)
         row.location_id = value.location_id
         row.provider = value.provider
         row.dataset_key = value.dataset_key
@@ -1702,6 +1719,10 @@ class WeatherRepository:
         row.collected_at = canonical_collected
         row.source_record_key = source_key
         existing[(value_id, canonical_known)] = row
+        # 만료 fact도 배치 내 충돌 검증용 transient row만 보관하고 DB에는 추가하지 않는다.
+        if short_cutoff is not None and expired_short_forecast(value, short_cutoff):
+            return None
+        session.add(row)
         return True
 
     def _ingest_batch_session(
@@ -1831,7 +1852,10 @@ class WeatherRepository:
                 skipped.add(location_id)
         if skipped:
             facts = [value for value in facts if value.location_id not in skipped]
-        expired_window, horizon = self._retention_bounds(session) if facts else (None, None)
+        catalog = self._retention_catalog(session) if facts else (None, [])
+        expired_window, horizon = self._retention_bounds(session, catalog=catalog)
+        admitted_at = kst_now()
+        short_cutoff = short_forecast_cutoff(admitted_at)
         source_rows: dict[str, SourceRecordRow] = {}
         # 위치 잠금으로 보호된 배치 안에서만 격자 두 값을 재사용한다. ORM row나
         # session/global 캐시를 보관하지 않아 메모리와 다음 배치의 정합성을 지킨다.
@@ -1843,9 +1867,13 @@ class WeatherRepository:
             for value in facts
         ]
         stored_facts = self._existing_facts_session(session, resolved)
+        resolved = self._readmit_retained_short_session(
+            session, resolved, stored_facts, catalog=catalog,
+            admitted_at=admitted_at, short_cutoff=short_cutoff,
+        )
         if horizon is not None:
             resolved = self._redate_forgotten_replays_session(
-                session, resolved, stored_facts, horizon
+                session, resolved, stored_facts, horizon, short_cutoff=short_cutoff,
             )
         loaded = 0
         candidates: list[_ResolvedFact] = []
@@ -1856,6 +1884,7 @@ class WeatherRepository:
                 stored_facts,
                 allow_replay_payload_mismatch=fact.source_key in replay_source_keys,
                 expired_window=expired_window,
+                short_cutoff=short_cutoff,
             )
             if outcome is None:
                 continue
@@ -2065,7 +2094,8 @@ class WeatherRepository:
 
     @staticmethod
     def _retention_bounds(
-        session: Session,
+        session: Session, *,
+        catalog: tuple[datetime | None, list[tuple[datetime, datetime]]] | None = None,
     ) -> tuple[tuple[datetime, datetime] | None, datetime | None]:
         """``(expired window, horizon)`` from the partition catalog.
 
@@ -2088,11 +2118,12 @@ class WeatherRepository:
         horizon and its fact is gone (``_redate_forgotten_replays_session``).
         Two catalog reads per batch.
         """
-        connection = session.connection()
-        floor = default_partition_floor(connection)
+        floor, bounds = catalog if catalog is not None else WeatherRepository._retention_catalog(
+            session
+        )
         if floor is None:
             return None, None
-        lowers = [lower for lower, _ in dated_partition_bounds(connection) if lower >= floor]
+        lowers = [lower for lower, _ in bounds if lower >= floor]
         if not lowers:
             return None, None
         horizon = min(lowers)
@@ -2100,11 +2131,79 @@ class WeatherRepository:
         return window, horizon
 
     @staticmethod
+    def _retention_catalog(
+        session: Session,
+    ) -> tuple[datetime | None, list[tuple[datetime, datetime]]]:
+        """배치당 기존 catalog 두 조회를 일반 보존과 미래 재입장에서 공유한다."""
+        connection = session.connection()
+        floor = default_partition_floor(connection)
+        return floor, dated_partition_bounds(connection) if floor is not None else []
+
+    @staticmethod
+    def _readmit_retained_short_session(
+        session: Session, facts: list[_ResolvedFact],
+        stored: dict[tuple[str, datetime | None], WeatherValueRow], *,
+        catalog: tuple[datetime | None, list[tuple[datetime, datetime]]],
+        admitted_at: datetime, short_cutoff: datetime,
+    ) -> list[_ResolvedFact]:
+        """원 clock이 사용 불가한 보존 대상만 새 known_at으로 재입장시킨다."""
+        protected = [
+            fact for fact in facts if fact.known_at is not None
+            and retained_short_forecast(fact.value, short_cutoff)
+            and (fact.value_id, fact.known_at) not in stored
+        ]
+        if not protected:
+            return facts
+        # 원 source가 새 것이면 FK상 기존 fact가 없다. 기존 source의 잊힌 clock만
+        # value_id별 최초 retained row를 최대1000개씩 조회해 재입장 clock을 재사용한다.
+        ids = list(dict.fromkeys(fact.value_id for fact in protected if fact.replayed))
+        prior: dict[str, WeatherValueRow] = {}
+        for offset in range(0, len(ids), 1000):
+            rows = session.scalars(
+                select(WeatherValueRow)
+                .where(WeatherValueRow.value_id.in_(ids[offset:offset + 1000]))
+                .distinct(WeatherValueRow.value_id)
+                .order_by(WeatherValueRow.value_id, WeatherValueRow.known_at)
+            ).all()
+            for row in rows:
+                prior[row.value_id] = row
+                stored[(row.value_id, _canonical_row_datetime(row.known_at))] = row
+        floor, bounds = catalog
+
+        def routable(clock: datetime) -> bool:
+            return floor is None or clock < floor or any(
+                lower <= clock < upper for lower, upper in bounds
+            )
+
+        result = []
+        for fact in facts:
+            if not retained_short_forecast(fact.value, short_cutoff) or fact.known_at is None:
+                result.append(fact)
+                continue
+            row = prior.get(fact.value_id)
+            if (fact.value_id, fact.known_at) in stored:
+                result.append(fact)
+            elif row is not None:
+                result.append(replace(
+                    fact, known_at=_canonical_row_datetime(row.known_at),
+                    collected_at=_canonical_row_datetime(row.collected_at),
+                ))
+            elif routable(fact.known_at):
+                # 정상 첫 입장/DEFAULT 수용이면 원 source clock을 그대로 보존한다.
+                result.append(fact)
+            else:
+                if not routable(admitted_at):
+                    raise ValueError("현재 재입장시각의 fact partition이 없습니다.")
+                # source.fetched_at에 원 known_at이 남는다. collected/raw/target은 불변이다.
+                result.append(replace(fact, known_at=_canonical_datetime(admitted_at)))
+        return result
+
+    @staticmethod
     def _redate_forgotten_replays_session(
         session: Session,
         facts: list[_ResolvedFact],
         stored: dict[tuple[str, datetime | None], WeatherValueRow],
-        horizon: datetime,
+        horizon: datetime, *, short_cutoff: datetime | None = None,
     ) -> list[_ResolvedFact]:
         """Re-date replays whose first fetch retention has already forgotten.
 
@@ -2144,6 +2243,9 @@ class WeatherRepository:
             and fact.known_at is not None
             and fact.known_at < horizon
             and (fact.value_id, fact.known_at) not in stored
+            and not (
+                short_cutoff is not None and retained_short_forecast(fact.value, short_cutoff)
+            )
         ]
         if not stale:
             return facts
@@ -3159,6 +3261,76 @@ class WeatherRepository:
             observe_sync_finished(row.provider, row.dataset_key, status="failed")
         return recovered
 
+    def purge_expired_short_forecast(
+        self, *, cutoff: datetime, batch_size: int = 1000, dry_run: bool = True,
+    ) -> dict[str, Any]:
+        """KMA 단기예보의 지난 valid_at만 복합키 단위로 유한 정리한다."""
+        latest_cutoff = short_forecast_cutoff(kst_now())
+        if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+            raise ValueError("cutoff는 timezone-aware여야 합니다.")
+        cutoff = cutoff.astimezone(UTC)
+        if cutoff > latest_cutoff:
+            raise ValueError("cutoff는 현재시각에서6시간을 뺀 값보다 늦을 수 없습니다.")
+        if (
+            isinstance(batch_size, bool) or not isinstance(batch_size, int)
+            or not 1 <= batch_size <= 1000
+        ):
+            raise ValueError("batch_size는1~1000 정수여야 합니다.")
+        started = time.monotonic()
+        report: dict[str, Any] = {
+            "cutoff": cutoff.isoformat(), "matched_in_batch": 0,
+            "pointers_deleted": 0, "facts_deleted": 0,
+            "remaining": None, "deferred": False,
+        }
+        with self._session_factory.begin() as session:
+            if dry_run:
+                session.execute(text("SET TRANSACTION READ ONLY"))
+            session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
+            session.execute(text("SET LOCAL lock_timeout = '1000ms'"))
+            if not dry_run and not session.scalar(text(
+                "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
+            )):
+                report["deferred"] = True
+                report["elapsed_seconds"] = time.monotonic() - started
+                return report
+            statement = SHORT_FORECAST_CANDIDATES_SQL
+            if not dry_run:
+                statement += " FOR UPDATE SKIP LOCKED"
+            keys = [tuple(row) for row in session.execute(
+                text(statement), {"cutoff": cutoff, "batch_size": batch_size},
+            ).all()]
+            report["matched_in_batch"] = len(keys)
+            if keys and not dry_run:
+                relation = values(
+                    column("value_id", String(64)),
+                    column("known_at", AwareDateTime()),
+                    name="expired_short_keys",
+                ).data(keys)
+                pair = [
+                    WeatherCurrentValueRow.value_id == relation.c.value_id,
+                    WeatherCurrentValueRow.known_at == relation.c.known_at,
+                ]
+                report["pointers_deleted"] = int(session.execute(
+                    delete(WeatherCurrentValueRow).where(*pair)
+                ).rowcount or 0)
+                session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+                report["facts_deleted"] = int(session.execute(
+                    delete(WeatherValueRow).where(
+                        WeatherValueRow.value_id == relation.c.value_id,
+                        WeatherValueRow.known_at == relation.c.known_at,
+                        WeatherValueRow.known_at >= min(key[1] for key in keys),
+                        WeatherValueRow.known_at <= max(key[1] for key in keys),
+                    )
+                ).rowcount or 0)
+                if report["facts_deleted"] != len(keys):
+                    raise RuntimeError("선택한 단기예보 fact 삭제 수가 일치하지 않습니다.")
+            # SKIP LOCKED로 못 고른 행도 읽으므로 빈 batch를 전체 완료로 오인하지 않는다.
+            report["remaining"] = bool(session.scalar(
+                text(SHORT_FORECAST_EXISTS_SQL), {"cutoff": cutoff},
+            ))
+        report["elapsed_seconds"] = time.monotonic() - started
+        return report
+
     def purge_expired_history(
         self,
         *,
@@ -3226,10 +3398,20 @@ class WeatherRepository:
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
             pointers = session.execute(
-                text("DELETE FROM weather_current_values WHERE known_at < :cutoff"),
-                {"cutoff": cutoff},
+                text(
+                    "DELETE FROM weather_current_values cv WHERE cv.known_at < :cutoff "
+                    "AND NOT EXISTS (SELECT 1 FROM weather_values wv "
+                    "WHERE wv.value_id = cv.value_id AND wv.known_at = cv.known_at AND "
+                    + SHORT_FORECAST_PREDICATE.replace("provider =", "wv.provider =")
+                    .replace("dataset_key =", "wv.dataset_key =")
+                    .replace("weather_domain =", "wv.weather_domain =")
+                    .replace("forecast_style =", "wv.forecast_style =")
+                    .replace("valid_at IS", "wv.valid_at IS")
+                    + " AND wv.valid_at >= :short_cutoff)"
+                ),
+                {"cutoff": cutoff, "short_cutoff": short_forecast_cutoff(kst_now())},
             ).rowcount
-        dropped, deferred, overdue, unmarked = self._drop_expired_partitions(
+        dropped, deferred, overdue, unmarked, retained = self._drop_expired_partitions(
             cutoff.date(), prior_unmarked=frozenset(prior_unmarked)
         )
         validation_deferred = not self._validate_fact_foreign_keys()
@@ -3263,6 +3445,7 @@ class WeatherRepository:
             partitions_created=tuple(created),
             partitions_not_created=tuple(not_created),
             partitions_dropped=tuple(dropped),
+            partitions_retained_short_forecast=tuple(retained),
             partitions_deferred=tuple(deferred),
             partitions_overdue=tuple(overdue),
             partitions_unmarked=tuple(unmarked),
@@ -3454,10 +3637,10 @@ class WeatherRepository:
 
     def _drop_expired_partitions(
         self, cutoff: date, *, prior_unmarked: frozenset[str] = frozenset()
-    ) -> tuple[list[str], list[str], list[str], list[str]]:
+    ) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
         """Detach and drop each expired day.
 
-        Returns ``(dropped, deferred, overdue, unmarked)``.  Oldest first.  A
+        Returns ``(dropped, deferred, overdue, unmarked, retained)``.  Oldest first.  A
         detached table whose drop was deferred (this run or an earlier one)
         is retried first, and while one is left no further day is detached:
         at most one detached table ever waits, and the rest stay attached
@@ -3480,6 +3663,7 @@ class WeatherRepository:
         deferred: list[str] = []
         overdue: list[str] = []
         unmarked: list[str] = []
+        retained: list[str] = []
         held = False
 
         def missed(name: str, *, due: bool = True) -> None:
@@ -3501,19 +3685,27 @@ class WeatherRepository:
             return done
 
         for name in leftovers:
-            if drop(name):
-                dropped.append(name)
-            else:
-                missed(name)
+            try:
+                if drop(name):
+                    dropped.append(name)
+                else:
+                    missed(name)
+                    held = True
+            except ShortForecastPartitionRetained:
+                retained.append(name)
                 held = True
         for name in expired:
             if held:
                 missed(name, due=False)
                 continue
-            done, detached = self._try_partition_ddl(
-                lambda connection, name=name: self._detach_expired(connection, name),
-                breaker="retention",
-            )
+            try:
+                done, detached = self._try_partition_ddl(
+                    lambda connection, name=name: self._detach_expired(connection, name),
+                    breaker="retention",
+                )
+            except ShortForecastPartitionRetained:
+                retained.append(name)
+                continue
             if done and not detached:
                 continue  # gone already: not this run's to report
             if not done:
@@ -3524,7 +3716,7 @@ class WeatherRepository:
             else:
                 missed(name)
                 held = True
-        return dropped, deferred, overdue, unmarked
+        return dropped, deferred, overdue, unmarked, retained
 
     def _mark_deferred(self, name: str) -> tuple[bool, bool]:
         """Mark ``name`` deferred; return ``(marked before, written)``.
@@ -3560,10 +3752,34 @@ class WeatherRepository:
         return marked_before, False
 
     @staticmethod
+    def _preserve_short_forecast_partition(connection: Connection, name: str) -> None:
+        """보존할 valid_at이 있거나 조회가 실패하면 partition을 삭제하지 않는다."""
+        # catalog 날짜 이름과 정본 DEFAULT 이름 이외의 식별자는 허용하지 않는다.
+        dated = (
+            name.startswith("weather_values_")
+            and name.removeprefix("weather_values_").isdigit()
+            and len(name) == len("weather_values_") + 8
+        )
+        if not dated and name not in {DEFAULT_PARTITION, DETACHED_DEFAULT}:
+            raise ValueError("정본 weather partition 이름이 아닙니다.")
+        connection.execute(text("SET LOCAL statement_timeout = '5000ms'"))
+        retained = connection.scalar(
+            text(
+                f'SELECT EXISTS (SELECT 1 FROM "{name}" WHERE '
+                + SHORT_FORECAST_PREDICATE + " AND valid_at >= :short_cutoff)"
+            ),
+            {"short_cutoff": short_forecast_cutoff(kst_now())},
+        )
+        if retained is not False:
+            # unknown/NULL도 삭제 허용으로 바꾸지 않는다.
+            raise ShortForecastPartitionRetained(name)
+
+    @staticmethod
     def _detach_expired(connection: Connection, name: str) -> bool:
         if name not in {partition for partition, _ in existing_partitions(connection)}:
             return False  # another run got there first
         lock_for_partition_ddl(connection, drop_foreign_keys=True)
+        WeatherRepository._preserve_short_forecast_partition(connection, name)
         keys = drop_foreign_keys_into_facts(connection)
         detach_partition(connection, name)
         readd_foreign_keys_not_valid(connection, keys)
@@ -3574,6 +3790,8 @@ class WeatherRepository:
         if name not in {table for table, _ in detached_leftovers(connection)}:
             return False
         lock_for_detached_drop(connection)
+        connection.execute(text(f'LOCK TABLE "{name}" IN ACCESS EXCLUSIVE MODE'))
+        WeatherRepository._preserve_short_forecast_partition(connection, name)
         drop_detached_partition(connection, name)
         return True
 

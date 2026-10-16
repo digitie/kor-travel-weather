@@ -24,3 +24,9 @@ target_at, source_record_key)`다. `value_id`는 이 축의 hash이며 source re
 
 `weather_values`와 `weather_source_records`는 PostgreSQL DB trigger로 UPDATE/DELETE를 막는다.
 PostgreSQL `timestamptz`가 timezone-aware 값의 저장·조회 기준이다.
+
+
+KMA 단기예보의 미래·최근6시간 값은 원 fact가 없고 원 clock이 retention gap으로 저장 불가한
+경우에만 재입장 시각을 known_at으로 사용한다. source.fetched_at으로 원 clock을 복원할 수 있고
+collected_at/issued_at/valid_at/payload/lineage는 불변이다. 정상 DEFAULT 첫 입장과
+이미 보유한 최초 복합키는 유지한다. 자세한 예외는 [ADR-072](../adr/072-weather-bitemporal.md)를 따른다.
