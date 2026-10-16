@@ -67,6 +67,14 @@ describe("every Dagster operation is scoped to this code location", () => {
     });
   });
 
+  it("선택한 실패 응답의 실제 식별자를 paging 및 tenant 범위와 함께 요청한다", () => {
+    const body = forwarded({ operationName: "WeatherDagsterRunFailure", variables: { runId: RUN_ID, cursor: "previous-page" } });
+    expect(body.query).toMatch(/results\s*\{\s*runId\s+jobName\s+status\s+eventConnection/);
+    expect(body.query).toContain("eventConnection(limit: 1000, afterCursor: $cursor)");
+    expect(body.query).toMatch(/runsOrError\(limit: 1, filter: \{ runIds: \[\$runId\], tags:/);
+    expect(body.variables).toEqual({ runId: RUN_ID, cursor: "previous-page", repositoryTag: DAGSTER_REPOSITORY_TAG_VALUE });
+  });
+
   it("the run-failure lookup is filtered by the same tag, not fetched by id alone", () => {
     const body = forwarded({ operationName: "WeatherDagsterRunFailure", variables: { runId: RUN_ID } });
     expect(body.query).toMatch(/runsOrError\(limit: 1, filter: \{ runIds: \[\$runId\], tags:/);
