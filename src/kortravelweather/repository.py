@@ -39,6 +39,7 @@ from sqlalchemy import (
     delete,
     desc,
     func,
+    literal,
     not_,
     nullslast,
     or_,
@@ -2506,16 +2507,25 @@ class WeatherRepository:
                 "marker_metrics"
             )
 
+            # 고정 부분 인덱스 조건은 generic plan에서도 증명할 수 있어야 한다.
+            # 요청 위치/시각과 VALUES의 pair는 계속 bind parameter로 유지한다.
+            marker_metric_literals = tuple(
+                literal(key, literal_execute=True) for key in _MARKER_METRIC_KEYS
+            )
+
             def candidate_ids(*, observed_only: bool) -> Any:
                 predicates = [
                     WeatherValueRow.location_id == requested_locations.c.location_id,
                     WeatherValueRow.metric_key == requested_metrics.c.metric_key,
-                    WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                    WeatherValueRow.metric_key.in_(marker_metric_literals),
                 ]
                 if observed_only:
                     predicates.append(
                         WeatherValueRow.forecast_style.in_(
-                            ("observed", "nowcast")
+                            (
+                                literal("observed", literal_execute=True),
+                                literal("nowcast", literal_execute=True),
+                            )
                         )
                     )
                 candidates = (
@@ -2594,7 +2604,7 @@ class WeatherRepository:
                         WeatherValueRow.location_id
                         == missing_locations.c.location_id,
                         WeatherValueRow.metric_key == missing_locations.c.metric_key,
-                        WeatherValueRow.metric_key.in_(_MARKER_METRIC_KEYS),
+                        WeatherValueRow.metric_key.in_(marker_metric_literals),
                     )
                     .order_by(
                         nullslast(desc(WeatherValueRow.known_at)),
@@ -2666,8 +2676,9 @@ class WeatherRepository:
                 .where(
                     WeatherValueRow.location_id.in_(location_ids),
                     or_(
-                        WeatherValueRow.weather_domain == "weather_alert",
-                        WeatherValueRow.metric_key == "ALERT",
+                        WeatherValueRow.weather_domain
+                        == literal("weather_alert", literal_execute=True),
+                        WeatherValueRow.metric_key == literal("ALERT", literal_execute=True),
                     ),
                     # Rank only what could still be active. Warnings accumulate
                     # in this append-only table, so ranking the whole history
