@@ -309,6 +309,12 @@ class WeatherValueRow(Base):
         # whole purge transaction, and with it every lock the transaction had
         # taken, for as long as the scan ran.
         Index("ix_weather_values_source_record_key", "source_record_key"),
+        # valid_at 순서로 최대1000개만 고르는 단기예보 정리 전용 부분 인덱스.
+        Index(
+            "ix_weather_values_short_forecast_retention",
+            "valid_at", "known_at", "value_id",
+            postgresql_where=text(SHORT_FORECAST_PREDICATE),
+        ),
         CheckConstraint(
             "value_number IS NOT NULL OR value_text IS NOT NULL",
             name="ck_weather_values_has_value",
@@ -3762,7 +3768,17 @@ class WeatherRepository:
         )
         if not dated and name not in {DEFAULT_PARTITION, DETACHED_DEFAULT}:
             raise ValueError("정본 weather partition 이름이 아닙니다.")
-        connection.execute(text("SET LOCAL statement_timeout = '5000ms'"))
+        previous = connection.scalar(text("SHOW statement_timeout"))
+        milliseconds = connection.scalar(text(
+            "SELECT setting::bigint FROM pg_settings WHERE name = 'statement_timeout'"
+        ))
+        if (
+            not isinstance(previous, str) or type(milliseconds) is not int or milliseconds < 0
+        ):
+            raise RuntimeError("기존 statement_timeout을 확인할 수 없습니다.")
+        # 0은 무제한이다. 이미5초보다 작은 예산이면 그 예산도 늘리지 않는다.
+        cap = min(milliseconds, 5000) if milliseconds else 5000
+        connection.execute(text(f"SET LOCAL statement_timeout = '{cap}ms'"))
         retained = connection.scalar(
             text(
                 f'SELECT EXISTS (SELECT 1 FROM "{name}" WHERE '
@@ -3771,8 +3787,13 @@ class WeatherRepository:
             {"short_cutoff": short_forecast_cutoff(kst_now())},
         )
         if retained is not False:
-            # unknown/NULL도 삭제 허용으로 바꾸지 않는다.
+            # unknown/NULL·오류는 호출자의 transaction rollback으로 전파한다.
             raise ShortForecastPartitionRetained(name)
+        # 성공 조회 뒤에는 후속 DDL의 원래 세션별 예산을 원문 그대로 복원한다.
+        connection.execute(
+            text("SELECT set_config('statement_timeout', :previous, true)"),
+            {"previous": previous},
+        )
 
     @staticmethod
     def _detach_expired(connection: Connection, name: str) -> bool:
