@@ -261,6 +261,22 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     }
     return [selected, ...inViewport];
   }, [selected, viewport, visibleLocations]);
+  // 상세·제공처 상태만 바뀐 렌더는 동일한 GeoJSON을 다시 만들지 않는다.
+  const markers = useMemo(() => mapLocations.map((location) => {
+    const summary = summaries[location.location_id];
+    const state = markerState(summary);
+    return {
+      id: location.location_id,
+      lngLat: [location.longitude, location.latitude] as [number, number],
+      temperature: markerTemperature(summary),
+      condition: markerCondition(state.kind),
+      alertCount: summary?.alerts.length ?? 0,
+      selected: location.location_id === selectedId,
+      ariaLabel: `${location.name}: ${state.label} 날씨 보기`,
+      title: location.name,
+      onClick: () => setSelectedId(location.location_id),
+    };
+  }), [mapLocations, selectedId, summaries]);
   const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
   const latestCollectedAt = useMemo(() => {
     const timestamps = values
@@ -372,26 +388,26 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           .map((location) => location.location_id),
       );
     }
-    const loadChunks = async () => {
-      try {
-        for (let index = 0; index < chunks.length; index += MARKER_BATCH_CONCURRENCY) {
-          const responses = await Promise.allSettled(
-            chunks
-              .slice(index, index + MARKER_BATCH_CONCURRENCY)
-              .map((chunk) => getMarkerSummaries(chunk, controller.signal)),
-          );
+    let nextChunk = 0;
+    const loadWorker = async () => {
+      while (!cancelled && nextChunk < chunks.length) {
+        // 다음 chunk 선택과 증가 사이에는 await가 없어 worker끼리 중복 배정하지 않는다.
+        const chunk = chunks[nextChunk++];
+        try {
+          const response = await getMarkerSummaries(chunk, controller.signal);
           if (cancelled) return;
-          for (const response of responses) {
-            if (response.status !== "fulfilled") continue;
-            for (const item of response.value.data) summariesRef.current[item.location_id] = item;
-          }
+          for (const item of response.data) summariesRef.current[item.location_id] = item;
+          // 느린 다른 요청을 기다리지 않고 성공한 위치를 보존·표시한다.
           setSummaries({ ...summariesRef.current });
+        } catch {
+          // 실패한 chunk만 격리하고, 취소된 세대는 다음 요청도 시작하지 않는다.
+          if (cancelled) return;
         }
-      } catch {
-        if (!cancelled) setSummaries({ ...summariesRef.current });
       }
     };
-    void loadChunks();
+    void Promise.all(
+      Array.from({ length: Math.min(MARKER_BATCH_CONCURRENCY, chunks.length) }, loadWorker),
+    );
     return () => {
       cancelled = true;
       controller.abort();
@@ -441,21 +457,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
               zoom={selected ? 7.2 : 6}
             >
               <VWorldWeatherClusters
-                markers={mapLocations.map((location) => {
-                  const summary = summaries[location.location_id];
-                  const state = markerState(summary);
-                  return {
-                    id: location.location_id,
-                    lngLat: [location.longitude, location.latitude] as [number, number],
-                    temperature: markerTemperature(summary),
-                    condition: markerCondition(state.kind),
-                    alertCount: summary?.alerts.length ?? 0,
-                    selected: location.location_id === selectedId,
-                    ariaLabel: `${location.name}: ${state.label} 날씨 보기`,
-                    title: location.name,
-                    onClick: () => setSelectedId(location.location_id),
-                  };
-                })}
+                markers={markers}
               />
             </VWorldMapView>
             <div className="map-legend"><span className="legend-dot" /> 지도 표시 위치 <span className="legend-muted">{mapLocations.length}/{visibleLocations.length}곳</span></div>
