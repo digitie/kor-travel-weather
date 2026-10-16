@@ -997,68 +997,76 @@ class WeatherRepository:
         )
 
     @staticmethod
-    def _advisory_xact_lock_once(session: Session, scope: str) -> bool:
-        """Take ``pg_advisory_xact_lock(hashtext(scope))`` once per transaction.
+    def _advisory_xact_lock_once(
+        session: Session, scope: str, *, shared: bool = False
+    ) -> bool:
+        """같은 transaction의 advisory scope와 shared/exclusive 모드를 기록한다.
 
-        The lock is reentrant, so taking it again is harmless but not free:
-        the ingest used to take its location and source locks once per fact,
-        four round trips per fact on a run of hundreds of thousands.  Returns
-        whether this call took it.
+        반복 fact마다 왕복하지 않지만, shared 캐시로 exclusive 승격을 생략하지 않는다.
+        이번 호출에서 새 잠금을 얻거나 승격했으면 True다.
         """
         held = WeatherRepository._held_advisory_scopes(session)
-        if scope in held:
+        mode = held.get(scope)
+        if mode == "exclusive" or (shared and mode == "shared"):
             return False
+        lock = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
         session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtext(:scope))"), {"scope": scope}
+            text(f"SELECT {lock}(hashtext(:scope))"), {"scope": scope}
         )
-        held.add(scope)
+        held[scope] = "shared" if shared else "exclusive"
         return True
 
     @staticmethod
-    def _held_advisory_scopes(session: Session) -> set[str]:
+    def _held_advisory_scopes(session: Session) -> dict[str, str]:
         """The advisory scopes the session's current transaction holds."""
         transaction = session.get_transaction()
         held = session.info.get("advisory_xact_scopes")
         if held is None or held[0] is not transaction:
-            held = (transaction, set())
+            held = (transaction, {})
             session.info["advisory_xact_scopes"] = held
         return held[1]
 
-    def _try_lock_location_session(self, session: Session, location_id: str) -> bool:
+    def _try_lock_location_session(
+        self, session: Session, location_id: str, *, shared: bool = False
+    ) -> bool:
         """``_lock_location_session`` that only tries the advisory lock.
 
         Returns whether the transaction holds the location afterwards.  The
         advisory try never waits, so it cannot be the waiting edge of a
         deadlock and a caller taking these in sorted order keeps the ingest's
-        lock order.  The location row's ``FOR UPDATE`` after it can still
+        lock order.  The location row's lock after it can still
         wait (bounded by the ingest ``lock_timeout``): every writer of that
         row takes the advisory lock first, so it waits only on a writer that
         does not.
         """
         scope = f"location:{location_id}"
         held = self._held_advisory_scopes(session)
-        if scope in held:
+        mode = held.get(scope)
+        if mode == "exclusive" or (shared and mode == "shared"):
             return True
+        lock = "pg_try_advisory_xact_lock_shared" if shared else "pg_try_advisory_xact_lock"
         if not session.execute(
-            text("SELECT pg_try_advisory_xact_lock(hashtext(:scope))"), {"scope": scope}
+            text(f"SELECT {lock}(hashtext(:scope))"), {"scope": scope}
         ).scalar_one():
             return False
-        held.add(scope)
+        held[scope] = "shared" if shared else "exclusive"
         session.execute(
             select(WeatherLocationRow.location_id)
             .where(WeatherLocationRow.location_id == location_id)
-            .with_for_update()
+            .with_for_update(read=shared, key_share=shared)
         ).scalar_one_or_none()
         return True
 
-    def _lock_location_session(self, session: Session, location_id: str) -> None:
-        """Serialize anchor mutation and fact publication for one location."""
-        if not self._advisory_xact_lock_once(session, f"location:{location_id}"):
+    def _lock_location_session(
+        self, session: Session, location_id: str, *, shared: bool = False
+    ) -> None:
+        """게시끼리는 anchor를 공유하고 catalog 변경은 배타적으로 직렬화한다."""
+        if not self._advisory_xact_lock_once(session, f"location:{location_id}", shared=shared):
             return
         session.execute(
             select(WeatherLocationRow.location_id)
             .where(WeatherLocationRow.location_id == location_id)
-            .with_for_update()
+            .with_for_update(read=shared, key_share=shared)
         ).scalar_one_or_none()
 
     def upsert_location(self, location: WeatherLocation) -> WeatherLocation:
@@ -1427,7 +1435,7 @@ class WeatherRepository:
         map holds rows only weakly, so without it a response cited by every
         fact of a batch was read back once per fact.
         """
-        self._lock_location_session(session, value.location_id)
+        self._lock_location_session(session, value.location_id, shared=True)
         source_key = value.source_record_key or _metric_source_key(value)
         canonical_target = _canonical_datetime(
             value.target_at
@@ -1753,8 +1761,8 @@ class WeatherRepository:
         # per fact.
         for location_id in sorted({value.location_id for value in facts}):
             if skipped is None:
-                self._lock_location_session(session, location_id)
-            elif not self._try_lock_location_session(session, location_id):
+                self._lock_location_session(session, location_id, shared=True)
+            elif not self._try_lock_location_session(session, location_id, shared=True):
                 skipped.add(location_id)
         if skipped:
             facts = [value for value in facts if value.location_id not in skipped]

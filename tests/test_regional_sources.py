@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from kortravelweather_dagster.regional_sources import publish_regional_records
+from sqlalchemy import text
 
 from kortravelweather.models import ForecastStyle, WeatherLocation
 from kortravelweather.providers import khoa, krex, krforest
@@ -319,6 +320,95 @@ def test_publish_cuts_between_stations_and_reports_the_cut() -> None:
     assert too_small["values_loaded"] == 0
     assert too_small["source_records"] == 0
     assert too_small["values_truncated"] is True
+
+
+def test_regional_publish_flushes_before_normalizing_the_whole_input(monkeypatch) -> None:
+    from kortravelweather_dagster import chunked_publish
+
+    monkeypatch.setattr(chunked_publish, "PUBLISH_CHUNK_LOCATIONS", 1)
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    normalized = 0
+    publishes = 0
+    original_ingest = repository.ingest_batch
+
+    def normalize(record, **kwargs):
+        nonlocal normalized
+        normalized += 1
+        return krforest.mountain_weather_to_weather_values(record, **kwargs)
+
+    def ingest(**kwargs):
+        nonlocal publishes
+        if publishes == 0:
+            assert normalized <= 2, "첫 chunk 전에 전체 원천을 정규화해 보관했습니다."
+        publishes += 1
+        return original_ingest(**kwargs)
+
+    monkeypatch.setattr(repository, "ingest_batch", ingest)
+    result = publish_regional_records(
+        repository=repository, provider=krforest.KRFOREST_PROVIDER,
+        dataset_key=krforest.KRFOREST_MOUNTAIN_DATASET,
+        records=[_mountain(obs_id=f"M{i}") for i in range(6)],
+        to_location=krforest.station_location, to_values=normalize,
+        build_source_record=krforest.mountain_source_record, max_values=1000,
+    )
+    assert normalized == 6 and publishes == 6
+    assert result["source_records"] == 6 and result["values_loaded"] > 0
+
+
+def test_regional_duplicate_location_and_partial_retry_preserve_lineage(monkeypatch) -> None:
+    from kortravelweather_dagster import chunked_publish
+
+    monkeypatch.setattr(chunked_publish, "PUBLISH_CHUNK_LOCATIONS", 1)
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    records = [_mountain(), _mountain(obs_id="M002"), _mountain(temperature_2m=9.0)]
+    original_ingest = repository.ingest_batch
+    chunks = []
+
+    def ingest(**kwargs):
+        chunks.append((list(kwargs["source_records"]), list(kwargs["values"])))
+        return original_ingest(**kwargs)
+
+    def fail_late(record, **kwargs):
+        if record is records[2]:
+            raise RuntimeError("모형의 늦은 원천 변환 실패")
+        return krforest.mountain_weather_to_weather_values(record, **kwargs)
+
+    def publish(normalize):
+        return publish_regional_records(
+            repository=repository, provider=krforest.KRFOREST_PROVIDER,
+            dataset_key=krforest.KRFOREST_MOUNTAIN_DATASET, records=records,
+            to_location=krforest.station_location, to_values=normalize,
+            build_source_record=krforest.mountain_source_record, max_values=1000,
+        )
+
+    monkeypatch.setattr(repository, "ingest_batch", ingest)
+    with pytest.raises(RuntimeError, match="늦은 원천"):
+        publish(fail_late)
+    one_station = len(krforest.mountain_weather_to_weather_values(
+        records[0], location_id="krforest-M001", source_record_key="s", known_at=KNOWN_AT
+    ))
+    failed = repository.list_sync_runs()[0]
+    assert failed.status == "failed" and failed.values_loaded == one_station
+    assert len(chunks) == 1
+
+    result = publish(krforest.mountain_weather_to_weather_values)
+    assert result["source_records"] == 3 and result["values_truncated"] is False
+    assert [chunk[1][0].location_id for chunk in chunks[1:]] == [
+        "krforest-M001", "krforest-M002", "krforest-M001"
+    ]
+    for sources, values in chunks:
+        assert len(sources) == 1 and len(values) == one_station
+        assert {value.source_record_key for value in values} == {sources[0]["source_record_key"]}
+    with repository.engine.connect() as connection:
+        source_count = connection.execute(
+            text("SELECT count(*) FROM weather_source_records")
+        ).scalar_one()
+        assert source_count == 3
+        # 재실행한 첫 관측은 중복되지 않고, 같은 위치의 다른 raw 관측은 별도 lineage다.
+        value_count = connection.execute(text("SELECT count(*) FROM weather_values")).scalar_one()
+        assert value_count == 3 * one_station
 
 
 def test_a_provider_removed_from_the_enabled_list_is_not_collected() -> None:
@@ -710,7 +800,9 @@ def test_the_mountain_fetch_walks_back_past_marks_with_no_readings() -> None:
     now = datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
     fake = _FakeForestClient(
         {
-            "202609100900": [_mountain(temperature_2m=None, temperature_10m=None)],
+            "202609100900": [
+                _mountain(**{attribute: None for _, attribute, _, _ in krforest._METRIC_FIELDS})
+            ],
             "202609100850": [_mountain(obs_id="M050")],
         }
     )
@@ -719,6 +811,36 @@ def test_the_mountain_fetch_walks_back_past_marks_with_no_readings() -> None:
         rows = krforest.fetch_mountain_weather(api_key="k", now=now)
     assert [r.obs_id for r in rows] == ["M050"]
     assert fake.asked == ["202609100900", "202609100850"]
+
+
+@pytest.mark.parametrize(
+    ("attribute", "reading", "metric"),
+    [
+        ("wind_speed_2m", 1.8, "WIND_SPEED"),
+        ("humidity_2m", 71.0, "HUMIDITY"),
+        ("temperature_10m", 0.0, "TEMP_10M"),
+        ("rainfall_tipping", 0.0, "RAINFALL"),
+        ("temperature_2m", 0.0, "TEMP"),
+    ],
+)
+def test_mountain_fetch_keeps_the_latest_mark_with_any_supported_reading(
+    monkeypatch, attribute: str, reading: float, metric: str
+) -> None:
+    empty = {field: None for _, field, _, _ in krforest._METRIC_FIELDS}
+    latest = _mountain(**{**empty, attribute: reading})
+    fake = _FakeForestClient({"202609100900": [latest], "202609100850": [_mountain()]})
+    monkeypatch.setattr(krforest, "ForestClient", lambda **_: fake)
+    rows = krforest.fetch_mountain_weather(
+        api_key="k", now=datetime(2026, 9, 10, 9, 4, tzinfo=UTC)
+    )
+    assert rows == [latest]
+    assert fake.asked == ["202609100900"]
+    values = krforest.mountain_weather_to_weather_values(
+        rows[0], location_id="krforest-M001", source_record_key="latest", known_at=KNOWN_AT
+    )
+    assert [(value.metric_key, float(value.value_number)) for value in values] == [
+        (metric, reading)
+    ]
 
 
 def test_the_walk_back_reaches_no_further_than_a_couple_of_hours() -> None:

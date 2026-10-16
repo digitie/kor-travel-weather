@@ -205,9 +205,13 @@ async def _fetch_mountain_weather(
             collected = await _fetch_one_mark(
                 client, stamp=stamp, max_records=max_records, page_size=page_size
             )
-            # A mark with rows but no readings is the same as no mark at all;
-            # keep walking rather than publishing a station list.
-            if any(record.temperature_2m is not None for record in collected):
+            # 기온이 없어도 풍속·습도 등 지원 관측값이 있으면 최신 시각을 사용한다.
+            # 0도 유효하며, 모든 관측값이 None인 관측소 목록만 건너뛴다.
+            if any(
+                getattr(record, attribute) is not None
+                for record in collected
+                for _, attribute, _, _ in _METRIC_FIELDS
+            ):
                 return collected
     return []
 

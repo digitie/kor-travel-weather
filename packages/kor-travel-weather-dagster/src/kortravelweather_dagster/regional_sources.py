@@ -3,7 +3,7 @@
 These three sources share a shape that none of the existing ones have: one call
 returns every station in the country, and each row carries its own coordinates.
 There is no catalog dataset to refresh separately and no per-location fan-out,
-so the whole run is a single request followed by one atomic publish.  That is
+so the run is a bounded fetch followed by short publication transactions. That is
 why they share :func:`publish_regional_records` instead of each growing its own
 copy of the anchor-creation and publish protocol.
 
@@ -65,7 +65,7 @@ from kortravelweather.providers.krforest_dust import (
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
-from .chunked_publish import chunk_publications, uncited_sources
+from . import chunked_publish
 
 
 def skipped_when_disabled(provider: str, settings: WeatherSettings) -> dict[str, Any] | None:
@@ -119,10 +119,24 @@ def publish_regional_records(
     try:
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
+        chunk_locations: set[str] = set()
+        source_count = 0
+        value_count = 0
+        published = 0
         anchored = 0
         skipped_without_coordinates = 0
         disabled = 0
         truncated = False
+
+        def flush() -> None:
+            nonlocal published
+            if not values:
+                return
+            published += repository.ingest_batch(source_records=sources, values=values)
+            sources.clear()
+            values.clear()
+            chunk_locations.clear()
+
         for record in records:
             location = to_location(record)
             if location is None:
@@ -165,23 +179,31 @@ def publish_regional_records(
             # The budget cuts between stations, never inside one: half a
             # station's readings, published as if complete, is worse than
             # fewer stations.
-            if len(values) + len(station_values) > max_values:
+            if value_count + len(station_values) > max_values:
                 truncated = True
                 break
+            # 전체 원천의 정규화 결과를 쌓지 않고 현재 chunk만 보관한다.
+            # 하나의 원천 관측과 그 metric set은 같은 transaction에 둔다.
+            if values and (
+                (
+                    existing.location_id not in chunk_locations
+                    and len(chunk_locations) >= chunked_publish.PUBLISH_CHUNK_LOCATIONS
+                )
+                or len(values) + len(station_values) > chunked_publish.PUBLISH_CHUNK_VALUES
+            ):
+                flush()
             sources.append(source)
             values.extend(station_values)
+            chunk_locations.add(existing.location_id)
+            source_count += 1
+            value_count += len(station_values)
 
-        # Stations publish in short location chunks (``chunked_publish``); the
-        # finish carries only lineage no fact cites, so it holds no location
-        # lock.  A chunk that fails leaves earlier chunks published -- whole
-        # stations, as the budget above already guarantees -- and the run row
-        # carries what they loaded.
-        published = 0
-        for chunk_sources, chunk in chunk_publications(sources, values):
-            published += repository.ingest_batch(source_records=chunk_sources, values=chunk)
+        # 늦은 원천 변환/게시 실패 뒤에도 이전 chunk와 그 저장량은 남는다.
+        # 모든 source는 위에서 facts와 함께 게시했으므로 finish에는 빈 묶음만 전달한다.
+        flush()
         loaded, finished = repository.publish_and_finish(
             run_id=run.run_id,
-            source_records=uncited_sources(sources, values),
+            source_records=[],
             values=[],
             grids_fetched=0,
             requests_fetched=1,
@@ -201,14 +223,14 @@ def publish_regional_records(
         # healthy run: krforest returned 513 stations with no coordinates and
         # reported success three times before anyone noticed it had never
         # written a value.
-        "produced_nothing": len(values) == 0,
+        "produced_nothing": value_count == 0,
         "records_fetched": len(records),
         "locations_anchored": anchored,
         "locations_disabled": disabled,
         "skipped_without_coordinates": skipped_without_coordinates,
         "values_loaded": loaded,
         "values_truncated": truncated,
-        "source_records": len(sources),
+        "source_records": source_count,
     }
 
 
