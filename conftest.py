@@ -16,6 +16,12 @@ os.environ.setdefault("KOR_TRAVEL_WEATHER_ENV", "development")
 os.environ.setdefault("KOR_TRAVEL_WEATHER_DATABASE_URL", TEST_DATABASE_URL)
 
 
+@pytest.fixture
+def weather_test_database_url() -> str:
+    """다른 conftest 모듈을 import하지 않고 동일 시험 DB 설정을 제공한다."""
+    return TEST_DATABASE_URL
+
+
 @pytest.fixture(autouse=True)
 def clean_postgresql_database() -> None:
     """Keep tests isolated while exercising the production database dialect."""

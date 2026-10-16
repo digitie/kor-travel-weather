@@ -132,6 +132,14 @@ class WeatherLocationRow(Base):
     __table_args__ = (
         Index("ix_weather_locations_enabled_region", "enabled", "region_code"),
         Index("ix_weather_locations_coordinates", "latitude", "longitude"),
+        # 공개 목록의 DB 기본 정렬 순서를 보존하며 매 요청의 locale sort를 피한다.
+        Index(
+            "ix_weather_locations_enabled_name_id",
+            "name",
+            "location_id",
+            postgresql_where=text("enabled IS TRUE"),
+            postgresql_include=["latitude", "longitude", "nx", "ny", "region_code", "enabled"],
+        ),
         CheckConstraint("latitude >= 33 AND latitude <= 43", name="ck_weather_locations_latitude"),
         CheckConstraint(
             "longitude >= 124 AND longitude <= 132", name="ck_weather_locations_longitude"
