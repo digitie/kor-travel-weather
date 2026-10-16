@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping
 from time import perf_counter
 from uuid import uuid4
 
+from anyio import CapacityLimiter, to_thread
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,6 +93,8 @@ def create_app(
     )
     api.state.settings = runtime_settings
     api.state.repository = runtime_repository
+    # 수집 버퍼는 하나만 만들고 대기는 일반 API의 worker 슬롯을 쓰지 않는다.
+    metrics_limiter = CapacityLimiter(1)
     if not runtime_settings.is_production:
         runtime_repository.create_schema()
 
@@ -211,7 +214,10 @@ def create_app(
                 observe_metric_error("forward_partitions")
                 logger.warning("forward partition gauge refresh failed", exc_info=True)
         try:
-            payload = metrics_payload() + forward_sample
+            # mmap 병합/정리가 느려져도 생존·일반 API의 이벤트 루프를 막지 않는다.
+            payload = (
+                await to_thread.run_sync(metrics_payload, limiter=metrics_limiter)
+            ) + forward_sample
         except Exception:
             logger.exception("Prometheus metrics collection failed")
             return Response(

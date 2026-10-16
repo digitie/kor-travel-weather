@@ -7,8 +7,12 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
+from types import SimpleNamespace
 
 import pytest
+from anyio.to_thread import current_default_thread_limiter
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
 from prometheus_client.mmap_dict import MmapedDict
@@ -59,6 +63,133 @@ def test_metrics_endpoint_is_authenticated_and_not_cached() -> None:
     assert "request-id-must-not-be-a-label" not in scraped.text
     # Scraping itself is deliberately excluded from the HTTP request counter.
     assert 'route="/metrics"' not in scraped.text
+
+
+
+def test_slow_metrics_collection_does_not_block_liveness(monkeypatch: pytest.MonkeyPatch) -> None:
+    """느린 mmap 수집이 동일 API 이벤트 루프의 생존 응답을 막지 않는다."""
+    entered = Event()
+    release = Event()
+    payload = b"weather_test_isolated 1\n"
+
+    def slow_metrics() -> bytes:
+        entered.set()
+        assert release.wait(timeout=5), "테스트 수집기 해제 신호 누락"
+        return payload
+
+    monkeypatch.setattr(sys.modules[create_app.__module__], "metrics_payload", slow_metrics)
+    client, _, metrics_token = _metrics_client()
+    with client, ThreadPoolExecutor(max_workers=2) as executor:
+        scrape = executor.submit(
+            client.get, "/metrics", headers={"authorization": f"Bearer {metrics_token}"}
+        )
+        try:
+            assert entered.wait(timeout=5), "테스트 수집기 미진입"
+            assert not scrape.done()
+            health = executor.submit(client.get, "/health")
+            response = health.result(timeout=0.5)
+            assert response.status_code == 200
+            assert response.json()["status"] == "ok"
+            assert not scrape.done(), "생존 응답 전에 수집이 이미 완료됨"
+        finally:
+            release.set()
+            scraped = scrape.result(timeout=5)
+        assert scraped.status_code == 200
+        assert scraped.content == payload
+        assert scraped.headers["cache-control"] == "no-store, private"
+
+
+
+def test_concurrent_scrapes_keep_collection_serial(monkeypatch: pytest.MonkeyPatch) -> None:
+    """대기 중인 두 scrape가 mmap 병합의 임시 버퍼를 중첩하지 않는다."""
+    entered = Event()
+    overlap = Event()
+    release = Event()
+    lock = Lock()
+    active = peak = calls = 0
+
+    def blocked_metrics() -> bytes:
+        nonlocal active, peak, calls
+        with lock:
+            active += 1
+            calls += 1
+            peak = max(peak, active)
+            entered.set()
+            if active > 1:
+                overlap.set()
+        try:
+            assert release.wait(timeout=5), "테스트 수집기 해제 신호 누락"
+            return b"weather_test_serial 1\n"
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(sys.modules[create_app.__module__], "metrics_payload", blocked_metrics)
+    client, _, metrics_token = _metrics_client()
+    with client, ThreadPoolExecutor(max_workers=2) as executor:
+        requests = [
+            executor.submit(
+                client.get, "/metrics", headers={"authorization": f"Bearer {metrics_token}"}
+            )
+            for _ in range(2)
+        ]
+        try:
+            assert entered.wait(timeout=5), "테스트 수집기 미진입"
+            assert not overlap.wait(timeout=0.5), "병합 수집기가 중첩 진입함"
+        finally:
+            release.set()
+            responses = [request.result(timeout=5) for request in requests]
+        assert calls == 2
+        assert peak == 1
+        assert all(response.status_code == 200 for response in responses)
+
+
+
+def test_blocked_scrape_leaves_default_worker_pool_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """수집이 실행 중이어도 단일 일반 worker로 위치 목록을 처리한다."""
+    entered = Event()
+    release = Event()
+
+    def blocked_metrics() -> bytes:
+        entered.set()
+        assert release.wait(timeout=5), "테스트 수집기 해제 신호 누락"
+        return b"weather_test_pool 1\n"
+
+    async def configure_default_pool():
+        limiter = current_default_thread_limiter()
+        previous = limiter.total_tokens
+        limiter.total_tokens = 1
+        return limiter, previous
+
+    async def restore_default_pool(limiter, previous):
+        limiter.total_tokens = previous
+
+    monkeypatch.setattr(sys.modules[create_app.__module__], "metrics_payload", blocked_metrics)
+    client, _, metrics_token = _metrics_client()
+    client.app.state.repository = SimpleNamespace(
+        list_locations=lambda **kwargs: [],
+        count_locations=lambda **kwargs: 0,
+    )
+    with client, ThreadPoolExecutor(max_workers=2) as executor:
+        assert client.portal is not None
+        limiter, previous = client.portal.call(configure_default_pool)
+        scrape = executor.submit(
+            client.get, "/metrics", headers={"authorization": f"Bearer {metrics_token}"}
+        )
+        try:
+            assert entered.wait(timeout=5), "테스트 수집기 미진입"
+            catalog = executor.submit(client.get, "/v1/weather/locations")
+            response = catalog.result(timeout=0.5)
+            assert response.status_code == 200
+            assert response.json()["data"] == []
+            assert not scrape.done()
+        finally:
+            release.set()
+            scraped = scrape.result(timeout=5)
+            client.portal.call(restore_default_pool, limiter, previous)
+        assert scraped.status_code == 200
 
 
 def test_metrics_labels_collapse_unregistered_provider_and_dataset() -> None:
