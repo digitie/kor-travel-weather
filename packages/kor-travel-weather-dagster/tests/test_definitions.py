@@ -178,3 +178,37 @@ def test_every_instigator_declares_its_running_state_in_code() -> None:
         assert schedule.default_status == DefaultScheduleStatus.RUNNING, schedule.name
     for sensor in repository.sensor_defs:
         assert sensor.default_status == DefaultSensorStatus.RUNNING, sensor.name
+
+
+def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_boundary() -> None:
+    """실제 Dagster 달력에서 같은 분 시작 집중과 주기·횟수 감소를 검출한다."""
+    from collections import Counter
+    from datetime import datetime, timedelta
+    from itertools import pairwise
+    from zoneinfo import ZoneInfo
+
+    from dagster._utils.schedules import schedule_execution_time_iterator
+    from kortravelweather_dagster.definitions import external_weather_schedules
+
+    start = datetime(2026, 10, 31, tzinfo=ZoneInfo("Asia/Seoul"))
+    end = start + timedelta(days=2)
+    launches = []
+    assert len(external_weather_schedules) == 9
+    for schedule in external_weather_schedules:
+        times = []
+        for tick in schedule_execution_time_iterator(
+            start.timestamp(), schedule.cron_schedule, execution_timezone="Asia/Seoul"
+        ):
+            if tick >= end:
+                break
+            times.append(tick)
+        assert len(times) == 16, schedule.name
+        assert all(b - a == timedelta(hours=3) for a, b in pairwise(times))
+        assert Counter(tick.date() for tick in times) == {
+            start.date(): 8,
+            end.date() - timedelta(days=1): 8,
+        }
+        launches.extend(times)
+    assert max(Counter(launches).values()) == 1
+    ordered = sorted(launches)
+    assert all(b - a == timedelta(minutes=20) for a, b in pairwise(ordered))
