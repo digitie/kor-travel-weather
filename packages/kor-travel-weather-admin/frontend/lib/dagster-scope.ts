@@ -69,6 +69,9 @@ const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: String!, $repo
     __typename
     ... on Runs {
       results {
+        runId
+        jobName
+        status
         eventConnection(limit: 1000, afterCursor: $cursor) {
           cursor
           hasMore
