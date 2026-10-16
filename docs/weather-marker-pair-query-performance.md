@@ -16,6 +16,7 @@ known_at 동등 JOIN이 있어도 planner가 항상 모든 partition을 제거�
 
 - 새 SQL 구조·빈 배치·실제 PostgreSQL의 observed/fallback/alert 복합 키 회귀 7개 통과. 별도 원본 Weather98 archive에서는 행 혼입 반례 3개가 모두 실패하고 수정본에서는 모두 통과했다.
 - 전용 UUID PostgreSQL DB에서 전체 Python 539개 통과, 49 warnings. 원래 저장소·다른 시험 DB는 변경하지 않았다. 첫 전체 시도는 이전 Common pin의 다른 venv를 재사용해 collection 단계에서 실패했으며, 자체 venv의 frozen lock 설치 후 전체를 다시 통과했다.
+- 제품 소스에 대한 독립 리뷰 2인의 SOURCE_PASS를 root가 확인했다. 작성자의 자체 검증과 별도로 집계한다.
 - Ruff, frontend type-check, 189개 frontend 테스트 통과. 새 DTO나 프런트엔드 변경은 없다.
 - 초기 PostgreSQL 시험은 source의 canonical fetched_at 기본값과 fixture의 known_at 기대가 달라 실패했다. fixture에 fetched_at을 명시해 바로잡았으며 제품 시간 처리 정책은 변경하지 않았다.
 
@@ -31,4 +32,4 @@ known_at 동등 JOIN이 있어도 planner가 항상 모든 partition을 제거�
 | fallback 상한 모형 | QueryCanceled 57014 | wall 5.853초, planning 794ms, execution 4,324.8ms, 410행 |
 | alerts | QueryCanceled 57014 | QueryCanceled 57014 |
 
-이는 개별 SQL 표본이며 API 전체·ORM 변환·세 요청 동시 부하·live UI 성공이나 CPU/RSS 감소를 증명하지 않는다. 원 R19 marker 504 실패는 그대로 보존한다. 남은 partition/index 필터, LATERAL 반복, 특보 window 및 동시 DB 부하는 별도 후속 변경에서 측정한다. 이 PR에 timeout 상향이나 추가 쿼리 재설계를 섞지 않는다. 배포·live UI·최종 독립 리뷰 결과는 별도 운영 게이트다.
+부하와 캐시 상태를 통제한 비교 실험은 아니다. 이는 개별 SQL 표본이며 API 전체·ORM 변환·세 요청 동시 부하·live UI 성공이나 CPU/RSS 감소를 증명하지 않는다. 원 R19 marker 504 실패는 그대로 보존한다. 남은 partition/index 필터, LATERAL 반복, 특보 window 및 동시 DB 부하는 별도 후속 변경에서 측정한다. 이 PR에 timeout 상향이나 추가 쿼리 재설계를 섞지 않는다. 배포·live UI·최종 독립 리뷰 결과는 별도 운영 게이트다.
