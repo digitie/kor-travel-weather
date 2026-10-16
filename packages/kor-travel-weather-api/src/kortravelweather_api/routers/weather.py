@@ -837,18 +837,21 @@ async def marker_summaries(
         }
     data: list[dict[str, Any]] = []
     for location_id in valid_ids:
-        _, _, latest_alerts = _split_weather_values(latest_by_location.get(location_id, []))
-        _, _, filtered_alerts = _split_weather_values(alert_by_location.get(location_id, []))
-        alerts = filtered_alerts or latest_alerts
+        latest, _, latest_alerts = _split_weather_values(latest_by_location.get(location_id, []))
+        # 운영 marker projection은 같은 묶음을 공유한다. 특보 판정은 한 번만
+        # 수행하되 별도 alerts를 돌려주는 기존 repository double도 지원한다.
+        if alert_by_location is latest_by_location:
+            alerts = latest_alerts
+        else:
+            _, _, filtered_alerts = _split_weather_values(alert_by_location.get(location_id, []))
+            alerts = filtered_alerts or latest_alerts
         data.append(
             WeatherMarkerOut(
                 location_id=location_id,
                 measurement_point=measurement_point_out(
                     by_id[location_id], distance_km=0.0
                 ),
-                latest=[value_out(row) for row in _split_weather_values(
-                    latest_by_location.get(location_id, [])
-                )[0]],
+                latest=[value_out(row) for row in latest],
                 alerts=[value_out(row) for row in alerts],
             ).model_dump(mode="json")
         )

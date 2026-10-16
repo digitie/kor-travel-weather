@@ -71,7 +71,10 @@ def test_marker_request_location_remains_bound(index):
     location = "request-quote-'-- %(__literal__)s"
     compiled = _compile(_statements(location)[index])
     assert location not in str(compiled)
-    assert location in compiled.params.values()
+    assert any(
+        value == location or isinstance(value, list) and location in value
+        for value in compiled.params.values()
+    )
     # 후보/경보의 한도도 내부 predicate 고정과 별개의 기존 bind 계약이다.
     assert any(isinstance(value, int) for value in compiled.params.values())
 
@@ -128,7 +131,7 @@ def test_marker_generic_prepared_queries_preserve_exact_rows(weather_test_databa
                 names, kinds = [], {}
                 token = re.compile(
                     r"%\(([A-Za-z0-9_]+)\)s::"
-                    r"(TIMESTAMP WITH TIME ZONE|VARCHAR|INTEGER|TEXT)"
+                    r"(TIMESTAMP WITH TIME ZONE|VARCHAR\[\]|VARCHAR|INTEGER|TEXT)"
                 )
 
                 def positional(match, names=names, kinds=kinds):
