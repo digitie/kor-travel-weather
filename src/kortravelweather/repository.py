@@ -32,6 +32,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    and_,
     case,
     column,
     create_engine,
@@ -2518,7 +2519,10 @@ class WeatherRepository:
                         )
                     )
                 candidates = (
-                    select(WeatherValueRow.value_id.label("value_id"))
+                    select(
+                        WeatherValueRow.value_id.label("value_id"),
+                        WeatherValueRow.known_at.label("known_at"),
+                    )
                     .where(*predicates)
                     .order_by(
                         nullslast(desc(WeatherValueRow.known_at)),
@@ -2529,17 +2533,23 @@ class WeatherRepository:
                     .lateral()
                     .alias("marker_candidates")
                 )
-                return select(candidates.c.value_id).select_from(
+                return select(candidates.c.value_id, candidates.c.known_at).select_from(
                     requested_locations.join(requested_metrics, true()).join(
                         candidates, true()
                     )
                 )
 
             def fetch_candidates(candidate_query: Any) -> list[WeatherValueRow]:
+                # 선택한 partition key를 보존해 다른 known_at의 같은 UUID를 읽지 않는다.
+                candidate_keys = candidate_query.subquery("marker_fact_keys")
                 return list(
                     session.scalars(
-                        select(WeatherValueRow).where(
-                            WeatherValueRow.value_id.in_(candidate_query)
+                        select(WeatherValueRow).join(
+                            candidate_keys,
+                            and_(
+                                WeatherValueRow.value_id == candidate_keys.c.value_id,
+                                WeatherValueRow.known_at == candidate_keys.c.known_at,
+                            ),
                         )
                     ).all()
                 )
@@ -2576,7 +2586,10 @@ class WeatherRepository:
                     name="marker_missing_pairs",
                 ).data(missing_pairs).alias("marker_missing_pairs")
                 fallback_candidates = (
-                    select(WeatherValueRow.value_id.label("value_id"))
+                    select(
+                        WeatherValueRow.value_id.label("value_id"),
+                        WeatherValueRow.known_at.label("known_at"),
+                    )
                     .where(
                         WeatherValueRow.location_id
                         == missing_locations.c.location_id,
@@ -2593,7 +2606,8 @@ class WeatherRepository:
                     .alias("marker_fallback_candidates")
                 )
                 fallback_query = select(
-                    fallback_candidates.c.value_id
+                    fallback_candidates.c.value_id,
+                    fallback_candidates.c.known_at,
                 ).select_from(
                     missing_locations.join(fallback_candidates, true())
                 )
@@ -2670,6 +2684,7 @@ class WeatherRepository:
             alert_limited = (
                 select(
                     alert_ranked.c.value_id,
+                    alert_ranked.c.known_at,
                     func.row_number()
                     .over(
                         partition_by=alert_ranked.c.location_id,
@@ -2686,7 +2701,13 @@ class WeatherRepository:
             )
             alerts = (
                 select(WeatherValueRow)
-                .join(alert_limited, WeatherValueRow.value_id == alert_limited.c.value_id)
+                .join(
+                    alert_limited,
+                    and_(
+                        WeatherValueRow.value_id == alert_limited.c.value_id,
+                        WeatherValueRow.known_at == alert_limited.c.known_at,
+                    ),
+                )
                 .where(
                     alert_limited.c.location_rank <= min(limit_per_location, 100),
                 )
