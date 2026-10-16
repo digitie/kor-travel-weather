@@ -1,0 +1,72 @@
+{
+  "at": "2026-10-16T16:22:33.336120+00:00",
+  "prior_audit_sha256": "2cc5c95f269a7b19a51abc89d75d91716cd109154b1fa256b117b9a7d9abd6a4",
+  "pr86": {
+    "headRefOid": "969cf51370e0893908a32b5736c0d1946138f6ec",
+    "mergeCommit": {
+      "oid": "369ee5e5ead11a5281a36eab95fb48d7f505fe83"
+    },
+    "mergedAt": "2026-10-16T16:17:02Z",
+    "number": 86,
+    "state": "MERGED"
+  },
+  "pr106": {
+    "headRefOid": "39e26fcdf17bc24473277fec28370e1a781e54a6",
+    "mergeStateStatus": "CLEAN",
+    "number": 106,
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-16T16:15:20Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/digitie/kor-travel-weather/actions/runs/38929861022/job/117070766904",
+        "name": "python",
+        "startedAt": "2026-10-16T16:10:42Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      },
+      {
+        "__typename": "CheckRun",
+        "completedAt": "2026-10-16T16:11:43Z",
+        "conclusion": "SUCCESS",
+        "detailsUrl": "https://github.com/digitie/kor-travel-weather/actions/runs/38929861022/job/117070767408",
+        "name": "frontend",
+        "startedAt": "2026-10-16T16:10:42Z",
+        "status": "COMPLETED",
+        "workflowName": "CI"
+      }
+    ]
+  },
+  "weather87_D": {
+    "verdict": "SOURCE_PASS",
+    "head": "acc8c71fb2dfb60f10654403081b7b4b21d75f62",
+    "raw": "weather87-product-review-d-r1-20261017.md",
+    "sha256": "1ba8fcdca3b6c28f612109727fbeaec19c57673dc31f738624c44a64a741b144"
+  },
+  "weather87_second_reviewer": "root가 별도 회수/판단; 본 append에서 열람하지 않음",
+  "remaining_sequence": [
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106
+  ],
+  "source_changes": 0,
+  "PR_mutations": 0,
+  "operating_calls": 0
+}
