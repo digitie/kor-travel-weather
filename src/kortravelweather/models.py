@@ -268,6 +268,8 @@ class PurgeReport(BaseModel):
     #: Names rather than a count: which day went is the useful fact when a run
     #: drops nothing, and a zero says nothing about whether that was correct.
     partitions_dropped: tuple[str, ...] = ()
+    #: 오래된 known_at에도 최근6시간/미래 단기예보가 있어 보존한 partition.
+    partitions_retained_short_forecast: tuple[str, ...] = ()
     #: Forward days whose creation lost its lock race every attempt; the next
     #: run tries again, and ``forward_partition_days`` says how much slack is left.
     partitions_not_created: tuple[str, ...] = ()

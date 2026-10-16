@@ -212,3 +212,15 @@ def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_bo
     assert max(Counter(launches).values()) == 1
     ordered = sorted(launches)
     assert all(b - a == timedelta(minutes=20) for a, b in pairwise(ordered))
+
+
+def test_short_forecast_retention_has_its_own_bounded_schedule() -> None:
+    from dagster import DefaultScheduleStatus
+
+    schedule = _schedule("short_forecast_retention_every_ten_minutes")
+    assert schedule.cron_schedule == "*/10 * * * *"
+    assert schedule.job_name == "weather_short_forecast_retention_job"
+    assert schedule.execution_timezone == "Asia/Seoul"
+    assert schedule.default_status == DefaultScheduleStatus.RUNNING
+    job = defs.get_repository_def().get_job(schedule.job_name)
+    assert job.tags["dagster/max_runtime"] == "300"

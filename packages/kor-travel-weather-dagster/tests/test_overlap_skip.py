@@ -83,7 +83,9 @@ def test_an_external_dataset_overlap_is_skipped_not_failed(monkeypatch) -> None:
 def test_every_collector_asset_turns_an_overlap_into_a_skip() -> None:
     """One wrapper at the asset boundary, so a new collector cannot forget it."""
     collectors = [
-        asset for asset in definitions._ASSETS if asset is not definitions.weather_retention_purge
+        asset for asset in definitions._ASSETS if asset not in (
+            definitions.weather_retention_purge, definitions.weather_short_forecast_retention,
+        )
     ]
     assert collectors
     for asset in collectors:

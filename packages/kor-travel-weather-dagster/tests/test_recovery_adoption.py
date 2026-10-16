@@ -36,7 +36,7 @@ def mapping(monkeypatch):
 
 def test_single_asset_jobs_in_process_and_regional_and_implicit_bounded():
     jobs = definitions._COLLECTION_JOBS
-    assert len(jobs) == 17
+    assert len(jobs) == 18
     for job in jobs:
         if job.name == "regional_weather_job":
             assert len(job.graph.node_names()) == 4
@@ -62,7 +62,7 @@ def test_retry_opt_in_rejects_ambiguous_values(mapping, monkeypatch, bad):
         optional_recovery_sensors(mapping)
 
 
-def test_one_running_retry_sensor_targets_all_seventeen_jobs(mapping, monkeypatch):
+def test_one_running_retry_sensor_targets_all_declared_jobs(mapping, monkeypatch):
     monkeypatch.setenv(INFRA_RETRY_ENABLED_ENV, "true")
     (retry,) = optional_recovery_sensors(mapping)
     assert retry.name == "weather_infrastructure_retry"

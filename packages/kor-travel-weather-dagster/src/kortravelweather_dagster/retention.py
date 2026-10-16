@@ -82,6 +82,7 @@ def run_weather_retention_purge(
         "partitions_created": list(report.partitions_created),
         "partitions_not_created": list(report.partitions_not_created),
         "partitions_dropped": list(report.partitions_dropped),
+        "partitions_retained_short_forecast": list(report.partitions_retained_short_forecast),
         "partitions_deferred": list(report.partitions_deferred),
         "partitions_overdue": list(report.partitions_overdue),
         "partitions_unmarked": list(report.partitions_unmarked),

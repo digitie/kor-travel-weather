@@ -103,7 +103,24 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0019_location_catalog_index"
+            assert version == "0020_short_forecast_retention"
+            retention_index = next(
+                item for item in inspect(engine).get_indexes("weather_values")
+                if item["name"] == "ix_weather_values_short_forecast_retention"
+            )
+            assert retention_index["column_names"] == ["valid_at", "known_at", "value_id"]
+            predicate = retention_index["dialect_options"]["postgresql_where"]
+            for column, value in (
+                ("provider", "python-kma-api"), ("dataset_key", "kma_short_forecast"),
+                ("weather_domain", "kma_short_forecast"), ("forecast_style", "short"),
+            ):
+                assert column in predicate and f"'{value}'" in predicate
+            assert "valid_at IS NOT NULL" in predicate
+            assert predicate.count(" AND ") == 4 and " OR " not in predicate
+            assert connection.execute(text(
+                "SELECT indisvalid,indisready FROM pg_index WHERE "
+                "indexrelid='ix_weather_values_short_forecast_retention'::regclass"
+            )).one() == (True, True)
             assert "orchestrator_run_id" in {
                 column["name"] for column in inspect(engine).get_columns("weather_sync_runs")
             }
