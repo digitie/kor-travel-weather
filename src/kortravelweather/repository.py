@@ -44,7 +44,6 @@ from sqlalchemy import (
     select,
     text,
     true,
-    tuple_,
     update,
     values,
 )
@@ -1536,25 +1535,49 @@ class WeatherRepository:
     def _existing_facts_session(
         session: Session, facts: Sequence[_ResolvedFact]
     ) -> dict[tuple[str, datetime | None], WeatherValueRow]:
-        """Load the facts a batch replays, by full primary key, in bounded queries.
+        """재수집 fact를 정확한 복합 키로 1,000개씩 조회한다.
 
-        One query per thousand facts instead of one ``session.get`` each.  The
-        primary key includes ``known_at``, so every probe prunes to the one
-        partition that can hold it. 이번 transaction에서 삽입한 source는 FK상
-        기존 fact가 있을 수 없다. 같은 배치 중복은 삽입 단계의 사전에서 검증한다.
+        같은 clock은 scalar 조건으로 partition을 좁히고, 서로 다른 clock은
+        typed VALUES와 정확한 pair로 JOIN한다. 대량 tuple IN의 OR 확장을 피하며
+        시간 범위를 함께 주어 해당 범위 밖 partition을 제외한다. 이번 transaction의
+        새 source는 FK상 기존 fact가 없고, NULL clock은 NOT NULL PK와 일치하지 않는다.
         """
         keys = list(
-            dict.fromkeys((fact.value_id, fact.known_at) for fact in facts if fact.replayed)
+            dict.fromkeys(
+                (fact.value_id, fact.known_at)
+                for fact in facts
+                if fact.replayed and fact.known_at is not None
+            )
         )
         found: dict[tuple[str, datetime | None], WeatherValueRow] = {}
         for offset in range(0, len(keys), 1000):
-            rows = session.scalars(
-                select(WeatherValueRow).where(
-                    tuple_(WeatherValueRow.value_id, WeatherValueRow.known_at).in_(
-                        keys[offset : offset + 1000]
+            batch = keys[offset : offset + 1000]
+            lower = min(clock for _, clock in batch)
+            upper = max(clock for _, clock in batch)
+            if lower == upper:
+                statement = select(WeatherValueRow).where(
+                    WeatherValueRow.known_at == lower,
+                    WeatherValueRow.value_id.in_([value_id for value_id, _ in batch]),
+                )
+            else:
+                requested = values(
+                    column("value_id", WeatherValueRow.value_id.type),
+                    column("known_at", WeatherValueRow.known_at.type),
+                    name="requested_fact_keys",
+                ).data(batch)
+                statement = (
+                    select(WeatherValueRow)
+                    .join(
+                        requested,
+                        (WeatherValueRow.value_id == requested.c.value_id)
+                        & (WeatherValueRow.known_at == requested.c.known_at),
+                    )
+                    .where(
+                        WeatherValueRow.known_at >= lower,
+                        WeatherValueRow.known_at <= upper,
                     )
                 )
-            ).all()
+            rows = session.scalars(statement).all()
             found.update(
                 {(row.value_id, _canonical_row_datetime(row.known_at)): row for row in rows}
             )
