@@ -15,6 +15,7 @@ from dagster import (
     MetadataValue,
     asset,
     define_asset_job,
+    in_process_executor,
     multiprocess_executor,
 )
 from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule, reconciliation_sensor
@@ -49,6 +50,7 @@ from .kma_weather import (
     targets_from_settings,
 )
 from .overlap import log_overlap_skip, overlap_skip_result, skips_live_overlap
+from .recovery import optional_recovery_sensors
 from .regional_sources import (
     run_khoa_beach_index_sync,
     run_krex_restarea_sync,
@@ -588,7 +590,7 @@ RUN_MAX_RUNTIME_TAG = "dagster/max_runtime"
 RUN_MAX_RUNTIME_SECONDS = 57600
 
 
-def _job_tags(job_name: str) -> dict[str, str]:
+def _job_policy(job_name: str) -> RecoveryPolicy:
     # 외부 provider의 실측 13시간 sweep 상한은 유지하고 최신성 작업은 더 일찍 회수한다.
     seconds = (
         RUN_MAX_RUNTIME_SECONDS
@@ -597,9 +599,11 @@ def _job_tags(job_name: str) -> dict[str, str]:
     )
     if job_name == "regional_weather_job":
         seconds = 21600
-    return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1).tags(
-        project="weather", job_name=job_name
-    )
+    return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1)
+
+
+def _job_tags(job_name: str) -> dict[str, str]:
+    return _job_policy(job_name).tags(project="weather", job_name=job_name)
 
 
 def _weather_schedule(**kwargs):
@@ -1138,12 +1142,16 @@ _resources = {
 }
 
 
+_BOUNDED_MULTIPROCESS_EXECUTOR = multiprocess_executor.configured({"max_concurrent": 1})
+
+
 @cache
 def _job_resolution_context():
     """프로세스마다 전체 graph와 resource 정의를 한 번만 구성한다."""
     asset_defs = Definitions(
         assets=_ASSETS,
         resources=_resources,
+        executor=_BOUNDED_MULTIPROCESS_EXECUTOR,
     )
     return (
         asset_defs.resolve_asset_graph(),
@@ -1151,12 +1159,12 @@ def _job_resolution_context():
     )
 
 
-def _resolve_job(unresolved):
+def _resolve_job(unresolved, *, executor_def=in_process_executor):
     """같은 graph에서 작업을 resolve하며 별도의 module Definitions는 노출하지 않는다."""
     asset_graph, resource_defs = _job_resolution_context()
     return unresolved.resolve(
         asset_graph,
-        default_executor_def=multiprocess_executor.configured({"max_concurrent": 1}),
+        default_executor_def=executor_def,
         resource_defs=resource_defs,
     )
 
@@ -1171,7 +1179,9 @@ external_weather_jobs = {
     key: _resolve_job(unresolved) for key, unresolved in _unresolved_external_jobs.items()
 }
 weather_retention_job = _resolve_job(_unresolved_retention_job)
-regional_weather_job = _resolve_job(_unresolved_regional_job)
+regional_weather_job = _resolve_job(
+    _unresolved_regional_job, executor_def=_BOUNDED_MULTIPROCESS_EXECUTOR
+)
 
 # The three hourly jobs that publish into the AirKorea station anchors run one
 # after another, not together: 초단기예보 at :00, 초단기실황 at :20, AirKorea at
@@ -1323,19 +1333,22 @@ daily_weather_retention_schedule = _weather_schedule(
 )
 
 
+_COLLECTION_JOBS = [
+    kma_ultra_short_nowcast_job,
+    kma_ultra_short_forecast_job,
+    kma_short_forecast_job,
+    kma_mid_forecast_job,
+    kma_weather_alerts_job,
+    airkorea_job,
+    *external_weather_jobs.values(),
+    regional_weather_job,
+    weather_retention_job,
+]
+
+
 defs = Definitions(
     assets=_ASSETS,
-    jobs=[
-        kma_ultra_short_nowcast_job,
-        kma_ultra_short_forecast_job,
-        kma_short_forecast_job,
-        kma_mid_forecast_job,
-        kma_weather_alerts_job,
-        airkorea_job,
-        *external_weather_jobs.values(),
-        regional_weather_job,
-        weather_retention_job,
-    ],
+    jobs=_COLLECTION_JOBS,
     schedules=[
         hourly_kma_ultra_short_nowcast_schedule,
         hourly_kma_ultra_short_forecast_schedule,
@@ -1348,5 +1361,11 @@ defs = Definitions(
         daily_weather_retention_schedule,
     ],
     resources=_resources,
-    sensors=[weather_sync_recovery_sensor],
+    executor=_BOUNDED_MULTIPROCESS_EXECUTOR,
+    sensors=[
+        weather_sync_recovery_sensor,
+        *optional_recovery_sensors(
+            {job.name: (job, _job_policy(job.name)) for job in _COLLECTION_JOBS}
+        ),
+    ],
 )
