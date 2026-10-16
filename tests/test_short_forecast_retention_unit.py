@@ -98,6 +98,10 @@ class Session:
     def scalar(self, statement, params=None):
         sql = str(statement)
         self.statements.append((sql, params, statement))
+        if sql == "SHOW statement_timeout":
+            return "60s"
+        if "FROM pg_settings" in sql:
+            return 60000
         return self.lock if "pg_try_advisory" in sql else self.remaining
 
     @contextmanager
@@ -413,3 +417,22 @@ def test_isolated_old_partition_does_not_hide_another_clock_gap():
         admitted_at=NOW, short_cutoff=CUTOFF,
     )
     assert result[0].known_at == old and result[1].known_at == NOW
+
+
+@pytest.mark.parametrize(("previous", "milliseconds", "cap"), [
+    ("0", 0, 5000), ("60s", 60000, 5000), ("2s", 2000, 2000), ("50ms", 50, 50),
+])
+def test_partition_lookup_caps_then_restores_exact_previous_budget(previous, milliseconds, cap):
+    class TimeoutSession(Session):
+        def scalar(self, statement, params=None):
+            if str(statement) == "SHOW statement_timeout":
+                return previous
+            if "FROM pg_settings" in str(statement):
+                return milliseconds
+            return super().scalar(statement, params)
+    connection = TimeoutSession()
+    WeatherRepository._preserve_short_forecast_partition(connection, "weather_values_20260101")
+    assert any(sql == f"SET LOCAL statement_timeout = '{cap}ms'"
+               for sql, _, _ in connection.statements)
+    sql, params, _ = connection.statements[-1]
+    assert "set_config" in sql and params == {"previous": previous}
