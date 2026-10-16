@@ -1351,7 +1351,8 @@ class WeatherRepository:
             return int(session.scalar(stmt) or 0)
 
     def _record_source_session(
-        self, session: Session, record: Mapping[str, Any]
+        self, session: Session, record: Mapping[str, Any], *,
+        payload_hash: str | None = None,
     ) -> tuple[str, bool]:
         """Insert a source response; return its canonical primary key and
         whether this call inserted it (``False``: a replay of a stored one).
@@ -1370,7 +1371,8 @@ class WeatherRepository:
         source_entity_id = str(record["source_entity_id"])
         payload = dict(record["payload"])
         fetched = record.get("fetched_at") or kst_now()
-        raw_hash = _payload_hash(payload)
+        # 배치 identity에서 계산한 동일 raw hash만 내부 인자로 재사용한다.
+        raw_hash = _payload_hash(payload) if payload_hash is None else payload_hash
         self._advisory_xact_lock_once(session, source_record_key)
         # A pending source row in the same batch must not be autoflushed while
         # checking the alternate identity; otherwise PostgreSQL raises the
@@ -1789,7 +1791,9 @@ class WeatherRepository:
             )
             canonical_key = identity_aliases.get(identity)
             if canonical_key is None:
-                canonical_key, inserted = self._record_source_session(session, record)
+                canonical_key, inserted = self._record_source_session(
+                    session, record, payload_hash=identity[-1]
+                )
                 if inserted:
                     inserted_sources.add(canonical_key)
                 identity_aliases[identity] = canonical_key
@@ -1816,11 +1820,15 @@ class WeatherRepository:
                     }
                 )
                 if fact.source_record_key in source_aliases
+                and source_aliases[fact.source_record_key] != fact.source_record_key
                 else fact
                 for fact in facts
             ]
         # pending source rows must be visible to FK checks/value lookup.
         session.flush()
+        # no_autoflush 중 session.get은 pending row를 찾지 못하므로 같은 배치의
+        # canonical 복합 키를 별도로 기록한다. ORM identity map을 캐시로 쓰지 않는다.
+        linked_sources: set[tuple[str, str]] = set()
         for record in records:
             run_id = record.get("run_id")
             if run_id is not None:
@@ -1835,9 +1843,14 @@ class WeatherRepository:
                     raise ValueError(
                         "sync run과 source record의 provider/dataset이 일치하지 않습니다."
                     )
-                existing = session.get(
-                    SyncRunSourceRow, {"run_id": str(run_id), "source_record_key": source_key}
-                )
+                link = (str(run_id), source_key)
+                if link in linked_sources:
+                    continue
+                with session.no_autoflush:
+                    existing = session.get(
+                        SyncRunSourceRow, {"run_id": link[0], "source_record_key": link[1]}
+                    )
+                linked_sources.add(link)
                 if existing is None:
                     session.add(
                         SyncRunSourceRow(
