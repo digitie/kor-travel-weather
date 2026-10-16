@@ -175,10 +175,30 @@ async function postDurableLoginRateLimit(
   env: Env,
 ): Promise<DurableLoginRateLimitResult> {
   if (env.NODE_ENV !== "production") return { available: true, retryAfter: null };
+  const started = performance.now();
+  let upstreamStatus: number | null = null;
+  let readingReply = false;
+  const unavailable = (
+    reason: "configuration" | "timeout" | "transport" | "non-200" | "invalid-reply",
+  ): DurableLoginRateLimitResult => {
+    // 원인 분류만 남긴다. 주소·계정·token·bucket·응답 본문은 로그에 넣지 않는다.
+    try {
+      console.warn(JSON.stringify({
+        event: "weather.auth.rate_limit.unavailable",
+        action,
+        reason,
+        upstream_status: upstreamStatus,
+        elapsed_ms: Math.max(0, Math.round(performance.now() - started)),
+      }));
+    } catch {
+      // 관측 실패가 기존 fail-closed 응답을 바꾸지 않게 한다.
+    }
+    return { available: false };
+  };
   const apiBase = env.WEATHER_API_INTERNAL_URL?.trim();
   const adminToken = env.WEATHER_ADMIN_TOKEN?.trim();
   if (!apiBase || !adminToken || !/^[0-9a-f]{64}$/.test(bucketHash)) {
-    return { available: false };
+    return unavailable("configuration");
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), DURABLE_AUTH_WRITE_TIMEOUT_MS);
@@ -193,18 +213,20 @@ async function postDurableLoginRateLimit(
         signal: controller.signal,
       },
     );
-    if (response.status !== 200) return { available: false };
+    upstreamStatus = response.status;
+    if (response.status !== 200) return unavailable("non-200");
+    readingReply = true;
     const payload: unknown = await response.json();
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      return { available: false };
+      return unavailable("invalid-reply");
     }
     if (action === "success") {
       return "cleared" in payload && payload.cleared === true
         ? { available: true, retryAfter: null }
-        : { available: false };
+        : unavailable("invalid-reply");
     }
     if (!("allowed" in payload) || typeof payload.allowed !== "boolean" ||
-        !("retry_after" in payload)) return { available: false };
+        !("retry_after" in payload)) return unavailable("invalid-reply");
     if (payload.allowed && payload.retry_after === null) {
       return { available: true, retryAfter: null };
     }
@@ -213,9 +235,12 @@ async function postDurableLoginRateLimit(
         payload.retry_after <= 24 * 60 * 60) {
       return { available: true, retryAfter: payload.retry_after };
     }
-    return { available: false };
-  } catch {
-    return { available: false };
+    return unavailable("invalid-reply");
+  } catch (error) {
+    return unavailable(
+      controller.signal.aborted ? "timeout" :
+        readingReply && error instanceof SyntaxError ? "invalid-reply" : "transport",
+    );
   } finally {
     clearTimeout(timeout);
   }
