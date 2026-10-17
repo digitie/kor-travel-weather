@@ -231,7 +231,16 @@ def jsonable(value: Any) -> Any:
 def source_record_key(
     provider: str, dataset_key: str, location_id: str, payload: Mapping[str, Any]
 ) -> str:
-    canonical = _canonical_json([provider, dataset_key, location_id, redact_secrets(payload)])
+    return _source_record_key_from_redacted_payload(
+        provider, dataset_key, location_id, redact_secrets(payload)
+    )
+
+
+def _source_record_key_from_redacted_payload(
+    provider: str, dataset_key: str, location_id: str, payload: Mapping[str, Any]
+) -> str:
+    """내부에서 이미 정제한 payload만 기존 canonical identity로 계산한다."""
+    canonical = _canonical_json([provider, dataset_key, location_id, payload])
     return "sr_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
 
 
@@ -256,8 +265,15 @@ def make_source_record(
     if status_code is not None:
         safe_metadata["status"] = status_code
     full_payload = {"rows": [safe_payload], "response_metadata": safe_metadata}
+    # payload/endpoint/request_params는 위에서 이미 정제했다. 공개 raw 경계는 유지한다.
+    # status_code의 비정수 기존 입력은 종전의 추가 redaction/hash 동작을 보존한다.
+    key_function = (
+        _source_record_key_from_redacted_payload
+        if status_code is None or isinstance(status_code, int)
+        else source_record_key
+    )
     return {
-        "source_record_key": source_record_key(provider, dataset_key, location_id, full_payload),
+        "source_record_key": key_function(provider, dataset_key, location_id, full_payload),
         "provider": provider,
         "dataset_key": dataset_key,
         "source_entity_type": "weather_response",

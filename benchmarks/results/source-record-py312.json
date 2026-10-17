@@ -1,0 +1,149 @@
+{
+  "scope": "synthetic source-record only; no provider/DB/SDK/network",
+  "python": "3.12.13 (main, Jun 11 2026, 04:03:26) [Clang 22.1.3 ]",
+  "baseline_sha256": "27a8723e157afcb836739d78ba2baf771bc84ee30bf3726092a5fd81d89492b9",
+  "candidate_sha256": "c323eda58076ad5a868d7651c2415523d8bd5071df1eeedaf5d59ec140218de0",
+  "prototype": false,
+  "results": {
+    "open_meteo_hourly336": {
+      "payload_json_bytes": 26135,
+      "calls_per_cpu_sample": 3,
+      "paired_outputs_identical": true,
+      "input_unchanged": true,
+      "samples": {
+        "old": [
+          {
+            "cpu_seconds_per_call": 0.0030082336666666654,
+            "python_peak_bytes": 146624
+          },
+          {
+            "cpu_seconds_per_call": 0.0029601823333333297,
+            "python_peak_bytes": 146624
+          },
+          {
+            "cpu_seconds_per_call": 0.0030056753333333372,
+            "python_peak_bytes": 146624
+          },
+          {
+            "cpu_seconds_per_call": 0.0030935693333333327,
+            "python_peak_bytes": 146624
+          },
+          {
+            "cpu_seconds_per_call": 0.002938722666666671,
+            "python_peak_bytes": 146624
+          },
+          {
+            "cpu_seconds_per_call": 0.00310738933333334,
+            "python_peak_bytes": 146624
+          }
+        ],
+        "new": [
+          {
+            "cpu_seconds_per_call": 0.0019986716666666646,
+            "python_peak_bytes": 145264
+          },
+          {
+            "cpu_seconds_per_call": 0.0020108783333333317,
+            "python_peak_bytes": 145264
+          },
+          {
+            "cpu_seconds_per_call": 0.0019634933333333346,
+            "python_peak_bytes": 145264
+          },
+          {
+            "cpu_seconds_per_call": 0.0019436883333333321,
+            "python_peak_bytes": 145264
+          },
+          {
+            "cpu_seconds_per_call": 0.0020033659999999878,
+            "python_peak_bytes": 145264
+          },
+          {
+            "cpu_seconds_per_call": 0.0019365980000000116,
+            "python_peak_bytes": 145264
+          }
+        ]
+      },
+      "median": {
+        "old": {
+          "cpu_seconds_per_call": 0.0030069545000000015,
+          "python_peak_bytes": 146624.0
+        },
+        "new": {
+          "cpu_seconds_per_call": 0.0019810824999999996,
+          "python_peak_bytes": 145264.0
+        }
+      }
+    },
+    "raw6000": {
+      "payload_json_bytes": 1523411,
+      "calls_per_cpu_sample": 3,
+      "paired_outputs_identical": true,
+      "input_unchanged": true,
+      "samples": {
+        "old": [
+          {
+            "cpu_seconds_per_call": 0.15011327333333335,
+            "python_peak_bytes": 10572926
+          },
+          {
+            "cpu_seconds_per_call": 0.1557678763333333,
+            "python_peak_bytes": 10572926
+          },
+          {
+            "cpu_seconds_per_call": 0.15037513566666671,
+            "python_peak_bytes": 10572926
+          },
+          {
+            "cpu_seconds_per_call": 0.16263495633333344,
+            "python_peak_bytes": 10572926
+          },
+          {
+            "cpu_seconds_per_call": 0.15461300366666672,
+            "python_peak_bytes": 10572926
+          },
+          {
+            "cpu_seconds_per_call": 0.15676776533333303,
+            "python_peak_bytes": 10572926
+          }
+        ],
+        "new": [
+          {
+            "cpu_seconds_per_call": 0.12770336099999993,
+            "python_peak_bytes": 10277678
+          },
+          {
+            "cpu_seconds_per_call": 0.09381946866666668,
+            "python_peak_bytes": 10277678
+          },
+          {
+            "cpu_seconds_per_call": 0.08932743533333347,
+            "python_peak_bytes": 10277678
+          },
+          {
+            "cpu_seconds_per_call": 0.09700340733333324,
+            "python_peak_bytes": 10277678
+          },
+          {
+            "cpu_seconds_per_call": 0.0957655026666669,
+            "python_peak_bytes": 10277678
+          },
+          {
+            "cpu_seconds_per_call": 0.09016570400000035,
+            "python_peak_bytes": 10277678
+          }
+        ]
+      },
+      "median": {
+        "old": {
+          "cpu_seconds_per_call": 0.15519044,
+          "python_peak_bytes": 10572926.0
+        },
+        "new": {
+          "cpu_seconds_per_call": 0.09479248566666679,
+          "python_peak_bytes": 10277678.0
+        }
+      }
+    }
+  }
+}
