@@ -436,3 +436,26 @@ def test_partition_lookup_caps_then_restores_exact_previous_budget(previous, mil
                for sql, _, _ in connection.statements)
     sql, params, _ = connection.statements[-1]
     assert "set_config" in sql and params == {"previous": previous}
+
+
+@pytest.mark.parametrize(("remaining", "dry_run", "expected"), [
+    (True, False, "deferred"),
+    (False, False, "complete_snapshot"),
+    (True, True, "dry_run"),
+])
+def test_runner_empty_selection_never_repeats_without_progress(remaining, dry_run, expected):
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return dict(matched_in_batch=0, pointers_deleted=0, facts_deleted=0,
+                    remaining=remaining, deferred=False)
+
+    result = run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=purge),
+        cutoff=CUTOFF, dry_run=dry_run,
+    )
+    assert result["status"] == expected
+    assert result["batches"] == len(calls) == 1
+    assert result["facts_deleted"] == 0
+    assert result["remaining"] is remaining

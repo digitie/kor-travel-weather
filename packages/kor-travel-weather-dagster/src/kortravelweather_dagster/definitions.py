@@ -1069,15 +1069,31 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
 )
 def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str, object]:
     repository = context.resources.weather_repository.create_repository()
+
+    def log_progress(progress: dict[str, object]) -> None:
+        if progress["phase"] == "BATCH_COMMITTED":
+            # SQL 예외로 최종 결과가 없어도 앞 batch의 확정 commit 숫자는 남긴다.
+            context.log.info(
+                "단기예보 정리 BATCH_COMMITTED operation_id=%s batches=%s "
+                "facts_deleted=%s pointers_deleted=%s remaining=%s elapsed_seconds=%s",
+                progress["operation_id"], progress["batches"], progress["facts_deleted"],
+                progress["pointers_deleted"], progress["remaining"], progress["elapsed_seconds"],
+            )
+
     try:
         result = run_short_forecast_retention(
             repository, cutoff=short_forecast_cutoff(kst_now()), dry_run=False,
+            on_progress=log_progress,
         )
     finally:
         repository.engine.dispose()
     context.add_output_metadata(result)
     if result["status"] != "complete_snapshot":
-        raise Failure(description="단기예보 정리가 유한 예산 안에 완료되지 않았습니다.")
+        # raise 뒤 STEP_OUTPUT이 없어도 Failure 이벤트 자체에 미완료 이유를 남긴다.
+        raise Failure(
+            description="단기예보 정리가 유한 예산 안에 완료되지 않았습니다.",
+            metadata=result,
+        )
     return result
 
 
