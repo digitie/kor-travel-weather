@@ -116,5 +116,10 @@ def run_short_forecast_retention(
         if not report["remaining"]:
             result["status"] = "complete_snapshot"
             break
+        if not report["matched_in_batch"]:
+            # SKIP LOCKED로 전부 건너뛰었으면 같은 행을100회 즉시 재조회하지 않는다.
+            # 남은 행은 다음 실행으로 연기하며 완료로 표시하지 않는다.
+            result["status"] = "deferred"
+            break
     result["elapsed_seconds"] = monotonic() - started
     return result
