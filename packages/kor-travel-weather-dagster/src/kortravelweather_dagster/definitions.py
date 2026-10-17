@@ -1072,7 +1072,16 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
 
     def log_progress(progress: dict[str, object]) -> None:
         if progress["phase"] == "BATCH_COMMITTED":
-            # SQL 예외로 최종 결과가 없어도 앞 batch의 확정 commit 숫자는 남긴다.
+            # Python INFO 로그가 차단되어도 다음 SQL 예외 전에 확정 숫자를 영속화한다.
+            context.log_event(AssetObservation(
+                asset_key=context.asset_key,
+                metadata={
+                    key: progress[key] for key in (
+                        "phase", "operation_id", "batches", "matched_in_batches",
+                        "facts_deleted", "pointers_deleted", "remaining", "elapsed_seconds",
+                    )
+                },
+            ))
             context.log.info(
                 "단기예보 정리 BATCH_COMMITTED operation_id=%s batches=%s "
                 "facts_deleted=%s pointers_deleted=%s remaining=%s elapsed_seconds=%s",
