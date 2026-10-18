@@ -1,0 +1,39 @@
+{
+  "scope": "Weather111 formal FULL post-fix r3; Transport context only",
+  "base": "28f731e6dcb12d5f4cde2ad86fd25acbf3da2eac",
+  "head": "ba40131d224fdb34dfd125c27e15e4a2a1f6df17",
+  "previous": "78817516561968868bb7a77c6cb17c6b90cefee5",
+  "path": "/home/digitie/dev/kor-travel-weather-codex-reverse-address-20261018",
+  "request": "VWorld primary/Kakao fallback; six calendar month automatic refresh/Admin manual queue; source/coords/facts preserved; bounded sequential resources, daemon OFF",
+  "fixes": [
+    "W111-A-P2-03 loadError/launchError split, old GET success cannot clear launch failure; actual loopback 4 FAIL->4 PASS included UI26",
+    "EOF whitespace removed, base..HEAD diff-check PASS",
+    "r1/r2 original reports/manifests/hash archived; old REQUEST_CHANGES preserved"
+  ],
+  "root_checks": [
+    "latest CI39090950401 both SUCCESS: Python658/frontend211/lint/type/build/OpenAPI/migration",
+    "Both apps type-check/Vitest211/build; actual loopback auth/API/native Dagster QUEUED + fixture provider UI13 each/26 total PASS",
+    "Common c067 source both FULL PASS/CI14 SUCCESS; Common39 merged33a3382",
+    "root evidence reverse-address-final-ui26-verification-20261018.json SHA256 fcc89310e250b1828fc65a9151a8ebf92160aa72096bbb734a8790a616702e5e"
+  ],
+  "constraints": [
+    "read-only immutable Git objects / owned temporary fixtures; other agents present do not edit/revert source/index/branch",
+    "no real providers/keys/production/SSH/Docker/daemon operations",
+    "no new peer result until both final; prior r2 may be read",
+    "Transport formal gate/production rollout excluded",
+    "single Node process admission, no distributed exactly-once; derived addresses Admin/API only, source locations/map fields preserved"
+  ],
+  "created_utc": "2026-10-18T02:45:51.791784+00:00",
+  "ci": [
+    {
+      "link": "https://github.com/digitie/kor-travel-weather/actions/runs/39090950401/job/117567393232",
+      "name": "python",
+      "state": "SUCCESS"
+    },
+    {
+      "link": "https://github.com/digitie/kor-travel-weather/actions/runs/39090950401/job/117567393367",
+      "name": "frontend",
+      "state": "SUCCESS"
+    }
+  ]
+}

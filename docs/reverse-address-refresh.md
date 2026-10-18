@@ -21,7 +21,7 @@ Daemon은 기존 중지 상태를 유지하며 이 변경이 운영을 임의로
 
 ## 검증 기록
 
-로컬 실브라우저 검증: Chromium 1365×900·390×844에서 13개씩 통과했다.
+로컬 실브라우저 검증: Chromium 1365×900·390×844를 합해 각 앱 13개가 통과했다.
 실제 로그인·상태 API·Dagster 큐 예약·동일 요청 재조회·중복 예약 차단·CSRF를 확인했다.
 실패 주소·키 미설정·503 복구는 browser route fixture로 검사했다. 제공자 응답은
 주입한 fixture이며 VWorld·Kakao 운영 API를 실호출한 결과로 해석하지 않는다.
@@ -76,3 +76,5 @@ Transport의 소유 Docker 전체 회귀는 dd66363 기준 835 PASS/13 SKIP다.
 조회 오류와 실행 오류 상태를 분리한 뒤 같은 반례를 포함한 루프백 UI26개가 통과했다.
 최종 공통 c067 pin에서 Weather CI Python658·Admin211, Transport Docker Python19·Admin211도 통과했다.
 Common PR39는 두 독립 FULL source 리뷰·최종 CI14개 통과 후 merge됐으며 소비자 최종 리뷰는 별도다.
+
+Weather의 최종 두 독립 리뷰·CI와 PR111 merge 근거는 [최종 closure](reviews/2026-10-18-address-refresh-final.md)에 보존했다. 이 후속 문서는 제품·스키마·배포를 바꾸지 않는다.

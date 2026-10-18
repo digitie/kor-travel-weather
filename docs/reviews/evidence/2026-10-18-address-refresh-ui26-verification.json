@@ -1,0 +1,80 @@
+{
+  "scope": "owned loopback fixtures only; providers injected, no production rollout",
+  "weather_head": "ba40131d224fdb34dfd125c27e15e4a2a1f6df17",
+  "weather_ui_commit": "b92ce4fb276131ede617488dc91b2b612063394f",
+  "transport_head": "f8e5dd06f8bfe478fdb57785e70b2304958333ad",
+  "transport_ui_commit": "6a93c61a5672b6aafdb2dea9546787c55d8cd116",
+  "common_pin": "c067a7f6a11b106931a73cd7465503d90e54d976",
+  "common_merge": "33a3382c2f605ca9135da676bed1ff42061d52fb",
+  "ui_tests": {
+    "weather": 13,
+    "transport": 13,
+    "late_get_before_fix": "4 FAIL across 2 apps x 2 viewports",
+    "late_get_after_fix": "4 PASS included in UI26"
+  },
+  "checks": [
+    {
+      "log": "weather-address-late-get-red.log",
+      "sha256": "a005fd9aef7e72b247b6c4feaa6f573e47476d8ee08842a24455711b49881b20",
+      "tail": "───────────────────────────────────────────────────\n    test-results/address-refresh-주소-갱신-390px-늦은-상태-조회-성공이-수동-실행-실패를-지우지-않는다-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace test-results/address-refresh-주소-갱신-390px-늦은-상태-조회-성공이-수동-실행-실패를-지우지-않는다-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n  2 failed\n    [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 1365px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 ──\n    [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 390px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 ───\n"
+    },
+    {
+      "log": "transport-address-late-get-red.log",
+      "sha256": "bd09cb723e31ded31d812b9714c0ecd841423b7759f211437498571d99e9aeed",
+      "tail": "───────────────────────────────────────────────────\n    test-results/address-refresh-주소-갱신-390px-늦은-상태-조회-성공이-수동-실행-실패를-지우지-않는다-chromium/trace.zip\n    Usage:\n\n        npx playwright show-trace test-results/address-refresh-주소-갱신-390px-늦은-상태-조회-성공이-수동-실행-실패를-지우지-않는다-chromium/trace.zip\n\n    ────────────────────────────────────────────────────────────────────────────────────────────────\n\n  2 failed\n    [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 1365px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 ──\n    [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 390px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 ───\n"
+    },
+    {
+      "log": "weather-address-late-get-green-full.log",
+      "sha256": "8ed2317527a15f7bb6d5e7e305bafbf2cc5777c223b20240ea28cb1b40689204",
+      "tail": "는다 (984ms)\n  ✓   9 [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 390px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 (779ms)\n  ✓  10 [chromium] › e2e/address-refresh.spec.ts:102:9 › 주소 갱신 390px › fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다 (680ms)\n  ✓  11 [chromium] › e2e/address-refresh.spec.ts:110:9 › 주소 갱신 390px › fixture 키 미설정과 빈 목록에서는 실행을 차단한다 (529ms)\n  ✓  12 [chromium] › e2e/address-refresh.spec.ts:118:9 › 주소 갱신 390px › fixture 조회 실패 후 상태 새로고침으로 실제 API에 복구한다 (790ms)\n  ✓  13 [chromium] › e2e/address-refresh.spec.ts:129:5 › 실제 Dagster 예약·같은 요청 재조회·중복 실행 차단·CSRF를 확인한다 (1.8s)\n\n  13 passed (12.7s)\n"
+    },
+    {
+      "log": "transport-address-late-get-green-full.log",
+      "sha256": "e69a3ddf65774729eefe19c45f63794ddcb8b2b69df4f12e4bedb6c2549b1623",
+      "tail": "않는다 (1.1s)\n  ✓   9 [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 390px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 (843ms)\n  ✓  10 [chromium] › e2e/address-refresh.spec.ts:102:9 › 주소 갱신 390px › fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다 (583ms)\n  ✓  11 [chromium] › e2e/address-refresh.spec.ts:110:9 › 주소 갱신 390px › fixture 키 미설정과 빈 목록에서는 실행을 차단한다 (541ms)\n  ✓  12 [chromium] › e2e/address-refresh.spec.ts:118:9 › 주소 갱신 390px › fixture 조회 실패 후 상태 새로고침으로 실제 API에 복구한다 (792ms)\n  ✓  13 [chromium] › e2e/address-refresh.spec.ts:129:5 › 실제 Dagster 예약·같은 요청 재조회·중복 실행 차단·CSRF를 확인한다 (1.7s)\n\n  13 passed (12.6s)\n"
+    },
+    {
+      "log": "transport-address-final-backend-test.log",
+      "sha256": "07a40c5adce83e42e0bd7f108f8b30d4c7f2067f87abc1a91b74431183acf8d7",
+      "tail": "8f2f5162f0 Created \n...................                                                      [100%]\n=============================== warnings summary ===============================\n../usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1\n  /usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n19 passed, 1 warning in 17.51s\n"
+    },
+    {
+      "log": "transport-address-final-admin-late-get-test.log",
+      "sha256": "6049076586aca13f350a0bcd73262868b108eddacacedbbcc27133a5b0ee4fd3",
+      "tail": "mponents/transport-reference-list.test.ts (4 tests) 3ms\n ✓ lib/common-dagster-ui.test.ts (1 test) 111ms\n ✓ lib/rate-limit.test.ts (3 tests) 9ms\n ✓ app/api/auth/logout/route.test.ts (1 test) 16ms\n ✓ lib/transport-presentation.test.ts (3 tests) 6ms\n ✓ lib/bounded-stream.test.ts (2 tests) 30ms\n ✓ lib/transport.test.ts (1 test) 5ms\n ✓ lib/upstream.test.ts (2 tests) 6ms\n ✓ lib/navigation.test.ts (1 test) 4ms\n\n Test Files  27 passed (27)\n      Tests  211 passed (211)\n   Start at  02:41:28\n   Duration  12.82s (transform 822ms, setup 0ms, collect 3.03s, tests 1.35s, environment 1.07s, prepare 2.47s)\n\n"
+    }
+  ],
+  "source_bindings": [
+    {
+      "app": "weather",
+      "path": "packages/kor-travel-weather-admin/frontend/components/address-refresh.tsx",
+      "sha256": "3e8de13e819a18eab38765c59743d5e0896eab52ba04744e0289e4279caca638"
+    },
+    {
+      "app": "weather",
+      "path": "packages/kor-travel-weather-admin/frontend/e2e/address-refresh.spec.ts",
+      "sha256": "6fd9e0e8a44e62a60e2441d69de877014833e1422d5e080a69de7a89eb558acd"
+    },
+    {
+      "app": "weather",
+      "path": "packages/kor-travel-weather-admin/frontend/app/api/address-refresh/route.ts",
+      "sha256": "3642642df5cdadc1a90b926f459a5dc79c8ef8fc9409952a1198f55137d40f62"
+    },
+    {
+      "app": "transport",
+      "path": "packages/kor-travel-transport-admin/frontend/components/address-refresh.tsx",
+      "sha256": "c3b5296505c08808f10c77afdfb3d1961cfacfa0eeb33fd7ed92af872f6f5e44"
+    },
+    {
+      "app": "transport",
+      "path": "packages/kor-travel-transport-admin/frontend/e2e/address-refresh.spec.ts",
+      "sha256": "623d52a6b5d75a3629e437cfa585cac954eb28df3a9e730d5ec64f71274231f2"
+    },
+    {
+      "app": "transport",
+      "path": "packages/kor-travel-transport-admin/frontend/app/api/address-refresh/route.ts",
+      "sha256": "4dc74f8bea409f98606e0a99b9cc8be0be170d44d7dd1336857d7734bd84e5ca"
+    }
+  ],
+  "cleanup": "Local queued2 canceled; five owned fixture process groups stopped after UI26; Docker full regression separate and running. No daemon started."
+}
