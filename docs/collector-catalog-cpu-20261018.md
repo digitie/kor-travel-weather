@@ -18,6 +18,7 @@ tools/benchmark_location_catalog.py는 실제 repository와 DTO를 import하고,
 SQLite에 metadata가 포함된 가상 측정소 1,450행을 넣는다.
 DB 조회→WeatherLocation 생성→ProviderLocation 생성까지 측정한다.
 legacy는 기존 ORM 조회 구현, candidate는 실제 변경 메서드다.
+import/fixture 준비는 측정에서 제외하고 tracemalloc을 켠 상태의 CPU를 비교했다.
 각 모드는 새 프로세스에서 5회씩 교대 실행했고, 모든 1,450 DTO의 JSON SHA256이 일치했다.
 원시 결과는 collector-catalog-benchmark-20261018.json에 보관한다.
 
@@ -39,7 +40,8 @@ Dagster daemon은 켜지 않았고 외부 provider와 운영 DB는 호출하지 
 
 - 회귀 테스트: 정렬/활성/검색/페이지/중첩 metadata/JSON null/독립 DTO와 ORM 미생성 확인.
 - Ruff 통과. frontend type-check 통과, 214 tests 통과.
-- 전체 pytest: 전용 로컬 PostgreSQL에서 실행 중. 초기 기본 로컬 test DB는
+- 최종 코드 전체 pytest: 전용 로컬 PostgreSQL에서 663 passed (204.49초).
+  초기 기본 로컬 test DB는
   기존 weather_values가 비파티션 테이블이라 collection 단계 실패; 해당 DB를 수정하지 않고
   새 테스트 컨테이너로 전환했다.
 - 두 명의 독립 적대 리뷰, merge, 운영 배포 및 live E2E는 root 후속 작업이다.
