@@ -125,3 +125,11 @@ loopback 24602 프록시는 첫 요청을 지연시켜 24102 native GraphQL로 �
 새 pin에서 실제 native 지연 요청·재시도 시험은 앱별 1건 통과했다. 전체 Python·UI
 회귀와 두 독립 최종 리뷰는 진행 중이며, 이 기록은 운영 수용 완료가 아니다.
 공용 webserver를 먼저 배포하고 소비자 Admin을 갱신한다. Daemon OFF를 유지한다.
+
+## SQL 실행 제한시간 보존 후속
+
+최신 pin은 89291f36d731ab906161b96757522e1cd833b4ef다. 이전 a68d049의
+독립 제출 연결에서 native statement_timeout이 빠지는 반례를 수정했다.
+공식 SQLAlchemy Pool.recreate로 연결 생성 설정과 listener를 보존하고 원래 풀의
+연결을 빌리지 않는다. 기존 연결 유실 시 제출 차단도 유지한다.
+최종 pin의 독립 재리뷰·CI·소비자 검증은 별도로 확인하며 운영 배포 전이다.
