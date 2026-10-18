@@ -21,7 +21,7 @@ Daemon은 기존 중지 상태를 유지하며 이 변경이 운영을 임의로
 
 ## 검증 기록
 
-로컬 실브라우저 검증: Chromium 1365×900·390×844에서 11개씩 통과했다.
+로컬 실브라우저 검증: Chromium 1365×900·390×844에서 13개씩 통과했다.
 실제 로그인·상태 API·Dagster 큐 예약·동일 요청 재조회·중복 예약 차단·CSRF를 확인했다.
 실패 주소·키 미설정·503 복구는 browser route fixture로 검사했다. 제공자 응답은
 주입한 fixture이며 VWorld·Kakao 운영 API를 실호출한 결과로 해석하지 않는다.
@@ -59,7 +59,7 @@ exactly-once 제출을 보장하지 않으며, replica 확장 전에는 공유 �
 요청 tag로 이전 실행을 재조회하고 실패·취소·완료를 새 예약과 구분해 표시한다.
 확인 주소는 이 Admin/API의 파생 결과이며 일반 locations/지도 응답의 원천 필드를 치환하지 않는다.
 
-추가 루프백 UI 22개는 기존 실행의 실패·취소·완료 표시까지 포함해 통과했다.
+추가 루프백 UI 26개는 기존 실행의 실패·취소·완료 표시까지 포함해 통과했다.
 최초 재기동 검증에서 Weather 2 PASS/9 FAIL은 전용 실행 환경의 API/Dagster PYTHONPATH 누락이었다.
 제품을 바꾸지 않고 전용 실행 script를 보정한 후 두 앱 각각 11 PASS로 재검증했다.
 제공자는 fixture이며 운영 제공자·배포·운영 UI 검증이 아니다.
@@ -71,3 +71,8 @@ Transport의 소유 Docker 전체 회귀는 dd66363 기준 835 PASS/13 SKIP다.
 모노레포 경로·Node·시험용 PATH의 python3 누락이었다. 소유 fixture에만 원본 archive·도구를 제공해
 전체 회귀를 통과시켰고 제품 Dockerfile을 시험 편의를 위해 변경하지 않았다.
 최종 Common pin 이후의 집중 계약/CI는 별도로 확인한다.
+
+늦은 상태 GET200이 POST의 실행 실패를 지우는 경합을 두 앱의 두 화면 크기에서 재현했다(4 FAIL).
+조회 오류와 실행 오류 상태를 분리한 뒤 같은 반례를 포함한 루프백 UI26개가 통과했다.
+최종 공통 c067 pin에서 Weather CI Python658·Admin211, Transport Docker Python19·Admin211도 통과했다.
+Common PR39는 두 독립 FULL source 리뷰·최종 CI14개 통과 후 merge됐으며 소비자 최종 리뷰는 별도다.

@@ -10,7 +10,8 @@ const date = (value?: string | null) => value ? new Date(value).toLocaleString("
 
 export function AddressRefresh() {
   const [summary, setSummary] = useState<AddressRefreshSummary | null>(null);
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [launchError, setLaunchError] = useState("");
   const [notice, setNotice] = useState("");
   const [runId, setRunId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -24,15 +25,15 @@ export function AddressRefresh() {
       const response = await fetch("/api/address-refresh", { cache: "no-store", signal: current.signal });
       if (!response.ok) throw new Error("주소 갱신 상태를 읽지 못했습니다.");
       const body = await response.json();
-      if (!current.signal.aborted) { setSummary(body); setError(""); }
+      if (!current.signal.aborted) { setSummary(body); setLoadError(""); }
     } catch {
-      if (!current.signal.aborted) setError("주소 갱신 상태를 읽지 못했습니다. 상태 새로고침으로 재시도하세요.");
+      if (!current.signal.aborted) setLoadError("주소 갱신 상태를 읽지 못했습니다. 상태 새로고침으로 재시도하세요.");
     }
   }, []);
   useEffect(() => { void load(); return () => controller.current?.abort(); }, [load]);
   async function launch() {
     if (busy) return;
-    setBusy(true); setError(""); setNotice("");
+    setBusy(true); setLaunchError(""); setNotice("");
     requestId.current ??= crypto.randomUUID();
     try {
       const response = await fetch("/api/address-refresh", {
@@ -44,7 +45,7 @@ export function AddressRefresh() {
       setRunId(body.runId);
       requestId.current = null;
       if (body.status === "FAILURE" || body.status === "CANCELED") {
-        setError(body.status === "FAILURE"
+        setLaunchError(body.status === "FAILURE"
           ? "기존 요청의 실행이 실패했습니다. 실행 기록을 확인한 뒤 새 수동 요청으로 재시도할 수 있습니다."
           : "기존 요청의 실행이 취소됐습니다. 실행 기록을 확인한 뒤 새 수동 요청으로 재시도할 수 있습니다.");
       } else if (body.status === "SUCCESS") {
@@ -56,7 +57,7 @@ export function AddressRefresh() {
       }
       if (body.status !== "FAILURE" && body.status !== "CANCELED") void load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "예약 결과를 확인하지 못했습니다. 다시 누르면 같은 요청의 예약 여부를 확인합니다.");
+      setLaunchError(reason instanceof Error ? reason.message : "예약 결과를 확인하지 못했습니다. 다시 누르면 같은 요청의 예약 여부를 확인합니다.");
     } finally { setBusy(false); }
   }
   return (
@@ -73,7 +74,8 @@ export function AddressRefresh() {
         <button type="button" onClick={() => void load()}>상태 새로고침</button>
         {runId ? <a href={dagsterRunUrl(runId)} target="_blank" rel="noreferrer">실행 기록 보기 ↗</a> : null}
       </div>
-      {error ? <p role="alert">{error}</p> : null}
+      {loadError ? <p role="alert">{loadError}</p> : null}
+      {launchError ? <p role="alert">{launchError}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
       {summary?.items.length ? <>
         <p>최근 확인한 위치 최대 50개입니다. 실패·기한 경과 주소는 최신으로 보장되지 않습니다. 작은 화면에서는 표를 좌우로 이동해 확인하세요.</p>

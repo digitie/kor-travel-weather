@@ -70,6 +70,35 @@ for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 
       await expect(panel.getByText(/^실행을 예약했습니다/)).toHaveCount(0);
       await expect(panel.getByRole("link", { name: "실행 기록 보기 ↗" })).toBeVisible();
     });
+    test("늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다", async ({ page }) => {
+      let gets = 0;
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; });
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      await page.route("**/api/address-refresh", async route => {
+        if (route.request().method() === "POST") {
+          await route.fulfill({ status: 202, json: {
+            runId: "03147536-8f5c-41ec-a725-be2ca3b024f3", status: "FAILURE", replayed: true,
+          } });
+          return;
+        }
+        gets += 1;
+        if (gets > 1) { entered(); await gate; }
+        await route.fulfill({ json: { ...fixture, total: gets > 1 ? 2 : 1 } });
+      });
+      await login(page);
+      const panel = page.getByRole("region", { name: "주소 갱신", exact: true });
+      const launch = panel.getByRole("button", { name: "전체 주소 수동 갱신", exact: true });
+      await expect(launch).toBeEnabled();
+      await panel.getByRole("button", { name: "상태 새로고침", exact: true }).click();
+      await started;
+      await launch.click();
+      await expect(panel.getByRole("alert")).toContainText("기존 요청의 실행이 실패했습니다.");
+      release();
+      await expect(panel.getByText(/전체 2개/)).toBeVisible();
+      await expect(panel.getByRole("alert")).toContainText("기존 요청의 실행이 실패했습니다.");
+    });
     test("fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다", async ({ page }) => {
       await page.route("**/api/address-refresh", route => route.fulfill({ json: fixture }));
       await login(page);
