@@ -52,7 +52,8 @@ def run_address_refresh(repository, settings, *, force=False, resolver=None):
             source.store,
             client,
             source.page,
-            source.lookup,
+            source.retries,
+            pending_failures=source.pending_failures,
             batch_size=settings.address_refresh_batch_size,
             force=force,
         )
