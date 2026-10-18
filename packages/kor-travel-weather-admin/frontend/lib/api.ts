@@ -365,8 +365,8 @@ export function getHealth(): Promise<{ status: string; service: string; version:
 
 export type AddressItem = {
   target_key: string; name?: string; status: string; stale: boolean;
-  address?: { full?: string }; region?: { legal_code?: string; admin_code?: string };
-  provider?: string; resolved_at?: string | null; next_refresh_at?: string | null; error_code?: string | null;
+  address?: { full?: string } | null; region?: { legal_code?: string; admin_code?: string } | null;
+  provider?: string | null; resolved_at?: string | null; next_refresh_at?: string | null; error_code?: string | null;
 };
 export type AddressRefreshSummary = {
   total: number; due: number; failed: number; refresh_months: number;
