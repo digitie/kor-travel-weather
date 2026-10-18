@@ -30,3 +30,10 @@ KMA 단기예보의 미래·최근6시간 값은 원 fact가 없고 원 clock이
 경우에만 재입장 시각을 known_at으로 사용한다. source.fetched_at으로 원 clock을 복원할 수 있고
 collected_at/issued_at/valid_at/payload/lineage는 불변이다. 정상 DEFAULT 첫 입장과
 이미 보유한 최초 복합키는 유지한다. 자세한 예외는 [ADR-072](../adr/072-weather-bitemporal.md)를 따른다.
+
+## 좌표 기반 파생 주소
+
+`0021_reverse_addresses`에서 `reverse_address_entries`와 `reverse_address_control`을 추가한다.
+`provider_id`·`target_key` 복합 식별자로 현재 좌표의 주소·행정구역·확인일·다음 갱신일과 오류/backoff를 분리 보관하고,
+제어 행은 수동 cycle·커서·만료 lease를 보관한다. 원천 주소·좌표·관리자 설정과 과거 관측은 변경하지 않는다.
+달력 6개월 갱신, VWorld 우선·Kakao fallback, 수동 실행과 복구 계약은 [구현 가이드](../reverse-address-refresh.md)를 따른다.
