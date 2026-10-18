@@ -1302,22 +1302,23 @@ class WeatherRepository:
         include_metadata: bool = True,
     ) -> list[WeatherLocation]:
         with self._session_factory() as session:
-            # 공개 목록은 DTO에 쓰는 컬럼만 읽어 JSON과 ORM 인스턴스 생성을 피한다.
-            # 관리자와 수집 경로는 기존 metadata 포함 기본 동작을 유지한다.
-            stmt = (
-                select(WeatherLocationRow)
-                if include_metadata
-                else select(
-                    WeatherLocationRow.location_id,
-                    WeatherLocationRow.name,
-                    WeatherLocationRow.latitude,
-                    WeatherLocationRow.longitude,
-                    WeatherLocationRow.nx,
-                    WeatherLocationRow.ny,
-                    WeatherLocationRow.region_code,
-                    WeatherLocationRow.enabled,
-                )
-            ).order_by(WeatherLocationRow.name, WeatherLocationRow.location_id)
+            # 카탈로그는 읽기 전용 DTO로 반환하므로 ORM identity map과 전체 행
+            # 복사본을 만들지 않는다. 수집 경로에는 metadata를 그대로 포함한다.
+            columns = [
+                WeatherLocationRow.location_id,
+                WeatherLocationRow.name,
+                WeatherLocationRow.latitude,
+                WeatherLocationRow.longitude,
+                WeatherLocationRow.nx,
+                WeatherLocationRow.ny,
+                WeatherLocationRow.region_code,
+                WeatherLocationRow.enabled,
+            ]
+            if include_metadata:
+                columns.append(WeatherLocationRow.metadata_json.label("metadata"))
+            stmt = select(*columns).order_by(
+                WeatherLocationRow.name, WeatherLocationRow.location_id
+            )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
             if search:
@@ -1330,12 +1331,12 @@ class WeatherRepository:
                 stmt = stmt.limit(limit)
             if offset:
                 stmt = stmt.offset(offset)
-            if not include_metadata:
-                return [
-                    WeatherLocation.model_validate(row)
-                    for row in session.execute(stmt).mappings()
-                ]
-            return [self._location_model(row) for row in session.scalars(stmt).all()]
+            return [
+                WeatherLocation.model_validate(
+                    {**row, "metadata": dict(row["metadata"] or {})} if include_metadata else row
+                )
+                for row in session.execute(stmt).mappings()
+            ]
 
     def count_locations(
         self,

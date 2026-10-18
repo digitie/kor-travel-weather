@@ -1,0 +1,154 @@
+{
+  "source_commit": "8c503fa8c41fefc8b42cdc94d61ff108ceb23a15",
+  "evidence_log": "stdout-r2.safe.log",
+  "evidence_log_sha256": "3d8f08baf99b8a7d6235b88634744e71df4d0dcf13a2614f8df0cca0bade40ea",
+  "attempt": "r2",
+  "prior_attempt": "r1: readonly rootfs temporary SQLite disk I/O failure; excluded from comparison",
+  "conditions": "Both old/new containers add RAM tmpfs /tmp; synthetic 1450 rows, in-memory SQLite, 5 fresh-process samples per image alternating; prepare-only SDK reads may overlap on shared host. No build/UI/rollout during r2.",
+  "result": {
+    "status": "PASS_ARM_ISOLATED",
+    "scope": "1450 synthetic location DB-to-DTO-to-target, in-memory SQLite, no provider or production database",
+    "images": {
+      "old": "sha256:99459fa40ed9ad4c97027e135fcc867dc17c30ace143dcfe6fc5107531653ff5",
+      "new": "sha256:48d7bb9253ffdd5e3bd73b82698b2bd44155a00a39af32f5b119fe83adb08205"
+    },
+    "samples": [
+      {
+        "role": "old",
+        "iteration": 0,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 2079.090124,
+        "wall_ms": 2115.976586,
+        "peak_bytes": 6448032,
+        "max_rss_kib": 97108,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "new",
+        "iteration": 0,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 1953.496112,
+        "wall_ms": 1984.554218,
+        "peak_bytes": 5423275,
+        "max_rss_kib": 96684,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "old",
+        "iteration": 1,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 2001.965585,
+        "wall_ms": 2023.090913,
+        "peak_bytes": 6450313,
+        "max_rss_kib": 95320,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "new",
+        "iteration": 1,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 1822.930078,
+        "wall_ms": 1844.11117,
+        "peak_bytes": 5422074,
+        "max_rss_kib": 96576,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "old",
+        "iteration": 2,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 2106.099019,
+        "wall_ms": 2134.977037,
+        "peak_bytes": 6449005,
+        "max_rss_kib": 97160,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "new",
+        "iteration": 2,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 1844.048198,
+        "wall_ms": 1862.419731,
+        "peak_bytes": 5419989,
+        "max_rss_kib": 96728,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "old",
+        "iteration": 3,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 2296.685403,
+        "wall_ms": 2348.249453,
+        "peak_bytes": 6450064,
+        "max_rss_kib": 97048,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "new",
+        "iteration": 3,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 1841.527925,
+        "wall_ms": 1863.568983,
+        "peak_bytes": 5419994,
+        "max_rss_kib": 96640,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "old",
+        "iteration": 4,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 2099.349288,
+        "wall_ms": 2127.938378,
+        "peak_bytes": 6448689,
+        "max_rss_kib": 95396,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      },
+      {
+        "role": "new",
+        "iteration": 4,
+        "mode": "candidate",
+        "rows": 1450,
+        "targets": 1450,
+        "cpu_ms": 1894.710414,
+        "wall_ms": 1922.115347,
+        "peak_bytes": 5414387,
+        "max_rss_kib": 96452,
+        "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+      }
+    ],
+    "median": {
+      "old": {
+        "cpu_ms": 2099.349288,
+        "wall_ms": 2127.938378,
+        "peak_bytes": 6449005,
+        "max_rss_kib": 97048
+      },
+      "new": {
+        "cpu_ms": 1844.048198,
+        "wall_ms": 1863.568983,
+        "peak_bytes": 5419994,
+        "max_rss_kib": 96640
+      }
+    },
+    "runtime_unchanged": true,
+    "daemon_off": true
+  }
+}

@@ -21,3 +21,16 @@
 - [ ] W-DOC-01 / P2: 실제 경로/효과 증거 확정 뒤 옛 runbook 현행 절차만 최소 갱신. T-WEA-03/04는 조건부 후보로 유지한다.
 
 이번은 docs4개뿐이다. 사용자 승인 [skip ci]로 링크·diff·사실 검토만 하며 독립2문서 리뷰/머지는 root 단계다.
+
+
+## 2026-10-18 수집 카탈로그 CPU/할당 peak 개선
+
+metadata 포함 카탈로그를 ORM 대신 DTO 컬럼 projection으로 조회한다. 실제 DB→DTO→target
+1,450행 로컬 비교와 한계를 [측정 기록](collector-catalog-cpu-20261018.md)에 기록했다.
+두 명의 독립 소스 리뷰·exact-head CI·ARM64 API/CS native build·r4 prepare는 통과했다.
+ARM 격리 fixture 10표본에서 CPU 중앙값 약 12.2%, Python 할당 peak 약 16.0% 감소했고
+RSS의 실질적 저감은 주장하지 않는다. API/CS 배포065661ca PASS와 배포 후 WSL
+Chromium1243 UI36 PASS/exit0를 확인했다. 이 수용 기록은 PR #117에 포함한다.
+실제 provider 전체 수집 CPU/RSS·장시간 안정성·Kakao 실제 fallback/주소 전체 sweep 및
+Track 1/2의 미검증 수용은 별도로 남긴다. 이전 pending 문장은 각 기록 시점의 이력이다.
+Dagster daemon OFF를 유지한다.

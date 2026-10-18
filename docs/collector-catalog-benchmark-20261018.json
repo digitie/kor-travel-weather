@@ -1,0 +1,119 @@
+{
+  "scope": "Local in-memory SQLite; synthetic 1450 rows; fresh process per sample; no provider or production access. Concurrent local test activity may affect timing. RSS is process high-water mark, not path allocation.",
+  "samples": [
+    {
+      "mode": "legacy",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 122.457635,
+      "wall_ms": 122.448242,
+      "peak_bytes": 6441806,
+      "max_rss_kib": 97712,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "candidate",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 105.2388,
+      "wall_ms": 105.228484,
+      "peak_bytes": 5414350,
+      "max_rss_kib": 98592,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "legacy",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 130.394007,
+      "wall_ms": 130.432206,
+      "peak_bytes": 6444470,
+      "max_rss_kib": 99392,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "candidate",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 125.569716,
+      "wall_ms": 128.472117,
+      "peak_bytes": 5413519,
+      "max_rss_kib": 98744,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "legacy",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 168.856533,
+      "wall_ms": 168.850666,
+      "peak_bytes": 6444025,
+      "max_rss_kib": 97660,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "candidate",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 115.746679,
+      "wall_ms": 115.752944,
+      "peak_bytes": 5413927,
+      "max_rss_kib": 98672,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "legacy",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 122.11237,
+      "wall_ms": 122.129156,
+      "peak_bytes": 6446822,
+      "max_rss_kib": 97632,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "candidate",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 112.296405,
+      "wall_ms": 112.321651,
+      "peak_bytes": 5413616,
+      "max_rss_kib": 98668,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "legacy",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 124.812244,
+      "wall_ms": 124.814419,
+      "peak_bytes": 6441911,
+      "max_rss_kib": 97636,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    },
+    {
+      "mode": "candidate",
+      "rows": 1450,
+      "targets": 1450,
+      "cpu_ms": 109.905006,
+      "wall_ms": 109.942114,
+      "peak_bytes": 5401618,
+      "max_rss_kib": 98900,
+      "output_sha256": "e86455bb78f4a6f6877bb3ef3651414527c2f62e7d1486c13cffd4ae523a8b65"
+    }
+  ],
+  "median": {
+    "legacy": {
+      "cpu_ms": 124.812244,
+      "wall_ms": 124.814419,
+      "peak_bytes": 6444025,
+      "max_rss_kib": 97660
+    },
+    "candidate": {
+      "cpu_ms": 112.296405,
+      "wall_ms": 112.321651,
+      "peak_bytes": 5413616,
+      "max_rss_kib": 98672
+    }
+  }
+}
