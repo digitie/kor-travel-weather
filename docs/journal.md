@@ -1,8 +1,10 @@
 # Weather 작업 기록
 
-## 2026-10-18 주소 갱신 구현 진행
+## 2026-10-18 주소 갱신 구현·로컬 검증
 
-VWorld·Kakao 기반 위치별 달력 6개월 자동 갱신 및 Admin 수동 실행을 구현 중이다. [설계·설정](reverse-address-refresh.md)을 참조한다. 운영 적용과 검증 완료는 미확정이며 Daemon은 중지 상태를 유지한다.
+VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin 수동 실행을 구현했다. 두 앱은 같은 Common Python 엔진을 고정 commit으로 사용한다. [설계·설정 및 검증 범위](reverse-address-refresh.md)를 참조한다. 원천 주소·좌표는 보존한다.
+
+로컬 실브라우저 최종 재검증은 앱별 9개(합계 18개) 통과했고 실제 인증·상태 API·Dagster 큐 예약·중복 차단·모바일/키보드·오류 복구를 포함한다. 제공자는 주입 fixture다. Python 전체 검증은 Common 501개, Weather 657개와 추가 GraphQL 계약, Transport 838개 통과·환경 조건 10개 skip이다. Draft PR과 독립 리뷰를 진행하며 운영 migration·실제 제공자 실호출·배포·운영 UI 수용은 미실행이다. Daemon은 중지 상태를 유지한다.
 
 ## 2026-10-17 — 최신109와 남은 운영 수용 문서 정산
 
