@@ -46,4 +46,4 @@ Odroid NVMe에서 API/CS ARM64 이미지를 직렬 빌드하고 각 설치 소�
 장애나 자동 daemon 복구 시험을 의미하지 않는다.
 
 [빌드·배포·UI 증거](2026-10-19-regional-deployment-evidence.json)를 보관한다.
-새 counter를 포함한 실제 지역 수집·현재 관측 최신성 및 자동 주기는 별도 수용이다.
+위 문장은 배포 당시 범위다. 후속 [수동 지역 수집](2026-10-19-regional-live-collection.md)에서 새 counter·관측 시각·두 asset native/DB 성공과 수집 후 UI36을 확인했다. 자동 주기는 daemon OFF로 여전히 별도 수용이다.
