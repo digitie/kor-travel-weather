@@ -10,7 +10,8 @@
     "start": "next start --hostname 127.0.0.1 --port 14105",
     "type-check": "next typegen && tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@kor-travel/tokens": "file:vendor/kor-travel-tokens-0.1.0.tgz",
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.13.0",
     "@types/react": "^19.0.0",

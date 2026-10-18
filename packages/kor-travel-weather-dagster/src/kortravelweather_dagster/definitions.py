@@ -602,6 +602,8 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
     )
     if job_name == "regional_weather_job":
         seconds = 21600
+    if job_name == "address_refresh_job":
+        seconds = 120
     if job_name == "weather_short_forecast_retention_job":
         seconds = 300
     return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1)

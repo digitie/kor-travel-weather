@@ -1,6 +1,6 @@
 # 6개월 자동 주소 갱신과 Admin 수동 실행
 
-정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/agent/codex-reverse-address-refresh-20261018/docs/reverse-address-refresh.md)를 따른다.
+정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/812b291659e40564595c3c28b7e8d51cbcc46df9/docs/reverse-address-refresh.md)를 따른다.
 기존 VWorld 우선·Kakao 보조를 유지하며 Geo API나 데이터 토큰에는 의존하지 않는다.
 
 환경변수: KOR_TRAVEL_WEATHER_VWORLD_API_KEY, KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY,
@@ -21,5 +21,19 @@ Daemon은 기존 중지 상태를 유지하며 이 변경이 운영을 임의로
 
 ## 검증 기록
 
-현재 구현·검증 진행 중이다. 로컬 테스트 결과와 운영 적용은 구분한다.
-운영 migration·실제 API 실호출·배포·외부 UI E2E는 아직 완료로 기록하지 않는다.
+로컬 실브라우저 검증: Chromium 1365×900·390×844에서 9개씩 통과했다.
+실제 로그인·상태 API·Dagster 큐 예약·동일 요청 재조회·중복 예약 차단·CSRF를 확인했다.
+실패 주소·키 미설정·503 복구는 browser route fixture로 검사했다. 제공자 응답은
+주입한 fixture이며 VWorld·Kakao 운영 API를 실호출한 결과로 해석하지 않는다.
+테스트용 Daemon도 실행하지 않았고 큐 대기 상태를 확인했다.
+
+실행: 전용 loopback fixture 환경에서 ADDRESS_REFRESH_UI_E2E=1,
+E2E_BASE_URL, E2E_UI_USER, E2E_UI_PASSWORD를 지정하고
+npx playwright test e2e/address-refresh.spec.ts --workers=1.
+운영 주소에 실수로 예약하지 않도록 spec은 loopback만 허용한다.
+
+공통 Python 전체 495개, 각 Admin Vitest 207개 및 운영 빌드가 통과했다.
+Weather 전체 Python 657개와 실제 고정 Dagster GraphQL schema 검증도 통과했다.
+Transport 전체 Python 회귀는 실행 중이다(첫 순차 검증은 600초 시간 예산 초과로 미완료).
+운영 migration·실제 API 실호출·배포·외부 운영 UI E2E는 미실행이다.
+CI·두 독립 리뷰의 최종 결과는 PR 검증 기록에 추가한다.

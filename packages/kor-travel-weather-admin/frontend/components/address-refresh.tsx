@@ -3,16 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { dagsterRunUrl } from "@/lib/dagster-scope";
 
-type AddressItem = {
-  target_key: string; name?: string; status: string; stale: boolean;
-  address?: { full?: string }; region?: { legal_code?: string; admin_code?: string };
-  provider?: string; resolved_at?: string; next_refresh_at?: string; error_code?: string;
-};
-export type AddressRefreshSummary = {
-  total: number; due: number; failed: number; refresh_months: number;
-  configured: boolean; auto_enabled: boolean; in_progress: boolean; manual_cycle: boolean;
-  last_resolved_at: string | null; items: AddressItem[];
-};
+import type { AddressRefreshSummary } from "@/lib/api";
 
 const date = (value?: string | null) => value ? new Date(value).toLocaleString("ko-KR") : "미확인";
 

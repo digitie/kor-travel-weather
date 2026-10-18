@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAllowedOrigin } from "@/lib/origin";
-import { DAGSTER_LOCATION_NAME, DAGSTER_REPOSITORY_NAME } from "@/lib/dagster-scope";
+import { DAGSTER_LOCATION_NAME, DAGSTER_REPOSITORY_NAME,
+  ADDRESS_REFRESH_PREVIOUS_QUERY, ADDRESS_REFRESH_ACTIVE_QUERY, ADDRESS_REFRESH_LAUNCH_MUTATION } from "@/lib/dagster-scope";
 import { adminUsername, checkDurableSession, SESSION_COOKIE, sessionSecret, verifySessionValue } from "@/lib/session";
 
 const headers = { "cache-control": "no-store, private" };
@@ -64,20 +65,20 @@ export async function POST(request: NextRequest) {
     || typeof body.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)) return reply("실행 요청 ID가 올바르지 않습니다.", 422);
   try {
     const previous = await graphql(
-      'query PreviousAddressRefresh($location: String!, $requestId: String!) { runsOrError(limit: 1, filter: { pipelineName: "address_refresh_job", tags: [{key: "dagster/code_location", value: $location}, {key: "kortravel/address-request", value: $requestId}] }) { __typename ... on Runs { results { runId status } } } }',
+      ADDRESS_REFRESH_PREVIOUS_QUERY,
       { location: DAGSTER_LOCATION_NAME, requestId: body.requestId },
     );
     if (previous.runsOrError?.__typename !== "Runs") throw new Error("previous");
     if (previous.runsOrError.results?.[0]) return NextResponse.json(previous.runsOrError.results[0], { status: 202, headers });
     const active = await graphql(
-      'query ActiveAddressRefresh($location: String!) { runsOrError(limit: 1, filter: { pipelineName: "address_refresh_job", statuses: [QUEUED, NOT_STARTED, STARTING, STARTED, CANCELING], tags: [{key: "dagster/code_location", value: $location}] }) { __typename ... on Runs { results { runId status } } } }',
+      ADDRESS_REFRESH_ACTIVE_QUERY,
       { location: DAGSTER_LOCATION_NAME },
     );
     if (active.runsOrError?.__typename !== "Runs") throw new Error("active");
     const existing = active.runsOrError.results?.[0];
     if (existing) return reply("주소 갱신이 이미 예약되었거나 실행 중입니다. 해당 실행 완료 후 다시 시도하세요.", 409);
     const result = await graphql(
-      'mutation LaunchAddressRefresh($executionParams: ExecutionParams!) { launchRun(executionParams: $executionParams) { __typename ... on LaunchRunSuccess { run { runId status } } } }',
+      ADDRESS_REFRESH_LAUNCH_MUTATION,
       { executionParams: {
         selector: { repositoryLocationName: DAGSTER_LOCATION_NAME, repositoryName: DAGSTER_REPOSITORY_NAME, pipelineName: JOB },
         runConfigData: { ops: { refresh_addresses: { config: { force: true } } } },
