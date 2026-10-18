@@ -1,0 +1,129 @@
+{
+  "groups": {
+    "baseline": [
+      {
+        "case": "weather-memory-70d84dd31691",
+        "worker_cpu": 17.411036049000003,
+        "pg_cpu": 23.544673,
+        "wall": 56.227166465017945,
+        "rss": 130777088,
+        "cgroup_peak": 111964160,
+        "sql": 107,
+        "semantic": {
+          "weather_values": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d",
+          "weather_current_values": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02",
+          "weather_source_records": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+        },
+        "combined_cpu": 40.955709049000006
+      },
+      {
+        "case": "weather-memory-998fa2f14ee7",
+        "worker_cpu": 17.756259735,
+        "pg_cpu": 23.111332,
+        "wall": 55.958049799955916,
+        "rss": 130699264,
+        "cgroup_peak": 112078848,
+        "sql": 107,
+        "semantic": {
+          "weather_values": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d",
+          "weather_current_values": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02",
+          "weather_source_records": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+        },
+        "combined_cpu": 40.867591735000005
+      },
+      {
+        "case": "weather-memory-a4accd5f29b3",
+        "worker_cpu": 17.231006274,
+        "pg_cpu": 22.781903,
+        "wall": 53.76196092698956,
+        "rss": 130514944,
+        "cgroup_peak": 111968256,
+        "sql": 107,
+        "semantic": {
+          "weather_values": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d",
+          "weather_current_values": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02",
+          "weather_source_records": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+        },
+        "combined_cpu": 40.012909273999995
+      }
+    ],
+    "candidate": [
+      {
+        "case": "weather-memory-62fbf9a013d3",
+        "worker_cpu": 17.45176057,
+        "pg_cpu": 22.886866,
+        "wall": 56.22314063098747,
+        "rss": 111099904,
+        "cgroup_peak": 92360704,
+        "sql": 125,
+        "semantic": {
+          "weather_values": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d",
+          "weather_current_values": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02",
+          "weather_source_records": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+        },
+        "combined_cpu": 40.33862657
+      },
+      {
+        "case": "weather-memory-b63e794336f4",
+        "worker_cpu": 17.383066092000004,
+        "pg_cpu": 23.330742,
+        "wall": 57.13795714802109,
+        "rss": 111104000,
+        "cgroup_peak": 92528640,
+        "sql": 125,
+        "semantic": {
+          "weather_values": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d",
+          "weather_current_values": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02",
+          "weather_source_records": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+        },
+        "combined_cpu": 40.71380809200001
+      },
+      {
+        "case": "weather-memory-f41136c031e0",
+        "worker_cpu": 17.068306399,
+        "pg_cpu": 23.201484,
+        "wall": 57.089649018016644,
+        "rss": 111104000,
+        "cgroup_peak": 92434432,
+        "sql": 125,
+        "semantic": {
+          "weather_values": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d",
+          "weather_current_values": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02",
+          "weather_source_records": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+        },
+        "combined_cpu": 40.269790399
+      }
+    ]
+  },
+  "medians": {
+    "baseline": {
+      "worker_cpu": 17.411036049000003,
+      "pg_cpu": 23.111332,
+      "combined_cpu": 40.867591735000005,
+      "wall": 55.958049799955916,
+      "rss": 130699264,
+      "cgroup_peak": 111968256,
+      "sql": 107
+    },
+    "candidate": {
+      "worker_cpu": 17.383066092000004,
+      "pg_cpu": 23.201484,
+      "combined_cpu": 40.33862657,
+      "wall": 57.089649018016644,
+      "rss": 111104000,
+      "cgroup_peak": 92434432,
+      "sql": 125
+    }
+  },
+  "delta_percent": {
+    "worker_cpu": -0.16064498931185334,
+    "pg_cpu": 0.39007704099442986,
+    "combined_cpu": -1.2943389677326778,
+    "wall": 2.022227761878903,
+    "rss": -14.992635306653291,
+    "cgroup_peak": -17.445858940591165,
+    "sql": 16.82242990654206
+  },
+  "status": "PASS",
+  "scope": "Synthetic10locations792facts each; initial collection CPU only; no provider networking; worker RSS/cgroup highwater includes imports; isolated PG CPU run_begin to run_finished; not whole host load."
+}

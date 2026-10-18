@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -100,7 +101,7 @@ class _Client:
 
 def test_grid_batches_publish_before_fetching_the_whole_sweep(monkeypatch):
     repository = _Repository()
-    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 3)
+    monkeypatch.setattr(kma_weather, "GRID_STAGE_VALUES", 3)
     calls = 0
 
     class Client(_Client):
@@ -122,7 +123,7 @@ def test_grid_batches_publish_before_fetching_the_whole_sweep(monkeypatch):
 
 def test_grid_budget_does_not_reset_after_flushing_memory(monkeypatch):
     repository = _Repository()
-    monkeypatch.setattr(kma_weather, "KMA_STAGE_VALUES", 3)
+    monkeypatch.setattr(kma_weather, "GRID_STAGE_VALUES", 3)
 
     class Client(_Client):
         async def now(self, **kwargs):
@@ -145,7 +146,10 @@ def test_grid_budget_does_not_reset_after_flushing_memory(monkeypatch):
             base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
         )
     assert repository.runs[-1].status == "failed"
-    assert repository.runs[-1].values_loaded == 4
+    # 첫 위치는 다음 위치 추가 전에 commit된다. 둘째 위치의 미게시 facts는
+    # 다음 격자의 예산 오류로 폐기되므로 실제 commit된 두 값만 보고한다.
+    assert repository.runs[-1].values_loaded == 2
+    assert [len(t["values"]) for t in repository.transactions if t["values"]] == [2]
 
 
 def _targets(grids: int, per_grid: int) -> list[WeatherTarget]:
@@ -286,3 +290,83 @@ def test_publishes_run_off_the_event_loop(monkeypatch) -> None:
 def test_the_default_chunk_bounds_the_locks_a_transaction_holds() -> None:
     assert 0 < kma_weather.GRID_PUBLISH_LOCATIONS <= 100
     assert 0 < kma_weather.GRID_PUBLISH_VALUES <= 10_000
+
+
+@pytest.mark.parametrize(("stage_limit", "expected_sizes"), [(5, [4, 4]), (1, [2, 2, 2, 2])])
+def test_grid_stages_whole_locations_without_an_extra_partial_publish(
+    monkeypatch, stage_limit, expected_sizes
+):
+    """위치 추가 전 상한 검사와 상한보다 큰 한 위치의 원자성을 함께 검증한다."""
+    monkeypatch.setattr(kma_weather, "GRID_STAGE_VALUES", stage_limit)
+    monkeypatch.setattr(kma_weather, "GRID_PUBLISH_VALUES", stage_limit)
+    repository = _Repository()
+
+    class Client(_Client):
+        async def now(self, **kwargs):
+            snapshot = await super().now(**kwargs)
+            snapshot.raw["items"].append(
+                {**snapshot.raw["items"][0], "category": "REH", "obsrValue": "50"}
+            )
+            return snapshot
+
+    result = run_weather_sync(
+        repository=repository,
+        client=Client(),
+        targets=_targets(1, 4),
+        base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+    )
+    publishes = [t for t in repository.transactions if t["values"]]
+    assert result["values_loaded"] == 8
+    assert [len(t["values"]) for t in publishes] == expected_sizes
+    published_locations = []
+    for transaction in publishes:
+        assert len(transaction["values"]) == 2 * len(transaction["locations"])
+        cited = {value.source_record_key for value in transaction["values"]}
+        assert cited <= transaction["sources"]
+        assert transaction["run_ids"] == {"run-1"}
+        published_locations.extend(transaction["locations"])
+    assert sorted(published_locations) == [target.location.location_id for target in _targets(1, 4)]
+
+
+@pytest.mark.parametrize(
+    ("facts_per_location", "expected_sizes"), [(1200, [2400, 2400]), (2501, [2501] * 4)]
+)
+def test_default_grid_staging_preserves_large_locations_and_lineage(
+    monkeypatch, facts_per_location, expected_sizes
+):
+    """실제 기본 상한에서 큰 응답의 fanout과 위치별 원자성을 검사한다."""
+    from zoneinfo import ZoneInfo
+
+    class Client(_Client):
+        async def now(self, **kwargs):
+            snapshot = await super().now(**kwargs)
+            row = snapshot.raw["items"][0]
+            start = datetime(2026, 1, 1, tzinfo=ZoneInfo("Asia/Seoul"))
+            snapshot.raw["items"] = [
+                {
+                    **row,
+                    "baseDate": (start + timedelta(hours=i)).strftime("%Y%m%d"),
+                    "baseTime": (start + timedelta(hours=i)).strftime("%H%M"),
+                }
+                for i in range(facts_per_location)
+            ]
+            return snapshot
+
+    repository = _Repository()
+    result = run_weather_sync(
+        repository=repository,
+        client=Client(),
+        targets=_targets(1, 4),
+        base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+    )
+    publishes = [t for t in repository.transactions if t["values"]]
+    assert result["values_loaded"] == facts_per_location * 4
+    assert [len(t["values"]) for t in publishes] == expected_sizes
+    locations = []
+    for transaction in publishes:
+        assert len(transaction["values"]) == facts_per_location * len(transaction["locations"])
+        cited = {value.source_record_key for value in transaction["values"]}
+        assert cited <= transaction["sources"]
+        assert transaction["run_ids"] == {"run-1"}
+        locations.extend(transaction["locations"])
+    assert sorted(locations) == [target.location.location_id for target in _targets(1, 4)]

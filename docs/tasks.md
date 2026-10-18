@@ -1,6 +1,6 @@
 # Weather 남은 작업
 
-2026-10-17 main39aafe0 기준 현행 인덱스다. 문서 PR 생성 전 감사 조회에서 OPEN PR0이었다. [전체 감사·증거·선행 관계](audits/2026-10-17-remaining-work.md)를 함께 읽는다. 과거 이전 백로그는 [deploy/n150.md](../deploy/n150.md)에 보존한다. vendored python-airkorea-api의 tasks/resume/journal은 별도 provider 문서다.
+아래 기존 인덱스는 2026-10-17 main39aafe0 기준 이력이다. 현재 PR #118의 부분 수용과 남은 게이트는 아래 최신 절을 따른다. 문서 PR 생성 전 감사 조회에서 OPEN PR0이었다. [전체 감사·증거·선행 관계](audits/2026-10-17-remaining-work.md)를 함께 읽는다. 과거 이전 백로그는 [deploy/n150.md](../deploy/n150.md)에 보존한다. vendored python-airkorea-api의 tasks/resume/journal은 별도 provider 문서다.
 
 코드·PR merge·실배포·운영 수용은 다른 상태다. 증거 미확인을 미배포 확정으로 쓰지 않는다. daemon OFF는 현재 사용자 정책이며 자동으로 해제하지 않는다.
 
@@ -17,10 +17,10 @@
 - [ ] W-DEP-01 / P1: Manager 정본의 옛 Weather probe와 실제 안전 override drift를 공통 소유자가 최신 main에 통합. #486/#488의 구 head를 blind merge하거나 현재 운영이 kill-probe라 단정하지 않는다.
 - [ ] W-OPS-03 / P2: native/Common 단일 retry 소유권·선택 센서 상태·첫 평가/중단재개 수용. OFF에서 자동 활성화하지 않는다.
 - [ ] W-OPS-04 / P2: 별도 승인된 재개 뒤 정기6시간 정리 처리량/deferred·미래 보존/진행 이벤트 수용.
-- [ ] W-OPS-05 / P2: 같은 workload CPU/RSS·3h/12h 포함24h OOM/swap·실제 memory 정책 수용.
+- [ ] W-OPS-05 / P2: 같은 workload CPU/RSS·3h/12h 포함24h OOM/swap·실제 memory 정책 수용. PR #118의 고정 격자 입력 RSS 약15% 감소·DB 포함 CPU 동등 및 복구2건은 아래와 같이 부분 수용했으며 전체·장시간 조건은 남는다.
 - [ ] W-DOC-01 / P2: 실제 경로/효과 증거 확정 뒤 옛 runbook 현행 절차만 최소 갱신. T-WEA-03/04는 조건부 후보로 유지한다.
 
-이번은 docs4개뿐이다. 사용자 승인 [skip ci]로 링크·diff·사실 검토만 하며 독립2문서 리뷰/머지는 root 단계다.
+2026-10-17 당시 작업은 docs4개뿐이었다. 당시 사용자 승인 [skip ci] 문서 검토 범위이며 현재 PR #118의 제품 검증을 뜻하지 않는다.
 
 
 ## 2026-10-18 수집 카탈로그 CPU/할당 peak 개선
@@ -34,3 +34,30 @@ Chromium1243 UI36 PASS/exit0를 확인했다. 이 수용 기록은 PR #117에 �
 실제 provider 전체 수집 CPU/RSS·장시간 안정성·Kakao 실제 fallback/주소 전체 sweep 및
 Track 1/2의 미검증 수용은 별도로 남긴다. 이전 pending 문장은 각 기록 시점의 이력이다.
 Dagster daemon OFF를 유지한다.
+
+
+## 2026-10-18 PR #118 비특보 예보 배치 메모리 개선 — 배포·UI 수용
+
+제품 a8949778은 다음 위치가 상한을 넘기기 전에 기존 묶음을 게시하고,
+격자·중기 예보의 staging·게시 상한을2500으로 분리했다. 특보 staging과
+다른 provider의 공용 게시 상한은5000을 유지하며 한 위치는 나누지 않는다.
+격리 PostgreSQL 전체667개·Ruff·최종 Python/frontend CI·독립 소스 리뷰2건이 통과했다.
+
+Odroid의 고정 합성 입력(792fact×10위치)에서 기준/후보 각3회 비교를 두 측정군으로
+수행했다. PostgreSQL을 포함한 측정군은 worker RSS 중앙값 약14.99% 감소,
+합산 CPU 약1.29% 감소, 처리 시간 약2.02% 증가였다. CPU는 작은 표본에서 동등
+수준으로 판단한다. SQL은107→125이며 전체 provider·전체 job·호스트의 개선율은 아니다.
+실측은6421a4b에 상수2500을 주입한 결과이고, 실제 a8949778 기본값은 별도로
+rollback+alias 및 commit 후 응답 오류의 복구2건을 통과했다.
+각각2376+5544,4752+3168건으로 총7920건을 복구하고 정상 기준의 원천·fact·current
+의미 digest 일치와 다음 재수집0건을 확인했다.
+
+[상세 측정·원시 증거·복구 및 한계](reviews/collector-bounded-stage-20261018.md)를 따른다.
+이번 제품의 ARM64 API/CS native 이미지 빌드와 각 이미지의 설치 소스67파일 검증이
+통과했다. 운영 전환 f5cc3880에서 API/CS READY·기존 큐와 env 파일 보존·버전 외 runtime
+환경 동일·daemon OFF를 확인했다. 배포 후 WSL Chromium1243 live UI는36/36 PASS,
+exit0이며 Weather 세 역할의 실행 상태가 유지됐다.
+[배포·UI 수용 증거](reviews/collector-bounded-stage-deployment-20261018.json)를 따른다.
+PR #118은 아직 머지 전이며 daemon OFF를 유지한다. 전체 수집·24시간 OOM/swap·자동 복구·Track1/2의 미검증
+운영 수용을 완료로 바꾸지 않는다. PR #117의 RSS 미입증 문장은 당시
+카탈로그 조회 범위의 기록이며 이번 격자 저장 실측과 구분한다.

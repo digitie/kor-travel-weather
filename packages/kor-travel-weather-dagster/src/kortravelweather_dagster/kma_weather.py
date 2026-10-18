@@ -41,7 +41,6 @@ from kortravelweather.repository import WeatherRepository
 
 from .chunked_publish import (
     PUBLISH_CHUNK_LOCATIONS,
-    PUBLISH_CHUNK_VALUES,
     chunk_publications,
     uncited_sources,
 )
@@ -50,7 +49,7 @@ KMA_ULTRA_SHORT_NOWCAST = "kma_ultra_short_nowcast"
 KMA_ULTRA_SHORT_FORECAST = "kma_ultra_short_forecast"
 KMA_SHORT_FORECAST = "kma_short_forecast"
 
-# 누적 수집량 대신 batch + 한 location의 응답만 유지한다.
+# 특보 staging 상한은 유지한다. 격자 예보에는 GRID_STAGE_VALUES를 적용한다.
 KMA_STAGE_VALUES = 5_000
 KMA_STAGE_SOURCES = 25
 
@@ -129,7 +128,10 @@ logger = logging.getLogger(__name__)
 #: instead: 4h03m holding 1,103 location locks, with three other KMA jobs
 #: queued 2h+ behind it.
 GRID_PUBLISH_LOCATIONS = PUBLISH_CHUNK_LOCATIONS
-GRID_PUBLISH_VALUES = PUBLISH_CHUNK_VALUES
+# 격자·중기 지역예보는 작은 batch + 한 location의 응답만 유지한다.
+# 한 위치의 facts가 상한보다 크면 해당 위치를 나누지 않는다.
+GRID_STAGE_VALUES = 2_500
+GRID_PUBLISH_VALUES = 2_500
 
 
 @dataclass(frozen=True, slots=True)
@@ -1117,6 +1119,10 @@ async def _stage_and_publish_weather(
                 # sharing its grid/region. Append one fact at a time so the
                 # aggregate cap is enforced before another object is retained.
                 for target_row in group_targets:
+                    # 다음 위치를 더하기 전에 비워 staging 초과와 잔여 소형 publish를
+                    # 피한다. 한 위치가 상한보다 커도 위치의 facts는 나누지 않는다.
+                    if values and len(values) + len(response.values) > GRID_STAGE_VALUES:
+                        await flush_grid_batch()
                     # 이전 target에서 flush한 경우 현재 response의 lineage를 다시 넣는다.
                     if not any(
                         source["source_record_key"] == response.source_record["source_record_key"]
@@ -1134,7 +1140,7 @@ async def _stage_and_publish_weather(
                             )
                         )
                         normalized_values_total += 1
-                    if len(values) >= KMA_STAGE_VALUES:
+                    if len(values) >= GRID_STAGE_VALUES:
                         await flush_grid_batch()
             keep_alive()
 
