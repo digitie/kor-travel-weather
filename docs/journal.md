@@ -96,3 +96,7 @@ exit0이며 Weather 세 역할의 실행 상태가 유지됐다.
 PR #118은 아직 머지 전이며 daemon OFF를 유지한다. 전체 수집·24시간 OOM/swap·자동 복구·Track1/2의 미검증
 운영 수용을 완료로 바꾸지 않는다. PR #117의 RSS 미입증 문장은 당시
 카탈로그 조회 범위의 기록이며 이번 격자 저장 실측과 구분한다.
+
+## 2026-10-19 지역 관측 제외 사유 보강
+
+W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조했다. 유효값 없는 지점의 skipped_without_values를 추가해 좌표 부재와 구분한다. 격리 PostgreSQL 전체 회귀 검증 중이며 daemon OFF를 유지한다.

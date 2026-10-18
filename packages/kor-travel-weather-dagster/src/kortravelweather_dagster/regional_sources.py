@@ -125,6 +125,7 @@ def publish_regional_records(
         published = 0
         anchored = 0
         skipped_without_coordinates = 0
+        skipped_without_values = 0
         disabled = 0
         truncated = False
 
@@ -172,6 +173,7 @@ def publish_regional_records(
                 known_at=fetched_at,
             )
             if not station_values:
+                skipped_without_values += 1
                 # A station that reported nothing usable leaves no lineage
                 # record either, or the run would publish provenance for facts
                 # that do not exist.
@@ -228,6 +230,7 @@ def publish_regional_records(
         "locations_anchored": anchored,
         "locations_disabled": disabled,
         "skipped_without_coordinates": skipped_without_coordinates,
+        "skipped_without_values": skipped_without_values,
         "values_loaded": loaded,
         "values_truncated": truncated,
         "source_records": source_count,
