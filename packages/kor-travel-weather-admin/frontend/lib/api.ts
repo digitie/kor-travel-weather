@@ -373,4 +373,3 @@ export type AddressRefreshSummary = {
   configured: boolean; auto_enabled: boolean; in_progress: boolean; manual_cycle: boolean;
   last_resolved_at: string | null; items: AddressItem[];
 };
-
