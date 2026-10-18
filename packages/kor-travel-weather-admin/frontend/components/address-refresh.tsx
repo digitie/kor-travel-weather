@@ -6,7 +6,7 @@ import styles from "./address-refresh.module.css";
 
 import type { AddressRefreshSummary } from "@/lib/api";
 
-const date = (value?: string | null) => value ? new Date(value).toLocaleString("ko-KR") : "미확인";
+const date = (value?: string | null) => value ? new Date(value).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) : "미확인";
 
 export function AddressRefresh() {
   const [summary, setSummary] = useState<AddressRefreshSummary | null>(null);

@@ -154,3 +154,27 @@ test("실제 Dagster 예약·같은 요청 재조회·중복 실행 차단·CSRF
   });
   expect(duplicate.status()).toBe(409);
 });
+
+
+for (const timezoneId of ["UTC", "America/Los_Angeles"]) {
+  for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 }]) {
+    test.describe("주소 갱신 KST " + timezoneId + " " + viewport.width + "px", () => {
+      test.use({ timezoneId, viewport });
+      test("브라우저 시간대와 무관하게 확인·다음 갱신일을 한국 시각으로 표시한다", async ({ page }) => {
+        await page.route("**/api/address-refresh", route => route.fulfill({
+          json: {
+            ...fixture, last_resolved_at: "2026-01-31T18:30:00Z",
+            items: [{ ...fixture.items[0], resolved_at: "2026-01-31T18:30:00Z",
+              next_refresh_at: "2026-07-31T18:30:00Z" }],
+          },
+        }));
+        await login(page);
+        const panel = page.getByRole("region", { name: "주소 갱신", exact: true });
+        await expect(panel.getByText(/^최근 정상 확인:/)).toContainText("2026. 2. 1. 오전 3:30:00");
+        const row = panel.getByRole("row").filter({ hasText: "실패 시험 위치" });
+        await expect(row.getByRole("cell").last()).toContainText("2026. 2. 1. 오전 3:30:00");
+        await expect(row.getByRole("cell").last()).toContainText("2026. 8. 1. 오전 3:30:00");
+      });
+    });
+  }
+}
