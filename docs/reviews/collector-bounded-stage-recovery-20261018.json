@@ -1,0 +1,130 @@
+{
+  "source": "a8949778ebae7b23da3c428a16263ee706930351",
+  "scope": "Synthetic PostgreSQL transaction recovery; no external provider, network failure or process kill",
+  "cases": [
+    {
+      "case": "weather-recovery-3d4811491f9a",
+      "result": {
+        "candidate_commit": "a8949778ebae7b23da3c428a16263ee706930351",
+        "worker_image": "sha256:48d7bb9253ffdd5e3bd73b82698b2bd44155a00a39af32f5b119fe83adb08205",
+        "postgres_image": "sha256:c47285045a2a82d706d083de13065be97aaca0978782c4e37c05226228ba0509",
+        "locations": 10,
+        "stage": 2500,
+        "anchor": "2026-10-19T02:00:00+09:00",
+        "exit": 0,
+        "oom": false,
+        "terminal": {
+          "status": "PASS_RECOVERY_FIXTURE",
+          "mode": "lost_reply",
+          "stage": 2500,
+          "recover_stage": 2500,
+          "alias": false,
+          "locations": 10,
+          "rows": 792,
+          "committed_before_failure": 4752,
+          "recovery_loaded": 3168,
+          "total": 7920,
+          "digest": {
+            "weather_values": {
+              "exact": "55c0470df2dce65b4bc6ecae5fd2e725f6416d9188f4019f652d4644d2416985",
+              "semantic": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d"
+            },
+            "weather_current_values": {
+              "exact": "e95a4ac1a5e14b4ea6fe73be1de67f7628ba2968d50c3c054d598893af675459",
+              "semantic": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02"
+            },
+            "weather_source_records": {
+              "exact": "c885cab48decc3f013b3797da52e23cb4914b39aab4da5705b5533b5bd830565",
+              "semantic": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+            }
+          },
+          "baseline_semantic_comparison": "REQUIRES_EXTERNAL_COMPARISON",
+          "performance": "NOT_MEASURED"
+        },
+        "network": "none; PostgreSQL Unix socket only",
+        "measured": "NOT_MEASURED; correctness recovery only"
+      },
+      "baseline_comparison": "PASS_BASELINE_SEMANTIC_EQUIVALENCE",
+      "result_sha256": "6d88fbccc8c2703d2a9259fca17662b89697aa16e0471668abb4d2731d1e9853",
+      "cleanup": [
+        {
+          "name": "weather-recovery-3d4811491f9a-worker",
+          "status": "removed",
+          "stderr": ""
+        },
+        {
+          "name": "weather-recovery-3d4811491f9a-pg",
+          "status": "removed",
+          "stderr": ""
+        },
+        {
+          "name": "weather-recovery-3d4811491f9a-socket",
+          "status": "removed",
+          "stderr": ""
+        }
+      ]
+    },
+    {
+      "case": "weather-recovery-754041b37f3f",
+      "result": {
+        "candidate_commit": "a8949778ebae7b23da3c428a16263ee706930351",
+        "worker_image": "sha256:48d7bb9253ffdd5e3bd73b82698b2bd44155a00a39af32f5b119fe83adb08205",
+        "postgres_image": "sha256:c47285045a2a82d706d083de13065be97aaca0978782c4e37c05226228ba0509",
+        "locations": 10,
+        "stage": 2500,
+        "anchor": "2026-10-19T02:00:00+09:00",
+        "exit": 0,
+        "oom": false,
+        "terminal": {
+          "status": "PASS_RECOVERY_FIXTURE",
+          "mode": "rollback",
+          "stage": 2500,
+          "recover_stage": 2500,
+          "alias": true,
+          "locations": 10,
+          "rows": 792,
+          "committed_before_failure": 2376,
+          "recovery_loaded": 5544,
+          "total": 7920,
+          "digest": {
+            "weather_values": {
+              "exact": "05f9b5eb525ae593113d37b7decf2ec61c59010c5f18578a6ff50b371c675c05",
+              "semantic": "8f61643632b585ca7a7586808c700e8d15757b2dbb485578db5f5bac5e6d500d"
+            },
+            "weather_current_values": {
+              "exact": "c7eb6884456e91a77c282f5b54be23cb9c3fe96b5ced0006ea2bbb3f26526a3c",
+              "semantic": "625f702093515b4d2388e727d63d3109a51351e9ad3a7715bc7ba7c2d5311a02"
+            },
+            "weather_source_records": {
+              "exact": "c7f03893ba9fa4e4856989b42c04e6d0931cde5221a61e311a6742a221bc8a8c",
+              "semantic": "ce8cb9e471615e921f20a8d0c462009027cc6a7656c3b81b22ce393592f65c72"
+            }
+          },
+          "baseline_semantic_comparison": "REQUIRES_EXTERNAL_COMPARISON",
+          "performance": "NOT_MEASURED"
+        },
+        "network": "none; PostgreSQL Unix socket only",
+        "measured": "NOT_MEASURED; correctness recovery only"
+      },
+      "baseline_comparison": "PASS_BASELINE_SEMANTIC_EQUIVALENCE",
+      "result_sha256": "170008dabb7a950b440073c884b30eb7c09b9679d13b97f2dd0a7800f8034b74",
+      "cleanup": [
+        {
+          "name": "weather-recovery-754041b37f3f-worker",
+          "status": "removed",
+          "stderr": ""
+        },
+        {
+          "name": "weather-recovery-754041b37f3f-pg",
+          "status": "removed",
+          "stderr": ""
+        },
+        {
+          "name": "weather-recovery-754041b37f3f-socket",
+          "status": "removed",
+          "stderr": ""
+        }
+      ]
+    }
+  ]
+}
