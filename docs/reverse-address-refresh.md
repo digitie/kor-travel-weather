@@ -1,5 +1,13 @@
 # 6개월 자동 주소 갱신과 Admin 수동 실행
 
+## 2026-10-18 운영 배포·제한된 실제 수용 완료
+
+Weather #115 배포와 migration0021을 완료했다. 기존 UI36(WSL)·새 주소 UI10(n150),
+실제 제공자 단일 대상 갱신 및 원천 위치1,450행 보존을 확인했다.
+[운영 결과와 미검증 범위](reviews/2026-10-18-address-live-deployment.md)를 따른다.
+Daemon OFF를 유지하며 아래의 운영 미실행 문장은 각 작성 시점의 이력이다.
+
+
 정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/522525aed3db934767c1c9e742b3bfc68e91679c/docs/reverse-address-refresh.md)를 따른다.
 Transport와 같은 VWorld 우선·Kakao 보조를 적용하며 Geo API나 데이터 토큰에는 의존하지 않는다.
 
