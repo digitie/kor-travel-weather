@@ -1117,6 +1117,10 @@ async def _stage_and_publish_weather(
                 # sharing its grid/region. Append one fact at a time so the
                 # aggregate cap is enforced before another object is retained.
                 for target_row in group_targets:
+                    # 다음 위치를 더하기 전에 비워 staging 초과와 잔여 소형 publish를
+                    # 피한다. 한 위치가 상한보다 커도 위치의 facts는 나누지 않는다.
+                    if values and len(values) + len(response.values) > KMA_STAGE_VALUES:
+                        await flush_grid_batch()
                     # 이전 target에서 flush한 경우 현재 response의 lineage를 다시 넣는다.
                     if not any(
                         source["source_record_key"] == response.source_record["source_record_key"]
