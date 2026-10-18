@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, TypeVar
 
 from cryptography.fernet import Fernet, InvalidToken
+from kortravelcommon.reverse_address import reverse_address_tables
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -116,6 +117,10 @@ from .settings import WeatherSettings, get_settings
 
 class Base(DeclarativeBase):
     pass
+
+
+# 파생 주소는 원천 주소·좌표와 분리해 같은 소비자 DB에 저장한다.
+reverse_address_tables(Base.metadata)
 
 
 class AwareDateTime(TypeDecorator[datetime]):

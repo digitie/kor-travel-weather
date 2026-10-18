@@ -31,11 +31,18 @@ def clean_postgresql_database() -> None:
             with engine.begin() as connection:
                 connection.execute(
                     text(
-                        "TRUNCATE TABLE weather_sync_run_sources, weather_values, "
+                        "TRUNCATE TABLE reverse_address_entries, reverse_address_control, "
+                        "weather_sync_run_sources, weather_values, "
                         "weather_source_records, weather_sync_runs, weather_locations "
                         "RESTART IDENTITY CASCADE"
                     )
                 )
+                # retention 시험이 바꾼 catalog 경계도 격리한다. 행만 비우면 다음
+                # 시험의 과거 fixture가 이미 폐기된 구간으로 오인되어 입력이 누락된다.
+                connection.execute(text(
+                    "ALTER TABLE IF EXISTS weather_values_default "
+                    "DROP CONSTRAINT IF EXISTS weather_values_default_known_at_floor"
+                ))
         except ProgrammingError as exc:
             if "does not exist" not in str(exc).lower():
                 raise

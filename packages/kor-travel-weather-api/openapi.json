@@ -1196,10 +1196,125 @@
           }
         ]
       }
+    },
+    "/v1/admin/address-refresh": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Address Refresh Summary",
+        "operationId": "address_refresh_summary_v1_admin_address_refresh_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AddressRefreshSummary_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "AddressRefreshSummary": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "due": {
+            "type": "integer",
+            "title": "Due"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "last_resolved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Resolved At"
+          },
+          "in_progress": {
+            "type": "boolean",
+            "title": "In Progress"
+          },
+          "manual_cycle": {
+            "type": "boolean",
+            "title": "Manual Cycle"
+          },
+          "refresh_months": {
+            "type": "integer",
+            "title": "Refresh Months"
+          },
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "auto_enabled": {
+            "type": "boolean",
+            "title": "Auto Enabled"
+          },
+          "items": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "due",
+          "failed",
+          "last_resolved_at",
+          "in_progress",
+          "manual_cycle",
+          "refresh_months",
+          "configured",
+          "auto_enabled",
+          "items"
+        ],
+        "title": "AddressRefreshSummary"
+      },
       "BundleMeta": {
         "properties": {
           "latest_per_location": {
@@ -1238,6 +1353,23 @@
           "longitude"
         ],
         "title": "CoordinateRequestOut"
+      },
+      "Envelope_AddressRefreshSummary_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AddressRefreshSummary"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[AddressRefreshSummary]"
       },
       "Envelope_LocationOut_": {
         "properties": {

@@ -22,7 +22,7 @@ import yaml
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMON_COMMIT = "c48595880aaad4367802ad71af2525a8a5e17c6a"
+COMMON_COMMIT = "c067a7f6a11b106931a73cd7465503d90e54d976"
 COMMAND = ["python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
 
 # SERVING이 성공하려면 CLI가 Dagster 없이 실행돼야 한다. 예외를 숨긴 경우도 exit1로 실패한다.
@@ -72,11 +72,13 @@ def test_common_health_is_pinned_installed_and_scoped_to_dagster_extra() -> None
         (ROOT / "packages/kor-travel-weather-dagster/pyproject.toml").read_text()
     )["project"]
     common = next(dep for dep in project["dependencies"] if dep.startswith("kor-travel-common"))
-    assert common.startswith("kor-travel-common @") and COMMON_COMMIT in common
+    assert common.startswith("kor-travel-common[reverse-address] @") and COMMON_COMMIT in common
     extras = project["optional-dependencies"]["dagster"]
-    assert any(dep.startswith("kor-travel-common[grpc-health] @") and COMMON_COMMIT in dep
-               for dep in extras)
-    assert any(dep.startswith("kor-travel-common[dagster,grpc-health] @")
+    assert any(
+        dep.startswith("kor-travel-common[grpc-health,reverse-address] @") and COMMON_COMMIT in dep
+        for dep in extras
+    )
+    assert any(dep.startswith("kor-travel-common[dagster,grpc-health,reverse-address] @")
                and COMMON_COMMIT in dep for dep in dagster_project["dependencies"])
     locked = tomllib.loads((ROOT / "uv.lock").read_text())["package"]
     package = next(dep for dep in locked if dep["name"] == "kor-travel-common")

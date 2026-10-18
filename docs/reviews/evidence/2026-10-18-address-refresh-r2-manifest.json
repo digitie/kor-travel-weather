@@ -1,0 +1,37 @@
+{
+  "scope": "Weather111 formal FULL post-fix r2; Transport integration context only",
+  "created_utc": "2026-10-18T02:32:08.803619+00:00",
+  "request": "Weather VWorld primary/Kakao fallback, six calendar months automatic reverse-address refresh plus Admin manual queue; preserve source/coords/facts; daemon OFF",
+  "base": "28f731e6dcb12d5f4cde2ad86fd25acbf3da2eac",
+  "head": "78817516561968868bb7a77c6cb17c6b90cefee5",
+  "previous_reviewed_head": "c52e08b5a5d7401fc600ddd4a378f327f6395f60",
+  "path": "/home/digitie/dev/kor-travel-weather-codex-reverse-address-20261018",
+  "common_pin": "c067a7f6a11b106931a73cd7465503d90e54d976",
+  "transport_context": "1e5dbeb44e12446858acd09ff867f6e1cb2511db",
+  "acceptance": [
+    "VWorld public SDK primary, Kakao fallback including empty/error boundaries",
+    "six calendar months and manual retry/resume auto OFF; Common c067 source/retries/required pending callback",
+    "read-only source fields; derived address Admin/API scope documented",
+    "auth/CSRF/fixed Dagster scope/body/time budgets; queue vs completion and prior statuses",
+    "bounded sequential batch/cache/pool; no daemon or production operations"
+  ],
+  "fixes": [
+    "single Node process submissionInFlight check/set/finally: concurrent same or different IDs rejected while one submission in flight; explicitly not distributed exactly-once",
+    "replayed result distinguishes prior FAILURE/CANCELED/SUCCESS/QUEUED and shows run record link",
+    "Common manual failure cycle preserved through backoff, live-source retries and cursor wrap/eligibility; consumers pin/callbacks adapted"
+  ],
+  "root_checks": [
+    "Weather final CI39090100738 both SUCCESS: Python658, frontend211 + lint/type/build + OpenAPI export/migration",
+    "Common c067 full509/CI14 SUCCESS, independent r4 source reviews both PASS",
+    "Final Common c067 Weather targeted10 PASS, Transport19 PASS",
+    "Local real-browser UI11 per app/22 total with actual login/API/native queued Dagster and fixture provider; desktop1365/mobile390 screenshots in frontend/test-results",
+    "Transport final Docker product image build, focused19 and Admin211 PASS; historical full835 PASS13 SKIP dd66363 not final whole suite"
+  ],
+  "constraints": [
+    "read-only immutable Git objects / owned temporary fixtures only; other agents are present, do not revert or edit any source/index/branch",
+    "no actual credentials/providers/production SSH/DB/Docker/daemon operations",
+    "no peer new report before both final; prior reports may be read for own closure",
+    "Transport formal gate excluded; pending CI is never pass",
+    "regular locations/map responses keep source fields; sidecar shown only Admin/API"
+  ]
+}

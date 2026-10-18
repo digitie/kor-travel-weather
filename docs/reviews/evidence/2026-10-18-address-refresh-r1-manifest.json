@@ -1,0 +1,38 @@
+{
+  "scope": "Weather111 formal FULL consumer review only; Transport86 context only until its final CI green",
+  "request": "Weather and Transport use same Common VWorld-primary/Kakao-fallback engine; six calendar months automatic address refresh and authenticated Admin manual force. Preserve source/admin coords and facts; daemon OFF. Find defects rather than approve.",
+  "repositories": [
+    {
+      "repository": "weather",
+      "path": "/home/digitie/dev/kor-travel-weather-codex-reverse-address-20261018",
+      "base": "28f731e6dcb12d5f4cde2ad86fd25acbf3da2eac",
+      "head": "c52e08b5a5d7401fc600ddd4a378f327f6395f60"
+    },
+    {
+      "repository": "transport",
+      "path": "/home/digitie/dev/kor-travel-transport-codex-reverse-address-20261018",
+      "base": "61a566dee0b1cc40f858652c0683883c26e56411",
+      "head": "dd66363af1421e9b34448a06afd8fe00fde28489"
+    }
+  ],
+  "common_product": "0f768a1974a65bfade4c0fa3c79b897c9663e1a6",
+  "common_closure": "f2c48bf",
+  "acceptance": [
+    "Common implementation guide and consumer guide",
+    "Consumer migrations and metadata consistent; OpenAPI/TS DTO match",
+    "Admin BFF session/CSRF/fixed-job/request replay, truthful queue/error UI",
+    "Bounded source read/engine lifetime, no source/fact mutation",
+    "CI green at formal review start; independent source review does not grant production/deploy gates"
+  ],
+  "available_checks": [
+    "Root Common501, Weather657+schema, Transport838 with10 environment skips; final targeted3/19",
+    "Both Admin207 unit/type/build, real loopback browser18 with injected provider fixtures",
+    "Root PostgreSQL17 owned row-lock/fencing drill, not production"
+  ],
+  "exclusions": [
+    "No production/SSH/real credentials/provider calls/daemon start/consumer operations",
+    "No source/index/branch changes; Git show immutable objects; owned temporary fixtures only",
+    "No new peer review/report sharing until both finalized"
+  ],
+  "ci_gate": "Weather exact c52e08b5a5d7401fc600ddd4a378f327f6395f60 python/frontend SUCCESS observed by root before review request"
+}

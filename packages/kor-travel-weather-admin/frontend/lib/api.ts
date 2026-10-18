@@ -361,3 +361,15 @@ export function getHealth(): Promise<{ status: string; service: string; version:
     return (await response.json()) as { status: string; service: string; version: string | null };
   });
 }
+
+
+export type AddressItem = {
+  target_key: string; name?: string; status: string; stale: boolean;
+  address?: { full?: string } | null; region?: { legal_code?: string; admin_code?: string } | null;
+  provider?: string | null; resolved_at?: string | null; next_refresh_at?: string | null; error_code?: string | null;
+};
+export type AddressRefreshSummary = {
+  total: number; due: number; failed: number; refresh_months: number;
+  configured: boolean; auto_enabled: boolean; in_progress: boolean; manual_cycle: boolean;
+  last_resolved_at: string | null; items: AddressItem[];
+};

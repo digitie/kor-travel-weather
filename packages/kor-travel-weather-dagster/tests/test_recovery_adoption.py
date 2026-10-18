@@ -52,7 +52,9 @@ def test_single_asset_jobs_in_process_and_regional_and_implicit_bounded():
 
 def test_defaults_keep_only_existing_app_reconciliation(mapping):
     assert optional_recovery_sensors(mapping) == []
-    assert [sensor.name for sensor in definitions.defs.sensors] == ["weather_sync_recovery"]
+    assert [sensor.name for sensor in definitions.defs.sensors] == [
+        "weather_address_refresh", "weather_sync_recovery",
+    ]
 
 
 @pytest.mark.parametrize("bad", ["TRUE", "1", " true", "true ", "", "yes"])
