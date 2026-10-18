@@ -1,0 +1,348 @@
+{
+  "product_commit": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+  "build": [
+    {
+      "phase": "BUILD_AND_SOURCE_PROOF_PASS",
+      "role": "api",
+      "attempt": "ad31b744-8ebf-4ac8-90f8-69f498739c0d",
+      "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+      "image_id": "sha256:d24e77af2265e45719248d078d409ea73899d0cd2af9ee9cbd0ffbd778cf0333",
+      "tag": "codex-local/weather119-api:683e446d",
+      "seconds": 20.582877163000376,
+      "architecture": "arm64",
+      "install_dagster": "0",
+      "proof": {
+        "files": 67,
+        "installed_origin": "/app/src/kortravelweather/__init__.py",
+        "dagster_present": false,
+        "weather_distribution": "0.1.0.dev0"
+      },
+      "foreign_equal": true,
+      "daemon_off": true,
+      "log_sha": "56cb511d3d576d586dfe2712b56f2c99142f19a777db0de99e39f9d909a45dbf"
+    },
+    {
+      "phase": "BUILD_AND_SOURCE_PROOF_PASS",
+      "role": "cs",
+      "attempt": "ad31b744-8ebf-4ac8-90f8-69f498739c0d",
+      "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+      "image_id": "sha256:e4a98c9cdf8cda05e1f55ccd48fc8e810eb216d2ab95ab28e6ec1ccba4dc0758",
+      "tag": "codex-local/weather119-cs:683e446d",
+      "seconds": 18.212281803000224,
+      "architecture": "arm64",
+      "install_dagster": "1",
+      "proof": {
+        "files": 67,
+        "installed_origin": "/app/src/kortravelweather/__init__.py",
+        "dagster_present": true,
+        "weather_distribution": "0.1.0.dev0"
+      },
+      "foreign_equal": true,
+      "daemon_off": true,
+      "log_sha": "cef8cf29a36c504fe933c63fdb9638e931c1e02a4f13839a9d306dc5d3c22c2b"
+    }
+  ],
+  "rollout": {
+    "attempt": "5c8db5f8-f4d2-4831-a0c4-03e74a8cec01",
+    "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+    "targets": [
+      {
+        "role": "api",
+        "old_cid": "73861834308c6e06a8090df831ef1624431ef55316e4fe158912dec02b0e14ca",
+        "old_name": "/kor-travel-weather-api-latest",
+        "retained_name": "kor-travel-weather-api-latest-before119-5c8db5f8",
+        "new_cid": "a093259f59bb83cf31a1dce6722c7d5b2413dda1d2baf3e994be755fd7d7a76b",
+        "new_pid": 537161,
+        "ticks": 1740055,
+        "fp": "db50ac2b2f7401bae9d6b3f848aaf19243bdf8187034f87c4b12cc3f3bec734e",
+        "status": "READY"
+      },
+      {
+        "role": "cs",
+        "old_cid": "2c1e6a0a1e586458618e95bdcfe200461e9ffffd85cb04b60cf0356e07807370",
+        "old_name": "/kor-travel-weather-dagster-code-server-latest",
+        "retained_name": "kor-travel-weather-dagster-code-server-latest-before119-5c8db5f8",
+        "new_cid": "29c30b8a62008ba3f1ecd4d5dd81fa802fe9763796585ce2ae1ba1ec4bb1de90",
+        "new_pid": 540450,
+        "ticks": 1750477,
+        "fp": "df668543b15ee4b334f291a3e820e97eef8a3d022c21aa5921ca4c5ec113d241",
+        "status": "READY"
+      }
+    ],
+    "phase": "PASS",
+    "at": 1792362044.2414212,
+    "read_exec_id": "e54831690fcfe560cf02ea447f8273d0c2789d6315124beee71e077f5f409a52",
+    "start_cid": "29c30b8a62008ba3f1ecd4d5dd81fa802fe9763796585ce2ae1ba1ec4bb1de90",
+    "new_pin": [
+      540450,
+      1750477
+    ],
+    "queue_unchanged": true,
+    "env_files_unchanged": true,
+    "runtime_env_only_version_changed": true,
+    "daemon_off": true
+  },
+  "initial_prepare": {
+    "attempt": "ee777fac-d174-464d-847e-39cd5d2130d2",
+    "status": "FAILED_BEFORE_RUNTIME_MUTATION",
+    "cause": "missing volatile shared lock file after host reboot",
+    "automatic_replay": false
+  },
+  "corrected_prepare": {
+    "attempt": "3c32e1f9-661c-429f-ae23-e0e85a794304",
+    "status": "PREPARED_NO_RUNTIME_MUTATION",
+    "lock_regressions_passed": 9
+  },
+  "source_reviews": [
+    {
+      "reviewer": "A",
+      "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+      "open_findings": 0,
+      "report_sha256": "b4a612dfb0947c937dfd1b42c18bb485d82bf85cb1401b3c00dda1009e271cbf"
+    },
+    {
+      "reviewer": "B",
+      "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+      "open_findings": 0,
+      "report_sha256": "9a1e3f893ff07510388cb0b5360a91e98e75c7c8201fa1239548ddaae163715a"
+    }
+  ],
+  "ci": {
+    "run_id": 39170492571,
+    "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+    "python": "SUCCESS",
+    "frontend": "SUCCESS"
+  },
+  "local_tests": {
+    "python_passed": 668,
+    "frontend_passed": 214,
+    "type_check": "PASS",
+    "ruff": "PASS"
+  },
+  "scope_limitations": [
+    "daemon remains OFF",
+    "regional provider latest observation acceptance pending"
+  ],
+  "ui": {
+    "status": "PASS",
+    "runtime": "WSL Chromium1243",
+    "counts": {
+      "PASS": 36,
+      "FAIL": 0,
+      "NOT_RUN": 0,
+      "NOT_EXERCISED": 0
+    },
+    "cases": [
+      {
+        "name": "anonymous-protected-redirect",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "public-login-screen",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "anonymous-monitor-api-denied",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "invalid-login-rejected",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "browser-login-form",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "authenticated-page-and-menu",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/weather",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "weather-markers-live-settle",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/locations",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/datasets",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/sync-runs",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/settings/providers",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "navigate:/admin/dagster",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "dagster-monitor-native-identity",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "default-overview-no-detail-fanout",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "failure-detail-not-fetched-before-selection",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "selected-failure-detail-live",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "history-auxiliary-strict-network",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "dagster-external-links-use-current-plane",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "run-search-empty-and-clear",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "schedule-expand-collapse",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "monitor-fault:http-503",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "monitor-recovery:http-503",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "monitor-fault:network-abort",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "monitor-recovery:network-abort",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "stylesheet-ready",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "viewport:320",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "viewport:375",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "viewport:414",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "viewport:768",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "viewport:1440",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "logout-and-protected-redirect",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "weather-marker-abort-signal-evidence",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "browser-runtime-errors",
+        "service": "weather",
+        "status": "PASS"
+      },
+      {
+        "name": "same-origin-api-responses",
+        "service": "weather",
+        "status": "PASS"
+      }
+    ],
+    "roles": {
+      "cs": {
+        "cid": "29c30b8a62008ba3f1ecd4d5dd81fa802fe9763796585ce2ae1ba1ec4bb1de90",
+        "image": "sha256:e4a98c9cdf8cda05e1f55ccd48fc8e810eb216d2ab95ab28e6ec1ccba4dc0758",
+        "pid": 540450,
+        "ticks": 1750477,
+        "fp": "67bd53082449a8ea3215177d6ca58cf5d2e514f0ee996e88f305d8c9ddeab2f6"
+      },
+      "api": {
+        "cid": "a093259f59bb83cf31a1dce6722c7d5b2413dda1d2baf3e994be755fd7d7a76b",
+        "image": "sha256:d24e77af2265e45719248d078d409ea73899d0cd2af9ee9cbd0ffbd778cf0333",
+        "pid": 537161,
+        "ticks": 1740055,
+        "fp": "0aa463e6b1a8b0c0d42f947776d4710b506122a2469ea75abd5855be94ba67d2"
+      },
+      "web": {
+        "cid": "d42bb9fa2995afd07702c82907f74b933233032e95723c5ab3e5c51104cce157",
+        "image": "sha256:1faf937af51cd3d8acb9fdf774592190c5d810736ea9d33da41aa4224fd36f09",
+        "pid": 2771,
+        "ticks": 3272,
+        "fp": "b5898031b1d6b46d0715dd7bcd733fb40e2de5b540d7d7943851598c21a5d0f0"
+      }
+    },
+    "source": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+    "daemon_off": true,
+    "weather_lifecycle_unchanged": true,
+    "started_at": "2026-10-18T22:20:54.220Z",
+    "finished_at": "2026-10-18T22:21:29.828Z",
+    "exit": 0
+  },
+  "ui_sha256": "cab42d2b666f9884ba11d5bcebfcef9a7e1b594b0d5d46cd5db37044bc707f0f"
+}
