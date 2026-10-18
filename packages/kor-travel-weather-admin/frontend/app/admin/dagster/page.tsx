@@ -1,3 +1,4 @@
+import { AddressRefresh } from "@/components/address-refresh";
 "use client";
 
 import { DagsterOperations } from "@kor-travel/ui";
@@ -97,6 +98,7 @@ export default function DagsterPage() {
         section="시스템"
         title="Dagster 운영"
       />
+      <AddressRefresh />
       <DagsterOperations snapshot={displaySnapshot} error={error} loading={loading} onRefresh={load}
         showRunDetails selectedRunId={selectedRunId} onSelectRun={selectRun}
         renderRunDetail={run => !run ? <p className="empty">실행을 선택하면 상세를 확인할 수 있습니다.</p> : (

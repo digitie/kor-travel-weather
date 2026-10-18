@@ -947,13 +947,18 @@ wheels = [
 [[package]]
 name = "kor-travel-common"
 version = "0.1.0.dev0"
-source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=c48595880aaad4367802ad71af2525a8a5e17c6a#c48595880aaad4367802ad71af2525a8a5e17c6a" }
+source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=24f5e85f3921813dca11af98cd4d78f49887138a#24f5e85f3921813dca11af98cd4d78f49887138a" }
 
 [package.optional-dependencies]
 grpc-health = [
     { name = "grpcio" },
     { name = "grpcio-health-checking" },
     { name = "protobuf" },
+]
+reverse-address = [
+    { name = "httpx" },
+    { name = "python-vworld-api" },
+    { name = "sqlalchemy" },
 ]
 
 [[package]]
@@ -966,7 +971,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "kor-travel-common" },
+    { name = "kor-travel-common", extra = ["reverse-address"] },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -986,7 +991,7 @@ dagster = [
     { name = "dagster" },
     { name = "dagster-postgres" },
     { name = "dagster-webserver" },
-    { name = "kor-travel-common", extra = ["grpc-health"] },
+    { name = "kor-travel-common", extra = ["grpc-health", "reverse-address"] },
 ]
 dev = [
     { name = "httpx" },
@@ -1008,8 +1013,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1" },
-    { name = "kor-travel-common", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=c48595880aaad4367802ad71af2525a8a5e17c6a" },
-    { name = "kor-travel-common", extras = ["grpc-health"], marker = "extra == 'dagster'", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=c48595880aaad4367802ad71af2525a8a5e17c6a" },
+    { name = "kor-travel-common", extras = ["grpc-health", "reverse-address"], marker = "extra == 'dagster'", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=24f5e85f3921813dca11af98cd4d78f49887138a" },
+    { name = "kor-travel-common", extras = ["reverse-address"], git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=24f5e85f3921813dca11af98cd4d78f49887138a" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
@@ -2120,6 +2125,15 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyproj" },
     { name = "pyshp" },
+]
+
+[[package]]
+name = "python-vworld-api"
+version = "0.1.0"
+source = { git = "https://github.com/digitie/python-vworld-api?rev=3b174abea1a1e734c60a9c2522b2844474a1ec71#3b174abea1a1e734c60a9c2522b2844474a1ec71" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
 ]
 
 [[package]]

@@ -39,6 +39,7 @@ from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.retention import run_short_forecast_retention, short_forecast_cutoff
 from kortravelweather.settings import WeatherSettings
 
+from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -1413,7 +1414,7 @@ _COLLECTION_JOBS = [
 
 defs = Definitions(
     assets=_ASSETS,
-    jobs=_COLLECTION_JOBS,
+    jobs=[*_COLLECTION_JOBS, address_refresh_job],
     schedules=[
         hourly_kma_ultra_short_nowcast_schedule,
         hourly_kma_ultra_short_forecast_schedule,
@@ -1429,6 +1430,7 @@ defs = Definitions(
     resources=_resources,
     executor=_BOUNDED_MULTIPROCESS_EXECUTOR,
     sensors=[
+        address_refresh_sensor,
         weather_sync_recovery_sensor,
         *optional_recovery_sensors(
             {job.name: (job, _job_policy(job.name)) for job in _COLLECTION_JOBS}

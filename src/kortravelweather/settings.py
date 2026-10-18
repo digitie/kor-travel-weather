@@ -62,6 +62,13 @@ _WEAK_ADMIN_TOKENS = {
 class WeatherSettings(BaseSettings):
     """kor-travel-weather 런타임 설정."""
 
+    # 위치별 마지막 확인일 + 달력 6개월. 수동 실행은 기한 전에도 허용한다.
+    address_refresh_auto_enabled: bool = True
+    address_refresh_batch_size: int = Field(default=50, ge=1, le=500)
+    address_refresh_timeout_seconds: float = Field(default=5, gt=0, le=10)
+    vworld_api_key: SecretStr | None = None
+    kakao_rest_api_key: SecretStr | None = None
+
     model_config = SettingsConfigDict(
         env_prefix="KOR_TRAVEL_WEATHER_",
         # Resolve the repository root first so package-local `uv run` commands

@@ -1281,3 +1281,31 @@ async def sync_run_sources(
         if record is not None:
             records.append(source_out(record))
     return envelope(request, started, records, limit=len(records), returned=len(records))
+
+
+class AddressRefreshSummary(BaseModel):
+    total: int
+    due: int
+    failed: int
+    last_resolved_at: str | None
+    in_progress: bool
+    manual_cycle: bool
+    refresh_months: int
+    configured: bool
+    auto_enabled: bool
+    items: list[dict[str, Any]]
+
+
+@admin_router.get(
+    "/address-refresh", response_model=Envelope[AddressRefreshSummary],
+    dependencies=[Depends(require_admin)],
+)
+async def address_refresh_summary(
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, Any]:
+    from kortravelweather.address_refresh import address_summary
+
+    started = perf_counter()
+    data = await run_in_threadpool(address_summary, repo, request.app.state.settings)
+    return envelope(request, started, data)

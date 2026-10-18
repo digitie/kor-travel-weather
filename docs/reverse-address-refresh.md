@@ -1,31 +1,25 @@
-# 같은 좌표의 주소 변경 대응
+# 6개월 자동 주소 갱신과 Admin 수동 실행
 
-## 범위와 책임
+정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/agent/codex-reverse-address-refresh-20261018/docs/reverse-address-refresh.md)를 따른다.
+기존 VWorld 우선·Kakao 보조를 유지하며 Geo API나 데이터 토큰에는 의존하지 않는다.
 
-좌표가 같아도 도로명·건물번호·우편번호·법정동·행정동이 변경될 수 있다. 날씨/교통 수집과 분리한 Dagster 작업이 Geo의 현재 data_token을 읽고 위치별 파생 주소를 갱신한다. Geo 원천 적재·게시와 경계 지문 개선은 이번 범위 밖이다.
+환경변수: KOR_TRAVEL_WEATHER_VWORLD_API_KEY, KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY,
+KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED(기본 true),
+KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE(기본 50),
+KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS(기본 5).
+대상은 활성 weather_locations다. KMA 격자·region_code·source lineage를 변경하지 않는다.
+Admin 상태 API는 GET /v1/admin/address-refresh다. 소비자 migration은 0021_reverse_addresses다.
 
-원천 주소·관리자 편집·좌표·KMA 격자·과거 관측은 보존한다. 파생 현재 주소는 별도 테이블에 저장하고 API에서 원천 정보와 구분해 제공한다. 기존 지점을 덮어쓰지 않는 수집기 보호 규칙은 유지한다.
+Admin의 Dagster 운영 화면에서 전체 주소 수동 갱신을 누른다. 서버에서 고정한
+address_refresh_job에 force=true를 예약하며, 큐 등록과 완료를 구별한다.
+확인 주소는 별도 파생 결과로 표시하고 원천 주소를 덮어쓰지 않는다.
+주소별 마지막 확인일부터 달력 6개월마다 갱신한다. 자동 due 검사는 10분 주기이나
+대상이 없을 때 provider를 호출하거나 run을 생성하지 않는다.
+실패는 마지막 정상 주소·확인일을 보존하고 재시도한다. 중단은 영속 커서로 재개한다.
+자동 갱신을 꺼도 이미 시작한 수동 배치는 계속 이어 처리한다.
+Daemon은 기존 중지 상태를 유지하며 이 변경이 운영을 임의로 재개하지 않는다.
 
-## 갱신 계약
+## 검증 기록
 
-- 공통 Geo HTTP 계약·결과 검증·영속 커서·위치별 상태·재시도는 kor-travel-common이 소유한다. 소비자는 자신의 대상 선택·schema migration·Dagster·읽기 API 연결을 소유한다.
-- 신규 위치는 최초 주소 보강이 필요하다. 첫 token 기준선 저장과 기존 주소 검증 완료는 구분한다. 기존 소비자의 첫 token 무재계획 정책은 변경하지 않는다.
-- 같은 token·같은 좌표의 검증 완료 행은 HTTP 재호출하지 않는다. token이 변경되면 기존 좌표도 다시 처리한다. 결과가 같으면 주소 변경으로 세지 않는다.
-- token 없음·버전 불일치·잘못된 응답·HTTP 실패는 성공으로 기록하지 않는다. 이전 정상 결과와 원천 정보를 보존하며 상태·다음 시도 시각을 제공한다.
-- 영속 keyset cursor와 제한 배치/시간 예산을 사용한다. HTTP 중 DB transaction을 잡지 않는다. lease 소유권과 만료를 확인한 transaction에서만 결과/커서를 저장한다.
-- 위치별 좌표·provider identity를 함께 기록한다. 재조회 중 좌표가 바뀌면 이전 위치의 결과를 새 위치에 적용하지 않는다. 관리자 값을 파생 주소로 덮어쓰지 않는다.
-- 같은 좌표의 결과는 같은 provider/token 안에서 재사용한다. HTTP redirect를 따르지 않고 키는 헤더로만 전달하며 오류 메시지에 URL·키·payload를 남기지 않는다.
-
-## 실행·소비
-
-자동 실행은 기본 비활성화다. 신규 job·설정·migration을 제공하되 daemon OFF·기존 일정·Geo 튜닝은 변경하지 않는다. Geo URL·전용 키가 없으면 명시적으로 건너뛴다. 기본 HTTP 연결/읽기 시간, 배치와 재시도 상한은 설정에 명시한다.
-
-주소 조회는 마지막 검증 token·시각·현재 확인된 token과 상태를 같이 반환한다. 오래된 결과를 새 token의 최신 주소처럼 표시하지 않는다. 파생 주소 변경은 API 소비자가 관측할 수 있어야 하며 원천 주소를 대체하는 의미로 노출하지 않는다.
-
-## 검증 기준
-
-동일 좌표의 주소/행정코드/우편번호 변경, 동일 token 무호출, 실패 뒤 정상값 보존·부분 재개, token NULL/변경 중 응답, 같은 좌표 중복 호출 방지, 동시 소유권·만료 뒤 늦은 쓰기 거부, 좌표 변경 뒤 옛 결과 비노출, 기존 fact/관리자 값 보존을 시험한다. 로컬 SQLite는 빠른 회귀용이고 PostgreSQL migration·실제 HTTP/소비자 계약은 별도 검증한다.
-
-## 현재 단계
-
-설계 초안과 Draft PR을 먼저 기록한다. 코드·회귀·독립 리뷰·CI 결과를 후속 커밋으로 추가한다. 운영 migration·배포·live UI·실수집 검증은 아직 수행하지 않았다.
+현재 구현·검증 진행 중이다. 로컬 테스트 결과와 운영 적용은 구분한다.
+운영 migration·실제 API 실호출·배포·외부 UI E2E는 아직 완료로 기록하지 않는다.

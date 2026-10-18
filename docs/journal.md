@@ -1,5 +1,9 @@
 # Weather 작업 기록
 
+## 2026-10-18 주소 갱신 구현 진행
+
+VWorld·Kakao 기반 위치별 달력 6개월 자동 갱신 및 Admin 수동 실행을 구현 중이다. [설계·설정](reverse-address-refresh.md)을 참조한다. 운영 적용과 검증 완료는 미확정이며 Daemon은 중지 상태를 유지한다.
+
 ## 2026-10-17 — 최신109와 남은 운영 수용 문서 정산
 
 - 이 문서 PR 생성 전 main39aafe0/OPEN0, #108/#109 exact head·MERGED·PR/main CI 성공을 공개 GitHub 읽기로 확인했다. 코드/config/tests 변경0.
