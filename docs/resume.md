@@ -1,5 +1,16 @@
 # Weather 현재 인수인계
 
+## 2026-10-18 PR117 수집 카탈로그 개선 현재 수용
+
+제품8c503fa8의 두 독립 소스 리뷰·exact-head CI·전체 Python663·frontend214/type-check·
+Ruff·ARM64 API/CS native build를 통과했다. 실제 배포065661ca PASS 뒤
+WSL Chromium1243 live UI36 PASS/exit0, role lifecycle 불변·daemon OFF를 확인했다.
+[제품·이미지·원시 측정 및 수용 근거](collector-catalog-cpu-20261018.md)를 따른다.
+ARM 고정 fixture CPU 중앙값은 약12.2%, Python 할당 peak는 약16.0% 감소했다.
+RSS의 실질적 개선, 전체 provider 수집 성능, 장시간 안정성, Kakao 실제 fallback과
+주소 전체 sweep, Track 1/2 미검증 운영 수용의 완료를 주장하지 않는다.
+이 수용 기록은 PR #117에 포함하며 아래 pending 문장들은 해당 작성 시점의 이력이다.
+
 ## 2026-10-18 운영 배포·제한된 실제 수용 완료
 
 Weather #115 배포와 migration0021을 완료했다. 기존 UI36(WSL)·새 주소 UI10(n150),
