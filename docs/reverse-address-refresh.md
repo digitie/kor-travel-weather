@@ -115,3 +115,13 @@ loopback 24602 프록시는 첫 요청을 지연시켜 24102 native GraphQL로 �
 시험용 BFF의 Dagster 내부 URL을 http://127.0.0.1:24602로 지정하고 실제 native webserver는
 24102에서 실행한다. 기존 fixture의 수동 큐를 먼저 정리한 격리 환경에서만 실행하며,
 끝난 뒤 생성한 큐·프록시·시험 서버를 정리한다. 운영 daemon을 기동하는 절차가 아니다.
+
+## 2026-10-18 영속 예약의 잠금 연결 장애 보강
+
+현재 Common pin은 a68d0495acc38906c31b95b1d0db163bd8f96f5b다.
+동일 요청 ID와 NOT_STARTED 제출 복구를 유지하며, PostgreSQL 잠금 연결이 끊긴 뒤
+늦은 제출이 STARTED를 QUEUED로 되돌리지 않도록 native run 저장도 같은 연결에 묶는다.
+이전 23e4775의 동시 제출 문제와 2704830의 잠금 연결 소실 반례는 이력으로 보존한다.
+새 pin에서 실제 native 지연 요청·재시도 시험은 앱별 1건 통과했다. 전체 Python·UI
+회귀와 두 독립 최종 리뷰는 진행 중이며, 이 기록은 운영 수용 완료가 아니다.
+공용 webserver를 먼저 배포하고 소비자 Admin을 갱신한다. Daemon OFF를 유지한다.
