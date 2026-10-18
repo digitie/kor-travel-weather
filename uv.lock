@@ -947,7 +947,7 @@ wheels = [
 [[package]]
 name = "kor-travel-common"
 version = "0.1.0.dev0"
-source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=522525aed3db934767c1c9e742b3bfc68e91679c#522525aed3db934767c1c9e742b3bfc68e91679c" }
+source = { git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=89291f36d731ab906161b96757522e1cd833b4ef#89291f36d731ab906161b96757522e1cd833b4ef" }
 
 [package.optional-dependencies]
 grpc-health = [
@@ -1013,8 +1013,8 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<1" },
-    { name = "kor-travel-common", extras = ["grpc-health", "reverse-address"], marker = "extra == 'dagster'", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=522525aed3db934767c1c9e742b3bfc68e91679c" },
-    { name = "kor-travel-common", extras = ["reverse-address"], git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=522525aed3db934767c1c9e742b3bfc68e91679c" },
+    { name = "kor-travel-common", extras = ["grpc-health", "reverse-address"], marker = "extra == 'dagster'", git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=89291f36d731ab906161b96757522e1cd833b4ef" },
+    { name = "kor-travel-common", extras = ["reverse-address"], git = "https://github.com/digitie/kor-travel-common.git?subdirectory=packages%2Fpy%2Fkor-travel-common&rev=89291f36d731ab906161b96757522e1cd833b4ef" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },

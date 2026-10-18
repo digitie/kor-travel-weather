@@ -1,0 +1,12 @@
+{
+  "previous_review": "5d8547e8b377176fc2669e29fbe163b72209cb18",
+  "head": "7f549f1257089c7c05d6ee63b412ca8a1bc00c67",
+  "common": "89291f36d731ab906161b96757522e1cd833b4ef",
+  "changes": [
+    "docs/reverse-address-refresh.md",
+    "packages/kor-travel-weather-dagster/pyproject.toml",
+    "pyproject.toml",
+    "tests/test_common_health_adoption.py",
+    "uv.lock"
+  ]
+}

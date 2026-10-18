@@ -54,8 +54,11 @@ backoff 대기 행만 있을 때는 run을 만들지 않는다. 실제 갱신 �
 커서 앞의 신규 위치·좌표 변경·6개월 due를 순환 처리한다. 비활성/삭제 위치의 오류가
 활성 재시도 슬롯을 차지하지 않으며 동일 cycle의 만료 캐시도 재확인한다.
 
-현재 BFF의 조회→예약 직렬화는 단일 Node 프로세스 범위다. 복수 replica의 전역
-exactly-once 제출을 보장하지 않으며, replica 확장 전에는 공유 원자적 제출 경계가 필요하다.
+BFF의 단일 프로세스 진입 제한에 더해 Common webserver의 launchIdempotentRun을 사용한다.
+요청 UUID를 소문자로 정규화하며, 동일 요청의 native 실행을 재사용한다. 생성 후 제출 전
+NOT_STARTED 상태로 중단된 실행은 같은 ID로 제출을 복구한다. 해당 mutation을 제공하지
+않는 기존 webserver에서는 502로 실패하며 무작위 실행 ID의 기존 mutation으로 우회하지 않는다.
+Common webserver를 먼저 배포한 다음 Admin UI를 배포해야 한다.
 요청 tag로 이전 실행을 재조회하고 실패·취소·완료를 새 예약과 구분해 표시한다.
 확인 주소는 이 Admin/API의 파생 결과이며 일반 locations/지도 응답의 원천 필드를 치환하지 않는다.
 
@@ -88,3 +91,48 @@ Common40의 522525a pin은 현재 원천 SELECT에 있고 좌표가 같은 파�
 
 Common40·Weather113은 두 FULL SOURCE PASS/최종 CI 후 머지했다. 새 pin의 전체661·UI13 및
 [독립 원문과 운영 미실행 범위](reviews/2026-10-18-address-summary-final.md)를 확인한다.
+
+## 시간대·응답 유실 후 재시도 회귀
+
+확인일·다음 갱신일은 브라우저 시간대와 관계없이 Asia/Seoul로 표시한다.
+UTC·미국 서부 시간대 PC/모바일 4건을 기존 코드에서 실패 재현한 뒤 통과시켰다.
+
+소유 loopback 프록시가 첫 mutation을 12초 늦게 전달하도록 하고, BFF의 10초 timeout 이후
+재시도했다. 기존 코드에서는 실제 native Dagster QUEUED 실행이 같은 요청에 두 개 생겼다.
+Common41 초안 23e4775와 새 BFF에서는 동일 시험에서 실행 하나가 유지됐고,
+각 앱의 기존 UI 회귀 17건도 통과했다. 운영 제공자 API와 daemon은 실행하지 않았다.
+
+단, 23e4775는 독립 리뷰에서 동시 NOT_STARTED 제출의 상태 역행 문제가 발견되어
+최종 수용본이 아니다. 제출 보호 수정·독립 재리뷰·최종 pin 검증 및 운영 배포가 남아 있다.
+위 지연 시험 통과를 worker 중복 실행 방지 전체의 증거로 해석하지 않는다.
+
+전용 fixture에서 ADDRESS_REFRESH_NATIVE_DELAY_E2E=1을 설정하고
+npx playwright test e2e/address-refresh-native-retry.spec.ts --workers=1로 재현한다.
+loopback 24602 프록시는 첫 요청을 지연시켜 24102 native GraphQL로 전달하며,
+두 앱은 같은 프록시를 쓰므로 이 지연 시험은 순차 실행한다.
+
+프록시는 Admin frontend 디렉터리에서 node e2e/fixtures/native-delay-proxy.mjs로 실행한다.
+시험용 BFF의 Dagster 내부 URL을 http://127.0.0.1:24602로 지정하고 실제 native webserver는
+24102에서 실행한다. 기존 fixture의 수동 큐를 먼저 정리한 격리 환경에서만 실행하며,
+끝난 뒤 생성한 큐·프록시·시험 서버를 정리한다. 운영 daemon을 기동하는 절차가 아니다.
+
+## 2026-10-18 영속 예약의 잠금 연결 장애 보강
+
+현재 Common pin은 a68d0495acc38906c31b95b1d0db163bd8f96f5b다.
+동일 요청 ID와 NOT_STARTED 제출 복구를 유지하며, PostgreSQL 잠금 연결이 끊긴 뒤
+늦은 제출이 STARTED를 QUEUED로 되돌리지 않도록 native run 저장도 같은 연결에 묶는다.
+이전 23e4775의 동시 제출 문제와 2704830의 잠금 연결 소실 반례는 이력으로 보존한다.
+새 pin에서 실제 native 지연 요청·재시도 시험은 앱별 1건 통과했다. 전체 Python·UI
+회귀와 두 독립 최종 리뷰는 진행 중이며, 이 기록은 운영 수용 완료가 아니다.
+공용 webserver를 먼저 배포하고 소비자 Admin을 갱신한다. Daemon OFF를 유지한다.
+
+## SQL 실행 제한시간 보존 후속
+
+최신 pin은 89291f36d731ab906161b96757522e1cd833b4ef다. 이전 a68d049의
+독립 제출 연결에서 native statement_timeout이 빠지는 반례를 수정했다.
+공식 SQLAlchemy Pool.recreate로 연결 생성 설정과 listener를 보존하고 원래 풀의
+연결을 빌리지 않는다. 기존 연결 유실 시 제출 차단도 유지한다.
+최종 pin의 독립 재리뷰·CI·소비자 검증은 별도로 확인하며 운영 배포 전이다.
+
+최종 두 독립 검토·CI·지연 재시도 결과와 운영 미실행 범위는
+[후속 종결 기록](reviews/2026-10-18-native-address-final.md)에 보존했다.

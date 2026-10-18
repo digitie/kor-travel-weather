@@ -1,0 +1,30 @@
+{
+  "repository": "digitie/kor-travel-weather",
+  "base": "332cd1f2fc74dd263473ea57ebc2b0594265f883",
+  "head": "5d8547e8b377176fc2669e29fbe163b72209cb18",
+  "common": "a68d0495acc38906c31b95b1d0db163bd8f96f5b",
+  "files": {
+    "docs/journal.md": "2a62a905e9d57b57938980909e75762cfe5d5af15c6c21c7d442d7df07106026",
+    "docs/resume.md": "69a5b9750519ae1f17680fc0dc1e8612c0ceb61f0ec0b745be6b371af5875ece",
+    "docs/reverse-address-refresh.md": "26aff616eb1564ec31306d787fe1a324fb08e62282fb985a46bb82f1e09be270",
+    "packages/kor-travel-weather-admin/frontend/app/api/address-refresh/route.test.ts": "2334fb2013b23d284471387a1817c9bb00e3169f1eebfc50e5e689cd8d11ce77",
+    "packages/kor-travel-weather-admin/frontend/app/api/address-refresh/route.ts": "2c1b579fe1113e3ace0de913245f2e88f0d7641bddb59aeac564e02706ddd105",
+    "packages/kor-travel-weather-admin/frontend/components/address-refresh.tsx": "019cfa7e793e68b84fc70eb7ceed8fb57029f64a9bb77136c33cb97e1ecbf6e5",
+    "packages/kor-travel-weather-admin/frontend/e2e/address-refresh-native-retry.spec.ts": "163f4cea77d77874cdc90a5f9084fe4a578429efdb49e5cf8c7be33213dba611",
+    "packages/kor-travel-weather-admin/frontend/e2e/address-refresh.spec.ts": "2f518201b9d2f7b0a08aeef963cad49fa9739e99406a2c9d0bf56c1737af5430",
+    "packages/kor-travel-weather-admin/frontend/e2e/fixtures/native-delay-proxy.mjs": "d0adaada364e00cf4f06cafb08944ba925a744ec55acc7885dd22da192d0c6a2",
+    "packages/kor-travel-weather-admin/frontend/lib/dagster-scope.ts": "c0b3a5990785de5894ee2d1ba13b036a6e528fd6ffcb2078ba9083856920dc2b",
+    "packages/kor-travel-weather-dagster/pyproject.toml": "9d96c9ffe641da217de88a55885e66e7c3d40ad726d9610265e97bbe028a44b3",
+    "pyproject.toml": "c41dce48dbc5a4503eb9eb7d25a97aee4fba1496e50825848ec39a32c33fa4da",
+    "tests/test_address_refresh_graphql.py": "c6d0f3e1309d33d2d451bbfc4df08b578933b767f8f7362672d403a1e5cf8033",
+    "tests/test_common_health_adoption.py": "c4d3e8f697ba1212e72170d1689291c5ff084fa36039b83e75ece9e0da396926",
+    "uv.lock": "162cb7e3ce3dc48ac0779b3b73a00c4d4381cbd2615362613d5d12d11bf1f874"
+  },
+  "validation": {
+    "native_delay": "1 PASS",
+    "loopback_ui": "17 PASS",
+    "full_python": "RUNNING",
+    "remote_ci": "RUNNING",
+    "production": "NOT_RUN"
+  }
+}

@@ -1,5 +1,24 @@
 # Weather 현재 인수인계
 
+## 2026-10-18 영속 주소 예약 후속 검토 완료
+
+최종 제품7f549f1의 두 독립 SOURCE PASS·CI와 UI/지연 재시도 결과를
+[후속 종결 기록](reviews/2026-10-18-native-address-final.md)에 보존했다.
+Common41은 머지됐으며 공용 호스트·소비자 운영 배포는 후속이다. daemon OFF를 유지한다.
+아래는 각 구현 시점의 이력이며 현재 결과를 소급 적용하지 않는다.
+
+
+## 2026-10-18 영속 예약의 잠금 연결 장애 보강
+
+현재 Common pin은 a68d0495acc38906c31b95b1d0db163bd8f96f5b다.
+동일 요청 ID와 NOT_STARTED 제출 복구를 유지하며, PostgreSQL 잠금 연결이 끊긴 뒤
+늦은 제출이 STARTED를 QUEUED로 되돌리지 않도록 native run 저장도 같은 연결에 묶는다.
+이전 23e4775의 동시 제출 문제와 2704830의 잠금 연결 소실 반례는 이력으로 보존한다.
+새 pin에서 실제 native 지연 요청·재시도 시험은 앱별 1건 통과했다. 전체 Python·UI
+회귀와 두 독립 최종 리뷰는 진행 중이며, 이 기록은 운영 수용 완료가 아니다.
+공용 webserver를 먼저 배포하고 소비자 Admin을 갱신한다. Daemon OFF를 유지한다.
+
+
 ## 2026-10-18 주소 확인 집계 후속 종결
 
 Common40·Weather113은 두 독립 FULL SOURCE PASS/CI 후 머지했다. 제품2bd779의 전체661·CI661,

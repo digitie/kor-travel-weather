@@ -36,7 +36,7 @@ describe("주소 수동 갱신 BFF", () => {
   });
   it("서버가 고정한 자기 location의 주소 job만 force=true로 예약한다", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(runs()).mockResolvedValueOnce(runs())
-      .mockResolvedValueOnce(response({ launchRun: { __typename: "LaunchRunSuccess", run: { runId: requestId, status: "QUEUED" } } }));
+      .mockResolvedValueOnce(response({ launchRun: { __typename: "IdempotentLaunchRunSuccess", replayed: false, run: { runId: requestId, status: "QUEUED" } } }));
     vi.stubGlobal("fetch", fetcher);
     const result = await POST(request());
     expect(result.status).toBe(202);
@@ -78,7 +78,7 @@ describe("주소 수동 갱신 BFF", () => {
       const query = JSON.parse(String(init.body)).query as string;
       if (query.includes("mutation")) {
         launches += 1;
-        return response({ launchRun: { __typename: "LaunchRunSuccess", run: { runId: requestId, status: "QUEUED" } } });
+        return response({ launchRun: { __typename: "IdempotentLaunchRunSuccess", replayed: false, run: { runId: requestId, status: "QUEUED" } } });
       }
       if (query.includes("kortravel/address-request")) {
         previousCalls += 1;
@@ -101,7 +101,36 @@ describe("주소 수동 갱신 BFF", () => {
     expect(result.status).toBe(502);
     expect(await result.text()).not.toContain("secret-key-in-url");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(runs()).mockResolvedValueOnce(runs())
-      .mockResolvedValueOnce(response({ launchRun: { __typename: "LaunchRunSuccess", run: { runId: requestId, status: "QUEUED" } } })));
+      .mockResolvedValueOnce(response({ launchRun: { __typename: "IdempotentLaunchRunSuccess", replayed: false, run: { runId: requestId, status: "QUEUED" } } })));
     expect((await POST(request())).status).toBe(202);
   });
+  it("대문자 요청 UUID를 정규화하고 영속 예약 mutation을 사용한다", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(runs()).mockResolvedValueOnce(runs())
+      .mockResolvedValueOnce(response({ launchRun: { __typename: "IdempotentLaunchRunSuccess", replayed: true, run: { runId: requestId, status: "QUEUED" } } }));
+    vi.stubGlobal("fetch", fetcher);
+    const result = await POST(request({ requestId: requestId.toUpperCase() }));
+    expect(result.status).toBe(202);
+    expect((await result.json()).replayed).toBe(true);
+    const payload = JSON.parse(fetcher.mock.calls[2][1].body);
+    expect(payload.variables.requestId).toBe(requestId);
+    expect(payload.query).toContain("launchIdempotentRun");
+  });
+  it("생성 후 제출 전에 중단된 NOT_STARTED 실행은 같은 ID로 제출을 복구한다", async () => {
+    const prior = { runId: requestId, status: "NOT_STARTED" };
+    const fetcher = vi.fn().mockResolvedValueOnce(runs([prior])).mockResolvedValueOnce(runs([prior]))
+      .mockResolvedValueOnce(response({ launchRun: { __typename: "IdempotentLaunchRunSuccess", replayed: true, run: { runId: requestId, status: "QUEUED" } } }));
+    vi.stubGlobal("fetch", fetcher);
+    const result = await POST(request());
+    expect(result.status).toBe(202);
+    expect(await result.json()).toEqual({ runId: requestId, status: "QUEUED", replayed: true });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+  it("새 mutation이 없는 서버에서 임의 ID의 기존 launch로 우회하지 않는다", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(runs()).mockResolvedValueOnce(runs())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ errors: [{ message: "Unknown field" }] })));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await POST(request())).status).toBe(502);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
 });
