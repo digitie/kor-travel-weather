@@ -12,7 +12,7 @@ license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "digitie" }]
 keywords = ["weather", "korea", "kma", "dagster", "fastapi", "data-source"]
 dependencies = [
-  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@522525aed3db934767c1c9e742b3bfc68e91679c#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@23e4775cf883b672ababad1b291bddd3441c9c63#subdirectory=packages/py/kor-travel-common",
   "pydantic>=2.7",
   "pydantic-settings>=2.4",
   "sqlalchemy>=2.0",
@@ -52,7 +52,7 @@ dev = [
 # version bump done together with the shared host, never a side effect.
 # dagster-graphql/-pipes/-shared follow from dagster's own ``==`` requirements.
 dagster = [
-  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@522525aed3db934767c1c9e742b3bfc68e91679c#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@23e4775cf883b672ababad1b291bddd3441c9c63#subdirectory=packages/py/kor-travel-common",
   "dagster==1.13.24",
   "dagster-webserver==1.13.24",
   # Backs run/event-log/schedule storage with PostgreSQL instead of Dagster's
