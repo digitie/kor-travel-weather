@@ -1,5 +1,13 @@
 # Weather 작업 기록
 
+## 2026-10-18 — 비활성·이동 지점의 주소 확인 집계 보정
+
+Transport86 r2에서 찾은 공통 MAX 집계 문제는 Weather 비활성 위치와 좌표 이동에도 해당한다.
+실제 WeatherLocationRow를 갱신하는 3개 반례를 이전 Common c067에서 3 FAIL로 확인하고,
+Common40의 522525a pin과 잠금을 갱신한 뒤 주소 회귀 4 PASS를 확인했다.
+파생 과거 행을 보존하고 source 지역·KMA 격자·관리자 metadata 불변도 검증한다.
+전체 CI·두 독립 리뷰·UI 및 운영 수용은 각각 별도다. 앞선111/112 이력을 덮지 않는다.
+
 ## 2026-10-18 주소 갱신 구현·로컬 검증
 
 VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin 수동 실행을 구현했다. 두 앱은 같은 Common Python 엔진을 고정 commit으로 사용한다. [설계·설정 및 검증 범위](reverse-address-refresh.md)를 참조한다. 원천 주소·좌표는 보존한다.
