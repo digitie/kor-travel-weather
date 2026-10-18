@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { dagsterRunUrl } from "@/lib/dagster-scope";
+import styles from "./address-refresh.module.css";
 
 import type { AddressRefreshSummary } from "@/lib/api";
 
@@ -49,7 +50,7 @@ export function AddressRefresh() {
     } finally { setBusy(false); }
   }
   return (
-    <section aria-label="주소 갱신" className="panel" style={{ padding: 20, marginBottom: 24 }}>
+    <section aria-label="주소 갱신" className={"panel " + styles.panel}>
       <h2>주소 갱신</h2>
       <p>VWorld 우선 · Kakao 보조로 좌표의 최신 주소를 확인합니다. 위치별 마지막 확인일부터 달력 6개월마다 갱신하며, 원천 주소와 관리자 좌표는 보존합니다.</p>
       {summary ? <>
@@ -57,16 +58,18 @@ export function AddressRefresh() {
         <p>최근 정상 확인: {date(summary.last_resolved_at)}{summary.in_progress ? " · 배치 진행 또는 재개 대기" : ""}</p>
         {!summary.configured ? <p role="status">VWorld 또는 Kakao 서버 키를 설정해야 실행할 수 있습니다.</p> : null}
       </> : <p role="status">주소 갱신 상태 확인 중…</p>}
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+      <div className={styles.actions}>
         <button type="button" disabled={busy || !summary?.configured} onClick={() => void launch()}>{busy ? "예약 중…" : "전체 주소 수동 갱신"}</button>
         <button type="button" onClick={() => void load()}>상태 새로고침</button>
         {runId ? <a href={dagsterRunUrl(runId)} target="_blank" rel="noreferrer">예약한 실행 보기 ↗</a> : null}
       </div>
       {error ? <p role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
-      {summary?.items.length ? <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", marginTop: 16 }}>
-          <caption>최근 확인한 위치 최대 50개. 실패·기한 경과 주소는 최신으로 보장되지 않습니다.</caption>
+      {summary?.items.length ? <>
+        <p>최근 확인한 위치 최대 50개입니다. 실패·기한 경과 주소는 최신으로 보장되지 않습니다. 작은 화면에서는 표를 좌우로 이동해 확인하세요.</p>
+        <div className={styles.scroll} role="region" aria-label="최근 주소 확인 결과" tabIndex={0}>
+        <table className={styles.table}>
+          <caption>최근 주소 확인 결과</caption>
           <thead><tr><th>위치</th><th>확인 주소</th><th>상태 / 제공자</th><th>확인일 / 다음 갱신일</th></tr></thead>
           <tbody>{summary.items.map(item => <tr key={item.target_key}>
             <td>{item.name || item.target_key}</td><td>{item.address?.full || "주소 없음"}</td>
@@ -74,7 +77,7 @@ export function AddressRefresh() {
             <td>{date(item.resolved_at)}<br />{date(item.next_refresh_at)}</td>
           </tr>)}</tbody>
         </table>
-      </div> : null}
+      </div></> : null}
     </section>
   );
 }

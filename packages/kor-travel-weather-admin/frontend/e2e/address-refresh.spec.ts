@@ -35,6 +35,13 @@ for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 
       await expect(panel.getByText("서울특별시 중구 세종대로 110", { exact: true })).toBeVisible();
       await expect(panel.getByRole("button", { name: "전체 주소 수동 갱신" })).toBeEnabled();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      const results = panel.getByRole("region", { name: "최근 주소 확인 결과", exact: true });
+      await results.focus();
+      await expect(results).toBeFocused();
+      if (viewport.width < 640) {
+        await results.press("ArrowRight");
+        await expect.poll(() => results.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+      }
       await page.screenshot({ path: "test-results/address-refresh-" + viewport.width + ".png", fullPage: true });
     });
     test("fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다", async ({ page }) => {

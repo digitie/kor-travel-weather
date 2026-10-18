@@ -1,6 +1,6 @@
 # 6개월 자동 주소 갱신과 Admin 수동 실행
 
-정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/812b291659e40564595c3c28b7e8d51cbcc46df9/docs/reverse-address-refresh.md)를 따른다.
+정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/0f768a1974a65bfade4c0fa3c79b897c9663e1a6/docs/reverse-address-refresh.md)를 따른다.
 기존 VWorld 우선·Kakao 보조를 유지하며 Geo API나 데이터 토큰에는 의존하지 않는다.
 
 환경변수: KOR_TRAVEL_WEATHER_VWORLD_API_KEY, KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY,
@@ -32,8 +32,17 @@ E2E_BASE_URL, E2E_UI_USER, E2E_UI_PASSWORD를 지정하고
 npx playwright test e2e/address-refresh.spec.ts --workers=1.
 운영 주소에 실수로 예약하지 않도록 spec은 loopback만 허용한다.
 
-공통 Python 전체 495개, 각 Admin Vitest 207개 및 운영 빌드가 통과했다.
+공통 Python 전체 501개, 각 Admin Vitest 207개 및 운영 빌드가 통과했다.
 Weather 전체 Python 657개와 실제 고정 Dagster GraphQL schema 검증도 통과했다.
-Transport 전체 Python 회귀는 실행 중이다(첫 순차 검증은 600초 시간 예산 초과로 미완료).
+Transport 전체 Python 회귀는 독립 SQLite 4 worker에서 838개 통과·환경 조건 10개 skip이다.
+첫 순차 검증은 600초 시간 예산 초과로 미완료였고, 뒤의 전체 병렬 검증으로 완료했다.
+PC·모바일의 표 좌우 스크롤과 키보드 focus도 추가 확인했다.
 운영 migration·실제 API 실호출·배포·외부 운영 UI E2E는 미실행이다.
 CI·두 독립 리뷰의 최종 결과는 PR 검증 기록에 추가한다.
+
+## 독립 리뷰 반영
+
+Common의 두 독립 리뷰에서 HTTPX 정상 요청의 가짜 키/URL 로그 반례, 완료 후 만료 owner 표시,
+정상 무결과 fallback 분류 및 동일 좌표 무결과 중복 호출을 재현하고 공통 엔진에서 수정했다.
+추가 자체 반례였던 배치 1의 실패 재시도 쏠림도 보완했다. 원본 결과·재검증은 Common PR에 보존한다.
+Weather와 Transport 모두 같은 VWorld 우선·Kakao fallback 구현을 사용한다.
