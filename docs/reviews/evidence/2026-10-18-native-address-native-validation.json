@@ -1,0 +1,40 @@
+{
+  "common": "89291f36d731ab906161b96757522e1cd833b4ef",
+  "scope": "owned loopback API/native SDK/Chromium; daemon/provider/production execution absent",
+  "apps": {
+    "weather": {
+      "focused": {
+        "sha256": "a3e7b2103a564809284a2f7c62310ef881954c01f19794d412b741653aab3175",
+        "tail": "12 passed in 5.93s",
+        "path": "/tmp/weather-native-892-focused.log"
+      },
+      "ui": {
+        "sha256": "2861fcab3b55d0de9ae251a7666b49bfb8f31c7e6e071b1873dcddf02208efab",
+        "tail": "  17 passed (15.4s)",
+        "path": "/tmp/weather-native-892-ui.log"
+      },
+      "delay": {
+        "sha256": "1d5bd816c3e9a36b00c749e74a31f3811f439f48601a54381c931c789c7c95e2",
+        "tail": "  1 passed (13.5s)",
+        "path": "/tmp/weather-native-892-delay.log"
+      }
+    },
+    "transport": {
+      "focused": {
+        "sha256": "a5be2e04458876a295874a14bd147a0937936a2b37fb430925e26d032d8d2cf1",
+        "tail": "23 passed, 1 warning in 17.57s",
+        "path": "/tmp/transport-native-892-focused.log"
+      },
+      "ui": {
+        "sha256": "6e8daab85dc92efa77c07b44ac76996c0091f7b065706975889519a55253c06c",
+        "tail": "  17 passed (16.0s)",
+        "path": "/tmp/transport-native-892-ui.log"
+      },
+      "delay": {
+        "sha256": "9c75d0c2948725c1c24e579ab5b54ca77399206bd211ed1357a9ab69420ddc18",
+        "tail": "  1 passed (13.9s)",
+        "path": "/tmp/transport-native-892-delay.log"
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "headRefOid": "7f549f1257089c7c05d6ee63b412ca8a1bc00c67",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-10-18T05:20:40Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/digitie/kor-travel-weather/actions/runs/39099991344/job/117594116324",
+      "name": "python",
+      "startedAt": "2026-10-18T05:16:33Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    },
+    {
+      "__typename": "CheckRun",
+      "completedAt": "2026-10-18T05:17:20Z",
+      "conclusion": "SUCCESS",
+      "detailsUrl": "https://github.com/digitie/kor-travel-weather/actions/runs/39099991344/job/117594116399",
+      "name": "frontend",
+      "startedAt": "2026-10-18T05:16:33Z",
+      "status": "COMPLETED",
+      "workflowName": "CI"
+    }
+  ]
+}
