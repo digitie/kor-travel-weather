@@ -1,0 +1,29 @@
+{
+  "scope": "Weather113 FULL current source last-confirmed summary Common5225 integration",
+  "base": "36c11950e1f5b6476f2c9b15396a097300a0e1e5",
+  "head": "2bd77942a21c5b449347963488a38814d55f0990",
+  "path": "/home/digitie/dev/kor-travel-weather-codex-reverse-address-20261018",
+  "created_utc": "2026-10-18T03:48:03.877577+00:00",
+  "common_pin": "522525aed3db934767c1c9e742b3bfc68e91679c",
+  "common_merge": "27cd146ed9e83d3ef481757d2b48e16f232dc88c",
+  "request": "활성 현재 좌표의 최근 정상 주소 확인 시각만 공개하며 원천/격자/admin metadata/sidecar 보존",
+  "root_checks": [
+    "Actual Weather disabled/longitude/latitude old3FAIL -> current address4PASS; Common-health integration11PASS",
+    "Full ownPG fixture661PASS/205.07s + fullRuff PASS",
+    "Exact-head CI39094583346 Python+Admin SUCCESS incl migration/OpenAPI/test/type/build; public CI log available",
+    "Fresh currentAPI/native fixture + unchanged compiled UI13PASS; provider injected; owned queued2/process5 cleanup; daemonOFF",
+    "Common40 independent2 FULL SOURCEPASS/OPEN0/CI8SUCCESS and merged27cd; core source/engine514PASS/newwheel28PASS",
+    "Initial focused1failure due remaining Dagster manifest oldpin was fixed; metadata exactpin assertions updated, no weakenedhashchecks"
+  ],
+  "evidence": {
+    "file": "reverse-address-source-summary-consumer-verification-20261018.json",
+    "sha256": "31892dbe8c2348052e902438840c5c4028e94fd4ff2e24172015e34579074d1a",
+    "ci_file": "address-summary-kor-travel-weather-ci-39094583346.json"
+  },
+  "constraints": [
+    "Immutable Git object/read-only own fixture only; source/index/branch edits forbidden; others present",
+    "No production/env/secrets/provider/SSH/Docker/daemon operations",
+    "No new peer report until both finalized; saved own requests/hash/time/limits/verdict",
+    "Old111/112 source/CI/UI remains history; current newpin closure and operating acceptance distinct; CPU/RSS after allTrack1/2"
+  ]
+}
