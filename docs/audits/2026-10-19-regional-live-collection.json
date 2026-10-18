@@ -1,0 +1,95 @@
+{
+  "source_commit": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+  "base_merge": "fd2bf1a3a2126e0873240156bb88829bf8b800a8",
+  "scope": "manual two-asset serial collection; daemon OFF; not scheduler acceptance",
+  "r1": {
+    "status": "PROBE_FAILED_BEFORE_COLLECTION",
+    "cause": "missing isolated metrics directory",
+    "provider_calls": 0,
+    "db_collection_runs": 0
+  },
+  "r2": {
+    "native_run_id": "a8ab7268-b8e5-4882-ac47-2ba64cfeb9d7",
+    "native_status": "FAILURE",
+    "failure_stage": "handle_output after provider and database writes",
+    "cause": "read-only local artifact path",
+    "new_values_loaded": 6403,
+    "linked_fact_count": 6403,
+    "observation_audit": [
+      {
+        "run_id": "run_3e032b5e90274967897259965d03504e",
+        "provider": "python-krex-api",
+        "dataset_key": "krex_restarea_weather",
+        "status": "success",
+        "started_at": "2026-10-18 22:49:31.088277+00:00",
+        "finished_at": "2026-10-18 22:49:43.111630+00:00",
+        "values_loaded": 1147,
+        "locations_total": 187,
+        "source_count": 187,
+        "fact_count": 1147,
+        "repeated_fact_identity": 0,
+        "audit_at": "2026-10-18 22:50:42.640445+00:00",
+        "min_observed_at": "2026-10-18 21:00:00+00:00",
+        "max_observed_at": "2026-10-18 21:00:00+00:00",
+        "min_known_at": "2026-10-18 22:49:31.088245+00:00",
+        "max_known_at": "2026-10-18 22:49:31.088245+00:00",
+        "oldest_age_seconds": "6642.640445",
+        "newest_age_seconds": "6642.640445",
+        "empty_source_payload": 0,
+        "empty_fact_payload": 0
+      },
+      {
+        "run_id": "run_80363bb7c29545689f79018dff9ab606",
+        "provider": "python-krforest-api",
+        "dataset_key": "krforest_mountain_weather",
+        "status": "success",
+        "started_at": "2026-10-18 22:49:59.846394+00:00",
+        "finished_at": "2026-10-18 22:50:38.075277+00:00",
+        "values_loaded": 5256,
+        "locations_total": 513,
+        "source_count": 438,
+        "fact_count": 5256,
+        "repeated_fact_identity": 0,
+        "audit_at": "2026-10-18 22:50:42.640445+00:00",
+        "min_observed_at": "2026-10-18 22:40:00+00:00",
+        "max_observed_at": "2026-10-18 22:40:00+00:00",
+        "min_known_at": "2026-10-18 22:49:59.846360+00:00",
+        "max_known_at": "2026-10-18 22:49:59.846360+00:00",
+        "oldest_age_seconds": "642.640445",
+        "newest_age_seconds": "642.640445",
+        "empty_source_payload": 0,
+        "empty_fact_payload": 0
+      }
+    ],
+    "limits": {
+      "regional_max_records": 1000,
+      "max_values_per_run": 8000000,
+      "provider_http_timeout_seconds": 20.0
+    },
+    "measurement": {
+      "wall_seconds": 90.88296068400086,
+      "worker_cpu_seconds": 67.266272,
+      "worker_cgroup_peak_bytes": 265404416,
+      "parent_rss_peak_kib": 154620,
+      "children_rss_peak_kib": 169116,
+      "shared_pg_cpu_seconds": 25.436849,
+      "cpu_interval": "ready/go through result/release; excludes import; includes execution and result audit",
+      "memory_scope": "absolute worker cgroup high-water including imports",
+      "shared_pg_scope": "shared postgres container includes unrelated SQL"
+    },
+    "worker_exit": 2,
+    "oom_killed": false,
+    "foreign_fence_errors": [],
+    "owned_workers_running": 0,
+    "raw_evidence_sha256": "e170bbec09f763331823385fe71f5a45b4cb80d10d81ab8337b02d088ce64bc7"
+  },
+  "r3": {
+    "status": "PENDING_ROOT_TERMINAL_EVIDENCE"
+  },
+  "limitations": [
+    "not a before/after performance comparison",
+    "no freshness SLA invented",
+    "daemon automatic operation not exercised",
+    "local compute logs remain in owned artifact directory"
+  ]
+}

@@ -102,3 +102,8 @@ PR #118은 아직 머지 전이며 daemon OFF를 유지한다. 전체 수집·24
 W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조했다. 유효값 없는 지점의 skipped_without_values를 추가해 좌표 부재와 구분한다. 격리 PostgreSQL 전체 668개·frontend 214개·type-check·Ruff 및 CI39170492571이 통과했다. 두 독립 코드 리뷰의 열린 지적은 0개다. 공개 좌표의 실제 VWorld 호출과 오류 주입 후 실제 Kakao fallback도 통과했다. 운영 API/CS 전환5c8db5f8과 배포 후 UI36이 통과했으며 daemon OFF를 유지한다.
 
 현재 상태 정정: 앞선 #118의 머지 전 표시는 당시 이력이다. #118은 4757df0c0b5090b22142535c623b77abc657f382로 머지됐고 a8949778 제품 배포와 UI36을 통과했다.
+
+
+## 2026-10-19 지역 수집 수동 수용 초안
+
+#119 이후 제품683e446d를 그대로 사용한 두 asset 제한 수집의 기록을 분리했다. metrics 사전 probe 실패와 실제 DB6403건 저장 후 Dagster 결과 경로 실패를 구분해 보존하고, 소유 metrics·NVMe state 경로와 시간 역전/정상 noop 감사 반례를 보강했다. 세 번째 실행 결과는 아직 정산 전이며 daemon OFF를 유지한다.
