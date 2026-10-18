@@ -7,6 +7,9 @@ import { adminUsername, checkDurableSession, SESSION_COOKIE, sessionSecret, veri
 const headers = { "cache-control": "no-store, private" };
 const reply = (detail: string, status: number) => NextResponse.json({ detail }, { status, headers });
 const JOB = "address_refresh_job";
+// 현재 단일 BFF 프로세스에서 조회→예약 사이 동시 진입을 차단한다.
+// 여러 replica의 전역 exactly-once를 보장하는 잠금은 아니다.
+let submissionInFlight = false;
 async function bounded(stream: ReadableStream<Uint8Array> | null, limit: number) {
   if (!stream) return "";
   const reader = stream.getReader(); const decoder = new TextDecoder();
@@ -63,13 +66,15 @@ export async function POST(request: NextRequest) {
   try { body = JSON.parse(await bounded(request.body, 1024)); } catch { return reply("요청 본문을 확인해 주세요.", 422); }
   if (!body || Array.isArray(body) || Object.keys(body).length !== 1
     || typeof body.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)) return reply("실행 요청 ID가 올바르지 않습니다.", 422);
+  if (submissionInFlight) return reply("주소 갱신 예약 요청을 처리 중입니다. 잠시 후 같은 요청으로 확인하세요.", 409);
+  submissionInFlight = true;
   try {
     const previous = await graphql(
       ADDRESS_REFRESH_PREVIOUS_QUERY,
       { location: DAGSTER_LOCATION_NAME, requestId: body.requestId },
     );
     if (previous.runsOrError?.__typename !== "Runs") throw new Error("previous");
-    if (previous.runsOrError.results?.[0]) return NextResponse.json(previous.runsOrError.results[0], { status: 202, headers });
+    if (previous.runsOrError.results?.[0]) return NextResponse.json({ ...previous.runsOrError.results[0], replayed: true }, { status: 202, headers });
     const active = await graphql(
       ADDRESS_REFRESH_ACTIVE_QUERY,
       { location: DAGSTER_LOCATION_NAME },
@@ -90,6 +95,7 @@ export async function POST(request: NextRequest) {
       } },
     );
     if (result.launchRun?.__typename !== "LaunchRunSuccess") return reply("실행을 예약하지 못했습니다. Dagster에서 같은 요청의 실행 여부를 확인하세요.", 502);
-    return NextResponse.json(result.launchRun.run, { status: 202, headers });
+    return NextResponse.json({ ...result.launchRun.run, replayed: false }, { status: 202, headers });
   } catch { return reply("예약 결과를 확인하지 못했습니다. 같은 요청으로 다시 시도해 주세요.", 502); }
+  finally { submissionInFlight = false; }
 }

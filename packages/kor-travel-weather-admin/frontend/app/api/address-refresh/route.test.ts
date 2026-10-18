@@ -40,6 +40,7 @@ describe("주소 수동 갱신 BFF", () => {
     vi.stubGlobal("fetch", fetcher);
     const result = await POST(request());
     expect(result.status).toBe(202);
+    expect((await result.json()).replayed).toBe(false);
     const payload = JSON.parse(fetcher.mock.calls[2][1].body);
     const params = payload.variables.executionParams;
     expect(params.selector).toEqual({ repositoryLocationName: DAGSTER_LOCATION_NAME,
@@ -49,10 +50,12 @@ describe("주소 수동 갱신 BFF", () => {
     expect(params.executionMetadata).not.toHaveProperty("runId");
     expect(result.headers.get("cache-control")).toBe("no-store, private");
   });
-  it("이전 요청이 완료돼도 다시 예약하지 않고 해당 실행을 돌려준다", async () => {
-    const fetcher = vi.fn().mockResolvedValueOnce(runs([{ runId: requestId, status: "SUCCESS" }]));
+  it.each(["SUCCESS", "FAILURE", "CANCELED"])("이전 %s 요청을 새 예약 없이 재조회한다", async (status) => {
+    const fetcher = vi.fn().mockResolvedValueOnce(runs([{ runId: requestId, status }]));
     vi.stubGlobal("fetch", fetcher);
-    expect((await POST(request())).status).toBe(202);
+    const result = await POST(request());
+    expect(result.status).toBe(202);
+    expect(await result.json()).toEqual({ runId: requestId, status, replayed: true });
     expect(fetcher).toHaveBeenCalledTimes(1);
     const payload = JSON.parse(fetcher.mock.calls[0][1].body);
     expect(payload.query).toContain("kortravel/address-request");
@@ -64,10 +67,41 @@ describe("주소 수동 갱신 BFF", () => {
     expect((await POST(request())).status).toBe(409);
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
+  it.each([requestId, "03147536-8f5c-41ec-a725-be2ca3b024f4"])("동시 예약 %s를 차단하고 한 번만 launch한다", async (secondId) => {
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let previousCalls = 0;
+    let launches = 0;
+    const fetcher = vi.fn(async (_url: unknown, init: RequestInit) => {
+      const query = JSON.parse(String(init.body)).query as string;
+      if (query.includes("mutation")) {
+        launches += 1;
+        return response({ launchRun: { __typename: "LaunchRunSuccess", run: { runId: requestId, status: "QUEUED" } } });
+      }
+      if (query.includes("kortravel/address-request")) {
+        previousCalls += 1;
+        if (previousCalls === 1) { entered(); await gate; }
+      }
+      return runs();
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const first = POST(request());
+    await started;
+    const second = await POST(request({ requestId: secondId }));
+    release();
+    expect((await first).status).toBe(202);
+    expect(second.status).toBe(409);
+    expect(launches).toBe(1);
+  });
   it("원문 upstream 오류나 키를 응답하지 않는다", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("secret-key-in-url")));
     const result = await POST(request());
     expect(result.status).toBe(502);
     expect(await result.text()).not.toContain("secret-key-in-url");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(runs()).mockResolvedValueOnce(runs())
+      .mockResolvedValueOnce(response({ launchRun: { __typename: "LaunchRunSuccess", run: { runId: requestId, status: "QUEUED" } } })));
+    expect((await POST(request())).status).toBe(202);
   });
 });

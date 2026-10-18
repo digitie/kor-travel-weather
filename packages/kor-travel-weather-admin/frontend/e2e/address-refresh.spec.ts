@@ -44,6 +44,32 @@ for (const viewport of [{ width: 1365, height: 900 }, { width: 390, height: 844 
       }
       await page.screenshot({ path: "test-results/address-refresh-" + viewport.width + ".png", fullPage: true });
     });
+    test("fixture 기존 실패·취소·완료 실행을 새 예약으로 표시하지 않는다", async ({ page }) => {
+      let status = "FAILURE";
+      await page.route("**/api/address-refresh", route => route.fulfill({
+        status: route.request().method() === "POST" ? 202 : 200,
+        json: route.request().method() === "POST"
+          ? { runId: "03147536-8f5c-41ec-a725-be2ca3b024f3", status, replayed: true }
+          : fixture,
+      }));
+      await login(page);
+      const panel = page.getByRole("region", { name: "주소 갱신", exact: true });
+      const launch = panel.getByRole("button", { name: "전체 주소 수동 갱신", exact: true });
+      await launch.click();
+      await expect(panel.getByRole("alert")).toContainText("기존 요청의 실행이 실패했습니다.");
+      await expect(launch).toBeEnabled();
+      await page.waitForTimeout(100);
+      await expect(panel.getByRole("alert")).toContainText("기존 요청의 실행이 실패했습니다.");
+      status = "CANCELED";
+      await launch.click();
+      await expect(panel.getByRole("alert")).toContainText("기존 요청의 실행이 취소됐습니다.");
+      status = "SUCCESS";
+      await launch.click();
+      await expect(panel.getByRole("status").filter({ hasText: "이 요청의 실행이 정상 완료되었습니다." })).toBeVisible();
+      await expect(panel.getByRole("alert")).toHaveCount(0);
+      await expect(panel.getByText(/^실행을 예약했습니다/)).toHaveCount(0);
+      await expect(panel.getByRole("link", { name: "실행 기록 보기 ↗" })).toBeVisible();
+    });
     test("fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다", async ({ page }) => {
       await page.route("**/api/address-refresh", route => route.fulfill({ json: fixture }));
       await login(page);
@@ -90,7 +116,7 @@ test("실제 Dagster 예약·같은 요청 재조회·중복 실행 차단·CSRF
   expect(run.status).toBe("QUEUED");
   const requestId = result.request().postDataJSON().requestId;
   await expect(page.getByText(/Daemon이 중지되어 있으면 대기합니다/)).toBeVisible();
-  await expect(page.getByRole("link", { name: "예약한 실행 보기 ↗" })).toHaveAttribute("href", new RegExp(run.runId));
+  await expect(page.getByRole("link", { name: "실행 기록 보기 ↗" })).toHaveAttribute("href", new RegExp(run.runId));
   const replay = await page.request.post("/api/address-refresh", { headers: { origin: base }, data: { requestId } });
   expect(replay.status()).toBe(202);
   expect((await replay.json()).runId).toBe(run.runId);

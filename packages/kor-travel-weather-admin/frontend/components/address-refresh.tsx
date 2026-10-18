@@ -43,8 +43,18 @@ export function AddressRefresh() {
       if (!response.ok) throw new Error(body.detail || "갱신 실행을 예약하지 못했습니다.");
       setRunId(body.runId);
       requestId.current = null;
-      setNotice("실행을 예약했습니다. 주소 갱신 완료 여부는 아래 Dagster 실행 상태에서 확인하세요. Daemon이 중지되어 있으면 대기합니다.");
-      void load();
+      if (body.status === "FAILURE" || body.status === "CANCELED") {
+        setError(body.status === "FAILURE"
+          ? "기존 요청의 실행이 실패했습니다. 실행 기록을 확인한 뒤 새 수동 요청으로 재시도할 수 있습니다."
+          : "기존 요청의 실행이 취소됐습니다. 실행 기록을 확인한 뒤 새 수동 요청으로 재시도할 수 있습니다.");
+      } else if (body.status === "SUCCESS") {
+        setNotice("이 요청의 실행이 정상 완료되었습니다. 아래 실행 기록에서 결과를 확인하세요.");
+      } else if (body.replayed) {
+        setNotice("기존 요청의 실행을 확인했습니다. 아래 실행 기록에서 현재 상태를 확인하세요. Daemon이 중지되어 있으면 대기합니다.");
+      } else {
+        setNotice("실행을 예약했습니다. 주소 갱신 완료 여부는 아래 Dagster 실행 상태에서 확인하세요. Daemon이 중지되어 있으면 대기합니다.");
+      }
+      if (body.status !== "FAILURE" && body.status !== "CANCELED") void load();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "예약 결과를 확인하지 못했습니다. 다시 누르면 같은 요청의 예약 여부를 확인합니다.");
     } finally { setBusy(false); }
@@ -61,7 +71,7 @@ export function AddressRefresh() {
       <div className={styles.actions}>
         <button type="button" disabled={busy || !summary?.configured} onClick={() => void launch()}>{busy ? "예약 중…" : "전체 주소 수동 갱신"}</button>
         <button type="button" onClick={() => void load()}>상태 새로고침</button>
-        {runId ? <a href={dagsterRunUrl(runId)} target="_blank" rel="noreferrer">예약한 실행 보기 ↗</a> : null}
+        {runId ? <a href={dagsterRunUrl(runId)} target="_blank" rel="noreferrer">실행 기록 보기 ↗</a> : null}
       </div>
       {error ? <p role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
