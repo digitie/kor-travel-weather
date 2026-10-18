@@ -1,0 +1,497 @@
+{
+  "weather-regional-ro-f88c5096-57f9-4aa3-b91d-1debcd41179e.safe.json": {
+    "sha256": "0788efe722a7787dbacf4c000b5d77cc2664a9a1805374055f2ddbbe58de1012",
+    "data": {
+      "enabled": {
+        "python-krex-api": true,
+        "python-krforest-api": true
+      },
+      "credential_present": {
+        "python-krex-api": true,
+        "python-krforest-api": true
+      },
+      "vworld_present": true,
+      "kakao_present": true,
+      "python-krex-api": {
+        "recent_runs": [
+          {
+            "run_id": "run_209facdc83af40cdb1eddeaa7909f383",
+            "dataset_key": "krex_restarea_weather",
+            "status": "success",
+            "started_at": "2026-10-16 21:16:00.634142+00:00",
+            "finished_at": "2026-10-16 21:16:16.196416+00:00",
+            "locations_total": 187,
+            "requests_fetched": 1,
+            "values_loaded": 1112,
+            "orchestrator_run_id": "a89a120b-f648-4175-9052-a8a6f4084071",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_b4938a7cc4fc47cd80d09663fb818d64",
+            "dataset_key": "krex_restarea_weather",
+            "status": "success",
+            "started_at": "2026-10-16 08:39:47.933212+00:00",
+            "finished_at": "2026-10-16 08:41:59.073263+00:00",
+            "locations_total": 187,
+            "requests_fetched": 1,
+            "values_loaded": 954,
+            "orchestrator_run_id": "68d813c4-630f-453e-92da-f14a145d7c63",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_9da16bfa400b493a9caa6047cf723b23",
+            "dataset_key": "krex_restarea_weather",
+            "status": "success",
+            "started_at": "2026-10-15 20:42:51.840576+00:00",
+            "finished_at": "2026-10-15 20:46:55.899696+00:00",
+            "locations_total": 187,
+            "requests_fetched": 1,
+            "values_loaded": 947,
+            "orchestrator_run_id": "a01eb742-8fb4-4dcb-aa54-8b2b213b2595",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_4d7baa53c0764f278b08302f1c2ede0c",
+            "dataset_key": "krex_restarea_weather",
+            "status": "success",
+            "started_at": "2026-10-15 08:40:46.061243+00:00",
+            "finished_at": "2026-10-15 08:43:58.984105+00:00",
+            "locations_total": 187,
+            "requests_fetched": 1,
+            "values_loaded": 1119,
+            "orchestrator_run_id": "295d5523-977e-4b4e-8016-ce76f33bdd8b",
+            "error_sha256": null,
+            "error_classes": []
+          }
+        ]
+      },
+      "python-krforest-api": {
+        "recent_runs": [
+          {
+            "run_id": "run_34778f5b977a44f7a0b4251558b8ea63",
+            "dataset_key": "krforest_mountain_weather",
+            "status": "success",
+            "started_at": "2026-10-16 21:18:51.805206+00:00",
+            "finished_at": "2026-10-16 21:19:46.151450+00:00",
+            "locations_total": 513,
+            "requests_fetched": 1,
+            "values_loaded": 5232,
+            "orchestrator_run_id": "a89a120b-f648-4175-9052-a8a6f4084071",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_4be4910f99b8477184b780887f7f4e6d",
+            "dataset_key": "krforest_dust",
+            "status": "success",
+            "started_at": "2026-10-16 21:16:49.381070+00:00",
+            "finished_at": "2026-10-16 21:18:27.782354+00:00",
+            "locations_total": 1256,
+            "requests_fetched": 1,
+            "values_loaded": 7630,
+            "orchestrator_run_id": "a89a120b-f648-4175-9052-a8a6f4084071",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_847fd9421fd44a83a53743f25bbeb0aa",
+            "dataset_key": "krforest_mountain_weather",
+            "status": "success",
+            "started_at": "2026-10-16 09:00:54.100234+00:00",
+            "finished_at": "2026-10-16 09:01:44.987585+00:00",
+            "locations_total": 513,
+            "requests_fetched": 1,
+            "values_loaded": 204,
+            "orchestrator_run_id": "68d813c4-630f-453e-92da-f14a145d7c63",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_231cbe8891ea4983b2da9fe4631a31b9",
+            "dataset_key": "krforest_dust",
+            "status": "success",
+            "started_at": "2026-10-16 08:43:25.478003+00:00",
+            "finished_at": "2026-10-16 08:59:54.543455+00:00",
+            "locations_total": 1250,
+            "requests_fetched": 1,
+            "values_loaded": 7602,
+            "orchestrator_run_id": "68d813c4-630f-453e-92da-f14a145d7c63",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_ab1b59c1e33a45478298e7dda726ff0a",
+            "dataset_key": "krforest_mountain_weather",
+            "status": "success",
+            "started_at": "2026-10-15 21:11:59.735968+00:00",
+            "finished_at": "2026-10-15 21:33:29.860435+00:00",
+            "locations_total": 513,
+            "requests_fetched": 1,
+            "values_loaded": 5388,
+            "orchestrator_run_id": "a01eb742-8fb4-4dcb-aa54-8b2b213b2595",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_9fba4c35b95241ada0ee828a1a141264",
+            "dataset_key": "krforest_dust",
+            "status": "success",
+            "started_at": "2026-10-15 20:48:19.830752+00:00",
+            "finished_at": "2026-10-15 21:10:29.952201+00:00",
+            "locations_total": 1237,
+            "requests_fetched": 1,
+            "values_loaded": 7511,
+            "orchestrator_run_id": "a01eb742-8fb4-4dcb-aa54-8b2b213b2595",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_ab2222a9b8624c41874c922b88775839",
+            "dataset_key": "krforest_mountain_weather",
+            "status": "success",
+            "started_at": "2026-10-15 09:05:46.054415+00:00",
+            "finished_at": "2026-10-15 09:29:08.387242+00:00",
+            "locations_total": 513,
+            "requests_fetched": 1,
+            "values_loaded": 4692,
+            "orchestrator_run_id": "295d5523-977e-4b4e-8016-ce76f33bdd8b",
+            "error_sha256": null,
+            "error_classes": []
+          },
+          {
+            "run_id": "run_bda549dde5f840f888707fe88ae65dfa",
+            "dataset_key": "krforest_dust",
+            "status": "success",
+            "started_at": "2026-10-15 08:45:21.091683+00:00",
+            "finished_at": "2026-10-15 09:04:31.218907+00:00",
+            "locations_total": 1257,
+            "requests_fetched": 1,
+            "values_loaded": 7630,
+            "orchestrator_run_id": "295d5523-977e-4b4e-8016-ce76f33bdd8b",
+            "error_sha256": null,
+            "error_classes": []
+          }
+        ]
+      }
+    }
+  },
+  "weather-regional-freshness-ro-0a7e4a43-69cb-4a2e-84dc-ac50e11ce55b.safe.json": {
+    "sha256": "da05541e17acac3651b36be86c82aeebddee6547eaff7339929d26e9a6f7edb6",
+    "data": {
+      "krex_restarea_weather": {
+        "run_id": "run_209facdc83af40cdb1eddeaa7909f383",
+        "facts": 1112,
+        "locations": 187,
+        "sources": 187,
+        "oldest_observed_at": "2026-10-16 19:00:00+00:00",
+        "newest_observed_at": "2026-10-16 19:00:00+00:00",
+        "oldest_known_at": "2026-10-16 21:16:00.634100+00:00",
+        "newest_known_at": "2026-10-16 21:16:00.634100+00:00"
+      },
+      "krforest_mountain_weather": {
+        "run_id": "run_34778f5b977a44f7a0b4251558b8ea63",
+        "facts": 5232,
+        "locations": 436,
+        "sources": 436,
+        "oldest_observed_at": "2026-10-16 21:10:00+00:00",
+        "newest_observed_at": "2026-10-16 21:10:00+00:00",
+        "oldest_known_at": "2026-10-16 21:18:51.805160+00:00",
+        "newest_known_at": "2026-10-16 21:18:51.805160+00:00"
+      },
+      "krforest_dust": {
+        "run_id": "run_4be4910f99b8477184b780887f7f4e6d",
+        "facts": 7630,
+        "locations": 67,
+        "sources": 1090,
+        "oldest_observed_at": "2026-10-16 18:20:00+00:00",
+        "newest_observed_at": "2026-10-16 21:10:00+00:00",
+        "oldest_known_at": "2026-10-16 21:16:49.381025+00:00",
+        "newest_known_at": "2026-10-16 21:16:49.381025+00:00"
+      }
+    }
+  },
+  "weather-regional-native-ro-1a3364e6-00b1-4bcb-8ce9-23151d6bb83a.safe.json": {
+    "sha256": "6adb9eb6e741b47ba72bcfdcc5e384f8921156b2e1942d258ad7640744fd9d23",
+    "data": [
+      {
+        "run_id": "a89a120b-f648-4175-9052-a8a6f4084071",
+        "status": "SUCCESS",
+        "start_time": 1792185296.780068,
+        "end_time": 1792185589.714225,
+        "assets": [
+          {
+            "asset": "khoa_beach_index_sync",
+            "metadata": {
+              "provider": "python-khoa-api",
+              "dataset_key": "khoa_beach_index",
+              "produced_nothing": false,
+              "records_fetched": 52,
+              "locations_anchored": 52,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 2000,
+              "values_truncated": false,
+              "source_records": 52
+            }
+          },
+          {
+            "asset": "krex_restarea_sync",
+            "metadata": {
+              "provider": "python-krex-api",
+              "dataset_key": "krex_restarea_weather",
+              "produced_nothing": false,
+              "records_fetched": 187,
+              "locations_anchored": 187,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 1112,
+              "values_truncated": false,
+              "source_records": 187
+            }
+          },
+          {
+            "asset": "krforest_dust_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_dust",
+              "produced_nothing": false,
+              "records_fetched": 1256,
+              "locations_anchored": 1090,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 166,
+              "values_loaded": 7630,
+              "values_truncated": false,
+              "source_records": 1090
+            }
+          },
+          {
+            "asset": "krforest_mountain_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_mountain_weather",
+              "produced_nothing": false,
+              "records_fetched": 513,
+              "locations_anchored": 454,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 59,
+              "values_loaded": 5232,
+              "values_truncated": false,
+              "source_records": 436
+            }
+          }
+        ],
+        "has_more": false
+      },
+      {
+        "run_id": "68d813c4-630f-453e-92da-f14a145d7c63",
+        "status": "SUCCESS",
+        "start_time": 1792139704.564665,
+        "end_time": 1792141312.716265,
+        "assets": [
+          {
+            "asset": "khoa_beach_index_sync",
+            "metadata": {
+              "provider": "python-khoa-api",
+              "dataset_key": "khoa_beach_index",
+              "produced_nothing": false,
+              "records_fetched": 50,
+              "locations_anchored": 50,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 2500,
+              "values_truncated": false,
+              "source_records": 50
+            }
+          },
+          {
+            "asset": "krex_restarea_sync",
+            "metadata": {
+              "provider": "python-krex-api",
+              "dataset_key": "krex_restarea_weather",
+              "produced_nothing": false,
+              "records_fetched": 187,
+              "locations_anchored": 187,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 954,
+              "values_truncated": false,
+              "source_records": 187
+            }
+          },
+          {
+            "asset": "krforest_dust_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_dust",
+              "produced_nothing": false,
+              "records_fetched": 1250,
+              "locations_anchored": 1086,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 164,
+              "values_loaded": 7602,
+              "values_truncated": false,
+              "source_records": 1086
+            }
+          },
+          {
+            "asset": "krforest_mountain_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_mountain_weather",
+              "produced_nothing": false,
+              "records_fetched": 513,
+              "locations_anchored": 454,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 59,
+              "values_loaded": 204,
+              "values_truncated": false,
+              "source_records": 17
+            }
+          }
+        ],
+        "has_more": false
+      },
+      {
+        "run_id": "a01eb742-8fb4-4dcb-aa54-8b2b213b2595",
+        "status": "SUCCESS",
+        "start_time": 1792096376.041908,
+        "end_time": 1792100028.49479,
+        "assets": [
+          {
+            "asset": "khoa_beach_index_sync",
+            "metadata": {
+              "provider": "python-khoa-api",
+              "dataset_key": "khoa_beach_index",
+              "produced_nothing": false,
+              "records_fetched": 52,
+              "locations_anchored": 52,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 2000,
+              "values_truncated": false,
+              "source_records": 52
+            }
+          },
+          {
+            "asset": "krex_restarea_sync",
+            "metadata": {
+              "provider": "python-krex-api",
+              "dataset_key": "krex_restarea_weather",
+              "produced_nothing": false,
+              "records_fetched": 187,
+              "locations_anchored": 187,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 947,
+              "values_truncated": false,
+              "source_records": 187
+            }
+          },
+          {
+            "asset": "krforest_dust_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_dust",
+              "produced_nothing": false,
+              "records_fetched": 1237,
+              "locations_anchored": 1073,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 164,
+              "values_loaded": 7511,
+              "values_truncated": false,
+              "source_records": 1073
+            }
+          },
+          {
+            "asset": "krforest_mountain_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_mountain_weather",
+              "produced_nothing": false,
+              "records_fetched": 513,
+              "locations_anchored": 454,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 59,
+              "values_loaded": 5388,
+              "values_truncated": false,
+              "source_records": 449
+            }
+          }
+        ],
+        "has_more": false
+      },
+      {
+        "run_id": "295d5523-977e-4b4e-8016-ce76f33bdd8b",
+        "status": "SUCCESS",
+        "start_time": 1792053243.438439,
+        "end_time": 1792056572.301147,
+        "assets": [
+          {
+            "asset": "khoa_beach_index_sync",
+            "metadata": {
+              "provider": "python-khoa-api",
+              "dataset_key": "khoa_beach_index",
+              "produced_nothing": false,
+              "records_fetched": 50,
+              "locations_anchored": 50,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 2500,
+              "values_truncated": false,
+              "source_records": 50
+            }
+          },
+          {
+            "asset": "krex_restarea_sync",
+            "metadata": {
+              "provider": "python-krex-api",
+              "dataset_key": "krex_restarea_weather",
+              "produced_nothing": false,
+              "records_fetched": 187,
+              "locations_anchored": 187,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 0,
+              "values_loaded": 1119,
+              "values_truncated": false,
+              "source_records": 187
+            }
+          },
+          {
+            "asset": "krforest_dust_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_dust",
+              "produced_nothing": false,
+              "records_fetched": 1257,
+              "locations_anchored": 1090,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 167,
+              "values_loaded": 7630,
+              "values_truncated": false,
+              "source_records": 1090
+            }
+          },
+          {
+            "asset": "krforest_mountain_sync",
+            "metadata": {
+              "provider": "python-krforest-api",
+              "dataset_key": "krforest_mountain_weather",
+              "produced_nothing": false,
+              "records_fetched": 513,
+              "locations_anchored": 454,
+              "locations_disabled": 0,
+              "skipped_without_coordinates": 59,
+              "values_loaded": 4692,
+              "values_truncated": false,
+              "source_records": 391
+            }
+          }
+        ],
+        "has_more": false
+      }
+    ]
+  }
+}

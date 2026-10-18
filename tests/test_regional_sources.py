@@ -1125,3 +1125,37 @@ def test_fetch_beach_index_is_bounded_by_its_record_budget() -> None:
         patch.setattr(khoa, "KhoaClient", lambda **_: fake)
         places = khoa.fetch_beach_index(api_key="k", max_places=3, page_size=1)
     assert len(places) == 3
+
+
+def test_regional_missing_values_are_distinct_from_missing_coordinates() -> None:
+    """좌표가 있어도 관측값이 없는 지점을 별도 집계하고 빈 원천은 게시하지 않는다."""
+    repository = WeatherRepository(TEST_DATABASE_URL)
+    repository.create_schema()
+    records = [
+        _mountain(obs_id="valid"),
+        _mountain(obs_id="no-coordinates", latitude=None),
+        _mountain(obs_id="no-values"),
+    ]
+
+    def convert(record: Any, **kwargs: Any) -> list[Any]:
+        if record.obs_id == "no-values":
+            return []
+        return krforest.mountain_weather_to_weather_values(record, **kwargs)
+
+    result = publish_regional_records(
+        repository=repository,
+        provider=krforest.KRFOREST_PROVIDER,
+        dataset_key=krforest.KRFOREST_MOUNTAIN_DATASET,
+        records=records,
+        to_location=krforest.station_location,
+        to_values=convert,
+        build_source_record=krforest.mountain_source_record,
+        max_values=1000,
+    )
+    assert result["records_fetched"] == 3
+    assert result["locations_anchored"] == 2
+    assert result["skipped_without_coordinates"] == 1
+    assert result["skipped_without_values"] == 1
+    assert result["source_records"] == 1
+    assert result["values_loaded"] > 0
+    assert result["produced_nothing"] is False

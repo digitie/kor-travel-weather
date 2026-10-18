@@ -58,6 +58,12 @@ rollback+alias 및 commit 후 응답 오류의 복구2건을 통과했다.
 환경 동일·daemon OFF를 확인했다. 배포 후 WSL Chromium1243 live UI는36/36 PASS,
 exit0이며 Weather 세 역할의 실행 상태가 유지됐다.
 [배포·UI 수용 증거](reviews/collector-bounded-stage-deployment-20261018.json)를 따른다.
-PR #118은 아직 머지 전이며 daemon OFF를 유지한다. 전체 수집·24시간 OOM/swap·자동 복구·Track1/2의 미검증
+PR #118은 머지·배포·UI 수용을 완료했으며 daemon OFF를 유지한다. 전체 수집·24시간 OOM/swap·자동 복구·Track1/2의 미검증
 운영 수용을 완료로 바꾸지 않는다. PR #117의 RSS 미입증 문장은 당시
 카탈로그 조회 범위의 기록이며 이번 격자 저장 실측과 구분한다.
+
+## 2026-10-19 지역 관측 정산 진행
+
+휴게소·산악 최근 성공 native 실행과 실제 저장 행을 대조했다. [개별 제외 원인과 최신성 한계](audits/2026-10-19-regional-acceptance.md)를 따른다. 좌표 없는 응답과 관측값 없는 응답은 별도로 집계한다. 자동 재개·신규 live 수집 수용은 아직 대기 중이다.
+
+지역 제외 집계 제품683e446d의 전체668·frontend214·CI·두 독립 소스 리뷰와 운영 API/CS 배포·UI36은 완료했다. 실제 신규 지역 수집 및 자동 주기 검증과 구분한다.
