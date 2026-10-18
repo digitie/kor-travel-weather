@@ -21,3 +21,10 @@
 - [ ] W-DOC-01 / P2: 실제 경로/효과 증거 확정 뒤 옛 runbook 현행 절차만 최소 갱신. T-WEA-03/04는 조건부 후보로 유지한다.
 
 이번은 docs4개뿐이다. 사용자 승인 [skip ci]로 링크·diff·사실 검토만 하며 독립2문서 리뷰/머지는 root 단계다.
+
+
+## 2026-10-18 수집 카탈로그 CPU/할당 peak 개선
+
+metadata 포함 카탈로그를 ORM 대신 DTO 컬럼 projection으로 조회한다. 실제 DB→DTO→target
+1,450행 로컬 비교와 한계를 [측정 기록](collector-catalog-cpu-20261018.md)에 기록했다.
+두 명의 리뷰·운영 배포·운영 CPU/RSS 실측은 아직 완료되지 않았다.
