@@ -66,36 +66,38 @@ export async function POST(request: NextRequest) {
   try { body = JSON.parse(await bounded(request.body, 1024)); } catch { return reply("요청 본문을 확인해 주세요.", 422); }
   if (!body || Array.isArray(body) || Object.keys(body).length !== 1
     || typeof body.requestId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.requestId)) return reply("실행 요청 ID가 올바르지 않습니다.", 422);
+  const requestId = body.requestId.toLowerCase();
   if (submissionInFlight) return reply("주소 갱신 예약 요청을 처리 중입니다. 잠시 후 같은 요청으로 확인하세요.", 409);
   submissionInFlight = true;
   try {
     const previous = await graphql(
       ADDRESS_REFRESH_PREVIOUS_QUERY,
-      { location: DAGSTER_LOCATION_NAME, requestId: body.requestId },
+      { location: DAGSTER_LOCATION_NAME, requestId },
     );
     if (previous.runsOrError?.__typename !== "Runs") throw new Error("previous");
-    if (previous.runsOrError.results?.[0]) return NextResponse.json({ ...previous.runsOrError.results[0], replayed: true }, { status: 202, headers });
+    const prior = previous.runsOrError.results?.[0];
+    if (prior && prior.status !== "NOT_STARTED") return NextResponse.json({ ...prior, replayed: true }, { status: 202, headers });
     const active = await graphql(
       ADDRESS_REFRESH_ACTIVE_QUERY,
       { location: DAGSTER_LOCATION_NAME },
     );
     if (active.runsOrError?.__typename !== "Runs") throw new Error("active");
     const existing = active.runsOrError.results?.[0];
-    if (existing) return reply("주소 갱신이 이미 예약되었거나 실행 중입니다. 해당 실행 완료 후 다시 시도하세요.", 409);
+    if (existing && existing.runId !== prior?.runId) return reply("주소 갱신이 이미 예약되었거나 실행 중입니다. 해당 실행 완료 후 다시 시도하세요.", 409);
     const result = await graphql(
       ADDRESS_REFRESH_LAUNCH_MUTATION,
-      { executionParams: {
+      { requestId, executionParams: {
         selector: { repositoryLocationName: DAGSTER_LOCATION_NAME, repositoryName: DAGSTER_REPOSITORY_NAME, pipelineName: JOB },
         runConfigData: { ops: { refresh_addresses: { config: { force: true } } } },
         executionMetadata: { tags: [
-          { key: "kortravel/address-request", value: body.requestId },
+          { key: "kortravel/address-request", value: requestId },
           { key: "dagster/code_location", value: DAGSTER_LOCATION_NAME },
           { key: "kortravel/address-refresh", value: "manual" },
         ] },
       } },
     );
-    if (result.launchRun?.__typename !== "LaunchRunSuccess") return reply("실행을 예약하지 못했습니다. Dagster에서 같은 요청의 실행 여부를 확인하세요.", 502);
-    return NextResponse.json({ ...result.launchRun.run, replayed: false }, { status: 202, headers });
+    if (result.launchRun?.__typename !== "IdempotentLaunchRunSuccess") return reply("실행을 예약하지 못했습니다. Dagster에서 같은 요청의 실행 여부를 확인하세요.", 502);
+    return NextResponse.json({ ...result.launchRun.run, replayed: result.launchRun.replayed }, { status: 202, headers });
   } catch { return reply("예약 결과를 확인하지 못했습니다. 같은 요청으로 다시 시도해 주세요.", 502); }
   finally { submissionInFlight = false; }
 }
