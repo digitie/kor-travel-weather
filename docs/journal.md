@@ -1,5 +1,12 @@
 # Weather 작업 기록
 
+## 2026-10-18 주소 확인 집계 후속 종결
+
+Common40·Weather113은 두 독립 FULL SOURCE PASS/CI 후 머지했다. 제품2bd779의 전체661·CI661,
+새 pin의 loopback UI13과 원천 보존을 [최종 원문·수용 범위](reviews/2026-10-18-address-summary-final.md)에
+보존했다. 운영 migration/provider/배포·수집 CPU/RSS와 Transport 별도 gate는 후속이다.
+아래 구현 당시 대기 문장은 당시 이력이며 Daemon OFF를 유지한다.
+
 ## 2026-10-18 — 비활성·이동 지점의 주소 확인 집계 보정
 
 Transport86 r2에서 찾은 공통 MAX 집계 문제는 Weather 비활성 위치와 좌표 이동에도 해당한다.

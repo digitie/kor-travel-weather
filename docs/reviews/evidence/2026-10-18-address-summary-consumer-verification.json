@@ -1,0 +1,106 @@
+{
+  "scope": "Source summary Common5225 consumer integration owned fixtures only",
+  "weather_head": "2bd77942a21c5b449347963488a38814d55f0990",
+  "transport_head": "1554783755ccf30be24bcafbab039322c6a685d3",
+  "common_pin": "522525aed3db934767c1c9e742b3bfc68e91679c",
+  "common_merge": "27cd146ed9e83d3ef481757d2b48e16f232dc88c",
+  "recorded_utc": "2026-10-18T03:48:03.518308+00:00",
+  "checks": [
+    {
+      "name": "weather-address-summary-red",
+      "sha256": "d6da9cf5210e0c322ad3f2f237e25293d69faa7b005dddcb776fa92c5149b974",
+      "tail": "y = SimpleNamespace(engine=engine)\n        settings = WeatherSettings(_env_file=None, environment=\"development\")\n        try:\n            run_address_refresh(repository, settings, force=True, resolver=Resolver())\n            source = address_source(repository)\n            previous = source.store.row(\"active\")\n            assert source.summary()[\"last_resolved_at\"] is not None\n            with engine.begin() as conn:\n                conn.execute(update(WeatherLocationRow.__table__).values(**change))\n            summary = source.summary()\n>           assert summary[\"last_resolved_at\"] is None\nE           AssertionError: assert '2026-10-18T03:38:36.211962+00:00' is None\n\ntests/test_address_refresh.py:119: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_address_refresh.py::test_summary_does_not_reuse_confirmation_from_disabled_or_moved_location[change0]\nFAILED tests/test_address_refresh.py::test_summary_does_not_reuse_confirmation_from_disabled_or_moved_location[change1]\nFAILED tests/test_address_refresh.py::test_summary_does_not_reuse_confirmation_from_disabled_or_moved_location[change2]\n3 failed, 1 deselected in 0.63s\n"
+    },
+    {
+      "name": "transport-address-summary-red",
+      "sha256": "d41ce9b8563fa741b64ccda01703e80cd33a72add37705b387d41ef4f3531210",
+      "tail": "riginal = source.store.row(\"ferry_port:1\")\n                assert original[\"status\"] == \"ok\"\n                summary = source.summary()\n                assert summary[\"total\"] == summary[\"due\"] == 2\n                assert summary[\"items\"] == []\n>               assert summary[\"last_resolved_at\"] is None\nE               AssertionError: assert '2026-10-18T03:38:36.704704+00:00' is None\n\ntests/test_address_refresh.py:172: AssertionError\n=============================== warnings summary ===============================\n.venv/lib/python3.12/site-packages/fastapi/testclient.py:1\n  /home/digitie/dev/kor-travel-transport-codex-reverse-address-20261018/backend/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_address_refresh.py::test_legacy_only_result_does_not_set_current_summary_confirmation\n1 failed, 4 deselected, 1 warning in 0.12s\n"
+    },
+    {
+      "name": "weather-address-summary-focused",
+      "sha256": "7fe967520d0dbece142ef11a3c691c801058ef836f6216f2accc9a7ff1d4a867",
+      "tail": "ster_project = tomllib.loads(\n            (ROOT / \"packages/kor-travel-weather-dagster/pyproject.toml\").read_text()\n        )[\"project\"]\n        common = next(dep for dep in project[\"dependencies\"] if dep.startswith(\"kor-travel-common\"))\n        assert common.startswith(\"kor-travel-common[reverse-address] @\") and COMMON_COMMIT in common\n        extras = project[\"optional-dependencies\"][\"dagster\"]\n        assert any(\n            dep.startswith(\"kor-travel-common[grpc-health,reverse-address] @\") and COMMON_COMMIT in dep\n            for dep in extras\n        )\n>       assert any(dep.startswith(\"kor-travel-common[dagster,grpc-health,reverse-address] @\")\n                   and COMMON_COMMIT in dep for dep in dagster_project[\"dependencies\"])\nE       assert False\nE        +  where False = any(<generator object test_common_health_is_pinned_installed_and_scoped_to_dagster_extra.<locals>.<genexpr> at 0x7c544bf5b370>)\n\ntests/test_common_health_adoption.py:81: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_common_health_adoption.py::test_common_health_is_pinned_installed_and_scoped_to_dagster_extra\n1 failed, 10 passed in 1.59s\n"
+    },
+    {
+      "name": "transport-address-summary-green",
+      "sha256": "af30063e318c989fa5657894a7f712ddbd197bced2f45e7e986d9f64cb51686b",
+      "tail": "data.read_text(\"direct_url.json\") or \"{}\")\n        if \"vcs_info\" in direct:\n>           assert direct[\"vcs_info\"][\"commit_id\"] == \"c067a7f6a11b106931a73cd7465503d90e54d976\"\nE           AssertionError: assert '522525aed3db...3bfc68e91679c' == 'c067a7f6a11b...503d90e54d976'\nE             \nE             - c067a7f6a11b106931a73cd7465503d90e54d976\nE             + 522525aed3db934767c1c9e742b3bfc68e91679c\n\ntests/test_health_cpu_contract.py:67: AssertionError\n=============================== warnings summary ===============================\n.venv/lib/python3.12/site-packages/fastapi/testclient.py:1\n  /home/digitie/dev/kor-travel-transport-codex-reverse-address-20261018/backend/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/test_health_cpu_contract.py::test_installed_common_has_pinned_cli_modules\n1 failed, 21 passed, 1 warning in 13.35s\n"
+    },
+    {
+      "name": "weather-address-summary-focused-final",
+      "sha256": "87d695a00a0dc204b151ffb07f67cb701080d061b46a05e19cb690fa0d6ed715",
+      "tail": "...........                                                              [100%]\n11 passed in 1.47s\n"
+    },
+    {
+      "name": "transport-address-summary-focused",
+      "sha256": "64fcdcb96c2acd011fb0bb384fa022b04000b00c136997d43cd65dd9352ebeff",
+      "tail": "......................                                                   [100%]\n=============================== warnings summary ===============================\n.venv/lib/python3.12/site-packages/fastapi/testclient.py:1\n  /home/digitie/dev/kor-travel-transport-codex-reverse-address-20261018/backend/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n22 passed, 1 warning in 13.73s\n"
+    },
+    {
+      "name": "weather-address-summary-full",
+      "sha256": "fec64c83b3ac41a59482f3cb6a879fd9f0abb4e236d4486ea597bd40cc80cbe0",
+      "tail": "antic_compat_layer.py:74: PydanticDeprecatedSince20: The `__fields__` attribute is deprecated, use the `model_fields` class property instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/\n    fields = getattr(model, \"__fields__\")\n\ntests/test_krex_upstream_block.py: 1 warning\npackages/kor-travel-weather-dagster/tests/test_kma_targets.py: 10 warnings\npackages/kor-travel-weather-dagster/tests/test_overlap_skip.py: 2 warnings\npackages/kor-travel-weather-dagster/tests/test_recovery_contract.py: 1 warning\npackages/kor-travel-weather-dagster/tests/test_retention_status.py: 5 warnings\n  /home/digitie/dev/kor-travel-weather-codex-reverse-address-20261018/packages/kor-travel-weather-dagster/src/kortravelweather_dagster/definitions.py:630: DeprecationWarning: AssetExecutionContext.run_id is deprecated and will be removed in a future release. You have called the deprecated method run_id on AssetExecutionContext. Use context.run.run_id instead.\n    repository.orchestrator_run_id = context.run_id\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n661 passed, 49 warnings in 205.07s (0:03:25)\n"
+    },
+    {
+      "name": "transport-address-summary-docker22",
+      "sha256": "cff87a91b2e2ed46d042aa05d9e8eaf90c23bb38352d27e7c9fba9ec7fda22aa",
+      "tail": " Container codex-address-summary-test-20261018-backend-run-a441e8b3d7bf Creating \n Container codex-address-summary-test-20261018-backend-run-a441e8b3d7bf Created \n......................                                                   [100%]\n=============================== warnings summary ===============================\n../usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1\n  /usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.\n    from starlette.testclient import TestClient as TestClient  # noqa\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n22 passed, 1 warning in 20.50s\n"
+    },
+    {
+      "name": "weather-address-summary-ui13",
+      "sha256": "f3478341d6c4f0264a681f4818aee9ee1afc36f8ab40b45e208735fd779a82e5",
+      "tail": "실패를 지우지 않는다 (859ms)\n  ✓   4 [chromium] › e2e/address-refresh.spec.ts:102:9 › 주소 갱신 1365px › fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다 (711ms)\n  ✓   5 [chromium] › e2e/address-refresh.spec.ts:110:9 › 주소 갱신 1365px › fixture 키 미설정과 빈 목록에서는 실행을 차단한다 (514ms)\n  ✓   6 [chromium] › e2e/address-refresh.spec.ts:118:9 › 주소 갱신 1365px › fixture 조회 실패 후 상태 새로고침으로 실제 API에 복구한다 (840ms)\n  ✓   7 [chromium] › e2e/address-refresh.spec.ts:32:9 › 주소 갱신 390px › 실제 로그인·상태 API·파생 주소를 표시하고 화면 전체가 넘치지 않는다 (855ms)\n  ✓   8 [chromium] › e2e/address-refresh.spec.ts:47:9 › 주소 갱신 390px › fixture 기존 실패·취소·완료 실행을 새 예약으로 표시하지 않는다 (908ms)\n  ✓   9 [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 390px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 (693ms)\n  ✓  10 [chromium] › e2e/address-refresh.spec.ts:102:9 › 주소 갱신 390px › fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다 (662ms)\n  ✓  11 [chromium] › e2e/address-refresh.spec.ts:110:9 › 주소 갱신 390px › fixture 키 미설정과 빈 목록에서는 실행을 차단한다 (619ms)\n  ✓  12 [chromium] › e2e/address-refresh.spec.ts:118:9 › 주소 갱신 390px › fixture 조회 실패 후 상태 새로고침으로 실제 API에 복구한다 (793ms)\n  ✓  13 [chromium] › e2e/address-refresh.spec.ts:129:5 › 실제 Dagster 예약·같은 요청 재조회·중복 실행 차단·CSRF를 확인한다 (1.6s)\n\n  13 passed (12.4s)\n"
+    },
+    {
+      "name": "transport-address-summary-ui13",
+      "sha256": "e3fb2888af2f1b9105a07314abeaced97c590cf53d7efa0e1c43b52a1ee78882",
+      "tail": "행 실패를 지우지 않는다 (1.0s)\n  ✓   4 [chromium] › e2e/address-refresh.spec.ts:102:9 › 주소 갱신 1365px › fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다 (679ms)\n  ✓   5 [chromium] › e2e/address-refresh.spec.ts:110:9 › 주소 갱신 1365px › fixture 키 미설정과 빈 목록에서는 실행을 차단한다 (638ms)\n  ✓   6 [chromium] › e2e/address-refresh.spec.ts:118:9 › 주소 갱신 1365px › fixture 조회 실패 후 상태 새로고침으로 실제 API에 복구한다 (866ms)\n  ✓   7 [chromium] › e2e/address-refresh.spec.ts:32:9 › 주소 갱신 390px › 실제 로그인·상태 API·파생 주소를 표시하고 화면 전체가 넘치지 않는다 (1.0s)\n  ✓   8 [chromium] › e2e/address-refresh.spec.ts:47:9 › 주소 갱신 390px › fixture 기존 실패·취소·완료 실행을 새 예약으로 표시하지 않는다 (905ms)\n  ✓   9 [chromium] › e2e/address-refresh.spec.ts:73:9 › 주소 갱신 390px › 늦은 상태 조회 성공이 수동 실행 실패를 지우지 않는다 (843ms)\n  ✓  10 [chromium] › e2e/address-refresh.spec.ts:102:9 › 주소 갱신 390px › fixture 실패 주소를 최신으로 표시하지 않고 마지막 정상 값을 보존한다 (567ms)\n  ✓  11 [chromium] › e2e/address-refresh.spec.ts:110:9 › 주소 갱신 390px › fixture 키 미설정과 빈 목록에서는 실행을 차단한다 (610ms)\n  ✓  12 [chromium] › e2e/address-refresh.spec.ts:118:9 › 주소 갱신 390px › fixture 조회 실패 후 상태 새로고침으로 실제 API에 복구한다 (830ms)\n  ✓  13 [chromium] › e2e/address-refresh.spec.ts:129:5 › 실제 Dagster 예약·같은 요청 재조회·중복 실행 차단·CSRF를 확인한다 (1.5s)\n\n  13 passed (12.8s)\n"
+    },
+    {
+      "name": "address-summary-ui26-wrapper",
+      "sha256": "d931090bf4a8f72d2e2ba3d8c7db808121bb42187511ad866b657f2c33bd7ee9",
+      "tail": "CANCELED_OWN_QUEUE 2\n \nSTOPPED_OWN_GROUP weather-api 2442746\nSTOPPED_OWN_GROUP transport-api 2442747\nSTOPPED_OWN_GROUP dagster-ui 2442748\nSTOPPED_OWN_GROUP weather-ui 2442749\nSTOPPED_OWN_GROUP transport-ui 2442750\nRESULTS {'weather': 0, 'transport': 0}\n"
+    }
+  ],
+  "source_bindings": [
+    {
+      "app": "weather",
+      "path": "packages/kor-travel-weather-admin/frontend/components/address-refresh.tsx",
+      "sha256": "3e8de13e819a18eab38765c59743d5e0896eab52ba04744e0289e4279caca638"
+    },
+    {
+      "app": "weather",
+      "path": "packages/kor-travel-weather-admin/frontend/e2e/address-refresh.spec.ts",
+      "sha256": "6fd9e0e8a44e62a60e2441d69de877014833e1422d5e080a69de7a89eb558acd"
+    },
+    {
+      "app": "weather",
+      "path": "packages/kor-travel-weather-admin/frontend/app/api/address-refresh/route.ts",
+      "sha256": "3642642df5cdadc1a90b926f459a5dc79c8ef8fc9409952a1198f55137d40f62"
+    },
+    {
+      "app": "transport",
+      "path": "packages/kor-travel-transport-admin/frontend/components/address-refresh.tsx",
+      "sha256": "c3b5296505c08808f10c77afdfb3d1961cfacfa0eeb33fd7ed92af872f6f5e44"
+    },
+    {
+      "app": "transport",
+      "path": "packages/kor-travel-transport-admin/frontend/e2e/address-refresh.spec.ts",
+      "sha256": "623d52a6b5d75a3629e437cfa585cac954eb28df3a9e730d5ec64f71274231f2"
+    },
+    {
+      "app": "transport",
+      "path": "packages/kor-travel-transport-admin/frontend/app/api/address-refresh/route.ts",
+      "sha256": "4dc74f8bea409f98606e0a99b9cc8be0be170d44d7dd1336857d7734bd84e5ca"
+    }
+  ],
+  "limits": [
+    "Production migration/provider/deploy/UI/CPU-RSS not run; daemon OFF",
+    "Compiled UI unchanged Weatherb92/Transport6a; fresh current API/native fixture uses installed5225",
+    "Historical full Docker835/13 is6a+c067 baseline, not current155+5225; current focusedDocker22 separate",
+    "Weather113 CI39094583346 SUCCESS; currentTransport155 fullCI still running and not counted PASS",
+    "Track1/2 all completion precedes collector CPU/RSS optimization per user"
+  ],
+  "docker_image": "sha256:31a8fd448684f527ae648e26680aadf420bc37f82047009bb53edc3ac351f04f",
+  "cleanup": "Owned queued2 canceled, five own fixture process groups stopped; daemon never started."
+}
