@@ -73,7 +73,7 @@
       "parent_rss_peak_kib": 154620,
       "children_rss_peak_kib": 169116,
       "shared_pg_cpu_seconds": 25.436849,
-      "cpu_interval": "ready/go through result/release; excludes import; includes execution and result audit",
+      "cpu_interval": "ready/go through result/release; excludes parent pre-ready preparation; includes child imports, initialization, execution and result audit",
       "memory_scope": "absolute worker cgroup high-water including imports",
       "shared_pg_scope": "shared postgres container includes unrelated SQL"
     },
@@ -185,7 +185,7 @@
       "parent_rss_peak_kib": 154884,
       "children_rss_peak_kib": 169120,
       "shared_pg_cpu_seconds": 23.518444,
-      "cpu_interval": "ready/go through result/release; excludes import; includes execution and result audit",
+      "cpu_interval": "ready/go through result/release; excludes parent pre-ready preparation; includes child imports, initialization, execution and result audit",
       "memory_scope": "absolute worker cgroup high-water including imports",
       "shared_pg_scope": "shared postgres container includes unrelated SQL"
     },

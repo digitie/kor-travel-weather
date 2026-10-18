@@ -62,7 +62,8 @@ worker cgroup peak265404416바이트였다. parent RSS peak154620KiB와
 종결 자식 RSS peak169116KiB는 별도 high-water이며 합산하지 않는다.
 같은 구간 공유 PostgreSQL CPU는25.437초였고 다른 SQL을 포함한다.
 
-CPU는 ready/go부터 result/release까지로 import 준비를 제외하고 결과 감사를 포함한다.
+CPU는 ready/go부터 result/release까지로 부모의 ready 이전 준비를 제외하며
+자식 import·초기화와 결과 감사를 포함한다.
 cgroup 메모리 peak는 import부터의 절대 high-water다. 실패 시도1회의 절대값이므로
 성능 개선율·호스트 전체 CPU·장시간 메모리 안정성의 근거로 사용하지 않는다.
 
