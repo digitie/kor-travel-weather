@@ -118,3 +118,8 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 수집 후 UI36도 PASS, 제품683e446d·daemon OFF·큐3개는 유지됐다.
 실패 r1/r2와 기존 DB 저장은 보존했다. 전체 주소 수동 갱신 및 daemon 자동 운영·
 장시간 전체 수집은 별도 수용이며 추가 성능 튜닝보다 남은 Track 수용을 우선한다.
+
+
+## 2026-10-19 전체 주소 수동 cycle 수용 진행
+
+첫 native SUCCESS/주소 50개 저장 뒤 INFO 로그 부재로 검사기가 INCOMPLETE를 기록했다. 실패 기록을 보존하고 DB·run·cycle을 대조해 해당 50개를 재실행하지 않는 복구 검사를 준비·검토했다. [전체 주소 수동 갱신 수용](audits/2026-10-19-address-full-cycle.md)은 진행 중이며 전체 DB/완료 후 UI 결과를 확정한 뒤 갱신한다. 제품 변경 및 daemon 재개는 없다.
