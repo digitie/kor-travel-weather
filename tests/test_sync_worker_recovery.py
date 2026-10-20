@@ -234,10 +234,27 @@ def test_stuck_sync_runs_lists_only_running_rows_past_the_lease(repository):
             {"wedged": wedged.run_id, "done": done.run_id},
         )
     repository.finish_sync_run(done.run_id, status="failed")
-    stuck = repository.stuck_sync_runs()
+    stuck = [row for row in repository.stuck_sync_runs() if row.provider == provider]
     assert [row.run_id for row in stuck] == [wedged.run_id]
-    assert stuck[0].provider == provider and stuck[0].orchestrator_run_id == "wedged"
+    assert stuck[0].orchestrator_run_id == "wedged"
     repository.finish_sync_run(fresh.run_id, status="success")
+    repository.finish_sync_run(wedged.run_id, status="failed")
+
+
+def test_a_started_page_always_classifies_its_first_row(repository):
+    repository.orchestrator_run_id = "terminal"
+    run = repository.start_sync_run(provider=f"progress-{uuid.uuid4().hex}", dataset_key="d")
+    calls = []
+
+    def remaining():
+        calls.append(1)
+        # page는 시작하지만 그 뒤로는 행 예비 시간이 없다.
+        return RECONCILE_PAGE_RESERVE_SECONDS if len(calls) == 1 else 0.0
+
+    progress = repository.reconcile_interrupted_sync_runs_within(
+        lambda owner: True, remaining=remaining
+    )
+    assert progress.recovered == 1 and _status(repository, run.run_id) == "failed"
 
 
 def test_eighteen_hour_wedge_raises_the_recovery_stall_alert(repository, monkeypatch, capfd):
@@ -334,3 +351,4 @@ def test_eighteen_hour_wedge_raises_the_recovery_stall_alert(repository, monkeyp
         for state in sync_recovery._STATES.values():
             state.repository.engine.dispose()
         instance.dispose()
+        SYNC_RECOVERY_STALLED.set(0)

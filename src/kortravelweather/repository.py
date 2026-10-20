@@ -757,7 +757,9 @@ SYNC_RUN_LEASE_MINUTES = 180
 
 #: 예산 있는 회수 순회(``reconcile_interrupted_sync_runs_within``)가 새 page를 시작하려면
 #: 남아 있어야 하는 초. page 읽기 1건과 CAS 쓰기 1건(각 statement_timeout 10초)에 뒤따르는
-#: 정체 행 조회 1건(10초)까지 들어가는 값이다.
+#: 정체 행 조회 1건(10초)까지 들어가는 값이다. 연결 획득(pool/connect timeout)과 orchestrator
+#: 조회 시간은 넣지 않았다 -- 그것까지 길어지면 tick이 예산을 넘어 ``DeadlineExceeded``로
+#: 기록되고, 그것이 이어지면 정체 경보가 된다. 예비 시간은 상한이 아니라 보통의 여유다.
 RECONCILE_PAGE_RESERVE_SECONDS = 30.0
 #: 행 하나를 더 분류하려면 남아 있어야 하는 초. 이미 분류한 행의 CAS 쓰기와 정체 행
 #: 조회가 예산 안에서 끝나도록 남긴다.
@@ -3265,8 +3267,9 @@ class WeatherRepository:
     ) -> InterruptedReconcileProgress:
         """``remaining()``초 예산 안에서만 keyset을 순회하고 멈춘 위치를 돌려준다.
 
-        새 page는 ``RECONCILE_PAGE_RESERVE_SECONDS``, 행 하나는
-        ``RECONCILE_ROW_RESERVE_SECONDS``가 남아 있을 때만 시작한다. 행 사이에서 멈추면
+        새 page는 ``RECONCILE_PAGE_RESERVE_SECONDS``가 남아 있을 때만 시작하고, 시작한 page의
+        첫 행은 반드시 분류한다(진행 보장). 둘째 행부터는 ``RECONCILE_ROW_RESERVE_SECONDS``가
+        남아 있을 때만 분류한다. 행 사이에서 멈추면
         이미 분류한 행까지만 CAS로 회수하고 그 행 바로 뒤를 이어 갈 위치로 돌려준다.
         끝에 닿으면 위치는 None(처음부터)이다. 회수 조건·조회 장애 처리는
         ``reconcile_interrupted_sync_runs``와 같다.
@@ -3329,8 +3332,8 @@ class WeatherRepository:
         무소유 기존 행은 lease
         reconciler가 처리한다. 늦게 돌아온 worker는 기존 heartbeat/publish CAS에 막힌다.
 
-        ``should_stop``이 행 분류 전에 참이 되면 분류한 행까지만 회수하고, 마지막으로
-        분류한 행(없으면 ``after``)을 위치로 하여 세 번째 값 True로 돌려준다.
+        ``should_stop``이 둘째 행부터 분류 전에 참이 되면 분류한 행까지만 회수하고, 마지막으로
+        분류한 행을 위치로 하여 세 번째 값 True로 돌려준다.
         """
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL statement_timeout = '10s'"))
@@ -3360,7 +3363,9 @@ class WeatherRepository:
         terminal_ids = []
         missing_ids = []
         for index, (run_id, owner, heartbeat, _started_at) in enumerate(candidates):
-            if should_stop is not None and should_stop():
+            # 시작한 page는 첫 행을 반드시 분류한다. 그래야 예산이 빠듯한 tick이 이어져도
+            # 위치가 앞으로 간다.
+            if index and should_stop is not None and should_stop():
                 stopped = True
                 next_cursor = (
                     (candidates[index - 1][3], candidates[index - 1][0]) if index else after

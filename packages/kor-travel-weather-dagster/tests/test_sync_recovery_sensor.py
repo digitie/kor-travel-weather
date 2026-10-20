@@ -6,6 +6,8 @@ repository는 가짜로 두고 실제 common `reconciliation_sensor` 정의를 t
 
 from __future__ import annotations
 
+import json
+import threading
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -24,6 +26,8 @@ class FakeRepository:
         self.resume_after: tuple[datetime, str] | None = None
         self.stuck: list[StuckSyncRun] = []
         self.error: Exception | None = None
+        self.block: threading.Event | None = None
+        self.finished = threading.Event()
 
     def reconcile_stale_sync_runs(self) -> int:
         self.calls.append(("stale", None))
@@ -32,12 +36,16 @@ class FakeRepository:
         return 1
 
     def reconcile_interrupted_sync_runs_within(self, is_terminal, *, remaining, after):
-        assert 0 < remaining() <= sync_recovery.BUDGET_SECONDS
+        assert remaining() >= sync_recovery.RECONCILE_PAGE_RESERVE_SECONDS
+        assert remaining() <= sync_recovery.BUDGET_SECONDS
         self.calls.append(("interrupted", after))
         return InterruptedReconcileProgress(2, self.resume_after)
 
     def stuck_sync_runs(self) -> list[StuckSyncRun]:
         self.calls.append(("stuck", None))
+        if self.block is not None:
+            self.block.wait(10)
+            self.finished.set()
         return self.stuck
 
 
@@ -67,8 +75,8 @@ def harness(monkeypatch):
     instance = DagsterInstance.ephemeral()
     state = {"cursor": None}
 
-    def tick():
-        result = sync_recovery.weather_sync_recovery_sensor.evaluate_tick(
+    def tick(sensor=sync_recovery.weather_sync_recovery_sensor):
+        result = sensor.evaluate_tick(
             build_sensor_context(
                 instance=instance,
                 cursor=state["cursor"],
@@ -82,6 +90,7 @@ def harness(monkeypatch):
         repository=repository, created=created, clock=clock, tick=tick, state=state
     )
     instance.dispose()
+    SYNC_RECOVERY_STALLED.set(0)
 
 
 def _stuck(hours: float) -> StuckSyncRun:
@@ -219,3 +228,69 @@ def test_stuck_error_names_rows_without_credentials():
     text = str(error)
     assert "2건" in text and "python-kma-api/kma_ultra_short_nowcast" in text
     assert "dagster-4" in text and "dagster-18" in text
+
+
+def test_a_late_finish_after_the_budget_does_not_clear_the_gauge(harness, monkeypatch):
+    """끊긴 thread가 늦게 성공해도 이미 실패로 기록된 tick의 경보 gauge를 내리지 않는다."""
+    monkeypatch.setattr(sync_recovery, "RECONCILE_PAGE_RESERVE_SECONDS", 0.0)
+    returned = threading.Event()
+    original = sync_recovery.reconcile_sync_runs
+
+    def observed(context, remaining):
+        try:
+            return original(context, remaining)
+        finally:
+            returned.set()
+
+    monkeypatch.setattr(sync_recovery, "reconcile_sync_runs", observed)
+    sensor = sync_recovery.build_sync_recovery_sensor(budget_seconds=0.3)
+    harness.repository.block = threading.Event()
+    SYNC_RECOVERY_STALLED.set(1)
+    result = harness.tick(sensor)
+    assert result.skip_message == "회수 실패 기록: DeadlineExceeded"
+    harness.repository.block.set()
+    assert returned.wait(10)
+    assert _stalled() == 1
+    # 이전 thread가 끝났으니 다음 tick은 다시 실행되고, 예산 안에서 성공하면 내린다.
+    harness.repository.block = None
+    harness.clock.now += 60
+    # 끝난 thread가 sensor 전용 slot을 돌려주기 직전일 수 있다(그 tick은 DeadlineExceeded).
+    for _ in range(100):
+        if harness.tick(sensor).cursor == "stall:null":
+            break
+        threading.Event().wait(0.02)
+    assert harness.state["cursor"] == "stall:null"
+    assert _stalled() == 0
+
+
+def test_short_budget_that_cannot_start_the_walk_is_recorded(harness):
+    sensor = sync_recovery.build_sync_recovery_sensor(budget_seconds=1)
+    result = harness.tick(sensor)
+    assert result.skip_message == "회수 실패 기록: SyncRecoveryStarved"
+    assert [name for name, _ in harness.repository.calls] == ["stale", "stuck"]
+
+
+def test_an_alerted_stall_restores_the_gauge_after_a_restart(harness):
+    """code-server가 재시작되면 gauge는 0이지만 정체 시계는 cursor에 남아 있다."""
+    alerted = {
+        "key": "weather_sync_recovery",
+        "first_failed_at": harness.clock.now - 1800,
+        "last_failure": "SyncRunsStuck",
+        "alerted_at": harness.clock.now - 900,
+    }
+    harness.state["cursor"] = "stall:" + json.dumps(alerted)
+    harness.repository.stuck = [_stuck(5)]
+    assert _stalled() == 0
+    harness.tick()  # 재경보 시각(1시간) 전이라 경보 콜백은 부르지 않는다.
+    assert _stalled() == 1
+    harness.repository.stuck = []
+    harness.tick()
+    assert _stalled() == 0
+
+
+@pytest.mark.parametrize("cursor", [None, "", "stall:null", "stall:{bad", "legacy"])
+def test_unreadable_or_clean_cursors_do_not_raise_the_gauge(harness, cursor):
+    harness.state["cursor"] = cursor
+    harness.repository.stuck = [_stuck(5)]
+    harness.tick()
+    assert _stalled() == 0
