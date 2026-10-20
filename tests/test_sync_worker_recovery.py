@@ -1,6 +1,5 @@
 """worker 중단·lease 유효·조회 장애·늦은 publish의 복구 경계를 검증한다."""
 
-import logging
 import os
 import uuid
 from datetime import timedelta
@@ -241,7 +240,7 @@ def test_stuck_sync_runs_lists_only_running_rows_past_the_lease(repository):
     repository.finish_sync_run(fresh.run_id, status="success")
 
 
-def test_eighteen_hour_wedge_raises_the_recovery_stall_alert(repository, monkeypatch, caplog):
+def test_eighteen_hour_wedge_raises_the_recovery_stall_alert(repository, monkeypatch, capfd):
     """deploy/dagster.yaml:8-9·60-66의 사고를 실제 DB와 실제 sensor로 재현한다.
 
     worker 10개가 프로세스는 살아 있고 socket read에서 멈춰 3~18시간 STARTED로 남았다.
@@ -256,7 +255,6 @@ def test_eighteen_hour_wedge_raises_the_recovery_stall_alert(repository, monkeyp
 
     from kortravelweather.metrics import SYNC_RECOVERY_STALLED
 
-    caplog.set_level(logging.ERROR)
     now = [1_800_000_000.0]
     monkeypatch.setattr(common_dagster, "wall_clock", lambda: now[0])
     monkeypatch.setattr(sync_recovery, "_now", lambda: now[0])
@@ -302,12 +300,13 @@ def test_eighteen_hour_wedge_raises_the_recovery_stall_alert(repository, monkeyp
         cursor[0] = result.cursor
         return result
 
+    stderr = [""]
+
     def alerts():
-        return [
-            record.getMessage()
-            for record in caplog.records
-            if sync_recovery.STALL_EVENT in record.getMessage()
-        ]
+        # Dagster context.log은 stderr handler로 나가며 python logging으로 전파되지 않는다.
+        stderr[0] += capfd.readouterr().err
+        marker = f"{sync_recovery.STALL_EVENT} key="
+        return [line for line in stderr[0].splitlines() if marker in line]
 
     try:
         assert tick().skip_message == "회수 실패 기록: SyncRunsStuck"

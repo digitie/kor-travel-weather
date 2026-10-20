@@ -6,7 +6,6 @@ repository는 가짜로 두고 실제 common `reconciliation_sensor` 정의를 t
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -99,6 +98,19 @@ def _stalled() -> float:
     return SYNC_RECOVERY_STALLED._value.get()
 
 
+class AlertLog:
+    """Dagster context.log은 stderr handler로 나가며 python logging으로 전파되지 않는다."""
+
+    def __init__(self, capfd) -> None:
+        self.capfd = capfd
+        self.text = ""
+
+    def lines(self) -> list[str]:
+        self.text += self.capfd.readouterr().err
+        marker = f"{sync_recovery.STALL_EVENT} key="
+        return [line for line in self.text.splitlines() if marker in line]
+
+
 def test_definition_uses_budget_and_stall_alert():
     assert definitions.weather_sync_recovery_sensor is sync_recovery.weather_sync_recovery_sensor
     # Dagster sensor 평가 상한(기본 60초) 안에 예산과 경보 기록이 들어간다.
@@ -142,13 +154,13 @@ def test_failed_repository_creation_is_retried_next_tick(harness, monkeypatch):
     assert "fake://broken" not in sync_recovery._STATES
 
 
-def test_wedged_runs_alert_after_the_stall_window_and_clear_on_recovery(harness, caplog):
+def test_wedged_runs_alert_after_the_stall_window_and_clear_on_recovery(harness, capfd):
     """deploy/dagster.yaml의 18시간 정체: 프로세스가 살아 멈춘 run 10개가 lease를 넘겼다.
 
     회수는 그 행을 건드리지 못하고(orchestrator가 아직 끝나지 않았다고 답한다) 수집 schedule은
     max_concurrent_runs에 막힌다. 예전 sensor는 매 tick "0건 회수"로 성공했다.
     """
-    caplog.set_level(logging.ERROR)
+    log = AlertLog(capfd)
     harness.repository.stuck = [_stuck(3 + index * 15 / 9) for index in range(10)]
 
     first = harness.tick()
@@ -161,14 +173,14 @@ def test_wedged_runs_alert_after_the_stall_window_and_clear_on_recovery(harness,
         harness.clock.now += 60
         harness.tick()
         assert _stalled() == 0
-    assert sync_recovery.STALL_EVENT not in caplog.text
+    assert log.lines() == []
 
     harness.clock.now += 60  # 첫 실패 뒤 900초
     harness.tick()
     assert _stalled() == 1
-    alerts = [r for r in caplog.records if sync_recovery.STALL_EVENT in r.getMessage()]
+    alerts = log.lines()
     assert len(alerts) == 1
-    message = alerts[0].getMessage()
+    message = alerts[0]
     assert "key=weather_sync_recovery" in message
     assert "stalled_seconds=900" in message
     assert "last_failure=SyncRunsStuck" in message
@@ -176,10 +188,10 @@ def test_wedged_runs_alert_after_the_stall_window_and_clear_on_recovery(harness,
     # 재경보는 한 시간 뒤에만 한다.
     harness.clock.now += 3599
     harness.tick()
-    assert len([r for r in caplog.records if sync_recovery.STALL_EVENT in r.getMessage()]) == 1
+    assert len(log.lines()) == 1
     harness.clock.now += 1
     harness.tick()
-    assert len([r for r in caplog.records if sync_recovery.STALL_EVENT in r.getMessage()]) == 2
+    assert len(log.lines()) == 2
 
     # worker가 끝나 회수되면 다음 tick이 시계와 gauge를 지운다.
     harness.repository.stuck = []
@@ -188,15 +200,15 @@ def test_wedged_runs_alert_after_the_stall_window_and_clear_on_recovery(harness,
     assert _stalled() == 0
 
 
-def test_database_outage_alerts_through_the_same_clock(harness, caplog):
-    caplog.set_level(logging.ERROR)
+def test_database_outage_alerts_through_the_same_clock(harness, capfd):
+    log = AlertLog(capfd)
     harness.repository.error = ConnectionError("connection refused")
     harness.tick()
     harness.clock.now += 900
     result = harness.tick()
     assert result.skip_message == "회수 실패 기록: ConnectionError"
     assert _stalled() == 1
-    alerts = [r.getMessage() for r in caplog.records if sync_recovery.STALL_EVENT in r.getMessage()]
+    alerts = log.lines()
     assert len(alerts) == 1 and "last_failure=ConnectionError" in alerts[0]
     # 원문 오류 메시지는 cursor에 들어가지 않는다.
     assert "connection refused" not in harness.state["cursor"]
