@@ -163,13 +163,16 @@ def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, 
         original_floor = default_partition_floor(connection)
         bounds = dated_partition_bounds(connection)
         floor = min(lower for lower, _ in bounds) - timedelta(days=30)
+        # 재입장 시각(kst_now)은 dated partition 안이어야 한다. create_schema는 실제 오늘
+        # 기준 ±3일만 만들므로 고정 NOW(2026-10-16)는 10-20부터 그 범위를 벗어났다.
+        now = min(lower for lower, _ in bounds) + timedelta(hours=12)
         connection.execute(text(
             f"ALTER TABLE {DEFAULT_PARTITION} DROP CONSTRAINT IF EXISTS "
             f"{DEFAULT_FLOOR_CONSTRAINT}"
         ))
         add_default_floor(connection, floor)
         validate_default_floor(connection)
-    monkeypatch.setattr(module, "kst_now", lambda: NOW)
+    monkeypatch.setattr(module, "kst_now", lambda: now)
     try:
         for label, clock, replay, reentered in (
             ("first-default", floor - timedelta(days=1), False, False),
@@ -178,7 +181,7 @@ def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, 
             ("replay-gap", floor + timedelta(days=11), True, True),
         ):
             item = _value(
-                NOW + timedelta(days=100), source_record_key=label, known_at=clock,
+                now + timedelta(days=100), source_record_key=label, known_at=clock,
                 collected_at=clock, issued_at=clock - timedelta(hours=1), payload={"raw": label},
             )
             record = dict(
@@ -191,9 +194,9 @@ def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, 
             assert repository.ingest_batch(
                 source_records=[] if replay else [record], values=[item],
             ) == 1
-            expected = NOW if reentered else clock
+            expected = now if reentered else clock
             # 새 wall clock이나 늦은 replay도 동일 pair를 재사용해야 한다.
-            monkeypatch.setattr(module, "kst_now", lambda: NOW + timedelta(hours=1))
+            monkeypatch.setattr(module, "kst_now", lambda: now + timedelta(hours=1))
             assert repository.upsert_values([item]) == 0
             with repository._session_factory() as session:
                 rows = session.scalars(select(WeatherValueRow).where(
@@ -206,7 +209,7 @@ def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, 
                 assert row.payload == item.payload
                 source = session.get(SourceRecordRow, label)
                 assert source.fetched_at == clock and source.payload == record["payload"]
-            monkeypatch.setattr(module, "kst_now", lambda: NOW)
+            monkeypatch.setattr(module, "kst_now", lambda: now)
     finally:
         with repository.engine.begin() as connection:
             connection.execute(text(
