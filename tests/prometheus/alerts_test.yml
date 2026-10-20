@@ -325,3 +325,29 @@ tests:
       - eval_time: 3h59m
         alertname: KorTravelWeatherRetentionStale
         exp_alerts: []
+
+  # The recovery sensor sets the gauge only after its own 15-minute stall
+  # clock, so the rule fires on the first evaluation that sees 1 and clears on
+  # the next clean tick.  The API process also exports the gauge (at 0); only
+  # the Dagster job counts.
+  - interval: 30s
+    input_series:
+      - series: 'ktw_sync_recovery_stalled{job="kor-travel-weather-dagster",instance="dagster-code-server:14103"}'
+        values: '0x59 1x59 0x59'
+      - series: 'ktw_sync_recovery_stalled{job="kor-travel-weather-api",instance="api:14101"}'
+        values: '0x179'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: KorTravelWeatherSyncRecoveryStalled
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: KorTravelWeatherSyncRecoveryStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Weather sync recovery has been failing or finding wedged runs"
+              description: "The weather_sync_recovery sensor raised a stall alert. Search the Dagster sensor log for `weather_sync_recovery.stalled`: last_failure SyncRunsStuck means a run kept a running sync row past its 3h lease (wedged worker; it also holds a max_concurrent_runs slot); DeadlineExceeded or a database error means recovery itself cannot run."
+      - eval_time: 61m
+        alertname: KorTravelWeatherSyncRecoveryStalled
+        exp_alerts: []

@@ -18,7 +18,7 @@ from dagster import (
     in_process_executor,
     multiprocess_executor,
 )
-from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule, reconciliation_sensor
+from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule
 from kortravelcommon.deadline import DeadlineExceeded
 from kortravelcommon.scheduling import staggered_cron
 
@@ -71,6 +71,7 @@ from .resources import (
     WeatherRepositoryResource,
 )
 from .retention import FORWARD_PARTITION_ALERT_DAYS, run_weather_retention_purge
+from .sync_recovery import terminal_worker, weather_sync_recovery_sensor
 
 logger = logging.getLogger(__name__)
 
@@ -619,37 +620,13 @@ def _weather_schedule(**kwargs):
     )
 
 
-def _terminal_worker(instance, run_id: str) -> bool | None:
-    run = instance.get_run_by_id(run_id)
-    # metadata DB 누락/조회 장애를 worker 사망으로 해석하지 않는다.
-    return run.is_finished if run is not None else None
-
-
 def _run_repository(context) -> WeatherRepository:
     repository = context.resources.weather_repository.create_repository()
     repository.orchestrator_run_id = context.run_id
     reconcile = getattr(repository, "reconcile_interrupted_sync_runs", None)
     if callable(reconcile):
-        reconcile(lambda run_id: _terminal_worker(context.instance, run_id))
+        reconcile(lambda run_id: terminal_worker(context.instance, run_id))
     return repository
-
-
-def _reconcile_sync_runs(context) -> int:
-    repository = context.resources.weather_repository.create_repository()
-    try:
-        recovered = repository.reconcile_interrupted_sync_runs(
-            lambda run_id: _terminal_worker(context.instance, run_id)
-        )
-        return recovered + repository.reconcile_stale_sync_runs()
-    finally:
-        repository.engine.dispose()
-
-
-weather_sync_recovery_sensor = reconciliation_sensor(
-    name="weather_sync_recovery",
-    reconcile=_reconcile_sync_runs,
-    required_resource_keys={"weather_repository"},
-)
 
 
 def _external_slug(provider_key: str) -> str:

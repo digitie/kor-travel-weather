@@ -346,6 +346,12 @@ SYNC_STALE_RECOVERED = Counter(
     "Running sync rows recovered after a worker interruption.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
+SYNC_RECOVERY_STALLED = Gauge(
+    "ktw_sync_recovery_stalled",
+    "1 after the weather_sync_recovery sensor raised a stall alert, until its next clean tick.",
+    multiprocess_mode="livemax",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 HISTORY_PURGED_VALUES = Counter(
     "ktw_history_purged_values_total",
     "Weather facts deleted by the retention purge.",
@@ -661,6 +667,10 @@ def observe_stale_recovered(count: int) -> None:
         _safe("sync_stale", lambda: SYNC_STALE_RECOVERED.inc(max(0, count)))
 
 
+def set_sync_recovery_stalled(stalled: bool) -> None:
+    _safe("sync_recovery_stalled", lambda: SYNC_RECOVERY_STALLED.set(1 if stalled else 0))
+
+
 def observe_history_purged(values: int, sources: int) -> None:
     def update() -> None:
         if values > 0:
@@ -813,5 +823,6 @@ __all__ = [
     "observe_sync_started",
     "observe_sync_values_skipped",
     "provider_request",
+    "set_sync_recovery_stalled",
     "start_metrics_server",
 ]
