@@ -151,8 +151,9 @@ groups:
       # cannot see.  After 15 minutes of that the sensor logs
       # `weather_sync_recovery.stalled` and sets this gauge to 1; its next clean
       # tick sets it back to 0.  The 15 minutes are already in the sensor, so
-      # there is no `for`.  A code-server restart drops the gauge until the
-      # next hourly re-alert (the clock itself survives in the sensor cursor).
+      # there is no `for`.  A code-server restart starts the gauge at 0, but
+      # the next tick reads the already-alerted stall clock from the sensor
+      # cursor and sets it back to 1 (within a minute).
       - alert: KorTravelWeatherSyncRecoveryStalled
         expr: |
           max(ktw_sync_recovery_stalled{job="kor-travel-weather-dagster"}) > 0

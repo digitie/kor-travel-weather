@@ -3367,9 +3367,7 @@ class WeatherRepository:
             # 위치가 앞으로 간다.
             if index and should_stop is not None and should_stop():
                 stopped = True
-                next_cursor = (
-                    (candidates[index - 1][3], candidates[index - 1][0]) if index else after
-                )
+                next_cursor = (candidates[index - 1][3], candidates[index - 1][0])
                 break
             state = is_terminal(owner)
             # 누락된 metadata만으로 회수하지 않는다. heartbeat lease도 만료된 경우
