@@ -1,5 +1,24 @@
 # Weather 작업 기록
 
+## 2026-10-21 회수 sensor tick 예산·정체 경보(Map ADR-112 교훈)
+
+- Common pin을 main `e746e4b81b9b62dd1a74ca90ba0a1204951c2885`로 바꿨다. 이전 pin `89291f3`은
+  common main의 조상이 아니었다(squash 병합 전 브랜치 커밋). src 차이는 추가뿐이다
+  (daemon pool·pg_errors·stall·`reconciliation_sensor`의 `budget_seconds`/`on_stall`).
+- `weather_sync_recovery`는 tick마다 engine을 새로 만들고, 100행 page를 끝까지 돌며 행마다
+  Dagster run을 조회했고, 예산·cursor·정체 경보가 없었다. 이제 새 모듈
+  `kortravelweather_dagster.sync_recovery`가 `budget_seconds=40`·`on_stall`로 등록한다.
+  keyset 순회는 예산 안에서 멈추고 위치를 code-server 메모리에 두어 다음 tick에 이어 간다
+  (끝에 닿으면 처음부터; 위치를 잃어도 처음부터 돌 뿐이라 빠지는 행이 없다). engine은 DSN마다
+  한 번 만들어 재사용한다. 트랜잭션별 lock 5초·statement 10초는 그대로다.
+- 정체 판정: 두 회수 뒤에도 heartbeat가 lease(3시간)보다 오래된 running 행이 남으면
+  `SyncRunsStuck`. `deploy/dagster.yaml`의 18시간 정체(프로세스가 살아 멈춘 run 10개가
+  `max_concurrent_runs`를 채움)는 예전 sensor에서 매 tick "0건 회수" 성공이었다. 지금은
+  heartbeat 정지 약 3시간 15분 뒤 `weather_sync_recovery.stalled` 오류 로그와
+  `ktw_sync_recovery_stalled=1`(규칙 `KorTravelWeatherSyncRecoveryStalled`)을 남긴다. DB 장애·
+  예산 초과도 같은 시계로 15분 뒤 경보한다. 실제 DB·실제 sensor 재현 시험이 고정한다.
+- 운영 배포·daemon 재개는 하지 않았다(daemon OFF 유지).
+
 ## 2026-10-18 영속 주소 예약 후속 검토 완료
 
 최종 제품7f549f1의 두 독립 SOURCE PASS·CI와 UI/지연 재시도 결과를

@@ -143,3 +143,22 @@ groups:
         annotations:
           summary: "KMA values are missing beyond one routine station outage"
           description: "{{ $labels.provider }}/{{ $labels.dataset }} dropped more than 60 Missing-sentinel values over the last 3h30m, for an hour. For the hourly nowcast that is a third offline station (one drops 21-28); runs stay success until ~10% of a run is missing. Check which stations or grids are blank."
+
+      # The weather_sync_recovery sensor keeps a stall clock: its reconcile
+      # callback failed (DB error, tick budget exceeded) or found running sync
+      # rows whose heartbeat is older than the 3h lease while their Dagster run
+      # is still not finished -- a worker alive but wedged, which run_monitoring
+      # cannot see.  After 15 minutes of that the sensor logs
+      # `weather_sync_recovery.stalled` and sets this gauge to 1; its next clean
+      # tick sets it back to 0.  The 15 minutes are already in the sensor, so
+      # there is no `for`.  A code-server restart starts the gauge at 0, but
+      # the next tick reads the already-alerted stall clock from the sensor
+      # cursor and sets it back to 1 (within a minute).
+      - alert: KorTravelWeatherSyncRecoveryStalled
+        expr: |
+          max(ktw_sync_recovery_stalled{job="kor-travel-weather-dagster"}) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Weather sync recovery has been failing or finding wedged runs"
+          description: "The weather_sync_recovery sensor raised a stall alert. Search the Dagster sensor log for `weather_sync_recovery.stalled`: last_failure SyncRunsStuck means a run kept a running sync row past its 3h lease (wedged worker; it also holds a max_concurrent_runs slot); DeadlineExceeded or a database error means recovery itself cannot run."

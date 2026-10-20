@@ -6,6 +6,8 @@
 Common `c48595880aaad4367802ad71af2525a8a5e17c6a`를 정확히 고정한다.
 17개 job의 자산 선택·태그·run timeout, 17개 예약의 cron/KST·상태,
 resource와 기존 `weather_sync_recovery` 앱 DB 정산은 유지한다.
+(2026-10-21: `weather_sync_recovery`는 `kortravelweather_dagster.sync_recovery`로 옮겨 tick 예산
+40초·정체 경보를 붙였다. 의미는 `docs/observability.md`의 `ktw_sync_recovery_stalled` 항목.)
 이 문서는 소스 채택과 후속 운영 조건을 구분한다. 이미지 제작·배포·센서 활성화와
 동일 작업 입력의 CPU/RSS/PSS 개선은 아직 검증하지 않았다.
 

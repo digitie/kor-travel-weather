@@ -1,5 +1,17 @@
 # Weather 현재 인수인계
 
+## 2026-10-21 회수 sensor tick 예산·정체 경보 — 머지 대기
+
+브랜치 `feat/recovery-sensor-budget-stall`. Common pin `e746e4b`, `weather_sync_recovery`에
+`budget_seconds=40`·`on_stall`, 정체 경보 로그 `weather_sync_recovery.stalled`와 gauge
+`ktw_sync_recovery_stalled`·규칙 `KorTravelWeatherSyncRecoveryStalled`. 자세한 것은
+`docs/journal.md` 같은 날짜 절과 `docs/observability.md`. 배포(odroid, codex 관리)는 스키마 변경이 없어 migrate가 필요 없고, code-server 이미지(sensor가 도는
+곳; `/opt/kor-travel-odroid/compose.yml`의 `kor-travel-weather-dagster-code-server` image 태그)와
+같은 소스의 API 이미지를 새 main으로 재빌드·교체하면 된다. 공용 plane의 sensor gRPC timeout 60초 안에
+예산 40초가 들어간다. odroid에는 weather Prometheus가 없어 새 규칙은 아직 평가되지 않는다 — 그동안
+경보는 Dagster sensor 로그와 code-server `:14103`의 gauge로만 보인다. transport override 파일은 무관하다. 실패 중 sensor를 오래 멈췄다가
+다시 켤 때는 재기동 전에 sensor cursor를 지운다(common runbook §19). daemon OFF는 유지한다.
+
 ## 2026-10-18 PR #118 비특보 예보 배치 메모리 개선 — 배포·UI 수용
 
 제품 a8949778은 다음 위치가 상한을 넘기기 전에 기존 묶음을 게시하고,

@@ -755,6 +755,40 @@ _T = TypeVar("_T")
 #: skips (see ``SyncRunAlreadyActive``).
 SYNC_RUN_LEASE_MINUTES = 180
 
+#: 예산 있는 회수 순회(``reconcile_interrupted_sync_runs_within``)가 새 page를 시작하려면
+#: 남아 있어야 하는 초. page 읽기 1건과 CAS 쓰기 1건(각 statement_timeout 10초)에 뒤따르는
+#: 정체 행 조회 1건(10초)까지 들어가는 값이다. 연결 획득(pool/connect timeout)과 orchestrator
+#: 조회 시간은 넣지 않았다 -- 그것까지 길어지면 tick이 예산을 넘어 ``DeadlineExceeded``로
+#: 기록되고, 그것이 이어지면 정체 경보가 된다. 예비 시간은 상한이 아니라 보통의 여유다.
+RECONCILE_PAGE_RESERVE_SECONDS = 30.0
+#: 행 하나를 더 분류하려면 남아 있어야 하는 초. 이미 분류한 행의 CAS 쓰기와 정체 행
+#: 조회가 예산 안에서 끝나도록 남긴다.
+RECONCILE_ROW_RESERVE_SECONDS = 20.0
+
+
+@dataclass(frozen=True)
+class InterruptedReconcileProgress:
+    """예산 안에서 멈춘 회수 순회의 결과.
+
+    ``resume_after``는 다음 순회가 이어 갈 keyset 위치이며 None이면 처음부터다. 끝까지
+    돌았거나 첫 page도 시작하지 못한 경우가 None이다. 위치 뒤의 행은 다음 순회가, 위치
+    앞에 늦게 끼어든 행은 처음으로 되돌아간 순회가 본다 -- 빠지는 행은 없다.
+    """
+
+    recovered: int
+    resume_after: tuple[datetime, str] | None
+
+
+@dataclass(frozen=True)
+class StuckSyncRun:
+    """lease가 지난 running 행. 회수 뒤에도 남아 있으면 worker가 살아서 멈춘 것이다."""
+
+    run_id: str
+    provider: str
+    dataset_key: str
+    orchestrator_run_id: str | None
+    heartbeat_at: datetime
+
 
 class SyncRunAlreadyActive(RuntimeError):
     """A live run of the same provider/dataset holds the slot.
@@ -3216,23 +3250,90 @@ class WeatherRepository:
         after = None
         recovered = 0
         while True:
-            count, after = self._reconcile_interrupted_sync_runs_page(
+            count, after, _stopped = self._reconcile_interrupted_sync_runs_page(
                 is_terminal, limit=limit, after=after
             )
             recovered += count
             if after is None:
                 return recovered
 
+    def reconcile_interrupted_sync_runs_within(
+        self,
+        is_terminal: Callable[[str], bool | None],
+        *,
+        remaining: Callable[[], float],
+        after: tuple[datetime, str] | None = None,
+        limit: int = 100,
+    ) -> InterruptedReconcileProgress:
+        """``remaining()``초 예산 안에서만 keyset을 순회하고 멈춘 위치를 돌려준다.
+
+        새 page는 ``RECONCILE_PAGE_RESERVE_SECONDS``가 남아 있을 때만 시작하고, 시작한 page의
+        첫 행은 반드시 분류한다(진행 보장). 둘째 행부터는 ``RECONCILE_ROW_RESERVE_SECONDS``가
+        남아 있을 때만 분류한다. 행 사이에서 멈추면
+        이미 분류한 행까지만 CAS로 회수하고 그 행 바로 뒤를 이어 갈 위치로 돌려준다.
+        끝에 닿으면 위치는 None(처음부터)이다. 회수 조건·조회 장애 처리는
+        ``reconcile_interrupted_sync_runs``와 같다.
+        """
+        if type(limit) is not int or limit <= 0:
+            raise ValueError("limit은 양의 정수여야 합니다.")
+        recovered = 0
+        while remaining() >= RECONCILE_PAGE_RESERVE_SECONDS:
+            count, next_after, stopped = self._reconcile_interrupted_sync_runs_page(
+                is_terminal,
+                limit=limit,
+                after=after,
+                should_stop=lambda: remaining() < RECONCILE_ROW_RESERVE_SECONDS,
+            )
+            recovered += count
+            if stopped:
+                return InterruptedReconcileProgress(recovered, next_after)
+            after = next_after
+            if after is None:
+                break
+        return InterruptedReconcileProgress(recovered, after)
+
+    def stuck_sync_runs(
+        self, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES, limit: int = 20
+    ) -> list[StuckSyncRun]:
+        """heartbeat가 lease보다 오래된 running 행을 오래된 순으로 최대 ``limit``건 읽는다.
+
+        회수 sensor가 두 회수를 마친 뒤 부른다. 그때 남은 행은 대개 orchestrator가 아직
+        끝나지 않았다고 답하는 실행, 즉 프로세스는 살아 있는데 socket read 등에서 멈춘
+        worker다. run_monitoring은 프로세스가 사라진 run만 실패시키므로 이 상태를 보지
+        못하고, 쌓이면 ``max_concurrent_runs``를 채워 모든 schedule을 멈춘다.
+        """
+        cutoff = kst_now() - timedelta(minutes=max_age_minutes)
+        heartbeat = func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at)
+        with self._session_factory.begin() as session:
+            session.execute(text("SET LOCAL statement_timeout = '10s'"))
+            rows = session.execute(
+                select(
+                    SyncRunRow.run_id,
+                    SyncRunRow.provider,
+                    SyncRunRow.dataset_key,
+                    SyncRunRow.orchestrator_run_id,
+                    heartbeat,
+                )
+                .where(SyncRunRow.status == "running", heartbeat < cutoff)
+                .order_by(heartbeat, SyncRunRow.run_id)
+                .limit(limit)
+            ).all()
+        return [StuckSyncRun(*row) for row in rows]
+
     def _reconcile_interrupted_sync_runs_page(
         self, is_terminal: Callable[[str], bool | None], *, limit: int,
         after: tuple[datetime, str] | None,
-    ) -> tuple[int, tuple[datetime, str] | None]:
+        should_stop: Callable[[], bool] | None = None,
+    ) -> tuple[int, tuple[datetime, str] | None, bool]:
         """terminal worker 또는 metadata 유실 뒤 lease가 만료된 행을 CAS로 회수한다.
 
         orchestrator 조회는 DB 트랜잭션 밖에서 한다. 조회 장애는 호출자에게 전달하며
         살아 있는 실행은 회수하지 않는다. 없는 ID는 lease까지 만료되어야 회수한다.
         무소유 기존 행은 lease
         reconciler가 처리한다. 늦게 돌아온 worker는 기존 heartbeat/publish CAS에 막힌다.
+
+        ``should_stop``이 둘째 행부터 분류 전에 참이 되면 분류한 행까지만 회수하고, 마지막으로
+        분류한 행을 위치로 하여 세 번째 값 True로 돌려준다.
         """
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL statement_timeout = '10s'"))
@@ -3257,10 +3358,17 @@ class WeatherRepository:
                 ))
             candidates = session.execute(query).all()
         next_cursor = (candidates[-1][3], candidates[-1][0]) if len(candidates) == limit else None
+        stopped = False
         cutoff = kst_now() - timedelta(minutes=SYNC_RUN_LEASE_MINUTES)
         terminal_ids = []
         missing_ids = []
-        for run_id, owner, heartbeat, _started_at in candidates:
+        for index, (run_id, owner, heartbeat, _started_at) in enumerate(candidates):
+            # 시작한 page는 첫 행을 반드시 분류한다. 그래야 예산이 빠듯한 tick이 이어져도
+            # 위치가 앞으로 간다.
+            if index and should_stop is not None and should_stop():
+                stopped = True
+                next_cursor = (candidates[index - 1][3], candidates[index - 1][0])
+                break
             state = is_terminal(owner)
             # 누락된 metadata만으로 회수하지 않는다. heartbeat lease도 만료된 경우
             # CAS로 소유권을 끊어, 기록 유실 뒤 영구 running이 되는 것을 막는다.
@@ -3269,7 +3377,7 @@ class WeatherRepository:
             elif state is None and heartbeat < cutoff:
                 missing_ids.append(run_id)
         if not terminal_ids and not missing_ids:
-            return 0, next_cursor
+            return 0, next_cursor, stopped
         with self._session_factory.begin() as session:
             session.execute(text("SET LOCAL lock_timeout = '5s'"))
             session.execute(text("SET LOCAL statement_timeout = '10s'"))
@@ -3298,7 +3406,7 @@ class WeatherRepository:
         for provider, dataset in rows:
             observe_sync_finished(provider, dataset, status="failed")
         observe_stale_recovered(len(rows))
-        return len(rows), next_cursor
+        return len(rows), next_cursor, stopped
 
     @staticmethod
     def _reconcile_stale_sync_runs_session(

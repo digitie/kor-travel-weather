@@ -78,7 +78,12 @@ class WeatherRepositoryResource(ConfigurableResource):
         )
         repository = WeatherRepository(settings.database_url)
         if not settings.is_production:
-            repository.create_schema()
+            try:
+                repository.create_schema()
+            except BaseException:
+                # 호출자는 실패한 repository를 받지 못하므로 engine을 여기서 닫는다.
+                repository.engine.dispose()
+                raise
         return repository
 
 
