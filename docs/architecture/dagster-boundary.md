@@ -149,9 +149,19 @@ cursor는 후속 범위다.
 provider를 순회하던 이전 구조에서는 한 provider의 응답이 멈추면 나머지 전부가 같은
 run 안에서 함께 멈췄고, 그 run이 동시 실행 슬롯을 계속 점유해 KMA·에어코리아·지역별
 수집까지 큐에 쌓였다. 분리된 지금은 멈춘 provider가 자기 run 하나만 소비한다.
-job들은 같은 `:15` tick에 **3시간마다** 예약되지만 `kortravelweather/run_group`
+job들은 **3시간마다** 예약되지만 `kortravelweather/run_group`
 태그와 `deploy/dagster.yaml`의 `tag_concurrency_limits`가 동시 실행 수를
 제한하므로 한꺼번에 슬롯을 가져가지 않는다.
+
+태그 값은 둘이다. 기본 location 상한으로 실제 sweep을 하는 `open_meteo`(380곳 × 2
+dataset = 760 요청)·`openweathermap`(350 × 2 = 700 요청, 요청 간격 1.25초)·`weatherapi`
+(150 × 2 = 300 요청)는 `external_weather_slow`, 나머지는 `external_weather`다
+(`definitions.py`의 `SLOW_EXTERNAL_PROVIDER_KEYS`). 공용 instance가 CPU 포화로 외부 run을
+1개로 묶었을 때 몇 초에 끝나는 run이 73~90분짜리 `open_meteo` 뒤에서 기다리던 것을
+없애려는 분리다(2026-10-21 odroid). instance는 slow를 1로, 나머지를 따로 제한한다.
+상한이 없는 provider를 켜면(env 또는 admin UI credential — 코드 변경 없이 가능) catalog 전체를
+sweep한다. 태그는 정의 시점 값이라 런타임 credential로 분류할 수 없으므로, 켜기 **전에** slow 집합에
+넣어 배포한다([runbook](../runbooks/dagster-recovery.md) 3단계).
 
 ## 매시 station lock job의 시간 분리
 
