@@ -1,0 +1,582 @@
+{
+  "mode": "production",
+  "cases": [
+    {
+      "name": "real-login-default-all",
+      "pass": true,
+      "count": "1450곳"
+    },
+    {
+      "name": "keyboard-open-menu",
+      "pass": true
+    },
+    {
+      "name": "clear-all-empty-and-no-requests",
+      "pass": true
+    },
+    {
+      "name": "single-provider-marker-data",
+      "pass": true,
+      "locations": 60
+    },
+    {
+      "name": "single-provider-keyboard-filter",
+      "pass": true,
+      "count": "500곳"
+    },
+    {
+      "name": "multiple-provider-marker-data",
+      "pass": true,
+      "locations": 60
+    },
+    {
+      "name": "multiple-providers-or",
+      "pass": true,
+      "count": "500곳"
+    },
+    {
+      "name": "remove-provider-refetches-detail",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-empty",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-match",
+      "pass": true,
+      "title": "가평"
+    },
+    {
+      "name": "all-recheck-normalizes-and-restores",
+      "pass": true
+    },
+    {
+      "name": "rapid-filter-last-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "mobile-menu-layout",
+      "pass": true
+    },
+    {
+      "name": "real-logout",
+      "pass": true
+    }
+  ],
+  "errors": [],
+  "httpErrors": [
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 401,
+      "expected_after_logout": true
+    }
+  ],
+  "requests": [
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "python-kma-api",
+        "python-khoa-api",
+        "python-krforest-api",
+        "python-krex-api",
+        "python-airkorea-api",
+        "weatherapi",
+        "open_meteo",
+        "visual_crossing",
+        "tomorrow_io",
+        "weatherbit",
+        "weatherstack",
+        "accuweather",
+        "wttr_in"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": []
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "weatherapi"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "weatherapi",
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "providers": [
+        "openweathermap"
+      ]
+    }
+  ],
+  "filteredResponses": [
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 100
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 120
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "selected": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "returned": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "rows": 100
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "selected": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap",
+        "weatherapi"
+      ],
+      "rows": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "selected": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 120
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "selected": [
+        "weatherapi"
+      ],
+      "returned": [
+        "weatherapi"
+      ],
+      "rows": 100
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "selected": [
+        "weatherapi"
+      ],
+      "returned": [
+        "weatherapi"
+      ],
+      "rows": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "selected": [
+        "weatherapi"
+      ],
+      "returned": [
+        "weatherapi"
+      ],
+      "rows": 100
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "selected": [
+        "weatherapi"
+      ],
+      "returned": [
+        "weatherapi"
+      ],
+      "rows": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 100
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 200
+    }
+  ],
+  "tiles": {
+    "ok": 9,
+    "failed": 0
+  },
+  "pass": true
+}

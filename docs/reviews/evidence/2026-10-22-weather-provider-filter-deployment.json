@@ -1,0 +1,129 @@
+{
+  "checked_at": "2026-10-21T22:52:51.092690+00:00",
+  "rollout": {
+    "phase": "PASS",
+    "source": "eabcece0610dacf3bf863f1191099d90b4bdb999",
+    "original": {
+      "kor-travel-weather-api": "f748895a3cc254e141d5eb84794fc7e39db86f6153a00c4517eb5dce72917c7e",
+      "kor-travel-weather-web": "05028039ff85542ba44e1a07fdf035566311e40518b7e3535d8767e6a5e04088"
+    },
+    "foreign_before": {
+      "kor-travel-shared-postgres": "a8e58d8089fb12e549bc260c595d63d7ff58367fb4f823be179844946531108c",
+      "kor-travel-dagster-daemon": "53ddf7cedb551193a6ab41c366a73f7361c58298bd075924f04d5bc36ba402fb",
+      "kor-travel-dagster-webserver": "c186efab11d4a819e3eab2927fa8b9baa742d4952404b5bc3a7ab0ffc733615d",
+      "kor-travel-weather-dagster-code-server-latest": "29c30b8a62008ba3f1ecd4d5dd81fa802fe9763796585ce2ae1ba1ec4bb1de90",
+      "kor-travel-geo-api-latest": "894507e8696a35815e7b2560be99a4973629f44c519f46eb91f12ebedb18ef9d",
+      "kor-travel-geo-ui-latest": "08fc7526556f8ef8347c90098c650b7c4f43581256cc8a13d039503fd50644dd",
+      "kor-travel-geo-dagster-code-server-latest": "da95a61826569c4ea882943d771945e0e0478bb01df29b5f08bac86da90b1d7d",
+      "kor-travel-transport-backend-1": "5116499033ebeb81bb1578606e8283e70ea3ea34b4df4f788cbd1a4b731fb04a",
+      "kor-travel-transport-transport-admin-web-1": "2015daf30134a5b83c0eac40884ae7ea7f4e2533559fa7b0a62c09cee0a299b7",
+      "kor-travel-transport-dagster-code-server-1": "3992408d90ffb32b04284338b06a6976ab5fdc54ad2be7b49dfd70464eb9b00f"
+    },
+    "version": {
+      "service": "kor-travel-weather",
+      "version": "0.1.0.dev0",
+      "git_commit": "eabcece0610dacf3bf863f1191099d90b4bdb999"
+    },
+    "current": {
+      "kor-travel-weather-api": "aa7b114ad528d6206ddcc638fb5880f288c022eeebebb5bda2f9ff9eb64cc819",
+      "kor-travel-weather-web": "7fbe76e0c3860d9450f3aa4ff4d70a64291712b2aca6ef1733e8a9286a43adc9"
+    }
+  },
+  "migration": {
+    "phase": "PASS",
+    "source": "407947bd70bfc8b4c61e89d6bf67583093da28d3",
+    "before": {
+      "revision": "0021_reverse_addresses",
+      "index": []
+    },
+    "started_at": 1792621601.9386492,
+    "after": {
+      "revision": "0022_provider_marker_index",
+      "index": [
+        {
+          "indisvalid": true,
+          "definition": "CREATE INDEX ix_weather_current_values_provider_marker ON public.weather_current_values USING btree (location_id, provider, metric_key, (\nCASE\n    WHEN ((forecast_style)::text = ANY ((ARRAY['observed'::character varying, 'nowcast'::character varying])::text[])) THEN 0\n    ELSE 1\nEND), known_at DESC NULLS LAST, source_record_key DESC NULLS LAST, value_id DESC) WHERE ((metric_key)::text = ANY ((ARRAY['TEMP'::character varying, 'T1H'::character varying, 'TMP'::character varying, 'WEATHER_CODE'::character varying, 'SKY'::character varying, 'PTY'::character varying])::text[]))",
+          "bytes": 121593856
+        }
+      ]
+    },
+    "elapsed_seconds": 221.3
+  },
+  "containers": [
+    {
+      "name": "kor-travel-weather-api-latest",
+      "id": "aa7b114ad528d6206ddcc638fb5880f288c022eeebebb5bda2f9ff9eb64cc819",
+      "image": "sha256:f8745b78b7b365db97802fafe2fc3bca9fd039582ec81e31dee6fbefd9ad9255",
+      "tag": "codex-local/weather126-api:eabcece0",
+      "revision": "eabcece0610dacf3bf863f1191099d90b4bdb999",
+      "running": true,
+      "health": "starting"
+    },
+    {
+      "name": "kor-travel-weather-web-latest",
+      "id": "7fbe76e0c3860d9450f3aa4ff4d70a64291712b2aca6ef1733e8a9286a43adc9",
+      "image": "sha256:b2b7241a88aa04e823b33601f82e64b3ec62b0a399db2e01e74fa2914aded1a6",
+      "tag": "codex-local/weather126-web:eabcece0",
+      "revision": "eabcece0610dacf3bf863f1191099d90b4bdb999",
+      "running": true,
+      "health": null
+    },
+    {
+      "name": "kor-travel-dagster-daemon",
+      "id": "53ddf7cedb551193a6ab41c366a73f7361c58298bd075924f04d5bc36ba402fb",
+      "image": "sha256:588a2a16d09f1afc38542fa4c5c560a89d10d481dbb77e8a73ffe1329e2d12ed",
+      "tag": "kor-travel-dagster-host:73c524b1424d4aa6",
+      "revision": "fcc2d7597bfd80044ad88c18dd447201470d6a1b",
+      "running": true,
+      "health": "healthy"
+    },
+    {
+      "name": "kor-travel-weather-dagster-code-server-latest",
+      "id": "29c30b8a62008ba3f1ecd4d5dd81fa802fe9763796585ce2ae1ba1ec4bb1de90",
+      "image": "sha256:e4a98c9cdf8cda05e1f55ccd48fc8e810eb216d2ab95ab28e6ec1ccba4dc0758",
+      "tag": "sha256:e4a98c9cdf8cda05e1f55ccd48fc8e810eb216d2ab95ab28e6ec1ccba4dc0758",
+      "revision": "683e446d4317f9c5f33d4d85121a18b36112ce95",
+      "running": true,
+      "health": "healthy"
+    }
+  ],
+  "public": [
+    {
+      "url": "https://weather-api.digitie.mywire.org/health",
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "service": "kor-travel-weather",
+        "version": "0.1.0.dev0"
+      }
+    },
+    {
+      "url": "https://weather-api.digitie.mywire.org/version",
+      "status": 200,
+      "body": {
+        "service": "kor-travel-weather",
+        "version": "0.1.0.dev0",
+        "git_commit": "eabcece0610dacf3bf863f1191099d90b4bdb999"
+      }
+    },
+    {
+      "url": "https://weather.digitie.mywire.org/login",
+      "status": 200
+    }
+  ],
+  "post_ui_health": {
+    "checked_at": "2026-10-21T22:54:36.422109+00:00",
+    "containers": {
+      "kor-travel-weather-api-latest": {
+        "id": "aa7b114ad528d6206ddcc638fb5880f288c022eeebebb5bda2f9ff9eb64cc819",
+        "running": true,
+        "health": "healthy"
+      },
+      "kor-travel-weather-web-latest": {
+        "id": "7fbe76e0c3860d9450f3aa4ff4d70a64291712b2aca6ef1733e8a9286a43adc9",
+        "running": true,
+        "health": null
+      }
+    }
+  }
+}
