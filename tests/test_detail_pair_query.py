@@ -94,7 +94,7 @@ def test_fixed_preference_and_hydration_keep_cacheable_bind_boundaries():
                              compile_kwargs={"render_postcompile": True}) for stmt in statements]
 
     first, hydration = capture(["request'; --"])
-    assert "IN ('observed', 'nowcast') THEN 0 ELSE 1 END" in str(first)
+    assert "IN ('observed', 'nowcast')) THEN 0 ELSE 1 END" in str(first)
     assert "request'; --" not in str(first)
     assert first.params["current_location_ids"] == ["request'; --"]
     assert "weather_values.known_at = current_fact_keys.known_at" in str(hydration)
