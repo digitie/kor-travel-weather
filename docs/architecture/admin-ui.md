@@ -82,3 +82,18 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 공유하는 `KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`(Fernet URL-safe key)가
 설정된 경우에만 키를 암호화해 저장하며, 화면에는 source·fingerprint·마지막 4자리만
 표시한다. 환경변수로 주입된 키는 이 화면에서 삭제할 수 없다.
+
+## 날씨 지도 제공처 다중 선택
+
+날씨 지도 소스 필터는 shadcn/ui Radix Dropdown Menu의 체크 항목으로 구현한다.
+관측소의 출처가 아니라 저장된 날씨의 `provider`(KMA·OpenWeatherMap 등)를 선택하며,
+여러 제공처는 OR로 결합하고 위치 검색은 AND로 적용한다. 전체 선택은 기존 전체
+카탈로그를 사용하고 전체 해제는 위치·상세를 비우며 DB 요청을 보내지 않는다.
+제공처별 위치가 로딩 중이면 이전 제공처의 위치·마커·상세를 표시하지 않는다.
+
+공개 `locations`, `latest`, `forecast`, `markers` API는 반복 `provider` query를 받는다.
+위치는 current projection의 제공처 존재 여부를 pagination 전에 검사하고, 관측·예보와
+마커 데이터도 SQL LIMIT 전에 제공처를 제한한다. 현재 projection의 기존 복합 인덱스를
+사용하며 스키마 변경은 없다. 마커 캐시는 제공처 조합별로 구분하고 필터 변경 시
+기존 위치·마커·상세 요청을 취소한다. 키보드 방향키·Space/Enter·Escape와 모바일
+화면을 지원한다.

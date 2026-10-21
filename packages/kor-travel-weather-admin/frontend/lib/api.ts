@@ -183,16 +183,23 @@ export function getLocations(
   return request<Location[]>(`/v1/admin/locations${query.size ? `?${query}` : ""}`);
 }
 
-export function getPublicLocations(limit = 1000, offset = 0): Promise<ApiEnvelope<Location[]>> {
-  return request<Location[]>(`/v1/weather/locations?limit=${limit}&offset=${offset}`);
+function appendProviders(query: URLSearchParams, providers?: readonly string[]) {
+  for (const provider of providers ?? []) query.append("provider", provider);
 }
 
-export async function getAllPublicLocations(): Promise<Location[]> {
+export function getPublicLocations(limit = 1000, offset = 0, providers?: string[], signal?: AbortSignal): Promise<ApiEnvelope<Location[]>> {
+  const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  appendProviders(query, providers);
+  return request<Location[]>(`/v1/weather/locations?${query}`, { signal });
+}
+
+export async function getAllPublicLocations(providers?: string[], signal?: AbortSignal): Promise<Location[]> {
+  if (providers?.length === 0) return [];
   const pageSize = 1000;
   const all: Location[] = [];
   let offset = 0;
   while (true) {
-    const page = await getPublicLocations(pageSize, offset);
+    const page = await getPublicLocations(pageSize, offset, providers, signal);
     all.push(...page.data);
     if (page.data.length < pageSize) return all;
     offset += page.data.length;
@@ -232,9 +239,11 @@ export function updateLocation(
   });
 }
 
-export function getLatest(locationId: string, limit = 200, signal?: AbortSignal): Promise<ApiEnvelope<WeatherValue[]>> {
+export function getLatest(locationId: string, limit = 200, signal?: AbortSignal, providers?: string[]): Promise<ApiEnvelope<WeatherValue[]>> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  appendProviders(query, providers);
   return request<WeatherValue[]>(
-    `/v1/weather/locations/${encodeURIComponent(locationId)}/latest?limit=${limit}`,
+    `/v1/weather/locations/${encodeURIComponent(locationId)}/latest?${query}`,
     { signal },
   );
 }
@@ -263,8 +272,10 @@ export function getForecast(
   to?: string,
   limit = 200,
   signal?: AbortSignal,
+  providers?: string[],
 ): Promise<ApiEnvelope<WeatherValue[]>> {
   const query = new URLSearchParams({ limit: String(limit) });
+  appendProviders(query, providers);
   if (from) query.set("from", from);
   if (to) query.set("to", to);
   return request<WeatherValue[]>(
@@ -304,8 +315,10 @@ export function getWeatherResolve(
 export function getMarkerSummaries(
   locationIds: string[],
   signal?: AbortSignal,
+  providers?: string[],
 ): Promise<ApiEnvelope<WeatherMarker[]>> {
   const query = new URLSearchParams();
+  appendProviders(query, providers);
   for (const locationId of locationIds) query.append("location_id", locationId);
   return request<WeatherMarker[]>(`/v1/weather/markers?${query.toString()}`, { signal });
 }

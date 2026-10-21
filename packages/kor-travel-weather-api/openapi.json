@@ -72,6 +72,31 @@
         "operationId": "list_locations_v1_weather_locations_get",
         "parameters": [
           {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "minItems": 1,
+                  "maxItems": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "날씨 제공처. 여러 번 지정하면 OR로 선택",
+              "title": "Provider"
+            },
+            "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
+          },
+          {
             "name": "search",
             "in": "query",
             "required": false,
@@ -203,6 +228,31 @@
               "type": "string",
               "title": "Location Id"
             }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "minItems": 1,
+                  "maxItems": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "날씨 제공처. 여러 번 지정하면 OR로 선택",
+              "title": "Provider"
+            },
+            "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
           },
           {
             "name": "limit",
@@ -345,6 +395,31 @@
               "title": "History"
             },
             "description": "수정 revision까지 반환"
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "minItems": 1,
+                  "maxItems": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "날씨 제공처. 여러 번 지정하면 OR로 선택",
+              "title": "Provider"
+            },
+            "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
           },
           {
             "name": "limit",
@@ -568,6 +643,31 @@
               ],
               "title": "Location Id"
             }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  },
+                  "minItems": 1,
+                  "maxItems": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "날씨 제공처. 여러 번 지정하면 OR로 선택",
+              "title": "Provider"
+            },
+            "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
           }
         ],
         "responses": {

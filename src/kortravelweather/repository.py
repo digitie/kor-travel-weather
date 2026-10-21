@@ -1331,6 +1331,7 @@ class WeatherRepository:
         *,
         enabled_only: bool = False,
         search: str | None = None,
+        providers: Sequence[str] | None = None,
         limit: int | None = 100,
         offset: int = 0,
         include_metadata: bool = True,
@@ -1355,6 +1356,11 @@ class WeatherRepository:
             )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            if providers is not None:
+                stmt = stmt.where(select(WeatherCurrentValueRow.location_id).where(
+                    WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
+                    WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
+                ).exists())
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -1377,11 +1383,17 @@ class WeatherRepository:
         *,
         enabled_only: bool = False,
         search: str | None = None,
+        providers: Sequence[str] | None = None,
     ) -> int:
         with self._session_factory() as session:
             stmt = select(func.count()).select_from(WeatherLocationRow)
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            if providers is not None:
+                stmt = stmt.where(select(WeatherCurrentValueRow.location_id).where(
+                    WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
+                    WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
+                ).exists())
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -2398,6 +2410,7 @@ class WeatherRepository:
         now: datetime | None = None,
         from_at: datetime | None = None,
         to_at: datetime | None = None,
+        providers: Sequence[str] | None = None,
         dataset_key: str | None = None,
         metric_key: str | None = None,
         weather_domain: str | None = None,
@@ -2489,6 +2502,10 @@ class WeatherRepository:
                     WeatherCurrentValueRow.forecast_style.in_(current_styles),
                     WeatherCurrentValueRow.target_at <= (now or kst_now()),
                 )
+            )
+        if providers is not None:
+            candidate = candidate.where(
+                WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers)))
             )
         if from_at is not None:
             candidate = candidate.where(WeatherCurrentValueRow.target_at >= from_at)
@@ -2600,7 +2617,8 @@ class WeatherRepository:
         return ranked.where(*stmt._where_criteria).subquery("current_weather_revision")
 
     def latest_values(
-        self, location_id: str, *, limit: int = 100, now: datetime | None = None
+        self, location_id: str, *, limit: int = 100, now: datetime | None = None,
+        providers: Sequence[str] | None = None,
     ) -> list[WeatherValue]:
         with self._session_factory() as session:
             return self._current_value_models_many(
@@ -2609,6 +2627,7 @@ class WeatherRepository:
                 limit_per_location=limit,
                 prefer_current=True,
                 now=now,
+                providers=providers,
             ).get(location_id, [])
 
     def latest_values_many(
@@ -2616,6 +2635,7 @@ class WeatherRepository:
         location_ids: Sequence[str],
         *,
         limit_per_location: int = 100,
+        providers: Sequence[str] | None = None,
         weather_domain: str | None = None,
         metric_keys: Sequence[str] | None = None,
         now: datetime | None = None,
@@ -2628,6 +2648,7 @@ class WeatherRepository:
                 session,
                 location_ids,
                 now=now,
+                providers=providers,
                 limit_per_location=limit_per_location,
                 prefer_current=True,
                 weather_domain=weather_domain,
@@ -2640,6 +2661,7 @@ class WeatherRepository:
         *,
         limit_per_location: int = 80,
         now: datetime | None = None,
+        providers: Sequence[str] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the small current projection needed to render map markers.
 
@@ -2659,11 +2681,27 @@ class WeatherRepository:
         # revisions.  Keep the generic window-query fallback for SQLite and
         # other test dialects.
         with self._session_factory() as session:
+            if providers is not None:
+                # 필터가 있는 마커는 현재 projection에서 먼저 제공처를 제한한다.
+                # append-only fact에서 선택하지 않은 제공처의 긴 이력을 훑지 않는다.
+                current = self._current_value_models_many(
+                    session, location_ids, limit_per_location=limit_per_location,
+                    prefer_current=True, now=marker_instant, providers=providers,
+                    metric_keys=_MARKER_METRIC_KEYS, exclude_alerts=True,
+                )
+                alerts = self._current_value_models_many(
+                    session, location_ids, limit_per_location=min(limit_per_location, 20),
+                    prefer_current=False, providers=providers, alerts_only=True,
+                    alert_active_at=marker_instant,
+                )
+                return {key: [*rows, *active_alert_values(alerts[key], now=marker_instant)]
+                        for key, rows in current.items()}
             if session.get_bind().dialect.name != "postgresql":
                 return self.latest_values_many(
                     location_ids,
                     limit_per_location=limit_per_location,
                     metric_keys=(*_MARKER_METRIC_KEYS, "ALERT"),
+                    providers=providers,
                 )
 
             # A forecast response can be ingested after the current response
@@ -3066,6 +3104,7 @@ class WeatherRepository:
         *,
         from_at: datetime | None = None,
         to_at: datetime | None = None,
+        providers: Sequence[str] | None = None,
         dataset_key: str | None = None,
         metric_key: str | None = None,
         limit: int = 500,
@@ -3082,6 +3121,7 @@ class WeatherRepository:
                     newest_first=False,
                     from_at=from_at,
                     to_at=to_at,
+                    providers=providers,
                     dataset_key=dataset_key,
                     metric_key=metric_key,
                     exclude_alerts=exclude_alerts,
@@ -3094,6 +3134,10 @@ class WeatherRepository:
                 WeatherValueRow.issued_at,
             )
             stmt = select(WeatherValueRow).where(WeatherValueRow.location_id == location_id)
+            if providers is not None:
+                stmt = stmt.where(
+                    WeatherValueRow.provider.in_(tuple(dict.fromkeys(providers)))
+                )
             if from_at is not None:
                 stmt = stmt.where(timestamp >= from_at)
             if to_at is not None:

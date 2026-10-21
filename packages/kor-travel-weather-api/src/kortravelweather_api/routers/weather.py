@@ -24,6 +24,17 @@ from kortravelweather.repository import (
 from ..auth import require_admin
 from ..response import BundleMeta, Envelope, envelope
 
+ProviderFilter = Annotated[
+    list[Annotated[str, Field(min_length=1, max_length=120)]] | None,
+    Query(alias="provider", min_length=1, max_length=32,
+          description="날씨 제공처. 여러 번 지정하면 OR로 선택"),
+]
+
+
+def _provider_kwargs(providers: list[str] | None) -> dict[str, Any]:
+    return {"providers": providers} if providers is not None else {}
+
+
 router = APIRouter(prefix="/v1/weather", tags=["weather"])
 admin_router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -427,6 +438,7 @@ def _weather_bundle(
 async def list_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
+    providers: ProviderFilter = None,
     enabled: bool = Query(default=True, include_in_schema=False),
     search: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -440,8 +452,11 @@ async def list_locations(
         limit=limit,
         offset=offset,
         include_metadata=False,
+        **_provider_kwargs(providers),
     )
-    total = await run_in_threadpool(repo.count_locations, enabled_only=True, search=search)
+    total = await run_in_threadpool(
+        repo.count_locations, enabled_only=True, search=search, **_provider_kwargs(providers),
+    )
     return envelope(
         request,
         started,
@@ -469,13 +484,16 @@ async def latest(
     location_id: str,
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
+    providers: ProviderFilter = None,
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> dict[str, Any]:
     started = perf_counter()
     location = await run_in_threadpool(repo.get_location, location_id)
     if location is None or not location.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
-    rows = await run_in_threadpool(repo.latest_values, location_id, limit=limit)
+    rows = await run_in_threadpool(
+        repo.latest_values, location_id, limit=limit, **_provider_kwargs(providers),
+    )
     # ``latest_values`` includes alert facts for the location.  Apply the
     # same active-alert projection used by markers/resolve so a named latest
     # request cannot resurrect a released or stale notice.
@@ -500,6 +518,7 @@ async def forecast(
     dataset_key: str | None = None,
     metric_key: str | None = None,
     history: bool = Query(default=False, description="수정 revision까지 반환"),
+    providers: ProviderFilter = None,
     limit: int = Query(default=500, ge=1, le=5000),
 ) -> dict[str, Any]:
     try:
@@ -523,6 +542,7 @@ async def forecast(
         limit=limit,
         include_revisions=history,
         exclude_alerts=True,
+        **_provider_kwargs(providers),
     )
     return envelope(
         request,
@@ -777,6 +797,7 @@ async def marker_summaries(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
     location_ids: Annotated[list[str] | None, Query(alias="location_id", min_length=1)] = None,
+    providers: ProviderFilter = None,
 ) -> dict[str, Any]:
     """Return current/alert marker state for a bounded visible-location batch."""
     started = perf_counter()
@@ -786,7 +807,9 @@ async def marker_summaries(
         # 대기하는 사이 지도 이동으로 취소된 요청은 DB 작업을 새로 시작하지 않는다.
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="요청이 취소되었습니다.")
-        return await _marker_summaries(request, repo, location_ids, started=started)
+        return await _marker_summaries(
+            request, repo, location_ids, started=started, providers=providers,
+        )
 
 
 async def _marker_summaries(
@@ -795,6 +818,7 @@ async def _marker_summaries(
     location_ids: list[str] | None,
     *,
     started: float,
+    providers: list[str] | None = None,
 ) -> dict[str, Any]:
     """입장이 허용된 마커 배치만 조회·변환한다."""
     # Keep the public marker endpoint bounded even when a client accidentally
@@ -822,7 +846,7 @@ async def _marker_summaries(
         # alerts while retaining the weather-code/temperature rows needed by
         # the map.
         marker_by_location = await run_in_threadpool(
-            marker_many, valid_ids, limit_per_location=80
+            marker_many, valid_ids, limit_per_location=80, **_provider_kwargs(providers)
         )
         latest_by_location = marker_by_location
         alert_by_location = marker_by_location
@@ -832,17 +856,20 @@ async def _marker_summaries(
     latest_many = getattr(repo, "latest_values_many", None)
     if latest_by_location is None and callable(latest_many):
         latest_by_location = await run_in_threadpool(
-            latest_many, valid_ids, limit_per_location=40
+            latest_many, valid_ids, limit_per_location=40, **_provider_kwargs(providers)
         )
         alert_by_location = await run_in_threadpool(
             latest_many,
             valid_ids,
             limit_per_location=80,
             weather_domain="weather_alert",
+            **_provider_kwargs(providers),
         )
     elif latest_by_location is None:
         latest_by_location = {
-            location_id: await run_in_threadpool(repo.latest_values, location_id, limit=80)
+            location_id: await run_in_threadpool(
+                repo.latest_values, location_id, limit=80, **_provider_kwargs(providers),
+            )
             for location_id in valid_ids
         }
         alert_by_location = {
