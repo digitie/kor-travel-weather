@@ -54,7 +54,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
 from .alerts import ALERT_MAX_AGE, active_alert_values
@@ -376,6 +376,10 @@ class WeatherValueRow(Base):
     )
 
 
+_MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
+_PROVIDER_MARKER_PREDICATE = "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+
+
 class WeatherCurrentValueRow(Base):
     """Mutable pointer to the newest revision of one logical weather point.
 
@@ -439,6 +443,14 @@ class WeatherCurrentValueRow(Base):
             text("source_record_key DESC NULLS LAST"),
             text("value_id DESC"),
         ),
+        # 제공처별 대표 metric은 이력 정렬 없이 exact prefix에서 1개만 읽는다.
+        Index(
+            "ix_weather_current_values_provider_marker",
+            text("location_id"), text("provider"), text("metric_key"),
+            text(_CURRENT_PREFERENCE_EXPRESSION),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_PROVIDER_MARKER_PREDICATE),
+        ),
         # The fact table is partitioned by ``known_at``, so its primary key is
         # ``(value_id, known_at)`` and a reference has to name both.  The
         # projection already carried ``known_at`` for ordering, and 0012's
@@ -481,7 +493,7 @@ class WeatherCurrentValueRow(Base):
     source_record_key: Mapped[str | None] = mapped_column(String(255))
 
 
-_MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
+
 _MARKER_CANDIDATE_LIMIT = 4
 
 
@@ -1331,6 +1343,7 @@ class WeatherRepository:
         *,
         enabled_only: bool = False,
         search: str | None = None,
+        providers: Sequence[str] | None = None,
         limit: int | None = 100,
         offset: int = 0,
         include_metadata: bool = True,
@@ -1355,6 +1368,11 @@ class WeatherRepository:
             )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            if providers is not None:
+                stmt = stmt.where(select(WeatherCurrentValueRow.location_id).where(
+                    WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
+                    WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
+                ).exists())
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -1377,11 +1395,17 @@ class WeatherRepository:
         *,
         enabled_only: bool = False,
         search: str | None = None,
+        providers: Sequence[str] | None = None,
     ) -> int:
         with self._session_factory() as session:
             stmt = select(func.count()).select_from(WeatherLocationRow)
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
+            if providers is not None:
+                stmt = stmt.where(select(WeatherCurrentValueRow.location_id).where(
+                    WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
+                    WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
+                ).exists())
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -2398,6 +2422,7 @@ class WeatherRepository:
         now: datetime | None = None,
         from_at: datetime | None = None,
         to_at: datetime | None = None,
+        providers: Sequence[str] | None = None,
         dataset_key: str | None = None,
         metric_key: str | None = None,
         weather_domain: str | None = None,
@@ -2489,6 +2514,10 @@ class WeatherRepository:
                     WeatherCurrentValueRow.forecast_style.in_(current_styles),
                     WeatherCurrentValueRow.target_at <= (now or kst_now()),
                 )
+            )
+        if providers is not None:
+            candidate = candidate.where(
+                WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers)))
             )
         if from_at is not None:
             candidate = candidate.where(WeatherCurrentValueRow.target_at >= from_at)
@@ -2600,7 +2629,8 @@ class WeatherRepository:
         return ranked.where(*stmt._where_criteria).subquery("current_weather_revision")
 
     def latest_values(
-        self, location_id: str, *, limit: int = 100, now: datetime | None = None
+        self, location_id: str, *, limit: int = 100, now: datetime | None = None,
+        providers: Sequence[str] | None = None,
     ) -> list[WeatherValue]:
         with self._session_factory() as session:
             return self._current_value_models_many(
@@ -2609,6 +2639,7 @@ class WeatherRepository:
                 limit_per_location=limit,
                 prefer_current=True,
                 now=now,
+                providers=providers,
             ).get(location_id, [])
 
     def latest_values_many(
@@ -2616,6 +2647,7 @@ class WeatherRepository:
         location_ids: Sequence[str],
         *,
         limit_per_location: int = 100,
+        providers: Sequence[str] | None = None,
         weather_domain: str | None = None,
         metric_keys: Sequence[str] | None = None,
         now: datetime | None = None,
@@ -2628,6 +2660,7 @@ class WeatherRepository:
                 session,
                 location_ids,
                 now=now,
+                providers=providers,
                 limit_per_location=limit_per_location,
                 prefer_current=True,
                 weather_domain=weather_domain,
@@ -2640,6 +2673,7 @@ class WeatherRepository:
         *,
         limit_per_location: int = 80,
         now: datetime | None = None,
+        providers: Sequence[str] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the small current projection needed to render map markers.
 
@@ -2664,6 +2698,7 @@ class WeatherRepository:
                     location_ids,
                     limit_per_location=limit_per_location,
                     metric_keys=(*_MARKER_METRIC_KEYS, "ALERT"),
+                    providers=providers,
                 )
 
             # A forecast response can be ingested after the current response
@@ -2709,6 +2744,8 @@ class WeatherRepository:
                     WeatherValueRow.metric_key == requested_metrics.c.metric_key,
                     WeatherValueRow.metric_key.in_(marker_metric_literals),
                 ]
+                if providers is not None:
+                    predicates.append(WeatherValueRow.provider.in_(tuple(dict.fromkeys(providers))))
                 if observed_only:
                     predicates.append(
                         WeatherValueRow.forecast_style.in_(
@@ -2761,7 +2798,50 @@ class WeatherRepository:
                     ).all()
                 )
 
-            observed_rows = fetch_candidates(candidate_ids(observed_only=True))
+            if providers is None:
+                observed_rows = fetch_candidates(candidate_ids(observed_only=True))
+            else:
+                # exact (위치, 제공처, metric) prefix마다 인덱스에서 대표 1개만
+                # 읽고, 선택 제공처들 사이에서는 관측 우선·revision 순서를 유지한다.
+                projection = WeatherCurrentValueRow
+                requested_providers = (
+                    select(func.unnest(bindparam(
+                        "marker_provider_ids", list(dict.fromkeys(providers)), type_=ARRAY(String),
+                    )).label("provider"))
+                    .subquery("marker_providers")
+                )
+                preference = case((projection.forecast_style.in_(
+                    (literal("observed", literal_execute=True),
+                     literal("nowcast", literal_execute=True)),
+                ), literal(0, literal_execute=True)), else_=literal(1, literal_execute=True))
+                per_provider = (
+                    select(projection.value_id, projection.known_at, projection.location_id,
+                           projection.metric_key, projection.source_record_key,
+                           preference.label("preference"))
+                    .where(
+                        projection.location_id == requested_locations.c.location_id,
+                        projection.provider == requested_providers.c.provider,
+                        projection.metric_key == requested_metrics.c.metric_key,
+                        projection.metric_key.in_(marker_metric_literals),
+                    )
+                    .order_by(preference, nullslast(desc(projection.known_at)),
+                              nullslast(desc(projection.source_record_key)),
+                              desc(projection.value_id))
+                    .limit(1).lateral().alias("provider_marker_candidate")
+                )
+                candidates = select(per_provider).select_from(
+                    requested_locations.join(requested_providers, true())
+                    .join(requested_metrics, true()).join(per_provider, true())
+                ).subquery("provider_marker_representatives")
+                provider_candidates = (
+                    select(candidates)
+                    .distinct(candidates.c.location_id, candidates.c.metric_key)
+                    .order_by(candidates.c.location_id, candidates.c.metric_key,
+                              candidates.c.preference, nullslast(desc(candidates.c.known_at)),
+                              nullslast(desc(candidates.c.source_record_key)),
+                              desc(candidates.c.value_id))
+                )
+                observed_rows = list(session.execute(provider_candidates).all())
             selected: dict[tuple[str, str], Any] = {}
             for row in observed_rows:
                 pair = (row.location_id, row.metric_key)
@@ -2786,7 +2866,7 @@ class WeatherRepository:
                 for metric_key in _MARKER_METRIC_KEYS
                 if (location_id, metric_key) not in selected
             ]
-            if missing_pairs:
+            if missing_pairs and providers is None:
                 # PostgreSQL의 다중 unnest는 같은 인덱스의 두 배열을 한 pair로
                 # 묶는다. 각 pair를 보존하고 위치×metric의 추가 조합은 만들지 않는다.
                 missing_locations = (
@@ -2809,6 +2889,9 @@ class WeatherRepository:
                         == missing_locations.c.location_id,
                         WeatherValueRow.metric_key == missing_locations.c.metric_key,
                         WeatherValueRow.metric_key.in_(marker_metric_literals),
+                        true() if providers is None else WeatherValueRow.provider.in_(
+                            tuple(dict.fromkeys(providers)),
+                        ),
                     )
                     .order_by(
                         nullslast(desc(WeatherValueRow.known_at)),
@@ -2860,15 +2943,19 @@ class WeatherRepository:
                     .table_valued("value_id", "known_at")
                     .render_derived(name="marker_winner_keys")
                 )
-                winners = session.scalars(
-                    select(WeatherValueRow).join(
+                winner_query = select(WeatherValueRow).join(
                         winner_keys,
                         and_(
                             WeatherValueRow.value_id == winner_keys.c.value_id,
                             WeatherValueRow.known_at == winner_keys.c.known_at,
                         ),
                     )
-                ).all()
+                if providers is not None:
+                    winner_query = winner_query.where(
+                        WeatherValueRow.known_at >= min(row.known_at for row in selected_keys),
+                        WeatherValueRow.known_at <= max(row.known_at for row in selected_keys),
+                    )
+                winners = session.scalars(winner_query).all()
                 by_key = {(row.value_id, row.known_at): row for row in winners}
                 # READ COMMITTED의 다음 읽기 전에 retention으로 사라진 fact를
                 # 다른 partition이나 차순위 fact로 대신하지 않는다.
@@ -2916,6 +3003,9 @@ class WeatherRepository:
                 )
                 .where(
                     WeatherValueRow.location_id.in_(location_ids),
+                    true() if providers is None else WeatherValueRow.provider.in_(
+                        tuple(dict.fromkeys(providers)),
+                    ),
                     or_(
                         WeatherValueRow.weather_domain
                         == literal("weather_alert", literal_execute=True),
@@ -2971,7 +3061,40 @@ class WeatherRepository:
             for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
             alert_values_by_location: dict[str, list[WeatherValue]] = {}
-            for row in session.scalars(alerts).all():
+            if providers is None:
+                alert_rows = session.scalars(alerts).all()
+            else:
+                # 이벤트별 revision과 기존 상한은 그대로 고른 뒤 key만 먼저
+                # 확정한다. 큰 fact JOIN이 ranking 앞에서 실행되는 것을 막는다.
+                alert_keys = session.execute(select(
+                    alert_limited.c.value_id, alert_limited.c.known_at,
+                ).where(alert_limited.c.location_rank <= min(limit_per_location, 100))).all()
+                alert_rows = []
+                if alert_keys:
+                    keys = (
+                        func.unnest(
+                            bindparam("provider_alert_value_ids",
+                                      [key.value_id for key in alert_keys],
+                                      type_=ARRAY(String)),
+                            bindparam("provider_alert_known_ats",
+                                      [key.known_at for key in alert_keys],
+                                      type_=ARRAY(AwareDateTime())),
+                        ).table_valued("value_id", "known_at")
+                        .render_derived(name="provider_alert_keys")
+                    )
+                    fact = select(WeatherValueRow).where(
+                        WeatherValueRow.value_id == keys.c.value_id,
+                        WeatherValueRow.known_at == keys.c.known_at,
+                        WeatherValueRow.known_at >= min(key.known_at for key in alert_keys),
+                        WeatherValueRow.known_at <= max(key.known_at for key in alert_keys),
+                    ).limit(1).lateral("provider_alert_fact")
+                    fact_row = aliased(WeatherValueRow, fact)
+                    # key당 PK lookup을 강제해 큰 fact 전체와 hash JOIN하지 않는다.
+                    alert_rows = session.scalars(select(fact_row).select_from(
+                        keys.join(fact, true()),
+                    ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
+
+            for row in alert_rows:
                 alert_values_by_location.setdefault(row.location_id, []).append(
                     self._value_model(row)
                 )
@@ -3066,6 +3189,7 @@ class WeatherRepository:
         *,
         from_at: datetime | None = None,
         to_at: datetime | None = None,
+        providers: Sequence[str] | None = None,
         dataset_key: str | None = None,
         metric_key: str | None = None,
         limit: int = 500,
@@ -3082,6 +3206,7 @@ class WeatherRepository:
                     newest_first=False,
                     from_at=from_at,
                     to_at=to_at,
+                    providers=providers,
                     dataset_key=dataset_key,
                     metric_key=metric_key,
                     exclude_alerts=exclude_alerts,
@@ -3094,6 +3219,10 @@ class WeatherRepository:
                 WeatherValueRow.issued_at,
             )
             stmt = select(WeatherValueRow).where(WeatherValueRow.location_id == location_id)
+            if providers is not None:
+                stmt = stmt.where(
+                    WeatherValueRow.provider.in_(tuple(dict.fromkeys(providers)))
+                )
             if from_at is not None:
                 stmt = stmt.where(timestamp >= from_at)
             if to_at is not None:

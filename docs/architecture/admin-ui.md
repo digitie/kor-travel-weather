@@ -82,3 +82,26 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 공유하는 `KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`(Fernet URL-safe key)가
 설정된 경우에만 키를 암호화해 저장하며, 화면에는 source·fingerprint·마지막 4자리만
 표시한다. 환경변수로 주입된 키는 이 화면에서 삭제할 수 없다.
+
+## 날씨 지도 제공처 다중 선택
+
+날씨 지도 소스 필터는 shadcn/ui Radix Dropdown Menu의 체크 항목으로 구현한다.
+관측소의 출처가 아니라 저장된 날씨의 `provider`(KMA·OpenWeatherMap 등)를 선택하며,
+여러 제공처는 OR로 결합하고 위치 검색은 AND로 적용한다. 전체 선택은 기존 전체
+카탈로그를 사용하고 전체 해제는 위치·상세를 비우며 DB 요청을 보내지 않는다.
+제공처별 위치가 로딩 중이면 이전 제공처의 위치·마커·상세를 표시하지 않는다.
+
+공개 `locations`, `latest`, `forecast`, `markers` API는 반복 `provider` query를 받는다.
+위치는 current projection의 제공처 존재 여부를 pagination 전에 검사하고, 관측·예보와
+마커 데이터도 SQL LIMIT 전에 제공처를 제한한다. 마커는 기존 metric별 대표 값과
+특보 이벤트별 revision 선택을 유지한다. 마커의 일반 값은 현재 projection의
+`ix_weather_current_values_provider_marker` 부분 인덱스에서 위치·제공처·지표별
+대표 1개를 읽고, 특보는 기존 fact 이벤트 경로를 유지한다. migration
+`0022_provider_marker_index`는 concurrent 생성으로 수집 쓰기를 막지 않는다.
+실패 시 INVALID index의 이름·정의를 확인하여 CONCURRENTLY 제거한 뒤 재시도한다. 마커 캐시는 제공처 조합별로 구분하고 필터 변경 시
+기존 위치·마커·상세 요청을 취소한다. 키보드 방향키·Space/Enter·Escape와 모바일
+화면을 지원한다.
+
+제공처 필터의 특보는 이벤트별 revision·상한을 적용한 key를 먼저 확정하고,
+`(value_id, known_at)` PK LATERAL 조회와 날짜 범위로 전체 fact를 읽는다.
+큰 fact JOIN이 특보 ranking 앞에 배치되는 계획을 피하며 원본 payload는 보존한다.

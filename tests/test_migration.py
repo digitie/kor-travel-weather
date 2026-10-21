@@ -99,11 +99,18 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             "latitude", "longitude", "nx", "ny", "region_code", "enabled",
         }
         assert "enabled IS TRUE" in catalog_index["dialect_options"]["postgresql_where"]
+        provider_marker_index = next(
+            item for item in inspector.get_indexes("weather_current_values")
+            if item["name"] == "ix_weather_current_values_provider_marker"
+        )
+        assert provider_marker_index["column_names"][:3] == [
+            "location_id", "provider", "metric_key",
+        ]
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0021_reverse_addresses"
+            assert version == "0022_provider_marker_index"
             retention_index = next(
                 item for item in inspect(engine).get_indexes("weather_values")
                 if item["name"] == "ix_weather_values_short_forecast_retention"
