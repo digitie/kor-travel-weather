@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from anyio import CapacityLimiter
 from fastapi import Request
 from kortravelweather_api.routers import weather
 from sqlalchemy.dialects.postgresql.psycopg import PGDialect_psycopg
@@ -72,7 +73,11 @@ def test_marker_shared_projection_reduces_alerts_once(monkeypatch):
         get_locations_by_ids=lambda *args, **kwargs: [location],
         marker_values_many=lambda *args, **kwargs: {"one": [row]},
     )
-    request = Request({"type": "http", "headers": []})
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    app = SimpleNamespace(state=SimpleNamespace(marker_limiter=CapacityLimiter(2)))
+    request = Request({"type": "http", "headers": [], "app": app}, receive=receive)
     result = asyncio.run(weather.marker_summaries(request, repo, ["one"]))
     assert len(calls) == 1
     assert result["data"][0]["alerts"][0]["value_text"] == "호우주의보 발표"
