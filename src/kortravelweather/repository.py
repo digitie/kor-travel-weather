@@ -2681,21 +2681,6 @@ class WeatherRepository:
         # revisions.  Keep the generic window-query fallback for SQLite and
         # other test dialects.
         with self._session_factory() as session:
-            if providers is not None:
-                # 필터가 있는 마커는 현재 projection에서 먼저 제공처를 제한한다.
-                # append-only fact에서 선택하지 않은 제공처의 긴 이력을 훑지 않는다.
-                current = self._current_value_models_many(
-                    session, location_ids, limit_per_location=limit_per_location,
-                    prefer_current=True, now=marker_instant, providers=providers,
-                    metric_keys=_MARKER_METRIC_KEYS, exclude_alerts=True,
-                )
-                alerts = self._current_value_models_many(
-                    session, location_ids, limit_per_location=min(limit_per_location, 20),
-                    prefer_current=False, providers=providers, alerts_only=True,
-                    alert_active_at=marker_instant,
-                )
-                return {key: [*rows, *active_alert_values(alerts[key], now=marker_instant)]
-                        for key, rows in current.items()}
             if session.get_bind().dialect.name != "postgresql":
                 return self.latest_values_many(
                     location_ids,
@@ -2747,6 +2732,8 @@ class WeatherRepository:
                     WeatherValueRow.metric_key == requested_metrics.c.metric_key,
                     WeatherValueRow.metric_key.in_(marker_metric_literals),
                 ]
+                if providers is not None:
+                    predicates.append(WeatherValueRow.provider.in_(tuple(dict.fromkeys(providers))))
                 if observed_only:
                     predicates.append(
                         WeatherValueRow.forecast_style.in_(
@@ -2847,6 +2834,9 @@ class WeatherRepository:
                         == missing_locations.c.location_id,
                         WeatherValueRow.metric_key == missing_locations.c.metric_key,
                         WeatherValueRow.metric_key.in_(marker_metric_literals),
+                        true() if providers is None else WeatherValueRow.provider.in_(
+                            tuple(dict.fromkeys(providers)),
+                        ),
                     )
                     .order_by(
                         nullslast(desc(WeatherValueRow.known_at)),
@@ -2954,6 +2944,9 @@ class WeatherRepository:
                 )
                 .where(
                     WeatherValueRow.location_id.in_(location_ids),
+                    true() if providers is None else WeatherValueRow.provider.in_(
+                        tuple(dict.fromkeys(providers)),
+                    ),
                     or_(
                         WeatherValueRow.weather_domain
                         == literal("weather_alert", literal_execute=True),

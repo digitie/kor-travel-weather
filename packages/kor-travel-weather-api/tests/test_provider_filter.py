@@ -80,3 +80,44 @@ def test_marker_filter_and_empty_provider(filtered_client):
     assert body["data"][0]["latest"] == []
     assert filtered_client.get(path + "&provider=").status_code == 422
     assert filtered_client.get(path + "&provider=a" * 33).status_code == 422
+
+
+def test_filter_preserves_each_marker_metric_and_all_alert_events(filtered_client):
+    repo = filtered_client.app.state.repository
+    now = datetime.now(UTC)
+    provider = "openweathermap"
+    location = "krforest-location"
+    repo.record_source(source_record_key="marker-many", provider=provider, dataset_key="weather",
+                       source_entity_type="response", source_entity_id="many", payload={},
+                       fetched_at=now)
+    rows = [WeatherValue(
+        location_id=location, provider=provider, dataset_key="weather", weather_domain="weather",
+        forecast_style="observed", metric_key="TEMP", value_number=15,
+        target_at=now - timedelta(minutes=i), known_at=now, source_record_key="marker-many",
+    ) for i in range(81)]
+    rows.append(WeatherValue(
+        location_id=location, provider=provider, dataset_key="weather", weather_domain="weather",
+        forecast_style="observed", metric_key="SKY", value_number=3,
+        target_at=now - timedelta(hours=3), known_at=now - timedelta(hours=3),
+        source_record_key="marker-many",
+    ))
+    repo.upsert_values(rows)
+    for i in range(21):
+        source = f"event-{i}"
+        repo.record_source(source_record_key=source, provider=provider, dataset_key="weather_alert",
+                           source_entity_type="response", source_entity_id=source, payload={},
+                           fetched_at=now)
+        repo.upsert_values([WeatherValue(
+            location_id=location, provider=provider, dataset_key="weather_alert",
+            weather_domain="weather_alert", forecast_style="observed", metric_key="ALERT",
+            value_text="호우주의보 발표", target_at=now, known_at=now + timedelta(microseconds=i),
+            valid_until=now + timedelta(days=1), source_record_key=source,
+            payload={"stn_id": str(i), "seq": "1"},
+        )])
+    path = f"/v1/weather/markers?location_id={location}&provider={provider}"
+    response = filtered_client.get(path)
+    assert response.status_code == 200, response.text
+    marker = response.json()["data"][0]
+    assert {r["metric_key"] for r in marker["latest"]} == {"TEMP", "SKY"}
+    assert len(marker["alerts"]) == 21
+    assert {r["source_record_key"] for r in marker["alerts"]} == {f"event-{i}" for i in range(21)}

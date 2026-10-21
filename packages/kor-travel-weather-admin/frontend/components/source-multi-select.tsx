@@ -38,7 +38,8 @@ export function SourceMultiSelect({ options, value, onChange }: Props) {
             onCheckedChange={(checked) => {
               const next = new Set(selected.map((item) => item.value));
               if (checked) next.add(option.value); else next.delete(option.value);
-              onChange(options.filter((item) => next.has(item.value)).map((item) => item.value));
+              onChange(next.size === options.length ? null
+                : options.filter((item) => next.has(item.value)).map((item) => item.value));
             }}>
             <span className="multi-select-option-label">{option.label}</span>{option.count !== undefined ? <span className="multi-select-count">{option.count}</span> : null}
           </DropdownMenuCheckboxItem>
