@@ -2416,21 +2416,25 @@ class WeatherRepository:
         if not unique_ids:
             return result
 
-        requested_locations = values(
-            column("location_id", String), name="current_value_locations"
-        ).data([(location_id,) for location_id in unique_ids]).alias("current_value_locations")
+        requested_locations = (
+            select(func.unnest(bindparam(
+                "current_location_ids", list(unique_ids), type_=ARRAY(String),
+            )).label("location_id"))
+            .subquery("current_value_locations")
+        )
+        # 고정 정렬식은 generic plan에서도 기존 expression index와 일치해야 한다.
+        current_styles = tuple(literal(style, literal_execute=True)
+                               for style in ("observed", "nowcast"))
         timestamp = WeatherCurrentValueRow.target_at
         order: list[Any] = []
         if prefer_current:
             order.append(
                 case(
                     (
-                        WeatherCurrentValueRow.forecast_style.in_(
-                            ("observed", "nowcast")
-                        ),
-                        0,
+                        WeatherCurrentValueRow.forecast_style.in_(current_styles),
+                        literal(0, literal_execute=True),
                     ),
-                    else_=1,
+                    else_=literal(1, literal_execute=True),
                 )
             )
         # Every sort key is a projection column, so the LIMIT can be applied
@@ -2460,7 +2464,10 @@ class WeatherRepository:
                 ]
             )
         candidate = (
-            select(WeatherCurrentValueRow.value_id.label("value_id"))
+            select(
+                WeatherCurrentValueRow.value_id.label("value_id"),
+                WeatherCurrentValueRow.known_at.label("known_at"),
+            )
             .where(WeatherCurrentValueRow.location_id == requested_locations.c.location_id)
             .order_by(*order)
             .limit(limit_per_location)
@@ -2479,7 +2486,7 @@ class WeatherRepository:
             # the future to begin with.
             candidate = candidate.where(
                 or_(
-                    WeatherCurrentValueRow.forecast_style.in_(("observed", "nowcast")),
+                    WeatherCurrentValueRow.forecast_style.in_(current_styles),
                     WeatherCurrentValueRow.target_at <= (now or kst_now()),
                 )
             )
@@ -2523,7 +2530,10 @@ class WeatherRepository:
             # predicate added without it compiles to a silent cross join.
             candidate = candidate.join(
                 WeatherValueRow,
-                WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
+                and_(
+                    WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
+                    WeatherValueRow.known_at == WeatherCurrentValueRow.known_at,
+                ),
             ).where(
                 or_(
                     WeatherCurrentValueRow.target_at >= alert_active_at - ALERT_MAX_AGE,
@@ -2532,19 +2542,32 @@ class WeatherRepository:
             )
         candidate = candidate.lateral().alias("current_value_candidates")
         pairs = session.execute(
-            select(requested_locations.c.location_id, candidate.c.value_id).select_from(
-                requested_locations.join(candidate, true())
+            select(
+                requested_locations.c.location_id, candidate.c.value_id, candidate.c.known_at,
+            ).select_from(requested_locations.join(candidate, true()))
+        ).all()
+        if not pairs:
+            return result
+        # UUID만 조회하면 모든 날짜 partition을 탐색하고 다른 revision도 섞인다.
+        # 배열의 같은 인덱스가 정확한 복합 키이며, 범위 조건은 partition을 제거한다.
+        keys = func.unnest(
+            bindparam("current_value_ids", [row.value_id for row in pairs], type_=ARRAY(String)),
+            bindparam("current_known_ats", [row.known_at for row in pairs],
+                      type_=ARRAY(AwareDateTime())),
+        ).table_valued("value_id", "known_at").render_derived(name="current_fact_keys")
+        clocks = [row.known_at for row in pairs]
+        rows = session.scalars(
+            select(WeatherValueRow).join(keys, and_(
+                WeatherValueRow.value_id == keys.c.value_id,
+                WeatherValueRow.known_at == keys.c.known_at,
+            )).where(
+                WeatherValueRow.known_at >= min(clocks),
+                WeatherValueRow.known_at <= max(clocks),
             )
         ).all()
-        value_ids = [value_id for _, value_id in pairs]
-        if not value_ids:
-            return result
-        rows = session.scalars(
-            select(WeatherValueRow).where(WeatherValueRow.value_id.in_(value_ids))
-        ).all()
-        by_id = {row.value_id: row for row in rows}
-        for location_id, value_id in pairs:
-            row = by_id.get(value_id)
+        by_key = {(row.value_id, row.known_at): row for row in rows}
+        for location_id, value_id, known_at in pairs:
+            row = by_key.get((value_id, known_at))
             if row is not None:
                 result[location_id].append(self._value_model(row))
         return result

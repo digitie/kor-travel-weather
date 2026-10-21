@@ -209,6 +209,8 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"map" | "list">("map");
   const [loading, setLoading] = useState(false);
+  const [forecastLoading, setForecastLoading] = useState(false);
+  const [forecastMessage, setForecastMessage] = useState("");
   const [message, setMessage] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
@@ -242,6 +244,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     );
   }, [locations, query]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+  const selectedLocationId = selected?.location_id;
   // Keep the controlled map center referentially stable while the user pans.
   // VWorldMapView treats a changed center prop as an explicit recenter
   // request; creating a new array on every viewport update would therefore
@@ -329,43 +332,44 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   }
 
   useEffect(() => {
-    if (!selected) {
-      setValues([]);
-      setForecast([]);
-      setMessage("");
-      return;
-    }
-    let cancelled = false;
-    // Clear the previous location immediately. A failed request must never
-    // leave another location's metrics visible in the inspector.
+    const controller = new AbortController();
+    const { signal } = controller;
+    // 위치가 바뀌면 이전 값·오류와 진행 중 요청을 함께 격리한다.
     setValues([]);
     setForecast([]);
-    setLoading(true);
     setMessage("");
-    // The forecast route is a timeline query. Without a window it answers from
-    // the oldest row the projection holds, and `forecastGroups` then keeps the
-    // six earliest target times -- so the preview showed values days old.
-    Promise.all([
-      getLatest(selected.location_id),
-      getForecast(selected.location_id, forecastWindowStart(), undefined, 100),
-    ])
-      .then(([latest, next]) => {
-        if (cancelled) return;
+    setForecastMessage("");
+    setLastRefreshedAt(null);
+    setLoading(Boolean(selectedLocationId));
+    setForecastLoading(Boolean(selectedLocationId));
+    if (!selectedLocationId) return () => controller.abort();
+
+    void getLatest(selectedLocationId, 200, signal)
+      .then((latest) => {
+        if (signal.aborted) return;
         setValues(latest.data);
-        setForecast(next.data);
         setLastRefreshedAt(new Date());
         if (!latest.data.length) setMessage("아직 수집된 최신 값이 없습니다.");
       })
       .catch((reason: unknown) => {
-        if (!cancelled) setMessage(reason instanceof Error ? reason.message : "날씨를 불러오지 못했습니다.");
+        if (!signal.aborted) setMessage(reason instanceof Error ? reason.message : "날씨를 불러오지 못했습니다.");
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshToken, selected]);
+    // 예보가 늦거나 실패해도 먼저 도착한 현재 날씨는 즉시 표시한다.
+    void getForecast(selectedLocationId, forecastWindowStart(), undefined, 100, signal)
+      .then((next) => {
+        if (!signal.aborted) setForecast(next.data);
+      })
+      .catch((reason: unknown) => {
+        if (!signal.aborted) setForecastMessage(reason instanceof Error ? reason.message : "예보를 불러오지 못했습니다.");
+      })
+      .finally(() => {
+        if (!signal.aborted) setForecastLoading(false);
+      });
+    return () => controller.abort();
+  }, [refreshToken, selectedLocationId]);
 
   useEffect(() => {
     if (!mapLocations.length || mode !== "map") return;
@@ -477,7 +481,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           {selected ? (
             <>
               <div className="inspector-heading"><div><span className="eyebrow">선택한 위치</span><h2>{selected.name}</h2><p>{selected.location_id} · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</p><div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{freshnessTimestamp ? freshnessTimestamp.toLocaleString("ko-KR") : "수집 시각 없음"}</small>{lastRefreshedAt ? <small>확인 {lastRefreshedAt.toLocaleTimeString("ko-KR")}</small> : null}<small>{values[0] ? (providerLabels.get(values[0].provider) ?? values[0].provider) : "제공처 없음"} · {values[0] ? (datasetLabels.get(values[0].dataset_key) ?? values[0].dataset_key) : "데이터셋 없음"}</small>{values[0]?.source_record_key ? <small>원본 {values[0].source_record_key.slice(0, 12)}…</small> : null}</div></div><div className="inspector-actions"><button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button><button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button></div></div>
-              {loading ? <div className="loading-block" role="status" aria-live="polite">최신 날씨를 불러오는 중…</div> : <>
+              {loading ? <div className="loading-block" role="status" aria-live="polite">날씨 조회 중…</div> : null}
                 {message ? <div className="empty" role="status">{message}</div> : null}
                 {summaries[selected.location_id]?.measurement_point ? (
                   <div className="measurement-point">
@@ -498,11 +502,13 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                     ))}
                   </div>
                 ) : null}
+                {!loading ? <>
                 <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
                 <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
+                </> : null}
                 <div className="inspector-section forecast-section">
                   <div className="section-label"><span>예보 미리보기</span><span>{forecast.length}개</span></div>
-                  {groupedForecast.length ? (
+                  {forecastLoading ? <div className="loading-block" role="status">예보 조회 중…</div> : forecastMessage ? <div className="empty" role="status">{forecastMessage}</div> : groupedForecast.length ? (
                     <div className="forecast-list">
                       {groupedForecast.map(([targetAt, items]) => (
                         <div className="forecast-row" key={targetAt}>
@@ -519,7 +525,6 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                     </div>
                   ) : <p className="muted-note">예보 데이터가 없습니다.</p>}
                 </div>
-              </>}
             </>
           ) : <div className="empty">지도에서 위치를 선택하세요.</div>}
         </aside>

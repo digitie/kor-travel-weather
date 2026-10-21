@@ -7,7 +7,7 @@ import secrets
 from fastapi import HTTPException, Request
 
 
-def require_admin(request: Request) -> None:
+async def require_admin(request: Request) -> None:
     settings = request.app.state.settings
     expected = settings.require_admin_token()
     supplied = request.headers.get("x-admin-token") or ""

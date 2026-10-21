@@ -93,6 +93,10 @@ def create_app(
     )
     api.state.settings = runtime_settings
     api.state.repository = runtime_repository
+    # 지도 이동의 이전 배치가 DB·일반 worker 슬롯을 독점하지 않도록 제한한다.
+    api.state.marker_limiter = CapacityLimiter(2)
+    # 인증 조회는 긴 일반 조회가 모두 worker를 사용해도 별도로 처리한다.
+    api.state.auth_limiter = CapacityLimiter(2)
     # 수집 버퍼는 하나만 만들고 대기는 일반 API의 worker 슬롯을 쓰지 않는다.
     metrics_limiter = CapacityLimiter(1)
     if not runtime_settings.is_production:

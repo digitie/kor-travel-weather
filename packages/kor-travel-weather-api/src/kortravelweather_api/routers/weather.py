@@ -7,6 +7,7 @@ from datetime import datetime
 from time import perf_counter
 from typing import Annotated, Any, Literal
 
+from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
@@ -312,7 +313,7 @@ class ForecastQuery(BaseModel):
         return self
 
 
-def repository(request: Request) -> WeatherRepository:
+async def repository(request: Request) -> WeatherRepository:
     return request.app.state.repository
 
 
@@ -779,6 +780,23 @@ async def marker_summaries(
 ) -> dict[str, Any]:
     """Return current/alert marker state for a bounded visible-location batch."""
     started = perf_counter()
+    if len(location_ids or []) > 500:
+        raise HTTPException(status_code=422, detail="marker location 수는 500개 이하여야 합니다.")
+    async with request.app.state.marker_limiter:
+        # 대기하는 사이 지도 이동으로 취소된 요청은 DB 작업을 새로 시작하지 않는다.
+        if await request.is_disconnected():
+            raise HTTPException(status_code=499, detail="요청이 취소되었습니다.")
+        return await _marker_summaries(request, repo, location_ids, started=started)
+
+
+async def _marker_summaries(
+    request: Request,
+    repo: WeatherRepository,
+    location_ids: list[str] | None,
+    *,
+    started: float,
+) -> dict[str, Any]:
+    """입장이 허용된 마커 배치만 조회·변환한다."""
     # Keep the public marker endpoint bounded even when a client accidentally
     # sends a whole unbounded catalog.  The UI chunks larger maps by request.
     requested_ids = location_ids or []
@@ -1055,11 +1073,14 @@ async def revoke_admin_session(
 )
 async def check_admin_session(
     body: AdminSessionAction,
+    request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
 ) -> dict[str, bool]:
     """Check one web session without exposing its digest or bearer value."""
     try:
-        revoked = await run_in_threadpool(repo.is_admin_session_revoked, body.session)
+        revoked = await to_thread.run_sync(
+            repo.is_admin_session_revoked, body.session, limiter=request.app.state.auth_limiter,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="session 값이 올바르지 않습니다.") from exc
     return {"revoked": revoked}

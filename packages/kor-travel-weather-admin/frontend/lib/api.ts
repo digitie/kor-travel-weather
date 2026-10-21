@@ -232,9 +232,10 @@ export function updateLocation(
   });
 }
 
-export function getLatest(locationId: string, limit = 200): Promise<ApiEnvelope<WeatherValue[]>> {
+export function getLatest(locationId: string, limit = 200, signal?: AbortSignal): Promise<ApiEnvelope<WeatherValue[]>> {
   return request<WeatherValue[]>(
     `/v1/weather/locations/${encodeURIComponent(locationId)}/latest?limit=${limit}`,
+    { signal },
   );
 }
 
@@ -261,12 +262,14 @@ export function getForecast(
   from?: string,
   to?: string,
   limit = 200,
+  signal?: AbortSignal,
 ): Promise<ApiEnvelope<WeatherValue[]>> {
   const query = new URLSearchParams({ limit: String(limit) });
   if (from) query.set("from", from);
   if (to) query.set("to", to);
   return request<WeatherValue[]>(
     `/v1/weather/locations/${encodeURIComponent(locationId)}/forecast?${query.toString()}`,
+    { signal },
   );
 }
 
