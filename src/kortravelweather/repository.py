@@ -54,7 +54,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
 from .alerts import ALERT_MAX_AGE, active_alert_values
@@ -3061,7 +3061,40 @@ class WeatherRepository:
             for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
             alert_values_by_location: dict[str, list[WeatherValue]] = {}
-            for row in session.scalars(alerts).all():
+            if providers is None:
+                alert_rows = session.scalars(alerts).all()
+            else:
+                # 이벤트별 revision과 기존 상한은 그대로 고른 뒤 key만 먼저
+                # 확정한다. 큰 fact JOIN이 ranking 앞에서 실행되는 것을 막는다.
+                alert_keys = session.execute(select(
+                    alert_limited.c.value_id, alert_limited.c.known_at,
+                ).where(alert_limited.c.location_rank <= min(limit_per_location, 100))).all()
+                alert_rows = []
+                if alert_keys:
+                    keys = (
+                        func.unnest(
+                            bindparam("provider_alert_value_ids",
+                                      [key.value_id for key in alert_keys],
+                                      type_=ARRAY(String)),
+                            bindparam("provider_alert_known_ats",
+                                      [key.known_at for key in alert_keys],
+                                      type_=ARRAY(AwareDateTime())),
+                        ).table_valued("value_id", "known_at")
+                        .render_derived(name="provider_alert_keys")
+                    )
+                    fact = select(WeatherValueRow).where(
+                        WeatherValueRow.value_id == keys.c.value_id,
+                        WeatherValueRow.known_at == keys.c.known_at,
+                        WeatherValueRow.known_at >= min(key.known_at for key in alert_keys),
+                        WeatherValueRow.known_at <= max(key.known_at for key in alert_keys),
+                    ).limit(1).lateral("provider_alert_fact")
+                    fact_row = aliased(WeatherValueRow, fact)
+                    # key당 PK lookup을 강제해 큰 fact 전체와 hash JOIN하지 않는다.
+                    alert_rows = session.scalars(select(fact_row).select_from(
+                        keys.join(fact, true()),
+                    ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
+
+            for row in alert_rows:
                 alert_values_by_location.setdefault(row.location_id, []).append(
                     self._value_model(row)
                 )

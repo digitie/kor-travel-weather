@@ -74,7 +74,8 @@ def repository(weather_test_database_url):
 
 
 @pytest.mark.parametrize("kind", ["observed", "fallback", "alert"])
-def test_marker_never_rejoins_same_uuid_from_another_partition(repository, kind):
+@pytest.mark.parametrize("providers", [None, ["fixture"]])
+def test_marker_never_rejoins_same_uuid_from_another_partition(repository, kind, providers):
     """같은 UUID도 partition key가 다르면 선택하지 않은 fact다."""
     now = kst_now().astimezone(UTC)
     known = now - timedelta(days=1)
@@ -116,7 +117,7 @@ def test_marker_never_rejoins_same_uuid_from_another_partition(repository, kind)
         # UUID가 같다는 이유로 marker에 섞이거나 요청별 한도가 늘면 안 된다.
         shadow.update(location_id="unrequested", known_at=now - timedelta(minutes=1))
         session.execute(insert(WeatherValueRow), shadow)
-    result = repository.marker_values_many(["requested"], now=now)
+    result = repository.marker_values_many(["requested"], now=now, providers=providers)
     assert set(result) == {"requested"}
     assert len(result["requested"]) == 1
     assert result["requested"][0].known_at == known

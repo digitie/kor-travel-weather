@@ -101,3 +101,7 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 실패 시 INVALID index의 이름·정의를 확인하여 CONCURRENTLY 제거한 뒤 재시도한다. 마커 캐시는 제공처 조합별로 구분하고 필터 변경 시
 기존 위치·마커·상세 요청을 취소한다. 키보드 방향키·Space/Enter·Escape와 모바일
 화면을 지원한다.
+
+제공처 필터의 특보는 이벤트별 revision·상한을 적용한 key를 먼저 확정하고,
+`(value_id, known_at)` PK LATERAL 조회와 날짜 범위로 전체 fact를 읽는다.
+큰 fact JOIN이 특보 ranking 앞에 배치되는 계획을 피하며 원본 payload는 보존한다.
