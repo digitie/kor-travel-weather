@@ -103,7 +103,9 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             item for item in inspector.get_indexes("weather_current_values")
             if item["name"] == "ix_weather_current_values_provider_marker"
         )
-        assert provider_marker_index["column_names"][:3] == ["location_id", "provider", "metric_key"]
+        assert provider_marker_index["column_names"][:3] == [
+            "location_id", "provider", "metric_key",
+        ]
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
