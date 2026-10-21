@@ -1,0 +1,195 @@
+{
+  "mode": "staging-real-db",
+  "cases": [
+    {
+      "name": "real-login-initial-current-forecast",
+      "pass": true
+    },
+    {
+      "name": "select-감일",
+      "pass": true,
+      "render_ms": 3882
+    },
+    {
+      "name": "select-강릉",
+      "pass": true,
+      "render_ms": 3156
+    },
+    {
+      "name": "select-가평",
+      "pass": true,
+      "render_ms": 2612
+    },
+    {
+      "name": "actual-map-marker-click",
+      "pass": true,
+      "title": "양평 소리산",
+      "label": "양평 소리산: 날씨 정보 없음 날씨 보기",
+      "render_ms": 3051
+    },
+    {
+      "name": "forecast-held-current-visible",
+      "pass": true
+    },
+    {
+      "name": "forecast-failure-current-preserved",
+      "pass": true
+    },
+    {
+      "name": "current-held-forecast-visible",
+      "pass": true
+    },
+    {
+      "name": "current-failure-forecast-preserved",
+      "pass": true
+    },
+    {
+      "name": "empty-search-clears-inspector",
+      "pass": true
+    },
+    {
+      "name": "rapid-search-latest-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "mobile-current-forecast-layout",
+      "pass": true
+    },
+    {
+      "name": "real-logout",
+      "pass": true
+    }
+  ],
+  "timings": [
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 3118,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 3916,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-8150939b924d/forecast",
+      "ms": 1195,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-8150939b924d/latest",
+      "ms": 3645,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/kma-mid-gangneung/forecast",
+      "ms": 2701,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/kma-mid-gangneung/latest",
+      "ms": 2982,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 2161,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 2468,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/krforest-1906/forecast",
+      "ms": 2416,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/krforest-1906/latest",
+      "ms": 2970,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 2366,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 2394,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 1927,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 1967,
+      "status": 503
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 1426,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 1865,
+      "status": 503
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 3953,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 3991,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 4084,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 4708,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 2279,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 2350,
+      "status": 200
+    }
+  ],
+  "errors": [],
+  "httpErrors": [
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "status": 503,
+      "detail": "{\"detail\":\"예보 시험 실패\"}",
+      "injected": true
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "status": 503,
+      "detail": "{\"detail\":\"관측 시험 실패\"}",
+      "injected": true
+    }
+  ],
+  "tiles": {
+    "ok": 53,
+    "failed": 0
+  },
+  "pass": true
+}

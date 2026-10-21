@@ -1,0 +1,108 @@
+{
+  "mode": "production",
+  "cases": [
+    {
+      "name": "real-login-initial-current-forecast",
+      "pass": true
+    },
+    {
+      "name": "select-감일",
+      "pass": true,
+      "render_ms": 2098
+    },
+    {
+      "name": "select-강릉",
+      "pass": true,
+      "render_ms": 3672
+    },
+    {
+      "name": "select-가평",
+      "pass": true,
+      "render_ms": 3621
+    },
+    {
+      "name": "actual-map-marker-click",
+      "pass": true,
+      "title": "양평 소리산",
+      "label": "양평 소리산: 날씨 정보 없음 날씨 보기",
+      "render_ms": 5239
+    },
+    {
+      "name": "mobile-current-forecast-layout",
+      "pass": true
+    },
+    {
+      "name": "real-logout",
+      "pass": true
+    }
+  ],
+  "timings": [
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 3148,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 3502,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-8150939b924d/forecast",
+      "ms": 939,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-8150939b924d/latest",
+      "ms": 1880,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/kma-mid-gangneung/latest",
+      "ms": 3422,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/kma-mid-gangneung/forecast",
+      "ms": 3507,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 3446,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 3453,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/krforest-1906/forecast",
+      "ms": 5130,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/krforest-1906/latest",
+      "ms": 5152,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/forecast",
+      "ms": 3055,
+      "status": 200
+    },
+    {
+      "path": "/api/weather/v1/weather/locations/airkorea-station-039da7bca44e/latest",
+      "ms": 4597,
+      "status": 200
+    }
+  ],
+  "errors": [],
+  "httpErrors": [],
+  "tiles": {
+    "ok": 57,
+    "failed": 0
+  },
+  "pass": true
+}

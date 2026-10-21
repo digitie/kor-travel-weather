@@ -1,0 +1,41 @@
+{
+  "source": "3aff5ef7501109b2a3863dede062c2323e9f32c0",
+  "roles": {
+    "kor-travel-weather-api-latest": {
+      "image": "sha256:8f1986ef90827ba84f8588c2bbb42a1be2f4266fc5a1f44ad3961efab3e6f8d8",
+      "revision": "3aff5ef7501109b2a3863dede062c2323e9f32c0",
+      "status": "running",
+      "health": "healthy"
+    },
+    "kor-travel-weather-web-latest": {
+      "image": "sha256:1fdc6aaff52bfadbc20fc5cbb4bd4147b4c5683c17c845e9d9d0847a864f5d53",
+      "revision": "3aff5ef7501109b2a3863dede062c2323e9f32c0",
+      "status": "running",
+      "health": null
+    }
+  },
+  "repository_sha256": "f38b5e509673e6d8facc518c1ebb4cbcfd70cd5f92787aee6268f4ffaff1b4ed",
+  "rollout_phase": "PASS",
+  "foreign_preserved": 10,
+  "version": {
+    "service": "kor-travel-weather",
+    "version": "0.1.0.dev0",
+    "git_commit": "3aff5ef7501109b2a3863dede062c2323e9f32c0"
+  },
+  "public": {
+    "https://weather-api.digitie.mywire.org/health": {
+      "status": 200
+    },
+    "https://weather-api.digitie.mywire.org/version": {
+      "status": 200,
+      "body": {
+        "service": "kor-travel-weather",
+        "version": "0.1.0.dev0",
+        "git_commit": "3aff5ef7501109b2a3863dede062c2323e9f32c0"
+      }
+    },
+    "https://weather.digitie.mywire.org/login": {
+      "status": 200
+    }
+  }
+}
