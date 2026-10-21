@@ -58,7 +58,8 @@ DB 저장소는 count만 보존하는 시험 대역이며 전체 process RSS/운
    standalone의 정본은 `deploy/dagster.yaml`이다. shared plane에서는 그 파일이 사용되지
    않으므로 [common instance 계약](https://github.com/digitie/kor-travel-common/tree/codex/dagster-recovery/packages/py/kor-travel-common#instance-설정)을 관리자 배포 설정에 병합한다.
 3. `kortravelcommon/project=weather` 동시 6개, `kortravelcommon/job` 값별 1개,
-   기존 `kortravelweather/run_group=external_weather` 3개 제한을 함께 유지한다.
+   기존 `kortravelweather/run_group=external_weather` 3개 제한과
+   `kortravelweather/run_group=external_weather_slow` 1개 제한(긴 sweep provider)을 함께 유지한다.
    pools가 있는 instance는 `concurrency.runs`에 넣고 coordinator 설정과 혼용하지 않는다.
 4. recovery sensor가 RUNNING인지 확인한다. 신규 metadata DB에도 기본 RUNNING이다.
 5. `/admin/dagster`의 공용 운영 화면에서 실패 원인·job별 상한 초과·스케줄을 확인한다.

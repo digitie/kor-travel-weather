@@ -20,6 +20,7 @@
 - [ ] W-OPS-05 / P2: 같은 workload CPU/RSS·3h/12h 포함24h OOM/swap·실제 memory 정책 수용. PR #118의 고정 격자 입력 RSS 약15% 감소·DB 포함 CPU 동등 및 복구2건은 아래와 같이 부분 수용했으며 전체·장시간 조건은 남는다.
 - [ ] W-DOC-01 / P2: 실제 경로/효과 증거 확정 뒤 옛 runbook 현행 절차만 최소 갱신. T-WEA-03/04는 조건부 후보로 유지한다.
 - [ ] W-OPS-06 / P2: 회수 sensor 예산·정체 경보(2026-10-21 PR) 배포 뒤 수용. code-server 재빌드, 규칙 reload, `ktw_sync_recovery_stalled` series(dagster job, 0) 존재, sensor tick이 `stall:null` cursor로 성공하는지 확인. daemon 재개는 별도 승인.
+- [ ] W-OPS-07 / P2: 외부 provider run group 분리(2026-10-21 PR) 배포 뒤 수용. 공용 instance `tag_concurrency_limits`에 `kortravelweather/run_group=external_weather_slow` `limit: 1` 추가(Manager), code-server 갱신 뒤 fast provider run이 `open_meteo` 진행 중에도 바로 시작하는지 확인.
 
 2026-10-17 당시 작업은 docs4개뿐이었다. 당시 사용자 승인 [skip ci] 문서 검토 범위이며 현재 PR #118의 제품 검증을 뜻하지 않는다.
 

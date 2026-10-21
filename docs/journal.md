@@ -1,5 +1,20 @@
 # Weather 작업 기록
 
+## 2026-10-21 외부 provider 긴 sweep run group 분리
+
+- odroid 공용 Dagster는 CPU 포화로 `kortravelweather/run_group=external_weather`를 동시 1개로
+  묶었다. 그 결과 2~4초에 끝나는 run(weatherstack·weatherbit·accuweather·wttr_in·tomorrow_io·
+  visual_crossing)이 73~90분짜리 `open_meteo_weather_job` 뒤에서 최대 한 시간 기다렸다.
+- 같은 태그 키에 값 `external_weather_slow`를 추가했다. 소속은 실행 측정이 아니라 코드의 요청
+  수로 명시한다(`SLOW_EXTERNAL_PROVIDER_KEYS`): `open_meteo` 380곳 × 2 dataset = 760 요청,
+  `openweathermap` 350 × 2 = 700 요청 + 1.25초 간격, `weatherapi` 150 × 2 = 300 요청. weatherapi도
+  같은 종류의 sweep이라 fast에 두면 포화 CPU에서 sweep 둘이 겹친다. phase가 +7분으로 가장 앞서
+  slow 상한 1에서도 기다리지 않는다. 나머지는 기본 location 상한이 없어 기본 설정에서 꺼져 있거나
+  credential 없이 skip하므로 빠르다; key를 넣어 켜면 이 집합에 넣어야 한다.
+- `deploy/dagster.yaml`에 `external_weather_slow` `limit: 1`을 추가했다(기존 `external_weather` 3은
+  그대로). 공용 instance 설정은 Manager 쪽에서 같은 항목을 넣어야 효과가 난다. max_runtime 등 다른
+  태그는 바꾸지 않았다. 배포는 하지 않았다.
+
 ## 2026-10-21 회수 sensor tick 예산·정체 경보(Map ADR-112 교훈)
 
 - Common pin을 main `e746e4b81b9b62dd1a74ca90ba0a1204951c2885`로 바꿨다. 이전 pin `89291f3`은

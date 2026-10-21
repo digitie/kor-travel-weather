@@ -580,6 +580,42 @@ EXTERNAL_PROVIDER_KEYS = tuple(
 #: deploy/dagster.yaml can cap how many providers fetch at the same time.
 EXTERNAL_RUN_GROUP_TAG = "kortravelweather/run_group"
 EXTERNAL_RUN_GROUP = "external_weather"
+#: 같은 태그 키의 두 번째 값. 실제로 location sweep을 하는 provider만 여기에 둔다.
+#: 한 그룹에 묶여 있으면 instance가 CPU 때문에 상한을 1로 낮췄을 때, 기본 설정에서
+#: 몇 초 만에 끝나는 run(credential 없음 skip 등)이 73~90분짜리 open_meteo 뒤에서
+#: 한 시간 가까이 기다린다. 값을 나누면 instance는 slow를 1로, 나머지는 따로 제한한다.
+EXTERNAL_SLOW_RUN_GROUP = "external_weather_slow"
+
+#: 소속은 실행 시간 측정이 아니라 코드가 정하는 요청 수로 정한다. 한 run의 요청 수는
+#: ``provider_location_caps`` 기본값 × catalog dataset 수(각 2)다.
+#:
+#: - ``open_meteo``: 380곳 × 2 = 760 요청.
+#: - ``openweathermap``: 350곳 × 2 = 700 요청, 그리고 요청 사이 1.25초 간격
+#:   (``provider_min_request_interval_seconds``)만으로 최소 약 14.6분.
+#: - ``weatherapi``: 150곳 × 2 = 300 요청. 앞의 둘보다 작지만 같은 종류의 일(위치마다
+#:   HTTP 호출과 DB publish)이라, fast 쪽에 두면 CPU가 포화된 호스트에서 sweep 둘이
+#:   동시에 도는 것을 다시 허용하게 된다. slow에 둬도 기다리지 않는다: 3시간 주기 안의
+#:   phase가 weatherapi +7분, openweathermap +27분, open_meteo +47분이라 가장 먼저
+#:   시작해 openweathermap 전에 끝난다.
+#:
+#: 나머지 provider는 기본 location 상한이 없다. 기본 설정에서 그들의 run이 빠른 것은
+#: 꺼져 있거나(visual_crossing, wttr_in) credential이 없어 skip하기 때문이다. key를
+#: 넣어 하나를 켜면 catalog 전체(약 1,400곳)를 sweep하므로 이 집합에 추가해야 한다.
+#: tests/test_definitions.py가 기본 상한이 있는 provider는 모두 여기 있음을 고정한다.
+SLOW_EXTERNAL_PROVIDER_KEYS = frozenset({"open_meteo", "openweathermap", "weatherapi"})
+if not set(EXTERNAL_PROVIDER_KEYS) >= SLOW_EXTERNAL_PROVIDER_KEYS:
+    raise RuntimeError(
+        "SLOW_EXTERNAL_PROVIDER_KEYS에 외부 provider가 아닌 key가 있습니다: "
+        f"{sorted(SLOW_EXTERNAL_PROVIDER_KEYS - set(EXTERNAL_PROVIDER_KEYS))}"
+    )
+
+
+def external_run_group(provider_key: str) -> str:
+    """외부 provider job이 받을 ``EXTERNAL_RUN_GROUP_TAG`` 값."""
+    if provider_key in SLOW_EXTERNAL_PROVIDER_KEYS:
+        return EXTERNAL_SLOW_RUN_GROUP
+    return EXTERNAL_RUN_GROUP
+
 
 #: Dagster's per-run override of ``run_monitoring.max_runtime_seconds``.
 RUN_MAX_RUNTIME_TAG = "dagster/max_runtime"
@@ -1137,7 +1173,7 @@ _unresolved_external_jobs = {
     key: define_asset_job(
         external_job_name(key),
         selection=[asset_def],
-        tags={**_job_tags(external_job_name(key)), EXTERNAL_RUN_GROUP_TAG: EXTERNAL_RUN_GROUP},
+        tags={**_job_tags(external_job_name(key)), EXTERNAL_RUN_GROUP_TAG: external_run_group(key)},
     )
     for key, asset_def in zip(EXTERNAL_PROVIDER_KEYS, _EXTERNAL_PROVIDER_ASSETS, strict=True)
 }

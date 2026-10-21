@@ -143,12 +143,56 @@ def test_external_jobs_keep_their_run_group_next_to_the_runtime_tag() -> None:
     from kortravelweather_dagster.definitions import (
         EXTERNAL_RUN_GROUP,
         EXTERNAL_RUN_GROUP_TAG,
+        EXTERNAL_SLOW_RUN_GROUP,
         external_weather_jobs,
     )
 
+    # 같은 태그 키에 두 값. slow 소속은 코드가 명시하며 아래 목록이 그 정본의 사본이다.
+    slow = {"open_meteo", "openweathermap", "weatherapi"}
     assert external_weather_jobs
-    for job in external_weather_jobs.values():
-        assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) == EXTERNAL_RUN_GROUP, job.name
+    assert slow <= set(external_weather_jobs)
+    for key, job in external_weather_jobs.items():
+        expected = EXTERNAL_SLOW_RUN_GROUP if key in slow else EXTERNAL_RUN_GROUP
+        assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) == expected, job.name
+    # fast 쪽이 비면 분리가 아무 run도 앞당기지 못한다.
+    assert set(external_weather_jobs) - slow
+
+
+def test_every_location_capped_provider_runs_in_the_slow_group() -> None:
+    # 기본 location 상한이 있는 provider는 기본 설정에서 실제로 sweep하는 provider다.
+    # 상한을 새로 주면서 slow 집합을 빠뜨리면 fast 그룹에서 sweep 둘이 겹친다.
+    from kortravelweather_dagster.definitions import SLOW_EXTERNAL_PROVIDER_KEYS
+
+    from kortravelweather.providers.catalog import provider_spec
+    from kortravelweather.settings import WeatherSettings
+
+    caps = WeatherSettings.model_fields["provider_location_caps"].default_factory()
+    assert caps
+    assert set(caps) <= SLOW_EXTERNAL_PROVIDER_KEYS
+    # 주석의 요청 수(상한 × dataset 2개)가 전제하는 dataset 수.
+    for key in SLOW_EXTERNAL_PROVIDER_KEYS:
+        assert len(provider_spec(key).datasets) == 2, key
+
+
+def test_deploy_instance_limits_both_external_run_groups() -> None:
+    from pathlib import Path
+
+    import yaml
+    from kortravelweather_dagster.definitions import (
+        EXTERNAL_RUN_GROUP,
+        EXTERNAL_RUN_GROUP_TAG,
+        EXTERNAL_SLOW_RUN_GROUP,
+    )
+
+    path = Path(__file__).resolve().parents[3] / "deploy/dagster.yaml"
+    coordinator = yaml.safe_load(path.read_text(encoding="utf-8"))["run_coordinator"]
+    limits = {
+        entry["value"]: entry["limit"]
+        for entry in coordinator["config"]["tag_concurrency_limits"]
+        if entry["key"] == EXTERNAL_RUN_GROUP_TAG
+    }
+    assert limits[EXTERNAL_SLOW_RUN_GROUP] == 1
+    assert EXTERNAL_RUN_GROUP in limits
 
 
 def test_schedule_runs_inherit_the_runtime_tag() -> None:
