@@ -594,13 +594,17 @@ EXTERNAL_SLOW_RUN_GROUP = "external_weather_slow"
 #:   (``provider_min_request_interval_seconds``)만으로 최소 약 14.6분.
 #: - ``weatherapi``: 150곳 × 2 = 300 요청. 앞의 둘보다 작지만 같은 종류의 일(위치마다
 #:   HTTP 호출과 DB publish)이라, fast 쪽에 두면 CPU가 포화된 호스트에서 sweep 둘이
-#:   동시에 도는 것을 다시 허용하게 된다. slow에 둬도 기다리지 않는다: 3시간 주기 안의
-#:   phase가 weatherapi +7분, openweathermap +27분, open_meteo +47분이라 가장 먼저
-#:   시작해 openweathermap 전에 끝난다.
+#:   동시에 도는 것을 다시 허용하게 된다. 3시간 주기 안의 phase가 weatherapi +7분,
+#:   openweathermap +27분, open_meteo +47분이라 weatherapi가 가장 먼저 시작하고
+#:   (2026-10-21 관측 약 9분), 늦어지면 openweathermap이 그 뒤에서 기다린다. 세 sweep의
+#:   관측 합(약 9 + 30 + 73~90분)은 3시간 주기 안이다.
 #:
 #: 나머지 provider는 기본 location 상한이 없다. 기본 설정에서 그들의 run이 빠른 것은
-#: 꺼져 있거나(visual_crossing, wttr_in) credential이 없어 skip하기 때문이다. key를
-#: 넣어 하나를 켜면 catalog 전체(약 1,400곳)를 sweep하므로 이 집합에 추가해야 한다.
+#: 꺼져 있거나(visual_crossing, wttr_in) credential이 없어 skip하기 때문이다. 하나를
+#: 켜면(env 또는 admin UI의 DB credential — 코드 변경 없이 가능) catalog 전체(약
+#: 1,400곳)를 sweep한다. 태그는 정의 시점에 정해지므로 런타임 credential로 분류할 수
+#: 없다: **켜기 전에** 이 집합에 추가하는 변경이 먼저 배포돼야 한다(runbook
+#: docs/runbooks/dagster-recovery.md). 위치 상한을 env로 풀 때도 같다.
 #: tests/test_definitions.py가 기본 상한이 있는 provider는 모두 여기 있음을 고정한다.
 SLOW_EXTERNAL_PROVIDER_KEYS = frozenset({"open_meteo", "openweathermap", "weatherapi"})
 if not set(EXTERNAL_PROVIDER_KEYS) >= SLOW_EXTERNAL_PROVIDER_KEYS:

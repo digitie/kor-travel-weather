@@ -159,7 +159,9 @@ dataset = 760 요청)·`openweathermap`(350 × 2 = 700 요청, 요청 간격 1.2
 (`definitions.py`의 `SLOW_EXTERNAL_PROVIDER_KEYS`). 공용 instance가 CPU 포화로 외부 run을
 1개로 묶었을 때 몇 초에 끝나는 run이 73~90분짜리 `open_meteo` 뒤에서 기다리던 것을
 없애려는 분리다(2026-10-21 odroid). instance는 slow를 1로, 나머지를 따로 제한한다.
-상한이 없는 provider에 key를 넣어 켜면 catalog 전체를 sweep하므로 slow 집합에 넣는다.
+상한이 없는 provider를 켜면(env 또는 admin UI credential — 코드 변경 없이 가능) catalog 전체를
+sweep한다. 태그는 정의 시점 값이라 런타임 credential로 분류할 수 없으므로, 켜기 **전에** slow 집합에
+넣어 배포한다([runbook](../runbooks/dagster-recovery.md) 3단계).
 
 ## 매시 station lock job의 시간 분리
 
