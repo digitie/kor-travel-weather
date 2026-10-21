@@ -94,7 +94,10 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 공개 `locations`, `latest`, `forecast`, `markers` API는 반복 `provider` query를 받는다.
 위치는 current projection의 제공처 존재 여부를 pagination 전에 검사하고, 관측·예보와
 마커 데이터도 SQL LIMIT 전에 제공처를 제한한다. 마커는 기존 metric별 대표 값과
-특보 이벤트별 revision 선택을 유지한다. 현재 projection과 fact의 기존 복합 인덱스를
-사용하며 스키마 변경은 없다. 마커 캐시는 제공처 조합별로 구분하고 필터 변경 시
+특보 이벤트별 revision 선택을 유지한다. 마커의 일반 값은 현재 projection의
+`ix_weather_current_values_provider_marker` 부분 인덱스에서 위치·제공처·지표별
+대표 1개를 읽고, 특보는 기존 fact 이벤트 경로를 유지한다. migration
+`0022_provider_marker_index`는 concurrent 생성으로 수집 쓰기를 막지 않는다.
+실패 시 INVALID index의 이름·정의를 확인하여 CONCURRENTLY 제거한 뒤 재시도한다. 마커 캐시는 제공처 조합별로 구분하고 필터 변경 시
 기존 위치·마커·상세 요청을 취소한다. 키보드 방향키·Space/Enter·Escape와 모바일
 화면을 지원한다.

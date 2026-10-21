@@ -121,3 +121,38 @@ def test_filter_preserves_each_marker_metric_and_all_alert_events(filtered_clien
     assert {r["metric_key"] for r in marker["latest"]} == {"TEMP", "SKY"}
     assert len(marker["alerts"]) == 21
     assert {r["source_record_key"] for r in marker["alerts"]} == {f"event-{i}" for i in range(21)}
+
+
+def test_provider_marker_plan_uses_bounded_index_prefix(filtered_client):
+    import json
+
+    from sqlalchemy import event
+
+    repo = filtered_client.app.state.repository
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters))
+
+    event.listen(repo.engine, "before_cursor_execute", record)
+    try:
+        repo.marker_values_many(["krforest-location"], providers=["openweathermap"])
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", record)
+    statement, params = statements[0]
+    with repo.engine.connect() as connection:
+        # 작은 fixture도 실제 partial/expression index에 맞는지 확인한다.
+        connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        plan = connection.exec_driver_sql("EXPLAIN (FORMAT JSON) " + statement, params).scalar_one()
+    encoded = json.dumps(plan)
+    assert "ix_weather_current_values_provider_marker" in encoded
+    def nodes(node):
+        yield node
+        for child in node.get("Plans", []):
+            yield from nodes(child)
+
+    indexed = next(node for node in nodes(plan[0]["Plan"])
+                   if node.get("Index Name") == "ix_weather_current_values_provider_marker")
+    condition = indexed["Index Cond"]
+    assert all(column in condition for column in ("location_id", "provider", "metric_key"))
+    assert "unnest" in condition

@@ -376,6 +376,10 @@ class WeatherValueRow(Base):
     )
 
 
+_MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
+_PROVIDER_MARKER_PREDICATE = "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+
+
 class WeatherCurrentValueRow(Base):
     """Mutable pointer to the newest revision of one logical weather point.
 
@@ -439,6 +443,14 @@ class WeatherCurrentValueRow(Base):
             text("source_record_key DESC NULLS LAST"),
             text("value_id DESC"),
         ),
+        # 제공처별 대표 metric은 이력 정렬 없이 exact prefix에서 1개만 읽는다.
+        Index(
+            "ix_weather_current_values_provider_marker",
+            text("location_id"), text("provider"), text("metric_key"),
+            text(_CURRENT_PREFERENCE_EXPRESSION),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_PROVIDER_MARKER_PREDICATE),
+        ),
         # The fact table is partitioned by ``known_at``, so its primary key is
         # ``(value_id, known_at)`` and a reference has to name both.  The
         # projection already carried ``known_at`` for ordering, and 0012's
@@ -481,7 +493,7 @@ class WeatherCurrentValueRow(Base):
     source_record_key: Mapped[str | None] = mapped_column(String(255))
 
 
-_MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
+
 _MARKER_CANDIDATE_LIMIT = 4
 
 
@@ -2786,7 +2798,50 @@ class WeatherRepository:
                     ).all()
                 )
 
-            observed_rows = fetch_candidates(candidate_ids(observed_only=True))
+            if providers is None:
+                observed_rows = fetch_candidates(candidate_ids(observed_only=True))
+            else:
+                # exact (위치, 제공처, metric) prefix마다 인덱스에서 대표 1개만
+                # 읽고, 선택 제공처들 사이에서는 관측 우선·revision 순서를 유지한다.
+                projection = WeatherCurrentValueRow
+                requested_providers = (
+                    select(func.unnest(bindparam(
+                        "marker_provider_ids", list(dict.fromkeys(providers)), type_=ARRAY(String),
+                    )).label("provider"))
+                    .subquery("marker_providers")
+                )
+                preference = case((projection.forecast_style.in_(
+                    (literal("observed", literal_execute=True),
+                     literal("nowcast", literal_execute=True)),
+                ), literal(0, literal_execute=True)), else_=literal(1, literal_execute=True))
+                per_provider = (
+                    select(projection.value_id, projection.known_at, projection.location_id,
+                           projection.metric_key, projection.source_record_key,
+                           preference.label("preference"))
+                    .where(
+                        projection.location_id == requested_locations.c.location_id,
+                        projection.provider == requested_providers.c.provider,
+                        projection.metric_key == requested_metrics.c.metric_key,
+                        projection.metric_key.in_(marker_metric_literals),
+                    )
+                    .order_by(preference, nullslast(desc(projection.known_at)),
+                              nullslast(desc(projection.source_record_key)),
+                              desc(projection.value_id))
+                    .limit(1).lateral().alias("provider_marker_candidate")
+                )
+                candidates = select(per_provider).select_from(
+                    requested_locations.join(requested_providers, true())
+                    .join(requested_metrics, true()).join(per_provider, true())
+                ).subquery("provider_marker_representatives")
+                provider_candidates = (
+                    select(candidates)
+                    .distinct(candidates.c.location_id, candidates.c.metric_key)
+                    .order_by(candidates.c.location_id, candidates.c.metric_key,
+                              candidates.c.preference, nullslast(desc(candidates.c.known_at)),
+                              nullslast(desc(candidates.c.source_record_key)),
+                              desc(candidates.c.value_id))
+                )
+                observed_rows = list(session.execute(provider_candidates).all())
             selected: dict[tuple[str, str], Any] = {}
             for row in observed_rows:
                 pair = (row.location_id, row.metric_key)
@@ -2811,7 +2866,7 @@ class WeatherRepository:
                 for metric_key in _MARKER_METRIC_KEYS
                 if (location_id, metric_key) not in selected
             ]
-            if missing_pairs:
+            if missing_pairs and providers is None:
                 # PostgreSQL의 다중 unnest는 같은 인덱스의 두 배열을 한 pair로
                 # 묶는다. 각 pair를 보존하고 위치×metric의 추가 조합은 만들지 않는다.
                 missing_locations = (
@@ -2888,15 +2943,19 @@ class WeatherRepository:
                     .table_valued("value_id", "known_at")
                     .render_derived(name="marker_winner_keys")
                 )
-                winners = session.scalars(
-                    select(WeatherValueRow).join(
+                winner_query = select(WeatherValueRow).join(
                         winner_keys,
                         and_(
                             WeatherValueRow.value_id == winner_keys.c.value_id,
                             WeatherValueRow.known_at == winner_keys.c.known_at,
                         ),
                     )
-                ).all()
+                if providers is not None:
+                    winner_query = winner_query.where(
+                        WeatherValueRow.known_at >= min(row.known_at for row in selected_keys),
+                        WeatherValueRow.known_at <= max(row.known_at for row in selected_keys),
+                    )
+                winners = session.scalars(winner_query).all()
                 by_key = {(row.value_id, row.known_at): row for row in winners}
                 # READ COMMITTED의 다음 읽기 전에 retention으로 사라진 fact를
                 # 다른 partition이나 차순위 fact로 대신하지 않는다.
