@@ -1,0 +1,142 @@
+[
+  {
+    "providers": [
+      "python-kma-api"
+    ],
+    "list_ms": 2942,
+    "total": 1450,
+    "count_ms": 824,
+    "marker60_ms": 6769,
+    "marker_rows": 198,
+    "marker_locations": 60,
+    "latest_ms": 1135,
+    "latest_rows": 200,
+    "pass": true,
+    "sql": [
+      {
+        "kind": "other",
+        "ms": 1107
+      },
+      {
+        "kind": "other",
+        "ms": 771
+      },
+      {
+        "kind": "other",
+        "ms": 227
+      },
+      {
+        "kind": "other",
+        "ms": 410
+      },
+      {
+        "kind": "alerts",
+        "ms": 949
+      },
+      {
+        "kind": "other",
+        "ms": 1785
+      },
+      {
+        "kind": "other",
+        "ms": 498
+      },
+      {
+        "kind": "other",
+        "ms": 302
+      }
+    ],
+    "peak_rss_kb": 92816
+  },
+  {
+    "providers": [
+      "openweathermap"
+    ],
+    "list_ms": 855,
+    "total": 500,
+    "count_ms": 482,
+    "marker60_ms": 1485,
+    "marker_rows": 120,
+    "marker_locations": 60,
+    "latest_ms": 538,
+    "latest_rows": 200,
+    "pass": true,
+    "sql": [
+      {
+        "kind": "other",
+        "ms": 302
+      },
+      {
+        "kind": "other",
+        "ms": 452
+      },
+      {
+        "kind": "other",
+        "ms": 110
+      },
+      {
+        "kind": "other",
+        "ms": 373
+      },
+      {
+        "kind": "alerts",
+        "ms": 545
+      },
+      {
+        "kind": "other",
+        "ms": 25
+      },
+      {
+        "kind": "other",
+        "ms": 133
+      }
+    ],
+    "peak_rss_kb": 92816
+  },
+  {
+    "providers": [
+      "openweathermap",
+      "weatherapi"
+    ],
+    "list_ms": 1034,
+    "total": 500,
+    "count_ms": 279,
+    "marker60_ms": 2685,
+    "marker_rows": 120,
+    "marker_locations": 60,
+    "latest_ms": 456,
+    "latest_rows": 200,
+    "pass": true,
+    "sql": [
+      {
+        "kind": "other",
+        "ms": 244
+      },
+      {
+        "kind": "other",
+        "ms": 263
+      },
+      {
+        "kind": "other",
+        "ms": 76
+      },
+      {
+        "kind": "other",
+        "ms": 37
+      },
+      {
+        "kind": "alerts",
+        "ms": 2275
+      },
+      {
+        "kind": "other",
+        "ms": 75
+      },
+      {
+        "kind": "other",
+        "ms": 83
+      }
+    ],
+    "peak_rss_kb": 92816
+  }
+]

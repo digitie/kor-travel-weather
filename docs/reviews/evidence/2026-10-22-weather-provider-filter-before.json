@@ -1,0 +1,36 @@
+[
+  {
+    "providers": [
+      "python-kma-api"
+    ],
+    "list_ms": 4311,
+    "total": 1450,
+    "count_ms": 883,
+    "pass_": false,
+    "error_type": "OperationalError",
+    "elapsed_ms": 8046
+  },
+  {
+    "providers": [
+      "openweathermap"
+    ],
+    "list_ms": 3041,
+    "total": 500,
+    "count_ms": 1676,
+    "pass_": false,
+    "error_type": "OperationalError",
+    "elapsed_ms": 9954
+  },
+  {
+    "providers": [
+      "openweathermap",
+      "weatherapi"
+    ],
+    "list_ms": 2125,
+    "total": 500,
+    "count_ms": 347,
+    "pass_": false,
+    "error_type": "OperationalError",
+    "elapsed_ms": 6538
+  }
+]
