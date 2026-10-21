@@ -9,13 +9,16 @@ left.  These tests pin the catalog shape that broke and what each job reads.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from dagster import build_asset_context
 from kortravelweather_dagster.definitions import (
+    KMA_ROTATION_SLOT_TAG,
     _kma_alert_targets,
     _kma_grid_targets,
+    _kma_rotation_slot,
     kma_mid_forecast_sync,
     kma_ultra_short_nowcast_sync,
     kma_weather_alerts_sync,
@@ -107,9 +110,10 @@ def _ids(targets) -> list[str]:
     return [target.location.location_id for target in targets]
 
 
-def _fill(catalog, **settings):
+def _fill(catalog, *, rotation_slot=0, **settings):
     targets, _, _, fill = _kma_grid_targets(
-        _CatalogRepository(catalog), _settings(**settings), station_fill=True
+        _CatalogRepository(catalog), _settings(**settings), station_fill=True,
+        rotation_slot=rotation_slot,
     )
     return targets, fill
 
@@ -126,14 +130,72 @@ def test_station_only_catalog_still_yields_kma_grid_targets() -> None:
     )
 
 
-def test_station_fill_has_its_own_budget_below_the_run_ceiling() -> None:
-    # MAX_GRIDS_PER_RUN is a ceiling, not a spend target: the default fill
-    # budget (150) is what a station-only catalog costs, not the 300 ceiling.
+def test_station_fill_default_covers_a_catalog_below_the_run_ceiling() -> None:
     catalog = _station_catalog(rows=20, columns=12)  # 240 grids
     defaults = _settings()
-    assert defaults.kma_station_fill_max_grids == 150 < defaults.max_grids_per_run
+    assert defaults.kma_station_fill_max_grids == defaults.max_grids_per_run == 300
     targets, _ = _fill(catalog)
-    assert len(_grids(targets)) == 150
+    assert len(_grids(targets)) == 240
+
+
+@pytest.mark.parametrize("budget", [1, 7, 10, 47, 48, 60])
+def test_rotation_visits_every_grid_from_any_start_and_preserves_ceiling(budget) -> None:
+    catalog = _station_catalog()
+    expected = {row.location_id for row in catalog}
+    runs = (len(catalog) + budget - 1) // budget
+    for start in [0, 1, 12345]:
+        covered = set()
+        for slot in range(start, start + runs):
+            targets, fill = _fill(catalog, rotation_slot=slot,
+                                  max_grids_per_run=budget, kma_station_fill_max_grids=budget)
+            assert len(_grids(targets)) <= budget
+            assert fill.rotation_runs == runs
+            again, _ = _fill(catalog, rotation_slot=slot,
+                             max_grids_per_run=budget, kma_station_fill_max_grids=budget)
+            assert _ids(targets) == _ids(again)
+            covered.update(_ids(targets))
+        assert covered == expected
+
+
+def test_rotation_keeps_explicit_shared_grid_and_disabled_lifecycle() -> None:
+    explicit = WeatherLocation(location_id="seoul", name="서울", latitude=37.5665,
+                               longitude=126.978)
+    twin = _station("twin", explicit.latitude, explicit.longitude)
+    disabled = _station("disabled", 33.5, 126.5, enabled=False)
+    catalog = [explicit, twin, disabled, *_station_catalog()]
+    covered = set()
+    for slot in range(8):
+        targets, _ = _fill(catalog, rotation_slot=slot,
+                           max_grids_per_run=8, kma_station_fill_max_grids=7)
+        assert _ids(targets)[0] == "seoul"
+        assert "twin" in _ids(targets) and "disabled" not in _ids(targets)
+        assert len(_grids(targets)) <= 8
+        covered.update(_ids(targets))
+    assert covered == {row.location_id for row in catalog if row.enabled}
+
+
+def test_rotation_uses_root_run_creation_and_three_hour_short_forecast_slots() -> None:
+    created = datetime(2026, 10, 22, 2, 15, tzinfo=UTC)
+    records = {
+        "root": SimpleNamespace(create_timestamp=created, dagster_run=SimpleNamespace(tags={})),
+        "retry": SimpleNamespace(create_timestamp=created + timedelta(hours=5),
+                                  dagster_run=SimpleNamespace(tags={KMA_ROTATION_SLOT_TAG: "999"})),
+    }
+    instance = SimpleNamespace(get_run_record_by_id=records.get)
+    first = SimpleNamespace(instance=instance, run_id="root",
+                            run=SimpleNamespace(run_id="root", root_run_id=None))
+    retry = SimpleNamespace(instance=instance, run_id="retry",
+                            run=SimpleNamespace(run_id="retry", root_run_id="root"))
+    key = "kma_ultra_short_nowcast"
+    assert _kma_rotation_slot(first, key) == _kma_rotation_slot(retry, key)
+    first_slot = _kma_rotation_slot(first, "kma_short_forecast")
+    records["root"].create_timestamp += timedelta(hours=3)
+    assert _kma_rotation_slot(first, "kma_short_forecast") == first_slot + 1
+    records["root"].dagster_run.tags[KMA_ROTATION_SLOT_TAG] = "123"
+    assert _kma_rotation_slot(retry, key) == 123
+    records["root"].dagster_run.tags[KMA_ROTATION_SLOT_TAG] = "-1"
+    with pytest.raises(ValueError, match="slot tag"):
+        _kma_rotation_slot(retry, key)
 
 
 def test_station_fill_never_pushes_the_total_past_the_run_ceiling() -> None:

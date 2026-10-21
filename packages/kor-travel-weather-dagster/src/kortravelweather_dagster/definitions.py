@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cache
 
 from dagster import (
@@ -74,6 +75,8 @@ from .retention import FORWARD_PARTITION_ALERT_DAYS, run_weather_retention_purge
 from .sync_recovery import terminal_worker, weather_sync_recovery_sensor
 
 logger = logging.getLogger(__name__)
+
+KMA_ROTATION_SLOT_TAG = "kortravelweather/kma_rotation_slot"
 
 
 def _start_metrics_server_from_env() -> None:
@@ -181,6 +184,7 @@ def _kma_grid_targets(
     settings: WeatherSettings,
     *,
     station_fill: bool,
+    rotation_slot: int = 0,
 ) -> tuple[list[WeatherTarget], dict[str, dict[str, object]], set[str], "StationFill | None"]:
     """Build the validated target set every base-grid/mid-forecast KMA job shares.
 
@@ -213,6 +217,7 @@ def _kma_grid_targets(
             max_grids=settings.max_grids_per_run,
             fill_max_grids=settings.kma_station_fill_max_grids,
             disabled_ids=disabled_ids,
+            rotation_slot=rotation_slot,
         )
         targets.extend(fill.targets)
     return targets, merged, disabled_ids, fill
@@ -230,6 +235,8 @@ class StationFill:
     #: Enabled station anchors, and the grids they sit on.
     stations_total: int
     grids_total: int
+    rotation_slot: int = 0
+    rotation_runs: int = 1
 
     def coverage_line(self) -> str:
         return (
@@ -246,6 +253,7 @@ def _station_grid_fill(
     max_grids: int,
     fill_max_grids: int,
     disabled_ids: set[str],
+    rotation_slot: int = 0,
 ) -> StationFill:
     """Spend a bounded grid budget on station anchors no explicit target covers.
 
@@ -307,7 +315,12 @@ def _station_grid_fill(
             cells[f"grid-{nx}-{ny}"] = (nx, ny), ProviderLocation(
                 location_id=f"grid-{nx}-{ny}", latitude=latitude, longitude=longitude
             )
-        chosen = spatially_even_subset([cell for _, cell in cells.values()], budget)
+        # 같은 앞부분만 영구 수집하지 않는다. 실행에 고정한 슬롯으로 전체
+        # 공간 분산 순서의 연속 구간을 방문하고 끝에서는 처음으로 돌아간다.
+        ordered = spatially_even_subset([cell for _, cell in cells.values()], len(cells))
+        take = min(budget, len(ordered))
+        start = (rotation_slot * take) % len(ordered)
+        chosen = [ordered[(start + index) % len(ordered)] for index in range(take)]
     filled = [
         *on_covered,
         *(station for picked in chosen for station in by_grid[cells[picked.location_id][0]]),
@@ -318,7 +331,33 @@ def _station_grid_fill(
         grids_shared=covered_station_grids,
         stations_total=len(stations),
         grids_total=len(by_grid) + covered_station_grids,
+        rotation_slot=rotation_slot,
+        rotation_runs=(len(by_grid) + budget - 1) // budget if budget > 0 else 0,
     )
+
+
+def _kma_rotation_slot(context: AssetExecutionContext, dataset_key: str) -> int:
+    """대기·재실행이 시간 경계를 넘어도 최초 run 생성 시각의 구간을 유지한다."""
+    if context.run_id == "EPHEMERAL":
+        # build_asset_context의 직접 호출에는 저장된 Dagster run이 없다.
+        created = kst_now()
+    else:
+        run = context.run
+        record = context.instance.get_run_record_by_id(run.root_run_id or run.run_id)
+        if record is None:
+            raise RuntimeError("KMA 순환 기준 run을 찾지 못했습니다.")
+        # 관리자 재수집도 동일 cohort를 지정할 수 있다. 재시도에서는 root의
+        # tag만 읽어 후속 run이 다른 구간으로 바뀌지 않도록 한다.
+        override = record.dagster_run.tags.get(KMA_ROTATION_SLOT_TAG)
+        if override is not None:
+            if not (override.isascii() and override.isdigit() and len(override) <= 12):
+                raise ValueError("KMA 순환 slot tag는 12자리 이하 비음수 정수여야 합니다.")
+            return int(override)
+        created = record.create_timestamp
+    if not isinstance(created, datetime) or created.tzinfo is None:
+        raise ValueError("KMA 순환 기준 시각은 timezone-aware datetime이어야 합니다.")
+    seconds = 3 * 3600 if dataset_key == KMA_SHORT_FORECAST else 3600
+    return int(created.timestamp() // seconds)
 
 
 def _kma_alert_targets(
@@ -374,10 +413,15 @@ def _make_kma_dataset_asset(
         client_resource = context.resources.kma_client
         repository = _run_repository(context)
         targets, merged, disabled_ids, fill = _kma_grid_targets(
-            repository, settings, station_fill=include_base
+            repository, settings, station_fill=include_base,
+            rotation_slot=_kma_rotation_slot(context, dataset_key) if include_base else 0,
         )
         if fill is not None:
             context.log.info(fill.coverage_line())
+            context.log.info(
+                "station rotation: slot %s, full sweep needs %s consecutive successful slots",
+                fill.rotation_slot, fill.rotation_runs,
+            )
         if include_mid and not any(target.has_mid for target in targets):
             # Mid-forecast regions are configuration (env TARGETS or admin
             # metadata); stations carry none.  An unconfigured source is

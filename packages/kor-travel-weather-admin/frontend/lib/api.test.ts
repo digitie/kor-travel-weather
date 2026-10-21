@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { forecastWindowStart, getPublicLocations } from "./api";
+import { forecastWindowStart, getAllPublicLocations, getPublicLocations } from "./api";
 
 function respond(body: string, init: ResponseInit) {
   const fetchMock = vi.fn(async () => new Response(body, init));
@@ -97,5 +97,33 @@ describe("forecastWindowStart", () => {
     expect(new Date(forecastWindowStart(now)).getTime()).toBeGreaterThan(
       now.getTime() - 60 * 60 * 1000,
     );
+  });
+});
+
+describe("일반 날씨 카탈로그", () => {
+  it("모든 페이지에 제공처·weather_only·취소 signal을 유지한다", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (url: string) => {
+      const offset = Number(new URL(url, "http://localhost").searchParams.get("offset"));
+      return new Response(JSON.stringify({ data: Array.from({ length: offset ? 1 : 1000 },
+        (_, i) => ({ location_id: `location-${offset + i}` })), meta: {} }),
+      { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await getAllPublicLocations(["python-kma-api"], controller.signal, true);
+    expect(result).toHaveLength(1001);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [url, init] of vi.mocked(fetch).mock.calls) {
+      const query = new URL(String(url), "http://localhost").searchParams;
+      expect(query.get("weather_only")).toBe("true");
+      expect(query.getAll("provider")).toEqual(["python-kma-api"]);
+      expect(init?.signal).toBe(controller.signal);
+    }
+  });
+  it("전체 해제는 일반값 옵션과 관계없이 요청하지 않는다", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(getAllPublicLocations([], undefined, true)).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

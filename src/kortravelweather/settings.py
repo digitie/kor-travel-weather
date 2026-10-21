@@ -233,11 +233,12 @@ class WeatherSettings(BaseSettings):
     # call per grid per hour against data.go.kr's 10,000/day per-operation
     # limit, on a key shared with other projects:
     #
-    #   150 grids x 24 runs = 3,600/day = 36% of 10,000 per operation
+    #   total <= 300 grids x 24 runs = 7,200/day per operation
     #
-    # Explicit targets come on top, still bounded by max_grids_per_run.
+    # 명시 target을 포함한 전체 상한은 max_grids_per_run이다. 순환 수집으로
+    # 고정 표본 밖의 위치도 방문한다. 재시도·수동 실행·공유 키 호출은 별도다.
     kma_station_fill_max_grids: int = Field(
-        default=150,
+        default=300,
         validation_alias="KOR_TRAVEL_WEATHER_KMA_STATION_FILL_MAX_GRIDS",
         ge=0,
         le=5000,

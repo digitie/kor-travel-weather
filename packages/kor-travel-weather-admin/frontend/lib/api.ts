@@ -187,19 +187,20 @@ function appendProviders(query: URLSearchParams, providers?: readonly string[]) 
   for (const provider of providers ?? []) query.append("provider", provider);
 }
 
-export function getPublicLocations(limit = 1000, offset = 0, providers?: string[], signal?: AbortSignal): Promise<ApiEnvelope<Location[]>> {
+export function getPublicLocations(limit = 1000, offset = 0, providers?: string[], signal?: AbortSignal, weatherOnly = false): Promise<ApiEnvelope<Location[]>> {
   const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   appendProviders(query, providers);
+  if (weatherOnly) query.set("weather_only", "true");
   return request<Location[]>(`/v1/weather/locations?${query}`, { signal });
 }
 
-export async function getAllPublicLocations(providers?: string[], signal?: AbortSignal): Promise<Location[]> {
+export async function getAllPublicLocations(providers?: string[], signal?: AbortSignal, weatherOnly = false): Promise<Location[]> {
   if (providers?.length === 0) return [];
   const pageSize = 1000;
   const all: Location[] = [];
   let offset = 0;
   while (true) {
-    const page = await getPublicLocations(pageSize, offset, providers, signal);
+    const page = await getPublicLocations(pageSize, offset, providers, signal, weatherOnly);
     all.push(...page.data);
     if (page.data.length < pageSize) return all;
     offset += page.data.length;

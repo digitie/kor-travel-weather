@@ -225,8 +225,10 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
   const [sourceError, setSourceError] = useState("");
   const [sourceCatalog, setSourceCatalog] = useState<{ key: string; locations: Location[] } | null>(null);
+  const [includeAlertOnly, setIncludeAlertOnly] = useState(false);
   const providerFilter = selectedSources ?? undefined;
-  const sourceKey = JSON.stringify(selectedSources);
+  const sourceKey = JSON.stringify([selectedSources, includeAlertOnly]);
+  const needsSourceCatalog = selectedSources !== null || !includeAlertOnly;
   const [datasetLabels, setDatasetLabels] = useState<Map<string, string>>(new Map());
   const [providerLabels, setProviderLabels] = useState<Map<string, string>>(new Map());
 
@@ -248,9 +250,9 @@ export function WeatherMap({ locations }: WeatherMapProps) {
 
   useEffect(() => {
     setSourceError("");
-    if (selectedSources === null || !selectedSources.length) return;
+    if (!needsSourceCatalog || selectedSources?.length === 0) return;
     const controller = new AbortController();
-    void getAllPublicLocations(selectedSources, controller.signal)
+    void getAllPublicLocations(selectedSources ?? undefined, controller.signal, !includeAlertOnly)
       .then((next) => {
         if (!controller.signal.aborted) setSourceCatalog({ key: sourceKey, locations: next });
       })
@@ -258,17 +260,17 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         if (!controller.signal.aborted) setSourceError("선택한 소스의 위치를 불러오지 못했습니다. 다시 선택해 주세요.");
       });
     return () => controller.abort();
-  }, [selectedSources, sourceKey]);
-  const sourceLoading = selectedSources !== null && selectedSources.length > 0
+  }, [selectedSources, sourceKey, includeAlertOnly, needsSourceCatalog]);
+  const sourceLoading = needsSourceCatalog && selectedSources?.length !== 0
     && sourceCatalog?.key !== sourceKey && !sourceError;
   const visibleLocations = useMemo(() => {
-    const catalog = selectedSources === null ? locations
-      : !selectedSources.length ? [] : sourceCatalog?.key === sourceKey ? sourceCatalog.locations : [];
+    const catalog = !needsSourceCatalog ? locations
+      : selectedSources?.length === 0 ? [] : sourceCatalog?.key === sourceKey ? sourceCatalog.locations : [];
     const normalized = query.trim().toLocaleLowerCase();
     return normalized ? catalog.filter((location) =>
       `${location.name} ${location.location_id} ${location.region_code ?? ""}`.toLocaleLowerCase().includes(normalized),
     ) : catalog;
-  }, [locations, query, selectedSources, sourceCatalog, sourceKey]);
+  }, [locations, query, selectedSources, sourceCatalog, sourceKey, needsSourceCatalog]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
   const selectedLocationId = selected?.location_id;
   // Keep the controlled map center referentially stable while the user pans.
@@ -466,6 +468,10 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           {query ? <button type="button" aria-label="검색어 지우기" onClick={() => setQuery("")}><X size={15} /></button> : null}
         </div>
         <SourceMultiSelect options={sourceOptions} value={selectedSources} onChange={setSelectedSources} />
+        <label className="source-coverage-option">
+          <input type="checkbox" checked={includeAlertOnly} onChange={(event) => setIncludeAlertOnly(event.target.checked)} />
+          특보만 있는 위치 포함
+        </label>
         <div className="view-switcher" role="tablist" aria-label="조회 방식">
           <button aria-controls="weather-map-panel" aria-selected={mode === "map"} className={mode === "map" ? "active" : ""} id="weather-map-tab" onClick={() => setMode("map")} onKeyDown={(event) => handleTabKey(event, "map")} role="tab" tabIndex={mode === "map" ? 0 : -1} type="button"><MapIcon aria-hidden="true" size={15} /> 지도</button>
           <button aria-controls="weather-list-panel" aria-selected={mode === "list"} className={mode === "list" ? "active" : ""} id="weather-list-tab" onClick={() => setMode("list")} onKeyDown={(event) => handleTabKey(event, "list")} role="tab" tabIndex={mode === "list" ? 0 : -1} type="button"><List aria-hidden="true" size={15} /> 목록</button>

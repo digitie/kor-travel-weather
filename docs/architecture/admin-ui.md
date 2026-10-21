@@ -87,12 +87,11 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 
 날씨 지도 소스 필터는 shadcn/ui Radix Dropdown Menu의 체크 항목으로 구현한다.
 관측소의 출처가 아니라 저장된 날씨의 `provider`(KMA·OpenWeatherMap 등)를 선택하며,
-여러 제공처는 OR로 결합하고 위치 검색은 AND로 적용한다. 전체 선택은 기존 전체
-카탈로그를 사용하고 전체 해제는 위치·상세를 비우며 DB 요청을 보내지 않는다.
+여러 제공처는 OR로 결합하고 위치 검색은 AND로 적용한다. 기본적으로 선택 제공처의 일반값이 있는 위치만 표시한다. `특보만 있는 위치 포함`을 켜면 특보 전용 위치도 포함하며 전체 제공처에서도 같은 규칙을 쓴다. 전체 해제는 위치·상세를 비우며 DB 요청을 보내지 않는다.
 제공처별 위치가 로딩 중이면 이전 제공처의 위치·마커·상세를 표시하지 않는다.
 
 공개 `locations`, `latest`, `forecast`, `markers` API는 반복 `provider` query를 받는다.
-위치는 current projection의 제공처 존재 여부를 pagination 전에 검사하고, 관측·예보와
+위치는 current projection의 제공처 존재 여부를 pagination 전에 검사한다. `weather_only=true`이면 같은 행이 metric/domain/dataset의 alert/warning에 속하지 않는지도 검사한다. API 옵션 기본은 false로 기존 계약을 보존하며 미래 예보를 수집 시각 6시간으로 제외하지 않는다. 관측·예보와
 마커 데이터도 SQL LIMIT 전에 제공처를 제한한다. 마커는 기존 metric별 대표 값과
 특보 이벤트별 revision 선택을 유지한다. 마커의 일반 값은 현재 projection의
 `ix_weather_current_values_provider_marker` 부분 인덱스에서 위치·제공처·지표별
