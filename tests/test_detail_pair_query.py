@@ -1,5 +1,6 @@
 """상세 조회가 projection의 정확한 fact revision만 읽는지 검증한다."""
 
+from collections import namedtuple
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -77,9 +78,8 @@ def test_fixed_preference_and_hydration_keep_cacheable_bind_boundaries():
     class Session:
         def execute(self, stmt):
             statements.append(stmt)
-            return SimpleNamespace(all=lambda: [SimpleNamespace(
-                location_id="request'; --", value_id="id", known_at=known,
-            )])
+            pair = namedtuple("Pair", "location_id value_id known_at")
+            return SimpleNamespace(all=lambda: [pair("request'; --", "id", known)])
 
         def scalars(self, stmt):
             statements.append(stmt)

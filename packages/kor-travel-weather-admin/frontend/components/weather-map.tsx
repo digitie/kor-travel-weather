@@ -482,7 +482,6 @@ export function WeatherMap({ locations }: WeatherMapProps) {
             <>
               <div className="inspector-heading"><div><span className="eyebrow">선택한 위치</span><h2>{selected.name}</h2><p>{selected.location_id} · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</p><div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{freshnessTimestamp ? freshnessTimestamp.toLocaleString("ko-KR") : "수집 시각 없음"}</small>{lastRefreshedAt ? <small>확인 {lastRefreshedAt.toLocaleTimeString("ko-KR")}</small> : null}<small>{values[0] ? (providerLabels.get(values[0].provider) ?? values[0].provider) : "제공처 없음"} · {values[0] ? (datasetLabels.get(values[0].dataset_key) ?? values[0].dataset_key) : "데이터셋 없음"}</small>{values[0]?.source_record_key ? <small>원본 {values[0].source_record_key.slice(0, 12)}…</small> : null}</div></div><div className="inspector-actions"><button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button><button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button></div></div>
               {loading ? <div className="loading-block" role="status" aria-live="polite">날씨 조회 중…</div> : null}
-              <>
                 {message ? <div className="empty" role="status">{message}</div> : null}
                 {summaries[selected.location_id]?.measurement_point ? (
                   <div className="measurement-point">
@@ -526,7 +525,6 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                     </div>
                   ) : <p className="muted-note">예보 데이터가 없습니다.</p>}
                 </div>
-              </>}
             </>
           ) : <div className="empty">지도에서 위치를 선택하세요.</div>}
         </aside>
