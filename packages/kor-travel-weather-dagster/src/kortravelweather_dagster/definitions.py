@@ -236,7 +236,7 @@ class StationFill:
     stations_total: int
     grids_total: int
     rotation_slot: int = 0
-    rotation_runs: int = 1
+    rotation_runs: int | None = 1
 
     def coverage_line(self) -> str:
         return (
@@ -332,7 +332,8 @@ def _station_grid_fill(
         stations_total=len(stations),
         grids_total=len(by_grid) + covered_station_grids,
         rotation_slot=rotation_slot,
-        rotation_runs=(len(by_grid) + budget - 1) // budget if budget > 0 else 0,
+        rotation_runs=((len(by_grid) + budget - 1) // budget if budget > 0
+                       else None if by_grid else 0),
     )
 
 
@@ -418,10 +419,13 @@ def _make_kma_dataset_asset(
         )
         if fill is not None:
             context.log.info(fill.coverage_line())
-            context.log.info(
-                "station rotation: slot %s, full sweep needs %s consecutive successful slots",
-                fill.rotation_slot, fill.rotation_runs,
-            )
+            if fill.rotation_runs is None:
+                context.log.info("station rotation disabled: no grid budget for remaining stations")
+            else:
+                context.log.info(
+                    "station rotation: slot %s, full sweep needs %s consecutive successful slots",
+                    fill.rotation_slot, fill.rotation_runs,
+                )
         if include_mid and not any(target.has_mid for target in targets):
             # Mid-forecast regions are configuration (env TARGETS or admin
             # metadata); stations carry none.  An unconfigured source is

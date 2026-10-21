@@ -224,6 +224,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [viewport, setViewport] = useState<MapViewport | null>(null);
   const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
   const [sourceError, setSourceError] = useState("");
+  const [sourceListError, setSourceListError] = useState("");
   const [sourceCatalog, setSourceCatalog] = useState<{ key: string; locations: Location[] } | null>(null);
   const [includeAlertOnly, setIncludeAlertOnly] = useState(false);
   const providerFilter = selectedSources ?? undefined;
@@ -245,7 +246,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         setDatasetLabels(datasets);
         setProviderLabels(providers);
       })
-      .catch(() => setSourceError("소스 목록을 불러오지 못했습니다. 페이지를 새로고침해 주세요."));
+      .catch(() => setSourceListError("소스 목록을 불러오지 못했습니다. 페이지를 새로고침해 주세요."));
   }, []);
 
   useEffect(() => {
@@ -481,6 +482,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
 
       {sourceLoading ? <p className="muted-note" role="status">소스별 위치 조회 중…</p> : null}
       {sourceError ? <p className="muted-note" role="alert">{sourceError}</p> : null}
+      {sourceListError ? <p className="muted-note" role="alert">{sourceListError}</p> : null}
       <div className={`weather-layout ${mode === "list" ? "list-mode" : ""}`}>
         <div className="map-card">
           <div aria-labelledby="weather-map-tab" className="map-panel" hidden={mode !== "map"} id="weather-map-panel" role="tabpanel" tabIndex={0}>

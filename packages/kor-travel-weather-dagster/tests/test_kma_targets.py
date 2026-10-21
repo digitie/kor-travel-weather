@@ -216,6 +216,7 @@ def test_station_fill_can_be_switched_off() -> None:
     targets, fill = _fill(_station_catalog(), kma_station_fill_max_grids=0)
     assert targets == []
     assert fill.grids_filled == 0
+    assert fill.rotation_runs is None
 
 
 def test_station_fill_is_stable_when_the_budget_grows() -> None:
