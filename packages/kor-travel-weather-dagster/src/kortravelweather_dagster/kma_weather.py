@@ -8,8 +8,8 @@ import json
 import logging
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import AsyncExitStack, aclosing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -132,6 +132,41 @@ GRID_PUBLISH_LOCATIONS = PUBLISH_CHUNK_LOCATIONS
 # 한 위치의 facts가 상한보다 크면 해당 위치를 나누지 않는다.
 GRID_STAGE_VALUES = 2_500
 GRID_PUBLISH_VALUES = 2_500
+
+# HTTP 응답은 순서대로 소비하고 두 격자까지만 선행 요청한다. DB 게시자는 하나다.
+GRID_FETCH_CONCURRENCY = 2
+GRID_RESPONSE_ROWS = 5_000
+GRID_RESPONSE_VALUES = 5_000
+GRID_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+async def _prefetch_grids(
+    calls: Iterable[Callable[[], Awaitable[Any]]],
+) -> AsyncIterator[Any]:
+    """대기 응답 수를 제한하고 소비자 오류·취소 시 선행 요청을 모두 회수한다."""
+    pending: list[asyncio.Task[Any]] = []
+    iterator = iter(calls)
+    try:
+        while True:
+            while len(pending) < GRID_FETCH_CONCURRENCY:
+                call = next(iterator, None)
+                if call is None:
+                    break
+                pending.append(asyncio.create_task(call()))
+            if not pending:
+                break
+            # 먼저 요청한 격자부터 소비해 lineage와 부분 성공 순서를 유지한다.
+            task = pending[0]
+            result = await task
+            pending.pop(0)
+            yield result
+            del result, task
+    finally:
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -583,6 +618,13 @@ async def stage_grid(
     if values_budget is not None and values_budget <= 0:
         raise ValueError("normalized fact 예산이 소진되었습니다.")
 
+    def require_remaining() -> None:
+        # 정확히 상한만큼 받은 마지막 dataset은 성공이다. 추가 요청 직전에만 거절한다.
+        if rows_budget is not None and rows_budget <= 0:
+            raise ValueError("provider response row 수가 상한을 초과했습니다.")
+        if values_budget is not None and values_budget <= 0:
+            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+
     def row_limit(multiplier: int = 1) -> int | None:
         if rows_budget is None:
             return None
@@ -593,6 +635,7 @@ async def stage_grid(
 
     active_base_datasets = base_datasets if base_datasets is not None else BASE_GRID_DATASETS
     if include_base and KMA_ULTRA_SHORT_NOWCAST in active_base_datasets:
+        require_remaining()
         snapshot = await _kma_provider_call(
             lambda: client.now(nx=location.nx, ny=location.ny),
             dataset="kma_ultra_short_nowcast",
@@ -625,11 +668,8 @@ async def stage_grid(
                 now_values,
             )
         )
-        if rows_budget is not None and rows_budget <= 0:
-            raise ValueError("provider response row 수가 상한을 초과했습니다.")
-        if values_budget is not None and values_budget <= 0:
-            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
     if include_base and KMA_ULTRA_SHORT_FORECAST in active_base_datasets:
+        require_remaining()
         ultra_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: client.forecast.short(nx=location.nx, ny=location.ny),
@@ -660,11 +700,8 @@ async def stage_grid(
                 ultra_values,
             )
         )
-        if rows_budget is not None and rows_budget <= 0:
-            raise ValueError("provider response row 수가 상한을 초과했습니다.")
-        if values_budget is not None and values_budget <= 0:
-            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
     if include_base and KMA_SHORT_FORECAST in active_base_datasets:
+        require_remaining()
         short_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: client.forecast.vilage(nx=location.nx, ny=location.ny),
@@ -696,6 +733,7 @@ async def stage_grid(
         if values_budget is not None:
             values_budget -= len(short_values)
     if include_mid and target.has_mid:
+        require_remaining()
         if data_client is None:
             raise ValueError("중기예보에는 DataGoKrClient가 필요합니다.")
         land_region_code = target.land_region_code
@@ -739,10 +777,7 @@ async def stage_grid(
                 land_values,
             )
         )
-        if rows_budget is not None and rows_budget <= 0:
-            raise ValueError("provider response row 수가 상한을 초과했습니다.")
-        if values_budget is not None and values_budget <= 0:
-            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+        require_remaining()
         temp_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: data_client.mid_temperature_forecast(reg_id=temperature_region_code),
@@ -868,7 +903,7 @@ async def _run_weather_sync(
     retries: int = 0,
     sync_run: Any | None = None,
 ) -> dict[str, Any]:
-    """Fetch and publish every grid with bounded, sequential staging."""
+    """두 격자까지 선행 요청하고 한 게시자가 제한된 배치로 저장한다."""
     async with AsyncExitStack() as clients:
         await clients.enter_async_context(client)
         if data_client is not None:
@@ -1070,30 +1105,21 @@ async def _stage_and_publish_weather(
             sources.clear()
             values.clear()
 
-        async def stage_and_append(
-            target: WeatherTarget,
+        async def fetch_group(
             group_targets: Sequence[WeatherTarget],
-            *,
             include_mid_for_group: bool,
             source_entity_id: str,
-        ) -> None:
-            nonlocal response_rows_total, normalized_values_total, values_accepted
-            if len(sources) >= KMA_STAGE_SOURCES:
-                await flush_grid_batch()
-            keep_alive()
-            remaining_rows = max_response_rows - response_rows_total
+        ) -> tuple[Sequence[WeatherTarget], list[StagedResponse], Counter[str]]:
+            remaining_rows = min(GRID_RESPONSE_ROWS, max_response_rows - response_rows_total)
             remaining_values = max_values - normalized_values_total
             if remaining_rows <= 0:
                 raise ValueError("provider response row 예산이 소진되었습니다.")
             if remaining_values < len(group_targets):
-                raise ValueError(
-                    "normalized fact 예산이 target fan-out을 수용하지 못합니다: "
-                    f"{remaining_values} < {len(group_targets)}"
-                )
-            per_target_values = max(1, remaining_values // len(group_targets))
+                raise ValueError("normalized fact 예산이 target fan-out을 수용하지 못합니다.")
+            skipped: Counter[str] = Counter()
             responses = await stage_grid(
                 client=client,
-                target=target,
+                target=group_targets[0],
                 include_mid=include_mid_for_group,
                 include_base=include_base and not include_mid_for_group,
                 base_datasets=base_datasets,
@@ -1101,9 +1127,37 @@ async def _stage_and_publish_weather(
                 retries=retries,
                 source_entity_id=source_entity_id,
                 max_response_rows=remaining_rows,
-                max_normalized_values=per_target_values,
-                skipped=values_skipped,
+                max_normalized_values=min(
+                    GRID_RESPONSE_VALUES, max(1, remaining_values // len(group_targets))
+                ),
+                skipped=skipped,
             )
+            # provider 내부의 일시적 할당은 라이브러리가 소유한다. 대기열에는
+            # 격자당 raw JSON 8MiB·정규화 fact 5,000개 이내만 진입시킨다.
+            size = sum(len(json.dumps(response.source_record, ensure_ascii=False,
+                                      default=str).encode("utf-8")) for response in responses)
+            if size > GRID_RESPONSE_BYTES:
+                raise ValueError("격자 응답 바이트 상한을 초과했습니다.")
+            return group_targets, responses, skipped
+
+        async def append_group(
+            group_targets: Sequence[WeatherTarget],
+            responses: list[StagedResponse],
+            skipped: Counter[str],
+        ) -> None:
+            nonlocal response_rows_total, normalized_values_total, values_accepted
+            if len(sources) >= KMA_STAGE_SOURCES:
+                await flush_grid_batch()
+            keep_alive()
+            # 선행 요청은 이전 격자의 예산 차감을 기다리지 않으므로 소비 시 재검사한다.
+            rows = sum(len((response.source_record.get("payload") or {}).get("rows", []))
+                       for response in responses)
+            facts = sum(len(response.values) for response in responses) * len(group_targets)
+            if response_rows_total + rows > max_response_rows:
+                raise ValueError("provider response row 수가 상한을 초과했습니다.")
+            if normalized_values_total + facts > max_values:
+                raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+            values_skipped.update(skipped)
             values_accepted += sum(len(response.values) for response in responses)
             for response in responses:
                 payload = response.source_record.get("payload") or {}
@@ -1144,23 +1198,26 @@ async def _stage_and_publish_weather(
                         await flush_grid_batch()
             keep_alive()
 
-        # Grid requests are deduplicated first; each staged response is
-        # immediately bounded, fanned out, and released before the next grid.
+        calls = []
         if include_base:
-            for grid_key, group_targets in grid_groups.items():
-                await stage_and_append(
-                    group_targets[0],
-                    group_targets,
-                    include_mid_for_group=False,
-                    source_entity_id=f"grid:{grid_key[0]}:{grid_key[1]}",
-                )
-        for mid_region_codes, group_targets in mid_groups.items():
-            await stage_and_append(
-                group_targets[0],
-                group_targets,
-                include_mid_for_group=True,
-                source_entity_id=f"mid-region:{mid_region_codes[0]}:{mid_region_codes[1]}",
+            calls.extend(
+                (lambda group=group_targets, key=grid_key: fetch_group(
+                    group, False, f"grid:{key[0]}:{key[1]}"
+                ))
+                for grid_key, group_targets in grid_groups.items()
             )
+        calls.extend(
+            (lambda group=group_targets, key=mid_region_codes: fetch_group(
+                group, True, f"mid-region:{key[0]}:{key[1]}"
+            ))
+            for mid_region_codes, group_targets in mid_groups.items()
+        )
+        # aclosing은 append/DB 실패 시에도 generator의 finally를 즉시 실행한다.
+        keep_alive()
+        async with aclosing(_prefetch_grids(calls)) as prefetched:
+            async for group_targets, responses, skipped in prefetched:
+                await append_group(group_targets, responses, skipped)
+                del group_targets, responses, skipped
         alert_groups = 0
         alert_rows_total = 0
         if include_alerts:
@@ -1417,7 +1474,7 @@ async def _stage_and_publish_weather(
             "alert_locations_skipped_sample": alerts_skipped[:ALERT_SKIP_LOG_IDS],
             "alert_locations_starved": alerts_starved,
         }
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         repository.finish_sync_run(
             run.run_id,
             status="failed",
@@ -1426,7 +1483,8 @@ async def _stage_and_publish_weather(
             # row; ``published_values`` misses a chunk whose COMMIT landed
             # but whose reply did not.
             values_loaded=None,
-            error=str(exc)[:2000],
+            error=("collection cancelled" if isinstance(exc, asyncio.CancelledError)
+                   else str(exc)[:2000]),
         )
         raise
 
