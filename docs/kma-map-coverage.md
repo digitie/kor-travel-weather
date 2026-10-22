@@ -12,7 +12,7 @@ DB에 nx/ny가 저장된 389곳의 격자는 268개지만, 미계산 좌표를 `
 
 지도는 선택한 제공처에 일반값이 있는 위치를 기본 조회한다. `특보만 있는 위치 포함`으로 특보 전용 위치도 볼 수 있다. API의 기존 기본 동작은 유지하며 `weather_only=true`에만 일반값 조건을 적용한다. provider와 일반값 조건은 같은 EXISTS에서 결합하고 페이지 제한 전에 실행한다. 미래 예보는 과거 수집 시각만으로 제거하지 않는다.
 
-또한 KMA 실황 `T1H`·`RN1`을 기온·강수 요약과 마커에서 인식하도록 보완했다. 값이 없을 때 0도로 보이던 변환도 막고 실제 0도와 음수는 유지한다.
+또한 KMA 실황 `T1H`를 기온 카드·마커에서, `RN1`을 강수 카드에서 인식하도록 보완했다. 값이 없을 때 0도로 보이던 변환도 막고 실제 0도와 음수는 유지한다.
 
 ## 자원·요청 예산
 
@@ -25,7 +25,7 @@ DB에 nx/ny가 저장된 389곳의 격자는 268개지만, 미계산 좌표를 `
 
 구현 PR [#128](https://github.com/digitie/kor-travel-weather/pull/128)은 두 적대적 리뷰어의 지적을 반영하고 머지했다. 추가 예산 0의 순환 로그, provider 목록 장애 안내 유지 문제를 수정했으며 최종 소스 `3a0ae398`의 미해결 P0/P1/P2는 없다.
 
-Python 전체 718개, 프런트엔드 223개·type-check·lint, Ruff·OpenAPI export와 최종 커밋의 CI가 통과했다. 운영 DB를 사용하는 별도 API·웹에서 live UI 22개가 통과했고 JavaScript/API 오류 0, VWorld 48건 성공이었다. 실제 KMA marker 응답, T1H·RN1 카드, 단일/복수 제공처, 특보 전용 위치 포함, 빠른 필터 변경, 목록 선택, 모바일, provider 목록의 의도적 503, 로그인·로그아웃을 확인했다.
+Python 전체 718개, 프런트엔드 223개·type-check·lint, Ruff·OpenAPI export와 최종 커밋의 CI가 통과했다. 운영 DB를 사용하는 별도 API·웹에서 live UI 22개가 통과했고 예상하지 않은 JavaScript/API 오류 0, VWorld 48건 성공이었다. 실제 KMA marker 응답, T1H·RN1 카드, 단일/복수 제공처, 특보 전용 위치 포함, 빠른 필터 변경, 목록 선택, 모바일, provider 목록의 의도적 503, 로그인·로그아웃을 확인했다.
 
 초기 시험의 `route.fetch` 및 raw HTTP→`route.fulfill` 중계에서는 취소/지도 렌더링 정체가 있었다. loopback HTTPS streaming proxy와 Chromium host resolver를 사용해 공개 origin과 브라우저 취소 동작을 유지한 경로에서 전 케이스를 확인했다. 초기 실패 보고는 최종 통과 근거로 사용하지 않는다. 공개 HTTPS 운영 검증은 배포 후 별도로 수행한다.
 
@@ -35,7 +35,7 @@ Odroid NVMe에서 ARM64 이미지를 만들고 API·웹·code-server를 `3a0ae39
 
 ## 실제 수집·운영 UI 결과
 
-2026-10-22 KST에 nowcast 검증용 슬롯 0~3을 순서대로 실행했고 모두 성공했다. 합쳐서 1,076개 격자 원천·1,450곳의 최근 일반값을 확인했다. 최근 6시간·24시간 내 일반 KMA 값이 있는 위치는 기존 258곳에서 1,450곳으로 늘었다. 이는 T1H 대표값을 우선하고 T1H가 없으면 PTY를 확인한 결과다. 수집 run→source→현재값→fact의 연결을 사용하며 read-only transaction과 SQL 12초 제한을 적용했다.
+2026-10-22 KST에 nowcast 검증용 슬롯 0~3을 순서대로 실행했고 모두 성공했다. 합쳐서 1,076개 격자 원천·1,450곳의 최근 일반값을 확인했다. 최근 24시간 내 일반 KMA 값이 있는 위치는 기존 258곳에서 1,450곳으로 늘었다. 개선 후 최근 6시간 기준도 1,450곳이다. 이는 T1H 대표값을 우선하고 T1H가 없으면 PTY를 확인한 결과다. 수집 run→source→현재값→fact의 연결을 사용하며 read-only transaction과 SQL 12초 제한을 적용했다.
 
 유효 기온 T1H는 1,445곳이다. 협재해수욕장·연평도·삼척해수욕장·격렬비열도·춘천 가리산 5곳은 이번 원본 응답에 T1H=-999, RN1=-998.9, REH=-998 등이 왔고, 정규화 후 PTY=0만 남았다. 이 5곳을 기온 수집 성공으로 세지 않는다. 원본을 보존하며 다음 순환에서 원천 응답이 회복되면 다시 갱신한다.
 
@@ -50,7 +50,7 @@ Odroid NVMe에서 ARM64 이미지를 만들고 API·웹·code-server를 `3a0ae39
 
 CPU는 수집 구간 내 약 10초 간격 샘플의 한 코어 환산값이며 호스트 전체 사용률이 아니다. 메모리는 code-server·worker·page cache를 포함한 cgroup current 샘플 최댓값이다. cgroup 수명 전체 peak는 최대 402.50MiB였고 기동 과정도 포함한다. 동일 작업의 변경 전후 대조 실험이 아니므로 CPU·메모리 저감률을 주장하지 않는다.
 
-스케줄 18개 RUNNING, 센서 3개 RUNNING·1개 STOPPED로 원래 상태를 복원하고 전체 일치를 확인했다. daemon은 유지했다. 공개 HTTPS의 live UI 22개도 모두 통과했다. KMA 일반값 필터 1,450곳, 실제 marker 응답, T1H 5.5 deg_c·RN1 0 mm 카드, 빠른 전환·모바일·장애 안내·로그아웃을 확인했고 JavaScript/API 오류 0, VWorld 48건 성공이었다.
+스케줄 18개 RUNNING, 센서 3개 RUNNING·1개 STOPPED로 원래 상태를 복원하고 전체 일치를 확인했다. daemon은 유지했다. 공개 HTTPS의 live UI 22개도 모두 통과했다. KMA 일반값 필터 1,450곳, 실제 marker 응답, T1H 5.5 deg_c·RN1 0 mm 카드, 빠른 전환·모바일·장애 안내·로그아웃을 확인했고 예상하지 않은 JavaScript/API 오류 0, VWorld 48건 성공이었다.
 
 ## 근거 파일
 
