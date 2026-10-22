@@ -1,0 +1,30 @@
+{
+  "phase": "PASS",
+  "source": "3a0ae39875dde7987ee6d907af885093b95b471e",
+  "version": {
+    "service": "kor-travel-weather",
+    "version": "0.1.0.dev0",
+    "git_commit": "3a0ae39875dde7987ee6d907af885093b95b471e"
+  },
+  "collector_settings": {
+    "fill": 300,
+    "ceiling": 300,
+    "revision": "3a0ae39875dde7987ee6d907af885093b95b471e"
+  },
+  "unchanged_foreign_container_count": 9,
+  "attempts": 2,
+  "first_attempt": "ROLLED_BACK after premature readiness probe",
+  "final_code_server_probe": {
+    "phase": "PASS",
+    "socket_ready_seconds": 40.75,
+    "health_finished_seconds": 55.21,
+    "exit_code": 0
+  },
+  "staged_repository_load": {
+    "phase": "PASS",
+    "type": "ListRepositoriesResponse",
+    "repositories": [
+      "__repository__"
+    ]
+  }
+}
