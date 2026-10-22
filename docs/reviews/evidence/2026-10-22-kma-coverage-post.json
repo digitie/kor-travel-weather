@@ -1,0 +1,113 @@
+{
+  "source": "3a0ae39875dde7987ee6d907af885093b95b471e",
+  "mode": "read_only_operating_database",
+  "measured_at": "2026-10-22T01:13:49.439395+00:00",
+  "coverage": {
+    "source_lineage": {
+      "source_entities": 1076,
+      "source_records": 1076
+    },
+    "cohort_current_marker_facts": {
+      "active_locations": 1450,
+      "active_marker_locations": 1450,
+      "temperature_locations": 1445,
+      "precipitation_type_only_locations": 5,
+      "refreshed_last_6h": 1450,
+      "refreshed_last_24h": 1450,
+      "oldest_collected_at": "2026-10-22T00:51:37.57856+00:00",
+      "newest_collected_at": "2026-10-22T01:02:30.066962+00:00",
+      "transaction_read_only": "on",
+      "statement_timeout": "12s"
+    }
+  },
+  "runs": [
+    {
+      "slot": 0,
+      "dagster_run_id": "7f6dd4c8-2fd4-5a7f-b60e-a7402161e3ec",
+      "sync_run": {
+        "run_id": "run_2ba9db1a815a4456b89e92a226754147",
+        "status": "success",
+        "started_at": "2026-10-22 00:51:27.224526+00:00",
+        "finished_at": "2026-10-22 00:53:35.397805+00:00",
+        "locations_total": 422,
+        "grids_fetched": 300,
+        "requests_fetched": 300,
+        "values_loaded": 3369,
+        "has_error": false
+      },
+      "sample_count": 13,
+      "observation_seconds": 123.26,
+      "sampled_max_cgroup_current_mib": 380.84,
+      "cgroup_lifetime_peak_mib": 383.64,
+      "sampled_average_cpu_one_core_percent": 46.65
+    },
+    {
+      "slot": 1,
+      "dagster_run_id": "19a3e37c-281e-51c9-acff-227169889658",
+      "sync_run": {
+        "run_id": "run_2dbf63e427bc4331b5a2e8c56f4d23cf",
+        "status": "success",
+        "started_at": "2026-10-22 00:54:36.221564+00:00",
+        "finished_at": "2026-10-22 00:56:30.817346+00:00",
+        "locations_total": 406,
+        "grids_fetched": 300,
+        "requests_fetched": 300,
+        "values_loaded": 2714,
+        "has_error": false
+      },
+      "sample_count": 11,
+      "observation_seconds": 102.55,
+      "sampled_max_cgroup_current_mib": 369.02,
+      "cgroup_lifetime_peak_mib": 384.98,
+      "sampled_average_cpu_one_core_percent": 57.8
+    },
+    {
+      "slot": 2,
+      "dagster_run_id": "af582652-d35d-5c74-9c82-0d906feb08fb",
+      "sync_run": {
+        "run_id": "run_e51b577c5d8346e496b8a6e276cd8e92",
+        "status": "success",
+        "started_at": "2026-10-22 00:57:46.630479+00:00",
+        "finished_at": "2026-10-22 00:59:41.082712+00:00",
+        "locations_total": 446,
+        "grids_fetched": 300,
+        "requests_fetched": 300,
+        "values_loaded": 3048,
+        "has_error": false
+      },
+      "sample_count": 11,
+      "observation_seconds": 102.46,
+      "sampled_max_cgroup_current_mib": 386.46,
+      "cgroup_lifetime_peak_mib": 402.23,
+      "sampled_average_cpu_one_core_percent": 56.47
+    },
+    {
+      "slot": 3,
+      "dagster_run_id": "4a648b1c-8471-5f50-90dd-aef5badeccfa",
+      "sync_run": {
+        "run_id": "run_65171c014dc34edd9c8a36d160ecb877",
+        "status": "success",
+        "started_at": "2026-10-22 01:00:42.089089+00:00",
+        "finished_at": "2026-10-22 01:02:49.699526+00:00",
+        "locations_total": 454,
+        "grids_fetched": 300,
+        "requests_fetched": 300,
+        "values_loaded": 2434,
+        "has_error": false
+      },
+      "sample_count": 12,
+      "observation_seconds": 113.99,
+      "sampled_max_cgroup_current_mib": 386.74,
+      "cgroup_lifetime_peak_mib": 402.5,
+      "sampled_average_cpu_one_core_percent": 59.47
+    }
+  ],
+  "instigators_restore_exit": 0,
+  "limitations": [
+    "Four nowcast slots were launched sequentially with explicit slot tags, not observed over four natural hourly ticks.",
+    "Source entities are counted through sync run source lineage. Per-location cohort T1H pointers (PTY fallback when T1H is absent) are selected with an index and LIMIT before bounded fact lookup; collected_at establishes freshness.",
+    "CPU is one-core equivalent during sampled collection interval, not percentage of total host capacity.",
+    "cgroup current includes code-server, workers and page cache; lifetime peak also includes startup.",
+    "No controlled same-workload before/after CPU or memory reduction claim."
+  ]
+}

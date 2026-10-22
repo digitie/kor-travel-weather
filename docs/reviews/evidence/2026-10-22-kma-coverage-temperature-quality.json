@@ -1,0 +1,192 @@
+[
+  {
+    "location_id": "airkorea-station-28b66347b615",
+    "raw_categories": [
+      {
+        "category": "PTY",
+        "value": "0"
+      },
+      {
+        "category": "REH",
+        "value": "-998"
+      },
+      {
+        "category": "RN1",
+        "value": "-998.9"
+      },
+      {
+        "category": "T1H",
+        "value": "-999"
+      },
+      {
+        "category": "UUU",
+        "value": "-998.9"
+      },
+      {
+        "category": "VEC",
+        "value": "-998"
+      },
+      {
+        "category": "VVV",
+        "value": "-998.9"
+      },
+      {
+        "category": "WSD",
+        "value": "-998.9"
+      }
+    ],
+    "root_fields": []
+  },
+  {
+    "location_id": "airkorea-station-51388a0aeab6",
+    "raw_categories": [
+      {
+        "category": "PTY",
+        "value": "0"
+      },
+      {
+        "category": "REH",
+        "value": "-998"
+      },
+      {
+        "category": "RN1",
+        "value": "-998.9"
+      },
+      {
+        "category": "T1H",
+        "value": "-999"
+      },
+      {
+        "category": "UUU",
+        "value": "-998.9"
+      },
+      {
+        "category": "VEC",
+        "value": "-998"
+      },
+      {
+        "category": "VVV",
+        "value": "-998.9"
+      },
+      {
+        "category": "WSD",
+        "value": "-998.9"
+      }
+    ],
+    "root_fields": []
+  },
+  {
+    "location_id": "khoa-BCH009",
+    "raw_categories": [
+      {
+        "category": "PTY",
+        "value": "0"
+      },
+      {
+        "category": "REH",
+        "value": "-998"
+      },
+      {
+        "category": "RN1",
+        "value": "-998.9"
+      },
+      {
+        "category": "T1H",
+        "value": "-999"
+      },
+      {
+        "category": "UUU",
+        "value": "-998.9"
+      },
+      {
+        "category": "VEC",
+        "value": "-998"
+      },
+      {
+        "category": "VVV",
+        "value": "-998.9"
+      },
+      {
+        "category": "WSD",
+        "value": "-998.9"
+      }
+    ],
+    "root_fields": []
+  },
+  {
+    "location_id": "khoa-BCH020",
+    "raw_categories": [
+      {
+        "category": "PTY",
+        "value": "0"
+      },
+      {
+        "category": "REH",
+        "value": "-998"
+      },
+      {
+        "category": "RN1",
+        "value": "-998.9"
+      },
+      {
+        "category": "T1H",
+        "value": "-999"
+      },
+      {
+        "category": "UUU",
+        "value": "-998.9"
+      },
+      {
+        "category": "VEC",
+        "value": "-998"
+      },
+      {
+        "category": "VVV",
+        "value": "-998.9"
+      },
+      {
+        "category": "WSD",
+        "value": "-998.9"
+      }
+    ],
+    "root_fields": []
+  },
+  {
+    "location_id": "krforest-2911",
+    "raw_categories": [
+      {
+        "category": "PTY",
+        "value": "0"
+      },
+      {
+        "category": "REH",
+        "value": "-998"
+      },
+      {
+        "category": "RN1",
+        "value": "-998.9"
+      },
+      {
+        "category": "T1H",
+        "value": "-999"
+      },
+      {
+        "category": "UUU",
+        "value": "-998.9"
+      },
+      {
+        "category": "VEC",
+        "value": "-998"
+      },
+      {
+        "category": "VVV",
+        "value": "-998.9"
+      },
+      {
+        "category": "WSD",
+        "value": "-998.9"
+      }
+    ],
+    "root_fields": []
+  }
+]

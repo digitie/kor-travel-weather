@@ -1,0 +1,40 @@
+{
+  "checked_at": "2026-10-21T23:26:33Z",
+  "mode": "read_only_operating_database",
+  "active_locations": 1450,
+  "stored_grid_locations": 389,
+  "unique_stored_grids": 268,
+  "derived_unique_grids": 1076,
+  "explicit_grids": 21,
+  "old_fixed_fill_budget": 150,
+  "old_run_grids": 171,
+  "old_run_locations": 258,
+  "kma_any_value_locations": 1450,
+  "kma_marker_weather_locations": 358,
+  "marker_weather_refreshed_last_24h": 258,
+  "simulation": {
+    "additional_grids": 1055,
+    "fill_budget_after_explicit": 279,
+    "total_grid_ceiling": 300,
+    "consecutive_successful_slots_for_full_sweep": 4,
+    "all_possible_slice_locations_min": 404,
+    "all_possible_slice_locations_max": 458,
+    "first_four_slots_locations": [
+      422,
+      406,
+      446,
+      454
+    ]
+  },
+  "runtime_limits": {
+    "max_values_per_run": 8000000,
+    "max_response_rows_per_run": 1000000,
+    "max_targets_per_run": 10000
+  },
+  "limitations": [
+    "268 counts stored nx/ny only; full grid count uses python-kma-api public to_grid for missing nx/ny",
+    "General data availability is different from marker metric availability and recent successful refresh",
+    "Simulation assumes unchanged catalog and consecutive successful time slots",
+    "Daily normal schedule request arithmetic excludes HTTP pages/retries/manual runs/shared key consumers"
+  ]
+}

@@ -1,0 +1,237 @@
+{
+  "mode": "production",
+  "cases": [
+    {
+      "name": "real-login-default-all",
+      "pass": true,
+      "count": "1450곳"
+    },
+    {
+      "name": "keyboard-open-menu",
+      "pass": true
+    },
+    {
+      "name": "clear-all-empty-and-no-requests",
+      "pass": true
+    },
+    {
+      "name": "single-provider-marker-data",
+      "pass": true,
+      "locations": 60
+    },
+    {
+      "name": "single-provider-keyboard-filter",
+      "pass": true,
+      "count": "500곳"
+    },
+    {
+      "name": "multiple-provider-marker-data",
+      "pass": true,
+      "locations": 60
+    },
+    {
+      "name": "multiple-providers-or",
+      "pass": true,
+      "count": "500곳"
+    },
+    {
+      "name": "remove-provider-refetches-detail",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-empty",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-match",
+      "pass": true,
+      "title": "가평"
+    },
+    {
+      "name": "all-recheck-normalizes-and-restores",
+      "pass": true
+    },
+    {
+      "name": "rapid-filter-last-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "default-general-values-scope",
+      "pass": true
+    },
+    {
+      "name": "kma-real-marker-weather-response",
+      "pass": true,
+      "locations": 60,
+      "latestRows": 120
+    },
+    {
+      "name": "kma-general-values-catalog",
+      "pass": true,
+      "count": 1450
+    },
+    {
+      "name": "kma-nowcast-temperature-and-rain-cards",
+      "pass": true,
+      "temperature": "5.5 deg_c",
+      "precipitation": "0 mm"
+    },
+    {
+      "name": "kma-alert-only-inclusion",
+      "pass": true,
+      "count": 1450
+    },
+    {
+      "name": "kma-list-selection-restores-map-detail",
+      "pass": true
+    },
+    {
+      "name": "rapid-scope-toggle-last-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "mobile-menu-layout",
+      "pass": true
+    },
+    {
+      "name": "injected-provider-list-failure-survives-scope-toggle",
+      "pass": true,
+      "expected_status": 503
+    },
+    {
+      "name": "real-logout",
+      "pass": true
+    }
+  ],
+  "errors": [],
+  "httpErrors": [],
+  "relayErrors": [],
+  "tiles": {
+    "ok": 48,
+    "failed": 0
+  },
+  "pass": true,
+  "source": "3a0ae39875dde7987ee6d907af885093b95b471e",
+  "transport": "Direct public HTTPS, no staging relay or host override",
+  "timezone": "Asia/Seoul",
+  "request_count": 146,
+  "browser_cancelled_requests": 88,
+  "unexpected_failed_requests": [],
+  "filtered_responses": [
+    {
+      "endpoint": "forecast",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 100
+    },
+    {
+      "endpoint": "latest",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 200
+    },
+    {
+      "endpoint": "markers",
+      "selected": [
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 120
+    },
+    {
+      "endpoint": "forecast",
+      "selected": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "returned": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "rows": 100
+    },
+    {
+      "endpoint": "latest",
+      "selected": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap",
+        "weatherapi"
+      ],
+      "rows": 200
+    },
+    {
+      "endpoint": "markers",
+      "selected": [
+        "weatherapi",
+        "openweathermap"
+      ],
+      "returned": [
+        "openweathermap"
+      ],
+      "rows": 120
+    },
+    {
+      "endpoint": "latest",
+      "selected": [
+        "weatherapi"
+      ],
+      "returned": [
+        "weatherapi"
+      ],
+      "rows": 200
+    },
+    {
+      "endpoint": "forecast",
+      "selected": [
+        "weatherapi"
+      ],
+      "returned": [
+        "weatherapi"
+      ],
+      "rows": 100
+    },
+    {
+      "endpoint": "forecast",
+      "selected": [
+        "python-kma-api"
+      ],
+      "returned": [
+        "python-kma-api"
+      ],
+      "rows": 100
+    },
+    {
+      "endpoint": "latest",
+      "selected": [
+        "python-kma-api"
+      ],
+      "returned": [
+        "python-kma-api"
+      ],
+      "rows": 186
+    },
+    {
+      "endpoint": "markers",
+      "selected": [
+        "python-kma-api"
+      ],
+      "returned": [
+        "python-kma-api"
+      ],
+      "rows": 240
+    }
+  ]
+}
