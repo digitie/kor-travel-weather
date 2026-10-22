@@ -66,9 +66,14 @@ coordinator는 별도 탐색에서 `ERR_NETWORK_CHANGED`와 source catalog 실�
 화면전환/필터 변경으로 취소된 `ERR_ABORTED` 요청과 의도한 503은 예상 밖 오류와 구분했다.
 [격리 UI 요약](evidence/2026-10-23-weather130-isolated-ui.json).
 
-이 22개 검사는 **code-server 운영 교체 전** 결과다. 배포 후 최종 UI 재검증은 coordinator가
-이어 수행할 예정이며, 후속 결과가 오기 전에는 미검증으로 남긴다. 격리 브라우저 성공은 초기
-네트워크 실패를 분리해 관찰한 결과이지 최초 504가 영구 해결됐다는 증거는 아니다.
+앞의 22개 검사는 **code-server 운영 교체 전** 결과다. source HEAD가 배포된 뒤 별도로 수행한
+**최종 UI 재검증도 22개 모두 PASS**였다. 실제 공개 HTTPS를 Docker 격리 network namespace
+브라우저로 접속했고 예상 밖 JS/HTTP 오류는 각각 0, VWorld는 48회 성공/0회 실패다. 이때 API와
+Web은 PR #128 이미지를 유지했고 code-server만 이번 source HEAD였다. 같은
+[UI 증거 JSON](evidence/2026-10-23-weather130-isolated-ui.json)의 `postdeploy_verification`이
+이 최종 결과다. 교체 전·후 검사는 독립된 22개 실행이며 하나의 실행을 중복 집계하지 않는다.
+격리 브라우저 성공은 초기 네트워크 실패를 분리해 관찰한 결과이지 최초 504가 영구 해결됐다는
+증거는 아니다.
 
 ## NVMe 배포와 원래 실행 상태 복원
 

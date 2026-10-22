@@ -38,8 +38,16 @@
     "provenance": "coordinator final review confirmation"
   },
   "postdeploy_ui": {
-    "status": "PENDING",
-    "reason": "coordinator will perform final post-deployment UI revalidation"
+    "status": "PASS",
+    "passed_case_count": 22,
+    "unexpected_js_errors": 0,
+    "unexpected_http_errors": 0,
+    "vworld_success": 48,
+    "vworld_failed": 0,
+    "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+    "evidence": "2026-10-23-weather130-isolated-ui.json#postdeploy_verification",
+    "browser_scope": "실제 공개 HTTPS, Docker 격리 network namespace",
+    "api_web_changed": false
   },
   "operational_notes": {
     "nvme_build_release": true,
