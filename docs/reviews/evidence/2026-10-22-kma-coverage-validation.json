@@ -1,0 +1,61 @@
+{
+  "local_python": {
+    "passed": 718,
+    "seconds": 896.14,
+    "profile": "isolated PostgreSQL weather_map_perf_20261021"
+  },
+  "local_frontend": {
+    "passed": 223,
+    "type_check": "PASS",
+    "lint": "PASS"
+  },
+  "ruff": "PASS",
+  "ci": [
+    {
+      "id": "39698847077",
+      "sha": "3a0ae39875dde7987ee6d907af885093b95b471e",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "python",
+          "conclusion": "success",
+          "url": "https://github.com/digitie/kor-travel-weather/actions/runs/39698847077/job/119562806914"
+        },
+        {
+          "name": "frontend",
+          "conclusion": "success",
+          "url": "https://github.com/digitie/kor-travel-weather/actions/runs/39698847077/job/119562807202"
+        }
+      ]
+    },
+    {
+      "id": "39698850956",
+      "sha": "3a0ae39875dde7987ee6d907af885093b95b471e",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "name": "python",
+          "conclusion": "success",
+          "url": "https://github.com/digitie/kor-travel-weather/actions/runs/39698850956/job/119562821033"
+        },
+        {
+          "name": "frontend",
+          "conclusion": "success",
+          "url": "https://github.com/digitie/kor-travel-weather/actions/runs/39698850956/job/119562821210"
+        }
+      ]
+    }
+  ],
+  "reviewers": {
+    "count": 2,
+    "final_source": "3a0ae39875dde7987ee6d907af885093b95b471e",
+    "open_P0_P1_P2": 0,
+    "addressed": [
+      "zero-budget rotation log distinguished from completed coverage",
+      "provider catalog failure persists after data-scope toggles"
+    ]
+  },
+  "source": "3a0ae39875dde7987ee6d907af885093b95b471e"
+}
