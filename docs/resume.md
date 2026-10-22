@@ -4,11 +4,14 @@
 ## 2026-10-23 Map 서비스 export 설계 — proposed, 구현 미착수
 
 [설계 정본](design/map-service-exports.md)과 W-MAP-01~05를 문서로 수납했다.
-독립 초안 적대 리뷰 2인은 조건부 PASS이며 W5 관측 범위는 사용자 답변 pending, COW는 합산
-실측 gate 통과 전까지 미채택이다. Weather/Transport 구현 소유권은 분리한다.
+독립 초안 적대 리뷰 2인은 조건부 PASS다. 2026-10-23 사용자가 기상청 실황 관측 포함을 승인해
+W-MAP-03 선택 문서화를 완료했다. 기존 OBSERVED + `python-kma-api/kma_ultra_short_nowcast`의
+obsr_value 기반 T1H/RN1/REH/WSD/PTY 실제 관측만 추가하며 일반 예보·외부 예측 NOWCAST는 제외한다.
+W-MAP-04 구현은 성공 receipt/projection W-MAP-02가 계속 선행이고 미착수다. COW는 합산 실측
+게이트 전 미채택이며 Weather/Transport 구현 소유권은 분리한다.
 
-다음 작업은 정확한 문서 HEAD의 2인 리뷰와 문서 머지 판단이다. 코드·schema·운영 변경은 없고
-기능 구현도 착수하지 않았다. 문서 PR의 `[skip ci]`는 후속 기능 PR의 CI·2인 리뷰·배포 전 Map
+PR #132 설계는 머지됐고, 다음 작업은 W5 선택 후속 문서 HEAD의 2인 리뷰와 머지 판단이다.
+코드·schema·운영 변경은 없고 기능 구현도 착수하지 않았다. 문서 PR의 `[skip ci]`는 후속 기능 PR의 CI·2인 리뷰·배포 전 Map
 응답 예시 전달·live E2E/API/UI·실측/배포 게이트를 생략하는 지시가 아니다.
 
 
