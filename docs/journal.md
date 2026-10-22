@@ -1,5 +1,22 @@
 # Weather 작업 기록
 
+
+## 2026-10-23 ADR-114 연계 서비스 export 설계 보존 — proposed
+
+- Weather main `12c3a4adfcd7a030bedaf5346371a5684656ea71`에서 문서 branch를 만들고
+  [설계 정본](design/map-service-exports.md)을 보존했다. 코드·schema·운영 변경과 구현 착수는 없다.
+- Weather의 기존 인증은 require_admin/x-admin-token/AdminToken이며 새 service route에도 재사용한다.
+  Transport 기존 header/CIDR/path·#103과 #104의 병합 순서를 구분하고 소유권을 분리했다.
+- 독립 초안 적대 리뷰 2인의 지적을 반영했다: failed chunk 공개 차단, 성공 재관측 0건/alias 수용,
+  성공 scope barrier·checkpoint vector·상태 집계, 응답시점 미래/weak ETag, TTL과 durable checkpoint,
+  collector+publisher+PG 합산 비용 gate, 강수 interval 증거와 temporal partial/준비 상태 분리.
+- 판정은 조건부 PASS다. W5의 실제 관측 NOWCAST 포함 범위는 사용자 답변 pending이며 해당
+  종속 구현은 대기한다. COW artifact 채택은 실측 gate를 통과해야 한다. 문서 머지가 구현 승인은 아니다.
+- Weather W-MAP-01~05를 미착수로 등록했다. Transport T1~T5는 외부 연계 설계이며 이 저장소의
+  구현/완료로 세지 않는다. 문서 PR은 `[skip ci]`, CI 실행/검토/대기 없이 독립 2인 문서 리뷰 후 판단한다.
+  후속 기능 PR은 정상 CI·2인 리뷰·Map 응답 예시 전달·live E2E/API/UI와 배포 수용을 거쳐야 한다.
+
+
 ## 2026-10-21 외부 provider 긴 sweep run group 분리
 
 - odroid 공용 Dagster는 CPU 포화로 `kortravelweather/run_group=external_weather`를 동시 1개로
