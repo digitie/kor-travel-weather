@@ -1344,6 +1344,7 @@ class WeatherRepository:
         enabled_only: bool = False,
         search: str | None = None,
         providers: Sequence[str] | None = None,
+        weather_only: bool = False,
         limit: int | None = 100,
         offset: int = 0,
         include_metadata: bool = True,
@@ -1368,11 +1369,8 @@ class WeatherRepository:
             )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
-            if providers is not None:
-                stmt = stmt.where(select(WeatherCurrentValueRow.location_id).where(
-                    WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
-                    WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
-                ).exists())
+            if providers is not None or weather_only:
+                stmt = stmt.where(self._catalog_values_exist(providers, weather_only))
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -1396,16 +1394,14 @@ class WeatherRepository:
         enabled_only: bool = False,
         search: str | None = None,
         providers: Sequence[str] | None = None,
+        weather_only: bool = False,
     ) -> int:
         with self._session_factory() as session:
             stmt = select(func.count()).select_from(WeatherLocationRow)
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
-            if providers is not None:
-                stmt = stmt.where(select(WeatherCurrentValueRow.location_id).where(
-                    WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
-                    WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
-                ).exists())
+            if providers is not None or weather_only:
+                stmt = stmt.where(self._catalog_values_exist(providers, weather_only))
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -1413,6 +1409,27 @@ class WeatherRepository:
                     | WeatherLocationRow.location_id.ilike(needle)
                 )
             return int(session.scalar(stmt) or 0)
+
+    @staticmethod
+    def _catalog_values_exist(providers: Sequence[str] | None, weather_only: bool):
+        # 제공처와 일반값은 동일 행에서 판정한다. 다른 제공처의 TEMP 때문에
+        # KMA 특보 전용 위치가 KMA 일반 날씨에 섞이면 안 된다.
+        stmt = select(WeatherCurrentValueRow.location_id).where(
+            WeatherCurrentValueRow.location_id == WeatherLocationRow.location_id,
+        )
+        if providers is not None:
+            stmt = stmt.where(
+                WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers))),
+            )
+        if weather_only:
+            stmt = stmt.where(not_(or_(
+                WeatherCurrentValueRow.metric_key == "ALERT",
+                WeatherCurrentValueRow.weather_domain.ilike("%alert%"),
+                WeatherCurrentValueRow.weather_domain.ilike("%warning%"),
+                WeatherCurrentValueRow.dataset_key.ilike("%alert%"),
+                WeatherCurrentValueRow.dataset_key.ilike("%warning%"),
+            )))
+        return stmt.exists()
 
     def _record_source_session(
         self, session: Session, record: Mapping[str, Any], *,

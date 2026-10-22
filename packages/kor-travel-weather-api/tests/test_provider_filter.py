@@ -58,6 +58,48 @@ def test_provider_catalog_filter_uses_values_not_location_prefix(filtered_client
     assert client.get("/v1/weather/locations?provider=missing").json()["data"] == []
 
 
+def test_weather_only_uses_same_provider_row_before_count_and_pagination(filtered_client):
+    repo = filtered_client.app.state.repository
+    now = datetime.now(UTC)
+    for key, metric, domain, dataset in [
+        ("cross-provider", "ALERT", "weather", "weather"),
+        ("warning-domain", "TEXT", "WeatherWarning", "weather"),
+        ("alert-dataset", "TEXT", "weather", "regional_ALERT"),
+    ]:
+        repo.upsert_location(WeatherLocation(location_id=key, name=key,
+                                            latitude=37, longitude=127))
+        repo.record_source(source_record_key=key, provider="python-kma-api", dataset_key=dataset,
+                           source_entity_type="response", source_entity_id=key, payload={},
+                           fetched_at=now)
+        repo.upsert_values([WeatherValue(
+            location_id=key, provider="python-kma-api", dataset_key=dataset,
+            weather_domain=domain, forecast_style="observed", metric_key=metric,
+            value_text="특보", target_at=now, known_at=now, source_record_key=key,
+        )])
+    repo.record_source(source_record_key="other-weather", provider="openweathermap",
+                       dataset_key="weather", source_entity_type="response",
+                       source_entity_id="cross-provider", payload={}, fetched_at=now)
+    repo.upsert_values([WeatherValue(
+        location_id="cross-provider", provider="openweathermap", dataset_key="weather",
+        weather_domain="weather", forecast_style="short", metric_key="TEMP", value_number=20,
+        target_at=now + timedelta(days=2), known_at=now - timedelta(days=1),
+        source_record_key="other-weather",
+    )])
+    path = "/v1/weather/locations?provider=python-kma-api"
+    assert filtered_client.get(path).json()["meta"]["page"]["total"] == 5
+    body = filtered_client.get(path + "&weather_only=true&limit=1&offset=1").json()
+    assert body["meta"]["page"]["total"] == 2
+    assert [r["location_id"] for r in body["data"]] == ["only-a"]
+    body = filtered_client.get(path + "&weather_only=true&search=cross-provider").json()
+    assert body["data"] == [] and body["meta"]["page"]["total"] == 0
+    # 일반값은 미래 예보도 포함한다. 수집 시각 6시간으로 자르면 안 된다.
+    body = filtered_client.get("/v1/weather/locations?weather_only=true").json()
+    expected = {"krforest-location", "only-a", "cross-provider"}
+    assert {r["location_id"] for r in body["data"]} == expected
+    body = filtered_client.get(path + "&provider=openweathermap&weather_only=true").json()
+    assert {r["location_id"] for r in body["data"]} == expected
+
+
 @pytest.mark.parametrize("suffix", [
     "latest?limit=1", "forecast?limit=1", "forecast?history=true&limit=1",
 ])

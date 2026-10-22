@@ -196,10 +196,10 @@ function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
 function markerTemperature(summary: WeatherMarker | undefined): number | null {
   if (!summary) return null;
   const row = summary.latest.find((value) =>
-    ["TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(value.metric_key),
+    ["T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(value.metric_key),
   );
   if (!row) return null;
-  const numeric = row.value_number ?? Number(row.value_text);
+  const numeric = row.value_number ?? (row.value_text?.trim() ? Number(row.value_text) : NaN);
   return Number.isFinite(numeric) ? numeric : null;
 }
 
@@ -224,9 +224,12 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [viewport, setViewport] = useState<MapViewport | null>(null);
   const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
   const [sourceError, setSourceError] = useState("");
+  const [sourceListError, setSourceListError] = useState("");
   const [sourceCatalog, setSourceCatalog] = useState<{ key: string; locations: Location[] } | null>(null);
+  const [includeAlertOnly, setIncludeAlertOnly] = useState(false);
   const providerFilter = selectedSources ?? undefined;
-  const sourceKey = JSON.stringify(selectedSources);
+  const sourceKey = JSON.stringify([selectedSources, includeAlertOnly]);
+  const needsSourceCatalog = selectedSources !== null || !includeAlertOnly;
   const [datasetLabels, setDatasetLabels] = useState<Map<string, string>>(new Map());
   const [providerLabels, setProviderLabels] = useState<Map<string, string>>(new Map());
 
@@ -243,14 +246,14 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         setDatasetLabels(datasets);
         setProviderLabels(providers);
       })
-      .catch(() => setSourceError("소스 목록을 불러오지 못했습니다. 페이지를 새로고침해 주세요."));
+      .catch(() => setSourceListError("소스 목록을 불러오지 못했습니다. 페이지를 새로고침해 주세요."));
   }, []);
 
   useEffect(() => {
     setSourceError("");
-    if (selectedSources === null || !selectedSources.length) return;
+    if (!needsSourceCatalog || selectedSources?.length === 0) return;
     const controller = new AbortController();
-    void getAllPublicLocations(selectedSources, controller.signal)
+    void getAllPublicLocations(selectedSources ?? undefined, controller.signal, !includeAlertOnly)
       .then((next) => {
         if (!controller.signal.aborted) setSourceCatalog({ key: sourceKey, locations: next });
       })
@@ -258,17 +261,17 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         if (!controller.signal.aborted) setSourceError("선택한 소스의 위치를 불러오지 못했습니다. 다시 선택해 주세요.");
       });
     return () => controller.abort();
-  }, [selectedSources, sourceKey]);
-  const sourceLoading = selectedSources !== null && selectedSources.length > 0
+  }, [selectedSources, sourceKey, includeAlertOnly, needsSourceCatalog]);
+  const sourceLoading = needsSourceCatalog && selectedSources?.length !== 0
     && sourceCatalog?.key !== sourceKey && !sourceError;
   const visibleLocations = useMemo(() => {
-    const catalog = selectedSources === null ? locations
-      : !selectedSources.length ? [] : sourceCatalog?.key === sourceKey ? sourceCatalog.locations : [];
+    const catalog = !needsSourceCatalog ? locations
+      : selectedSources?.length === 0 ? [] : sourceCatalog?.key === sourceKey ? sourceCatalog.locations : [];
     const normalized = query.trim().toLocaleLowerCase();
     return normalized ? catalog.filter((location) =>
       `${location.name} ${location.location_id} ${location.region_code ?? ""}`.toLocaleLowerCase().includes(normalized),
     ) : catalog;
-  }, [locations, query, selectedSources, sourceCatalog, sourceKey]);
+  }, [locations, query, selectedSources, sourceCatalog, sourceKey, needsSourceCatalog]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
   const selectedLocationId = selected?.location_id;
   // Keep the controlled map center referentially stable while the user pans.
@@ -466,6 +469,10 @@ export function WeatherMap({ locations }: WeatherMapProps) {
           {query ? <button type="button" aria-label="검색어 지우기" onClick={() => setQuery("")}><X size={15} /></button> : null}
         </div>
         <SourceMultiSelect options={sourceOptions} value={selectedSources} onChange={setSelectedSources} />
+        <label className="source-coverage-option">
+          <input type="checkbox" checked={includeAlertOnly} onChange={(event) => setIncludeAlertOnly(event.target.checked)} />
+          특보만 있는 위치 포함
+        </label>
         <div className="view-switcher" role="tablist" aria-label="조회 방식">
           <button aria-controls="weather-map-panel" aria-selected={mode === "map"} className={mode === "map" ? "active" : ""} id="weather-map-tab" onClick={() => setMode("map")} onKeyDown={(event) => handleTabKey(event, "map")} role="tab" tabIndex={mode === "map" ? 0 : -1} type="button"><MapIcon aria-hidden="true" size={15} /> 지도</button>
           <button aria-controls="weather-list-panel" aria-selected={mode === "list"} className={mode === "list" ? "active" : ""} id="weather-list-tab" onClick={() => setMode("list")} onKeyDown={(event) => handleTabKey(event, "list")} role="tab" tabIndex={mode === "list" ? 0 : -1} type="button"><List aria-hidden="true" size={15} /> 목록</button>
@@ -475,6 +482,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
 
       {sourceLoading ? <p className="muted-note" role="status">소스별 위치 조회 중…</p> : null}
       {sourceError ? <p className="muted-note" role="alert">{sourceError}</p> : null}
+      {sourceListError ? <p className="muted-note" role="alert">{sourceListError}</p> : null}
       <div className={`weather-layout ${mode === "list" ? "list-mode" : ""}`}>
         <div className="map-card">
           <div aria-labelledby="weather-map-tab" className="map-panel" hidden={mode !== "map"} id="weather-map-panel" role="tabpanel" tabIndex={0}>
@@ -535,7 +543,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                   </div>
                 ) : null}
                 {!loading ? <>
-                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
+                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "RN1", "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
                 <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
                 </> : null}
                 <div className="inspector-section forecast-section">

@@ -439,12 +439,16 @@ async def list_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
     providers: ProviderFilter = None,
+    weather_only: bool = Query(default=False, description="특보 외 일반값이 있는 위치만 선택"),
     enabled: bool = Query(default=True, include_in_schema=False),
     search: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     started = perf_counter()
+    filters = _provider_kwargs(providers)
+    if weather_only:
+        filters["weather_only"] = True
     rows = await run_in_threadpool(
         repo.list_locations,
         enabled_only=True,
@@ -452,10 +456,10 @@ async def list_locations(
         limit=limit,
         offset=offset,
         include_metadata=False,
-        **_provider_kwargs(providers),
+        **filters,
     )
     total = await run_in_threadpool(
-        repo.count_locations, enabled_only=True, search=search, **_provider_kwargs(providers),
+        repo.count_locations, enabled_only=True, search=search, **filters,
     )
     return envelope(
         request,
