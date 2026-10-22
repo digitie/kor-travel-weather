@@ -81,3 +81,35 @@ def test_grid_response_byte_cap_fails_before_publication(monkeypatch):
         )
     assert repository.runs[-1].status == "failed"
     assert repository._committed == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_closes_provider_and_records_failure():
+    repository = _Repository()
+    started, closed = asyncio.Event(), asyncio.Event()
+    active = 0
+
+    class Client(_Client):
+        async def now(self, **kwargs):
+            nonlocal active
+            active += 1
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                active -= 1
+
+        async def __aexit__(self, *_exc):
+            closed.set()
+
+    task = asyncio.create_task(kma_weather._run_weather_sync(
+        repository=repository, client=Client(), targets=_targets(3, 2),
+        base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+    ))
+    await asyncio.wait_for(started.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert active == 0
+    assert closed.is_set()
+    assert repository.runs[-1].status == "failed"

@@ -1110,7 +1110,6 @@ async def _stage_and_publish_weather(
             include_mid_for_group: bool,
             source_entity_id: str,
         ) -> tuple[Sequence[WeatherTarget], list[StagedResponse], Counter[str]]:
-            keep_alive()
             remaining_rows = min(GRID_RESPONSE_ROWS, max_response_rows - response_rows_total)
             remaining_values = max_values - normalized_values_total
             if remaining_rows <= 0:
@@ -1214,6 +1213,7 @@ async def _stage_and_publish_weather(
             for mid_region_codes, group_targets in mid_groups.items()
         )
         # aclosing은 append/DB 실패 시에도 generator의 finally를 즉시 실행한다.
+        keep_alive()
         async with aclosing(_prefetch_grids(calls)) as prefetched:
             async for group_targets, responses, skipped in prefetched:
                 await append_group(group_targets, responses, skipped)
@@ -1474,7 +1474,7 @@ async def _stage_and_publish_weather(
             "alert_locations_skipped_sample": alerts_skipped[:ALERT_SKIP_LOG_IDS],
             "alert_locations_starved": alerts_starved,
         }
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         repository.finish_sync_run(
             run.run_id,
             status="failed",
@@ -1483,7 +1483,8 @@ async def _stage_and_publish_weather(
             # row; ``published_values`` misses a chunk whose COMMIT landed
             # but whose reply did not.
             values_loaded=None,
-            error=str(exc)[:2000],
+            error=("collection cancelled" if isinstance(exc, asyncio.CancelledError)
+                   else str(exc)[:2000]),
         )
         raise
 
