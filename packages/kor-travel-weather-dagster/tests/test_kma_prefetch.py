@@ -113,3 +113,35 @@ async def test_cancelled_run_closes_provider_and_records_failure():
     assert active == 0
     assert closed.is_set()
     assert repository.runs[-1].status == "failed"
+
+
+@pytest.mark.parametrize("cap", ["GRID_RESPONSE_ROWS", "GRID_RESPONSE_VALUES"])
+def test_exact_grid_response_budget_is_allowed(monkeypatch, cap):
+    monkeypatch.setattr(kma_weather, cap, 1)
+    result = kma_weather.run_weather_sync(
+        repository=_Repository(), client=_Client(), targets=_targets(1, 1),
+        max_response_rows=1, max_values=1,
+        base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+    )
+    assert result["values_loaded"] == 1
+
+
+@pytest.mark.parametrize("cap", ["GRID_RESPONSE_ROWS", "GRID_RESPONSE_VALUES"])
+def test_response_over_grid_budget_is_rejected(monkeypatch, cap):
+    monkeypatch.setattr(kma_weather, cap, 1)
+
+    class Client(_Client):
+        async def now(self, **kwargs):
+            snapshot = await super().now(**kwargs)
+            snapshot.raw["items"].append(
+                {**snapshot.raw["items"][0], "category": "REH", "obsrValue": "50"}
+            )
+            return snapshot
+
+    repository = _Repository()
+    with pytest.raises(ValueError, match="상한"):
+        kma_weather.run_weather_sync(
+            repository=repository, client=Client(), targets=_targets(1, 1),
+            base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
+        )
+    assert repository._committed == 0

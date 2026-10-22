@@ -618,6 +618,13 @@ async def stage_grid(
     if values_budget is not None and values_budget <= 0:
         raise ValueError("normalized fact 예산이 소진되었습니다.")
 
+    def require_remaining() -> None:
+        # 정확히 상한만큼 받은 마지막 dataset은 성공이다. 추가 요청 직전에만 거절한다.
+        if rows_budget is not None and rows_budget <= 0:
+            raise ValueError("provider response row 수가 상한을 초과했습니다.")
+        if values_budget is not None and values_budget <= 0:
+            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+
     def row_limit(multiplier: int = 1) -> int | None:
         if rows_budget is None:
             return None
@@ -628,6 +635,7 @@ async def stage_grid(
 
     active_base_datasets = base_datasets if base_datasets is not None else BASE_GRID_DATASETS
     if include_base and KMA_ULTRA_SHORT_NOWCAST in active_base_datasets:
+        require_remaining()
         snapshot = await _kma_provider_call(
             lambda: client.now(nx=location.nx, ny=location.ny),
             dataset="kma_ultra_short_nowcast",
@@ -660,11 +668,8 @@ async def stage_grid(
                 now_values,
             )
         )
-        if rows_budget is not None and rows_budget <= 0:
-            raise ValueError("provider response row 수가 상한을 초과했습니다.")
-        if values_budget is not None and values_budget <= 0:
-            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
     if include_base and KMA_ULTRA_SHORT_FORECAST in active_base_datasets:
+        require_remaining()
         ultra_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: client.forecast.short(nx=location.nx, ny=location.ny),
@@ -695,11 +700,8 @@ async def stage_grid(
                 ultra_values,
             )
         )
-        if rows_budget is not None and rows_budget <= 0:
-            raise ValueError("provider response row 수가 상한을 초과했습니다.")
-        if values_budget is not None and values_budget <= 0:
-            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
     if include_base and KMA_SHORT_FORECAST in active_base_datasets:
+        require_remaining()
         short_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: client.forecast.vilage(nx=location.nx, ny=location.ny),
@@ -731,6 +733,7 @@ async def stage_grid(
         if values_budget is not None:
             values_budget -= len(short_values)
     if include_mid and target.has_mid:
+        require_remaining()
         if data_client is None:
             raise ValueError("중기예보에는 DataGoKrClient가 필요합니다.")
         land_region_code = target.land_region_code
@@ -774,10 +777,7 @@ async def stage_grid(
                 land_values,
             )
         )
-        if rows_budget is not None and rows_budget <= 0:
-            raise ValueError("provider response row 수가 상한을 초과했습니다.")
-        if values_budget is not None and values_budget <= 0:
-            raise ValueError("normalized fact 수가 상한을 초과했습니다.")
+        require_remaining()
         temp_rows = _bounded_rows(
             await _kma_provider_call(
                 lambda: data_client.mid_temperature_forecast(reg_id=temperature_region_code),
