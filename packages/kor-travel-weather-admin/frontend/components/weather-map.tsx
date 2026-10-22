@@ -196,10 +196,10 @@ function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
 function markerTemperature(summary: WeatherMarker | undefined): number | null {
   if (!summary) return null;
   const row = summary.latest.find((value) =>
-    ["TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(value.metric_key),
+    ["T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(value.metric_key),
   );
   if (!row) return null;
-  const numeric = row.value_number ?? Number(row.value_text);
+  const numeric = row.value_number ?? (row.value_text?.trim() ? Number(row.value_text) : NaN);
   return Number.isFinite(numeric) ? numeric : null;
 }
 
@@ -543,7 +543,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                   </div>
                 ) : null}
                 {!loading ? <>
-                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
+                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "RN1", "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
                 <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
                 </> : null}
                 <div className="inspector-section forecast-section">
