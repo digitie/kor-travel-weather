@@ -1,6 +1,23 @@
 # Weather 작업 기록
 
 
+
+## 2026-10-23 W5 관측 범위 사용자 선택 완료 — 구현은 미착수
+
+- 사용자가 “기상청 실황도 관측으로 포함(권장)”을 승인했다. W-MAP-03은 **선택 문서화만 완료**로
+  닫고, 기존 OBSERVED + 실제 관측 기반 KMA NOWCAST를 설계에 고정했다.
+- main `b31c33d4d5188810d52dd102d4e59346b4aacc33`의 `_nowcast_value`를 확인했다.
+  provider `python-kma-api`, dataset/weather_domain `kma_ultra_short_nowcast`, source_metric_key와
+  category 동일, payload `obsr_value`(원천 `obsrValue`), observed_at/target_at, typed unit·기존
+  결측/범위 검증을 조건으로 삼는다. W5 지표 T1H/RN1/REH/WSD/PTY를 구체화했다.
+- 일반 미래 예보·KMA forecast dataset·외부 예측 NOWCAST를 무차별 포함하지 않는다. 실황에
+  없는 SKY는 예보에서 채우지 않으며 강수 interval/coverage·reset·경계 분해의 보수 규약은 유지한다.
+- W-MAP-04는 성공 receipt/projection W-MAP-02가 계속 선행이며 구현·초기 backfill·배포는
+  미착수다. COW artifact도 실측 gate 전 미채택이다. 아래 설계 보존 절의 pending은 당시 상태다.
+- 수정 범위는 설계/tasks/journal/resume 문서뿐이다. `[skip ci]`, CI 실행/검토/대기 없이 문서 PR의
+  독립 리뷰 2인을 거쳐 머지 여부를 판단한다. 코드/schema/운영 변경과 기능 완료 주장은 없다.
+
+
 ## 2026-10-23 ADR-114 연계 서비스 export 설계 보존 — proposed
 
 - Weather main `12c3a4adfcd7a030bedaf5346371a5684656ea71`에서 문서 branch를 만들고
@@ -10,8 +27,8 @@
 - 독립 초안 적대 리뷰 2인의 지적을 반영했다: failed chunk 공개 차단, 성공 재관측 0건/alias 수용,
   성공 scope barrier·checkpoint vector·상태 집계, 응답시점 미래/weak ETag, TTL과 durable checkpoint,
   collector+publisher+PG 합산 비용 gate, 강수 interval 증거와 temporal partial/준비 상태 분리.
-- 판정은 조건부 PASS다. W5의 실제 관측 NOWCAST 포함 범위는 사용자 답변 pending이며 해당
-  종속 구현은 대기한다. COW artifact 채택은 실측 gate를 통과해야 한다. 문서 머지가 구현 승인은 아니다.
+- 당시 판정은 조건부 PASS였고 W5 관측 범위는 사용자 답변 대기였다. 위 후속 선택으로
+  관측 범위 문서화는 완료했으며 기능 구현은 여전히 미착수다. COW artifact 채택은 실측 gate를 통과해야 한다. 문서 머지가 구현 승인은 아니다.
 - Weather W-MAP-01~05를 미착수로 등록했다. Transport T1~T5는 외부 연계 설계이며 이 저장소의
   구현/완료로 세지 않는다. 문서 PR은 `[skip ci]`, CI 실행/검토/대기 없이 독립 2인 문서 리뷰 후 판단한다.
   후속 기능 PR은 정상 CI·2인 리뷰·Map 응답 예시 전달·live E2E/API/UI와 배포 수용을 거쳐야 한다.

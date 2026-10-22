@@ -1,9 +1,11 @@
 # ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
 - 상태: **proposed, 구현 미착수**. 문서만 저장하며 코드·schema·운영 변경은 없다.
-- 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 포함 범위는 사용자 답변 pending이며,
+- 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
   COW artifact 채택은 구현 전 실측 exit gate 통과가 조건이다. 문서 머지가 구현 승인은 아니다.
 - 보존 기준 Weather main: `12c3a4adfcd7a030bedaf5346371a5684656ea71`.
+- 관측 선택 갱신 기준: `b31c33d4d5188810d52dd102d4e59346b4aacc33`(PR #132 머지 뒤).
+- W5 선택: 사용자 “기상청 실황도 관측으로 포함(권장)” 승인. 선택 문서화만 완료했고 구현은 미착수다.
 - 작성일: 2026-10-23.
 - Map 정본: ADR-114(Valkey 현재/예보 + Weather 요약, PinVi는 Map REST).
 - 입력 정본: coordinator가 전달한 W1~W5/T1~T5. 최신 사용자 명시 W5의 KST 3개 slot이
@@ -351,11 +353,41 @@ false/0으로 관측 성공을 조작하지 않는다. `partial`은 **현재 시
 not_ready, 집계 장애는 failed, 완료된 정상 무관측은 ready+sample_count0/null이다. 모든 원천을
 확인하지 못한 source 상태와 `partial`은 별도다. 과거 slot의 failed/null을 정상 무관측처럼 내지 않는다.
 
-**관측 포함 범위는 사용자 답변 대기 중인 결정**이다. A안은 실제 관측 의미의 KMA NOWCAST까지
-포함(권장), B안은 normalized enum `forecast_style=observed`만 포함한다. KMA T1H/RN1 등이 실제
-관측이지만 enum nowcast인 코드가 있어 B안은 주요 KMA 자료를 제외할 수 있다. 선택이 오기 전
-종속 구현·backfill·공개 summary 의미를 확정하지 않는다. 두 안 모두 미래 forecast·alert는 제외하며
-provider/dataset/metric별 실제 관측 eligibility를 명시적으로 고정한다. 테스트 fixture도 선택 후 확정한다. raw RN1/누적강수/강수율을 모두 더하지
+**2026-10-23 사용자 선택 완료: 기존 `ForecastStyle.OBSERVED`에 KMA 실제 관측 기반
+NOWCAST를 포함한다.** 모든 provider의 nowcast를 관측으로 취급하거나 미래 예보를 포함하는
+선택이 아니다. 구현·backfill·운영 집계는 아직 착수하지 않았다.
+
+코드 근거는 `src/kortravelweather/providers/kma.py::_nowcast_value`와
+`providers/catalog.py`다. KMA 경로는 다음 조건을 모두 확인한다.
+
+- provider=`python-kma-api`, dataset_key/weather_domain=`kma_ultra_short_nowcast`,
+  forecast_style=`ForecastStyle.NOWCAST`인 초단기실황이다. `kma_ultra_short_forecast`,
+  `kma_short_forecast`, `kma_mid_forecast`는 포함하지 않는다.
+- provider typed row의 `obsr_value`(원천 alias `obsrValue`)를 기존 변환으로 정규화했고,
+  payload의 `obsr_value`, `category`, base_date/base_time, nx/ny와 source_record_key를
+  보존한다. `source_metric_key == category`다. `_forecast_value`의 `fcst_value`는 제외한다.
+- `_nowcast_value`가 base_date/base_time을 aware KST로 파싱한 `observed_at`과 동일
+  `target_at`을 사용한다. 실제 관측 시각이 미래면 관측 집계에 넣지 않고 finding으로 남긴다.
+- `python-kma-api`의 `is_missing`과 기존 `value_range_error`를 통과한 typed value만
+  사용한다. -999/-998.9·빈 문자열·NaN/Infinity를 0으로 바꾸거나 원문을 새로 임의 해석하지 않는다.
+- 성공 receipt/immutable 관측 증거의 §3 규약을 통과한다. enum/provider만 맞는 synthetic
+  예측값이나 외부 provider의 NOWCAST를 무차별 포함하지 않는다.
+
+초기 W5 KMA 지표는 실제 초단기실황의 아래 관측값이다. 기존 OBSERVED 경로도 같은 단위/
+관측 증거·provider 중복/수정 정책을 통과해 사용하며, 미확인 metric을 이름 유사성으로 매핑하지 않는다.
+
+| KMA source_metric_key/category | 기존 typed unit | W5 사용 |
+|---|---|---|
+| `T1H` | `deg_c` | temp_min/temp_max/temp_avg |
+| `REH` | `%` | humidity_avg |
+| `WSD` | `m/s` | wind_speed_avg |
+| `RN1` | `mm` | interval·coverage가 입증된 1시간 강수량만 precip_sum_mm에 사용 |
+| `PTY` | `code` | 원천 코드 의미와 관측 coverage가 입증된 강수 유무 보조 증거 |
+
+실황에 없는 `SKY`를 초단기/단기예보에서 가져와 sky_code 관측인 것처럼 채우지 않는다.
+별도 적격 OBSERVED 하늘상태가 없으면 sky_code는 null이다. `PTY`를 하늘상태 코드로 바꾸거나
+강수량 RN1로 환산하지 않는다. RN1의 mm 단위만으로 interval 경계·coverage가 입증되는 것은
+아니므로 아래 보수적 규약을 유지한다. raw RN1/누적강수/강수율을 모두 더하지
 않고 provider의 시간 구간·단위 계약으로 관측량을 먼저 맞춘다. 동일 위치·metric·관측구간에서
 복수 provider와 수정 revision을 중복 합산하지 않는다. 검토된 provider rank+관측 최신성으로
 대표를 고르고 source_providers는 실제 사용한 원천만 담는다. 강수는 관측 interval `[start,end)`와 quantity/
@@ -370,7 +402,7 @@ sky 대표는 정규화된 code의 최빈값,
 동률은 명시적인 안정 우선순위다. sample_count는 사용한 고유 관측시점 수이며 metric별 결측을
 평균 분모에 넣지 않는다. metric별 sample count를 가산해 의미를 검증 가능하게 한다.
 
-사용자 관측 eligibility 결정 후, 수집 chunk가 commit될 때 변경된 관측 logical point가 영향을 주는 `(location, KSTdate,
+위 사용자 선택과 적격 조건에 따라, 수집 chunk가 commit될 때 변경된 관측 logical point가 영향을 주는 `(location, KSTdate,
 slot)` dirty key를 같은 transaction으로 적는다. worker는 slot당 **성공 receipt로 검증된 관측 point**만 인덱스로
 읽어 대표 재계산한다. 실패 run이 바꿔 놓은 mutable current pointer를 그대로 신뢰하지 않는다.
 §3의 성공 attempt immutable artifact/재관측 포함 accepted receipt를 사용하며, 성공 전용 관측 projection이 필요하면
@@ -454,8 +486,8 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
    함께 실패 분리를 검증한다. 계약 준비만 마치고 mutable pointer를 직접 공개하지 않는다.
    Python provider client 자체는 수정하지 않는다.
 3. Weather W5 한 담당: summary migration/model·dirty-slot publisher·Dagster 집계/retention·bounded
-   초기 backfill·요약 endpoint와 tests. W-MAP-04는 W-MAP-03의 관측 범위 사용자 선택 **및**
-   W-MAP-02의 성공 receipt/projection 양쪽을 선행 조건으로 한다. repository 공통 쓰기 hook은
+   초기 backfill·요약 endpoint와 tests. W-MAP-03의 사용자 관측 선택은 문서화 완료다.
+   W-MAP-04는 계속 W-MAP-02의 성공 receipt/projection을 선행 조건으로 하며 그 전 공개/집계를 하지 않는다. repository 공통 쓰기 hook은
    2와 사전 합의해 한 담당만 편집.
 4. Transport 한 담당(root 이후): service_exports.py/schemas.py/models.py/migration·기존 collectors의
    current projection/admin join·T1/T2/T3/T5. #104 최종 커밋을 먼저 흡수한 뒤 ownership 인수.
@@ -470,7 +502,9 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
   잘못된cursor/다른filtercursor/TTL만료/304/auth/gzip/경계5000/bytecap을 테스트한다.
 - 페이지 사이 수집 commit·지연된 known_at·동일known_at수정·group삭제·forecast만료를 주입해
   frozen generation/complete group/체크포인트 불전진/재시작을 검증한다.
-- W5 관측 eligibility는 사용자 선택 후 확정한다. 05/11/17/23시 경계·누락구간23~05·provider중복·
+- W5 적격 OBSERVED+검증된 KMA `kma_ultra_short_nowcast`의 T1H/RN1/REH/WSD/PTY 포함,
+  KMA 예보·외부 예측 NOWCAST·미래 관측·결측/범위오류 제외, 실황 SKY 미존재 null과
+  source_metric_key/obsr_value/성공 receipt 정합을 먼저 검증한다. 05/11/17/23시 경계·누락구간23~05·provider중복·
   관측revision수정·늦은도착·noobs·금일partial/과거failed/not_ready 분리·metric결측·강수 overlapping/
   reset/slotcrossing과 coverage null·dirtyCAS·retention·indexed bounded query를 검증한다.
 - 실패 run chunk가 이미 current pointer를 바꾼 뒤 run FAILURE/cancel되는 fixture, owner epoch
@@ -509,7 +543,8 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
 4. Transport 기존 export의 503/current-set 의미는 opt-in 이전까지 보존한다. 새 last-success/stale
    metadata를 받아들이는 Map opt-in과 배포 순서를 함께 변경한다.
 5. W5 3slot이 최신 요구이며 Map ADR114의 반나절 표현/14일 저장과 충돌하는 시간 단위는 문서 PR에서
-   맞춘다. 실제 KMA NOWCAST 포함 관측 범위는 **사용자 답변 pending**이며 종속 구현은 대기한다.
+   맞춘다. 관측 범위는 사용자 승인으로 **기존 OBSERVED + 실제 관측 기반 KMA 초단기실황**으로
+   확정했다. 선택 문서화는 완료했지만 W5 구현은 성공 receipt/projection 선행 전 미착수다.
    Weather 요약 최대31일 조회, Map 보관14일, Weather 원본 history는 별도 보존이다.
 
 ## 9. 문서 보존과 현재 진행 상태
@@ -520,11 +555,12 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
 AdminToken 재사용은 §1의 사실/제안 구분을 따른다.
 
 작업 의존은 W-MAP-01(계약 준비) → W-MAP-02(성공 head/barrier 및 W1/W2 실제 공개)다.
-W-MAP-04(W5 구현)는 W-MAP-03(관측 선택)과 W-MAP-02(성공 receipt/projection)가 모두 필요하다.
+W-MAP-03(관측 선택 문서화)은 완료했다. W-MAP-04(W5 구현)는 계속 W-MAP-02의
+성공 receipt/projection이 필요하며 아직 미착수다.
 계약 준비나 W5 관측 선택 하나만으로 데이터 공개·집계를 앞당기지 않는다.
 
 현재 문서 PR은 사용자 지시로 `[skip ci]`를 사용하고 CI를 실행·검토·대기하지 않는다.
 독립 리뷰 2인 후 문서 머지 여부를 별도로 판단한다. **기능 구현 PR에는 §7의 CI·2인 리뷰·
-Map 담당 응답 예시 전달·live E2E·배포 게이트가 그대로 필요**하다. W5 관측 범위 결정 전에는
-해당 eligibility·집계·초기 backfill 종속 구현을 진행하지 않는다. COW는 실측을 통과하지 못하면
-채택하지 않는다. 이 문서 수납만으로 두 조건이 해제되지 않는다.
+Map 담당 응답 예시 전달·live E2E·배포 게이트가 그대로 필요**하다. 관측 범위 사용자 선택 완료가
+성공 receipt/projection·집계·초기 backfill의 구현/수용 완료는 아니다. COW는 실측을 통과하지
+못하면 채택하지 않는다. 이 문서 수납만으로 기능 구현 게이트가 해제되지 않는다.
