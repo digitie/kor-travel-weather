@@ -1,0 +1,30 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "evidence_kind": "live-initial",
+  "input_sha256": "d321c76c505aae49db674831c5e35b9a249924fced6419b73f25bd2f169226d2",
+  "phase": "PASS",
+  "host": "Odroid ARM64, live KMA to production database",
+  "samples": [
+    {
+      "concurrency": 1,
+      "run_id": "run_fc059003d6f54ac1ae5889629d6a7cbd",
+      "status": "success",
+      "grids": 6,
+      "values": 16,
+      "wall_s": 2.572,
+      "python_cpu_s": 1.626,
+      "max_rss_mib": 126.48
+    },
+    {
+      "concurrency": 2,
+      "run_id": "run_ac7000a04c4542be8c027ef1a519a99b",
+      "status": "success",
+      "grids": 6,
+      "values": 0,
+      "wall_s": 1.1,
+      "python_cpu_s": 0.791,
+      "max_rss_mib": 127.48
+    }
+  ],
+  "limitations": "6격자 소표본이다. initial은 신규16/재수집0으로 작업량이 다르고, warm은 모두 신규0건이다. 전체 job CPU/RAM 절감률의 근거가 아니다."
+}

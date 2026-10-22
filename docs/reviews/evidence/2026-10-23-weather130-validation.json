@@ -1,0 +1,58 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "merged_main": "9b03a4722b9abf873a64569994a83ec5a45d9661",
+  "product_pr": "https://github.com/digitie/kor-travel-weather/pull/130",
+  "merged_at": "2026-10-22T22:46:32Z",
+  "local_full_suite": {
+    "passed": 722,
+    "warnings": 57,
+    "elapsed_s": 1146.55,
+    "log": "/tmp/weather-concurrency-full.log",
+    "stage": "취소 1개·경계 4개 추가 전"
+  },
+  "focused_suite": {
+    "passed": 45,
+    "real_pg_deselected": 2,
+    "provenance": "coordinator verified; full suite included real PostgreSQL"
+  },
+  "completed_product_ci": {
+    "run_id": 39863934182,
+    "url": "https://github.com/digitie/kor-travel-weather/actions/runs/39863934182",
+    "python_passed": 727,
+    "python_warnings": 57,
+    "python_elapsed_s": 265.68,
+    "frontend_passed": 223,
+    "frontend_files_passed": 18,
+    "type_check": "PASS",
+    "ruff": "PASS",
+    "evidence": "이미 완료된 제품 PR 로그 확인. 문서 PR의 신규 CI 실행/대기 없음."
+  },
+  "product_reviews": {
+    "reviewers": [
+      "James",
+      "Popper"
+    ],
+    "reviewed_head": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+    "unresolved_p0_p1_p2": 0,
+    "initial_james_p2": "raw source JSON 정확히 8MiB 경계 재현을 수정하고 검사 추가",
+    "provenance": "coordinator final review confirmation"
+  },
+  "postdeploy_ui": {
+    "status": "PASS",
+    "passed_case_count": 22,
+    "unexpected_js_errors": 0,
+    "unexpected_http_errors": 0,
+    "vworld_success": 48,
+    "vworld_failed": 0,
+    "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+    "evidence": "2026-10-23-weather130-isolated-ui.json#postdeploy_verification",
+    "browser_scope": "실제 공개 HTTPS, Docker 격리 network namespace",
+    "api_web_changed": false
+  },
+  "operational_notes": {
+    "nvme_build_release": true,
+    "own_stage_removed": true,
+    "staging_environment_removed": true,
+    "provenance": "coordinator rollout confirmation"
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "evidence_kind": "pre-ui",
+  "input_sha256": "52b95bf86566b29afc4b958093ab3ac8fab405d932b4edbb6b1fcc1ada7715b5",
+  "target": "https://weather.digitie.mywire.org",
+  "pass": false,
+  "passed_case_count": 13,
+  "cases": [
+    {
+      "name": "real-login-default-all",
+      "pass": true
+    },
+    {
+      "name": "keyboard-open-menu",
+      "pass": true
+    },
+    {
+      "name": "clear-all-empty-and-no-requests",
+      "pass": true
+    },
+    {
+      "name": "single-provider-marker-data",
+      "pass": true
+    },
+    {
+      "name": "single-provider-keyboard-filter",
+      "pass": true
+    },
+    {
+      "name": "multiple-provider-marker-data",
+      "pass": true
+    },
+    {
+      "name": "multiple-providers-or",
+      "pass": true
+    },
+    {
+      "name": "remove-provider-refetches-detail",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-empty",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-match",
+      "pass": true
+    },
+    {
+      "name": "all-recheck-normalizes-and-restores",
+      "pass": true
+    },
+    {
+      "name": "rapid-filter-last-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "default-general-values-scope",
+      "pass": true
+    }
+  ],
+  "unexpected_js_error_count": 0,
+  "unexpected_http_errors": [
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 504
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 504
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 504
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 504
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 504
+    },
+    {
+      "path": "/api/weather/v1/weather/markers",
+      "status": 504
+    }
+  ],
+  "tiles": {
+    "ok": 16,
+    "failed": 0
+  },
+  "cancelled_request_count": 36,
+  "failure": "page.waitForResponse: Timeout 60000ms exceeded while waiting for event \"response\"",
+  "after_code_server_deployment": false,
+  "interpretation": "초기 n150 브라우저 13개 통과 뒤 marker 504 여섯 건/응답 대기 timeout. 최초 504 원인은 미확정이다."
+}

@@ -1,0 +1,41 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "evidence_kind": "simulated-benchmark",
+  "input_sha256": "9322738d06a754ea1aa71b14a1b7f1d2e032e0669637b71743932c72ce010713",
+  "kind": "controlled fake HTTP 40ms, publish 25ms, 30 grids/60 facts; not live Odroid",
+  "samples": [
+    {
+      "concurrency": 1,
+      "wall_s": 1.649,
+      "python_cpu_s": 0.0555,
+      "python_peak_mib": 0.6041,
+      "max_active_requests": 1,
+      "values": 60
+    },
+    {
+      "concurrency": 2,
+      "wall_s": 1.0133,
+      "python_cpu_s": 0.0382,
+      "python_peak_mib": 0.3667,
+      "max_active_requests": 2,
+      "values": 60
+    },
+    {
+      "concurrency": 1,
+      "wall_s": 1.6215,
+      "python_cpu_s": 0.0431,
+      "python_peak_mib": 0.4154,
+      "max_active_requests": 1,
+      "values": 60
+    },
+    {
+      "concurrency": 2,
+      "wall_s": 1.0141,
+      "python_cpu_s": 0.0389,
+      "python_peak_mib": 0.4183,
+      "max_active_requests": 2,
+      "values": 60
+    }
+  ],
+  "limitations": "가짜 HTTP/게시 지연과 Python 메모리 추적 표본이며 운영 실측이 아니다."
+}
