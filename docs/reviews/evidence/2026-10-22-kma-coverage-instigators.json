@@ -1,0 +1,14 @@
+{
+  "phase": "RESTORED",
+  "restored_at": "2026-10-22T01:03:06.957309+00:00",
+  "schedules": {
+    "original_states_match": true,
+    "running": 18,
+    "stopped": 0
+  },
+  "sensors": {
+    "original_states_match": true,
+    "running": 3,
+    "stopped": 1
+  }
+}

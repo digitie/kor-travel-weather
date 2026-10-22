@@ -33,4 +33,29 @@ Odroid NVMe에서 ARM64 이미지를 만들고 API·웹·code-server를 `3a0ae39
 
 첫 단발 gRPC 검사 실패 시 기존 3개 이미지·Compose로 자동 롤백했다. 이후 운영과 같은 tmpfs·환경을 갖춘 별도 code-server에서 socket 준비 40.75초, gRPC 검사 완료 55.21초와 실제 `__repository__` 로딩을 확인했다. 재배포는 최대 180초 readiness 대기와 저장소 로딩 검증을 통과했다.
 
-연속 4슬롯 수집·최종 공개 UI 및 자원 실측은 진행 중이다. 이 문서 PR은 결과 확정 전 초안으로 유지한다.
+## 실제 수집·운영 UI 결과
+
+2026-10-22 KST에 nowcast 검증용 슬롯 0~3을 순서대로 실행했고 모두 성공했다. 합쳐서 1,076개 격자 원천·1,450곳의 최근 일반값을 확인했다. 최근 6시간·24시간 내 일반 KMA 값이 있는 위치는 기존 258곳에서 1,450곳으로 늘었다. 이는 T1H 대표값을 우선하고 T1H가 없으면 PTY를 확인한 결과다. 수집 run→source→현재값→fact의 연결을 사용하며 read-only transaction과 SQL 12초 제한을 적용했다.
+
+유효 기온 T1H는 1,445곳이다. 협재해수욕장·연평도·삼척해수욕장·격렬비열도·춘천 가리산 5곳은 이번 원본 응답에 T1H=-999, RN1=-998.9, REH=-998 등이 왔고, 정규화 후 PTY=0만 남았다. 이 5곳을 기온 수집 성공으로 세지 않는다. 원본을 보존하며 다음 순환에서 원천 응답이 회복되면 다시 갱신한다.
+
+| 슬롯 | 격자·논리 요청 | 처리 위치 | 수집 시간(초) | CPU 한 코어 기준 평균(%) | cgroup current 샘플 최대(MiB) |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 300 | 422 | 128.17 | 46.65 | 380.84 |
+| 1 | 300 | 406 | 114.60 | 57.80 | 369.02 |
+| 2 | 300 | 446 | 114.45 | 56.47 | 386.46 |
+| 3 | 300 | 454 | 127.61 | 59.47 | 386.74 |
+
+4회 합계 1,200 logical request와 11,565개 값 적재를 기록했다. 위치 처리 수에는 명시 대상의 반복 방문이 포함된다. 검증은 명시 슬롯 태그로 연속 실행했으며 자연 시간의 4회 hourly tick을 관찰한 결과가 아니다. 단기예보의 12시간 전체 순회는 정책·시뮬레이션 기준이고 이번 실측은 nowcast에 한정한다.
+
+CPU는 수집 구간 내 약 10초 간격 샘플의 한 코어 환산값이며 호스트 전체 사용률이 아니다. 메모리는 code-server·worker·page cache를 포함한 cgroup current 샘플 최댓값이다. cgroup 수명 전체 peak는 최대 402.50MiB였고 기동 과정도 포함한다. 동일 작업의 변경 전후 대조 실험이 아니므로 CPU·메모리 저감률을 주장하지 않는다.
+
+스케줄 18개 RUNNING, 센서 3개 RUNNING·1개 STOPPED로 원래 상태를 복원하고 전체 일치를 확인했다. daemon은 유지했다. 공개 HTTPS의 live UI 22개도 모두 통과했다. KMA 일반값 필터 1,450곳, 실제 marker 응답, T1H 5.5 deg_c·RN1 0 mm 카드, 빠른 전환·모바일·장애 안내·로그아웃을 확인했고 JavaScript/API 오류 0, VWorld 48건 성공이었다.
+
+## 근거 파일
+
+- [기준·전체 격자 시뮬레이션](reviews/evidence/2026-10-22-kma-coverage-baseline.json)
+- [두 리뷰어·단위 검사·CI](reviews/evidence/2026-10-22-kma-coverage-validation.json)
+- [staging UI](reviews/evidence/2026-10-22-kma-coverage-stage-ui.json), [운영 배포](reviews/evidence/2026-10-22-kma-coverage-rollout.json)
+- [수집·자원·freshness 실측](reviews/evidence/2026-10-22-kma-coverage-post.json), [5곳의 원천 결측값](reviews/evidence/2026-10-22-kma-coverage-temperature-quality.json)
+- [스케줄·센서 복원](reviews/evidence/2026-10-22-kma-coverage-instigators.json), [공개 운영 UI](reviews/evidence/2026-10-22-kma-coverage-production-ui.json)
