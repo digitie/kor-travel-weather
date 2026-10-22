@@ -449,9 +449,14 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
    기존 auth/path 사실·W1~5/증분·snapshot·slot 수용 조건을 명시하고 doc-only PR을 따로 리뷰한다.
 2. Weather contract/repository 구현 한 담당: `api/routers/service_exports.py`(신규), app OpenAPI,
    auth 재사용, DTO·export script·TS타입·repository current queries·export artifact/dirty state.
-   W1/W2/W4부터 작게, W3 group snapshot은 다음 PR. Python provider client 자체는 수정하지 않는다.
+   W-MAP-01은 W1/W2/W4 DTO·auth·status 계약 준비까지만 한다. W1/W2 실제 데이터 공개 완료는
+   W-MAP-02의 성공 receipt·scope barrier·독립 성공 head를 선행 조건으로 삼으며 W3 snapshot과
+   함께 실패 분리를 검증한다. 계약 준비만 마치고 mutable pointer를 직접 공개하지 않는다.
+   Python provider client 자체는 수정하지 않는다.
 3. Weather W5 한 담당: summary migration/model·dirty-slot publisher·Dagster 집계/retention·bounded
-   초기 backfill·요약 endpoint와 tests. repository 공통 쓰기 hook은 2와 사전 합의해 한 담당만 편집.
+   초기 backfill·요약 endpoint와 tests. W-MAP-04는 W-MAP-03의 관측 범위 사용자 선택 **및**
+   W-MAP-02의 성공 receipt/projection 양쪽을 선행 조건으로 한다. repository 공통 쓰기 hook은
+   2와 사전 합의해 한 담당만 편집.
 4. Transport 한 담당(root 이후): service_exports.py/schemas.py/models.py/migration·기존 collectors의
    current projection/admin join·T1/T2/T3/T5. #104 최종 커밋을 먼저 흡수한 뒤 ownership 인수.
 5. Transport T4 한 담당: 기존 fuel snapshot indexed history와 endpoint/schema/OpenAPI/TS/tests.
@@ -513,6 +518,10 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
 아직 시작하지 않았다. 현재 code/DTO/OpenAPI/TS를 바꾸지 않았으므로 명세 예시는 제안 계약이며
 운영 endpoint가 존재한다고 해석하지 않는다. Weather 기존 `/v1/service/exports` 부재와 기존
 AdminToken 재사용은 §1의 사실/제안 구분을 따른다.
+
+작업 의존은 W-MAP-01(계약 준비) → W-MAP-02(성공 head/barrier 및 W1/W2 실제 공개)다.
+W-MAP-04(W5 구현)는 W-MAP-03(관측 선택)과 W-MAP-02(성공 receipt/projection)가 모두 필요하다.
+계약 준비나 W5 관측 선택 하나만으로 데이터 공개·집계를 앞당기지 않는다.
 
 현재 문서 PR은 사용자 지시로 `[skip ci]`를 사용하고 CI를 실행·검토·대기하지 않는다.
 독립 리뷰 2인 후 문서 머지 여부를 별도로 판단한다. **기능 구현 PR에는 §7의 CI·2인 리뷰·

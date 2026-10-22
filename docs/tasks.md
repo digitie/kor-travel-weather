@@ -12,16 +12,17 @@
 설계 문서 PR 머지는 코드/운영 수용이 아니다. W5 관측 범위는 사용자 답변 pending, COW는
 실측 exit gate를 통과한 뒤에만 채택한다.
 
-- [ ] W-MAP-01 — W1/W2/W4 계약·기존 require_admin/x-admin-token 인증 재사용. `/v1/service/exports`
-  신규 route와 실제 현재 경계를 구분하고 OpenAPI·타입·상태/오류·bounded query를 구현한다.
-  해제 조건: 설계 §1·2·4·7의 해당 계약, 기능 CI·2인 리뷰·live 검증.
-- [ ] W-MAP-02 — 성공 attempt receipt·scope 완결 barrier·독립 성공 export head와 W3 snapshot.
+- [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비. 기존 require_admin/x-admin-token 재사용과
+  신규 service route의 OpenAPI·타입·오류·bounded query 계약을 준비한다. 이 단계는 W1/W2 데이터
+  공개 완료가 아니다. 해제 조건: 설계 §1·2·4·7의 계약 준비 검증, 기능 CI·2인 리뷰.
+- [ ] W-MAP-02 — W-MAP-01 뒤 성공 attempt receipt·scope 완결 barrier·독립 성공 export head와
+  W1/W2 실제 공개·W3 snapshot을 구현한다. W1/W2 공개 완료는 이 성공 head/barrier가 선행해야 한다.
   zero-new-row·alias 재관측, failed chunk 차단, epoch/CAS·cursor/ETag/gzip·시간 경계와 durable
-  checkpoint를 구현한다. 해제 조건: 설계 §3·7의 실패 반증 및 COW 합산 실측 exit gate.
+  checkpoint를 검증한다. 해제 조건: 설계 §3·7의 실패 반증·live 검증 및 COW 합산 실측 exit gate.
 - [ ] W-MAP-03 — W5 관측 eligibility 선택 확정. KMA 실제 관측 NOWCAST 포함 여부는 사용자
   답변 pending이며 종속 구현은 대기한다. 답변과 최종 metric/source 범위를 설계에 기록해야 닫는다.
-- [ ] W-MAP-04 — W5 bounded 사전 집계·요약 retention·초기 backfill·API. W-MAP-03 해제 뒤에만
-  시작하며 기존 원본 history를 보존한다. 해제 조건: 설계 §4 W5·§7의 slot/강수/준비 상태·실패/중복
+- [ ] W-MAP-04 — W5 bounded 사전 집계·요약 retention·초기 backfill·API. W-MAP-03의 사용자 선택과
+  W-MAP-02의 성공 receipt/projection을 모두 선행 조건으로 삼으며 기존 원본 history를 보존한다. 해제 조건: 설계 §4 W5·§7의 slot/강수/준비 상태·실패/중복
   반증과 bounded query·기능 CI·2인 리뷰·live 수용.
 - [ ] W-MAP-05 — Map 소비자 계약 전달·수용·배포. 배포 전 실제 응답 예시/OpenAPI/PR을 Map
   담당에게 전달하고, source_status/체크포인트/304/미래 필터 계약과 rollback을 함께 검증한다.
