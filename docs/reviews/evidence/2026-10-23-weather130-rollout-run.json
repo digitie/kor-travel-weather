@@ -1,0 +1,73 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "rollout_phase": "PASS",
+  "repository_loaded": true,
+  "fetch_concurrency": 2,
+  "foreign_container_count": 9,
+  "instigators_phase": "RESTORED",
+  "instigators_restore_exit": 0,
+  "restored_instigators": {
+    "schedules": {
+      "daily_weather_retention": "RUNNING",
+      "hourly_airkorea_weather": "RUNNING",
+      "hourly_kma_ultra_short_forecast": "RUNNING",
+      "hourly_kma_ultra_short_nowcast": "RUNNING",
+      "hourly_kma_weather_alerts": "RUNNING",
+      "kma_mid_forecast_publish_hours": "RUNNING",
+      "kma_short_forecast_publish_hours": "RUNNING",
+      "short_forecast_retention_every_ten_minutes": "RUNNING",
+      "three_hourly_accuweather_weather": "RUNNING",
+      "three_hourly_open_meteo_weather": "RUNNING",
+      "three_hourly_openweathermap_weather": "RUNNING",
+      "three_hourly_tomorrow_io_weather": "RUNNING",
+      "three_hourly_visual_crossing_weather": "RUNNING",
+      "three_hourly_weatherapi_weather": "RUNNING",
+      "three_hourly_weatherbit_weather": "RUNNING",
+      "three_hourly_weatherstack_weather": "RUNNING",
+      "three_hourly_wttr_in_weather": "RUNNING",
+      "twice_daily_regional_weather": "RUNNING"
+    },
+    "sensors": {
+      "weather_address_refresh": "RUNNING",
+      "weather_infrastructure_retry": "RUNNING",
+      "weather_native_incarnation_recovery": "STOPPED",
+      "weather_sync_recovery": "RUNNING"
+    }
+  },
+  "post_run_phase": "PASS",
+  "dagster_run_id": "0aeaa342-4f67-5f29-89d2-58d3a231b19e",
+  "dagster_status": "SUCCESS",
+  "sync_runs": [
+    {
+      "run_id": "run_d020f39f5f75425fa1bff18f5c0c73b9",
+      "status": "success",
+      "started_at": "2026-10-22 22:51:38.498128+00:00",
+      "finished_at": "2026-10-22 22:54:10.278685+00:00",
+      "locations_total": 446,
+      "grids_fetched": 300,
+      "requests_fetched": 300,
+      "values_loaded": 3554,
+      "has_error": false
+    }
+  ],
+  "sampling": {
+    "sample_count": 22,
+    "elapsed_s": 218.81,
+    "cpu_core_seconds": 131.142669,
+    "cpu_percent_of_one_core": 59.934,
+    "cgroup_memory_peak_mib": 411.559,
+    "cgroup_memory_current_end_mib": 271.699,
+    "first_sample_unix": 1792709437.1710749,
+    "last_sample_unix": 1792709655.9812703,
+    "metric_scope": "code-server cgroup, includes workers/metadata/file cache; not process RSS"
+  },
+  "deployed_components": [
+    "dagster-code-server"
+  ],
+  "api_web_changed": false,
+  "release_root": "/srv/ktdm-releases/weather130-40bcce6c",
+  "limitations": [
+    "수집실행시간과 cgroup 표본시간이 다르다.",
+    "동일입력 통제 전후실험이 아니므로 전체 job CPU/RAM 개선률은 계산하지 않는다."
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "evidence_kind": "live-warm",
+  "input_sha256": "1b6c37c8bea916d7604887af26596da2984afbb9eb517d1e10025f04e45eaea4",
+  "phase": "PASS",
+  "host": "Odroid ARM64, live KMA; idempotent replay after warm-up",
+  "samples": [
+    {
+      "concurrency": 1,
+      "run_id": "run_2e03bcd173624440a516069959616da8",
+      "status": "success",
+      "grids": 6,
+      "values": 0,
+      "wall_s": 2.599,
+      "python_cpu_s": 1.657,
+      "max_rss_mib": 126.28
+    },
+    {
+      "concurrency": 2,
+      "run_id": "run_363a562e66da4c659a7cefc7e5ba01f0",
+      "status": "success",
+      "grids": 6,
+      "values": 0,
+      "wall_s": 1.49,
+      "python_cpu_s": 1.052,
+      "max_rss_mib": 127.28
+    },
+    {
+      "concurrency": 1,
+      "run_id": "run_23f833b22e8a4a3db500bd65db20a654",
+      "status": "success",
+      "grids": 6,
+      "values": 0,
+      "wall_s": 2.083,
+      "python_cpu_s": 1.057,
+      "max_rss_mib": 128.16
+    },
+    {
+      "concurrency": 2,
+      "run_id": "run_d691b5dc55e744a2bc45e91f390bb7d8",
+      "status": "success",
+      "grids": 6,
+      "values": 0,
+      "wall_s": 1.934,
+      "python_cpu_s": 1.046,
+      "max_rss_mib": 128.91
+    }
+  ],
+  "limitations": "6격자 소표본이다. initial은 신규16/재수집0으로 작업량이 다르고, warm은 모두 신규0건이다. 전체 job CPU/RAM 절감률의 근거가 아니다."
+}

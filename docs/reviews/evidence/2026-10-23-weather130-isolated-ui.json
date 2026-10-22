@@ -1,0 +1,109 @@
+{
+  "source": "40bcce6cba282d56ededa59504fd6fd49aa1a65e",
+  "evidence_kind": "isolated-ui",
+  "input_sha256": "971921ddf6d401a299b821f5997470515f95166c0a2c394bf708db110ea7253a",
+  "target": "https://weather.digitie.mywire.org",
+  "pass": true,
+  "passed_case_count": 22,
+  "cases": [
+    {
+      "name": "real-login-default-all",
+      "pass": true
+    },
+    {
+      "name": "keyboard-open-menu",
+      "pass": true
+    },
+    {
+      "name": "clear-all-empty-and-no-requests",
+      "pass": true
+    },
+    {
+      "name": "single-provider-marker-data",
+      "pass": true
+    },
+    {
+      "name": "single-provider-keyboard-filter",
+      "pass": true
+    },
+    {
+      "name": "multiple-provider-marker-data",
+      "pass": true
+    },
+    {
+      "name": "multiple-providers-or",
+      "pass": true
+    },
+    {
+      "name": "remove-provider-refetches-detail",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-empty",
+      "pass": true
+    },
+    {
+      "name": "provider-and-search-match",
+      "pass": true
+    },
+    {
+      "name": "all-recheck-normalizes-and-restores",
+      "pass": true
+    },
+    {
+      "name": "rapid-filter-last-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "default-general-values-scope",
+      "pass": true
+    },
+    {
+      "name": "kma-real-marker-weather-response",
+      "pass": true
+    },
+    {
+      "name": "kma-general-values-catalog",
+      "pass": true
+    },
+    {
+      "name": "kma-nowcast-temperature-and-rain-cards",
+      "pass": true
+    },
+    {
+      "name": "kma-alert-only-inclusion",
+      "pass": true
+    },
+    {
+      "name": "kma-list-selection-restores-map-detail",
+      "pass": true
+    },
+    {
+      "name": "rapid-scope-toggle-last-selection-wins",
+      "pass": true
+    },
+    {
+      "name": "mobile-menu-layout",
+      "pass": true
+    },
+    {
+      "name": "injected-provider-list-failure-survives-scope-toggle",
+      "pass": true,
+      "expected_status": 503
+    },
+    {
+      "name": "real-logout",
+      "pass": true
+    }
+  ],
+  "unexpected_js_error_count": 0,
+  "unexpected_http_errors": [],
+  "tiles": {
+    "ok": 48,
+    "failed": 0
+  },
+  "cancelled_request_count": 80,
+  "failure": null,
+  "after_code_server_deployment": false,
+  "interpretation": "Docker 격리 network namespace 브라우저의 공개 HTTPS 검사. 의도한503 장애 주입과 화면전환 cancel은 실패로 세지 않았다. 배포 후 최종 UI 재검증은 별도다."
+}
