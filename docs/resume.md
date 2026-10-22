@@ -1,5 +1,17 @@
 # Weather 현재 인수인계
 
+
+## 2026-10-23 Map 서비스 export 설계 — proposed, 구현 미착수
+
+[설계 정본](design/map-service-exports.md)과 W-MAP-01~05를 문서로 수납했다.
+독립 초안 적대 리뷰 2인은 조건부 PASS이며 W5 관측 범위는 사용자 답변 pending, COW는 합산
+실측 gate 통과 전까지 미채택이다. Weather/Transport 구현 소유권은 분리한다.
+
+다음 작업은 정확한 문서 HEAD의 2인 리뷰와 문서 머지 판단이다. 코드·schema·운영 변경은 없고
+기능 구현도 착수하지 않았다. 문서 PR의 `[skip ci]`는 후속 기능 PR의 CI·2인 리뷰·배포 전 Map
+응답 예시 전달·live E2E/API/UI·실측/배포 게이트를 생략하는 지시가 아니다.
+
+
 ## 2026-10-21 회수 sensor tick 예산·정체 경보 — 머지 대기
 
 브랜치 `feat/recovery-sensor-budget-stall`. Common pin `e746e4b`, `weather_sync_recovery`에
