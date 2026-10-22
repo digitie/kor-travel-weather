@@ -1217,6 +1217,7 @@ async def _stage_and_publish_weather(
         async with aclosing(_prefetch_grids(calls)) as prefetched:
             async for group_targets, responses, skipped in prefetched:
                 await append_group(group_targets, responses, skipped)
+                del group_targets, responses, skipped
         alert_groups = 0
         alert_rows_total = 0
         if include_alerts:
