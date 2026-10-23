@@ -15,6 +15,7 @@ MAX_GENERATION_REFS = 65536
 REF_FETCH_ROWS = 64
 MAX_REF_LOCATION_BYTES = 64 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+MANIFEST_STATE_RESERVE = 128
 
 
 class ExportCapacityExceeded(ExportArtifactError):
@@ -31,11 +32,15 @@ class MetadataBudget:
     def add(self, value):
         encoder = json.JSONEncoder(
             ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"),
+            allow_nan=False,
         )
-        for part in encoder.iterencode(value):
-            self.used += len(part.encode("utf-8"))
-            if self.used > self.maximum:
-                raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+        try:
+            for part in encoder.iterencode(value):
+                self.used += len(part.encode("utf-8"))
+                if self.used > self.maximum:
+                    raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+        except (ValueError, TypeError, UnicodeError, OverflowError) as exc:
+            raise ExportCapacityExceeded("승인 manifest JSON이 올바르지 않습니다.") from exc
         return self.used
 
 

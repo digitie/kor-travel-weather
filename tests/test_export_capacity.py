@@ -38,6 +38,12 @@ def test_source_vector_is_independent_of_location_cohort_and_artifact_caps():
         capacity.read_generation_refs(None, None, map(str, range(8193)))
 
 
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), "\ud800", {1: 1, "a": 2}])
+def test_invalid_json_is_a_capacity_error(invalid):
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.MetadataBudget().add(invalid)
+
+
 @pytest.fixture
 def refs_connection():
     engine = create_engine(os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"])

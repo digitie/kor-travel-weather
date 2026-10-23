@@ -31,6 +31,8 @@ from sqlalchemy import (
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_capacity import (
+    MANIFEST_STATE_RESERVE,
+    MAX_MANIFEST_BYTES,
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
@@ -367,7 +369,7 @@ class FrozenCurrentExports:
                 manifest["unconfirmed_sources"] = unconfirmed
             if self.current_selection is not None:
                 manifest["selection"] = self.current_selection
-            MetadataBudget().add(manifest)
+            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
             digest = _digest(manifest)
             now = datetime.now(UTC)
             latest = select(self.snapshots.c.issue_order).where(
@@ -462,6 +464,26 @@ class FrozenCurrentExports:
         with self.artifacts.guard(timeout_seconds=2, shared=True):
             return self._page_guarded(resource, limit=limit, cursor=cursor)
 
+    def _capacity_fallback(self, frozen):
+        # 과거 healthy handle을 바꾸지 않고, fallback cursor에도 거절 상태를 보존한다.
+        if frozen["manifest"].get("capacity_limited"):
+            return frozen
+        now = datetime.now(UTC)
+        row = {key: value for key, value in frozen.items()
+               if key in self.snapshots.c and key != "issue_order"}
+        row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL,
+                   manifest=dict(frozen["manifest"], capacity_limited=True))
+        MetadataBudget().add(row["manifest"])
+        row["manifest_digest"] = _digest(row["manifest"])
+        with self.heads._transaction() as s:
+            s.execute(self.snapshots.insert().values(**row))
+            s.execute(self.refs.insert(), [
+                {"snapshot_id": row["snapshot_id"], "ordinal": i,
+                 "generation_id": scope["generation_id"]}
+                for i, scope in enumerate(row["manifest"]["scopes"])
+            ])
+        return row
+
     def _page_guarded(self, resource: str, *, limit: int, cursor: str | None):
         if resource not in {"locations", "current"} or not 1 <= limit <= 5000:
             raise ExportCursorInvalid("지원하지 않는 resource/limit입니다.")
@@ -490,7 +512,9 @@ class FrozenCurrentExports:
         else:
             try:
                 frozen = self._freeze()
-            except (ExportSnapshotUnavailable, ExportCapacityExceeded):
+            except ExportCapacityExceeded:
+                frozen = self._capacity_fallback(self._previous_success())
+            except ExportSnapshotUnavailable:
                 frozen = self._previous_success()
             state = {
                 "v": 1,
@@ -596,6 +620,7 @@ class FrozenCurrentExports:
                 for scope in manifest["scopes"]
                 for key in ("source_collected_at", "data_revision_at")
             )
+        stale |= bool(manifest.get("capacity_limited"))
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
         runs = self.heads.metadata.tables["weather_sync_runs"]
         with (

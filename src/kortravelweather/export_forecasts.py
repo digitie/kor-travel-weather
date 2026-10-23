@@ -9,6 +9,8 @@ from uuid import uuid4
 from sqlalchemy import select, text
 
 from .export_capacity import (
+    MANIFEST_STATE_RESERVE,
+    MAX_MANIFEST_BYTES,
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
@@ -219,7 +221,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "unconfirmed_sources": unconfirmed,
             }
             manifest = self._prepare_manifest(manifest)
-            MetadataBudget().add(manifest)
+            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
             digest = _digest(manifest)
             latest = select(self.snapshots.c.issue_order).where(
                 self.snapshots.c.manifest["selection"]["kind"].as_string() == "forecasts",
@@ -333,7 +335,9 @@ class FrozenForecastExports(FrozenCurrentExports):
         else:
             try:
                 frozen = self._freeze_forecasts()
-            except (ExportSnapshotUnavailable, ExportCapacityExceeded):
+            except ExportCapacityExceeded:
+                frozen = self._capacity_fallback(self._previous_forecasts())
+            except ExportSnapshotUnavailable:
                 frozen = self._previous_forecasts()
             state = {
                 "v": 1,
@@ -347,7 +351,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
         output, more = self._page_items(manifest, state, limit, now)
-        stale = self._health(manifest, frozen, now)
+        stale = bool(manifest.get("capacity_limited")) or self._health(manifest, frozen, now)
         status = "stale" if stale else "ok"
         page = {
             "items": output,
