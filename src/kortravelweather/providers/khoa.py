@@ -22,6 +22,7 @@ from typing import Any
 
 from khoa import BeachIndexPlace, KhoaClient
 
+from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.models import KST, ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.providers.base import (
     jsonable,
@@ -179,6 +180,7 @@ def fetch_beach_index(
     page_size: int = 100,
     retries: int = 3,
     timeout: float | None = None,
+    export_assembly=None,
 ) -> list[BeachIndexPlace]:
     """Fetch the nationwide beach index, bounded, from a synchronous caller.
 
@@ -199,6 +201,7 @@ def fetch_beach_index(
             page_size=page_size,
             retries=retries,
             client_timeout=timeout,
+            export_assembly=export_assembly,
         )
     )
 
@@ -210,6 +213,7 @@ async def _fetch_beach_index(
     page_size: int,
     retries: int,
     client_timeout: float | None,
+    export_assembly=None,
 ) -> list[BeachIndexPlace]:
     # Named ``client_timeout`` rather than ``timeout``: it configures the HTTP
     # client, it is not a deadline on this coroutine (see krforest.py for the
@@ -225,17 +229,39 @@ async def _fetch_beach_index(
         env_file=None,
     ) as client:
         page_no = 1
-        while len(collected) < max_places:
+        while len(collected) < max_places or (
+            export_assembly is not None and not export_assembly.receipt.failed
+        ):
             page = await client.abeach_index(
-                page_no=page_no, num_of_rows=min(page_size, max_places - len(collected))
+                page_no=page_no,
+                num_of_rows=(page_size if export_assembly is not None
+                             else min(page_size, max_places - len(collected))),
             )
             items = list(page.items)
+            if export_assembly is not None:
+                try:
+                    export_assembly.add(page)
+                except (ValueError, ExportArtifactError):
+                    # 공개 SDK 수집 결과는 보존하되 승인용 완결 증거만 폐기한다.
+                    export_assembly.receipt.failed = True
             if not items:
                 break
             collected.extend(items)
             if not getattr(page, "has_next_page", False):
                 break
             page_no += 1
+            if page_no > 250:
+                if export_assembly is not None:
+                    export_assembly.receipt.failed = True
+                break
+    if export_assembly is not None and export_assembly.receipt.complete:
+        try:
+            assembled = export_assembly.finish()
+            if len(assembled) <= max_places:
+                return assembled
+            export_assembly.receipt.failed = True
+        except (ValueError, ExportArtifactError):
+            export_assembly.receipt.failed = True
     return collected[:max_places]
 
 

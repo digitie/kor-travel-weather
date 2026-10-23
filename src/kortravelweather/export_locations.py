@@ -28,7 +28,7 @@ class FrozenLocationExports(FrozenCurrentExports):
             connection.execute(
                 select(self.snapshots)
                 .where(self.snapshots.c.manifest["selection"]["kind"].as_string() == "locations")
-                .order_by(self.snapshots.c.created_at.desc())
+                .order_by(self.snapshots.c.issue_order.desc())
                 .limit(1)
             )
             .mappings()
@@ -39,6 +39,7 @@ class FrozenLocationExports(FrozenCurrentExports):
     def _renew(self, connection, frozen):
         now = datetime.now(UTC)
         if frozen["expires_at"] <= now:
+            frozen.pop("issue_order", None)
             frozen = {
                 **frozen,
                 "snapshot_id": str(uuid4()),
@@ -139,8 +140,10 @@ class FrozenLocationExports(FrozenCurrentExports):
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
+                        self.snapshots.c.issue_order == previous["issue_order"]
+                        if previous else False,
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()

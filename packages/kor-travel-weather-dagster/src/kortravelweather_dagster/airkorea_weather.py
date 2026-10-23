@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from kortravelweather.metrics import provider_request
@@ -25,6 +27,7 @@ from kortravelweather.repository import WeatherRepository
 
 from .chunked_publish import chunk_publications, uncited_sources
 
+logger = logging.getLogger(__name__)
 
 def run_airkorea_weather_sync(
     *,
@@ -32,6 +35,7 @@ def run_airkorea_weather_sync(
     client: Any,
     max_stations: int = 1000,
     max_values: int = 100_000,
+    export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     """Own the event loop ``AirKoreaClient`` now requires for the whole run.
 
@@ -50,6 +54,7 @@ def run_airkorea_weather_sync(
             client=client,
             max_stations=max_stations,
             max_values=max_values,
+            export_artifact_root=export_artifact_root,
         )
     )
 
@@ -60,6 +65,7 @@ async def _run_airkorea_weather_sync(
     client: Any,
     max_stations: int = 1000,
     max_values: int = 100_000,
+    export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     """Refresh station anchors, then fetch one latest observation per station.
 
@@ -123,7 +129,34 @@ async def _run_airkorea_weather_sync(
             provider=AIRKOREA_PROVIDER,
             dataset_key=AIRKOREA_MEASUREMENT_DATASET,
             locations_total=len(active_locations),
+            **({"export_cohort_required": True} if export_artifact_root is not None else {}),
         )
+        export_collector, export_plans = None, {}
+        if export_artifact_root is not None:
+            try:
+                from kortravelweather.export_sdk_collector import SdkExportCollector, sdk_descriptor
+                from kortravelweather.export_source_cohorts import declare_source_cohort
+
+                declare_source_cohort(
+                    repository, run_id=measurement_run.run_id, provider=AIRKOREA_PROVIDER,
+                    dataset_key=AIRKOREA_MEASUREMENT_DATASET,
+                    descriptors=[sdk_descriptor(
+                        location, provider=AIRKOREA_PROVIDER,
+                        dataset_key=AIRKOREA_MEASUREMENT_DATASET,
+                    ) for location in active_locations],
+                )
+                export_collector = SdkExportCollector(
+                    repository, run_id=measurement_run.run_id, artifact_root=export_artifact_root,
+                )
+                export_plans = {location.location_id: export_collector.prepare(
+                    location=location, provider=AIRKOREA_PROVIDER,
+                    dataset_key=AIRKOREA_MEASUREMENT_DATASET,
+                ) for location in active_locations}
+            except Exception:
+                # cohort/prepare 실패는 native 수집을 막지 않는다. 원자적 intent가
+                # reader에서 이전 정상 source로 실패를 숨기지 못하게 한다.
+                logger.warning("airkorea_export_prepare_deferred run_id=%s", measurement_run.run_id)
+                export_collector = None
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
         failed_stations: list[str] = []
@@ -277,14 +310,30 @@ async def _run_airkorea_weather_sync(
             # pause.  A chunk that fails leaves earlier chunks -- whole
             # stations -- published, and the run row carries what they loaded.
             published = 0
-            for chunk_sources, chunk in chunk_publications(sources, values):
-                published += await asyncio.to_thread(
-                    repository.ingest_batch, source_records=chunk_sources, values=chunk
-                )
+            if export_collector is not None:
+                by_source = {}
+                for value in values:
+                    by_source.setdefault(value.source_record_key, []).append(value)
+                for source in sources:
+                    keep_alive(measurement_run.run_id)
+                    published += await asyncio.to_thread(
+                        export_collector.ingest, export_plans.pop(source["source_entity_id"], None),
+                        record=source, values=by_source.pop(source["source_record_key"], []),
+                    )
+                for prepared in export_plans.values():
+                    if prepared is not None:
+                        export_collector._reject(prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED")
+            else:
+                for chunk_sources, chunk in chunk_publications(sources, values):
+                    published += await asyncio.to_thread(
+                        repository.ingest_batch, source_records=chunk_sources, values=chunk
+                    )
             loaded, finished = await asyncio.to_thread(
                 repository.publish_and_finish,
                 run_id=measurement_run.run_id,
-                source_records=uncited_sources(sources, values),
+                source_records=(
+                    [] if export_collector is not None else uncited_sources(sources, values)
+                ),
                 values=[],
                 values_loaded_offset=published,
                 grids_fetched=0,
