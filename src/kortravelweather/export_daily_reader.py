@@ -132,6 +132,7 @@ class DailySummaryExports(FrozenCurrentExports):
         if self.location_id is None:
             # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
             keys = [row["location_id"] for row in locations]
+        keys = set(keys)
         from .export_artifacts import ExportArtifactError
 
         try:
