@@ -32,8 +32,8 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
     }) for index in range(2)]
     repo.create_location(restarea_location(records[0]))
     settings = WeatherSettings(
-        enabled_providers=[KREX_PROVIDER], service_exports_enabled=True,
-        service_export_artifact_root=tmp_path,
+        enabled_providers=[KREX_PROVIDER, "open_meteo"], service_exports_enabled=True,
+        service_export_artifact_root=tmp_path, admin_token="discovery-fixture",
     )
 
     class Client(_EntersAndCloses):
@@ -65,6 +65,36 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
                 for identity in identities]
 
     assert collect(records[:1]) == ["PUBLISHED"]
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from test_export_inventory import _publish
+
+    from kortravelweather.export_daily_store import refresh_daily_summaries
+    from kortravelweather.providers import ProviderLocation
+
+    def publish_http(record):
+        location = restarea_location(record)
+        _publish(repo, tmp_path, [ProviderLocation(
+            location.location_id, location.latitude, location.longitude, {},
+        )])
+
+    publish_http(records[0])
+
+    client = TestClient(create_app(settings, repo))
+    daily_path, daily_headers = "/v1/service/exports/daily-summaries", {
+        "x-admin-token": "discovery-fixture",
+    }
+
+    def drain():
+        for _ in range(8):
+            result = refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=8)
+            if not result["has_more"]:
+                return
+        raise AssertionError("시험 관측이 reducer에 도달하지 않았습니다.")
+
+    drain()
+    daily_prior = client.get(daily_path, params={"days": 1}, headers=daily_headers)
+    assert daily_prior.status_code == 200 and daily_prior.json()["meta"]["source_status"] == "ok"
     reader = FrozenCurrentExports(
         repo, ExportArtifactStore(tmp_path), signing_key="discovery-fixture", source_inventory=True,
         providers=[KREX_PROVIDER], expected_sources=[(KREX_PROVIDER, KREX_RESTAREA_DATASET)],
@@ -75,6 +105,24 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
     stale, _ = reader.page("current", limit=5000, cursor=None)
     assert stale["meta"]["source_status"] == "stale" and stale["items"] == prior["items"]
     assert repo.get_location(restarea_location(records[1]).location_id) is not None
+    unapproved = client.get(daily_path, params={
+        "days": 1, "location_id": restarea_location(records[1]).location_id,
+    }, headers=daily_headers)
+    assert unapproved.status_code == 503
+    # 같은 위치에 다른 제공처 관측이 먼저 승인·요약돼도 새 SDK 원천을 대신하지 못한다.
+    publish_http(records[1])
+    drain()
+    cross_provider = client.get(daily_path, params={
+        "days": 1, "location_id": restarea_location(records[1]).location_id,
+    }, headers=daily_headers)
+    assert cross_provider.status_code == 503
+    retained = client.get(daily_path, params={"days": 1}, headers=daily_headers)
+    assert retained.status_code == 200 and retained.json()["meta"]["source_status"] == "stale"
+    assert retained.json()["items"] == daily_prior.json()["items"]
     assert collect(records) == ["PUBLISHED", "PUBLISHED"]
     recovered, _ = reader.page("current", limit=5000, cursor=None)
     assert recovered["meta"]["source_status"] == "ok" and len(recovered["items"]) == 4
+    drain()
+    daily_ready = client.get(daily_path, params={"days": 1}, headers=daily_headers)
+    assert daily_ready.status_code == 200 and daily_ready.json()["meta"]["source_status"] == "ok"
+    assert len(daily_ready.json()["items"]) == 6
