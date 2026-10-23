@@ -139,6 +139,7 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("bound_at", DateTime(timezone=True), nullable=False),
         Column("data_revision_at", DateTime(timezone=True)),
         Column("source_input_digest", String(64)),
+        Column("source_collected_at", DateTime(timezone=True)),
         Column("expected_point_count", Integer),
         Column("normalization_digest", String(64)),
         Column("normalization_evidence", JSON),
@@ -212,7 +213,7 @@ def source_input_digest(record: Mapping[str, Any]) -> str:
     )
 
 
-def validate_head_capture(session, metadata, attempt, records, values) -> None:
+def validate_head_capture(session, metadata, attempt, records, values, observed) -> None:
     """3B를 선택한 capture만 추가 검증한다. 기존 receipt 계약은 보존한다."""
     plans, *_ = export_head_tables(metadata)
     plan = (
@@ -231,6 +232,9 @@ def validate_head_capture(session, metadata, attempt, records, values) -> None:
         plan["data_revision_at"] is None
         or len(records) != 1
         or source_input_digest(records[0]) != plan["source_input_digest"]
+        or plan["source_collected_at"] is None
+        or records[0].get("fetched_at") != plan["source_collected_at"]
+        or observed != {str(records[0]["source_record_key"]): plan["source_collected_at"]}
         or any(
             v.provider != descriptor.provider
             or v.dataset_key != descriptor.dataset_key
@@ -260,7 +264,11 @@ def seal_head_plan(session, metadata, attempt_id):
     )
     if row is None:
         return None
-    if row["data_revision_at"] is None or row["source_input_digest"] is None:
+    if (
+        row["data_revision_at"] is None
+        or row["source_input_digest"] is None
+        or row["source_collected_at"] is None
+    ):
         raise ExportArtifactError("원천 publication 계획이 완결되지 않았습니다.")
     return {k: v.isoformat() if isinstance(v, datetime) else v for k, v in row.items()}
 
@@ -386,6 +394,7 @@ class ExportHeads:
                 or (
                     fetched.tzinfo is None
                     or fetched < plan["bound_at"]
+                    or fetched > datetime.now(UTC)
                     or str(request["nx"]) != str(descriptor.nx)
                     or str(request["ny"]) != str(descriptor.ny)
                     or record["dataset_key"] != descriptor.dataset_key
@@ -423,7 +432,11 @@ class ExportHeads:
             if revision > fetched.astimezone(UTC):
                 raise ExportArtifactError("발표 revision이 실제 조회 이후 시각입니다.")
             if plan["source_input_digest"] is not None:
-                if plan["source_input_digest"] != digest or plan["data_revision_at"] != revision:
+                if (
+                    plan["source_input_digest"] != digest
+                    or plan["data_revision_at"] != revision
+                    or plan["source_collected_at"] != fetched
+                ):
                     raise ExportArtifactError("완결 응답 계획은 변경할 수 없습니다.")
                 return
             if (
@@ -445,6 +458,7 @@ class ExportHeads:
                 .values(
                     data_revision_at=revision,
                     source_input_digest=digest,
+                    source_collected_at=fetched,
                     expected_point_count=len(expected),
                     normalization_digest=normalization_digest,
                     normalization_evidence={str(key): count for key, count in skipped.items()},
@@ -496,7 +510,11 @@ class ExportHeads:
                 .mappings()
                 .one_or_none()
             )
-            if plan is None or plan["data_revision_at"] is None:
+            if (
+                plan is None
+                or plan["data_revision_at"] is None
+                or plan["source_collected_at"] is None
+            ):
                 raise ExportArtifactError("승격할 원천 revision 계획이 없습니다.")
             receipts = [
                 dict(r)
@@ -515,7 +533,9 @@ class ExportHeads:
             ):
                 raise ExportArtifactError("성공 head 승격의 chunk/byte 상한을 넘었습니다.")
             if not receipts or any(
-                r["covered_sources"] != [plan["source_scope"]] for r in receipts
+                r["covered_sources"] != [plan["source_scope"]]
+                or r["source_collected_at"] != plan["source_collected_at"]
+                for r in receipts
             ):
                 raise ExportArtifactError("혼합 source chunk를 승격할 수 없습니다.")
             parent = (
@@ -641,7 +661,7 @@ class ExportHeads:
             if (old or {}).get("generation_id") != (parent or {}).get("generation_id"):
                 return "CONFLICT"
             revision = plan["data_revision_at"]
-            collected = min(r["source_collected_at"] for r in receipts)
+            collected = plan["source_collected_at"]
             if old is not None and revision < old["data_revision_at"]:
                 return "SUPERSEDED"
             if (

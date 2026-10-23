@@ -56,6 +56,8 @@ def _candidate(
     finish="success",
     record_mutator=None,
     values_mutator=None,
+    capture_clock_mutator=None,
+    post_bind_record_mutator=None,
 ):
     heads = ExportHeads(repository)
     revision = revision or datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(
@@ -122,9 +124,18 @@ def _candidate(
     if values_mutator:
         values = values_mutator(values)
     heads.bind_kma_response(identity, record)
+    if post_bind_record_mutator:
+        post_bind_record_mutator(record)
     heads.lifecycle.expect_chunk(identity, "one", records=[record], values=values)
     capture = ExportCapture(
-        identity, "one", {source_key: record["fetched_at"]}, ExportArtifactStore(tmp_path)
+        identity,
+        "one",
+        {
+            source_key: capture_clock_mutator(record["fetched_at"])
+            if capture_clock_mutator
+            else record["fetched_at"]
+        },
+        ExportArtifactStore(tmp_path),
     )
     loaded = repository.ingest_batch(source_records=[record], values=values, export_capture=capture)
     heads.lifecycle.close_source(identity, descriptor.source_scope, ["one"])
@@ -402,3 +413,71 @@ def test_managed_artifact_guard_has_finite_wait(tmp_path):
         second.guard(timeout_seconds=0.01),
     ):
         pytest.fail("다른 guard가 열린 동안 진입하면 안 됩니다.")
+
+
+@pytest.mark.parametrize("offset", [timedelta(days=36500), timedelta(days=-1)])
+def test_capture_cannot_forge_bound_freshness_but_original_fact_commits(
+    repository, tmp_path, offset
+):
+    descriptor = _descriptor(repository)
+    with pytest.raises(ExportArtifactError, match="source 계획"):
+        _candidate(repository, tmp_path, descriptor, capture_clock_mutator=lambda at: at + offset)
+    heads = ExportHeads(repository)
+    assert _head(heads, descriptor) is None
+    with repository.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(heads.lifecycle.chunks.c.chunk_key)
+                .join(heads.plans, heads.plans.c.attempt_id == heads.lifecycle.chunks.c.attempt_id)
+                .where(heads.plans.c.namespace == descriptor.namespace)
+                .limit(1)
+            )
+            is None
+        )
+        assert (
+            connection.scalar(
+                select(heads.metadata.tables["weather_values"].c.value_number).where(
+                    heads.metadata.tables["weather_values"].c.location_id
+                    == descriptor.location_ids[0]
+                )
+            )
+            == 1
+        )
+
+
+def test_bound_response_cannot_change_retrieval_clock_after_binding(repository, tmp_path):
+    descriptor = _descriptor(repository)
+
+    def mutate(record):
+        record["fetched_at"] += timedelta(seconds=1)
+
+    with pytest.raises(ExportArtifactError, match="source 계획"):
+        _candidate(repository, tmp_path, descriptor, post_bind_record_mutator=mutate)
+    assert _head(ExportHeads(repository), descriptor) is None
+
+
+def test_bind_rejects_future_fetch_clock_before_recording_freshness(repository, tmp_path):
+    descriptor = _descriptor(repository)
+
+    def mutate(record):
+        record["fetched_at"] += timedelta(days=36500)
+
+    with pytest.raises(ExportArtifactError, match="선언 이전"):
+        _candidate(repository, tmp_path, descriptor, record_mutator=mutate)
+    assert _head(ExportHeads(repository), descriptor) is None
+
+
+def test_promotion_rejects_receipt_clock_different_from_bound_source(repository, tmp_path):
+    from sqlalchemy import update
+
+    descriptor = _descriptor(repository)
+    heads, identity, capture, record, _, _ = _candidate(repository, tmp_path, descriptor)
+    with repository.engine.begin() as connection:
+        connection.execute(
+            update(heads.lifecycle.chunks)
+            .where(heads.lifecycle.chunks.c.attempt_id == identity.attempt_id)
+            .values(source_collected_at=record["fetched_at"] + timedelta(days=36500))
+        )
+    with pytest.raises(ExportArtifactError):
+        heads.promote(identity, capture.artifacts)
+    assert _head(heads, descriptor) is None

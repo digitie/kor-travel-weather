@@ -1,5 +1,4 @@
 """성공 generation/head와 원천 계획. 기존 이력 backfill/collector 활성화 없음."""
-
 from alembic import op
 
 revision = "0025_export_success_heads"
@@ -18,6 +17,7 @@ CREATE TABLE weather_export_scope_plans (
         bound_at TIMESTAMP WITH TIME ZONE NOT NULL,
         data_revision_at TIMESTAMP WITH TIME ZONE,
         source_input_digest VARCHAR(64),
+        source_collected_at TIMESTAMP WITH TIME ZONE,
         expected_point_count INTEGER,
         normalization_digest VARCHAR(64),
         normalization_evidence JSON,
@@ -58,10 +58,8 @@ CREATE TABLE weather_export_heads (
         FOREIGN KEY(generation_id) REFERENCES weather_export_generations (generation_id)
 )
 """)
-    op.execute(
-        """CREATE INDEX ix_weather_export_heads_source_scope
-ON weather_export_heads (source_scope)"""
-    )
+    op.execute("""CREATE INDEX ix_weather_export_heads_source_scope
+ON weather_export_heads (source_scope)""")
     op.execute("""
 CREATE TABLE weather_export_generation_chunks (
         generation_id VARCHAR(36) NOT NULL,
@@ -91,8 +89,8 @@ weather_export_pending_refs (artifact_digest)""")
 
 
 def downgrade():
-    op.drop_table("weather_export_pending_refs")
-    op.drop_table("weather_export_generation_chunks")
-    op.drop_table("weather_export_heads")
-    op.drop_table("weather_export_generations")
-    op.drop_table("weather_export_scope_plans")
+    op.drop_table('weather_export_pending_refs')
+    op.drop_table('weather_export_generation_chunks')
+    op.drop_table('weather_export_heads')
+    op.drop_table('weather_export_generations')
+    op.drop_table('weather_export_scope_plans')

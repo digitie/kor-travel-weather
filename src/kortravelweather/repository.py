@@ -2032,15 +2032,15 @@ class WeatherRepository:
                         raise ExportArtifactError(
                             "export 후보에는 단일 run·제한된 chunk가 필요합니다."
                         )
-                    validate_head_capture(
-                        session, Base.metadata, export_capture.attempt, records, facts,
-                    )
                     observed: dict[str, datetime] = {}
                     for key, at in export_capture.source_observed_at.items():
                         canonical_key = source_aliases.get(key, key)
                         if at.tzinfo is None or at.utcoffset() is None:
                             raise ExportArtifactError("원천 재관측 시각에는 timezone이 필요합니다.")
                         observed[canonical_key] = min(observed.get(canonical_key, at), at)
+                    validate_head_capture(
+                        session, Base.metadata, export_capture.attempt, records, facts, observed,
+                    )
                     required = {str(record["source_record_key"]) for record in records}
                     if not required or not required.issubset(observed):
                         raise ExportArtifactError("이번 원천 fetch의 실제 시각이 누락됐습니다.")
