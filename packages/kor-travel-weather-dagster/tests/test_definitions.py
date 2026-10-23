@@ -6,6 +6,7 @@ nothing else in this test suite exercises.
 
 from __future__ import annotations
 
+import pytest
 from kortravelweather_dagster.definitions import defs
 
 
@@ -20,6 +21,61 @@ def test_definitions_resolve_without_error() -> None:
     # Importing the module already runs every _resolve_job() call; asking for
     # the repository definition forces Dagster to validate the whole graph.
     assert defs.get_repository_def() is not None
+
+
+@pytest.mark.parametrize("dataset", ["mid", "alerts"])
+def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
+    monkeypatch, tmp_path, dataset,
+):
+    from types import SimpleNamespace
+
+    from dagster import build_asset_context
+    from kortravelweather_dagster import definitions
+    from kortravelweather_dagster.kma_weather import WeatherTarget
+    from test_kma_weather import FakeClient, FakeRepository, _EntersAndCloses, _target
+
+    from kortravelweather.settings import WeatherSettings
+
+    calls = []
+
+    class DataClient(_EntersAndCloses):
+        async def mid_land_forecast(self, *, reg_id):
+            calls.append("land")
+            return [{"tmFc": "202601010600", "regId": reg_id, "wf3Am": "맑음"}]
+
+        async def mid_temperature_forecast(self, *, reg_id):
+            calls.append("temperature")
+            return [{"tmFc": "202601010600", "regId": reg_id, "taMin3": "-1", "taMax3": "4"}]
+
+        async def weather_warning_list(self, **kwargs):
+            calls.append("alerts")
+            return [{"stnId": "108", "tmFc": "202601010600", "tmSeq": "1", "title": "호우주의보"}]
+
+    repo, client, data_client = FakeRepository(), FakeClient(), DataClient()
+    target = WeatherTarget(
+        _target().location, mid_land_region_code="11B00000", mid_temperature_region_code="11B10101",
+    )
+    monkeypatch.setattr(definitions, "WeatherSettings", lambda: WeatherSettings(
+        environment="development", service_exports_enabled=True,
+        service_export_artifact_root=tmp_path,
+    ))
+    monkeypatch.setattr(definitions, "_run_repository", lambda context: repo)
+    monkeypatch.setattr(definitions, "_kma_grid_targets", lambda *args, **kwargs: (
+        [target], {}, set(), None,
+    ))
+    monkeypatch.setattr(definitions, "_kma_alert_targets", lambda *args: [target])
+    resource = SimpleNamespace(
+        create_client=lambda **kwargs: client, create_data_client=lambda **kwargs: data_client,
+    )
+    asset = getattr(
+        definitions, "kma_mid_forecast_sync" if dataset == "mid" else "kma_weather_alerts_sync"
+    )
+    with build_asset_context(resources={
+        "kma_client": resource, "weather_repository": repo,
+    }) as context:
+        result = asset(context)
+    assert result["status"] == "success" and repo.values
+    assert calls == (["land", "temperature"] if dataset == "mid" else ["alerts"])
 
 
 def test_kma_is_split_into_one_job_per_dataset() -> None:

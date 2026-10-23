@@ -104,18 +104,36 @@ def selected_external_descriptors(connection, metadata, locations, providers, *,
     """호출자는 같은 MVCC snapshot에서 catalog/head와 이 선택 집합을 함께 읽는다."""
     from .export_external import RetrievalScopeDescriptor
     table = external_cohort_table(metadata)
+    runs = metadata.tables["weather_sync_runs"]
     suffix = "forecast" if forecast else "current"
     expected = {(provider, f"{provider}_{suffix}") for provider in providers}
     cohorts = list(
         connection.execute(
-            select(table).where(tuple_(table.c.provider, table.c.dataset_key).in_(expected))
+            select(table, runs.c.status.label("native_status"))
+            .outerjoin(runs, runs.c.run_id == table.c.run_id)
+            .where(tuple_(table.c.provider, table.c.dataset_key).in_(expected))
         ).mappings()
     )
     if {(r["provider"], r["dataset_key"]) for r in cohorts} != expected:
         raise ExportArtifactError("요청 provider의 실제 수집 선택 집합이 준비되지 않았습니다.")
     catalog = {r["location_id"]: r for r in locations}
     result = []
+    expected_runs = {}
     for row in cohorts:
+        # native INSERT와 원자적으로 저장된 intent를 작은 부분 index에서 한 행만
+        # 읽는다. roster 자체의 잠금/쓰기 실패도 이전 성공으로 숨기지 않는다.
+        latest = connection.scalar(
+            select(runs.c.run_id).where(
+                runs.c.provider == row["provider"], runs.c.dataset_key == row["dataset_key"],
+                runs.c.export_cohort_required.is_(True),
+            ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1)
+        )
+        if latest != row["run_id"]:
+            raise ExportArtifactError("최신 native 수집 선택 선언이 확인되지 않았습니다.")
+        # claim 이전 prepare 실패는 source owner에 흔적을 남기지 않는다. HTTP 전
+        # roster의 native 실행도 확인해야 이전 성공 owner가 실패를 가리지 못한다.
+        if row["native_status"] != "success":
+            raise ExportArtifactError("최신 수집 선택 집합의 native 성공이 확인되지 않았습니다.")
         targets = row["targets"]
         if not isinstance(targets, list) or not 1 <= len(targets) <= MAX_EXTERNAL_TARGETS:
             raise ExportArtifactError("수집 선택 집합 상한이 올바르지 않습니다.")
@@ -133,16 +151,31 @@ def selected_external_descriptors(connection, metadata, locations, providers, *,
             ):
                 raise ExportArtifactError("수집 선택 집합과 현재 위치 catalog가 다릅니다.")
             seen.add(key)
-            result.append(
-                RetrievalScopeDescriptor(
-                    provider=row["provider"],
-                    dataset_key=row["dataset_key"],
-                    forecast_style="short" if forecast else "observed",
-                    entity_id=key,
-                    location_ids=(key,),
-                    latitude=target["latitude"],
-                    longitude=target["longitude"],
-                    normalizer_revision=f"{row['provider']}-v1",
-                )
+            descriptor = RetrievalScopeDescriptor(
+                provider=row["provider"],
+                dataset_key=row["dataset_key"],
+                forecast_style="short" if forecast else "observed",
+                entity_id=key,
+                location_ids=(key,),
+                latitude=target["latitude"],
+                longitude=target["longitude"],
+                normalizer_revision=f"{row['provider']}-v1",
             )
+            result.append(descriptor)
+            expected_runs[descriptor.namespace] = row["run_id"]
+    heads = metadata.tables["weather_export_heads"]
+    generations = metadata.tables["weather_export_generations"]
+    attempts = metadata.tables["weather_export_attempts"]
+    approved = dict(
+        connection.execute(
+            select(heads.c.namespace, attempts.c.run_id)
+            .select_from(
+                heads.join(generations, heads.c.generation_id == generations.c.generation_id)
+                .join(attempts, generations.c.attempt_id == attempts.c.attempt_id)
+            )
+            .where(heads.c.namespace.in_(expected_runs))
+        ).all()
+    )
+    if approved != expected_runs:
+        raise ExportArtifactError("최신 선택 집합 전체의 승인 head가 확인되지 않았습니다.")
     return sorted(result, key=lambda d: (d.provider, d.entity_id))
