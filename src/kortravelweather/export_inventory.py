@@ -30,10 +30,11 @@ def export_inventory_table(metadata: MetaData):
         Column("provider", String(120), primary_key=True),
         Column("dataset_key", String(160), primary_key=True),
         Column("location_id", String(120), primary_key=True),
+        Column("source_part", String(16), primary_key=True, server_default="main"),
         Column("namespace", String(64), nullable=False, index=True),
         Column("generation_id", String(36), ForeignKey(
             "weather_export_generations.generation_id", ondelete="RESTRICT",
-        ), nullable=False),
+        ), nullable=False, index=True),
         Column("source_scope", String(64), nullable=False),
         Column("latitude", Float, nullable=False),
         Column("longitude", Float, nullable=False),
@@ -80,6 +81,7 @@ def record_approved_locations(session, metadata, *, descriptor, generation_id):
             continue
         rows.append({
             "provider": descriptor.provider, "dataset_key": descriptor.dataset_key,
+            "source_part": getattr(descriptor, "source_part", "main"),
             **{key: location[key] for key in ["location_id", "latitude", "longitude", "nx", "ny"]},
             "namespace": descriptor.namespace, "source_scope": descriptor.source_scope,
             "generation_id": generation_id, "source_collected_at": generation.source_collected_at,
@@ -89,9 +91,9 @@ def record_approved_locations(session, metadata, *, descriptor, generation_id):
         return
     statement = insert(table).values(rows)
     session.execute(statement.on_conflict_do_update(
-        index_elements=["provider", "dataset_key", "location_id"],
+        index_elements=["provider", "dataset_key", "location_id", "source_part"],
         set_={key: getattr(statement.excluded, key) for key in rows[0] if key not in {
-            "provider", "dataset_key", "location_id",
+            "provider", "dataset_key", "location_id", "source_part",
         }},
         where=table.c.published_at < statement.excluded.published_at,
     ))

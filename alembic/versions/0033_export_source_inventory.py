@@ -17,6 +17,7 @@ def upgrade():
         sa.Column("provider", sa.String(120), primary_key=True),
         sa.Column("dataset_key", sa.String(160), primary_key=True),
         sa.Column("location_id", sa.String(120), primary_key=True),
+        sa.Column("source_part", sa.String(16), primary_key=True, server_default="main"),
         sa.Column("namespace", sa.String(64), nullable=False),
         sa.Column("generation_id", sa.String(36), sa.ForeignKey(
             "weather_export_generations.generation_id", ondelete="RESTRICT",
@@ -32,8 +33,16 @@ def upgrade():
         "ix_weather_export_approved_locations_namespace", "weather_export_approved_locations",
         ["namespace"],
     )
+    op.create_index(
+        "ix_weather_export_approved_locations_generation_id", "weather_export_approved_locations",
+        ["generation_id"],
+    )
+    op.create_index(
+        "ix_weather_export_heads_generation_id", "weather_export_heads", ["generation_id"],
+    )
 
 
 def downgrade():
+    op.drop_index("ix_weather_export_heads_generation_id", table_name="weather_export_heads")
     op.drop_table("weather_export_approved_locations")
     op.drop_column("weather_export_external_cohorts", "descriptors")

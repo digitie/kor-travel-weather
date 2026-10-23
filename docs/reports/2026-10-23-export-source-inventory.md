@@ -7,11 +7,14 @@ W2/W3의 기본 조회를 활성 위치×모든 provider의 Cartesian product로
 이번에 선택되지 않은 이전 승인 위치가 사라진다. 원천 source plan과 승인 위치 projection을
 분리하고, 실제 수집 전 선언한 대상 및 마지막 승인 위치의 합집합을 사용한다.
 
-`weather_export_approved_locations`는 provider/dataset/location마다 마지막 승인
+`weather_export_approved_locations`는 provider/dataset/location/source_part마다 마지막 승인
 namespace/generation, 정확한 좌표/grid, 원문 수집 시각과 publication 시각만 보존한다.
 raw·fact·임의 metadata는 복사하지 않는다. 같은 위치의 재승인은 publication CAS upsert로
 한 행을 갱신하며 quota 밖 이전 위치는 삭제하지 않는다. source head와 같은 transaction에서
 작성하므로 API가 반쪽 승인 상태를 읽지 않는다.
+
+기본 source_part는 `main`이다. 중기예보는 `land`/`temperature`를 구분해 같은 지점의
+육상/기온 원문 승인이 서로 덮이지 않도록 한다. API에서는 같은 발표의 두 부분을 조합한다.
 
 - 처음인 provider/필수 source 미승인은503이다. 기존 승인 집합 뒤 실패·좌표 변경·미확인
   축소는 이전 승인 vector를 stale로 유지한다. 작은 부분집합을 전체 정상으로 꾸미지 않는다.
@@ -37,6 +40,9 @@ inventory의 generation FK는 `ON DELETE RESTRICT`다. head가 교체/삭제됐�
 유효 snapshot/cursor, W5 coverage/checkpoint의 참조를 모두 합쳐야 한다. FK만으로 파일
 삭제가 방지된다고 주장하지 않는다. 아직 파일 GC는 없으며 cursor/guard race·비용 검증과
 공유 NVMe artifact 권한 검증 전에 GC/운영 활성화를 하지 않는다.
+
+inventory와 source head의 generation_id 자식 index를 함께 두어 향후 parent generation
+삭제/FK 검사 때문에 작은 projection 전체가 반복 순회되지 않도록 한다.
 
 W1 catalog source clock은 현재 null/stale이며 updated_at으로 대체하지 않는다. Map 인계에는
 독립 reference의 최초 snapshot 수용 계약을 명시해야 한다.

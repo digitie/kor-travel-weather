@@ -200,7 +200,8 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("namespace", String(64), primary_key=True),
         Column("source_scope", String(64), nullable=False, index=True),
         Column(
-            "generation_id", String(36), ForeignKey(names[1] + ".generation_id"), nullable=False
+            "generation_id", String(36), ForeignKey(names[1] + ".generation_id"),
+            nullable=False, index=True,
         ),
         Column("version", BigInteger, nullable=False),
         Column("data_revision_at", DateTime(timezone=True), nullable=False),

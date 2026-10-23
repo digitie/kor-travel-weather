@@ -65,6 +65,9 @@ def test_quota_rotation_updates_selected_only_and_older_projection_cannot_overwr
     assert set(updated) == set(original)
     assert updated[targets[1].location_id] == original[targets[1].location_id]
     assert updated[targets[0].location_id]["published_at"] > old["published_at"]
+    selection = _selection(repo)
+    assert not selection.unconfirmed
+    assert set(key for scope in selection.scopes for key in scope.location_ids) == set(updated)
     heads = ExportHeads(repo)
     with heads._transaction() as s:
         descriptor = parse_scope_descriptor(s.scalar(select(heads.plans.c.descriptor).where(
@@ -78,6 +81,64 @@ def test_quota_rotation_updates_selected_only_and_older_projection_cannot_overwr
             c, heads.metadata, providers=["open_meteo"], dataset_keys=["open_meteo_current"],
         )}
     assert after == updated
+
+
+def _selection(repo, *, expected=None, optional=()):
+    from kortravelweather.export_inventory_selection import (
+        approved_source_selection,
+        catalog_source_columns,
+    )
+
+    heads = ExportHeads(repo)
+    catalog = heads.metadata.tables["weather_locations"]
+    with repo.engine.connect().execution_options(isolation_level="REPEATABLE READ") as c, c.begin():
+        c.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
+        locations = c.execute(select(
+            catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
+            catalog.c.nx, catalog.c.ny,
+            *catalog_source_columns(catalog),
+        ).where(catalog.c.enabled.is_(True))).mappings().all()
+        return approved_source_selection(
+            c, heads.metadata, locations,
+            expected=expected or [("open_meteo", "open_meteo_current")], optional=optional,
+        )
+
+
+def test_selection_preserves_failed_intent_and_distinguishes_optional_from_required(
+    external_repository, tmp_path,
+):
+    from kortravelweather.export_artifacts import ExportArtifactError
+
+    repo = external_repository
+    target = ProviderLocation("source-select-" + uuid.uuid4().hex, 37.5, 127, {})
+    repo.create_location(WeatherLocation(
+        location_id=target.location_id, name="미확인 source", latitude=37.5, longitude=127,
+    ))
+    _publish(repo, tmp_path, [target])
+    assert not _selection(repo).unconfirmed
+    required = [("open_meteo", "open_meteo_current"), ("python-krforest-api", "krforest_dust")]
+    with pytest.raises(ExportArtifactError, match="최초 승인"):
+        _selection(repo, expected=required)
+    assert _selection(repo, expected=required, optional=[required[1]]).unconfirmed
+    failed = repo.start_sync_run(provider="open_meteo", dataset_key="open_meteo_current",
+                                 export_cohort_required=True)
+    repo.finish_sync_run(failed.run_id, status="failed")  # roster 쓰기 이전 native 실패
+    stale = _selection(repo)
+    assert stale.unconfirmed and target.location_id in {
+        key for scope in stale.scopes for key in scope.location_ids
+    }
+    # native/admin은 fact가 있는 좌표 변경을 막는다. 외부 DB 이전의 SQL 변경도 거부한다.
+    catalog = ExportHeads(repo).metadata.tables["weather_locations"]
+    with repo.engine.begin() as c:
+        c.execute(catalog.update().where(catalog.c.location_id == target.location_id).values(
+            latitude=37.6,
+        ))
+    with pytest.raises(ExportArtifactError, match="좌표"):
+        _selection(repo)
+    with repo.engine.begin() as c:
+        c.execute(catalog.update().where(catalog.c.location_id == target.location_id).values(
+            latitude=37.5,
+        ))
 
 
 def test_inventory_generation_is_a_live_root_even_after_head_replacement(

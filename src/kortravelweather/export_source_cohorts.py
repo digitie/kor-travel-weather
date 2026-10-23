@@ -15,12 +15,15 @@ def declare_source_cohort(repository, *, run_id, provider, dataset_key, descript
     """사전 source plan과 실제 canonical target을 보존한다. caller가 오류를 격리한다."""
     if not 1 <= len(descriptors) <= MAX_EXTERNAL_TARGETS:
         raise ExportArtifactError("선언 source 개수가 상한을 벗어났습니다.")
-    scopes, ids = [], set()
+    scopes, ids, parts = [], set(), set()
     for descriptor in descriptors:
         if descriptor.provider != provider or descriptor.dataset_key != dataset_key:
             raise ExportArtifactError("사전 source 집합의 provider/dataset이 다릅니다.")
-        if ids.intersection(descriptor.location_ids):
+        selected = {(key, getattr(descriptor, "source_part", "main"))
+                    for key in descriptor.location_ids}
+        if parts.intersection(selected):
             raise ExportArtifactError("동일 dataset 위치가 사전 source 집합에 중복됩니다.")
+        parts.update(selected)
         ids.update(descriptor.location_ids)
         scopes.append(descriptor.model_dump(mode="json"))
     if len(ids) > MAX_EXTERNAL_TARGETS or len(json.dumps(scopes).encode()) > MAX_COHORT_BYTES:
