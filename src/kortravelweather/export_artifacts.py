@@ -8,7 +8,9 @@ import os
 import re
 import stat
 import tempfile
+import time
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -88,7 +90,42 @@ class ExportArtifactStore:
             raise ExportArtifactError("export artifact digest가 올바르지 않습니다.")
         return self.root / (digest + ".jsonl")
 
+    @contextmanager
+    def guard(self, *, timeout_seconds: float = 5):
+        # 관리되는 replace/unlink와 승격의 검증→CAS 구간을 같은 유한 guard로 보호한다.
+        # 관리자 외부 unlink/디스크 장애까지 원자적으로 묶는다는 뜻은 아니다.
+        import fcntl
+
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(
+            self.root / ".export.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+        )
+        acquired = False
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ExportArtifactError("artifact guard는 일반 파일이어야 합니다.")
+            while not acquired:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise ExportArtifactError(
+                            "artifact guard 대기 상한을 넘었습니다."
+                        ) from None
+                    time.sleep(0.01)
+            yield
+        finally:
+            if acquired:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def publish(self, chunk: PreparedExportChunk) -> None:
+        with self.guard():
+            self._publish(chunk)
+
+    def _publish(self, chunk: PreparedExportChunk) -> None:
         """DB commit 뒤에만 호출한다. 파일이 없으면 receipt만으로 공개할 수 없다."""
         target = self._path(chunk.digest)
         if (

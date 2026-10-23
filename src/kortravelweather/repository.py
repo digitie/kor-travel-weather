@@ -66,6 +66,7 @@ from .export_artifacts import (
     canonical_export_number,
     prepare_export_chunk,
 )
+from .export_heads import export_head_tables, validate_head_capture
 from .export_lifecycle import export_lifecycle_tables, normalization_input_digest
 from .export_receipts import (
     ExportAttempt,
@@ -140,6 +141,7 @@ class Base(DeclarativeBase):
 reverse_address_tables(Base.metadata)
 export_receipt_tables(Base.metadata)
 export_lifecycle_tables(Base.metadata)
+export_head_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
 
@@ -2036,6 +2038,9 @@ class WeatherRepository:
                         if at.tzinfo is None or at.utcoffset() is None:
                             raise ExportArtifactError("원천 재관측 시각에는 timezone이 필요합니다.")
                         observed[canonical_key] = min(observed.get(canonical_key, at), at)
+                    validate_head_capture(
+                        session, Base.metadata, export_capture.attempt, records, facts, observed,
+                    )
                     required = {str(record["source_record_key"]) for record in records}
                     if not required or not required.issubset(observed):
                         raise ExportArtifactError("이번 원천 fetch의 실제 시각이 누락됐습니다.")

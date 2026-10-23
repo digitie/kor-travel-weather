@@ -1,3 +1,7 @@
+## 2026-10-23 — Map export 단일 KMA 실황 성공 head 구현 중
+
+- [3B 범위·안전장치·미완](reports/2026-10-23-map-export-success-heads.md): 불변 요청계획, public pagination/정규화 증거, 성공 generation CAS, 같은 내용 파일 재사용을 구현했다. 검증·두 적대 리뷰·CI 대기이며 기존 collector OFF·API503이다. 실제 W1~W5/전국 완결·비용 gate는 계속 남는다.
+
 ## 2026-10-23 — KMA 페이지 완결성 provider 계약 수용
 
 - KMA PR32의 검증된 public pagination receipt를 고정하고 lineage에 보존한다. [범위·키 전환·미완](reports/2026-10-23-kma-pagination-contract.md)을 따른다. Weather PR141은 전체PG788·정확CI788/frontend243·독립2리뷰·격리API3/UI11 수용 후 머지됐다. export OFF/503·운영 미배포 상태다.
