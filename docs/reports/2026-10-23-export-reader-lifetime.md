@@ -38,8 +38,9 @@ entry 내부 helper다. helper를 독립 서비스 진입점으로 쓰거나 중
 - 다른 프로세스의 실제 EX probe와 새 전용 PG를 사용한 5종 page의 first/cursor 조회,
   파일 IO 중 pool checked-out 0, 마지막 health SQL까지 SH depth1을 확인했다.
   reducer는 metadata 조회 전부터 파일 검증과 최종 checkpoint CAS까지 같은 검사를 수행했다.
-- 초도 신규22건 PASS(97.50초). 이 뒤 추가한 공개 entry의 admission2초 상한1건과
-  기존 frozen/mid/daily/publisher 관련 회귀는 별도 실행 중이다. 전체 Ruff PASS다.
+- 초도 신규22건 PASS(97.50초). 이후 추가한 공개 entry의 admission2초 상한1건과
+  기존 frozen/mid/daily/publisher 관련 회귀74건 PASS(204.81초)다. 두 실행은 같은
+  전용 시험 DB에서 순차로 수행했다. 전체 Ruff PASS다.
 - 독립 두 리뷰·정확 CI·실제 HTTP/UI는 후속 수용이며 완료 전 결과로 세지 않는다.
 - 선행159의 별도 source 건강 보강은 작성자 소유로 유지하고 확정 뒤 통합한다.
 
