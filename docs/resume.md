@@ -1,5 +1,11 @@
 # Weather 현재 인수인계
 
+## 2026-10-23 — Map API 단계2 기반 머지, 실제 공개는 후속
+
+- 단계1 PR135 main9d75b64와 단계2 PR136 main91801d4를 머지했다. PR136 최종9bd5f21의 두 독립 적대 리뷰·CI PASS, WSL 전체Python756 PASS1150초(시작6d764da)+수정집중24 PASS29.29초, frontend243/type-check PASS, 격리실제API3범주/UI11 PASS다. 운영 배포/collector opt-in/실제 W1~W5 데이터 공개는 아직 아니다.
+- 잠금 실패표시의 원본 rollback/P1·후속 무한대기/P2·run미지정 원천혼입/P2·FIFO open 대기/P2를 실제PG/소유child 회귀와 함께 해소했다. [단계2 기록](reports/2026-10-23-map-export-receipts.md).
+- 다음은 [단계3A 계획·완결·terminal 검증, 3B 성공head](design/map-export-promotion-plan.md). COW 합산비용 gate·frozen pagination/GC·W5는 미완이다. 기존현재pointer의 실패값을 성공값처럼 내보내지 않는다.
+
 ## 2026-10-23 — Map API 단계1 머지·단계2 receipt 기반 구현 중
 
 - 계약·인증 경계 PR135는 두 독립 리뷰·CI·전체Python738/frontend243·격리실제API3범주/UI11 뒤 main9d75b64로 머지했다. 운영 배포는 아직 하지 않았다.
