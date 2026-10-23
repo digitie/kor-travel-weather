@@ -6,7 +6,7 @@ from time import monotonic
 import pytest
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
-from sqlalchemy import event, select, text
+from sqlalchemy import event, insert, select, text, true
 
 from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_status import ExportSourceStatuses
@@ -216,6 +216,16 @@ def test_unknown_actual_clock_never_uses_finish_time(repository):
     assert page["meta"]["source_status"] == "stale"
 
 
+@pytest.mark.parametrize("terminal", ["cancelled", "abandoned", "unknown_terminal"])
+def test_non_success_terminal_is_recoverable_and_never_ok(repository, terminal):
+    run = repository.start_sync_run(provider=PROVIDER, dataset_key=DATASET)
+    repository.finish_sync_run(run.run_id, status=terminal)
+    assert repository.get_sync_run(run.run_id).status == terminal
+    assert state(repository).last_attempt_failed
+    page, _ = read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
+    assert page["meta"]["source_status"] == "failed"
+
+
 def test_metadata_failure_does_not_rollback_native_run(repository, monkeypatch):
     def fail(*args, **kwargs):
         raise ValueError("bad derived status")
@@ -266,3 +276,26 @@ def test_status_off_keeps_derived_tables_empty(repository):
     repository.ingest_batch(source_records=records(run, clock=datetime.now(UTC)), values=[])
     repository.finish_sync_run(run.run_id, status="success")
     assert state(repository).last_status is None
+
+
+def test_pending_lookup_uses_partial_index_among_many_completed_runs(repository):
+    now = datetime.now(UTC)
+    with repository.engine.begin() as connection:
+        connection.execute(insert(SyncRunRow), [{
+            "run_id": f"plan-{index}", "provider": PROVIDER, "dataset_key": DATASET,
+            "status": "failed", "started_at": now - timedelta(seconds=index),
+            "export_status_pending": index == 2500,
+        } for index in range(5000)])
+        connection.execute(text("ANALYZE weather_sync_runs"))
+        query = select(SyncRunRow.run_id).where(
+            SyncRunRow.export_status_pending == true(), SyncRunRow.provider.in_({PROVIDER}),
+        ).order_by(SyncRunRow.started_at, SyncRunRow.run_id).limit(1).with_for_update(
+            skip_locked=True,
+        )
+        compiled = query.compile(dialect=connection.dialect, compile_kwargs={"literal_binds": True})
+        plan = connection.exec_driver_sql("EXPLAIN (FORMAT JSON) " + str(compiled)).scalar_one()
+        def indexes(node):
+            return [node.get("Index Name"), *(
+                value for child in node.get("Plans", []) for value in indexes(child)
+            )]
+        assert "ix_weather_sync_runs_export_pending" in indexes(plan[0]["Plan"])

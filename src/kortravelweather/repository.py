@@ -79,6 +79,7 @@ from .export_receipts import (
 )
 from .export_snapshots import export_snapshot_tables
 from .export_status import (
+    TERMINALS,
     ExportSourceStatuses,
     SourceKey,
     export_fetch_clock_table,
@@ -3577,7 +3578,8 @@ class WeatherRepository:
                     statuses.record_terminal(
                         session.connection(), key, run_id=row.run_id,
                         started_at=row.started_at, finished_at=row.finished_at,
-                        status=row.status, source_collected_at=fetched,
+                        status=row.status if row.status in TERMINALS else "failed",
+                        source_collected_at=fetched,
                     )
                 session.execute(update(SyncRunRow).where(
                     SyncRunRow.run_id == row.run_id,
@@ -3597,7 +3599,7 @@ class WeatherRepository:
             raise ValueError("상태 재투영은 한 번에 1~8개 실행까지 허용합니다.")
         with self._session_factory.begin() as session, status_transaction(session.connection()):
             rows = session.scalars(select(SyncRunRow).where(
-                SyncRunRow.export_status_pending.is_(True), SyncRunRow.provider.in_(providers),
+                SyncRunRow.export_status_pending == true(), SyncRunRow.provider.in_(providers),
             ).order_by(SyncRunRow.started_at, SyncRunRow.run_id).limit(limit).with_for_update(
                 skip_locked=True,
             )).all()

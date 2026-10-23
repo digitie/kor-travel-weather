@@ -36,6 +36,10 @@ native 종료 시각을 수집 시각으로 대체하지 않는다.
 provider에 미처리 실행이 있으면 옛 성공에 304를 주지 않고 503을 반환한다. 다음
 조회에서 잠금이 풀렸으면 복구한다. 사실 이력 전체 스캔과 수집 재실행은 하지 않는다.
 native 실행을 정리하면 flag도 함께 정리된다. 전체 실행 이력은 스캔하지 않는다.
+부분 인덱스와 조회 조건을 모두 `export_status_pending = true`로 맞춘다. 완료 실행
+5,000건과 대기 한 건을 둔 실제 PostgreSQL EXPLAIN에서 이 부분 인덱스 사용을 확인했다.
+알려진 cancelled/abandoned는 그대로 실패 상태로 표시하고, 미등록 native terminal도
+파생 상태에서는 failed로 보수적으로 표시한다. native 원래 상태는 바꾸지 않는다.
 
 해양·산악·청정넷·휴게소 opt-in 수집은 provider fetch 전에 native 실행을 만든다.
 fetch timeout/권한 오류도 실패 terminal로 남긴다. 성공 시 기존 publish 경로를 같은
@@ -72,7 +76,9 @@ null이며, 중지 후 tick이 없으면 이전 예정 시각이 지난 뒤 read
 
 ## 남은 수용 조건
 
-- 정상·실패·별칭 재수집·중단 복구·동시 실행·상태 잠금 실패의 PostgreSQL 회귀
+- 수정 전 기반 회귀 83개, 원자 pending/지역 실패 보강 관련 회귀 128개 PASS.
+  추가 terminal 경계 포함 상태 통합 17개와 5,000건 EXPLAIN 회귀 1개도 PASS.
+  이 수는 서로 겹치므로 단순 합산하지 않는다.
 - 실제 HTTP/기존 UI, OpenAPI/TypeScript, 전체 CI, 독립 적대 리뷰 2명
 - Map 담당에게 최종 PR·응답 예시 전달 후 consumer 계약 수용
 - 운영 배포 전 기존 장기 수집 drain 및 rollout 비용·복구 검증

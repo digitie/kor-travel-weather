@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, true
 
 from .export_artifacts import ExportArtifactError
 from .export_status import ExportSourceStatuses, status_transaction
@@ -25,7 +25,7 @@ def read_status(repository, providers: set[str], *, as_of: datetime) -> tuple[di
         isolation_level="REPEATABLE READ",
     ) as connection, connection.begin(), status_transaction(connection):
         if connection.scalar(select(SyncRunRow.run_id).where(
-            SyncRunRow.export_status_pending.is_(True), SyncRunRow.provider.in_(providers),
+            SyncRunRow.export_status_pending == true(), SyncRunRow.provider.in_(providers),
         ).limit(1)) is not None:
             raise ExportArtifactError("수집 상태 재투영을 기다리고 있습니다.")
         states = ExportSourceStatuses(repository_metadata()).read(connection, keys, as_of=now)
