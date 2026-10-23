@@ -3,11 +3,13 @@
 import json
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import select, text
 
 from .export_heads import ScopeDescriptor, _digest
+from .export_inventory_selection import approved_source_selection, catalog_source_columns
 from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
@@ -36,13 +38,22 @@ class FrozenForecastExports(FrozenCurrentExports):
             "style": style,
             "since": since.isoformat() if since else None,
         }
+        if self.source_inventory:
+            self.selection.update(
+                source_inventory=1, provider_signature=_digest([
+                    self.current_providers, self.expected_sources, self.optional_sources,
+                ]),
+            )
         if style == "external":
             from .export_external import ADAPTERS
 
-            if not self.current_providers or not set(self.current_providers).issubset(ADAPTERS):
+            if not self.source_inventory and (
+                not self.current_providers or not set(self.current_providers).issubset(ADAPTERS)
+            ):
                 raise ExportSnapshotUnavailable("요청 외부 provider 전체가 준비되지 않았습니다.")
             self.selection["providers"] = list(self.current_providers)
-            self.selection["provider_signature"] = _digest(self.current_providers)
+            if not self.source_inventory:
+                self.selection["provider_signature"] = _digest(self.current_providers)
         self.resource = f"forecasts:{style}:{_digest(self.selection)}"
 
     def _freeze_forecasts(self):
@@ -69,6 +80,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                     catalog.c.ny,
                     catalog.c.latitude,
                     catalog.c.longitude,
+                    *(catalog_source_columns(catalog) if self.source_inventory else []),
                 )
                 .where(catalog.c.enabled.is_(True))
                 .order_by(catalog.c.location_id)
@@ -77,7 +89,10 @@ class FrozenForecastExports(FrozenCurrentExports):
             if not roster or len(roster) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("활성 위치 전체가 준비되지 않았습니다.")
             groups = defaultdict(list)
-            for key, nx, ny, _latitude, _longitude in roster:
+            for row in roster:
+                key, nx, ny = row.location_id, row.nx, row.ny
+                if self.source_inventory:
+                    continue
                 if self.style == "external":
                     continue
                 if nx is None or ny is None:
@@ -102,7 +117,12 @@ class FrozenForecastExports(FrozenCurrentExports):
                 )
                 for (nx, ny), keys in sorted(groups.items())
             ]
-            if self.style == "external":
+            selected, unconfirmed = None, False
+            if self.source_inventory:
+                descriptors, selected_heads, selected, unconfirmed = self._select_current_scopes(
+                    c, [row._mapping for row in roster],
+                )
+            elif self.style == "external":
                 from .export_artifacts import ExportArtifactError
                 from .export_external_cohorts import selected_external_descriptors
 
@@ -120,7 +140,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                     ) from exc
             if len(descriptors) > 5000:
                 raise ExportSnapshotUnavailable("예보 source vector 상한을 넘었습니다.")
-            heads = {
+            heads = {} if self.source_inventory else {
                 r.namespace: r
                 for r in c.execute(
                     select(
@@ -137,6 +157,10 @@ class FrozenForecastExports(FrozenCurrentExports):
                     .where(self.heads.heads.c.namespace.in_([d.namespace for d in descriptors]))
                 )
             }
+            if self.source_inventory:
+                heads = {namespace: SimpleNamespace(
+                    **head, created_at=head["published_at"],
+                ) for namespace, head in selected_heads.items()}
             if len(heads) != len(descriptors):
                 raise ExportSnapshotUnavailable("모든 위치의 승인된 예보가 필요합니다.")
             refs = defaultdict(list)
@@ -171,9 +195,13 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "ny": getattr(d, "ny", None),
                         "provider": d.provider,
                         "forecast_style": d.forecast_style,
-                        "location_ids": list(d.location_ids),
+                        "location_ids": list(selected[d.namespace] if selected else d.location_ids),
+                        "approved_location_ids": list(d.location_ids),
+                        "dataset_key": d.dataset_key,
                         "refs": chunks,
                         "published_at": head.created_at.isoformat(),
+                        "source_collected_at": head.source_collected_at.isoformat(),
+                        "data_revision_at": head.data_revision_at.isoformat(),
                     }
                 )
             manifest = {
@@ -181,6 +209,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "as_of": anchor.isoformat(),
                 "scopes": scopes,
                 "next_since": watermark.isoformat(),
+                "unconfirmed_sources": unconfirmed,
             }
             digest = _digest(manifest)
             previous = (
@@ -402,6 +431,8 @@ class FrozenForecastExports(FrozenCurrentExports):
         return page, etag
 
     def _health(self, manifest, frozen, now):
+        if self.source_inventory:
+            return self._inventory_forecast_health(manifest, frozen, now)
         scopes = manifest["scopes"]
         stale = now - frozen["source_collected_at"] > timedelta(
             hours=3 if self.style == "ultra_short" else 9
@@ -478,3 +509,42 @@ class FrozenForecastExports(FrozenCurrentExports):
                 for a, run, generation in statuses
             )
         )
+
+    def _inventory_forecast_health(self, manifest, frozen, now):
+        from .export_artifacts import ExportArtifactError
+        from .export_inventory_selection import source_max_age
+
+        stale = bool(manifest.get("unconfirmed_sources"))
+        stale |= any(
+            now - datetime.fromisoformat(scope[key]) > source_max_age(scope["dataset_key"])
+            for scope in manifest["scopes"]
+            for key in ("source_collected_at", "data_revision_at")
+        )
+        with (
+            self.repository.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as c,
+            c.begin(),
+        ):
+            c.execute(text("SET LOCAL statement_timeout = '5s'"))
+            catalog = self.heads.metadata.tables["weather_locations"]
+            locations = c.execute(select(
+                catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
+                catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
+            ).where(catalog.c.enabled.is_(True)).limit(MAX_SNAPSHOT_LOCATIONS + 1)).mappings().all()
+            if len(locations) > MAX_SNAPSHOT_LOCATIONS:
+                return True
+            try:
+                selected = approved_source_selection(
+                    c, self.heads.metadata, locations,
+                    expected=self.expected_sources, optional=self.optional_sources,
+                )
+                stale |= selected.unconfirmed
+                actual = {(scope.descriptor.namespace, scope.location_ids)
+                          for scope in selected.scopes}
+                wanted = {(scope["namespace"], tuple(scope["location_ids"]))
+                          for scope in manifest["scopes"]}
+                stale |= actual != wanted
+            except (ExportArtifactError, KeyError, ValueError, TypeError):
+                stale = True
+        return stale

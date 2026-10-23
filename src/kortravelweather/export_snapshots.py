@@ -173,6 +173,7 @@ class FrozenCurrentExports:
                 "generation_id": item.generation_id,
                 "source_collected_at": item.source_collected_at,
                 "data_revision_at": item.data_revision_at,
+                "published_at": item.published_at,
             } for item in selection.scopes}
             return (
                 [item.descriptor for item in selection.scopes], heads, selected,
