@@ -2,17 +2,17 @@
 
 아래 기존 인덱스는 2026-10-17 main39aafe0 기준 이력이다. 현재 PR #118의 부분 수용과 남은 게이트는 아래 최신 절을 따른다. 문서 PR 생성 전 감사 조회에서 OPEN PR0이었다. [전체 감사·증거·선행 관계](audits/2026-10-17-remaining-work.md)를 함께 읽는다. 과거 이전 백로그는 [deploy/n150.md](../deploy/n150.md)에 보존한다. vendored python-airkorea-api의 tasks/resume/journal은 별도 provider 문서다.
 
-코드·PR merge·실배포·운영 수용은 다른 상태다. 증거 미확인을 미배포 확정으로 쓰지 않는다. daemon OFF는 현재 사용자 정책이며 자동으로 해제하지 않는다.
+코드·PR merge·실배포·운영 수용은 다른 상태다. 증거 미확인을 미배포 확정으로 쓰지 않는다. 현재 daemon 정책은 최신 사용자 지시에 따라 Geo·Weather·Transport RUNNING이다. 과거 OFF 기록은 당시 이력이며 현재 실행 지시가 아니다.
 
 
-## 2026-10-23 Map 서비스 export 설계 — proposed, 구현 미착수
+## 2026-10-23 Map 서비스 export — 계약/receipt 기반 머지, 실제 데이터 API 미완
 
-[설계 정본](design/map-service-exports.md)을 보존한다. 아래는 **Weather 소유** 작업이며 W-MAP-03의 선택 문서화 외에는 모두
-미착수다. Transport T1~T5는 같은 문서의 외부 연계 절일 뿐 이 저장소의 완료 항목으로 세지 않는다.
+[설계 정본](design/map-service-exports.md)을 보존한다. 아래는 **Weather 소유** 작업이다. 계약PR135·receipt 기반PR136과 W-MAP-03 선택 문서화는 완료했고,
+collector 연결·성공head·실제 데이터 API·요약·운영 수용은 남아 있다. Transport T1~T5는 같은 문서의 외부 연계 절일 뿐 이 저장소의 완료 항목으로 세지 않는다.
 설계 문서 PR 머지는 코드/운영 수용이 아니다. W5 관측 범위는 사용자 승인으로 기존 OBSERVED와
 실제 관측 기반 KMA 초단기실황을 포함하도록 선택 완료했다. COW는 실측 exit gate 뒤에만 채택한다.
 
-- [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비(구현·검증 완료, 전체Python738/frontend243·CI/2리뷰·격리실제API3범주/UI11 PASS, PR135 main9d75b64 머지). 기존 require_admin/x-admin-token 재사용과
+- [x] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비(구현·검증 완료, 전체Python738/frontend243·CI/2리뷰·격리실제API3범주/UI11 PASS, PR135 main9d75b64 머지). 기존 require_admin/x-admin-token 재사용과
   신규 service route의 OpenAPI·타입·오류·bounded query와 웹 catchall service prefix 차단을 준비한다.
   이 단계는 W1/W2 데이터 공개 완료가 아니다. 해제 조건: 설계 §1·6 단계1·§7의 계약 검증과
   프록시 upstream fetch 0회, 기존 경로 유지, 기능 CI·2인 리뷰.
@@ -34,6 +34,8 @@
   담당에게 전달하고, source_status/체크포인트/304/미래 필터 계약과 rollback을 함께 검증한다.
   해제 조건: 설계 §7의 기능 CI·2인 리뷰·live E2E/API/UI·실측·배포 증거. 설계 PR로 완료하지 않는다.
 
+
+[2026-10-23 API 남은 작업 감사](audits/2026-10-23-map-api-remaining.md)를 함께 읽는다.
 
 ## 완료한 한정 범위
 
