@@ -238,6 +238,9 @@ async def _fetch_beach_index(
                              else min(page_size, max_places - len(collected))),
             )
             items = list(page.items)
+            if not items and page_no == 1 and export_assembly is not None:
+                page = await client.abeach_index(page_no=1, num_of_rows=page_size)
+                items = list(page.items)
             if export_assembly is not None:
                 try:
                     export_assembly.add(page)

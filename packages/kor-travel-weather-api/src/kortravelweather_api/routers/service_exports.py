@@ -302,7 +302,11 @@ async def export_current(
     cursor: Cursor = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
 ) -> Response:
-    """관측 dataset이 있는 provider의 승인 선택 집합. 미지원/미승인 scope는503이다."""
+    """활성 관측 제공처의 실제 승인 합집합. 필수 source 최초 미승인은503이다.
+
+    해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은
+    보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다.
+    """
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
 
@@ -357,6 +361,10 @@ async def export_forecasts(
         Query(description="공개 publication watermark. 이전 응답 meta.next_since를 사용"),
     ] = None,
 ) -> Response:
+    """활성 예보 제공처의 승인 집합. external에는 KHOA 해양 예보를 포함한다.
+
+    known_at은 원천 시각이며 since에는 모든 페이지 반영 뒤 meta.next_since를 사용한다.
+    """
     return await _frozen_response(
         request, "forecasts", limit, cursor, provider=provider, style=style, since=since
     )
