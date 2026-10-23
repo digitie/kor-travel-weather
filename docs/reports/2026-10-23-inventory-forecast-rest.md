@@ -33,3 +33,12 @@ W5 eligibility·전체 provider 일간 요약·운영 비용/GC gate는 아직 �
 검증은 실제 PostgreSQL에서 SDK41+7 provider 기본 current/KHOA REST 2건을 함께
 43PASS, 빈 응답/새 station 발견과 다음 수집 복구·registry 집중10PASS다. 고정 최종
 CI/두 적대 리뷰/실제 TCP/UI gate는 별도로 수용한다. 운영 flag는 OFF를 유지한다.
+# 실제 원천의 실패와 namespace
+
+신뢰 상태의 단위는 `source_scope`(provider/dataset/entity의 실제 HTTP 원천)다.
+정규화 정책이나 선택 위치가 달라 namespace가 달라도 같은 실제 원천의 현재
+실패는 이전 승인 값을 stale로 표시한다. 불변 파일·승인 위치 집합은 유지한다.
+현재 owner의 active attempt만 확인하고 claim epoch가 일치해야 하며, 과거에
+교체된 attempt나 다른 source_scope의 실패는 해당 승인 집합을 오염시키지 않는다.
+native 성공 뒤 Dagster가 확정 FAILURE/CANCELED여서 publisher가 attempt를
+failed로 기록한 경우에도 같은 정책으로 건강한 이전 ETag304를 차단한다.

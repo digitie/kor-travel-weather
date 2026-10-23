@@ -20,8 +20,9 @@ def publisher_servability_metadata():
 
 
 @pytest.mark.parametrize("resource", ["current", "forecasts"])
+@pytest.mark.parametrize("policy", ["same", "different-namespace"])
 def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy_etag(
-    repository, tmp_path, resource
+    repository, tmp_path, resource, policy,
 ):
     collect = _collect if resource == "current" else _collect_forecast
     collect(repository, tmp_path)
@@ -30,6 +31,10 @@ def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy
         descriptor = ScopeDescriptor.model_validate(connection.scalar(
             select(heads.plans.c.descriptor).order_by(heads.plans.c.namespace).limit(1)
         ))
+    if policy != "same":
+        original_namespace = descriptor.namespace
+        descriptor = descriptor.model_copy(update={"normalizer_revision": "other-policy-v2"})
+        assert descriptor.namespace != original_namespace
     client = _client(repository, tmp_path)
     checks = [(f"/v1/service/exports/{resource}",
                {"limit": 1, **({"style": "ultra_short"} if resource == "forecasts" else {})})]

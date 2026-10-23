@@ -438,3 +438,47 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   원천 시각을 제공하고, 산림청/KREX 섭씨 `℃`를 지원한다.
 - 이력 전체 조회·새 이력 표·운영 수집 실행 없이 작은 summary/coverage만 사용한다.
   집중 시험·두 리뷰·정확CI/실제HTTP/UI 및 운영 비용/GC gate는 수용 전이다.
+# 2026-10-23 export artifact의 제한된 동시 읽기
+
+- current/forecast/일간요약의 파일 읽기에 공유 guard를 적용하고 writer 배타 guard는
+  유지한다. 같은 root의 OS 파일 slot으로 전체 프로세스를 합쳐동시2개까지만 허용한다.
+- 별도OS process의실제잠금/용량/강제종료회복3건·Ruff PASS. metadata→파일 사이
+  in-flight pin과GC/운영CPU·RSS 수용은별도이며운영flag/daemon은바꾸지않는다.
+- 상세: `docs/reports/2026-10-23-export-shared-read-guard.md`.
+### writer 기아 방지
+
+- 초기 독립 적대 리뷰의 연속 SH reader에 의한 writer timeout 경계를 admission
+  turnstile로 보완했다. writer 대기 중 새 reader를 막고 기존 reader만 drain한다.
+- 단일 deadline/두 slot/기본 EX 보존 및 실제OS writer진입회귀 포함4PASS/Ruff.
+  테스트의 강제종료 뒤 Event 정리 교착은 시험 harness에서 수정했고 실패실행은
+  통과로세지않았다. 두 최종 리뷰/CI·기존PG·HTTP/UI 수용은 별도다.
+# 2026-10-23 중기 전용 job의 export 배선
+
+- 명시 opt-in 중기 job에서 실제 source roster/사전 계획과 capture를 연결한다.
+  동일 지역을 중복 HTTP/claim하지 않고 SDK 회차를 한번 고정한다. 한 원문·작은
+  template과50곳/2,500값 batch로 원본 저장·전체 예산·heartbeat를 유지한다.
+- 공개SDK 모의HTTP+실제native runner6건/기존OFF23건/Ruff PASS. PostgreSQL
+  통합·두 리뷰·정확CI/HTTP/UI·운영 성능은 별도 수용 전이다.
+- 상세: `docs/reports/2026-10-23-mid-export-collection.md`.
+
+
+
+### 중기 실제 PostgreSQL 저장·복구 수용
+
+- 전용 DB에0001→0033을 새로 적용한 뒤 실제 SDK 모의HTTP/native runner/capture/
+  publisher에서3개 head·6개 역할 승인과 후속 HTTP 실패 시 이전6개 승인 보존을
+  확인했다. 관련PG10건14.01초·실제asset ON/OFF21건·Ruff PASS.
+- 초기 검증 두 실패는 공개SDK 예외 문구와 publisher REJECTED 상태의 기대값 오류였고
+  테스트만 수정했다. source 자체 변경은 없다. 두 리뷰·정확 CI/REST/UI는 후속이다.
+### 중기 빈 응답 재확인
+
+- root 자체 점검에서 빈 성공 응답 재확인 요건이 빠진 점을 찾아 같은 회차·계획으로
+  1회만 재확인하도록 보강했다. transport 재시도는 SDK 경계를 유지한다.
+- 집중8건/Ruff PASS. 원천이 계속 비면 native 실패/이전 승인 유지 경로를 사용한다.
+### export와 native 선택 상한 분리
+
+- root 자체 점검에서 descriptor1,000곳 상한이 기존 native 입력까지 막을 수 있는
+  경계를 찾아 작은 native scope와 export descriptor를 분리했다. 승인 불가면
+  원본 bounded 저장만 계속한다.1,001곳42,042값 포함 집중9건/Ruff PASS.
+- 빈 응답 재확인 추가 후 관련PG12건25.38초 PASS도 확인했다. 새 범위 분리와 최종
+  선행155수정 통합 후 실제PG를 다시 확인하고 정확 CI/리뷰를 수용한다.

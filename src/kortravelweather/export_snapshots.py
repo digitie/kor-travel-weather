@@ -516,7 +516,7 @@ class FrozenCurrentExports:
             more = False
             # 현재는 GC가 없으며 durable snapshot_refs가 generation의 삭제도 막는다.
             # 파일은 매 페이지 동일fd hash/count를 재검증하고 누락은 성공으로 반환하지 않는다.
-            with self.artifacts.guard(timeout_seconds=2):
+            with self.artifacts.guard(timeout_seconds=2, shared=True):
                 while state["g"] < len(scopes):
                     scope = scopes[state["g"]]
                     points = []

@@ -955,6 +955,9 @@ async def _stage_and_publish_weather(
         planned.clear()
     if include_mid:
         planned.add("kma_mid_forecast")
+    mid_export_mode = (
+        export_artifact_root is not None and include_mid and not include_base and not include_alerts
+    )
     status_kwargs = {"export_status_datasets": planned} if getattr(
         repository, "export_status_enabled", False,
     ) else {}
@@ -965,10 +968,13 @@ async def _stage_and_publish_weather(
     )
     run = sync_run or repository.start_sync_run(
         provider=KMA_PROVIDER_NAME,
-        dataset_key=next(iter(base_datasets)) if base_export_mode else "kma_weather_bundle",
+        dataset_key=(
+            "kma_mid_forecast" if mid_export_mode
+            else next(iter(base_datasets)) if base_export_mode else "kma_weather_bundle"
+        ),
         locations_total=len(targets),
+        **({"export_cohort_required": True} if mid_export_mode or base_export_mode else {}),
         **status_kwargs,
-        **({"export_cohort_required": True} if base_export_mode else {}),
     )
     #: Alert chunks already committed; reported even when the run fails.
     published_values = 0
@@ -1068,7 +1074,7 @@ async def _stage_and_publish_weather(
             )
         export_collector = None
         prepared_exports = {}
-        if export_artifact_root is not None:
+        if export_artifact_root is not None and not mid_export_mode:
             # 기존 혼합 batch를 명시 단일 KMA grid dataset에서만 분리한다.
             # OFF인 기존 경로의 chunk/메모리/성공 의미를 그대로 둔다.
             if (
@@ -1311,13 +1317,14 @@ async def _stage_and_publish_weather(
                 )
                 for grid_key, group_targets in grid_groups.items()
             )
+        mid_requests_fetched = len(mid_groups) * 2
         calls.extend(
             (
                 lambda group=group_targets, key=mid_region_codes: fetch_group(
                     group, True, f"mid-region:{key[0]}:{key[1]}"
                 )
             )
-            for mid_region_codes, group_targets in mid_groups.items()
+            for mid_region_codes, group_targets in mid_groups.items() if not mid_export_mode
         )
         # aclosing은 append/DB 실패 시에도 generator의 finally를 즉시 실행한다.
         keep_alive()
@@ -1325,6 +1332,20 @@ async def _stage_and_publish_weather(
             async for group_targets, responses, skipped in prefetched:
                 await append_group(group_targets, responses, skipped)
                 del group_targets, responses, skipped
+        if mid_export_mode:
+            from .mid_export import collect_mid_exports
+
+            mid_result = await collect_mid_exports(
+                repository=repository, run_id=run.run_id, targets=targets,
+                data_client=data_client, artifact_root=export_artifact_root,
+                max_response_rows=max_response_rows, max_values=max_values,
+                retries=retries, heartbeat=keep_alive,
+            )
+            published_values += mid_result["loaded"]
+            response_rows_total += mid_result["response_rows"]
+            normalized_values_total += mid_result["normalized_values"]
+            values_accepted += mid_result["values_accepted"]
+            mid_requests_fetched = mid_result["requests_fetched"]
         alert_groups = 0
         alert_rows_total = 0
         if include_alerts:
@@ -1541,7 +1562,7 @@ async def _stage_and_publish_weather(
                 values=[],
                 grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
-                requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
+                requests_fetched=base_requests_fetched + mid_requests_fetched + alert_groups,
                 values_loaded_offset=published_values,
                 status=status,
                 error=skip_note,
@@ -1558,7 +1579,7 @@ async def _stage_and_publish_weather(
                 status=status,
                 grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
-                requests_fetched=base_requests_fetched + len(mid_groups) * 2 + alert_groups,
+                requests_fetched=base_requests_fetched + mid_requests_fetched + alert_groups,
                 values_loaded=loaded,
                 error=skip_note,
             )
@@ -1574,7 +1595,7 @@ async def _stage_and_publish_weather(
             "status": finished.status,
             "grids_fetched": grids_fetched,
             "mid_groups_fetched": len(mid_groups),
-            "requests_fetched": base_requests_fetched + len(mid_groups) * 2 + alert_groups,
+            "requests_fetched": base_requests_fetched + mid_requests_fetched + alert_groups,
             "alerts_fetched": alert_rows_total,
             "values_loaded": loaded,
             "alert_locations_skipped": len(alerts_skipped),
