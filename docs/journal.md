@@ -8,8 +8,12 @@
 - 최신 main `d028ea72e440b36a44744c304264e20c9ad1f0f0`에서 후속 문서 branch를 만들었다.
   기존 catchall 프록시가 모든 경로에 서버 관리자 token을 주입하는 코드를 읽고 service prefix의
   명시 차단과 upstream fetch 0회 수용 조건을 설계에 추가했다. guard 구현은 아직 하지 않았다.
-- accepted replay/canonical 시각과 4단계 구현 의존을 이어 문서화한다. 코드·schema·운영 변경이나
-  테스트/CI 실행은 없으며 문서 PR의 2인 리뷰 후 CI 검토 없이 머지 여부를 판단한다.
+- accepted hook은 canonical 변환 뒤 `candidates`의 False replay까지 포함하며 원래 fact clock과
+  이번 실제 성공 수집 시각을 분리하도록 명시했다. source 연결만으로 point 완결을 증명하지 않는다.
+- 계약/프록시→receipt→종료 후 성공 승격→실제 조회 공개의 4단계와 W-MAP-01/02/04 의존을
+  맞췄다. W5 선택은 완료지만 구현은 미착수이며 COW 실측 gate를 유지한다.
+- 코드·schema·운영 변경이나 테스트/CI 실행은 없다. 문서 PR의 2인 리뷰 후 CI 검토 없이 머지
+  여부를 판단하며, 후속 기능 PR의 정상 검증·배포 게이트는 유지한다.
 
 
 ## 2026-10-23 W5 관측 범위 사용자 선택 완료 — 구현은 미착수

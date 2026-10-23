@@ -141,6 +141,21 @@ canonical source key/정확한 fact PK**를 담아야 한다. proposal의 임시
 신뢰하지 않는다. B가 다른 alias로 같은 원문을 재관측한 경우에도 canonical key 매핑·값 digest·
 B의 검증 receipt를 보존해 성공 후보로 인정한다.
 
+현재 코드의 안전한 hook 위치는 `repository.py::_ingest_batch_session`에서 alias 정규화/
+`_resolve_fact_session` 뒤, `_insert_value_session`의 결과가 `None`이 아니어서 `candidates`에
+들어간 지점이다. 결과 `False`도 검증된 replay이므로 포함하며 `loaded>0`/current CAS 성공만
+필터하지 않는다. 수집기의 임시 source key·known_at을 그대로 저장하지 않고 최종
+`_ResolvedFact`의 canonical source key·value_id/known_at·typed hash를 receipt에 묶는다.
+기존 `SyncRunSourceRow`는 run↔source 연결만 증명하므로 point 집합/값 hash·chunk 완결 증거를
+대신하지 못한다. 이 증거는 같은 chunk transaction이 rollback되면 함께 사라져야 한다.
+
+`_resolve_fact_session`은 동일 원문 replay의 fact known_at/collected_at을 기존
+`SourceRecordRow.fetched_at`으로 고정한다. 따라서 **fact의 원래 인식 시각**과 **이번 attempt가
+실제로 fetch/재관측한 시각**을 receipt에 분리한다. export `source_collected_at`은 성공 attempt의
+검증된 실제 수집 시각(§3 scope별 집계)을 사용하며 canonical fact 시각·SyncRun 종료·API 읽기
+시각으로 대체하지 않는다. zero-new-row 재관측은 원래 fact clock을 바꾸지 않으면서 이번 실제
+성공 수집을 새 receipt로 증명한다. DB 기존 row 존재만으로 재관측했다고 간주하지 않는다.
+
 precommit serialization은 proposal일 뿐이고, chunk receipt의 accepted key/값 hash/원문 digest와
 일치함을 검증한 immutable candidate만 terminal 승격 대상이다. 같은 PK의 fact가 upsert/교정으로
 나중에 바뀔 수 있는 경로라면 **나중 fact PK 재조회만으로 값을 신뢰하지 않는다**. B가 실제로
@@ -506,8 +521,25 @@ Weather W1~W5와 Transport T1~T5를 분리하며, 각 저장소의 별도 featur
 6. 공통 bounds/cursor 유틸이 정말 중복될 때만 kor-travel-common에 작게 둔다. Weather/Transport
    payload schema·provider 정책·DB 도메인 집계를 common에 섞지 않는다.
 
+Weather 구현 PR은 다음 4단계 순서다. 단계 구분은 작업 완료를 조기에 선언하는 예외가 아니다.
+
+| 단계 | task 대응·범위 | 다음 단계 전 증거 |
+|---|---|---|
+| 1. 계약·프록시 준비 | W-MAP-01: DTO/auth/OpenAPI/타입/status 계약과 service 프록시 차단 | auth·프록시 upstream 0회·계약 검증. W1/W2 데이터 공개는 아직 하지 않음 |
+| 2. receipt 기반 | W-MAP-02 전반: canonical accepted point/attempt/scope·동일 chunk commit 증거. 공개 head 미전진 | replay0건·alias·rollback·응답 유실·실제 재관측/원래 fact 시각 분리 |
+| 3. 성공 승격 | W-MAP-02 중반: collector scope 완결·owner·SyncRun/Dagster SUCCESS 검증 후 독립 성공 head CAS | failed partial/32-of-300 차단·native 강등 금지·종료 후 bounded reconciliation. 수집 job은 승격 대기 안 함 |
+| 4. 실제 조회 공개 | W-MAP-02 후반: W1/W2 공개 및 W3 snapshot/cursor·ETag·checkpoint | 단계2·3 성공 head가 선행. COW 합산 실측 gate·기능 CI/2인 리뷰/live 수용 뒤 완료 |
+
+W-MAP-02는 단계2나3만 끝나도 완료가 아니다. W-MAP-04의 성공 receipt/projection 선행 조건은
+그대로 두며, W5 선택 완료로 이를 건너뛰지 않는다. 구현 시 `repository.py` hook/모델·migration,
+새 artifact/승격 모듈, API router/OpenAPI·frontend 타입/프록시를 단계별 소유자가 인계한다.
+
 ## 7. 수용 조건·배포 순서
 
+- 웹 catchall의 service prefix 자체/하위/인코딩 경로·method·브라우저 제공 header에 관계없이
+  upstream fetch 0회, 기존 weather/admin 전달 유지, 직접 service API의 require_admin을 검증한다.
+- canonical fact known_at/collected_at과 이번 실제 성공 수집 시각이 다른 replay fixture에서
+  source_collected_at이 fact clock/완료/읽기 시각으로 치환되지 않는지 검증한다.
 - W1~5/T1~5 항목별 정상/초도없음/정상빈집합/급감후재확인실패/오래된성공/수집실패/DB실패,
   잘못된cursor/다른filtercursor/TTL만료/304/auth/gzip/경계5000/bytecap을 테스트한다.
 - 페이지 사이 수집 commit·지연된 known_at·동일known_at수정·group삭제·forecast만료를 주입해

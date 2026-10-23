@@ -10,7 +10,10 @@ obsr_value 기반 T1H/RN1/REH/WSD/PTY 실제 관측만 추가하며 일반 예�
 W-MAP-04 구현은 성공 receipt/projection W-MAP-02가 계속 선행이고 미착수다. COW는 합산 실측
 게이트 전 미채택이며 Weather/Transport 구현 소유권은 분리한다.
 
-PR #132 설계는 머지됐고, 다음 작업은 W5 선택 후속 문서 HEAD의 2인 리뷰와 머지 판단이다.
+PR #132·#133 설계/관측 선택은 머지됐다. 현재 후속은 프록시 service 우회 방지·canonical replay/
+실제 수집 시각·4단계 의존을 보강한 문서 HEAD의 2인 리뷰와 머지 판단이다. 구현 순서는
+W-MAP-01 계약/프록시 → W-MAP-02 receipt → 성공 승격 → 실제 조회 공개이며 W-MAP-02 완료 전
+데이터 공개 완료나 W5 성공 projection 선행 충족을 선언하지 않는다.
 코드·schema·운영 변경은 없고 기능 구현도 착수하지 않았다. 문서 PR의 `[skip ci]`는 후속 기능 PR의 CI·2인 리뷰·배포 전 Map
 응답 예시 전달·live E2E/API/UI·실측/배포 게이트를 생략하는 지시가 아니다.
 
