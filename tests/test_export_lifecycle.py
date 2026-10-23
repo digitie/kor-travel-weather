@@ -329,3 +329,108 @@ def test_normalization_plan_has_byte_bound(repository):
         normalization_input_digest(
             [value.model_copy(update={"value_text": "x" * (8 * 1024 * 1024)})]
         )
+
+
+def test_planned_canonical_alias_replay_is_eligible_with_zero_new_rows(repository, tmp_path):
+    record, value = _input(repository)
+    repository.ingest_batch(source_records=[record], values=[value])
+    alias = {**record, "source_record_key": "alias-" + uuid.uuid4().hex}
+    alias_value = value.model_copy(update={"source_record_key": alias["source_record_key"]})
+    alias, capture = _capture(repository, alias, tmp_path)
+    lifecycle = ExportLifecycle(repository)
+    lifecycle.claim(capture.attempt)
+    lifecycle.expect_chunk(
+        capture.attempt, capture.chunk_key, records=[alias], values=[alias_value]
+    )
+    assert (
+        repository.ingest_batch(
+            source_records=[alias], values=[alias_value], export_capture=capture
+        )
+        == 0
+    )
+    receipt = _receipt(repository, capture)
+    assert receipt is not None and receipt["point_count"] == 1
+    point = next(
+        capture.artifacts.read(
+            receipt["artifact_digest"], byte_count=receipt["byte_count"], point_count=1
+        )
+    )
+    assert point["source_record_key"] == record["source_record_key"]
+    lifecycle.close_source(capture.attempt, _scope(alias), [capture.chunk_key])
+    lifecycle.close_plan(capture.attempt)
+    repository.finish_sync_run(alias["run_id"], status="success")
+    assert lifecycle.reconcile(capture.attempt, capture.artifacts) == "ELIGIBLE"
+
+
+def test_positive_source_cannot_hide_empty_peer_in_shared_chunk(repository, tmp_path):
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_receipts import ExportCapture
+
+    first, value = _input(repository)
+    second, _unused = _input(repository)
+    second["provider"] = first["provider"]
+    run = repository.start_sync_run(provider=first["provider"], dataset_key=first["dataset_key"])
+    records = [{**item, "run_id": run.run_id} for item in (first, second)]
+    identity = repository.begin_export_attempt(
+        run_id=run.run_id,
+        scope_key="all",
+        execution_mode="native",
+        planned_sources=[_scope(item) for item in records],
+    )
+    capture = ExportCapture(
+        identity,
+        "mixed",
+        {item["source_record_key"]: datetime.now(UTC) for item in records},
+        ExportArtifactStore(tmp_path),
+    )
+    lifecycle = ExportLifecycle(repository)
+    lifecycle.claim(identity)
+    lifecycle.expect_chunk(identity, "mixed", records=records, values=[value])
+    assert (
+        repository.ingest_batch(source_records=records, values=[value], export_capture=capture) == 1
+    )
+    assert _receipt(repository, capture)["source_point_counts"] == {
+        _scope(first): 1,
+        _scope(second): 0,
+    }
+    for item in records:
+        lifecycle.close_source(identity, _scope(item), ["mixed"])
+    with pytest.raises(ExportArtifactError, match="barrier"):
+        lifecycle.close_plan(identity)
+
+
+def test_chunk_capture_does_not_lock_unrelated_planned_source(repository, tmp_path, monkeypatch):
+    record, value = _input(repository)
+    record, capture = _capture(repository, record, tmp_path)
+    lifecycle = ExportLifecycle(repository)
+    other = source_scope_key(
+        record["provider"], record["dataset_key"], record["source_entity_type"], "other-grid"
+    )
+    with repository.engine.begin() as connection:
+        connection.execute(
+            lifecycle.attempts.update()
+            .where(
+                lifecycle.attempts.c.attempt_id == capture.attempt.attempt_id,
+            )
+            .values(planned_sources=[_scope(record), other])
+        )
+    lifecycle.claim(capture.attempt)
+    lifecycle.expect_chunk(capture.attempt, capture.chunk_key, records=[record], values=[value])
+
+    def short_timeout(session):
+        session.execute(text("SET LOCAL lock_timeout='50ms'"))
+
+    monkeypatch.setattr(repository, "_set_ingest_lock_timeout", short_timeout)
+    with repository.engine.begin() as blocker:
+        blocker.execute(
+            select(lifecycle.owners)
+            .where(
+                lifecycle.owners.c.source_scope == other,
+            )
+            .with_for_update()
+        ).one()
+        assert (
+            repository.ingest_batch(source_records=[record], values=[value], export_capture=capture)
+            == 1
+        )
+    assert _receipt(repository, capture)["point_count"] == 1

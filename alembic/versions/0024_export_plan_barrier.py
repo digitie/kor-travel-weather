@@ -13,6 +13,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column("weather_export_chunks", sa.Column("source_point_counts", sa.JSON()))
     for column in (
         sa.Column("owner_epochs", sa.JSON()),
         sa.Column("plan_reference_count", sa.Integer(), nullable=False, server_default="0"),
@@ -84,6 +85,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_column("weather_export_chunks", "source_point_counts")
     for name in (
         "weather_export_terminal_evidence",
         "weather_export_validated_chunks",

@@ -95,6 +95,7 @@ def export_receipt_tables(metadata: MetaData) -> tuple[Table, Table]:
         Column("byte_count", Integer, nullable=False),
         Column("point_count", Integer, nullable=False),
         Column("covered_sources", JSON, nullable=False),
+        Column("source_point_counts", JSON),
         Column("source_collected_at", DateTime(timezone=True), nullable=False),
         Column("recorded_at", DateTime(timezone=True), nullable=False),
         CheckConstraint("byte_count BETWEEN 0 AND 8388608", name="ck_weather_export_chunk_bytes"),
@@ -168,6 +169,7 @@ def record_export_chunk(
     chunk: PreparedExportChunk,
     input_point_count: int | None = None,
     input_digest: str | None = None,
+    source_point_counts: Mapping[str, int] | None = None,
 ) -> None:
     if (
         not capture.chunk_key
@@ -200,16 +202,30 @@ def record_export_chunk(
         from .export_lifecycle import validate_planned_capture
 
         validate_planned_capture(
-            session, metadata, attempt, capture.chunk_key, covered,
-            input_point_count=input_point_count, input_digest=input_digest,
+            session,
+            metadata,
+            attempt,
+            capture.chunk_key,
+            covered,
+            input_point_count=input_point_count,
+            input_digest=input_digest,
         )
     if not covered or not set(covered).issubset(attempt["planned_sources"]):
         raise ExportArtifactError("export chunk가 예정 scope를 벗어났습니다.")
+    if source_point_counts is not None and (
+        set(source_point_counts) != set(covered)
+        or any(type(count) is not int or count < 0 for count in source_point_counts.values())
+        or sum(source_point_counts.values()) != chunk.point_count
+    ):
+        raise ExportArtifactError("source별 canonical point 수가 chunk와 다릅니다.")
+    if attempt["owner_epochs"] is not None and source_point_counts is None:
+        raise ExportArtifactError("계획된 source의 canonical point 증거가 없습니다.")
     expected = dict(
         artifact_digest=chunk.digest,
         byte_count=len(chunk.payload),
         point_count=chunk.point_count,
         covered_sources=covered,
+        source_point_counts=dict(source_point_counts) if source_point_counts is not None else None,
         source_collected_at=chunk.source_collected_at,
     )
     existing = (
@@ -223,7 +239,15 @@ def record_export_chunk(
         .one_or_none()
     )
     if existing is not None:
-        if any(existing[name] != value for name, value in expected.items()):
+        if any(
+            existing[name] != value
+            for name, value in expected.items()
+            if not (
+                name == "source_point_counts"
+                and existing[name] is None
+                and attempt["owner_epochs"] is None
+            )
+        ):
             raise ExportArtifactError("export chunk 재시도의 내용이 다릅니다.")
         return
     if attempt["status"] != "preparing" or attempt["plan_closed_at"] is not None:

@@ -55,7 +55,7 @@ def normalization_input_digest(values: Sequence[WeatherValue]) -> str:
     byte_count = 0
     for value in values:
         point = json.dumps(
-            value.model_dump(mode="json", exclude={"payload"}),
+            value.model_dump(mode="json", exclude={"payload", "source_record_key"}),
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
@@ -145,16 +145,24 @@ def export_lifecycle_tables(metadata: MetaData) -> tuple[Table, Table, Table, Ta
     return owners, expected, closures, validated, evidence
 
 
-def _current_owners(session: Session, metadata: MetaData, attempt: Mapping[str, Any]) -> None:
+def _current_owners(
+    session: Session,
+    metadata: MetaData,
+    attempt: Mapping[str, Any],
+    selected_sources: Sequence[str] | None = None,
+) -> None:
     epochs = attempt["owner_epochs"]
-    if not epochs or set(epochs) != set(attempt["planned_sources"]):
+    if not epochs or (selected_sources is None and set(epochs) != set(attempt["planned_sources"])):
         raise ExportArtifactError("export scope 소유권 계획이 없습니다.")
+    keys = set(epochs) if selected_sources is None else set(selected_sources)
+    if not keys or not keys.issubset(epochs):
+        raise ExportArtifactError("선택한 export source 소유권이 없습니다.")
     owners, *_ = export_lifecycle_tables(metadata)
     rows = (
         session.execute(
             select(owners)
             .where(
-                owners.c.source_scope.in_(sorted(epochs)),
+                owners.c.source_scope.in_(sorted(keys)),
             )
             .order_by(owners.c.source_scope)
             .with_for_update()
@@ -162,7 +170,7 @@ def _current_owners(session: Session, metadata: MetaData, attempt: Mapping[str, 
         .mappings()
         .all()
     )
-    if len(rows) != len(epochs) or any(
+    if len(rows) != len(keys) or any(
         row["active_attempt_id"] != attempt["attempt_id"]
         or row["owner_epoch"] != epochs[row["source_scope"]]
         for row in rows
@@ -180,7 +188,7 @@ def validate_planned_capture(
     input_point_count: int | None,
     input_digest: str | None,
 ) -> None:
-    _current_owners(session, metadata, attempt)
+    _current_owners(session, metadata, attempt, covered)
     _, expected, *_ = export_lifecycle_tables(metadata)
     plan = (
         session.execute(
@@ -327,7 +335,7 @@ class ExportLifecycle:
         }
         with self._transaction() as session:
             run, attempt = self._locked(session, identity)
-            _current_owners(session, self.metadata, attempt)
+            _current_owners(session, self.metadata, attempt, scopes)
             if (
                 run["status"] != "running"
                 or attempt["status"] != "preparing"
@@ -397,7 +405,7 @@ class ExportLifecycle:
             raise ExportArtifactError("완결 source의 예상 chunk가 잘못됐습니다.")
         with self._transaction() as session:
             run, attempt = self._locked(session, identity)
-            _current_owners(session, self.metadata, attempt)
+            _current_owners(session, self.metadata, attempt, [source_scope])
             if (
                 run["status"] != "running"
                 or attempt["status"] != "preparing"
@@ -476,11 +484,17 @@ class ExportLifecycle:
             for row in plans:
                 for source in row["source_scopes"]:
                     by_source[source].append(row["chunk_key"])
+            admitted = dict.fromkeys(attempt["planned_sources"], 0)
+            for row in chunks:
+                for source, count in (row["source_point_counts"] or {}).items():
+                    if source not in admitted:
+                        raise ExportArtifactError("canonical point source가 계획을 벗어났습니다.")
+                    admitted[source] += count
             if (
                 not plans
                 or {row["source_scope"]: row["chunk_keys"] for row in closures} != by_source
                 or [row["chunk_key"] for row in plans] != [row["chunk_key"] for row in chunks]
-                or sum(row["point_count"] for row in chunks) == 0
+                or any(count == 0 for count in admitted.values())
             ):
                 raise ExportArtifactError(
                     "예상 source·segment의 완결 barrier가 충족되지 않았습니다."
@@ -493,12 +507,28 @@ class ExportLifecycle:
                     row["point_count"],
                     row["source_collected_at"].isoformat(),
                     row["covered_sources"],
+                    row["source_point_counts"],
                 ]
                 for row in chunks
             ]
             digest = hashlib.sha256(
                 json.dumps(
-                    [attempt["plan_digest"], parts], sort_keys=True, separators=(",", ":")
+                    [
+                        attempt["plan_digest"],
+                        attempt["owner_epochs"],
+                        [
+                            [
+                                row["chunk_key"],
+                                row["source_scopes"],
+                                row["input_point_count"],
+                                row["input_digest"],
+                            ]
+                            for row in plans
+                        ],
+                        parts,
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
                 ).encode()
             ).hexdigest()
             session.execute(

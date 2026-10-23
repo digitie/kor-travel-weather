@@ -10,3 +10,11 @@
 - legacy stage2 unplanned receipt를 사후 계획으로 승인하지 않는다. 현재3A는 nonempty 후보만 지원한다. 정상0의 provider별 positive empty proof 통합은 후속이며, 불명0을 성공으로 공개하지 않는다. 이는 기존 원본수집의 성공 의미를 바꾸지 않는다.
 
 전용PG 기존receipt24+새lifecycle16=40 PASS30.59초. native/Dagster 정확status·누락파일·미계획/누락segment·입력변경·tick분할·scopeepoch/insert0·계획불변·실제scope행잠금과 원본commit을 검증했다. 추가 source누락/0후보/파일중pool반환/계획byte상한 회귀와 migration·전체회귀·CI·2리뷰는 진행 중이다. 비용exitgate/실제collector/운영API 수용은 미완이다.
+
+
+## 독립 적대 리뷰 반영
+
+- 입력alias가 canonical source key로 바뀌어 정상replay0이 거부되는 P2를 수정했다. typed normalization digest는 raw payload·source key alias를 제외하고, 실제canonical lineage는 별도 artifact/receipt로 계속 검증한다. planned alias replay가 원래 canonical key와1point/insert0으로 ELIGIBLE이 되는 실제PG 회귀를 추가했다.
+- 다른 source의1point가0point source를 감추는 P2를 수정했다. source별 unique canonical point 수를 원본과 같은 transaction의 receipt에 기록하고 모든선택source가 양수인지 검사한다. A1/B0 혼합chunk는 정상0 proof 없이 barrier를 통과하지 못한다. nullable 가산 column은 migration0024에 포함한다.
+- roster×전체chunk의 이중 집계는 source-point 참조를 한 번 순회하는 선형 집계로 바꿨다. capture/expect/close_source는 해당 source의 owner만 잠그고 최종close/reconcile은 전체roster fence를 유지한다. seal은 owner epoch·예상input count/digest·source counts에 묶인다. CPU 절감 실측을 했다는 의미는 아니다.
+- 수정집중PG46 PASS74.49초(추가selective-lock 전)와 기존회귀44 PASS48.57초를 확인했다. selective-lock·선형/manifest보강 최종집중과 전체/migration/CI/리뷰 closure는 진행 중이다.
