@@ -147,18 +147,22 @@ class DailySummaryExports(FrozenCurrentExports):
             (scope.descriptor.namespace, key): scope
             for scope in selection.scopes for key in scope.location_ids if key in keys
         }
+        approved_sources = {
+            (scope.descriptor.provider, scope.descriptor.dataset_key, key)
+            for scope in selection.scopes for key in scope.location_ids if key in keys
+        }
         coverage = {(r["namespace"], r["location_id"]): r for r in rows}
         # SDK가 이번 HTTP에서 새 관측소를 발견하면 native catalog는 먼저 저장한다.
         # 다음 cohort 전이라도 명시된 관측망 anchor를 예보 전용/무관측0으로 오인하지 않는다.
         known_observed = {
-            row["location_id"] for row in locations if row["location_id"] in keys and any(
-                row.get("point_provider") == provider and (
+            (provider, dataset, row["location_id"])
+            for row in locations if row["location_id"] in keys
+            for provider, dataset in self.expected_sources
+            if row.get("point_provider") == provider and (
                     dataset == "airkorea_realtime_measurement"
                     or dataset in SDK_NETWORKS
                     and SDK_NETWORKS[dataset] == row.get("point_network")
                     and dataset != "khoa_beach_index"
-                )
-                for provider, dataset in self.expected_sources
             )
         }
         from .export_external_cohorts import external_cohort_table
@@ -168,12 +172,16 @@ class DailySummaryExports(FrozenCurrentExports):
             "daily_target", joins_implicitly=True,
         )
         target_key = target.op("->>")("location_id")
-        declared = set(connection.scalars(select(target_key).select_from(cohorts).where(
+        declared = set(connection.execute(select(
+            cohorts.c.provider, cohorts.c.dataset_key, target_key,
+        ).select_from(cohorts).where(
             tuple_(cohorts.c.provider, cohorts.c.dataset_key).in_(self.expected_sources),
             target_key.in_(keys),
-        ).distinct().limit(MAX_SNAPSHOT_LOCATIONS + 1)))
-        if (declared | known_observed) - {row["location_id"] for row in rows}:
-            raise ExportSnapshotUnavailable("사전 계획된 관측 위치의 최초 요약이 없습니다.")
+        ).distinct().limit(MAX_SELECTED_ROWS + 1)))
+        if len(declared) > MAX_SELECTED_ROWS:
+            raise ExportSnapshotUnavailable("사전 관측 source metadata 상한을 넘었습니다.")
+        if (declared | known_observed) - approved_sources:
+            raise ExportSnapshotUnavailable("선택 관측 source의 최초 승인이 없습니다.")
         if expected.keys() - coverage.keys():
             # 승인 관측이 있으나 요약이 한번도 계산되지 않은 경우를 무관측0으로 꾸미지 않는다.
             raise ExportSnapshotUnavailable("승인 관측의 사전 계산이 아직 준비되지 않았습니다.")

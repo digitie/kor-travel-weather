@@ -21,6 +21,8 @@ stale/최초503을 유지한다. 기존 cursor도 새 원천의 미계산을 건
 SDK가 새 station을 발견해 HTTP 전 cohort에는 아직 없더라도 canonical
 measurement_point의 활성 관측 provider/network가 확인되면 최초 관측 coverage를
 요구한다. 미승인/아직 모름은 예보 전용의 무관측0과 구분하며 개별 최초 조회는503이다.
+이 판단은 provider/dataset/location별 실제 승인에 적용한다. 같은 위치의 다른
+제공처 관측이 준비됐더라도 아직 가입하지 못한 원천의 첫 승인을 대신하지 못한다.
 
 source별 신선도는 current와 같은 정책을 따른다(지역 SDK36시간, HTTP·실황3시간).
 선택 위치의 원천/coverage/작은 summary/checkpoint는 한 REPEATABLE READ에서
