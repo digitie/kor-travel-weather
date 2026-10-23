@@ -266,3 +266,195 @@ def test_semantically_small_complete_response_keeps_existing_success_head(reposi
     assert result["status"] == "success"
     assert publish_pending_exports(repository, tmp_path).processed == 0
     assert _counts(repository) == (4, 2, 2)
+
+
+def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=None):
+    from datetime import timedelta
+
+    from kma.time_utils import parse_kma_datetime
+
+    def respond(request):
+        q = request.url.params
+        base = parse_kma_datetime(q["base_date"], q["base_time"])
+        hours = 72 if short else 6
+        metrics = {
+            "TMP" if short else "T1H": "18.4",
+            "PCP" if short else "RN1": "0",
+            "REH": "50",
+            "PTY": "0",
+            "SKY": "1",
+            "VEC": "120",
+            "WSD": "1",
+        }
+        if short:
+            metrics["POP"] = "0"
+        rows = []
+        for hour in range(start_hour, start_hour + hours):
+            at = (base + timedelta(hours=hour)).replace(minute=0)
+            for category, value in metrics.items():
+                rows.append(
+                    dict(
+                        baseDate=q["base_date"],
+                        baseTime=q["base_time"],
+                        nx=int(q["nx"]),
+                        ny=int(q["ny"]),
+                        category=category,
+                        fcstValue="9999" if int(q["nx"]) == empty_grid else value,
+                        fcstDate=at.strftime("%Y%m%d"),
+                        fcstTime=at.strftime("%H%M"),
+                    )
+                )
+        if truncated:
+            rows = rows[: len(metrics)]
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                    "body": {
+                        "pageNo": 1,
+                        "numOfRows": 1000,
+                        "totalCount": len(rows),
+                        "items": {"item": rows},
+                    },
+                }
+            },
+        )
+
+    return KmaClient(
+        "private-key", session=httpx.AsyncClient(transport=httpx.MockTransport(respond)), retries=0
+    )
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_actual_forecast_fanout_publishes_only_complete_bounded_chunks(repository, tmp_path, short):
+    from kortravelweather_dagster.kma_weather import KMA_SHORT_FORECAST, KMA_ULTRA_SHORT_FORECAST
+
+    targets = [
+        WeatherTarget(
+            WeatherLocation(
+                location_id=f"forecast-{i:03d}",
+                name=f"예보 {i}",
+                latitude=37.5,
+                longitude=127,
+                nx=60,
+                ny=127,
+            )
+        )
+        for i in range(50)
+    ]
+    original, batches = repository.ingest_batch, []
+
+    def ingest(**kwargs):
+        values = kwargs.get("values", [])
+        batches.append((len(values), len({v.location_id for v in values})))
+        assert len(values) <= 2500 and len({v.location_id for v in values}) <= 50
+        return original(**kwargs)
+
+    repository.ingest_batch = ingest
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(short=short),
+        targets=targets,
+        base_datasets=frozenset({KMA_SHORT_FORECAST if short else KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    expected = 50 * (72 * 8 if short else 6 * 7)
+    assert result["status"] == "success" and result["values_loaded"] == expected
+    assert _counts(repository) == (1, 0, 0)
+    for _ in range(32):
+        progress = publish_pending_exports(repository, tmp_path)
+        if progress.results == {"PUBLISHED": 1}:
+            break
+        assert progress.results == {"NOT_READY": 1}
+    else:
+        pytest.fail("bounded publisher가 완결 예보를 승격하지 못했습니다.")
+    assert _counts(repository) == (1, 1, 1)
+    heads = ExportHeads(repository)
+    with repository.engine.connect() as connection:
+        assert connection.scalar(select(heads.generations.c.point_count)) == expected
+    assert sum(points for points, _ in batches) == expected
+    if short:
+        assert len(batches) > 8  # 한 reconcile tick을 넘는 실제 다중 chunk
+
+
+def test_forecast_complete_pagination_but_missing_hours_keeps_facts_unpublished(
+    repository, tmp_path
+):
+    from kortravelweather_dagster.kma_weather import KMA_ULTRA_SHORT_FORECAST
+
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(truncated=True),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] > 0
+    assert _counts(repository) == (2, 0, 0)
+    assert publish_pending_exports(repository, tmp_path).processed == 0
+
+
+@pytest.mark.parametrize("short,start_hour", [(False, 100), (True, 49)])
+def test_forecast_cannot_replace_missing_near_term_with_distant_complete_window(
+    repository,
+    tmp_path,
+    short,
+    start_hour,
+):
+    from kortravelweather_dagster.kma_weather import KMA_SHORT_FORECAST, KMA_ULTRA_SHORT_FORECAST
+
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(short=short, start_hour=start_hour),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_SHORT_FORECAST if short else KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] > 0
+    assert _counts(repository) == (2, 0, 0)
+    assert publish_pending_exports(repository, tmp_path).processed == 0
+
+
+def test_forecast_all_missing_grid_preserves_raw_and_lineage_once(repository, tmp_path):
+    from kortravelweather_dagster.kma_weather import KMA_ULTRA_SHORT_FORECAST
+
+    from kortravelweather.repository import Base
+
+    original, empty_calls = repository.ingest_batch, []
+
+    def ingest(**kwargs):
+        if not kwargs.get("values"):
+            empty_calls.append(kwargs["source_records"])
+        return original(**kwargs)
+
+    repository.ingest_batch = ingest
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(empty_grid=61),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "partial" and result["values_loaded"] == 84
+    assert len(empty_calls) == 1 and len(empty_calls[0]) == 1
+    assert len(empty_calls[0][0]["payload"]["rows"]) == 42
+    records, links = (
+        Base.metadata.tables["weather_source_records"],
+        Base.metadata.tables["weather_sync_run_sources"],
+    )
+    with repository.engine.connect() as c:
+        source_key = c.scalar(
+            select(records.c.source_record_key).where(records.c.source_entity_id == "grid:61:127")
+        )
+        assert source_key is not None
+        assert (
+            c.scalar(
+                select(func.count())
+                .select_from(links)
+                .where(links.c.source_record_key == source_key)
+            )
+            == 1
+        )
+    assert "PUBLISHED" not in publish_pending_exports(repository, tmp_path).results
+    assert _counts(repository) == (2, 0, 0)

@@ -10,7 +10,7 @@ import json
 from collections import Counter
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
@@ -45,8 +45,9 @@ from .export_receipts import ExportAttempt, source_scope_key
 
 NOWCAST_REQUIRED_CATEGORIES = frozenset({"T1H", "RN1", "UUU", "VVV", "REH", "PTY", "VEC", "WSD"})
 
-MAX_PROMOTION_CHUNKS = 8
-MAX_PROMOTION_BYTES = 16 * 1024 * 1024
+MAX_PROMOTION_CHUNKS = 64
+MAX_PROMOTION_BYTES = 128 * 1024 * 1024
+MAX_FORECAST_POINTS = 100_000
 
 
 def _digest(value: Any) -> str:
@@ -93,21 +94,34 @@ class ScopeDescriptor(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
     provider: Literal["python-kma-api"] = "python-kma-api"
-    dataset_key: Literal["kma_ultra_short_nowcast"] = "kma_ultra_short_nowcast"
+    dataset_key: Literal[
+        "kma_ultra_short_nowcast", "kma_ultra_short_forecast", "kma_short_forecast"
+    ] = "kma_ultra_short_nowcast"
     entity_type: str = Field(min_length=1, max_length=120)
     entity_id: str = Field(min_length=1, max_length=240)
-    forecast_style: Literal["nowcast"] = "nowcast"
+    forecast_style: Literal["nowcast", "ultra_short", "short"] = "nowcast"
     nx: int = Field(ge=1, le=300)
     ny: int = Field(ge=1, le=300)
     location_ids: tuple[str, ...] = Field(min_length=1, max_length=1000)
     normalizer_revision: str = Field(min_length=1, max_length=64)
     winner_policy_revision: str = Field(min_length=1, max_length=64)
-    coverage_contract: Literal["kma-grid-nonempty-v1", "kma-grid-nowcast-v1"] = (
-        "kma-grid-nonempty-v1"
-    )
+    coverage_contract: Literal[
+        "kma-grid-nonempty-v1", "kma-grid-nowcast-v1", "kma-grid-forecast-v1"
+    ] = "kma-grid-nonempty-v1"
 
     @model_validator(mode="after")
     def _canonical_selection(self):
+        styles = {
+            "kma_ultra_short_nowcast": "nowcast",
+            "kma_ultra_short_forecast": "ultra_short",
+            "kma_short_forecast": "short",
+        }
+        if styles[self.dataset_key] != self.forecast_style:
+            raise ValueError("KMA dataset과 forecast style이 다릅니다.")
+        if (self.coverage_contract == "kma-grid-forecast-v1") != (self.forecast_style != "nowcast"):
+            raise ValueError("예보는 전용 coverage 계약이 필요합니다.")
+        if self.forecast_style != "nowcast" and len(self.location_ids) > 50:
+            raise ValueError("예보 공개 원천은 한 번에 50개 위치까지 허용합니다.")
         if tuple(sorted(set(self.location_ids))) != self.location_ids:
             raise ValueError("선택 location은 중복 없는 정렬 목록이어야 합니다.")
         if any(not key or len(key) > 120 for key in self.location_ids):
@@ -217,6 +231,65 @@ def source_input_digest(record: Mapping[str, Any]) -> str:
     )
 
 
+def _normalize(descriptor, record, locations, *, skipped=None):
+    """기존 normalizer만 사용하며 한 위치의 값만 메모리에 유지한다."""
+    from .providers.kma import (
+        short_forecast_to_weather_values,
+        ultra_short_forecast_to_weather_values,
+        ultra_short_nowcast_to_weather_values,
+    )
+
+    normalizer = {
+        "nowcast": ultra_short_nowcast_to_weather_values,
+        "ultra_short": ultra_short_forecast_to_weather_values,
+        "short": short_forecast_to_weather_values,
+    }[descriptor.forecast_style]
+    for location in locations:
+        yield from normalizer(
+            record["payload"]["rows"],
+            location_id=location,
+            source_record_key=record["source_record_key"],
+            known_at=record["fetched_at"],
+            skipped=skipped,
+        )
+
+
+def _forecast_coverage(descriptor, rows, revision):
+    """public pagination에 더해 최소 예보 시간대/필수 category를 확인한다.
+
+    발표 시각 선택과 grid 계산은 SDK에 맡긴다. 확장 기간의 3시간 간격과
+    정성형 강수/적설을 1시간 숫자로 재해석하지 않는다.
+    """
+    from kma.time_utils import parse_kma_datetime
+
+    groups = {}
+    for row in rows:
+        at = parse_kma_datetime(str(row["fcstDate"]), str(row["fcstTime"])).astimezone(UTC)
+        if at <= revision:
+            raise ExportArtifactError("예보 대상 시각이 발표 이후가 아닙니다.")
+        groups.setdefault(at, set()).add(str(row["category"]))
+    required = (
+        {"T1H", "RN1", "REH", "PTY", "SKY", "VEC", "WSD"}
+        if descriptor.forecast_style == "ultra_short"
+        else {"TMP", "PCP", "REH", "PTY", "POP", "SKY", "VEC", "WSD"}
+    )
+    minimum = 6 if descriptor.forecast_style == "ultra_short" else 72
+    complete = sorted(at for at, categories in groups.items() if required.issubset(categories))
+    # metadata의 SDK 선택 base를 그대로 사용한다. 이미 선택된 회차의 첫 예보
+    # 정시를 묶는 검사이며 발표 회차 선택/지연시간 계산을 재구현하지 않는다.
+    first_target = revision.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    if (
+        not complete
+        or complete[0] != first_target
+        or len(complete) < minimum
+        or any(
+            (right - left).total_seconds() != 3600
+            for left, right in zip(complete[:minimum], complete[1:minimum], strict=False)
+        )
+    ):
+        raise ExportArtifactError("예보의 최소 연속 시간대·필수 category 증거가 없습니다.")
+
+
 def validate_head_capture(session, metadata, attempt, records, values, observed) -> None:
     """3B를 선택한 capture만 추가 검증한다. 기존 receipt 계약은 보존한다."""
     plans, *_ = export_head_tables(metadata)
@@ -246,11 +319,22 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
             or v.location_id not in descriptor.location_ids
             or v.weather_domain != descriptor.dataset_key
             or v.normalization_version != descriptor.normalizer_revision
-            or v.target_at != plan["data_revision_at"]
+            or (descriptor.forecast_style == "nowcast" and v.target_at != plan["data_revision_at"])
             for v in values
         )
     ):
         raise ExportArtifactError("승격 계획의 원천·정책과 실제 capture가 다릅니다.")
+    if descriptor.forecast_style != "nowcast":
+        # 위치별 bounded capture를 허용한다. 빠진 위치/metric, 중복 chunk는 승격 시
+        # 전체 정규화 digest와 대조하므로 부분 성공 head가 될 수 없다.
+        wanted = {semantic_point_digest(v.model_dump(mode="json")) for v in values}
+        expected = {
+            semantic_point_digest(v.model_dump(mode="json"))
+            for v in _normalize(descriptor, records[0], sorted({v.location_id for v in values}))
+        }
+        if not wanted or len(wanted) != len(values) or not wanted.issubset(expected):
+            raise ExportArtifactError("예보 capture가 원천 normalizer 결과와 다릅니다.")
+        return
     if (
         len(values) != plan["expected_point_count"]
         or _digest(sorted(semantic_point_digest(v.model_dump(mode="json")) for v in values))
@@ -417,25 +501,30 @@ class ExportHeads:
                 and not NOWCAST_REQUIRED_CATEGORIES.issubset({str(r.get("category")) for r in rows})
             ):
                 raise ExportArtifactError("공개 실황 source의 필수 category 전체 증거가 없습니다.")
-            from .providers.kma import ultra_short_nowcast_to_weather_values
-
-            if len(rows) * len(descriptor.location_ids) > MAX_CHUNK_POINTS:
+            if descriptor.forecast_style != "nowcast":
+                _forecast_coverage(descriptor, rows, revision)
+            limit = (
+                MAX_CHUNK_POINTS if descriptor.forecast_style == "nowcast" else MAX_FORECAST_POINTS
+            )
+            if len(rows) * len(descriptor.location_ids) > limit:
                 raise ExportArtifactError("단일 원천의 정규화 point 상한을 넘었습니다.")
             # 원천 normalizer의 명시 결측/이상값 분류도 함께 보존한다.
             expected, skipped = [], Counter()
-            for location in descriptor.location_ids:
-                normalized = ultra_short_nowcast_to_weather_values(
-                    rows,
-                    location_id=location,
-                    source_record_key=record["source_record_key"],
-                    known_at=fetched,
-                    skipped=skipped,
-                )
-                expected.extend(
-                    semantic_point_digest(v.model_dump(mode="json")) for v in normalized
-                )
+            expected.extend(
+                semantic_point_digest(v.model_dump(mode="json"))
+                for v in _normalize(descriptor, record, descriptor.location_ids, skipped=skipped)
+            )
             if not expected:
                 raise ExportArtifactError("nonempty 정상 point 증거가 없습니다.")
+            previous_count = session.scalar(
+                select(self.generations.c.point_count)
+                .join(self.heads, self.heads.c.generation_id == self.generations.c.generation_id)
+                .where(self.heads.c.namespace == plan["namespace"])
+            )
+            if previous_count and len(expected) * 2 < previous_count:
+                raise ExportArtifactError(
+                    "이전 성공 대비 절반 미만으로 축소된 원천은 재확인이 필요합니다."
+                )
             normalization_digest = _digest(sorted(expected))
             digest = source_input_digest(record)
             if revision > fetched.astimezone(UTC):
@@ -621,6 +710,8 @@ class ExportHeads:
         ):
             raise ExportArtifactError("선택한 위치의 nonempty 전체 집합이 아닙니다.")
         content = _digest(sorted(semantic))
+        if content != plan["normalization_digest"]:
+            raise ExportArtifactError("모든 chunk의 합집합이 검증한 전체 원천과 다릅니다.")
         # 내용이 같은 직전 성공 파일만 재사용한다. 기존 known_at/PK를 변조하지 않는다.
         reuse = parent is not None and parent["content_digest"] == content
         if reuse:
