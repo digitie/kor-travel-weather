@@ -1,3 +1,7 @@
+## 2026-10-23 — KMA 페이지 완결성 provider 계약 수용
+
+- KMA PR32의 검증된 public pagination receipt를 고정하고 lineage에 보존한다. [범위·키 전환·미완](reports/2026-10-23-kma-pagination-contract.md)을 따른다. Weather 전체/CI/두 리뷰는 PR gate이며 export OFF/503·운영 미배포 상태다.
+
 ## 2026-10-23 — Map export 내부 완결 검증 PR139 머지
 
 - nonempty 내부 lifecycle 범위의 예상계획·source별 admitted point·scope owner epoch·정확 native/Dagster 성공 검증을 머지했다(main4e92b241). 최종 두 리뷰·CI Python785/frontend PASS, 집중PG47·local frontend243/typecheck PASS다.

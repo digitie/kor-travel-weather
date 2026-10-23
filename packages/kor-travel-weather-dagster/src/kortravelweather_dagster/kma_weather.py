@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote, unquote
 
+from kma import PaginationReceipt
+from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
 from kortravelweather.metrics import (
@@ -166,7 +168,6 @@ async def _prefetch_grids(
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,44 +377,12 @@ def _metadata_dict(metadata: Any) -> dict[str, Any]:
     dumped = getattr(metadata, "model_dump", None)
     if callable(dumped):
         value = dumped(mode="json")
-        if isinstance(value, dict):
-            # collected/imported/fetched timestamps are observability fields,
-            # not response identity. Hash only endpoint/request/base metadata.
-            cleaned = {
-                key: item
-                for key, item in value.items()
-                if key
-                in {
-                    "provider",
-                    "service_name",
-                    "endpoint",
-                    "request_params",
-                    "base_date",
-                    "base_time",
-                    "status",
-                }
-            }
-            return _redact_metadata(cleaned)
-        return {}
-    if isinstance(metadata, Mapping):
-        return _redact_metadata(
-            {
-                key: value
-                for key, value in metadata.items()
-                if key
-                in {
-                    "provider",
-                    "service_name",
-                    "endpoint",
-                    "request_params",
-                    "base_date",
-                    "base_time",
-                    "status",
-                }
-            }
-        )
-    return _redact_metadata(
-        {
+        if not isinstance(value, dict):
+            return {}
+    elif isinstance(metadata, Mapping):
+        value = metadata
+    else:
+        value = {
             key: getattr(metadata, key)
             for key in (
                 "provider",
@@ -422,10 +391,38 @@ def _metadata_dict(metadata: Any) -> dict[str, Any]:
                 "request_params",
                 "base_date",
                 "base_time",
+                "pagination",
             )
             if hasattr(metadata, key)
         }
-    )
+    # 실제 조회 clock은 identity가 아니다. 페이지 증거는 원천 응답의
+    # 완결성을 구분하므로 안정적인 count/complete 필드만 함께 보존한다.
+    cleaned = {
+        key: item
+        for key, item in value.items()
+        if key
+        in {
+            "provider",
+            "service_name",
+            "endpoint",
+            "request_params",
+            "base_date",
+            "base_time",
+            "status",
+        }
+    }
+    pagination = value.get("pagination")
+    if isinstance(pagination, PaginationReceipt):
+        pagination = pagination.model_dump(mode="json")
+    if isinstance(pagination, Mapping):
+        try:
+            receipt = PaginationReceipt.model_validate(dict(pagination), strict=True)
+        except ValidationError:
+            # 기존/외부 metadata를 완결 증거로 오인하지 않는다.
+            pass
+        else:
+            cleaned["pagination"] = receipt.model_dump(mode="json")
+    return _redact_metadata(cleaned)
 
 
 def _redact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -512,9 +509,7 @@ def _mid_region(rows: Sequence[Any], region_code: str) -> None:
                 returned = getattr(row, name)
                 break
         if returned is None or str(returned).strip() != region_code:
-            raise ValueError(
-                f"중기예보 지역 불일치: expected={region_code} got={returned!r}"
-            )
+            raise ValueError(f"중기예보 지역 불일치: expected={region_code} got={returned!r}")
 
 
 def _bounded_rows(items: Iterable[Any], *, limit: int | None, label: str) -> list[Any]:
@@ -1042,9 +1037,7 @@ async def _stage_and_publish_weather(
                 land_region_code = target.land_region_code
                 temperature_region_code = target.temperature_region_code
                 if land_region_code is None or temperature_region_code is None:
-                    raise ValueError(
-                        "중기예보에는 land/temperature region code가 모두 필요합니다."
-                    )
+                    raise ValueError("중기예보에는 land/temperature region code가 모두 필요합니다.")
                 mid_key = (land_region_code, temperature_region_code)
                 mid_groups.setdefault(mid_key, []).append(target)
         mid_limit = max_mid_groups if max_mid_groups is not None else max_grids
@@ -1134,8 +1127,14 @@ async def _stage_and_publish_weather(
             )
             # provider 내부의 일시적 할당은 라이브러리가 소유한다. 대기열에는
             # 격자당 raw JSON 8MiB·정규화 fact 5,000개 이내만 진입시킨다.
-            size = sum(len(json.dumps(response.source_record, ensure_ascii=False,
-                                      default=str).encode("utf-8")) for response in responses)
+            size = sum(
+                len(
+                    json.dumps(response.source_record, ensure_ascii=False, default=str).encode(
+                        "utf-8"
+                    )
+                )
+                for response in responses
+            )
             if size > GRID_RESPONSE_BYTES:
                 raise ValueError("격자 응답 바이트 상한을 초과했습니다.")
             return group_targets, responses, skipped
@@ -1150,8 +1149,10 @@ async def _stage_and_publish_weather(
                 await flush_grid_batch()
             keep_alive()
             # 선행 요청은 이전 격자의 예산 차감을 기다리지 않으므로 소비 시 재검사한다.
-            rows = sum(len((response.source_record.get("payload") or {}).get("rows", []))
-                       for response in responses)
+            rows = sum(
+                len((response.source_record.get("payload") or {}).get("rows", []))
+                for response in responses
+            )
             facts = sum(len(response.values) for response in responses) * len(group_targets)
             if response_rows_total + rows > max_response_rows:
                 raise ValueError("provider response row 수가 상한을 초과했습니다.")
@@ -1201,15 +1202,19 @@ async def _stage_and_publish_weather(
         calls = []
         if include_base:
             calls.extend(
-                (lambda group=group_targets, key=grid_key: fetch_group(
-                    group, False, f"grid:{key[0]}:{key[1]}"
-                ))
+                (
+                    lambda group=group_targets, key=grid_key: fetch_group(
+                        group, False, f"grid:{key[0]}:{key[1]}"
+                    )
+                )
                 for grid_key, group_targets in grid_groups.items()
             )
         calls.extend(
-            (lambda group=group_targets, key=mid_region_codes: fetch_group(
-                group, True, f"mid-region:{key[0]}:{key[1]}"
-            ))
+            (
+                lambda group=group_targets, key=mid_region_codes: fetch_group(
+                    group, True, f"mid-region:{key[0]}:{key[1]}"
+                )
+            )
             for mid_region_codes, group_targets in mid_groups.items()
         )
         # aclosing은 append/DB 실패 시에도 generator의 finally를 즉시 실행한다.
@@ -1483,8 +1488,11 @@ async def _stage_and_publish_weather(
             # row; ``published_values`` misses a chunk whose COMMIT landed
             # but whose reply did not.
             values_loaded=None,
-            error=("collection cancelled" if isinstance(exc, asyncio.CancelledError)
-                   else str(exc)[:2000]),
+            error=(
+                "collection cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else str(exc)[:2000]
+            ),
         )
         raise
 
