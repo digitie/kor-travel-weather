@@ -186,7 +186,7 @@ class KmaNowcastExportCollector:
         bound = False
         if prepared:
             try:
-                self.heads.bind_kma_response(prepared.identity, record)
+                self._bind_source(prepared, record)
                 bound = True
             except Exception:
                 self._reject(prepared.identity, "SOURCE_PROOF_FAILED")

@@ -365,3 +365,11 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   템플릿만 보관하고 위치별 iterator로 내보낸다. 큰 전체 목록 복원은 거절한다.
 - 기존86건과 스트리밍4건을 함께90PASS/Ruff PASS.1,000곳 순회의 tracemalloc peak
   2MiB 미만을 확인했으며 운영 RSS/CPU 개선이나 실제 배선 완료로 세지 않는다.
+# 2026-10-23 중기 전용 job의 export 배선
+
+- 명시 opt-in 중기 job에서 실제 source roster/사전 계획과 capture를 연결한다.
+  동일 지역을 중복 HTTP/claim하지 않고 SDK 회차를 한번 고정한다. 한 원문·작은
+  template과50곳/2,500값 batch로 원본 저장·전체 예산·heartbeat를 유지한다.
+- 공개SDK 모의HTTP+실제native runner6건/기존OFF23건/Ruff PASS. PostgreSQL
+  통합·두 리뷰·정확CI/HTTP/UI·운영 성능은 별도 수용 전이다.
+- 상세: `docs/reports/2026-10-23-mid-export-collection.md`.
