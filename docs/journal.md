@@ -8,6 +8,9 @@
   저감과 작은 계획 다수의 검사 CPU 비용 증가를 함께 기록했다. 운영/ARM 성능 주장이 아니다.
 - PR163의 source별 W5 coverage·선택 건강도와 기존 guard/pool 반환을 보존했다.
   원천 호출·운영/flag·schema·GC 변경0. 정확 CI·리뷰·HTTP/UI는 PR에서 정산한다.
+- 722a42d 정확CI는1269PASS/일간 경합 시험1FAIL이었다. guard가 CAS까지 확장된 뒤
+  늦어진 시험 barrier만 실제 read 소진 후 SH 내부/CAS 전으로 이동했고 CAS 단언은 유지했다.
+  새 소유 PG에서 동일 회귀5회 연속 PASS. 제품 변경0이며 새 정확CI 결과는 PR에서 정산한다.
 
 ## 2026-10-23 — 중기예보 두 원천 grouped reader
 

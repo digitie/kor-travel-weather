@@ -64,6 +64,17 @@ fallback handle**과 generation refs를 한 TX에서 저장한다. 같은 최신
   세지 않았다. pinned SDK 제품 소스와 같은 venv에서 재실행했다.
 - 정확 CI·최종 두 독립 리뷰·실제 격리 HTTP/UI 결과는 PR에 남긴다. 운영 수용은 아니다.
 
+### 정확 CI의 경합 시험 보정
+
+722a42d의 CI39978620239는1269PASS/1FAIL(584.35초)이었다. 실패는 기존 일간 reducer
+동시성 시험에서 processed=[0,1]은 만족했지만 race=1을 강제하지 못한 것이다. PR162 이후
+공개 SH guard가 CAS까지 감싸므로 guard 종료 뒤의 barrier는 두 worker가 같은 checkpoint를
+읽도록 강제하기에 늦었다. 제품 코드는 변경하지 않고 실제 artifact read를 모두 소진한 직후,
+SH guard 내부/CAS 이전에서 두 reader를 만나게 수정했다. processed=[0,1]·race1·후속
+processed0 단언은 모두 유지했다. 새 소유 PG에서 같은 회귀를5회 연속 실행해 각각 PASS했다.
+기존 CI 실패를 통과로 세지 않으며 새 정확 CI가 필요하다. 제품 tree가722a42d와 같으므로
+그 제품으로 검증한 실제 격리 HTTP/UI의 근거는 유지한다.
+
 ## 합성 크기와 비용
 
 별도 소유 PG 임시표에서 실행했다. 운영 ARM·전체 API 비용이 아닌 단일 표본이다.
