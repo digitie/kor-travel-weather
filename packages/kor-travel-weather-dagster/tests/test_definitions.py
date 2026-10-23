@@ -263,12 +263,9 @@ def test_schedule_runs_inherit_the_runtime_tag() -> None:
         assert RUN_MAX_RUNTIME_TAG not in (schedule.tags or {}), schedule.name
 
 
-def test_every_instigator_declares_its_running_state_in_code() -> None:
-    # The on/off state of a schedule or sensor lives in Dagster's metadata DB
-    # only when someone toggled it by hand. A fresh DB -- the shared Dagster
-    # instance starts from one -- brings every instigator up in its *declared*
-    # default, so anything production runs must declare RUNNING here, never
-    # rely on a toggle stored somewhere else.
+def test_every_instigator_declares_its_expected_default_state_in_code() -> None:
+    # 새 metadata DB에서도 기존 수집·복구는 RUNNING이다. 새 export publisher만
+    # 파일 저장소와 source 준비 확인 후 명시 start하도록 STOPPED로 등록한다.
     from dagster import DefaultScheduleStatus, DefaultSensorStatus
 
     repository = defs.get_repository_def()
@@ -277,7 +274,12 @@ def test_every_instigator_declares_its_running_state_in_code() -> None:
     for schedule in schedules:
         assert schedule.default_status == DefaultScheduleStatus.RUNNING, schedule.name
     for sensor in repository.sensor_defs:
-        assert sensor.default_status == DefaultSensorStatus.RUNNING, sensor.name
+        expected = (
+            DefaultSensorStatus.STOPPED
+            if sensor.name == "weather_export_publisher"
+            else DefaultSensorStatus.RUNNING
+        )
+        assert sensor.default_status == expected, sensor.name
 
 
 def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_boundary() -> None:
