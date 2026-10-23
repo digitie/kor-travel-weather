@@ -158,6 +158,54 @@ def test_failed_raw_commit_never_appears_in_daily_projection(daily_repository, t
         assert c.execute(select(table.c.summary)).first() is None
 
 
+def test_missing_approved_artifact_keeps_checkpoint_and_summary_until_repair(
+    daily_repository, tmp_path
+):
+    from datetime import timedelta
+
+    from test_export_heads import _candidate, _descriptor
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+    store = ExportArtifactStore(tmp_path)
+    heads, identity, capture, _, _, _ = _candidate(
+        repository, tmp_path, descriptor, revision=yesterday, value="10"
+    )
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    refresh_daily_summaries(repository, store)
+    table, progress = daily_summary_tables(Base.metadata)
+    with repository.engine.connect() as c:
+        before = dict(c.execute(select(progress)).mappings().one())
+        original_summary = c.execute(select(table.c.summary)).scalar_one()
+    heads, identity, capture, _, _, _ = _candidate(
+        repository, tmp_path, descriptor, revision=yesterday + timedelta(hours=1), value="20"
+    )
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    with repository.engine.connect() as c:
+        ref = c.execute(
+            select(heads.refs)
+            .join(
+                heads.generations, heads.refs.c.generation_id == heads.generations.c.generation_id
+            )
+            .where(heads.generations.c.attempt_id == identity.attempt_id)
+        ).mappings().one()
+    path = tmp_path / (ref["artifact_digest"] + ".jsonl")
+    payload = path.read_bytes()
+    path.unlink()
+    with pytest.raises(OSError):
+        refresh_daily_summaries(repository, store)
+    with repository.engine.connect() as c:
+        assert dict(c.execute(select(progress)).mappings().one()) == before
+        assert c.execute(select(table.c.summary)).scalar_one() == original_summary
+    path.write_bytes(payload)
+    assert refresh_daily_summaries(repository, store)["processed"] == 1
+    with repository.engine.connect() as c:
+        assert c.execute(select(table.c.summary)).scalar_one()["temp_avg"] == 15
+
+
 def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
     daily_repository, tmp_path
 ):
@@ -277,3 +325,68 @@ def test_daily_retention_is_bounded_and_keeps_cursor_day_grace(daily_repository)
     assert prune_daily_summaries(daily_repository, limit=1) == 0
     with daily_repository.engine.connect() as c:
         assert list(c.scalars(select(table.c.date))) == [today - timedelta(days=31)]
+
+
+def test_concurrent_daily_reducers_commit_one_checkpoint(daily_repository, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Barrier
+
+    from test_export_heads import _candidate, _descriptor
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    heads, identity, capture, _, _, _ = _candidate(repository, tmp_path, descriptor)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    gate = Barrier(2)
+
+    class RacingStore(ExportArtifactStore):
+        @contextmanager
+        def guard(self, **kwargs):
+            with super().guard(**kwargs):
+                yield
+            # 두 실제 reader가 같은 checkpoint의 파일 검증을 끝낸 후 CAS한다.
+            gate.wait(timeout=10)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _: refresh_daily_summaries(repository, RacingStore(tmp_path)), range(2)
+            )
+        )
+    assert sorted(result["processed"] for result in results) == [0, 1]
+    assert sum(result.get("race", False) for result in results) == 1
+    assert refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))["processed"] == 0
+
+
+def test_daily_byte_budget_cursor_resumes_exact_last_included_item(
+    daily_repository, tmp_path, monkeypatch
+):
+    from test_export_heads import _candidate, _descriptor
+
+    import kortravelweather.export_daily_reader as reader
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    heads, identity, capture, _, _, _ = _candidate(repository, tmp_path, descriptor)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+    # 동일 production byte-budget 분기를 작은 상한으로 통과시켜 중간 slot 재개를 확인한다.
+    monkeypatch.setattr(reader, "MAX_PAGE_BYTES", 16 * 1024)
+    exports = reader.DailySummaryExports(
+        repository, ExportArtifactStore(tmp_path), signing_key="daily-budget", days=31
+    )
+    items, cursor, lengths = [], None, []
+    while True:
+        page, _ = exports.page(limit=5000, cursor=cursor)
+        lengths.append(len(page["items"]))
+        items.extend(page["items"])
+        cursor = page["meta"]["next_cursor"]
+        if not cursor:
+            break
+    assert len(lengths) > 1 and all(0 < size < 93 for size in lengths)
+    assert len(items) == 93 and len({(item["date"], item["slot"]) for item in items}) == 93
+    assert [(item["date"], item["slot"]) for item in items] == sorted(
+        [(item["date"], item["slot"]) for item in items],
+        key=lambda item: (item[0], ["morning", "noon", "evening"].index(item[1])),
+    )

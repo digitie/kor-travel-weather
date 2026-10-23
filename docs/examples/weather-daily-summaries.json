@@ -1,0 +1,48 @@
+{
+  "items": [
+    {
+      "location_id": "a",
+      "date": "2026-10-22",
+      "slot": "morning",
+      "temp_min": null,
+      "temp_max": null,
+      "temp_avg": null,
+      "humidity_avg": null,
+      "precip_sum_mm": null,
+      "precip_occurred": null,
+      "sky_code": null,
+      "wind_speed_avg": null,
+      "sample_count": 0,
+      "source_providers": [],
+      "partial": false
+    },
+    {
+      "location_id": "a",
+      "date": "2026-10-22",
+      "slot": "noon",
+      "temp_min": null,
+      "temp_max": null,
+      "temp_avg": null,
+      "humidity_avg": null,
+      "precip_sum_mm": null,
+      "precip_occurred": null,
+      "sky_code": null,
+      "wind_speed_avg": null,
+      "sample_count": 0,
+      "source_providers": [],
+      "partial": false
+    }
+  ],
+  "meta": {
+    "generated_at": "2026-10-23T10:45:57.928552Z",
+    "source_collected_at": "2026-10-23T10:45:55.939425Z",
+    "source_status": "stale",
+    "item_count": 2,
+    "snapshot_id": "a029674d-0dba-4a7c-b817-de9656cbb7bb",
+    "snapshot_generated_at": "2026-10-23T10:45:57.921652Z",
+    "as_of": "2026-10-23T10:45:57.928552Z",
+    "next_cursor": "eyJnIjowLCJsIjoyLCJwIjoyLCJyIjoiZGFpbHktc3VtbWFyaWVzOjMzZTg4MDBjN2U3OWI5NTllYTI1YWMxZjk0YTI1MGI1MTY1YmM4NmQ0N2U1NzE0OTIyYjE5OTAwNTk1ZWNlYTIiLCJzIjoiYTAyOTY3NGQtMGRiYS00YTdjLWI4MTctZGU5NjU2Y2JiN2JiIiwidiI6MX1IbxZosv-SYYfRdE-fDdStlEPi0KwmjTOEDO_jzVjKkw",
+    "has_more": true,
+    "next_since": null
+  }
+}

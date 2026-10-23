@@ -43,6 +43,11 @@ REST는 scalar summary만 선택하며 weather_values/날짜 파티션/hourly_wi
 ETag에는 실제 페이지와 source 상태를 넣어 변경 중의 페이지를 304로 숨기지 않는다.
 cursor 조건 변경은422, 15분 만료는410이며 첫 페이지부터 재시작한다.
 
+`docs/examples/weather-daily-summaries.json`은 격리된 PG/실제 publisher와 TCP API에서
+받은 응답 예시다. 토큰은 포함하지 않으며 관측이 없는 구간의 null/sample_count=0과
+다음 cursor를 보여 준다. 각 페이지에서 source 상태와 실제 값을 다시 검증하므로
+새 실패 상태를 이전 ETag의304로 숨기지 않는다.
+
 summary/winner 상태는 최대31일 조회에 하루 cursor 유예를 더해 보존하며 오래된
 파생 행만 SKIP LOCKED/최대500행씩 정리한다. 승인 generation의 publication 인덱스로
 증분 처리하여 매번 전체 이력을 훑지 않는다. 동일 상태 replay는 JSON UPDATE를 생략한다.
@@ -57,3 +62,12 @@ summary checkpoint 이전에 GC하면 안 된다. GC·전체 wall-clock/최대 R
 export가 준비되지 않은 기본 다중 provider 요청은503으로 실패한다. 외부 provider의
 관측 승인 경로가 연결되면 같은 reducer가 해당 자료를 받아 실제 winner만 반영한다.
 W4/다른 W3 provider/운영 비용·GC gate까지 완료됐다는 뜻이 아니다.
+
+## 검증 범위
+
+관측 순서/제공처 우선순위/재수집 중복/시간 경계/trace 강수/빈 구간을 순수 함수로
+검증하고, 실제 PG에서 승인만 집계·실패 배제·원자 checkpoint·두 reducer의 CAS·
+파일 손실 시 이전 요약 보존 및 동일 파일 복구 후 재개·보존 상한을 확인한다.
+REST 회귀는 token 거부, gzip,304, 페이지와 조건 서명, 사전계산 scalar projection만
+조회함을 검증한다. byte 상한은 production과 같은 분기를 작은 테스트 상한으로
+통과시켜 slot 중간에서 재개해도 누락/중복이 없음을 확인한다.
