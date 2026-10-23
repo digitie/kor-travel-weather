@@ -1,3 +1,13 @@
+## 2026-10-23 — W4 native 수집·복구·실제 일정 통합 PR151
+
+- [설계·수용 경계](reports/2026-10-23-export-status-integration.md): source 별칭 전 실제
+  fetch 시각, 원자 native 요청 계획, terminal CAS·중단 회수의 상태 투영을 연결한다.
+- 독립 리뷰에서 찾은 pending INSERT 실패와 계획 setter 실패 경로는 native INSERT와
+  terminal UPDATE의 durable flag로 보강한다. 지역 bulk fetch 실패도 추적한다.
+- 실제 tick의 중복 억제/config/tags는 유지하고 다음 일정을 작은 상태표에 기록한다.
+  W4 REST는 인증/weak ETag/gzip과 작은 전체 목록을 제공한다. 기본 OFF·운영 미배포이며
+  수정 후 테스트·적대 리뷰 최종 폐쇄·CI·실제 HTTP/UI 수용이 남아 있다.
+
 ## 2026-10-23 — 성공 head/실제 collector opt-in PR143·144 수용
 
 - PR143 제품43fa8ae→main476c9f11: exactarchive PG812/집중71·CI·frontend243/type·독립2리뷰·격리API3/UI11 PASS. source clock P1을폐쇄했다. [수용/미완](reports/2026-10-23-map-export-success-heads.md).

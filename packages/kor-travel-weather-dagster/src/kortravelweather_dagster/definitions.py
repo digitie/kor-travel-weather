@@ -19,7 +19,7 @@ from dagster import (
     in_process_executor,
     multiprocess_executor,
 )
-from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule
+from kortravelcommon.dagster import RecoveryPolicy
 from kortravelcommon.deadline import DeadlineExceeded
 from kortravelcommon.scheduling import staggered_cron
 
@@ -703,8 +703,44 @@ def _job_tags(job_name: str) -> dict[str, str]:
 
 
 def _weather_schedule(**kwargs):
-    return coalescing_schedule(
-        project="weather", location_name="kortravelweather_dagster.definitions", **kwargs
+    from kortravelweather.export_status_scopes import dataset_scopes, status_scopes
+
+    from .export_schedule_status import schedule_with_export_status
+
+    job_name = kwargs["job"].name
+    kma_datasets = {
+        "kma_ultra_short_nowcast_job": "kma_ultra_short_nowcast",
+        "kma_ultra_short_forecast_job": "kma_ultra_short_forecast",
+        "kma_short_forecast_job": "kma_short_forecast",
+        "kma_mid_forecast_job": "kma_mid_forecast",
+    }
+
+    def sources(_context):
+        settings = WeatherSettings()
+        if not settings.service_exports_enabled:
+            return ()
+        enabled = set(settings.enabled_providers)
+        if job_name in kma_datasets:
+            return dataset_scopes("python-kma-api", {kma_datasets[job_name]}) if (
+                "python-kma-api" in enabled
+            ) else ()
+        if job_name == "airkorea_weather_job":
+            return status_scopes(enabled & {"python-airkorea-api"})
+        if job_name == "regional_weather_job":
+            return status_scopes(enabled & {
+                "python-khoa-api", "python-krforest-api", "python-krex-api",
+            })
+        return status_scopes({
+            provider for provider in enabled if external_job_name(provider) == job_name
+        })
+
+    def repository_factory(_context):
+        settings = WeatherSettings()
+        return WeatherRepository(settings.database_url, export_status_enabled=True)
+
+    return schedule_with_export_status(
+        project="weather", location_name="kortravelweather_dagster.definitions",
+        source_keys=sources, repository_factory=repository_factory, **kwargs,
     )
 
 

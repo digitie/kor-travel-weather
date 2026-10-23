@@ -4,7 +4,8 @@
 
 상태표 기반 PR #149 뒤에서 native 수집 실행의 terminal CAS, 실제 응답 시각,
 중단 복구, 상태 REST를 연결한다. W5 PR #148의 0029 뒤에 nullable 실행 scope
-열만 추가하는 0030을 둔다. 기존 이력·수집 결과와 기존 API를 바꾸지 않는다.
+열과 재투영 대기 flag·부분 인덱스를 추가하는 0030을 둔다. 기존 이력·수집 결과와
+기존 API를 바꾸지 않는다.
 현재 구현·검증 중이며 운영 활성화 또는 전체 Map API 완료를 뜻하지 않는다.
 
 `service_exports_enabled` 기본값은 false다. 활성화한 repository만 상태를 투영한다.
@@ -19,15 +20,31 @@
 상태를 쓰지 않고 ingest batch마다 그룹당 한 번 쓴다. 실제 시각이 없으면 null이며
 native 종료 시각을 수집 시각으로 대체하지 않는다.
 
-복합 KMA 수집은 네트워크 호출 전에 실제 요청 데이터셋만 native 실행에 기록한다.
+복합 KMA 수집은 네트워크 호출 전에 실제 요청 데이터셋을 native 실행의 같은 INSERT에
+기록한다. opt-in 복합 수집에서 명시 계획이 없거나 지원하지 않는 데이터셋이면 실행을
+시작하지 않는다. 별도 best-effort 계획 setter를 사용하지 않는다.
 실제 terminal CAS에 성공한 실행만 상태를 투영한다. worker 중단/lease 만료의 복구도
 동일한 경계를 사용한다. 이미 종료된 실행의 늦은 finish는 상태를 다시 쓰지 않는다.
 상태표는 최신 시작 시각·run_id fence로 이전 실행의 결과가 새 결과를 덮지 못하게 한다.
 
 작은 파생 쓰기는 savepoint, statement 최대 5초·lock 최대 1초를 사용한다. 더 엄격한
 기존 상한은 유지한다. 파생 쓰기 실패는 경고로 기록하고 기존 수집 transaction을
-계속 사용할 수 있게 한다. 이 경로는 마지막으로 **기록된** terminal을 제공하며,
-상태 저장 실패 뒤의 재투영/운영 경고 수용은 rollout 검토에서 별도로 확인한다.
+계속 사용할 수 있게 한다. native terminal CAS의 **같은 UPDATE**에 실행별 재투영
+대기 flag를 남기고 투영 성공 때 지운다. 별도 대기표 INSERT가 실패해 복구 의도를
+잃는 경로를 제거했다. 상태 행 경합 때문에 투영을 못 해도 대기 flag는 남는다.
+상태 조회는 pending=true 부분 인덱스에서 대기 실행 한 건만 복구를 시도하며, 해당
+provider에 미처리 실행이 있으면 옛 성공에 304를 주지 않고 503을 반환한다. 다음
+조회에서 잠금이 풀렸으면 복구한다. 사실 이력 전체 스캔과 수집 재실행은 하지 않는다.
+native 실행을 정리하면 flag도 함께 정리된다. 전체 실행 이력은 스캔하지 않는다.
+부분 인덱스와 조회 조건을 모두 `export_status_pending = true`로 맞춘다. 완료 실행
+5,000건과 대기 한 건을 둔 실제 PostgreSQL EXPLAIN에서 이 부분 인덱스 사용을 확인했다.
+알려진 cancelled/abandoned는 그대로 실패 상태로 표시하고, 미등록 native terminal도
+파생 상태에서는 failed로 보수적으로 표시한다. native 원래 상태는 바꾸지 않는다.
+
+해양·산악·청정넷·휴게소 opt-in 수집은 provider fetch 전에 native 실행을 만든다.
+fetch timeout/권한 오류도 실패 terminal로 남긴다. 성공 시 기존 publish 경로를 같은
+실행으로 이어받고 실제 대상 수를 갱신한다. 비활성 provider와 기본 OFF 경로는 기존
+동작을 유지한다. provider client·원문 파싱을 재구현하지 않는다.
 
 ## REST 계약
 
@@ -47,12 +64,21 @@ last_failed_at, last_attempt_failed, next_scheduled_at이다. 아직 실행되�
 값이 아니라 상태 응답의 보수적 표시 기준이다. 미래 원천 시각도 stale로 처리한다.
 source_collected_at은 필수 데이터셋의 실제 수집 시각이 모두 있을 때 최솟값이며,
 하나라도 모르면 null이다. generated_at을 제외한 의미 기반 weak ETag로 304를 지원하고
-gzip을 지원한다. DB 연결은 JSON 직렬화·압축 전에 반환한다.
+gzip을 지원한다. 대기 flag와 상태 목록은 같은 REPEATABLE READ에서 확인한다.
+DB 연결은 JSON 직렬화·압축 전에 반환한다.
+
+실제 Dagster tick의 public evaluate_tick 결과를 위임해 기존 중복 억제와
+RunRequest/config/tags를 보존한다. 다음 시각은 등록된 cron·timezone을 croniter로
+계산한다. 모듈 import/definition load 때 DB를 연결하지 않는다. active 실행 때문에
+새 run을 생략하는 tick도 일정은 기록한다. 시각 없는 수동 평가와 명시적 중지/불명은
+null이며, 중지 후 tick이 없으면 이전 예정 시각이 지난 뒤 reader가 null로 보여 준다.
+기본 default_status로 현재 실행 상태를 추측하거나 API가 workspace를 조회하지 않는다.
 
 ## 남은 수용 조건
 
-- 실제 스케줄 평가와 next_scheduled_at 연결 및 stopped/unknown 만료 검증
-- 정상·실패·별칭 재수집·중단 복구·동시 실행·상태 잠금 실패의 PostgreSQL 회귀
+- 수정 전 기반 회귀 83개, 원자 pending/지역 실패 보강 관련 회귀 128개 PASS.
+  추가 terminal 경계 포함 상태 통합 17개와 5,000건 EXPLAIN 회귀 1개도 PASS.
+  이 수는 서로 겹치므로 단순 합산하지 않는다.
 - 실제 HTTP/기존 UI, OpenAPI/TypeScript, 전체 CI, 독립 적대 리뷰 2명
 - Map 담당에게 최종 PR·응답 예시 전달 후 consumer 계약 수용
 - 운영 배포 전 기존 장기 수집 drain 및 rollout 비용·복구 검증

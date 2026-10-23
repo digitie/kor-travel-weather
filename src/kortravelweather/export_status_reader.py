@@ -6,6 +6,8 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import select, true
+
 from .export_artifacts import ExportArtifactError
 from .export_status import ExportSourceStatuses, status_transaction
 from .export_status_scopes import status_scopes
@@ -16,7 +18,16 @@ def read_status(repository, providers: set[str], *, as_of: datetime) -> tuple[di
     if not keys or providers != {key.provider for key in keys}:
         raise ExportArtifactError("상태 scope가 설정되지 않았습니다.")
     now = as_of.astimezone(UTC)
-    with repository.engine.begin() as connection, status_transaction(connection):
+    repository.reconcile_export_status(providers, limit=1)
+    from .repository import SyncRunRow
+
+    with repository.engine.connect().execution_options(
+        isolation_level="REPEATABLE READ",
+    ) as connection, connection.begin(), status_transaction(connection):
+        if connection.scalar(select(SyncRunRow.run_id).where(
+            SyncRunRow.export_status_pending == true(), SyncRunRow.provider.in_(providers),
+        ).limit(1)) is not None:
+            raise ExportArtifactError("수집 상태 재투영을 기다리고 있습니다.")
         states = ExportSourceStatuses(repository_metadata()).read(connection, keys, as_of=now)
     # 계획/스케줄만으로 성공처럼 보이지 않도록 최초 terminal까지 준비 중으로 둔다.
     if not any(state.last_status is not None for state in states):
