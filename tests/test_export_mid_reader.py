@@ -152,6 +152,17 @@ def test_cursor_uses_supported_mid_resource_and_cannot_change_selection():
                                  providers=["open_meteo"])
 
 
+def test_reconfirmed_unchanged_artifact_preserves_fact_clock_but_returns_head_clock():
+    selected = scopes()
+    handle = reader(selected)
+    selected[0]["source_collected_at"] = (ISSUED + timedelta(minutes=8)).isoformat()
+    selected[1]["source_collected_at"] = (ISSUED + timedelta(minutes=9)).isoformat()
+    frozen = handle._prepare_manifest(manifest(selected))
+    output, _ = handle._page_items(frozen, {"g": 0, "p": 0}, 5000, NOW)
+    assert output[0]["known_at"] == selected[1]["source_collected_at"]
+    assert handle.artifacts.points["temperature"][0]["known_at"] != output[0]["known_at"]
+
+
 def test_pair_requires_aware_issue_and_nonempty_inventory():
     with pytest.raises(ExportSnapshotUnavailable):
         paired_locations([])

@@ -144,7 +144,8 @@ class FrozenMidForecastExports(FrozenForecastExports):
                     or point["dataset_key"] != MID_SOURCE[1]
                     or point["location_id"] not in ref["location_ids"]
                     or _at(point["issued_at"]) != _at(scope["data_revision_at"])
-                    or _at(point["known_at"]) != _at(scope["source_collected_at"])
+                    or not (_at(scope["data_revision_at"]) <= _at(point["known_at"])
+                            <= _at(scope["source_collected_at"]))
                 ):
                     raise ExportSnapshotUnavailable("중기 artifact와 승인된 원천이 다릅니다.")
                 allowed = {"SKY", "POP"} if scope["source_part"] == "land" else {"TMN", "TMX"}
@@ -190,7 +191,10 @@ class FrozenMidForecastExports(FrozenForecastExports):
                     )
                 item = {
                     "location_id": key, "provider": MID_SOURCE[0], "forecast_style": "mid",
-                    "known_at": max(_at(point["known_at"]) for point in points).isoformat(),
+                    # 동일 의미 값을 재수집하면 승인 head는 원래 파일을 재사용한다.
+                    # fact의 옛 known_at을 바꾸지 않고 실제 재확인 clock은 head에서 읽는다.
+                    "known_at": max(_at(scopes[pair[part]]["source_collected_at"])
+                                    for part in ("land", "temperature")).isoformat(),
                     "published_at": pair["published_at"],
                     "target_at": [target.isoformat() for target in targets],
                     "metrics": {metric: [values.get(target) for target in targets]
