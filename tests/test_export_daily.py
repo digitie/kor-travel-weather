@@ -185,13 +185,18 @@ def test_missing_approved_artifact_keeps_checkpoint_and_summary_until_repair(
     )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     with repository.engine.connect() as c:
-        ref = c.execute(
-            select(heads.refs)
-            .join(
-                heads.generations, heads.refs.c.generation_id == heads.generations.c.generation_id
+        ref = (
+            c.execute(
+                select(heads.refs)
+                .join(
+                    heads.generations,
+                    heads.refs.c.generation_id == heads.generations.c.generation_id,
+                )
+                .where(heads.generations.c.attempt_id == identity.attempt_id)
             )
-            .where(heads.generations.c.attempt_id == identity.attempt_id)
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     path = tmp_path / (ref["artifact_digest"] + ".jsonl")
     payload = path.read_bytes()
     path.unlink()
@@ -390,3 +395,35 @@ def test_daily_byte_budget_cursor_resumes_exact_last_included_item(
         [(item["date"], item["slot"]) for item in items],
         key=lambda item: (item[0], ["morning", "noon", "evening"].index(item[1])),
     )
+
+
+def test_legacy_equal_publication_times_resume_with_generation_id(daily_repository, tmp_path):
+    from datetime import timedelta
+
+    from test_export_heads import _candidate, _descriptor
+
+    repo = daily_repository
+    yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+    for value in ["10", "20"]:
+        descriptor = _descriptor(repo)
+        heads, identity, capture, _, _, _ = _candidate(
+            repo, tmp_path, descriptor, revision=yesterday, value=value
+        )
+        assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    # 0026 승인 자료는 publication clock 도입 전이라 서로 같은 시각일 수 있다.
+    legacy_at = datetime.now(KST) - timedelta(minutes=5)
+    with repo.engine.begin() as c:
+        c.execute(heads.generations.update().values(created_at=legacy_at))
+    table, progress = daily_summary_tables(Base.metadata)
+    assert refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=1)["processed"] == 1
+    assert refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=1)["processed"] == 1
+    assert refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=1)["processed"] == 0
+    with repo.engine.connect() as c:
+        assert sorted(row["temp_avg"] for row in c.scalars(select(table.c.summary))) == [10, 20]
+        checkpoint = c.execute(select(progress)).mappings().one()
+        assert checkpoint["published_at"] == legacy_at
+        assert checkpoint["generation_id"] == max(
+            c.scalars(select(heads.generations.c.generation_id))
+        )
