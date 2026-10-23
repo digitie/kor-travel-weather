@@ -389,3 +389,10 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 별도OS process의실제잠금/용량/강제종료회복3건·Ruff PASS. metadata→파일 사이
   in-flight pin과GC/운영CPU·RSS 수용은별도이며운영flag/daemon은바꾸지않는다.
 - 상세: `docs/reports/2026-10-23-export-shared-read-guard.md`.
+### writer 기아 방지
+
+- 초기 독립 적대 리뷰의 연속 SH reader에 의한 writer timeout 경계를 admission
+  turnstile로 보완했다. writer 대기 중 새 reader를 막고 기존 reader만 drain한다.
+- 단일 deadline/두 slot/기본 EX 보존 및 실제OS writer진입회귀 포함4PASS/Ruff.
+  테스트의 강제종료 뒤 Event 정리 교착은 시험 harness에서 수정했고 실패실행은
+  통과로세지않았다. 두 최종 리뷰/CI·기존PG·HTTP/UI 수용은 별도다.

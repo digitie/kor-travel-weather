@@ -16,6 +16,19 @@ def _holder(root, shared, ready, release):
             raise RuntimeError("시험 guard release가 도착하지 않았습니다.")
 
 
+def _waiting_writer(root, waiting, acquired, release):
+    class NotifyingStore(ExportArtifactStore):
+        def _turnstile(self, deadline):
+            descriptor = super()._turnstile(deadline)
+            waiting.set()
+            return descriptor
+
+    with NotifyingStore(Path(root)).guard(timeout_seconds=10):
+        acquired.set()
+        if not release.wait(15):
+            raise RuntimeError("시험 writer release가 도착하지 않았습니다.")
+
+
 @contextmanager
 def _holding(root, *, shared):
     context = multiprocessing.get_context("spawn")
@@ -95,3 +108,31 @@ def test_terminated_reader_releases_main_guard_and_read_capacity(tmp_path):
         if process.is_alive():
             process.terminate()
             process.join(5)
+
+
+def test_waiting_writer_blocks_new_reader_before_existing_reader_finishes(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    waiting, acquired, release = context.Event(), context.Event(), context.Event()
+    process = context.Process(
+        target=_waiting_writer, args=(str(tmp_path), waiting, acquired, release)
+    )
+    store = ExportArtifactStore(tmp_path)
+    try:
+        with store.guard(shared=True):
+            process.start()
+            assert waiting.wait(10)
+            assert not acquired.is_set()
+            with (
+                pytest.raises(ExportArtifactError, match="입장 대기 상한"),
+                store.guard(shared=True, timeout_seconds=0.05),
+            ):
+                pytest.fail("writer가 대기 중이면 새 reader를 막아야 합니다.")
+        assert acquired.wait(5)
+    finally:
+        if process.pid is not None:
+            release.set()
+            process.join(10)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+            assert process.exitcode == 0
