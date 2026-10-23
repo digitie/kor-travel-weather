@@ -481,7 +481,7 @@ class FrozenCurrentExports:
         }
         # generated_at은 ETag에 넣지 않는다. 데이터/vector/페이지/상태 변화는 포함한다.
         etag = (
-            '"'
+            'W/"'
             + _digest(
                 [frozen["snapshot_id"], frozen["manifest_digest"], resource, limit, cursor, status]
             )
