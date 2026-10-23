@@ -183,14 +183,23 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "next_since": watermark.isoformat(),
             }
             digest = _digest(manifest)
+            latest = select(self.snapshots.c.issue_order).where(
+                self.snapshots.c.manifest["selection"]["kind"].as_string() == "forecasts",
+                self.snapshots.c.manifest["selection"]["style"].as_string() == self.style,
+                self.snapshots.c.manifest["selection"]["since"].as_string()
+                == self.selection["since"],
+                self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
+                == self.selection.get("provider_signature"),
+            ).order_by(self.snapshots.c.issue_order.desc()).limit(1).correlate(None).scalar_subquery()
             previous = (
                 c.execute(
                     select(self.snapshots)
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
+                        self.snapshots.c.issue_order == latest,
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()
@@ -234,7 +243,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
                         == self.selection.get("provider_signature"),
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()
@@ -244,6 +253,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportSnapshotUnavailable("이전 승인 예보가 없습니다.")
             frozen, now = dict(row), datetime.now(UTC)
             if frozen["expires_at"] <= now:
+                frozen.pop("issue_order", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
                 )

@@ -43,6 +43,16 @@ def clean_postgresql_database() -> None:
                     "ALTER TABLE IF EXISTS weather_values_default "
                     "DROP CONSTRAINT IF EXISTS weather_values_default_known_at_floor"
                 ))
+                export_tables = connection.scalars(text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname=current_schema() "
+                    "AND tablename LIKE 'weather_export_%'"
+                )).all()
+                if export_tables:
+                    quote = connection.dialect.identifier_preparer.quote
+                    connection.exec_driver_sql(
+                        "TRUNCATE TABLE " + ", ".join(quote(name) for name in export_tables)
+                        + " RESTART IDENTITY CASCADE"
+                    )
         except ProgrammingError as exc:
             if "does not exist" not in str(exc).lower():
                 raise

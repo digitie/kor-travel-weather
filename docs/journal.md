@@ -343,6 +343,37 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
   실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
 
+### 공개 SDK 원문 재해석과 페이지 완결 검증
+
+- AirKorea·산림청 산악/청정넷·KREX·KHOA 공개 parser와 기존 Weather 정규화를 재사용해
+  관측소/시각/수치/source key를 검증하고 기존 native capture·성공 head에 연결했다.
+- AirKorea 실제 vendor 소스와 KHOA/KREX 최종 SDK pin을 함께 갱신했다. 원본 라이선스와
+  provenance를 보존했다. KHOA 원문 좌표의 NaN/무한대/범위 밖/bool도 거절한다.
+- SDK typed DTO만으로 전국 완결을 주장하지 않는다. 작은 페이지 receipt와 KHOA 장소별
+  원문 조합을 추가하고 누락·개수 변동·중복 구간을 거부한다.
+- 실제 Dagster source 배선·누적 inventory·전체 provider/mid REST·GC/운영 비용 gate는
+  후속이다. 운영 flag OFF와 기존 수집/API를 유지한다.
+- 상세 계약/검증: `docs/reports/2026-10-23-sdk-source-exports.md`.
+
+### 실제 source inventory와 quota 회전 준비
+
+- provider/dataset/location의 마지막 승인 metadata를 head와 같은 TX에서 upsert하고
+  quota 선택 밖 이전 위치는 유지한다. source raw/fact는 복사하지 않는다.
+- 작은 namespace 키셋으로 이전 승인 head를 재투영하는 bootstrap helper와
+  native intent가 있는 source의 HTTP 전 명시 roster 선언을 추가했다.
+- inventory generation FK/live-root 계약을 명시했다. 파일 GC는 아직 없으며
+  reader·실제 수집 배선·전체 provider/mid·운영 비용 검증은 후속이다.
+- 상세 설계/task: `docs/reports/2026-10-23-export-source-inventory.md`.
+
+### AirKorea 승인 source 실제 수집 연결
+
+- 명시 export opt-in일 때만 native 시작 intent와 HTTP 전 canonical 측정소 roster를
+  고정하고, 기존 public SDK 정규화 결과를 원본 fact/lineage와 함께 캡처한다.
+- 원천 실패 다음에도 이전 승인 값과 cursor는 남으며 source 상태를 stale로 유지한다.
+  기존 OFF 경로와 기존 AirKorea의 요청 실패 집계 동작은 유지한다.
+- quota 회전 current reader, 기존 AirKorea/asset와 0033 실제 upgrade를 포함한
+  PostgreSQL 집중 43개 및 전체 Ruff를 확인했다. 전체 SDK 배선·REST 기본 선택과
+  운영 비용/GC gate는 아직 후속이며 운영 설정은 변경하지 않았다.
 
 
 # 2026-10-23 중기예보 export 재해석 증거
@@ -359,22 +390,6 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   bool/숫자/객체/배열·NaN/Inf·숫자/sentinel을 camel/snake alias 모두에서 거절한다.
 - 올바른 source hash를 재계산한 추가32건 포함 집중86건/Ruff PASS. 최초54건과
   합산하지 않으며 최종 두 리뷰·정확 CI는 별도 수용한다.
-
-### 공개 SDK 원문 재해석과 페이지 완결 검증
-
-- AirKorea·산림청 산악/청정넷·KREX·KHOA 공개 parser와 기존 Weather 정규화를 재사용해
-  관측소/시각/수치/source key를 검증하고 기존 native capture·성공 head에 연결했다.
-- AirKorea 실제 vendor 소스와 KHOA/KREX 최종 SDK pin을 함께 갱신했다. 원본 라이선스와
-  provenance를 보존했다. KHOA 원문 좌표의 NaN/무한대/범위 밖/bool도 거절한다.
-- SDK typed DTO만으로 전국 완결을 주장하지 않는다. 작은 페이지 receipt와 KHOA 장소별
-  원문 조합을 추가하고 누락·개수 변동·중복 구간을 거부한다.
-- 실제 Dagster source 배선·누적 inventory·전체 provider/mid REST·GC/운영 비용 gate는
-  후속이다. 운영 flag OFF와 기존 수집/API를 유지한다.
-- 상세 계약/검증: `docs/reports/2026-10-23-sdk-source-exports.md`.
-
-
-
-
 ### 중기 지역의 스트리밍 fan-out
 
 - 한 육상 지역이50곳을 넘더라도 source scope를 잘라 중복 claim하지 않도록
@@ -382,3 +397,24 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   템플릿만 보관하고 위치별 iterator로 내보낸다. 큰 전체 목록 복원은 거절한다.
 - 기존86건과 스트리밍4건을 함께90PASS/Ruff PASS.1,000곳 순회의 tracemalloc peak
   2MiB 미만을 확인했으며 운영 RSS/CPU 개선이나 실제 배선 완료로 세지 않는다.
+
+### SDK 관측망 실제 수집 연결
+
+- 산악·청정넷·KREX·KHOA의 native 시작에 명시 export intent를 함께 저장하고
+  기존 canonical anchor의 작은 필드만 읽어 HTTP 전에 source 계획을 고정한다.
+- KREX 부분 파싱/개수 불일치는 승인하지 않는다. KHOA는 공개 Page의 원문 수를
+  검증해 페이지에 나뉜 장소 예보를 조합하며, 불완전하면 기존 native 경로만 보존한다.
+- 반환되지 않은 source 계획은 실패로 마감해 영구 preparing 재시도를 피한다.
+  청정넷 과거 관측은 기존 native 이력에 모두 남기고 최신 한 건만 current에 승인한다.
+- 기존 regional/OFF와 SDK page 회귀를 포함한 집중62건 뒤 보완한 실제4종 native
+  runner/부분 KREX 회귀4건을 확인했다. 운영 CPU/메모리 비용은 별도 실측 gate다.
+
+### inventory 적대 리뷰의 복구 경계 보완
+
+- 승인 위치가 활성 roster에 없을 때 같은 RR에서 명시 비활성화만 제외한다.
+  실제 catalog 유실은 이전 완전 vector와 cursor를 stale로 보존한다. disable→reenable
+  후 과거의 더 작은 snapshot이 fallback으로 선택되지 않도록 최신 handle만 재사용한다.
+- 0033 upgrade/downgrade에 statement60초/lock5초 상한을 두고 더 짧은 caller 설정을
+  보존·복원한다. 실패 시 Alembic TX가 DDL/설정을 함께 rollback한다.
+- 선행 최신 관측 선택의 잘못된 anchor는 export만 무효화하고 원래 native 순회의
+  실패 시점과 이미 저장한 chunk를 보존한다. 시험의 export metadata도 매번 격리한다.
