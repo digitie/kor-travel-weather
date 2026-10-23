@@ -1,6 +1,7 @@
 """확정 terminal과 아직 불확실한 export 후보의 복구 경계를 검증한다."""
 
 import os
+import threading
 import uuid
 
 import pytest
@@ -28,11 +29,12 @@ def clear_exports(publisher_repository):
         connection.execute(text("TRUNCATE " + ",".join(names) + " CASCADE"))
 
 
-def candidate(repository, root, monkeypatch, *, terminal="success", dagster=False, descriptor=None):
+def candidate(repository, root, monkeypatch, *, terminal="success", dagster=False, descriptor=None,
+              orchestrator=None):
     from test_export_heads import _candidate, _descriptor
 
     if dagster:
-        monkeypatch.setattr(repository, "orchestrator_run_id", str(uuid.uuid4()))
+        monkeypatch.setattr(repository, "orchestrator_run_id", orchestrator or str(uuid.uuid4()))
         original = repository.begin_export_attempt
 
         def begin(**kwargs):
@@ -135,3 +137,59 @@ def test_partial_preserves_old_head_and_new_epoch_can_retry(publisher_repository
     assert _head(heads, descriptor)["version"] == before["version"] + 1
     assert state(publisher_repository, heads, retry)[0]["owner_epochs"] != state(
         publisher_repository, heads, failed)[0]["owner_epochs"]
+
+
+def test_success_native_is_not_rewritten_when_orchestrator_fails(publisher_repository, tmp_path,
+                                                               monkeypatch):
+    heads, identity, *_ = candidate(publisher_repository, tmp_path, monkeypatch, dagster=True)
+    assert publish_pending_exports(publisher_repository, tmp_path,
+                                   dagster_status=lambda _: "FAILURE").results == {"REJECTED": 1}
+    attempt, run = state(publisher_repository, heads, identity)
+    assert attempt["status"] == "failed" and run["status"] == "success"
+    assert run["values_loaded"] > 0
+
+
+def test_probe_timeout_is_unknown_and_connection_is_released(publisher_repository, tmp_path,
+                                                           monkeypatch):
+    heads, identity, *_ = candidate(publisher_repository, tmp_path, monkeypatch,
+                                    dagster=True, terminal=None)
+    release = threading.Event()
+
+    def stalled(_):
+        release.wait(10)
+        return "FAILURE"
+
+    try:
+        assert publish_pending_exports(publisher_repository, tmp_path,
+                                       dagster_status=stalled).results == {"NOT_READY": 1}
+        assert publisher_repository.engine.pool.checkedout() == 0
+        assert state(publisher_repository, heads, identity)[0]["status"] == "preparing"
+    finally:
+        release.set()
+
+
+def test_missing_file_is_retryable_and_original_bytes_can_recover(publisher_repository, tmp_path,
+                                                              monkeypatch):
+    heads, identity, *_ = candidate(publisher_repository, tmp_path, monkeypatch)
+    artifact = next(tmp_path.glob("*.jsonl"))
+    saved = artifact.read_bytes()
+    artifact.unlink()
+    assert publish_pending_exports(publisher_repository, tmp_path).results == {"NOT_READY": 1}
+    assert state(publisher_repository, heads, identity)[0]["status"] == "preparing"
+    artifact.write_bytes(saved)
+    assert publish_pending_exports(publisher_repository, tmp_path).results == {"PUBLISHED": 1}
+
+
+def test_keyset_microbatch_finishes_and_wraps_for_new_candidates(publisher_repository, tmp_path,
+                                                             monkeypatch):
+    for _ in range(3):
+        candidate(publisher_repository, tmp_path, monkeypatch, terminal="partial")
+    first = publish_pending_exports(publisher_repository, tmp_path, limit=2)
+    assert first.processed == 2 and first.has_more and first.next_cursor
+    second = publish_pending_exports(publisher_repository, tmp_path, limit=2,
+                                     cursor=first.next_cursor)
+    assert second.processed == 1 and not second.has_more and second.next_cursor is None
+    candidate(publisher_repository, tmp_path, monkeypatch)
+    assert publish_pending_exports(publisher_repository, tmp_path, limit=2).results == {
+        "PUBLISHED": 1,
+    }
