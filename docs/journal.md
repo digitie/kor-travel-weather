@@ -408,3 +408,11 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 상세: `docs/reports/2026-10-23-mid-export-collection.md`.
 
 
+
+### 중기 실제 PostgreSQL 저장·복구 수용
+
+- 전용 DB에0001→0033을 새로 적용한 뒤 실제 SDK 모의HTTP/native runner/capture/
+  publisher에서3개 head·6개 역할 승인과 후속 HTTP 실패 시 이전6개 승인 보존을
+  확인했다. 관련PG10건14.01초·실제asset ON/OFF21건·Ruff PASS.
+- 초기 검증 두 실패는 공개SDK 예외 문구와 publisher REJECTED 상태의 기대값 오류였고
+  테스트만 수정했다. source 자체 변경은 없다. 두 리뷰·정확 CI/REST/UI는 후속이다.

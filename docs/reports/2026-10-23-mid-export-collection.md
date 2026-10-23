@@ -26,7 +26,14 @@
   집중6건 PASS: pre-HTTP 전체 계획, 같은 회차/지역 요청 dedupe,120곳 큰 지역,
   cohort 실패의 원본 저장, 메모리·예산 상한, 중복 위치·역할 거절.
 - 기존 OFF KMA runner23건 PASS(실 PostgreSQL1건은 이 집중 실행에서 제외).
-- 전체 Ruff PASS. 실제 PostgreSQL capture→head→REST, 두 독립 적대 리뷰와 정확
+- 새 전용 DB의0001→0033 migration 뒤 실제 native capture→3개 head 승격→6개
+  역할별 inventory→다음 HTTP 실패 시3개 시도 퇴역·이전6개 승인 보존을 확인했다.
+  관련 PostgreSQL10건 PASS(14.01초), 실제 asset ON/OFF21건 PASS.
+- 전체 Ruff PASS. REST 중기 배열 연결, 두 독립 적대 리뷰와 정확
   CI 및 HTTP/UI, ARM 운영 비용은 아직 별도 수용 전이다.
 - source inventory·mid generic head proof는 선행 PR#155, 스트리밍 template은
   PR#157에 의존한다. 단순히 이 어댑터 파일만으로 운영 API 전체를 활성화하지 않는다.
+
+초기 PostgreSQL 검증의 두 실패는 SDK가 HTTP 예외 문구를 일반화하는 계약과
+publisher 결과가 `FAILED`가 아닌 `REJECTED`라는 시험 기대값 불일치였다.
+제품 코드를 바꾸지 않고 실제 공개 예외·반환 상태에 맞춰 수정 후10건이 통과했다.
