@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 class SdkCollectionContext:
     collector: SdkExportCollector
     plans: dict = field(default_factory=dict)
+    ignored_ids: set = field(default_factory=set)
     complete: bool = True
 
     def invalidate(self):
@@ -58,16 +59,17 @@ def prepare_sdk_collection(repository, *, run_id, provider, dataset_key, artifac
         # arbitrary metadata를 가져오지 않는다. 각 projected 필드에 byte/길이 상한이 있다.
         with heads._transaction() as s:
             rows = s.execute(select(
-                catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
+                catalog.c.location_id, catalog.c.latitude, catalog.c.longitude, catalog.c.enabled,
                 *catalog_source_columns(catalog),
             ).where(
-                catalog.c.enabled.is_(True),
                 catalog.c.metadata["measurement_point"]["provider"].as_string() == provider,
                 catalog.c.metadata["measurement_point"]["network"].as_string()
                 == SDK_NETWORKS[dataset_key],
             ).order_by(catalog.c.location_id).limit(5001)).mappings().all()
         if not 1 <= len(rows) <= 5000:
             raise ValueError("SDK 최초 catalog bootstrap 또는 상한 확인이 필요합니다.")
+        context.ignored_ids = {row["location_id"] for row in rows if row["enabled"] is False}
+        rows = [row for row in rows if row["enabled"]]
         locations = [SimpleNamespace(
             location_id=row["location_id"], latitude=row["latitude"], longitude=row["longitude"],
             metadata={"measurement_point": {

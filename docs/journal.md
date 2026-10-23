@@ -418,3 +418,14 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   보존·복원한다. 실패 시 Alembic TX가 DDL/설정을 함께 rollback한다.
 - 선행 최신 관측 선택의 잘못된 anchor는 export만 무효화하고 원래 native 순회의
   실패 시점과 이미 저장한 chunk를 보존한다. 시험의 export metadata도 매번 격리한다.
+
+### 전체 현재 source와 SDK 외부 예보 REST
+
+- current 기본 query가 KMA 실황·AirKorea·산림청2종·KREX·HTTP3종의 승인 합집합을
+  반환하고 KHOA를 external forecast에 제공한다. 초기 필수 누락503/실패stale 계약을 유지한다.
+- KMA base의 native intent와 HTTP 전 실제 격자 cohort를 연결했다. SDK 새 station은
+  catalog bootstrap 뒤 다음 사전 계획에서 승인하며 빈 응답도 한 번 재확인한다.
+- 중기 전용 grouped reader가 안전한 공통 pagination/TTL/ETag를 재사용하도록
+  STYLE_DATASETS/manifest/page 출력의 좁은 protected hook을 분리했다.
+- 실제 7 provider current/KHOA REST·SDK43PASS, 재확인/새 station 복구/registry10PASS.
+  전체 제공처 일간 요약·최종 리뷰/CI/실제TCP/UI와 운영 비용/GC gate는 남아 있다.

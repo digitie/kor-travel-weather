@@ -88,9 +88,14 @@ async def _run_airkorea_weather_sync(
             locations_total=max_stations,
         )
         catalog_entries: list[tuple[Any, dict[str, Any]]] = []
+        catalog_requests = 1
         try:
             with provider_request(AIRKOREA_PROVIDER, AIRKOREA_STATION_DATASET):
                 catalog_entries = await fetch_station_catalog(client, max_stations=max_stations)
+            if not catalog_entries and export_artifact_root is not None:
+                catalog_requests += 1
+                with provider_request(AIRKOREA_PROVIDER, AIRKOREA_STATION_DATASET):
+                    catalog_entries = await fetch_station_catalog(client, max_stations=max_stations)
             active_locations = []
             for location, _ in catalog_entries:
                 keep_alive(catalog_run.run_id)
@@ -113,7 +118,7 @@ async def _run_airkorea_weather_sync(
                 source_records=catalog_sources,
                 values=[],
                 grids_fetched=0,
-                requests_fetched=1,
+                requests_fetched=catalog_requests,
             )
             if finished.status != "success":
                 raise RuntimeError("AirKorea 측정소 catalog run ownership을 잃었습니다.")
@@ -212,6 +217,11 @@ async def _run_airkorea_weather_sync(
                         sido_name=sido,
                         max_stations=max_stations,
                     )
+                    if not measurements and export_artifact_root is not None:
+                        request_count += 1
+                        measurements = await fetch_sido_measurements(
+                            client, sido_name=sido, max_stations=max_stations,
+                        )
                 request_count += 1
             except Exception as exc:
                 request_count += 1
@@ -273,6 +283,13 @@ async def _run_airkorea_weather_sync(
                         known_at=fetched_at,
                         expected_sido=str(point.get("address") or "").split()[0] or None,
                     )
+                    if response is None and export_artifact_root is not None:
+                        request_count += 1
+                        response = await fetch_station_measurement(
+                            client, station_name=str(point.get("station_name") or location.name),
+                            location_id=location.location_id, known_at=fetched_at,
+                            expected_sido=str(point.get("address") or "").split()[0] or None,
+                        )
                 request_count += 1
             except Exception as exc:
                 request_count += 1
@@ -362,7 +379,7 @@ async def _run_airkorea_weather_sync(
             "active_station_count": len(active_locations),
             "catalog_run_id": catalog_run.run_id,
             "run_id": measurement_run.run_id,
-            "requests_fetched": 1 + request_count,
+            "requests_fetched": catalog_requests + request_count,
             "values_loaded": loaded,
             "stations_failed": len(failed_stations),
         }

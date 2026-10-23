@@ -186,6 +186,15 @@ def publish_regional_records(
                 for record in records:
                     candidate = to_location(record)
                     if candidate is not None:
+                        if (
+                            candidate.location_id not in source_export.plans
+                            and candidate.location_id not in source_export.ignored_ids
+                        ):
+                            # 처음 발견한 station은 먼저 canonical catalog에 남긴다.
+                            # 다음 수집의 사전 roster로 승인하기 전에는 과거 전체 집합을 유지한다.
+                            source_export.invalidate()
+                            latest_sources.clear()
+                            break
                         observed = getattr(record[0] if isinstance(record, tuple) else record,
                                            "observed_at", None)
                         previous = latest_sources.get(candidate.location_id)
@@ -431,6 +440,10 @@ def run_krforest_dust_sync(
                 max_records=max_records,
                 timeout=timeout,
             )
+            if not measurements and _source_export is not None:
+                stations, measurements = fetch_dust(
+                    api_key=api_key, hours=hours, max_records=max_records, timeout=timeout,
+                )
         except DustCatalogUnavailable as exc:
             return {
                 "provider": KRFOREST_PROVIDER,
