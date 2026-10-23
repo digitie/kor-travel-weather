@@ -93,6 +93,12 @@ def test_order_independent_provider_winner_and_cumulative_rain_exclusion():
     assert result["source_providers"] == ["python-kma-api"]
 
 
+def test_trace_rain_keeps_occurrence_without_claiming_exact_zero_amount():
+    state = merge_observations({}, [point(6, "RN1", "0", value_text="1mm 미만")], key=KEY, now=NOW)
+    result = summarize(*KEY, state, now=NOW)
+    assert result["precip_occurred"] is True and result["precip_sum_mm"] is None
+
+
 @pytest.fixture
 def daily_repository():
     repository = WeatherRepository(os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"])

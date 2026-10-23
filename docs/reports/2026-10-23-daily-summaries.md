@@ -1,0 +1,59 @@
+# W5 관측 일간 요약
+
+`GET /v1/service/exports/daily-summaries?days=14&location_id=`는 최근 N일(1~31일)의
+morning [05,11), noon [11,17), evening [17,23) KST 요약을 제공한다. 기존 서비스
+토큰, gzip, 약한 ETag와 cursor를 사용한다. 기본 설정은 OFF다.
+
+## 원천과 집계 정책
+
+원본 수집 TX에서 집계하지 않는다. 별도 publisher의 명시 `daily_summaries=True`
+옵션이 승인 generation만 키셋으로 최대 한 개 읽고, 작은 표에 요약과 checkpoint를
+함께 commit한다. 파일 IO 중에는 PG connection을 보유하지 않는다. 원본 fact·이력·
+보존 정책은 변경하지 않는다. 실패·부분 성공 run의 미승인 자료는 요약에 섞이지 않는다.
+
+KMA NOWCAST 실관측과 observed 자료를 포함하고 미래/예보 자료는 제외한다.
+각 위치/시간/metric별 한 winner를 선택한다. 제공처 우선순위는 KMA→산림청→도로공사→
+해양조사원→Open-Meteo→WeatherAPI→OpenWeatherMap→나머지 등록 제공처 순서이며,
+같은 제공처에서는 늦은 관측/known_at, 완전 동률이면 내용 hash 순으로 결정한다.
+실행 순서·재수집 횟수·제공처 수가 평균이나 합계를 늘리지 않는다.
+
+- 기온 T1H/TEMP(deg_c), 습도 REH/HUMIDITY(%), 풍속 WSD/WIND_SPEED를 사용한다.
+  km/h 풍속은 m/s로 바꾼다. 시간 winner의 기온 min/max/평균과 습도·풍속 평균이다.
+- `sample_count`는 metric 행 수가 아닌 채택된 값이 하나 이상 있는 시간 bucket 수다.
+  한 구간 최대6이며 `source_providers`에는 실제 winner 제공처만 포함한다.
+- 강수 합계는 구간이 확인된 KMA 실황 RN1(mm)만 사용한다. 11시 RN1은 [10,11)의
+  양이므로 morning에 속한다. 일 누적·기간 불명 PRECIP 및 다른 제공처 강수량을
+  임의 합산하지 않는다. 강수 측정이 없으면 합계/발생 여부 모두 null이다.
+- 기존 정규화가 `1mm 미만`을 숫자0+원문으로 보존한 경우 발생은 true로 유지하고,
+  정확한 양을 단정하지 않도록 합계는 null이다. 원본 정규화 계약을 바꾸지 않는다.
+- SKY 관측 code 1/3/4의 최빈값을 쓰고 동률이면 작은 code를 선택한다. 예보 SKY나
+  제공처별 서로 다른 WEATHER_CODE를 임의로 같은 code로 합치지 않는다.
+- 관측이 없는 구간은 sample_count=0, source_providers=[], 모든 관측 지표 null이다.
+  오늘 아직 끝나지 않은 구간의 partial은 요청 시각으로 계산해 오래된 true가 남지 않는다.
+
+강수 시간 단위/문자 범주 근거:
+https://apihub.kma.go.kr/apiList.do?seqApi=10 및
+https://apihub.kma.go.kr/getAttachFile.do?fileName=%28250305%29%EC%82%B0%EC%95%85%EC%98%88%EB%B3%B4+API+%EC%84%9C%EB%B9%84%EC%8A%A4+%ED%99%9C%EC%9A%A9%EA%B0%80%EC%9D%B4%EB%93%9C_f.pdf
+
+## 메모리·보존·페이지
+
+REST는 scalar summary만 선택하며 weather_values/날짜 파티션/hourly_winners를 읽지
+않는다. 한 위치의 31일×3구간만 유지하고, 페이지는 5,000항목/4MiB 상한이다.
+위치/날짜 범위는 cursor 동안 고정하고 값은 각 요청의 최신 사전계산 값을 제공한다.
+ETag에는 실제 페이지와 source 상태를 넣어 변경 중의 페이지를 304로 숨기지 않는다.
+cursor 조건 변경은422, 15분 만료는410이며 첫 페이지부터 재시작한다.
+
+summary/winner 상태는 최대31일 조회에 하루 cursor 유예를 더해 보존하며 오래된
+파생 행만 SKIP LOCKED/최대500행씩 정리한다. 승인 generation의 publication 인덱스로
+증분 처리하여 매번 전체 이력을 훑지 않는다. 동일 상태 replay는 JSON UPDATE를 생략한다.
+
+API·publisher는 동일 NVMe artifact 경로·권한을 사용해야 한다. 미처리 generation은
+summary checkpoint 이전에 GC하면 안 된다. GC·전체 wall-clock/최대 RSS·모든 provider
+승인 및 정지/재개 비용 측정은 운영 활성화 전 마감 항목이다. 자동 배포/ON은 하지 않는다.
+
+## 구현 상태
+
+이 PR은 KMA 승인 관측 기반의 실제 reducer/REST를 구현한다. 아직 all-provider
+export가 준비되지 않은 기본 다중 provider 요청은503으로 실패한다. 외부 provider의
+관측 승인 경로가 연결되면 같은 reducer가 해당 자료를 받아 실제 winner만 반영한다.
+W4/다른 W3 provider/운영 비용·GC gate까지 완료됐다는 뜻이 아니다.

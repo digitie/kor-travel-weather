@@ -91,15 +91,16 @@ def observation(point: dict[str, Any]):
     # provider가 같은 시간에 여러 번 관측하면 가장 늦은 관측, 재수집이면 가장
     # 늦게 알게 된 값을 택한다. 완전 동률은 내용 hash로 결정하여 실행순서와 무관하다.
     rank = [priority, -target.timestamp(), -known.timestamp(), _digest(point)]
+    cell = {"value": str(number), "provider": point["provider"], "rank": rank}
+    if field == "precip":
+        # 기존 normalizer는 '1mm 미만'을 숫자0+원문 qualifier로 보존한다.
+        # 정확히0mm라고 단정하거나 비가 없었다고 바꾸지 않는다.
+        cell["unknown_amount"] = "미만" in str(point.get("value_text") or "")
     return (
         (point["location_id"], local.date().isoformat(), slot),
         str(local.hour),
         field,
-        {
-            "value": str(number),
-            "provider": point["provider"],
-            "rank": rank,
-        },
+        cell,
     )
 
 
@@ -133,6 +134,8 @@ def summarize(location_id, day, slot, state, *, now: datetime):
 
     sky = Counter(values["sky"])
     representative = min(sky, key=lambda v: (-sky[v], v)) if sky else None
+    rain = [hour["precip"] for hour in state.values() if "precip" in hour]
+    unknown_rain = any(cell.get("unknown_amount") for cell in rain)
     end = datetime.fromisoformat(day).replace(hour=SLOTS[slot][1], tzinfo=KST)
     return {
         "location_id": location_id,
@@ -142,8 +145,8 @@ def summarize(location_id, day, slot, state, *, now: datetime):
         "temp_max": float(max(values["temp"])) if values["temp"] else None,
         "temp_avg": avg("temp"),
         "humidity_avg": avg("humidity"),
-        "precip_sum_mm": float(sum(values["precip"])) if values["precip"] else None,
-        "precip_occurred": any(v > 0 for v in values["precip"]) if values["precip"] else None,
+        "precip_sum_mm": float(sum(values["precip"])) if rain and not unknown_rain else None,
+        "precip_occurred": (unknown_rain or any(v > 0 for v in values["precip"])) if rain else None,
         "sky_code": int(representative) if representative is not None else None,
         "wind_speed_avg": avg("wind"),
         "sample_count": len(state),

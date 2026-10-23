@@ -294,3 +294,11 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   추가했다. PostgreSQL 집중17건에서 실제 잠금 실패 후 native SQL 사용을 확인했다.
 - 원본 ingest/terminal·REST/일정 hook 통합과 두 리뷰·CI/운영 수용은 아직 별도다.
 
+# 2026-10-23 W5 관측 일간 요약
+
+- 승인 generation 기반 시간 winner reducer와 사전계산 일간 세 구간 REST를 추가했다.
+- KMA NOWCAST 포함, provider/replay 중복 제거, 강수 누적/기간 불명 제외, 단위 변환,
+  KST 구간 경계·partial·무관측 null 정책을 문서화했다.
+- 원본 fact/이력/기본 OFF를 유지하고 publisher 명시 opt-in만 제공한다.
+- 상세: `docs/reports/2026-10-23-daily-summaries.md`.
+
