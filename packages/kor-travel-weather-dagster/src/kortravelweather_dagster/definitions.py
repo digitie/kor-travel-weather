@@ -617,6 +617,10 @@ def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
         client=client,
         max_stations=runtime.airkorea_max_stations,
         max_values=runtime.max_values_per_run,
+        **(
+            {"export_artifact_root": runtime.service_export_artifact_root}
+            if runtime.service_exports_enabled and runtime.service_export_artifact_root else {}
+        ),
     )
     context.add_output_metadata(result)
     return result

@@ -343,6 +343,38 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
   실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
 
+### 공개 SDK 원문 재해석과 페이지 완결 검증
+
+- AirKorea·산림청 산악/청정넷·KREX·KHOA 공개 parser와 기존 Weather 정규화를 재사용해
+  관측소/시각/수치/source key를 검증하고 기존 native capture·성공 head에 연결했다.
+- AirKorea 실제 vendor 소스와 KHOA/KREX 최종 SDK pin을 함께 갱신했다. 원본 라이선스와
+  provenance를 보존했다. KHOA 원문 좌표의 NaN/무한대/범위 밖/bool도 거절한다.
+- SDK typed DTO만으로 전국 완결을 주장하지 않는다. 작은 페이지 receipt와 KHOA 장소별
+  원문 조합을 추가하고 누락·개수 변동·중복 구간을 거부한다.
+- 실제 Dagster source 배선·누적 inventory·전체 provider/mid REST·GC/운영 비용 gate는
+  후속이다. 운영 flag OFF와 기존 수집/API를 유지한다.
+- 상세 계약/검증: `docs/reports/2026-10-23-sdk-source-exports.md`.
+
+### 실제 source inventory와 quota 회전 준비
+
+- provider/dataset/location의 마지막 승인 metadata를 head와 같은 TX에서 upsert하고
+  quota 선택 밖 이전 위치는 유지한다. source raw/fact는 복사하지 않는다.
+- 작은 namespace 키셋으로 이전 승인 head를 재투영하는 bootstrap helper와
+  native intent가 있는 source의 HTTP 전 명시 roster 선언을 추가했다.
+- inventory generation FK/live-root 계약을 명시했다. 파일 GC는 아직 없으며
+  reader·실제 수집 배선·전체 provider/mid·운영 비용 검증은 후속이다.
+- 상세 설계/task: `docs/reports/2026-10-23-export-source-inventory.md`.
+
+### AirKorea 승인 source 실제 수집 연결
+
+- 명시 export opt-in일 때만 native 시작 intent와 HTTP 전 canonical 측정소 roster를
+  고정하고, 기존 public SDK 정규화 결과를 원본 fact/lineage와 함께 캡처한다.
+- 원천 실패 다음에도 이전 승인 값과 cursor는 남으며 source 상태를 stale로 유지한다.
+  기존 OFF 경로와 기존 AirKorea의 요청 실패 집계 동작은 유지한다.
+- quota 회전 current reader, 기존 AirKorea/asset와 0033 실제 upgrade를 포함한
+  PostgreSQL 집중 43개 및 전체 Ruff를 확인했다. 전체 SDK 배선·REST 기본 선택과
+  운영 비용/GC gate는 아직 후속이며 운영 설정은 변경하지 않았다.
+
 
 # 2026-10-23 중기예보 export 재해석 증거
 
@@ -365,6 +397,7 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   템플릿만 보관하고 위치별 iterator로 내보낸다. 큰 전체 목록 복원은 거절한다.
 - 기존86건과 스트리밍4건을 함께90PASS/Ruff PASS.1,000곳 순회의 tracemalloc peak
   2MiB 미만을 확인했으며 운영 RSS/CPU 개선이나 실제 배선 완료로 세지 않는다.
+
 # 2026-10-23 중기 전용 job의 export 배선
 
 - 명시 opt-in 중기 job에서 실제 source roster/사전 계획과 capture를 연결한다.
@@ -373,3 +406,5 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 공개SDK 모의HTTP+실제native runner6건/기존OFF23건/Ruff PASS. PostgreSQL
   통합·두 리뷰·정확CI/HTTP/UI·운영 성능은 별도 수용 전이다.
 - 상세: `docs/reports/2026-10-23-mid-export-collection.md`.
+
+
