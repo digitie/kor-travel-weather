@@ -118,7 +118,7 @@ class KmaNowcastExportCollector:
         capture = None
         if prepared is not None:
             try:
-                self.heads.bind_kma_response(prepared.identity, record)
+                self._bind_source(prepared, record)
                 self.heads.lifecycle.expect_chunk(
                     prepared.identity, "grid", records=[record], values=values
                 )
@@ -151,6 +151,9 @@ class KmaNowcastExportCollector:
                 )
                 self._reject(prepared.identity, "PLAN_SEAL_FAILED")
         return loaded
+
+    def _bind_source(self, prepared, record):
+        self.heads.bind_kma_response(prepared.identity, record)
 
     def ingest_fanout(
         self,

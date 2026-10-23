@@ -139,6 +139,14 @@ class ScopeDescriptor(BaseModel):
         return _digest(self.model_dump(mode="json"))
 
 
+def parse_scope_descriptor(value):
+    if value.get("provider", "python-kma-api") == "python-kma-api":
+        return ScopeDescriptor.model_validate(value)
+    from .export_external import RetrievalScopeDescriptor
+
+    return RetrievalScopeDescriptor.model_validate(value)
+
+
 def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, Table]:
     names = (
         "weather_export_scope_plans",
@@ -243,6 +251,11 @@ def source_input_digest(record: Mapping[str, Any]) -> str:
 
 def _normalize(descriptor, record, locations, *, skipped=None):
     """기존 normalizer만 사용하며 한 위치의 값만 메모리에 유지한다."""
+    if not isinstance(descriptor, ScopeDescriptor):
+        from .export_external import normalize_external_source
+
+        yield from normalize_external_source(descriptor, record)
+        return
     from .providers.kma import (
         short_forecast_to_weather_values,
         ultra_short_forecast_to_weather_values,
@@ -314,7 +327,7 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
     )
     if plan is None:
         return
-    descriptor = ScopeDescriptor.model_validate(plan["descriptor"])
+    descriptor = parse_scope_descriptor(plan["descriptor"])
     if (
         plan["data_revision_at"] is None
         or len(records) != 1
@@ -327,7 +340,8 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
             or v.dataset_key != descriptor.dataset_key
             or v.forecast_style.value != descriptor.forecast_style
             or v.location_id not in descriptor.location_ids
-            or v.weather_domain != descriptor.dataset_key
+            or v.weather_domain
+            != (descriptor.dataset_key if isinstance(descriptor, ScopeDescriptor) else "weather")
             or v.normalization_version != descriptor.normalizer_revision
             or (descriptor.forecast_style == "nowcast" and v.target_at != plan["data_revision_at"])
             for v in values
@@ -386,7 +400,7 @@ class ExportHeads:
             session.execute(text("SET LOCAL statement_timeout = '5s'"))
             yield session
 
-    def declare(self, identity: ExportAttempt, descriptor: ScopeDescriptor) -> None:
+    def declare(self, identity: ExportAttempt, descriptor) -> None:
         """실제 요청 전에 선언한다. 응답을 본 뒤 새 ownership을 붙이지 않는다."""
         with self._transaction() as session:
             run, attempt = self.lifecycle._locked(session, identity)
@@ -422,18 +436,19 @@ class ExportHeads:
             ):
                 raise ExportArtifactError("응답 계획 전에 descriptor를 선언해야 합니다.")
             catalog = self.metadata.tables["weather_locations"]
-            targets = (
-                session.execute(
-                    select(catalog.c.location_id).where(
-                        catalog.c.location_id.in_(descriptor.location_ids),
-                        catalog.c.enabled.is_(True),
-                        catalog.c.nx == descriptor.nx,
-                        catalog.c.ny == descriptor.ny,
-                    )
-                )
-                .scalars()
-                .all()
+            selection = select(catalog.c.location_id).where(
+                catalog.c.location_id.in_(descriptor.location_ids), catalog.c.enabled.is_(True)
             )
+            if isinstance(descriptor, ScopeDescriptor):
+                selection = selection.where(
+                    catalog.c.nx == descriptor.nx, catalog.c.ny == descriptor.ny
+                )
+            else:
+                selection = selection.where(
+                    catalog.c.latitude == descriptor.latitude,
+                    catalog.c.longitude == descriptor.longitude,
+                )
+            targets = session.execute(selection).scalars().all()
             if set(targets) != set(descriptor.location_ids):
                 raise ExportArtifactError("선택 위치의 catalog/grid가 선언과 다릅니다.")
             session.execute(
@@ -484,7 +499,7 @@ class ExportHeads:
                 .mappings()
                 .one()
             )
-            descriptor = ScopeDescriptor.model_validate(plan["descriptor"])
+            descriptor = parse_scope_descriptor(plan["descriptor"])
             fetched = record["fetched_at"]
             if (
                 run["status"] != "running"
@@ -570,6 +585,84 @@ class ExportHeads:
                     expected_point_count=len(expected),
                     normalization_digest=normalization_digest,
                     normalization_evidence={str(key): count for key, count in skipped.items()},
+                )
+            )
+
+    def bind_external_response(self, identity: ExportAttempt, record: Mapping[str, Any]) -> None:
+        """저장 raw를 기존 adapter로 독립 재검증하고 실제 조회 시각을 revision으로 쓴다."""
+        from .export_external import RetrievalScopeDescriptor, normalize_external_source
+
+        with self._transaction() as session:
+            plan = (
+                session.execute(
+                    select(self.plans).where(self.plans.c.attempt_id == identity.attempt_id)
+                )
+                .mappings()
+                .one()
+            )
+            descriptor = RetrievalScopeDescriptor.model_validate(plan["descriptor"])
+        # 원천 정규화 CPU 작업 동안 PG 연결과 잠금을 보유하지 않는다.
+        values = normalize_external_source(descriptor, record)
+        expected = [semantic_point_digest(v.model_dump(mode="json")) for v in values]
+        fetched, digest = record["fetched_at"], source_input_digest(record)
+        with self._transaction() as session:
+            run, attempt = self.lifecycle._locked(session, identity)
+            _current_owners(session, self.metadata, attempt)
+            current = (
+                session.execute(
+                    select(self.plans).where(self.plans.c.attempt_id == identity.attempt_id)
+                )
+                .mappings()
+                .one()
+            )
+            if (
+                current["descriptor"] != descriptor.model_dump(mode="json")
+                or run["status"] != "running"
+                or attempt["status"] != "preparing"
+                or fetched < current["bound_at"]
+                or fetched > datetime.now(UTC)
+                or descriptor.source_scope
+                != source_scope_key(
+                    record["provider"],
+                    record["dataset_key"],
+                    record["source_entity_type"],
+                    record["source_entity_id"],
+                )
+            ):
+                raise ExportArtifactError("실제 응답의 원천/조회 시각이 사전 선언과 다릅니다.")
+            previous_count = session.scalar(
+                select(self.generations.c.point_count)
+                .join(self.heads, self.heads.c.generation_id == self.generations.c.generation_id)
+                .where(self.heads.c.namespace == current["namespace"])
+            )
+            if previous_count and len(expected) * 2 < previous_count:
+                raise ExportArtifactError("직전 성공 대비 비정상 축소 원천은 재확인이 필요합니다.")
+            if current["source_input_digest"] is not None:
+                if (
+                    current["source_input_digest"] != digest
+                    or current["source_collected_at"] != fetched
+                ):
+                    raise ExportArtifactError("완결 응답 계획은 변경할 수 없습니다.")
+                return
+            if (
+                session.scalar(
+                    select(self.lifecycle.expected.c.chunk_key)
+                    .where(self.lifecycle.expected.c.attempt_id == identity.attempt_id)
+                    .limit(1)
+                )
+                is not None
+            ):
+                raise ExportArtifactError("예상 chunk 전에 독립 원천 증거를 고정해야 합니다.")
+            session.execute(
+                update(self.plans)
+                .where(self.plans.c.attempt_id == identity.attempt_id)
+                .values(
+                    data_revision_at=fetched,
+                    source_input_digest=digest,
+                    source_collected_at=fetched,
+                    expected_point_count=len(expected),
+                    normalization_digest=_digest(sorted(expected)),
+                    normalization_evidence={"policy": "latest-retrieval-v1"},
                 )
             )
 
@@ -683,7 +776,7 @@ class ExportHeads:
                         .on_conflict_do_nothing()
                     )
         semantic, seen, count, locations = [], set(), 0, set()
-        descriptor = ScopeDescriptor.model_validate(plan["descriptor"])
+        descriptor = parse_scope_descriptor(plan["descriptor"])
         for r in receipts:
             chunk_locations = set()
             for point in artifacts.read(
