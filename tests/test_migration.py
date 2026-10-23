@@ -126,7 +126,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0025_export_success_heads"
+            assert version == "0026_export_frozen_snapshots"
             retention_index = next(
                 item
                 for item in inspect(engine).get_indexes("weather_values")

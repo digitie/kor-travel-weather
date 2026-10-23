@@ -51,17 +51,34 @@ def _targets():
     ]
 
 
-def _client():
+def _client(*, one_metric=False):
     def respond(request):
         q = request.url.params
-        row = dict(
-            baseDate=q["base_date"],
-            baseTime=q["base_time"],
-            nx=int(q["nx"]),
-            ny=int(q["ny"]),
-            category="T1H",
-            obsrValue="18.4",
+        metrics = (
+            [("T1H", "18.4")]
+            if one_metric
+            else [
+                ("T1H", "18.4"),
+                ("RN1", "0"),
+                ("UUU", "0"),
+                ("VVV", "0"),
+                ("REH", "50"),
+                ("PTY", "0"),
+                ("VEC", "120"),
+                ("WSD", "1"),
+            ]
         )
+        rows = [
+            dict(
+                baseDate=q["base_date"],
+                baseTime=q["base_time"],
+                nx=int(q["nx"]),
+                ny=int(q["ny"]),
+                category=k,
+                obsrValue=v,
+            )
+            for k, v in metrics
+        ]
         return httpx.Response(
             200,
             json={
@@ -70,8 +87,8 @@ def _client():
                     "body": {
                         "pageNo": 1,
                         "numOfRows": 1000,
-                        "totalCount": 1,
-                        "items": {"item": [row]},
+                        "totalCount": len(rows),
+                        "items": {"item": rows},
                     },
                 }
             },
@@ -104,7 +121,7 @@ def _counts(repository):
 
 def test_actual_collector_fanout_then_separate_native_publisher(repository, tmp_path):
     result = _run(repository, tmp_path)
-    assert result["status"] == "success" and result["values_loaded"] == 3
+    assert result["status"] == "success" and result["values_loaded"] == 24
     assert _counts(repository) == (2, 0, 0)
     assert len(list(tmp_path.glob("*.jsonl"))) == 2
     first = publish_pending_exports(repository, tmp_path, limit=1)
@@ -117,7 +134,7 @@ def test_actual_collector_fanout_then_separate_native_publisher(repository, tmp_
 
 def test_off_preserves_existing_collector_without_export_work(repository, tmp_path):
     result = _run(repository, tmp_path, enabled=False)
-    assert result["status"] == "success" and result["values_loaded"] == 3
+    assert result["status"] == "success" and result["values_loaded"] == 24
     assert _counts(repository) == (0, 0, 0)
     assert not list(tmp_path.iterdir())
 
@@ -160,7 +177,7 @@ def test_capture_file_failure_keeps_original_success_and_cannot_publish(
 
     monkeypatch.setattr(ExportArtifactStore, "publish", fail)
     result = _run(repository, tmp_path)
-    assert result["status"] == "success" and result["values_loaded"] == 3
+    assert result["status"] == "success" and result["values_loaded"] == 24
     progress = publish_pending_exports(repository, tmp_path)
     assert progress.results == {} and progress.processed == 0
     assert _counts(repository) == (2, 0, 0)
@@ -191,7 +208,7 @@ def test_missing_provider_proof_preserves_facts_and_fails_export_closed(
 
     monkeypatch.setattr(kma_weather, "_metadata_dict", strip)
     result = _run(repository, tmp_path)
-    assert result["status"] == "success" and result["values_loaded"] == 3
+    assert result["status"] == "success" and result["values_loaded"] == 24
     assert _counts(repository) == (2, 0, 0)
     assert publish_pending_exports(repository, tmp_path).processed == 0
     assert not list(tmp_path.glob("*.jsonl"))
@@ -225,7 +242,7 @@ def test_whole_grid_optin_preserves_fifty_location_lock_bound(repository, tmp_pa
     repository.ingest_batch = ingest
     result = run_weather_sync(
         repository=repository,
-        client=_client(),
+        client=_client(one_metric=True),
         targets=targets,
         base_datasets=frozenset({KMA_ULTRA_SHORT_NOWCAST}),
         export_artifact_root=tmp_path,
@@ -234,3 +251,18 @@ def test_whole_grid_optin_preserves_fifty_location_lock_bound(repository, tmp_pa
     assert locked == [50, 1]
     assert _counts(repository) == (0, 0, 0)
     assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_semantically_small_complete_response_keeps_existing_success_head(repository, tmp_path):
+    assert _run(repository, tmp_path)["status"] == "success"
+    assert publish_pending_exports(repository, tmp_path).results == {"PUBLISHED": 2}
+    result = run_weather_sync(
+        repository=repository,
+        client=_client(one_metric=True),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_ULTRA_SHORT_NOWCAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success"
+    assert publish_pending_exports(repository, tmp_path).processed == 0
+    assert _counts(repository) == (4, 2, 2)

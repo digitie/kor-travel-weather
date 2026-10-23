@@ -43,6 +43,8 @@ from .export_artifacts import (
 from .export_lifecycle import ExportLifecycle, _current_owners
 from .export_receipts import ExportAttempt, source_scope_key
 
+NOWCAST_REQUIRED_CATEGORIES = frozenset({"T1H", "RN1", "UUU", "VVV", "REH", "PTY", "VEC", "WSD"})
+
 MAX_PROMOTION_CHUNKS = 8
 MAX_PROMOTION_BYTES = 16 * 1024 * 1024
 
@@ -100,7 +102,9 @@ class ScopeDescriptor(BaseModel):
     location_ids: tuple[str, ...] = Field(min_length=1, max_length=1000)
     normalizer_revision: str = Field(min_length=1, max_length=64)
     winner_policy_revision: str = Field(min_length=1, max_length=64)
-    coverage_contract: Literal["kma-grid-nonempty-v1"] = "kma-grid-nonempty-v1"
+    coverage_contract: Literal["kma-grid-nonempty-v1", "kma-grid-nowcast-v1"] = (
+        "kma-grid-nonempty-v1"
+    )
 
     @model_validator(mode="after")
     def _canonical_selection(self):
@@ -408,6 +412,11 @@ class ExportHeads:
                 )
             ):
                 raise ExportArtifactError("선언 이전의 응답이나 다른 scope를 연결할 수 없습니다.")
+            if (
+                descriptor.coverage_contract == "kma-grid-nowcast-v1"
+                and not NOWCAST_REQUIRED_CATEGORIES.issubset({str(r.get("category")) for r in rows})
+            ):
+                raise ExportArtifactError("공개 실황 source의 필수 category 전체 증거가 없습니다.")
             from .providers.kma import ultra_short_nowcast_to_weather_values
 
             if len(rows) * len(descriptor.location_ids) > MAX_CHUNK_POINTS:

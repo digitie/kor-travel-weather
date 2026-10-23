@@ -1,3 +1,13 @@
+## 2026-10-23 — 성공 head/실제 collector opt-in PR143·144 수용
+
+- PR143 제품43fa8ae→main476c9f11: exactarchive PG812/집중71·CI·frontend243/type·독립2리뷰·격리API3/UI11 PASS. source clock P1을폐쇄했다. [수용/미완](reports/2026-10-23-map-export-success-heads.md).
+- PR144 제품68dd7a5→main089bdc32: exactCI전체PG/frontend·집중33·두리뷰·격리API3/UI11 PASS. 51location의원본50/1잠금상한을보존했다. [수용/미완](reports/2026-10-23-map-export-collector.md).
+- 기본OFF/API503·운영미배포를유지한다. strict8category·실제W1/W2 frozen reader는PR145 진행중이며전체provider/W3/W4/W5·비용/GC·전국운영수용은미완이다.
+
+## 2026-10-23 — W1/W2 승인 KMA 실황 frozen reader 구현 중
+
+- [scope·cursor·미완 경계](reports/2026-10-23-map-export-frozen-reader.md): 실제 REST200/304·gzip·고정generation vector·TTL410·cursor422와 strict8category공개정책을 구현 중이다. 기본OFF이며전체provider/W3/W4/W5·비용gate·운영수용은남는다.
+
 ## 2026-10-23 — 실제 KMA 실황 collector opt-in 배선
 
 - [실제 collector·독립 publisher와 미완](reports/2026-10-23-map-export-collector.md): 실제 KmaClient→기존 정상화→단일 grid 전체 capture→exact native/Dagster 성공 publisher를 구현했다. 집중PG32 PASS, 기본 OFF·API503 유지. 전국 sensor/reader/W3/W5·비용 gate·운영 수용은 남는다.

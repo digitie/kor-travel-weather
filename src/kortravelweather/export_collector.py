@@ -67,6 +67,7 @@ class KmaNowcastExportCollector:
                 location_ids=tuple(sorted(location_ids)),
                 normalizer_revision="kma-v1",
                 winner_policy_revision="kma-base-v1",
+                coverage_contract="kma-grid-nowcast-v1",
             )
             runs = self.heads.metadata.tables["weather_sync_runs"]
             with self.heads._transaction() as session:
