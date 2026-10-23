@@ -153,7 +153,7 @@ class FrozenCurrentExports:
                     value["r"] not in {"locations", "current"}
                     and re.fullmatch(r"current:[0-9a-f]{64}", value["r"]) is None
                     and re.fullmatch(
-                        r"forecasts:(ultra_short|short|external):[0-9a-f]{64}", value["r"]
+                        r"forecasts:(ultra_short|short|mid|external):[0-9a-f]{64}", value["r"]
                     )
                     is None
                     and re.fullmatch(r"daily-summaries:[0-9a-f]{64}", value["r"]) is None
@@ -186,6 +186,7 @@ class FrozenCurrentExports:
                 "generation_id": item.generation_id,
                 "source_collected_at": item.source_collected_at,
                 "data_revision_at": item.data_revision_at,
+                "published_at": item.published_at,
             } for item in selection.scopes}
             return (
                 [item.descriptor for item in selection.scopes], heads, selected,

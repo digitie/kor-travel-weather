@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from airkorea import parse_measurement
 from sqlalchemy import select
 from test_airkorea_weather import _EntersAndCloses, _station
@@ -17,8 +18,9 @@ from kortravelweather.export_snapshots import FrozenCurrentExports
 from kortravelweather.providers.airkorea import AIRKOREA_MEASUREMENT_DATASET, AIRKOREA_PROVIDER
 
 
+@pytest.mark.parametrize("empty_first", [False, True])
 def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failure(
-    external_repository, tmp_path,
+    external_repository, tmp_path, empty_first,
 ):
     from kortravelweather_dagster.airkorea_weather import run_airkorea_weather_sync
 
@@ -30,6 +32,7 @@ def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failu
 
     class Client(_EntersAndCloses):
         fail = False
+        empty_once = False
 
         async def stations(self, *, page_no, num_of_rows):
             if page_no != 1:
@@ -51,6 +54,9 @@ def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failu
                 assert len(plans) == 2
             if self.fail:
                 raise TimeoutError("fixture upstream timeout")
+            if self.empty_once:
+                self.empty_once = False
+                return []
             stamp = (datetime.now(UTC) - timedelta(hours=1)).astimezone(
                 ZoneInfo("Asia/Seoul")
             ).strftime("%Y-%m-%d %H:%M")
@@ -63,10 +69,13 @@ def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failu
         prior = list(c.scalars(select(catalog.c.location_id).where(catalog.c.enabled.is_(True))))
         c.execute(catalog.update().values(enabled=False))
     try:
+        initial_client = Client()
+        initial_client.empty_once = empty_first
         result = run_airkorea_weather_sync(
-            repository=repo, client=Client(), export_artifact_root=tmp_path,
+            repository=repo, client=initial_client, export_artifact_root=tmp_path,
         )
         assert result["status"] == "success" and result["values_loaded"] == 4
+        assert result["requests_fetched"] == (3 if empty_first else 2)
         with repo.engine.connect() as c:
             identities = c.execute(select(
                 heads.lifecycle.attempts.c.attempt_id, heads.lifecycle.attempts.c.owner_id,

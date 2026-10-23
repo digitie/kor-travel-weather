@@ -104,6 +104,46 @@ def _selection(repo, *, expected=None, optional=()):
         )
 
 
+def test_inventory_health_ignores_inactive_or_unrelated_owner_and_rejects_epoch_mismatch(
+    external_repository, tmp_path,
+):
+    repo = external_repository
+    target = ProviderLocation("owner-health-" + uuid.uuid4().hex, 37.5, 127, {})
+    repo.create_location(WeatherLocation(
+        location_id=target.location_id, name="현재 epoch", latitude=37.5, longitude=127,
+    ))
+    before = _publish(repo, tmp_path, [target])
+    heads = ExportHeads(repo)
+    with repo.engine.connect() as connection:
+        old_attempt = connection.scalar(select(heads.generations.c.attempt_id).where(
+            heads.generations.c.generation_id == before[target.location_id]["generation_id"],
+        ))
+    _publish(repo, tmp_path, [target])
+    with repo.engine.begin() as connection:
+        connection.execute(heads.lifecycle.attempts.update().where(
+            heads.lifecycle.attempts.c.attempt_id == old_attempt,
+        ).values(status="failed"))
+    assert not _selection(repo).unconfirmed
+    unrelated = repo.start_sync_run(provider="open_meteo", dataset_key="open_meteo_current")
+    from kortravelweather.export_receipts import source_scope_key
+
+    unrelated_scope = source_scope_key(
+        "open_meteo", "open_meteo_current", "weather_response", "unrelated-location",
+    )
+    identity = repo.begin_export_attempt(
+        run_id=unrelated.run_id, scope_key="other-real-source",
+        planned_sources=[unrelated_scope], execution_mode="native",
+    )
+    heads.lifecycle.claim(identity)
+    repo.finish_sync_run(unrelated.run_id, status="failed")
+    assert not _selection(repo).unconfirmed
+    with repo.engine.begin() as connection:
+        connection.execute(heads.lifecycle.owners.update().where(
+            heads.lifecycle.owners.c.source_scope != unrelated_scope,
+        ).values(owner_epoch=heads.lifecycle.owners.c.owner_epoch + 1))
+    assert _selection(repo).unconfirmed
+
+
 def test_selection_preserves_failed_intent_and_distinguishes_optional_from_required(
     external_repository, tmp_path,
 ):

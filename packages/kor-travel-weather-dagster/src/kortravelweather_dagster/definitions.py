@@ -456,7 +456,7 @@ def _make_kma_dataset_asset(
                 locations_total=len(alert_targets) if alert_targets is not None else len(targets),
                 **({"export_cohort_required": True} if (
                     settings.service_exports_enabled and settings.service_export_artifact_root
-                    and include_mid and not include_base and not include_alerts
+                    and include_base != include_mid and not include_alerts
                 ) else {}),
             )
             client = client_resource.create_client(settings=settings, repository=repository)

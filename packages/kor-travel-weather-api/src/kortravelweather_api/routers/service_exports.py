@@ -23,6 +23,7 @@ from kortravelweather.export_snapshots import (
     ExportSnapshotExpired,
     FrozenCurrentExports,
 )
+from kortravelweather.export_source_registry import select_export_sources
 from kortravelweather.export_status_reader import read_status
 from kortravelweather.models import kst_now
 
@@ -216,37 +217,18 @@ async def _frozen_response(
     ):
         return _unavailable(request)
     # 지원하지 않는 provider를 누락한 작은 집합을 전체 정상으로 내보내지 않는다.
-    if resource in {"current", "forecasts", "daily-summaries"}:
-        required = {provider} if provider else set(settings.enabled_providers)
-        if resource == "current" or (resource == "forecasts" and style == "external"):
-            from kortravelweather.export_external import ADAPTERS
-            from kortravelweather.providers.catalog import provider_spec
-
-            try:
-                required = {
-                    key
-                    for key in required
-                    if any(
-                        dataset.forecast == (resource == "forecasts")
-                        for dataset in provider_spec(key).datasets
-                    )
-                }
-            except KeyError:
-                return _unavailable(request)
-            if resource == "forecasts":
-                required.discard("python-kma-api")
-                supported = set(ADAPTERS)
-            else:
-                supported = {"python-kma-api", *ADAPTERS}
-        elif resource == "forecasts":
-            required &= {"python-kma-api"}
-            supported = {"python-kma-api"}
-        else:
-            supported = {"python-kma-api"}
-        if not required or not required.issubset(supported):
+    selection = None
+    if resource in {"current", "forecasts"}:
+        try:
+            selection = select_export_sources(
+                settings.enabled_providers, resource=resource, style=style, provider=provider,
+            )
+        except ExportArtifactError:
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
+    elif resource == "daily-summaries" and set(settings.enabled_providers) != {"python-kma-api"}:
+        return _unavailable(request)
     try:
         reader_class = {
             "forecasts": FrozenForecastExports,
@@ -258,8 +240,9 @@ async def _frozen_response(
             ExportArtifactStore(settings.service_export_artifact_root),
             signing_key=settings.admin_token.get_secret_value(),
             **(
-                {"providers": sorted(required)}
-                if resource == "current" or (resource == "forecasts" and style == "external")
+                {"providers": selection.providers, "source_inventory": True,
+                 "expected_sources": selection.expected, "optional_sources": selection.optional}
+                if selection is not None
                 else {}
             ),
             **({"style": style, "since": since} if resource == "forecasts" else {}),
@@ -319,7 +302,11 @@ async def export_current(
     cursor: Cursor = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
 ) -> Response:
-    """관측 dataset이 있는 provider의 승인 선택 집합. 미지원/미승인 scope는503이다."""
+    """활성 관측 제공처의 실제 승인 합집합. 필수 source 최초 미승인은503이다.
+
+    해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은
+    보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다.
+    """
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
 
@@ -374,6 +361,10 @@ async def export_forecasts(
         Query(description="공개 publication watermark. 이전 응답 meta.next_since를 사용"),
     ] = None,
 ) -> Response:
+    """활성 예보 제공처의 승인 집합. external에는 KHOA 해양 예보를 포함한다.
+
+    known_at은 원천 시각이며 since에는 모든 페이지 반영 뒤 meta.next_since를 사용한다.
+    """
     return await _frozen_response(
         request, "forecasts", limit, cursor, provider=provider, style=style, since=since
     )

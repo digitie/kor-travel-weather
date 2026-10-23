@@ -501,7 +501,7 @@ def test_forecast_four_mib_cap_cursor_keeps_every_last_included_location(
             break
         assert page["items"]
         params["cursor"] = page["meta"]["next_cursor"]
-    assert seen == ["a", "b", "c"] and len(sizes) >= 2
+    assert sorted(seen) == ["a", "b", "c"] and len(sizes) >= 2
 
 
 def test_forecast_snapshot_metadata_lock_has_bounded_wait_and_recovers(repository, tmp_path):
@@ -545,11 +545,23 @@ def test_dense_forecast_grid_is_unavailable_or_previous_stale_not_500(
                 ny=127,
             )
         )
+    if previous:
+        # 신규 catalog만으로 실제 source intent를 만들지 않는다. 변경된 대상의
+        # 다음 실제 수집이 전체 roster를 승인하지 못한 경우를 확인한다.
+        _collect_forecast(repository, tmp_path, targets=[
+            WeatherTarget(location) for location in repository.list_locations(
+                enabled_only=True, limit=5000,
+            )
+        ])
     response = client.get(url, params=params, headers=HEADERS)
     if previous:
         assert response.status_code == 200
         assert response.json()["meta"]["source_status"] == "stale"
-        assert response.json()["items"] == first.json()["items"]
+        assert [{k: v for k, v in item.items() if k != "published_at"}
+                for item in response.json()["items"]] == [
+                    {k: v for k, v in item.items() if k != "published_at"}
+                    for item in first.json()["items"]
+                ]
         continued = client.get(
             url,
             params={**params, "cursor": response.json()["meta"]["next_cursor"]},

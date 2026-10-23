@@ -252,6 +252,9 @@ async def fetch_restarea_weather(
     Korean source crosses for its own async-only client.
     """
     page = await client.restarea.latest_weather(lookback_hours=lookback_hours)
+    if not page.items and export_page_observer is not None:
+        # SDK가 과거 시각을 이미 확인했다. 추가 원천 조회는 현재 시각 한 번만 허용한다.
+        page = await client.restarea.latest_weather(lookback_hours=0)
     if export_page_observer is not None:
         export_page_observer(page)
     return list(page.items)[:max_records]
