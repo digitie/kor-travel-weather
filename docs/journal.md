@@ -343,3 +343,11 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
   실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
 
+
+# 2026-10-23 중기예보 export 재해석 증거
+
+- 공개 SDK의 중기 DTO와 기존 Weather normalizer로 저장 원문을 독립 복원하는
+  순수 모듈을 추가했다. 발표/가용 시간은 SDK 공개 API를 사용한다.
+- land/temperature 지역·회차·lineage·전체 필수 구간·숫자를 검증하고 불완전 증거는
+  거절한다. 집중54건/Ruff PASS이며 실제 수집·head·REST 배선과 운영 적용은 후속이다.
+- 상세 계약과 남은 배선 조건: `docs/reports/2026-10-23-mid-export-proof.md`.
