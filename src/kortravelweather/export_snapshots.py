@@ -134,7 +134,14 @@ class FrozenCurrentExports:
             catalog = self.heads.metadata.tables["weather_locations"]
             locations = list(
                 connection.execute(
-                    select(catalog)
+                    select(
+                        catalog.c.location_id,
+                        catalog.c.name,
+                        catalog.c.latitude,
+                        catalog.c.longitude,
+                        catalog.c.nx,
+                        catalog.c.ny,
+                    )
                     .where(catalog.c.enabled.is_(True))
                     .order_by(catalog.c.location_id)
                     .limit(MAX_SNAPSHOT_LOCATIONS + 1)
@@ -205,8 +212,17 @@ class FrozenCurrentExports:
             addresses = {
                 row["target_key"]: row
                 for row in connection.execute(
-                    select(entries).where(
+                    select(
+                        entries.c.target_key,
+                        entries.c.coordinate_key,
+                        entries.c.payload["address"]["legal_dong_code"]
+                        .as_string()
+                        .label("legal_dong_code"),
+                        entries.c.payload["region"]["sido"].as_string().label("sido_name"),
+                        entries.c.payload["region"]["sigungu"].as_string().label("sigungu_name"),
+                    ).where(
                         entries.c.provider_id == VworldKakaoAddressResolver.provider_id,
+                        entries.c.status.in_(["ok", "error"]),
                         entries.c.target_key.in_([row["location_id"] for row in locations]),
                     )
                 ).mappings()
@@ -214,22 +230,17 @@ class FrozenCurrentExports:
             items = []
             for location in locations:
                 entry = addresses.get(location["location_id"])
-                payload = (
-                    entry["payload"]
-                    if (
-                        entry
-                        and entry["coordinate_key"]
-                        == AddressTarget(
-                            location["location_id"],
-                            float(location["longitude"]),
-                            float(location["latitude"]),
-                        ).coordinate_key
-                    )
-                    else {}
-                )
-                payload = payload or {}
-                address, region = payload.get("address") or {}, payload.get("region") or {}
-                code = address.get("legal_dong_code")
+                if (
+                    entry
+                    and entry["coordinate_key"]
+                    != AddressTarget(
+                        location["location_id"],
+                        float(location["longitude"]),
+                        float(location["latitude"]),
+                    ).coordinate_key
+                ):
+                    entry = None
+                code = entry["legal_dong_code"] if entry else None
                 items.append(
                     {
                         "location_id": location["location_id"],
@@ -237,10 +248,10 @@ class FrozenCurrentExports:
                         "latitude": float(location["latitude"]),
                         "longitude": float(location["longitude"]),
                         "legal_dong_code": code
-                        if isinstance(code, str) and re.fullmatch(r"\d{10}", code)
+                        if isinstance(code, str) and re.fullmatch(r"[0-9]{10}", code)
                         else None,
-                        "sido_name": region.get("sido"),
-                        "sigungu_name": region.get("sigungu"),
+                        "sido_name": entry["sido_name"] if entry else None,
+                        "sigungu_name": entry["sigungu_name"] if entry else None,
                     }
                 )
             manifest = {"schema": 1, "scopes": scopes, "locations": items}

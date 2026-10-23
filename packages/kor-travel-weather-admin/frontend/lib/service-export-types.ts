@@ -16,6 +16,7 @@ export type ExportLocation = {
   name: string;
   latitude: number | null;
   longitude: number | null;
+  // 10자리 ASCII 숫자 코드. 좌표가 바뀌었거나 주소가 not_found면 null이다.
   legal_dong_code?: string | null;
   sido_name?: string | null;
   sigungu_name?: string | null;

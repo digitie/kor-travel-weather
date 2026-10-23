@@ -20,3 +20,6 @@
 
 - location/current 모두 envelope여유8KiB를제외한4MiB bytebudget과continuation을적용한다. 유효5000location×200개4byte문자 회귀에서2페이지/누락·중복0/본문4MiB이하를확인한다.
 - generated_at/압축표현의byte차이는강한동일성이아니므로weakETag를사용한다. gzip/identity·서로다른generated_at에서동일의미304, snapshotTTL epoch교체시새200을구분한다.
+
+- 역주소는좌표일치와status ok/error를함께검사한다. not_found에남아있는옛payload는법정동/행정명으로재공개하지않으며10자리ASCII숫자만허용한다. DB에서는필요한주소3필드만projection한다.
+- location목록은ID/이름/좌표/grid6열만선택한다. 사용하지않는임의metadata전체를읽지않고200KiBmetadata실제PG/SELECT회귀로메모리보호를검증한다.

@@ -375,3 +375,70 @@ def test_locations_page_byte_cap_preserves_all_valid_unicode_items(
     assert not next_page.json()["meta"]["has_more"]
     items = first.json()["items"] + next_page.json()["items"]
     assert len(items) == len({row["location_id"] for row in items}) == 5000
+
+
+def test_reverse_address_not_found_clears_old_payload_and_code_is_ascii(repository, tmp_path):
+    from kortravelcommon.address_providers import VworldKakaoAddressResolver
+    from kortravelcommon.reverse_address import AddressTarget
+
+    _collect(repository, tmp_path)
+    entries = Base.metadata.tables["reverse_address_entries"]
+    identity = dict(provider_id=VworldKakaoAddressResolver.provider_id, target_key="a")
+
+    def write(status, code):
+        with repository.engine.begin() as c:
+            c.execute(entries.delete().where(entries.c.target_key == "a"))
+            c.execute(
+                entries.insert().values(
+                    **identity,
+                    longitude=127,
+                    latitude=37.5,
+                    coordinate_key=AddressTarget("a", 127, 37.5).coordinate_key,
+                    status=status,
+                    checked_at=datetime.now(UTC),
+                    failures=0,
+                    payload={
+                        "address": {"legal_dong_code": code},
+                        "region": {"sido": "서울", "sigungu": "종로구"},
+                    },
+                )
+            )
+
+    client = _client(repository, tmp_path)
+    for status, expected in [("ok", "1111000000"), ("error", "1111000000"), ("not_found", None)]:
+        write(status, "1111000000")
+        r = client.get("/v1/service/exports/locations", headers=HEADERS)
+        assert r.status_code == 200
+        item = next(x for x in r.json()["items"] if x["location_id"] == "a")
+        assert item["legal_dong_code"] == expected
+        if status == "not_found":
+            assert item["sido_name"] is None and item["sigungu_name"] is None
+    write("ok", "١١١١٠٠٠٠٠٠")
+    r = client.get("/v1/service/exports/locations", headers=HEADERS)
+    assert (
+        r.status_code == 200
+        and next(x for x in r.json()["items"] if x["location_id"] == "a")["legal_dong_code"] is None
+    )
+
+
+def test_location_snapshot_does_not_read_arbitrary_unused_metadata(repository, tmp_path):
+    from sqlalchemy import event
+
+    _collect(repository, tmp_path)
+    catalog = Base.metadata.tables["weather_locations"]
+    with repository.engine.begin() as c:
+        c.execute(update(catalog).values(metadata={"unused_large": "x" * 200_000}))
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "FROM weather_locations" in statement:
+            statements.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", record)
+    try:
+        r = _client(repository, tmp_path).get("/v1/service/exports/locations", headers=HEADERS)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", record)
+    assert r.status_code == 200 and statements
+    assert all("weather_locations.metadata" not in sql for sql in statements)
+    assert "unused_large" not in r.text

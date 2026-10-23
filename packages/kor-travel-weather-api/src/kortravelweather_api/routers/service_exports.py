@@ -49,7 +49,7 @@ class ExportLocation(BaseModel):
     name: str
     latitude: float | None
     longitude: float | None
-    legal_dong_code: str | None = Field(default=None, pattern=r"^\d{10}$")
+    legal_dong_code: str | None = Field(default=None, pattern=r"^[0-9]{10}$")
     sido_name: str | None = None
     sigungu_name: str | None = None
 
