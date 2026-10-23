@@ -4,10 +4,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import and_, or_, select, text
 
 from .export_daily import KST, SLOTS, summarize
-from .export_daily_store import daily_summary_tables
+from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
 from .export_snapshots import (
     MAX_PAGE_BYTES,
@@ -22,14 +22,75 @@ from .export_snapshots import (
 
 
 class DailySummaryExports(FrozenCurrentExports):
-    def __init__(self, *args, days=14, location_id=None, **kwargs):
+    def __init__(self, *args, days=14, location_id=None, providers=("python-kma-api",), **kwargs):
         super().__init__(*args, **kwargs)
         if not 1 <= days <= 31:
             raise ExportCursorInvalid("요약 기간은 1~31일입니다.")
         self.table, self.progress = daily_summary_tables(self.heads.metadata)
+        self.coverage = daily_coverage_table(self.heads.metadata)
+        self.providers = tuple(sorted(set(providers)))
         self.days, self.location_id = days, location_id
-        self.selection = {"kind": "daily-summaries", "days": days, "location_id": location_id}
+        self.selection = {
+            "kind": "daily-summaries",
+            "days": days,
+            "location_id": location_id,
+            "providers": list(self.providers),
+        }
         self.resource = "daily-summaries:" + _digest(self.selection)
+
+    def _selected_coverage(self, connection, keys):
+        catalog = self.heads.metadata.tables["weather_locations"]
+        coverage = self.coverage
+        rows = list(
+            connection.execute(
+                select(coverage)
+                .join(catalog, catalog.c.location_id == coverage.c.location_id)
+                .where(
+                    coverage.c.location_id.in_(keys),
+                    coverage.c.provider.in_(self.providers),
+                    catalog.c.enabled.is_(True),
+                    or_(
+                        and_(
+                            coverage.c.provider == "python-kma-api",
+                            coverage.c.nx == catalog.c.nx,
+                            coverage.c.ny == catalog.c.ny,
+                        ),
+                        and_(
+                            coverage.c.provider != "python-kma-api",
+                            coverage.c.latitude == catalog.c.latitude,
+                            coverage.c.longitude == catalog.c.longitude,
+                        ),
+                    ),
+                )
+                .order_by(coverage.c.location_id, coverage.c.namespace)
+            ).mappings()
+        )
+        if {r["location_id"] for r in rows} != set(keys):
+            raise ExportSnapshotUnavailable("선택 위치의 승인 관측 coverage가 준비되지 않았습니다.")
+        owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
+        runs = self.heads.metadata.tables["weather_sync_runs"]
+        scopes = {r["source_scope"] for r in rows}
+        statuses = list(
+            connection.execute(
+                select(attempts.c.status, runs.c.status, self.heads.generations.c.generation_id)
+                .select_from(
+                    owners.join(attempts, owners.c.active_attempt_id == attempts.c.attempt_id)
+                    .join(runs, runs.c.run_id == attempts.c.run_id)
+                    .outerjoin(
+                        self.heads.generations,
+                        self.heads.generations.c.attempt_id == attempts.c.attempt_id,
+                    )
+                )
+                .where(owners.c.source_scope.in_(scopes))
+            )
+        )
+        unconfirmed = len(statuses) != len(scopes) or any(
+            attempt == "failed"
+            or run in {"failed", "partial", "skipped"}
+            or (run == "success" and generation is None)
+            for attempt, run, generation in statuses
+        )
+        return rows, unconfirmed
 
     def _freeze_daily(self):
         now = datetime.now(UTC)
@@ -52,13 +113,16 @@ class DailySummaryExports(FrozenCurrentExports):
             )
             if not keys or len(keys) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("선택 위치 집합이 준비되지 않았습니다.")
+            coverage, _ = self._selected_coverage(c, keys)
             today = now.astimezone(KST).date()
             manifest = {
                 "selection": self.selection,
                 "locations": keys,
                 "first_date": (today - timedelta(days=self.days - 1)).isoformat(),
                 "last_date": today.isoformat(),
-                "published_at": ready["published_at"].isoformat(),
+                "coverage": _digest(
+                    [[r["location_id"], r["namespace"], r["generation_id"]] for r in coverage]
+                ),
             }
             digest = _digest(manifest)
             existing = (
@@ -80,8 +144,8 @@ class DailySummaryExports(FrozenCurrentExports):
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": ready["source_collected_at"],
-                "data_revision_at": ready["published_at"],
+                "source_collected_at": min(r["source_collected_at"] for r in coverage),
+                "data_revision_at": min(r["published_at"] for r in coverage),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
             }
@@ -128,7 +192,13 @@ class DailySummaryExports(FrozenCurrentExports):
         if state["g"] > len(keys) or state["p"] > len(positions):
             raise ExportCursorInvalid("요약 cursor 위치가 올바르지 않습니다.")
         # scalar summary만 선택한다. 한 위치의 최대 31일×3구간만 메모리에 유지한다.
-        with self.heads._transaction() as s:
+        with (
+            self.repository.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as s,
+            s.begin(),
+        ):
+            s.execute(text("SET LOCAL statement_timeout = '5s'"))
             while state["g"] < len(keys):
                 key = keys[state["g"]]
                 rows = {
@@ -171,37 +241,12 @@ class DailySummaryExports(FrozenCurrentExports):
                     break
                 state["g"], state["p"] = state["g"] + 1, 0
             ready = s.execute(select(self.progress)).mappings().one_or_none()
-            owners, attempts, plans = (
-                self.heads.lifecycle.owners,
-                self.heads.lifecycle.attempts,
-                self.heads.plans,
-            )
-            runs = self.heads.metadata.tables["weather_sync_runs"]
-            unconfirmed = s.scalar(
-                select(
-                    select(attempts.c.attempt_id)
-                    .select_from(
-                        owners.join(attempts, owners.c.active_attempt_id == attempts.c.attempt_id)
-                        .join(plans, plans.c.attempt_id == attempts.c.attempt_id)
-                        .join(runs, runs.c.run_id == attempts.c.run_id)
-                    )
-                    .where(
-                        plans.c.descriptor["forecast_style"]
-                        .as_string()
-                        .in_(["observed", "nowcast"]),
-                        or_(
-                            attempts.c.status == "failed",
-                            runs.c.status.not_in(["running", "success"]),
-                        ),
-                    )
-                    .exists()
-                )
-            )
+            coverage, unconfirmed = self._selected_coverage(s, keys)
         more = state["g"] < len(keys)
         if ready is None or ready["source_collected_at"] is None:
             raise ExportSnapshotUnavailable("사전 계산 요약 checkpoint가 없습니다.")
         # roster/날짜 범위를 고정하고 각 페이지의 최신 사전계산 값을 반환한다.
-        source = ready["source_collected_at"]
+        source = min(r["source_collected_at"] for r in coverage)
         status = "stale" if unconfirmed or now - source > timedelta(hours=3) else "ok"
         page = {
             "items": output,

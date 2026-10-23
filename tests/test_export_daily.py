@@ -107,6 +107,7 @@ def daily_repository():
         c.execute(
             text(
                 "TRUNCATE weather_daily_summaries, weather_daily_summary_progress, "
+                "weather_daily_summary_coverage, "
                 "weather_export_scope_plans, weather_export_heads, weather_export_generations, "
                 "weather_export_generation_chunks, weather_export_pending_refs, "
                 "weather_export_attempts, "
@@ -427,3 +428,115 @@ def test_legacy_equal_publication_times_resume_with_generation_id(daily_reposito
         assert checkpoint["generation_id"] == max(
             c.scalars(select(heads.generations.c.generation_id))
         )
+
+
+def test_daily_coverage_requires_selected_location_and_ignores_other_failures(
+    daily_repository, tmp_path
+):
+    from datetime import timedelta
+
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_daily_reader import DailySummaryExports
+    from kortravelweather.export_daily_store import daily_coverage_table
+    from kortravelweather.export_snapshots import ExportSnapshotUnavailable
+
+    repo, store = daily_repository, ExportArtifactStore(tmp_path)
+    a, b = _descriptor(repo), _descriptor(repo)
+    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, a)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    refresh_daily_summaries(repo, store)
+
+    def read(location):
+        return DailySummaryExports(repo, store, signing_key="coverage", location_id=location).page(
+            limit=5000, cursor=None
+        )[0]
+
+    with pytest.raises(ExportSnapshotUnavailable, match="coverage"):
+        read(b.entity_id)
+    assert read(a.entity_id)["meta"]["source_status"] == "ok"
+    _candidate(repo, tmp_path, b, finish="failed")
+    assert read(a.entity_id)["meta"]["source_status"] == "ok"
+    coverage = daily_coverage_table(Base.metadata)
+    old = datetime.now(KST) - timedelta(hours=4)
+    with repo.engine.begin() as c:
+        c.execute(
+            coverage.update()
+            .where(coverage.c.location_id == a.entity_id)
+            .values(source_collected_at=old)
+        )
+    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, b)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    refresh_daily_summaries(repo, store)
+    selected = read(a.entity_id)
+    assert selected["meta"]["source_status"] == "stale"
+    assert datetime.fromisoformat(selected["meta"]["source_collected_at"]) == old
+    assert read(b.entity_id)["meta"]["source_status"] == "ok"
+    assert read(None)["meta"]["source_status"] == "stale"
+
+
+def test_daily_page_uses_one_rr_snapshot_across_locations_and_progress(daily_repository, tmp_path):
+    from datetime import timedelta
+
+    from sqlalchemy import event
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_daily_reader import DailySummaryExports
+    from kortravelweather.export_daily_store import daily_coverage_table
+
+    repo, store = daily_repository, ExportArtifactStore(tmp_path)
+    yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+    for _ in range(2):
+        descriptor = _descriptor(repo)
+        heads, identity, capture, _, _, _ = _candidate(
+            repo, tmp_path, descriptor, revision=yesterday, value="10"
+        )
+        assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    refresh_daily_summaries(repo, store)
+    table, progress = daily_summary_tables(Base.metadata)
+    coverage = daily_coverage_table(Base.metadata)
+    with repo.engine.connect() as c:
+        old_clock = min(c.scalars(select(coverage.c.source_collected_at)))
+    fired = False
+
+    def update_after_first_location(
+        connection, cursor, statement, parameters, context, executemany
+    ):
+        nonlocal fired
+        if (
+            fired
+            or "FROM weather_daily_summaries" not in statement
+            or not statement.startswith("SELECT")
+        ):
+            return
+        fired = True
+        # 첫 위치를 읽은 HTTP TX와 다른 실제 PG TX에서 두 위치를 원자 갱신한다.
+        with repo.engine.begin() as writer:
+            rows = list(writer.execute(select(table.c.location_id, table.c.summary)).mappings())
+            for row in rows:
+                changed = {**row["summary"], "temp_min": 20, "temp_max": 20, "temp_avg": 20}
+                writer.execute(
+                    table.update()
+                    .where(table.c.location_id == row["location_id"])
+                    .values(summary=changed)
+                )
+            writer.execute(
+                coverage.update().values(source_collected_at=old_clock + timedelta(seconds=1))
+            )
+            writer.execute(
+                progress.update().values(source_collected_at=old_clock + timedelta(seconds=1))
+            )
+
+    event.listen(repo.engine, "after_cursor_execute", update_after_first_location)
+    try:
+        reader = DailySummaryExports(repo, store, signing_key="rr", days=2)
+        page, _ = reader.page(limit=5000, cursor=None)
+    finally:
+        event.remove(repo.engine, "after_cursor_execute", update_after_first_location)
+    assert fired
+    assert [item["temp_avg"] for item in page["items"] if item["sample_count"]] == [10, 10]
+    assert datetime.fromisoformat(page["meta"]["source_collected_at"]) == old_clock
+    next_page, _ = reader.page(limit=5000, cursor=None)
+    assert [item["temp_avg"] for item in next_page["items"] if item["sample_count"]] == [20, 20]

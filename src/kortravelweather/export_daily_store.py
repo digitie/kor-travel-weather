@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Float,
     Index,
     Integer,
     MetaData,
@@ -24,7 +25,29 @@ from .export_daily import KST, merge_observations, observation, summarize
 from .export_heads import ExportHeads
 
 
+def daily_coverage_table(metadata: MetaData):
+    name = "weather_daily_summary_coverage"
+    if name in metadata.tables:
+        return metadata.tables[name]
+    return Table(
+        name,
+        metadata,
+        Column("location_id", String(120), primary_key=True),
+        Column("namespace", String(64), primary_key=True),
+        Column("provider", String(40), nullable=False),
+        Column("source_scope", String(64), nullable=False),
+        Column("nx", Integer),
+        Column("ny", Integer),
+        Column("latitude", Float),
+        Column("longitude", Float),
+        Column("source_collected_at", DateTime(timezone=True), nullable=False),
+        Column("published_at", DateTime(timezone=True), nullable=False),
+        Column("generation_id", String(36), nullable=False),
+    )
+
+
 def daily_summary_tables(metadata: MetaData):
+    daily_coverage_table(metadata)
     if "weather_daily_summaries" in metadata.tables:
         return metadata.tables["weather_daily_summaries"], metadata.tables[
             "weather_daily_summary_progress"
@@ -62,6 +85,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
         raise ValueError("요약 tick의 generation 상한은 1~8입니다.")
     heads = ExportHeads(repository)
     summaries, progress = daily_summary_tables(heads.metadata)
+    coverage = daily_coverage_table(heads.metadata)
     with heads._transaction() as s:
         checkpoint = s.execute(select(progress)).mappings().one_or_none()
         after = checkpoint["published_at"] if checkpoint else datetime(1970, 1, 1, tzinfo=UTC)
@@ -69,7 +93,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
         rows = [
             dict(r)
             for r in s.execute(
-                select(heads.generations, heads.plans.c.descriptor)
+                select(heads.generations, heads.plans.c.descriptor, heads.plans.c.source_scope)
                 .join(heads.plans, heads.plans.c.attempt_id == heads.generations.c.attempt_id)
                 .where(
                     tuple_(heads.generations.c.created_at, heads.generations.c.generation_id)
@@ -93,6 +117,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
         checkpoint["source_collected_at"] if checkpoint else None,
     )
     now = datetime.now(UTC)
+    approved_coverage = []
     # guard timeout은 획득 대기 상한이며 전체 IO의 wall deadline은 아니다.
     with artifacts.guard(timeout_seconds=2):
         for row in rows:
@@ -101,6 +126,23 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
             chunks = refs[row["generation_id"]]
             if not chunks or sum(c["point_count"] for c in chunks) > 5000:
                 raise ExportArtifactError("관측 요약 generation 상한을 넘었습니다.")
+            descriptor = row["descriptor"]
+            for location in descriptor["location_ids"]:
+                approved_coverage.append(
+                    {
+                        "location_id": location,
+                        "namespace": row["namespace"],
+                        "provider": descriptor["provider"],
+                        "source_scope": row["source_scope"],
+                        "nx": descriptor.get("nx"),
+                        "ny": descriptor.get("ny"),
+                        "latitude": descriptor.get("latitude"),
+                        "longitude": descriptor.get("longitude"),
+                        "source_collected_at": row["source_collected_at"],
+                        "published_at": row["created_at"],
+                        "generation_id": row["generation_id"],
+                    }
+                )
             collected = (
                 max(collected, row["source_collected_at"])
                 if collected
@@ -133,6 +175,25 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
         )
         if (locked["published_at"], locked["generation_id"]) != (after, after_generation):
             return {"processed": 0, "has_more": True, "race": True}
+        for values in approved_coverage:
+            s.execute(
+                coverage.delete().where(
+                    coverage.c.location_id == values["location_id"],
+                    coverage.c.source_scope == values["source_scope"],
+                    coverage.c.namespace != values["namespace"],
+                )
+            )
+            statement = insert(coverage).values(**values)
+            s.execute(
+                statement.on_conflict_do_update(
+                    index_elements=["location_id", "namespace"],
+                    set_={
+                        key: value
+                        for key, value in values.items()
+                        if key not in {"location_id", "namespace"}
+                    },
+                )
+            )
         for key, points in sorted(grouped.items()):
             location, day, slot = key
             day_value = datetime.fromisoformat(day).date()
