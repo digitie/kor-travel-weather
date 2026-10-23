@@ -50,11 +50,18 @@ def test_single_asset_jobs_in_process_and_regional_and_implicit_bounded():
     assert bounded.success and bounded.value["config"]["max_concurrent"] == 1
 
 
-def test_defaults_keep_only_existing_app_reconciliation(mapping):
+def test_defaults_keep_reconciliation_running_and_export_publisher_stopped(mapping):
     assert optional_recovery_sensors(mapping) == []
     assert [sensor.name for sensor in definitions.defs.sensors] == [
-        "weather_address_refresh", "weather_sync_recovery",
+        "weather_address_refresh", "weather_sync_recovery", "weather_export_publisher",
     ]
+    for sensor in definitions.defs.sensors:
+        expected = (
+            DefaultSensorStatus.STOPPED
+            if sensor.name == "weather_export_publisher"
+            else DefaultSensorStatus.RUNNING
+        )
+        assert sensor.default_status == expected, sensor.name
 
 
 @pytest.mark.parametrize("bad", ["TRUE", "1", " true", "true ", "", "yes"])
