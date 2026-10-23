@@ -71,6 +71,19 @@ def paired_locations(scopes):
     return result
 
 
+def _location_ref(scope, key):
+    refs = [ref for ref in scope["refs"] if key in ref["location_ids"]]
+    if len(refs) != 1:
+        raise ExportSnapshotUnavailable("중기 위치가 단일 bounded chunk에 있지 않습니다.")
+    ref = refs[0]
+    if not (
+        1 <= ref["point_count"] <= MAX_CHUNK_POINTS
+        and 1 <= ref["byte_count"] <= MAX_CHUNK_BYTES
+    ):
+        raise ExportSnapshotUnavailable("중기 chunk의 point/byte 상한이 다릅니다.")
+    return ref
+
+
 class FrozenMidForecastExports(FrozenForecastExports):
     """기존 cursor/TTL/delta/ETag를 사용하며 두 part의 완전 vector만 새로 발급한다."""
 
@@ -108,18 +121,16 @@ class FrozenMidForecastExports(FrozenForecastExports):
         watermark = _at(manifest["next_since"])
         if any(_at(pair["published_at"]) > watermark for pair in pairs):
             raise ExportSnapshotUnavailable("중기 publication이 snapshot watermark 이후입니다.")
+        # 공개 위치 ID 순서는 계약하지 않는다. 같은 물리 chunk를 이어 읽어 두 part의
+        # bounded cache만으로 여러 기온 지역이 섞인 경우의 반복 JSON decode를 줄인다.
+        pairs.sort(key=lambda pair: (*(
+            _location_ref(manifest["scopes"][pair[part]], pair["location_id"])["artifact_digest"]
+            for part in ("land", "temperature")
+        ), pair["location_id"]))
         return {**manifest, "mid_locations": pairs}
 
     def _chunk(self, scope, key, cache):
-        refs = [ref for ref in scope["refs"] if key in ref["location_ids"]]
-        if len(refs) != 1:
-            raise ExportSnapshotUnavailable("중기 위치가 단일 bounded chunk에 있지 않습니다.")
-        ref = refs[0]
-        if not (
-            1 <= ref["point_count"] <= MAX_CHUNK_POINTS
-            and 1 <= ref["byte_count"] <= MAX_CHUNK_BYTES
-        ):
-            raise ExportSnapshotUnavailable("중기 chunk의 point/byte 상한이 다릅니다.")
+        ref = _location_ref(scope, key)
         identity = (scope["generation_id"], ref["artifact_digest"])
         if cache.get("identity") != identity:
             points = defaultdict(list)
@@ -158,6 +169,8 @@ class FrozenMidForecastExports(FrozenForecastExports):
                 if self.since is not None and _at(pair["published_at"]) <= self.since:
                     state["g"] += 1
                     continue
+                if len(output) >= limit:
+                    return output, True
                 key = pair["location_id"]
                 points = [point for part in ("land", "temperature") for point in self._chunk(
                     scopes[pair[part]], key, caches[part],

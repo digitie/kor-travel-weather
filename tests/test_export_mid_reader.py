@@ -159,3 +159,28 @@ def test_pair_requires_aware_issue_and_nonempty_inventory():
     selected[0]["data_revision_at"] = "2026-10-23T09:00:00"
     with pytest.raises(ExportSnapshotUnavailable):
         paired_locations(selected)
+
+
+def test_physical_chunk_order_bounds_decode_when_temperature_regions_interleave():
+    selected = scopes(tuple(f"p-{i:03}" for i in range(12)))
+    temperature = selected.pop()
+    for region in range(3):
+        scope = deepcopy(temperature)
+        scope["location_ids"] = [key for i, key in enumerate(temperature["location_ids"])
+                                 if i % 3 == region]
+        scope["namespace"] = scope["generation_id"] = f"temp-{region}"
+        scope["refs"][0].update(
+            artifact_digest=f"temp-{region}", location_ids=scope["location_ids"], point_count=8,
+        )
+        selected.append(scope)
+    handle = reader(selected)
+    # Fake data storage identifies files by digest, as the actual artifact store does.
+    for scope in selected[1:]:
+        handle.artifacts.points[scope["refs"][0]["artifact_digest"]] = [
+            point(scope, key, "TMN", 1, number="5") for key in scope["location_ids"]
+        ] + [point(scope, key, "TMX", 2, number="20") for key in scope["location_ids"]]
+    frozen = handle._prepare_manifest(manifest(selected))
+    output, more = handle._page_items(frozen, {"g": 0, "p": 0}, 5000, NOW)
+    assert len(output) == 12 and not more
+    assert handle.artifacts.reads == ["land", "temp-0", "temp-1", "temp-2"]
+    assert len({item["location_id"] for item in output}) == 12
