@@ -373,3 +373,12 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 상세 계약/검증: `docs/reports/2026-10-23-sdk-source-exports.md`.
 
 
+
+
+### 중기 지역의 스트리밍 fan-out
+
+- 한 육상 지역이50곳을 넘더라도 source scope를 잘라 중복 claim하지 않도록
+  descriptor 상한을1,000곳으로 확장했다. 공개 SDK/기존 normalizer로 만든26/16개
+  템플릿만 보관하고 위치별 iterator로 내보낸다. 큰 전체 목록 복원은 거절한다.
+- 기존86건과 스트리밍4건을 함께90PASS/Ruff PASS.1,000곳 순회의 tracemalloc peak
+  2MiB 미만을 확인했으며 운영 RSS/CPU 개선이나 실제 배선 완료로 세지 않는다.
