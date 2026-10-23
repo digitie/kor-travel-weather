@@ -382,3 +382,10 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   템플릿만 보관하고 위치별 iterator로 내보낸다. 큰 전체 목록 복원은 거절한다.
 - 기존86건과 스트리밍4건을 함께90PASS/Ruff PASS.1,000곳 순회의 tracemalloc peak
   2MiB 미만을 확인했으며 운영 RSS/CPU 개선이나 실제 배선 완료로 세지 않는다.
+# 2026-10-23 export artifact의 제한된 동시 읽기
+
+- current/forecast/일간요약의 파일 읽기에 공유 guard를 적용하고 writer 배타 guard는
+  유지한다. 같은 root의 OS 파일 slot으로 전체 프로세스를 합쳐동시2개까지만 허용한다.
+- 별도OS process의실제잠금/용량/강제종료회복3건·Ruff PASS. metadata→파일 사이
+  in-flight pin과GC/운영CPU·RSS 수용은별도이며운영flag/daemon은바꾸지않는다.
+- 상세: `docs/reports/2026-10-23-export-shared-read-guard.md`.

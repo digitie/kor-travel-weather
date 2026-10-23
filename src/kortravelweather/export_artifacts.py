@@ -19,6 +19,7 @@ from typing import Any
 
 MAX_CHUNK_POINTS = 5000
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
+MAX_SHARED_ARTIFACT_READERS = 2
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
@@ -90,24 +91,54 @@ class ExportArtifactStore:
             raise ExportArtifactError("export artifact digest가 올바르지 않습니다.")
         return self.root / (digest + ".jsonl")
 
+    def _shared_slot(self, deadline: float) -> int:
+        """프로세스 수와 무관하게 같은 root의 동시 파일 읽기를 두 개로 제한한다."""
+        import fcntl
+
+        while True:
+            for ordinal in range(MAX_SHARED_ARTIFACT_READERS):
+                descriptor = os.open(
+                    self.root / f".export-read-{ordinal}.lock",
+                    os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    0o600,
+                )
+                try:
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise ExportArtifactError("artifact 읽기 slot은 일반 파일이어야 합니다.")
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    os.close(descriptor)
+                    continue
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                return descriptor
+            if time.monotonic() >= deadline:
+                raise ExportArtifactError("artifact 동시 읽기 대기 상한을 넘었습니다.")
+            time.sleep(0.01)
+
     @contextmanager
-    def guard(self, *, timeout_seconds: float = 5):
+    def guard(self, *, timeout_seconds: float = 5, shared: bool = False):
         # 관리되는 replace/unlink와 승격의 검증→CAS 구간을 같은 유한 guard로 보호한다.
         # 관리자 외부 unlink/디스크 장애까지 원자적으로 묶는다는 뜻은 아니다.
+        # reader끼리는 두 개의 OS 공유 slot 안에서만 겹치며 writer 기본값은 배타다.
         import fcntl
 
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(
             self.root / ".export.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
         )
-        acquired = False
+        acquired, read_slot = False, None
         deadline = time.monotonic() + timeout_seconds
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise ExportArtifactError("artifact guard는 일반 파일이어야 합니다.")
+            if shared:
+                read_slot = self._shared_slot(deadline)
             while not acquired:
                 try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                    fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
                     acquired = True
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
@@ -120,6 +151,8 @@ class ExportArtifactStore:
             if acquired:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
             os.close(descriptor)
+            if read_slot is not None:
+                os.close(read_slot)
 
     def publish(self, chunk: PreparedExportChunk) -> None:
         with self.guard():
