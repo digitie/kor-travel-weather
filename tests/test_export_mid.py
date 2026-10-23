@@ -171,6 +171,41 @@ def test_temperature_minimum_cannot_exceed_maximum():
         prove_mid_source(descriptor, record)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        False,
+        True,
+        0,
+        42,
+        {"x": 1},
+        ["맑음"],
+        " ",
+        "x" * 121,
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "-999",
+        "0",
+        "null",
+        "N/A",
+        "-",
+    ],
+)
+@pytest.mark.parametrize("snake", [False, True])
+def test_sky_requires_real_nonblank_source_string(value, snake):
+    descriptor, record = _source("land")
+    raw = record["payload"]["rows"][0]
+    if snake:
+        raw.pop("wf3Am")
+        raw["wf_3_am"] = value
+    else:
+        raw["wf3Am"] = value
+    _rehash(record)
+    with pytest.raises(ExportArtifactError):
+        prove_mid_source(descriptor, record)
+
+
 def test_official_availability_delay_uses_public_sdk(source):
     from kma.time_utils import base_available_at
 

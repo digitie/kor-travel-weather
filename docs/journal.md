@@ -351,3 +351,10 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - land/temperature 지역·회차·lineage·전체 필수 구간·숫자를 검증하고 불완전 증거는
   거절한다. 집중54건/Ruff PASS이며 실제 수집·head·REST 배선과 운영 적용은 후속이다.
 - 상세 계약과 남은 배선 조건: `docs/reports/2026-10-23-mid-export-proof.md`.
+### SKY 원문 타입 검증
+
+- 두 독립 초기 리뷰가 지적한 기존 normalizer의 `str()` 변환 경계를 수정했다.
+  normalizer를 바꾸지 않고 보존된 원문 `wf`가 실제 서술 문자열인지 검증한다.
+  bool/숫자/객체/배열·NaN/Inf·숫자/sentinel을 camel/snake alias 모두에서 거절한다.
+- 올바른 source hash를 재계산한 추가32건 포함 집중86건/Ruff PASS. 최초54건과
+  합산하지 않으며 최종 두 리뷰·정확 CI는 별도 수용한다.

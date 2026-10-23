@@ -16,7 +16,7 @@
 - SDK가 요청 문맥으로 제공한 `tmFc`를 사용한다. 원문에 없는 발표 시각을 원문
   필드라고 표시하지 않는다. 원문이 회차를 제공하면 요청과 같아야 한다.
 - land는 기존 정규화 기준 13구간의 하늘 상태·강수확률, temperature는 8일의
-  최저·최고기온 전체가 있어야 한다. 누락·중복·잘못된 숫자·비정상 확률·역전 기온은
+  최저·최고기온 전체가 있어야 한다. 누락·중복·잘못된 숫자·비정상 확률·역전 기온과 하늘 상태의 비문자열/숫자/sentinel은
   거절한다. SKY 문자열을 숫자로 축약하지 않는다.
 - fetch는 공식 가용 시각 이후이고 발표 후 18시간 이내여야 한다. 원본 이력에는
   이 제한을 적용하지 않으며 export 승인 증거에만 사용한다.
@@ -42,7 +42,7 @@
 
 - 공개 `DataGoKrClient`와 httpx offline transport로 만든 실제 SDK DTO를 기존
   `_source_spec`으로 저장한 뒤 네트워크 없이 복원했다. 외부 원천 호출은 없다.
-- 집중 54건 PASS: land/temperature 값·lineage·UTC revision, 정책 namespace,
+- 집중 86건 PASS: land/temperature 값·lineage·UTC revision, 정책 namespace,
   올바른 hash를 다시 계산한 원문 변조·빈/복수 행·필수 구간 누락·숫자·지역·endpoint·
   시각·가용 지연·선택적 receipt·scope 상한을 검사한다.
 - 전체 Ruff PASS. 두 독립 리뷰 및 정확 CI는 PR에서 별도 수용한다.

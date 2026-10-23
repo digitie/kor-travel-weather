@@ -11,6 +11,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from kma import MidForecastItem, PaginationReceipt
@@ -72,6 +73,19 @@ class MidSourceProof:
     values: tuple[WeatherValue, ...]
 
 
+def _weather_description(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 120:
+        return False
+    if value.strip().casefold() in {"null", "none", "n/a", "na", "-", "--"}:
+        return False
+    try:
+        Decimal(value.strip())
+    except InvalidOperation:
+        return True
+    # 중기 SKY는 서술형이다. 숫자·숫자 sentinel·NaN/Inf는 하늘 상태 증거가 아니다.
+    return False
+
+
 def _revision(value: Any, *, operation: str, fetched: datetime) -> datetime:
     if not isinstance(value, str) or len(value) != 12 or not value.isascii() or not value.isdigit():
         raise ExportArtifactError("중기 tmFc의 SDK 시각 증거가 올바르지 않습니다.")
@@ -112,8 +126,12 @@ def _checked_values(descriptor, item, record, revision):
             identities.add(identity)
             metrics[value.metric_key].append(value)
             if value.metric_key == "SKY":
+                # 기존 normalizer는 원문을 str로 변환한다. 그 전에 선택한 원문 필드가
+                # 실제 문자열이었는지는 normalizer가 보존한 payload로 따로 증명한다.
+                raw_weather = value.payload.get("wf")
                 if (
-                    not value.value_text
+                    not _weather_description(raw_weather)
+                    or not value.value_text
                     or not value.value_text.strip()
                     or len(value.value_text) > 120
                 ):
