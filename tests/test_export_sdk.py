@@ -19,8 +19,10 @@ AT = datetime(2026, 10, 23, 12, tzinfo=KST)
 
 
 def fixture(kind):
+    observed = AT - timedelta(hours=1)
     if kind == "air":
-        raw = {"stationName": "종로구", "sidoName": "서울", "dataTime": "2026-10-23 11:00",
+        raw = {"stationName": "종로구", "sidoName": "서울",
+               "dataTime": observed.strftime("%Y-%m-%d %H:%M"),
                "pm10Value": "35", "pm25Value": "17"}
         parsed = parse_measurement(raw)
         source = airkorea.measurement_source_record(parsed, location_id="airkorea-a", fetched_at=AT)
@@ -33,7 +35,8 @@ def fixture(kind):
         adapter = airkorea.measurement_to_weather_values
     elif kind == "mountain":
         raw = {"obsId": "M001", "obsName": "태백산", "latitude": 37.5, "longitude": 127,
-               "tm": "2026-10-23 11:00", "tm2m": "-2", "hm2m": "75", "ws2m": "1.2"}
+               "tm": observed.strftime("%Y-%m-%d %H:%M"),
+               "tm2m": "-2", "hm2m": "75", "ws2m": "1.2"}
         parsed = parse_mountain_weather(raw)
         source = krforest.mountain_source_record(parsed, location_id="krforest-M001", fetched_at=AT)
         desc = SdkScopeDescriptor(
@@ -43,7 +46,7 @@ def fixture(kind):
         )
         adapter = krforest.mountain_weather_to_weather_values
     elif kind == "dust":
-        raw = {"obsrr_tpcd": "001", "obsrt_dtm": "2026-10-23 11:00",
+        raw = {"obsrr_tpcd": "001", "obsrt_dtm": observed.strftime("%Y-%m-%d %H:%M"),
                "obsrt_pm10_val": "35", "obsrt_tmprt": "-2"}
         parsed = parse_forest_dust_measurement(raw)
         source = krforest_dust.dust_source_record(
@@ -58,7 +61,8 @@ def fixture(kind):
         )
         adapter = krforest_dust.dust_to_weather_values
     elif kind == "krex":
-        raw = {"sdate": "20261023", "stdHour": "11", "unitCode": "002", "unitName": "죽전",
+        raw = {"sdate": observed.strftime("%Y%m%d"), "stdHour": str(observed.hour),
+               "unitCode": "002", "unitName": "죽전",
                "xValue": "127", "yValue": "37.5", "tempValue": "-2", "humidityValue": "65",
                "windValue": "1.2", "weatherContents": "맑음"}
         parsed = parse_rest_area_weather(raw)
@@ -71,7 +75,8 @@ def fixture(kind):
         adapter = krex.restarea_weather_to_weather_values
     else:
         rows = [{"bbchNm": "대천", "lat": 36.31, "lot": 126.513,
-                 "predcYmd": "2026-10-23", "predcNoonSeCd": "오후",
+                 "predcYmd": (AT + timedelta(days=1)).date().isoformat(),
+                 "predcNoonSeCd": "오후" if AT.hour >= 3 else "오전",
                  "maxWvhgt": "0.7", "avgArtmp": "17.2"}]
         parsed = parse_beach_index_place(
             Observatory(id="beach", name="대천", latitude=36.31, longitude=126.513), rows
@@ -143,4 +148,57 @@ def test_khoa_unknown_slot_duplicate_and_forecast_without_future_are_not_approve
         with pytest.raises(ExportArtifactError):
             normalize_sdk_source(desc, modified)
     with pytest.raises(ExportArtifactError):
-        normalize_sdk_source(desc, {**source, "fetched_at": AT + timedelta(days=1)})
+        normalize_sdk_source(desc, {**source, "fetched_at": AT + timedelta(days=2)})
+
+
+@pytest.mark.parametrize("kind", ["air", "mountain", "dust", "krex", "khoa"])
+def test_actual_sdk_capture_native_success_promotes(
+    tmp_path, monkeypatch, kind
+):
+    import os
+    import sys
+
+    from sqlalchemy import select
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_heads import ExportHeads, parse_scope_descriptor
+    from kortravelweather.export_sdk_collector import SdkExportCollector
+    from kortravelweather.models import WeatherLocation
+    from kortravelweather.repository import WeatherRepository
+
+    repo = WeatherRepository(os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"])
+    repo.create_schema()
+    monkeypatch.setattr(sys.modules[__name__], "AT", datetime.now(KST))
+    desc, _, _, _ = fixture(kind)
+    point = {"provider": desc.provider, "station_id": desc.station_id,
+             "station_name": desc.station_name, "sido_name": desc.sido_name}
+    location = WeatherLocation(
+        location_id=desc.entity_id, name=desc.station_name, latitude=desc.latitude,
+        longitude=desc.longitude, metadata={"measurement_point": point},
+    )
+    repo.upsert_location(location)
+    run = repo.start_sync_run(provider=desc.provider, dataset_key=desc.dataset_key)
+    collector = SdkExportCollector(repo, run_id=run.run_id, artifact_root=tmp_path)
+    prepared = collector.prepare(
+        location=location, provider=desc.provider, dataset_key=desc.dataset_key
+    )
+    assert prepared is not None and parse_scope_descriptor(prepared.descriptor.model_dump()) == desc
+    # 선언 이후 실제 응답을 받는 순서를 보존한다.
+    monkeypatch.setattr(sys.modules[__name__], "AT", datetime.now(KST))
+    _, source, parsed, normalizer = fixture(kind)
+    source["run_id"] = run.run_id
+    values = normalizer(parsed, location_id=desc.entity_id,
+                        source_record_key=source["source_record_key"], known_at=AT)
+    collector._bind_source(prepared, source)
+    assert collector.ingest(prepared, record=source, values=values) == len(values)
+    repo.finish_sync_run(run.run_id, status="success", values_loaded=len(values))
+    heads = ExportHeads(repo)
+    assert heads.promote(prepared.identity, ExportArtifactStore(tmp_path)) == "PUBLISHED"
+    with repo.engine.connect() as c:
+        count = c.scalar(select(heads.generations.c.point_count).join(
+            heads.heads, heads.heads.c.generation_id == heads.generations.c.generation_id
+        ).where(
+            heads.heads.c.namespace == prepared.descriptor.namespace
+        ))
+    assert count == len(values)
+    repo.engine.dispose()
