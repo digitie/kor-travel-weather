@@ -43,6 +43,17 @@ REST는 scalar summary만 선택하며 weather_values/날짜 파티션/hourly_wi
 ETag에는 실제 페이지와 source 상태를 넣어 변경 중의 페이지를 304로 숨기지 않는다.
 cursor 조건 변경은422, 15분 만료는410이며 첫 페이지부터 재시작한다.
 
+한 HTTP 페이지의 summary·coverage·checkpoint·원천 상태는 같은 REPEATABLE READ
+snapshot과 statement 5초 상한 안에서 읽는다. 페이지 사이 최신 값 허용은 한 페이지
+안에서 서로 다른 commit의 위치 값을 섞어도 된다는 뜻이 아니다.
+
+승인 위치×namespace coverage를 요약/checkpoint와 같은 TX로 저장한다. 선택 위치의
+현재 grid/좌표에 맞는 coverage가 없으면503이고, 관측 없는 시간 bucket의 null과
+구분한다. 선택한 승인 원천 중 가장 오래된 실제 조회 시각을 신선도에 사용하며
+실패 상태도 선택 source_scope만 검사한다. 다른 위치의 성공/실패는 신선도를
+좋게 만들거나 무관한 위치를 stale로 바꾸지 않는다. 전체 위치 조회는 하나라도
+승인 coverage가 없으면 작은 성공 집합으로 축소해 내보내지 않는다.
+
 `docs/examples/weather-daily-summaries.json`은 격리된 PG/실제 publisher와 TCP API에서
 받은 응답 예시다. 토큰은 포함하지 않으며 관측이 없는 구간의 null/sample_count=0과
 다음 cursor를 보여 준다. 각 페이지에서 source 상태와 실제 값을 다시 검증하므로
