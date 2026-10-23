@@ -1,5 +1,10 @@
 # Weather 현재 인수인계
 
+## 2026-10-23 — 남은 API 작업 독립 감사
+
+- [W1~W5 요구사항·코드·PR·검증·운영 구분](audits/2026-10-23-map-api-remaining.md)을 작성했다. 실제 데이터 공개는 미완이며 계약/receipt 머지를 전체API 완료로 세지 않는다.
+- 현재 daemon 사용자정책은RUNNING이다. 과거OFF는 이력으로 보존하며, 문서정산만 수행하고 운영은 변경하지 않았다. 다음은3A→3B→비용/frozen gate→데이터 공개이며 W5는 성공관측projection 뒤다.
+
 ## 2026-10-23 — Map API 단계2 기반 머지, 실제 공개는 후속
 
 - 단계1 PR135 main9d75b64와 단계2 PR136 main91801d4를 머지했다. PR136 최종9bd5f21의 두 독립 적대 리뷰·CI PASS, WSL 전체Python756 PASS1150초(시작6d764da)+수정집중24 PASS29.29초, frontend243/type-check PASS, 격리실제API3범주/UI11 PASS다. 운영 배포/collector opt-in/실제 W1~W5 데이터 공개는 아직 아니다.
