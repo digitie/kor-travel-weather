@@ -164,51 +164,50 @@ class FrozenMidForecastExports(FrozenForecastExports):
             raise ExportCursorInvalid("중기 위치 cursor의 범위가 올바르지 않습니다.")
         output, size = [], 0
         caches = {"land": {}, "temperature": {}}
-        with self.artifacts.guard(timeout_seconds=2, shared=True):
-            while state["g"] < len(pairs):
-                pair = pairs[state["g"]]
-                if self.since is not None and _at(pair["published_at"]) <= self.since:
-                    state["g"] += 1
-                    continue
-                if len(output) >= limit:
-                    return output, True
-                key = pair["location_id"]
-                points = [point for part in ("land", "temperature") for point in self._chunk(
-                    scopes[pair[part]], key, caches[part],
-                )]
-                future = [point for point in points if _at(point["target_at"]) > now]
-                if not future:
-                    raise ExportSnapshotUnavailable("현재 이후의 완전 중기 예보가 없습니다.")
-                targets = sorted({_at(point["target_at"]) for point in future})
-                metrics = defaultdict(dict)
-                for point in future:
-                    metric, target = point["metric_key"], _at(point["target_at"])
-                    if target in metrics[metric]:
-                        raise ExportSnapshotUnavailable("중기 위치·metric·시각이 중복됐습니다.")
-                    metrics[metric][target] = (
-                        float(point["value_number"]) if point["value_number"] is not None
-                        else point["value_text"]
-                    )
-                item = {
-                    "location_id": key, "provider": MID_SOURCE[0], "forecast_style": "mid",
-                    # 같은 의미의 재확인은 과거 파일을 재사용한다. fact known_at은
-                    # 그대로 반환하고 새 수집 시각은 meta.source_collected_at으로 구분한다.
-                    "known_at": max(_at(point["known_at"]) for point in points).isoformat(),
-                    "published_at": pair["published_at"],
-                    "target_at": [target.isoformat() for target in targets],
-                    "metrics": {metric: [values.get(target) for target in targets]
-                                for metric, values in sorted(metrics.items())},
-                }
-                item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
-                if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
-                    raise ExportSnapshotUnavailable(
-                        "한 위치의 중기예보가 페이지 상한을 넘었습니다."
-                    )
-                if len(output) >= limit or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
-                    return output, True
-                output.append(item)
-                size += item_size
+        while state["g"] < len(pairs):
+            pair = pairs[state["g"]]
+            if self.since is not None and _at(pair["published_at"]) <= self.since:
                 state["g"] += 1
+                continue
+            if len(output) >= limit:
+                return output, True
+            key = pair["location_id"]
+            points = [point for part in ("land", "temperature") for point in self._chunk(
+                scopes[pair[part]], key, caches[part],
+            )]
+            future = [point for point in points if _at(point["target_at"]) > now]
+            if not future:
+                raise ExportSnapshotUnavailable("현재 이후의 완전 중기 예보가 없습니다.")
+            targets = sorted({_at(point["target_at"]) for point in future})
+            metrics = defaultdict(dict)
+            for point in future:
+                metric, target = point["metric_key"], _at(point["target_at"])
+                if target in metrics[metric]:
+                    raise ExportSnapshotUnavailable("중기 위치·metric·시각이 중복됐습니다.")
+                metrics[metric][target] = (
+                    float(point["value_number"]) if point["value_number"] is not None
+                    else point["value_text"]
+                )
+            item = {
+                "location_id": key, "provider": MID_SOURCE[0], "forecast_style": "mid",
+                # 같은 의미의 재확인은 과거 파일을 재사용한다. fact known_at은
+                # 그대로 반환하고 새 수집 시각은 meta.source_collected_at으로 구분한다.
+                "known_at": max(_at(point["known_at"]) for point in points).isoformat(),
+                "published_at": pair["published_at"],
+                "target_at": [target.isoformat() for target in targets],
+                "metrics": {metric: [values.get(target) for target in targets]
+                            for metric, values in sorted(metrics.items())},
+            }
+            item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
+            if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                raise ExportSnapshotUnavailable(
+                    "한 위치의 중기예보가 페이지 상한을 넘었습니다."
+                )
+            if len(output) >= limit or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                return output, True
+            output.append(item)
+            size += item_size
+            state["g"] += 1
         return output, False
 
     def _inventory_forecast_health(self, manifest, frozen, now):
