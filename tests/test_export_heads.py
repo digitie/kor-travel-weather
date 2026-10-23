@@ -15,6 +15,49 @@ from kortravelweather.models import WeatherLocation
 from kortravelweather.repository import WeatherRepository
 
 
+@pytest.mark.parametrize(
+    "style,base_time,hours", [("ultra_short", "2330", 6), ("short", "2300", 72)]
+)
+def test_forecast_coverage_uses_sdk_base_across_kst_midnight(style, base_time, hours):
+    from kma.time_utils import parse_kma_datetime
+
+    from kortravelweather.export_heads import _forecast_coverage
+
+    base = parse_kma_datetime("20261023", base_time)
+    descriptor = ScopeDescriptor(
+        dataset_key="kma_ultra_short_forecast" if style == "ultra_short" else "kma_short_forecast",
+        forecast_style=style,
+        entity_type="weather_response",
+        entity_id="grid:60:127",
+        nx=60,
+        ny=127,
+        location_ids=("midnight",),
+        normalizer_revision="kma-v1",
+        winner_policy_revision="kma-base-v1",
+        coverage_contract="kma-grid-forecast-v1",
+    )
+    categories = (
+        {"T1H", "RN1", "REH", "PTY", "SKY", "VEC", "WSD"}
+        if style == "ultra_short"
+        else {"TMP", "PCP", "REH", "PTY", "POP", "SKY", "VEC", "WSD"}
+    )
+    rows = []
+    for hour in range(1, hours + 1):
+        at = (base + timedelta(hours=hour)).replace(minute=0)
+        rows.extend(
+            {
+                "fcstDate": at.strftime("%Y%m%d"),
+                "fcstTime": at.strftime("%H%M"),
+                "category": category,
+            }
+            for category in categories
+        )
+    assert rows[0]["fcstDate"] == "20261024" and rows[0]["fcstTime"] == "0000"
+    _forecast_coverage(descriptor, rows, base.astimezone(UTC))
+    with pytest.raises(ExportArtifactError):
+        _forecast_coverage(descriptor, rows[len(categories) :], base.astimezone(UTC))
+
+
 @pytest.fixture(scope="module")
 def repository():
     result = WeatherRepository(os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"])
