@@ -1,6 +1,6 @@
 # Weather Map export 단계3 구현 계획
 
-- 상태: 제안. 단계3A/3B 제품 구현·collector 활성화·실제 데이터 API는 아직 미완료.
+- 상태: 단계3A의 nonempty 내부 lifecycle 범위는 PR139로 구현·검증·머지됐다. 아래 최초 계획과 차이는 [최종 수용 기록](../reports/2026-10-23-map-export-plan-barrier.md)을 따른다. 정상0 증거·실제 adapter/collector 통합·3B·비용/frozen·실제 데이터 API는 미완료.
 - 기준: `/mnt/f/dev/kor-travel-weather-map-perf`, `91801d4593fad3b95aafd7456a5d94b56dc23130` (PR136 머지).
 - 정본: `docs/design/map-service-exports.md` §3.1~3.3, 현재 `export_receipts.py`, `export_artifacts.py`, repository 수집/종료 hook.
 - 코드 조사 기반 계획이다. 운영·DB·수집 설정 변경과 성능 실측을 수행하지 않았다.
