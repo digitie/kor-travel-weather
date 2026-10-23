@@ -268,7 +268,7 @@ def test_semantically_small_complete_response_keeps_existing_success_head(reposi
     assert _counts(repository) == (4, 2, 2)
 
 
-def _forecast_client(*, short=False, truncated=False):
+def _forecast_client(*, short=False, truncated=False, start_hour=1):
     from datetime import timedelta
 
     from kma.time_utils import parse_kma_datetime
@@ -289,7 +289,7 @@ def _forecast_client(*, short=False, truncated=False):
         if short:
             metrics["POP"] = "0"
         rows = []
-        for hour in range(1, hours + 1):
+        for hour in range(start_hour, start_hour + hours):
             at = (base + timedelta(hours=hour)).replace(minute=0)
             for category, value in metrics.items():
                 rows.append(
@@ -388,6 +388,27 @@ def test_forecast_complete_pagination_but_missing_hours_keeps_facts_unpublished(
         client=_forecast_client(truncated=True),
         targets=_targets(),
         base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] > 0
+    assert _counts(repository) == (2, 0, 0)
+    assert publish_pending_exports(repository, tmp_path).processed == 0
+
+
+@pytest.mark.parametrize("short,start_hour", [(False, 100), (True, 49)])
+def test_forecast_cannot_replace_missing_near_term_with_distant_complete_window(
+    repository,
+    tmp_path,
+    short,
+    start_hour,
+):
+    from kortravelweather_dagster.kma_weather import KMA_SHORT_FORECAST, KMA_ULTRA_SHORT_FORECAST
+
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(short=short, start_hour=start_hour),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_SHORT_FORECAST if short else KMA_ULTRA_SHORT_FORECAST}),
         export_artifact_root=tmp_path,
     )
     assert result["status"] == "success" and result["values_loaded"] > 0

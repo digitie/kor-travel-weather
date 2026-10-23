@@ -10,7 +10,7 @@ import json
 from collections import Counter
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
@@ -275,9 +275,17 @@ def _forecast_coverage(descriptor, rows, revision):
     )
     minimum = 6 if descriptor.forecast_style == "ultra_short" else 72
     complete = sorted(at for at, categories in groups.items() if required.issubset(categories))
-    if len(complete) < minimum or any(
-        (right - left).total_seconds() != 3600
-        for left, right in zip(complete[:minimum], complete[1:minimum], strict=False)
+    # metadata의 SDK 선택 base를 그대로 사용한다. 이미 선택된 회차의 첫 예보
+    # 정시를 묶는 검사이며 발표 회차 선택/지연시간 계산을 재구현하지 않는다.
+    first_target = revision.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    if (
+        not complete
+        or complete[0] != first_target
+        or len(complete) < minimum
+        or any(
+            (right - left).total_seconds() != 3600
+            for left, right in zip(complete[:minimum], complete[1:minimum], strict=False)
+        )
     ):
         raise ExportArtifactError("예보의 최소 연속 시간대·필수 category 증거가 없습니다.")
 
