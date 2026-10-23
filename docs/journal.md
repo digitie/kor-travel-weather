@@ -429,3 +429,34 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   STYLE_DATASETS/manifest/page 출력의 좁은 protected hook을 분리했다.
 - 실제 7 provider current/KHOA REST·SDK43PASS, 재확인/새 station 복구/registry10PASS.
   전체 제공처 일간 요약·최종 리뷰/CI/실제TCP/UI와 운영 비용/GC gate는 남아 있다.
+
+# 2026-10-23 중기 전용 job의 export 배선
+
+- 명시 opt-in 중기 job에서 실제 source roster/사전 계획과 capture를 연결한다.
+  동일 지역을 중복 HTTP/claim하지 않고 SDK 회차를 한번 고정한다. 한 원문·작은
+  template과50곳/2,500값 batch로 원본 저장·전체 예산·heartbeat를 유지한다.
+- 공개SDK 모의HTTP+실제native runner6건/기존OFF23건/Ruff PASS. PostgreSQL
+  통합·두 리뷰·정확CI/HTTP/UI·운영 성능은 별도 수용 전이다.
+- 상세: `docs/reports/2026-10-23-mid-export-collection.md`.
+
+
+
+### 중기 실제 PostgreSQL 저장·복구 수용
+
+- 전용 DB에0001→0033을 새로 적용한 뒤 실제 SDK 모의HTTP/native runner/capture/
+  publisher에서3개 head·6개 역할 승인과 후속 HTTP 실패 시 이전6개 승인 보존을
+  확인했다. 관련PG10건14.01초·실제asset ON/OFF21건·Ruff PASS.
+- 초기 검증 두 실패는 공개SDK 예외 문구와 publisher REJECTED 상태의 기대값 오류였고
+  테스트만 수정했다. source 자체 변경은 없다. 두 리뷰·정확 CI/REST/UI는 후속이다.
+### 중기 빈 응답 재확인
+
+- root 자체 점검에서 빈 성공 응답 재확인 요건이 빠진 점을 찾아 같은 회차·계획으로
+  1회만 재확인하도록 보강했다. transport 재시도는 SDK 경계를 유지한다.
+- 집중8건/Ruff PASS. 원천이 계속 비면 native 실패/이전 승인 유지 경로를 사용한다.
+### export와 native 선택 상한 분리
+
+- root 자체 점검에서 descriptor1,000곳 상한이 기존 native 입력까지 막을 수 있는
+  경계를 찾아 작은 native scope와 export descriptor를 분리했다. 승인 불가면
+  원본 bounded 저장만 계속한다.1,001곳42,042값 포함 집중9건/Ruff PASS.
+- 빈 응답 재확인 추가 후 관련PG12건25.38초 PASS도 확인했다. 새 범위 분리와 최종
+  선행155수정 통합 후 실제PG를 다시 확인하고 정확 CI/리뷰를 수용한다.

@@ -24,8 +24,9 @@ def test_definitions_resolve_without_error() -> None:
 
 
 @pytest.mark.parametrize("dataset", ["mid", "alerts"])
+@pytest.mark.parametrize("enabled", [False, True])
 def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
-    monkeypatch, tmp_path, dataset,
+    monkeypatch, tmp_path, dataset, enabled,
 ):
     from types import SimpleNamespace
 
@@ -37,15 +38,19 @@ def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
     from kortravelweather.settings import WeatherSettings
 
     calls = []
+    issues = []
 
     class DataClient(_EntersAndCloses):
-        async def mid_land_forecast(self, *, reg_id):
+        async def mid_land_forecast(self, *, reg_id, tm_fc=None):
             calls.append("land")
-            return [{"tmFc": "202601010600", "regId": reg_id, "wf3Am": "맑음"}]
+            issues.append(tm_fc)
+            return [{"tmFc": tm_fc or "202601010600", "regId": reg_id, "wf3Am": "맑음"}]
 
-        async def mid_temperature_forecast(self, *, reg_id):
+        async def mid_temperature_forecast(self, *, reg_id, tm_fc=None):
             calls.append("temperature")
-            return [{"tmFc": "202601010600", "regId": reg_id, "taMin3": "-1", "taMax3": "4"}]
+            issues.append(tm_fc)
+            return [{"tmFc": tm_fc or "202601010600", "regId": reg_id,
+                     "taMin3": "-1", "taMax3": "4"}]
 
         async def weather_warning_list(self, **kwargs):
             calls.append("alerts")
@@ -56,7 +61,7 @@ def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
         _target().location, mid_land_region_code="11B00000", mid_temperature_region_code="11B10101",
     )
     monkeypatch.setattr(definitions, "WeatherSettings", lambda: WeatherSettings(
-        environment="development", service_exports_enabled=True,
+        environment="development", service_exports_enabled=enabled,
         service_export_artifact_root=tmp_path,
     ))
     monkeypatch.setattr(definitions, "_run_repository", lambda context: repo)
@@ -76,6 +81,9 @@ def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
         result = asset(context)
     assert result["status"] == "success" and repo.values
     assert calls == (["land", "temperature"] if dataset == "mid" else ["alerts"])
+    if dataset == "mid":
+        assert len(issues) == 2 and issues[0] == issues[1]
+        assert (issues[0] is not None) is enabled
 
 
 def test_kma_is_split_into_one_job_per_dataset() -> None:
