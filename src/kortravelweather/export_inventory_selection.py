@@ -172,6 +172,23 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     )))
     # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
     unconfirmed |= live_heads != namespaces
+    owners = metadata.tables["weather_export_scope_owners"]
+    source_scopes = {row["source_scope"] for row in valid.values()}
+    active = list(connection.execute(select(
+        owners.c.source_scope, attempts.c.status, runs.c.status,
+        generations.c.generation_id,
+    ).select_from(owners.join(
+        attempts, owners.c.active_attempt_id == attempts.c.attempt_id,
+    ).join(runs, runs.c.run_id == attempts.c.run_id).outerjoin(
+        generations, generations.c.attempt_id == attempts.c.attempt_id,
+    )).where(owners.c.source_scope.in_(source_scopes))))
+    # native terminal뿐 아니라 확정된 Dagster 실패를 publisher가 기록한 attempt도
+    # 현재 승인 집합의 건강도에 반영한다. 이전 파일과 inventory는 그대로 보존한다.
+    unconfirmed |= len(active) != len(source_scopes) or any(
+        attempt == "failed" or native not in {"running", "success"}
+        or native == "success" and generation is None
+        for _, attempt, native, generation in active
+    )
     cohorts = external_cohort_table(metadata)
     declarations = {
         (row["provider"], row["dataset_key"]): row for row in connection.execute(select(
