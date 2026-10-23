@@ -62,6 +62,11 @@ def test_daily_inventory_requires_reducer_for_each_source_and_allows_forecast_on
     assert no_observation.status_code == 200
     assert no_observation.json()["meta"]["source_collected_at"] is None
     assert all(row["sample_count"] == 0 for row in no_observation.json()["items"])
+    import kortravelweather.export_daily_reader as daily_reader
+
+    with monkeypatch.context() as bounded:
+        bounded.setattr(daily_reader, "MAX_SELECTED_ROWS", 1)
+        assert client.get(path, params={"days": 1}, headers=headers).status_code == 503
     with repo.engine.begin() as connection:
         connection.execute(update(table).where(table.c.provider == "python-krex-api").values(
             generation_id="previous-approved-generation",

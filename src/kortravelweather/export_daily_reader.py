@@ -10,6 +10,7 @@ from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
 from .export_inventory_selection import (
+    MAX_SELECTED_ROWS,
     approved_source_selection,
     catalog_source_columns,
     source_max_age,
@@ -74,8 +75,11 @@ class DailySummaryExports(FrozenCurrentExports):
                     ),
                 )
                 .order_by(coverage.c.location_id, coverage.c.namespace)
+                .limit(MAX_SELECTED_ROWS + 1)
             ).mappings()
         )
+        if len(rows) > MAX_SELECTED_ROWS:
+            raise ExportSnapshotUnavailable("관측 coverage metadata 상한을 넘었습니다.")
         if self.source_inventory:
             rows, unconfirmed = self._inventory_coverage(connection, keys, rows)
         else:
