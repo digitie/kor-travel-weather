@@ -369,7 +369,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         scopes = manifest["scopes"]
         if state["g"] > len(scopes):
             raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
-        with self.artifacts.guard(timeout_seconds=2):
+        with self.artifacts.guard(timeout_seconds=2, shared=True):
             while state["g"] < len(scopes):
                 scope = scopes[state["g"]]
                 if self.since and datetime.fromisoformat(scope["published_at"]) <= self.since:

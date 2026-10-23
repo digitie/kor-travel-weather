@@ -119,7 +119,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
     now = datetime.now(UTC)
     approved_coverage = []
     # guard timeout은 획득 대기 상한이며 전체 IO의 wall deadline은 아니다.
-    with artifacts.guard(timeout_seconds=2):
+    with artifacts.guard(timeout_seconds=2, shared=True):
         for row in rows:
             if row["descriptor"]["forecast_style"] not in {"observed", "nowcast"}:
                 continue
