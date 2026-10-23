@@ -1058,6 +1058,7 @@ async def _stage_and_publish_weather(
             # OFF인 기존 경로의 chunk/메모리/성공 의미를 그대로 둔다.
             if (
                 not include_base
+                or base_datasets is None
                 or len(base_datasets) != 1
                 or not base_datasets.issubset(
                     {
