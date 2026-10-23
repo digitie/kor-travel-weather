@@ -54,7 +54,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
 from sqlalchemy.types import TypeDecorator
 
@@ -78,7 +78,15 @@ from .export_receipts import (
     source_scope_key,
 )
 from .export_snapshots import export_snapshot_tables
-from .export_status import export_fetch_clock_table, export_status_table
+from .export_status import (
+    TERMINALS,
+    ExportSourceStatuses,
+    SourceKey,
+    export_fetch_clock_table,
+    export_status_table,
+    status_transaction,
+)
+from .export_status_scopes import dataset_scopes, status_scopes
 from .metrics import (
     observe_history_purged,
     observe_stale_recovered,
@@ -532,6 +540,10 @@ class SyncRunRow(Base):
     __table_args__ = (
         Index("ix_weather_sync_runs_started", "started_at"),
         Index("ix_weather_sync_runs_heartbeat", "heartbeat_at"),
+        Index(
+            "ix_weather_sync_runs_export_pending", "provider", "started_at", "run_id",
+            postgresql_where=text("export_status_pending = true"),
+        ),
         # A provider/dataset may have at most one live run.  The application
         # checks first for a useful error message, while this partial unique
         # index closes the check-then-insert race between workers.
@@ -570,6 +582,12 @@ class SyncRunRow(Base):
 
     # REST DTO에는 노출하지 않는 worker 소유권. lease만으로 생사를 추측하지 않는다.
     orchestrator_run_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    export_status_scopes: Mapped[list[dict[str, str]] | None] = mapped_column(
+        JSON(none_as_null=True),
+    )
+    export_status_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"),
+    )
 
 
 class SyncRunSourceRow(Base):
@@ -1001,8 +1019,9 @@ class WeatherRepository:
     작고 명시적이다. 장시간 provider I/O는 repository 밖 Dagster가 소유한다.
     """
 
-    def __init__(self, database_url: str) -> None:
+    def __init__(self, database_url: str, *, export_status_enabled: bool = False) -> None:
         self.orchestrator_run_id: str | None = None
+        self.export_status_enabled = export_status_enabled
         if not database_url.startswith(("postgresql://", "postgresql+psycopg://")):
             raise ValueError("WeatherRepository는 PostgreSQL DSN만 지원합니다.")
         normalized_url = database_url
@@ -1881,6 +1900,7 @@ class WeatherRepository:
             if run.status != "running":
                 raise ValueError(f"sync run이 이미 종료되었습니다: {run_id}")
             run_rows[run_key] = run
+        self._capture_export_fetch_clocks(session, records)
         # Normalize source-key aliases before values are inserted.  This keeps
         # foreign keys and WeatherValue identity stable when a provider emits a
         # new deterministic key for a raw payload already stored in the DB.
@@ -2282,6 +2302,7 @@ class WeatherRepository:
                     .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
                     .values(
                         status=status,
+                        export_status_pending=SyncRunRow.export_status_scopes.is_not(None),
                         finished_at=kst_now(),
                         grids_fetched=grids_fetched,
                         mid_groups_fetched=mid_groups_fetched,
@@ -2295,6 +2316,7 @@ class WeatherRepository:
                 row = session.get(SyncRunRow, run_id)
                 if row is None:
                     raise KeyError(run_id)
+                self._project_export_terminal(session, row)
                 # Every source the run published, read from its lineage rows:
                 # collectors publish in location chunks, so ``source_records``
                 # here is only what no fact cited.  The primary key leads with
@@ -3495,9 +3517,113 @@ class WeatherRepository:
                 for row, distance in session.execute(stmt).all()
             ]
 
+    @staticmethod
+    def _status_scope_dict(key: SourceKey) -> dict[str, str]:
+        return {
+            "provider": key.provider, "dataset_key": key.dataset_key,
+            "forecast_style": key.forecast_style,
+        }
+
+    def _capture_export_fetch_clocks(
+        self, session: Session, records: list[Mapping[str, Any]],
+    ) -> None:
+        if not self.export_status_enabled:
+            return
+        # canonical raw의 옛 fetched_at으로 대체하기 전 실제 이번 응답 시각을 보존한다.
+        grouped: dict[tuple[str, str, str], tuple[datetime, datetime]] = {}
+        allowed = {(key.provider, key.dataset_key) for key in status_scopes()}
+        try:
+            for record in records:
+                fetched = record.get("fetched_at")
+                run_id = record.get("run_id")
+                if run_id is None or not isinstance(fetched, datetime):
+                    continue
+                if fetched.tzinfo is None or fetched.utcoffset() is None:
+                    continue
+                identity = (str(run_id), str(record["provider"]), str(record["dataset_key"]))
+                if (identity[1], identity[2]) not in allowed:
+                    continue
+                previous = grouped.get(identity, (fetched, fetched))
+                grouped[identity] = (min(previous[0], fetched), max(previous[1], fetched))
+                if len(grouped) > 128:
+                    raise ValueError("상태 fetch scope 상한을 초과했습니다.")
+            if not grouped:
+                return
+            with status_transaction(session.connection()):
+                statuses = ExportSourceStatuses(Base.metadata)
+                for (run_id, provider, dataset), (first, last) in grouped.items():
+                    statuses.record_fetch_clock(
+                        session.connection(), run_id=run_id, provider=provider,
+                        dataset_key=dataset, fetched_at=first, last_fetched_at=last,
+                    )
+        except (SQLAlchemyError, ValueError):
+            logger.warning("export 실제 수집 시각을 저장하지 못했습니다.")
+
+    def _project_export_terminal(self, session: Session, row: SyncRunRow) -> None:
+        """성공한 native CAS의 소유권 아래에서만 파생 terminal을 기록한다."""
+        if not self.export_status_enabled or not row.export_status_scopes:
+            return
+        try:
+            scopes = tuple(SourceKey(**item) for item in row.export_status_scopes)
+            allowed = set(dataset_scopes(row.provider, {key.dataset_key for key in scopes}))
+            if len(scopes) > 128 or len(set(scopes)) != len(scopes) or set(scopes) != allowed:
+                raise ValueError("native 실행의 상태 scope가 올바르지 않습니다.")
+            with status_transaction(session.connection()):
+                statuses = ExportSourceStatuses(Base.metadata)
+                for key in scopes:
+                    fetched = statuses.fetch_clock(
+                        session.connection(), run_id=row.run_id,
+                        provider=key.provider, dataset_key=key.dataset_key,
+                    )
+                    statuses.record_terminal(
+                        session.connection(), key, run_id=row.run_id,
+                        started_at=row.started_at, finished_at=row.finished_at,
+                        status=row.status if row.status in TERMINALS else "failed",
+                        source_collected_at=fetched,
+                    )
+                session.execute(update(SyncRunRow).where(
+                    SyncRunRow.run_id == row.run_id,
+                ).values(export_status_pending=False))
+        except (SQLAlchemyError, TypeError, ValueError):
+            logger.warning("export terminal 상태를 저장하지 못했습니다.")
+
+    def reconcile_export_status(self, providers: set[str], *, limit: int = 1) -> int:
+        """native terminal과 원자적으로 남긴 pending 부분 인덱스로 재투영한다.
+
+        API는 한 실행까지만 복구를 시도한다. 상태 행 lock 경합은 최대 1초에서
+        미루며, 아직 pending이 있으면 reader가 빈/옛 정상 응답을 내보내지 않는다.
+        """
+        if not self.export_status_enabled:
+            return 0
+        if not 1 <= limit <= 8:
+            raise ValueError("상태 재투영은 한 번에 1~8개 실행까지 허용합니다.")
+        with self._session_factory.begin() as session, status_transaction(session.connection()):
+            rows = session.scalars(select(SyncRunRow).where(
+                SyncRunRow.export_status_pending == true(), SyncRunRow.provider.in_(providers),
+            ).order_by(SyncRunRow.started_at, SyncRunRow.run_id).limit(limit).with_for_update(
+                skip_locked=True,
+            )).all()
+            for row in rows:
+                if row.status != "running":
+                    self._project_export_terminal(session, row)
+            return len(rows)
+
     def start_sync_run(
-        self, *, provider: str, dataset_key: str, locations_total: int = 0
+        self, *, provider: str, dataset_key: str, locations_total: int = 0,
+        export_status_datasets: set[str] | None = None,
     ) -> SyncRun:
+        if self.export_status_enabled and dataset_key == "kma_weather_bundle" and (
+            export_status_datasets is None
+        ):
+            raise ValueError("복합 KMA 실행에는 실제 요청 데이터셋 계획이 필요합니다.")
+        requested = {dataset_key} if export_status_datasets is None else export_status_datasets
+        scopes = dataset_scopes(provider, requested) if (
+            self.export_status_enabled
+        ) else ()
+        if self.export_status_enabled and export_status_datasets is not None and (
+            requested != {key.dataset_key for key in scopes}
+        ):
+            raise ValueError("상태 계획에 지원하지 않는 데이터셋이 있습니다.")
         started_at = kst_now()
         run = SyncRun(
             run_id=f"run_{uuid.uuid4().hex}",
@@ -3542,9 +3668,10 @@ class WeatherRepository:
                         "동일 provider/dataset 실행이 이미 진행 중입니다 "
                         f"(lease 만료, 회수 대기): {active_id}"
                     )
-                session.add(
-                    SyncRunRow(**run.model_dump(), orchestrator_run_id=self.orchestrator_run_id)
-                )
+                session.add(SyncRunRow(
+                    **run.model_dump(), orchestrator_run_id=self.orchestrator_run_id,
+                    export_status_scopes=[self._status_scope_dict(key) for key in scopes] or None,
+                ))
         except IntegrityError as exc:
             # The partial unique index on running rows: another start of the
             # same provider/dataset committed between the check and the insert,
@@ -3554,6 +3681,17 @@ class WeatherRepository:
             ) from exc
         observe_sync_started(provider, dataset_key)
         return run
+
+    def set_sync_run_locations_total(self, run_id: str, total: int) -> None:
+        """bulk 응답 뒤에 알게 된 대상 수만 소유 native 실행에 기록한다."""
+        if total < 0:
+            raise ValueError("대상 수는 음수일 수 없습니다.")
+        with self._session_factory.begin() as session:
+            updated = session.execute(update(SyncRunRow).where(
+                SyncRunRow.run_id == run_id, SyncRunRow.status == "running",
+            ).values(locations_total=total))
+            if updated.rowcount != 1:
+                raise RuntimeError("대상 수 기록 전에 sync run 소유권을 잃었습니다.")
 
     def reconcile_stale_sync_runs(self, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES) -> int:
         """orchestrator 소유권이 없는 기존 running row를 lease 기준으로 회수한다."""
@@ -3726,28 +3864,23 @@ class WeatherRepository:
                 )
                 .values(
                     status="failed",
+                    export_status_pending=SyncRunRow.export_status_scopes.is_not(None),
                     finished_at=kst_now(),
                     error="worker 종료 또는 metadata 유실·lease 만료로 중단된 실행 회수",
                 )
-                .returning(SyncRunRow.provider, SyncRunRow.dataset_key)
-            ).all()
-        for provider, dataset in rows:
-            observe_sync_finished(provider, dataset, status="failed")
+                .returning(SyncRunRow)
+            ).scalars().all()
+            for row in rows:
+                self._project_export_terminal(session, row)
+        for row in rows:
+            observe_sync_finished(row.provider, row.dataset_key, status="failed")
         observe_stale_recovered(len(rows))
         return len(rows), next_cursor, stopped
 
-    @staticmethod
     def _reconcile_stale_sync_runs_session(
-        session: Session, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES
+        self, session: Session, *, max_age_minutes: int = SYNC_RUN_LEASE_MINUTES
     ) -> int:
         cutoff = kst_now() - timedelta(minutes=max_age_minutes)
-        stale_rows = session.scalars(
-            select(SyncRunRow).where(
-                SyncRunRow.status == "running",
-                SyncRunRow.orchestrator_run_id.is_(None),
-                func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at) < cutoff,
-            )
-        ).all()
         result = session.execute(
             update(SyncRunRow)
             .where(
@@ -3757,12 +3890,16 @@ class WeatherRepository:
             )
             .values(
                 status="failed",
+                export_status_pending=SyncRunRow.export_status_scopes.is_not(None),
                 finished_at=kst_now(),
                 error="stale sync run recovered after worker interruption",
             )
+            .returning(SyncRunRow)
         )
-        recovered = int(result.rowcount or 0)
-        for row in stale_rows[:recovered]:
+        rows = result.scalars().all()
+        recovered = len(rows)
+        for row in rows:
+            self._project_export_terminal(session, row)
             observe_sync_finished(row.provider, row.dataset_key, status="failed")
         return recovered
 
@@ -4402,6 +4539,7 @@ class WeatherRepository:
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
                 .values(
                     status=status,
+                    export_status_pending=SyncRunRow.export_status_scopes.is_not(None),
                     finished_at=kst_now(),
                     grids_fetched=grids_fetched,
                     mid_groups_fetched=mid_groups_fetched,
@@ -4414,6 +4552,8 @@ class WeatherRepository:
             row = session.get(SyncRunRow, run_id)
             if row is None:
                 raise KeyError(run_id)
+            if transitioned:
+                self._project_export_terminal(session, row)
             # Conditional UPDATE is the ownership/CAS boundary. If another
             # worker reconciled this run first, return its terminal row intact.
             finished = self._sync_model(row)
@@ -4714,4 +4854,7 @@ class WeatherRepository:
 
 
 def repository_from_settings(settings: WeatherSettings | None = None) -> WeatherRepository:
-    return WeatherRepository((settings or get_settings()).database_url)
+    runtime = settings or get_settings()
+    return WeatherRepository(
+        runtime.database_url, export_status_enabled=runtime.service_exports_enabled
+    )

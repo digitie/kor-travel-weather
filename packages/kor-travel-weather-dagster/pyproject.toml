@@ -12,6 +12,7 @@ dependencies = [
   "kor-travel-weather",
   "dagster>=1.9,<2",
   "dagster-webserver>=1.9,<2",
+  "croniter>=6,<7",
 ]
 
 [project.optional-dependencies]
