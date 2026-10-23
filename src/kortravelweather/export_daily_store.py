@@ -45,6 +45,7 @@ def daily_summary_tables(metadata: MetaData):
         metadata,
         Column("progress_id", Integer, primary_key=True),
         Column("published_at", DateTime(timezone=True), nullable=False),
+        Column("generation_id", String(36), nullable=False),
         Column("source_collected_at", DateTime(timezone=True)),
         Column("updated_at", DateTime(timezone=True), nullable=False),
     )
@@ -64,13 +65,17 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
     with heads._transaction() as s:
         checkpoint = s.execute(select(progress)).mappings().one_or_none()
         after = checkpoint["published_at"] if checkpoint else datetime(1970, 1, 1, tzinfo=UTC)
+        after_generation = checkpoint["generation_id"] if checkpoint else ""
         rows = [
             dict(r)
             for r in s.execute(
                 select(heads.generations, heads.plans.c.descriptor)
                 .join(heads.plans, heads.plans.c.attempt_id == heads.generations.c.attempt_id)
-                .where(heads.generations.c.created_at > after)
-                .order_by(heads.generations.c.created_at)
+                .where(
+                    tuple_(heads.generations.c.created_at, heads.generations.c.generation_id)
+                    > tuple_(after, after_generation)
+                )
+                .order_by(heads.generations.c.created_at, heads.generations.c.generation_id)
                 .limit(limit)
             ).mappings()
         ]
@@ -116,7 +121,9 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
         # 단일 writer CAS. 이 잠금은 파일을 다 읽은 뒤에만 획득한다.
         s.execute(
             insert(progress)
-            .values(progress_id=1, published_at=after, updated_at=now)
+            .values(
+                progress_id=1, published_at=after, generation_id=after_generation, updated_at=now
+            )
             .on_conflict_do_nothing()
         )
         locked = (
@@ -124,7 +131,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
             .mappings()
             .one()
         )
-        if locked["published_at"] != after:
+        if (locked["published_at"], locked["generation_id"]) != (after, after_generation):
             return {"processed": 0, "has_more": True, "race": True}
         for key, points in sorted(grouped.items()):
             location, day, slot = key
@@ -156,6 +163,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
             .where(progress.c.progress_id == 1)
             .values(
                 published_at=rows[-1]["created_at"],
+                generation_id=rows[-1]["generation_id"],
                 source_collected_at=collected,
                 updated_at=now,
             )
