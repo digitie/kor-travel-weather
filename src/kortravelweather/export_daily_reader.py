@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, tuple_
 
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
@@ -125,7 +125,7 @@ class DailySummaryExports(FrozenCurrentExports):
             selection = approved_source_selection(
                 connection, self.heads.metadata, locations,
                 expected=self.expected_sources, optional=self.optional_sources,
-                health_location_ids=keys,
+                health_location_ids=keys if self.location_id else None,
             )
         except (ExportArtifactError, KeyError, TypeError, ValueError) as exc:
             raise ExportSnapshotUnavailable("관측 source 승인 집합이 준비되지 않았습니다.") from exc
@@ -134,6 +134,19 @@ class DailySummaryExports(FrozenCurrentExports):
             for scope in selection.scopes for key in scope.location_ids if key in keys
         }
         coverage = {(r["namespace"], r["location_id"]): r for r in rows}
+        from .export_external_cohorts import external_cohort_table
+
+        cohorts = external_cohort_table(self.heads.metadata)
+        target = func.json_array_elements(cohorts.c.targets).column_valued(
+            "daily_target", joins_implicitly=True,
+        )
+        target_key = target.op("->>")("location_id")
+        declared = set(connection.scalars(select(target_key).select_from(cohorts).where(
+            tuple_(cohorts.c.provider, cohorts.c.dataset_key).in_(self.expected_sources),
+            target_key.in_(keys),
+        ).distinct().limit(MAX_SNAPSHOT_LOCATIONS + 1)))
+        if declared - {row["location_id"] for row in rows}:
+            raise ExportSnapshotUnavailable("사전 계획된 관측 위치의 최초 요약이 없습니다.")
         if expected.keys() - coverage.keys():
             # 승인 관측이 있으나 요약이 한번도 계산되지 않은 경우를 무관측0으로 꾸미지 않는다.
             raise ExportSnapshotUnavailable("승인 관측의 사전 계산이 아직 준비되지 않았습니다.")

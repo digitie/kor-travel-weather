@@ -74,3 +74,39 @@ def test_daily_inventory_requires_reducer_for_each_source_and_allows_forecast_on
     with repo.engine.begin() as connection:
         connection.execute(table.delete().where(table.c.provider == "python-krex-api"))
     assert client.get(path, params={"days": 1}, headers=headers).status_code == 503
+
+
+def test_predeclared_unapproved_observation_is_not_forecast_only_zero(
+    external_repository, tmp_path, monkeypatch,
+):
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from test_all_source_exports import _sdk
+    from test_export_sdk import fixture
+
+    from kortravelweather.export_sdk_collector import sdk_descriptor
+    from kortravelweather.export_source_cohorts import declare_source_cohort
+    from kortravelweather.providers import krex
+    from kortravelweather.settings import WeatherSettings
+
+    repo = external_repository
+    _sdk(repo, tmp_path, "krex", monkeypatch)
+    _drain(repo, tmp_path)
+    _, _, parsed, _ = fixture("krex")
+    new = krex.restarea_location(parsed).model_copy(update={"location_id": "new-krex"})
+    repo.upsert_location(new)
+    descriptor = sdk_descriptor(
+        new, provider="python-krex-api", dataset_key="krex_restarea_weather",
+    )
+    run = repo.start_sync_run(provider=descriptor.provider, dataset_key=descriptor.dataset_key,
+                              export_cohort_required=True)
+    declare_source_cohort(repo, run_id=run.run_id, provider=descriptor.provider,
+                          dataset_key=descriptor.dataset_key, descriptors=[descriptor])
+    repo.finish_sync_run(run.run_id, status="failed")
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="pending-daily", enabled_providers=["python-krex-api"],
+        service_exports_enabled=True, service_export_artifact_root=tmp_path,
+    ), repo))
+    response = client.get("/v1/service/exports/daily-summaries", params={"location_id": "new-krex"},
+                          headers={"x-admin-token": "pending-daily"})
+    assert response.status_code == 503
