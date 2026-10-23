@@ -1,17 +1,17 @@
 # ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
-- 상태: **proposed, 단계1/2 기반 머지·단계3 설계**. 성공 head 기반 실제 데이터 공개·운영 DB schema 반영·운영 배포는 아직 없다.
+- 상태 갱신(2026-10-24, source #164): **W1~W5 producer 구현·머지 완료, 운영 활성화/Map 소비자 수용은 별도**. 현재 확정 계약·PR은 [인계](../reports/2026-10-23-map-service-api-handoff.md), 운영 잔여는 [tasks](../tasks.md)를 따른다. 아래 단계/선행 조사·제안은 최초 설계 기준선을 보존한다.
 - 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
   COW artifact 채택은 구현 전 실측 exit gate 통과가 조건이다. 문서 머지가 구현 승인은 아니다.
 - 보존 기준 Weather main: `12c3a4adfcd7a030bedaf5346371a5684656ea71`.
 - 관측 선택 갱신 기준: `b31c33d4d5188810d52dd102d4e59346b4aacc33`(PR #132 머지 뒤).
-- W5 선택: 사용자 “기상청 실황도 관측으로 포함(권장)” 승인. 선택 문서화만 완료했고 구현은 미착수다.
+- W5 선택: 사용자 “기상청 실황도 관측으로 포함(권장)” 승인. #148/#152/#163에서 실제 reducer/REST와 다중 원천 eligibility를 구현했으며 초기 운영 투영/소비 수용은 별도다.
 - 작성일: 2026-10-23.
 - Map 정본: ADR-114(Valkey 현재/예보 + Weather 요약, PinVi는 Map REST).
 - 입력 정본: coordinator가 전달한 W1~W5/T1~T5. 최신 사용자 명시 W5의 KST 3개 slot이
   Map ADR-114의 기존 오전/오후 요약 표현보다 우선한다. 문서 이행 때 양쪽을 함께 맞춘다.
 - 기존 history·통계·dashboard·공개/admin API를 보존하는 additive 변경이다.
-- 본 초안의 새 표/endpoint/query는 모두 제안이다. 기존 구현인 것처럼 표시하지 않는다.
+- 아래 초안의 새 표/endpoint/query는 최초 제안이다. 현재 구현과 차이가 있으면 위 인계·OpenAPI·제품 소스를 우선하며 초안의 미착수 표현을 현재 상태로 해석하지 않는다.
 
 ## 1. 실제 코드에서 확인한 경계
 
@@ -23,7 +23,7 @@
 거부하고 인증 실패는 401이다. 개발 환경의 token 미설정 허용은 기존 정책이며 이 작업에서
 인증 정책을 임의로 바꾸지 않는다. OpenAPI scheme은 `AdminToken`이다.
 
-현재 Weather에는 별도의 ServiceToken header·require_service·`/v1/service/exports`가 없다.
+초기 설계 시점 Weather에는 별도의 ServiceToken header·require_service·`/v1/service/exports`가 없었다.
 기존 `/v1/weather/{locations,locations/{id}/latest,locations/{id}/forecast,markers,...}`는
 공개 read이고 `/v1/admin/*`는 require_admin을 쓴다. **새 요구의 경로는
 `/v1/service/exports/{locations,current,forecasts,status,daily-summaries}`로 추가하되,

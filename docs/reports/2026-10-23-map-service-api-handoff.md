@@ -26,6 +26,7 @@ fixture다. 인증 토큰은 포함하지 않는다. 실제 도메인의 운영 
 모든 경로는 `/v1/service/exports/` 아래이고 기존 서비스 인증 헤더
 `X-Admin-Token`을 그대로 사용한다. `locations`, `current`, `forecasts`, `status`,
 `daily-summaries`에 generated_at/source_collected_at/source_status/item_count가 있다.
+Weather 인증 실패는 기존401이며 Transport service token/peer의404 정책과 다르다.
 gzip과 약한 ETag/If-None-Match304를 지원한다. 큰 집합은 `meta.has_more`와
 `meta.next_cursor`를 따라가며 limit 최대5,000과 페이지4MiB 상한을 함께 적용한다.
 `item_count`는 페이지 항목 수다. W4 `status`는 최대128개 상태를 한 응답에 담고
@@ -41,6 +42,11 @@ W1 `locations`의 실제 catalog 원천 수집 clock은 현재 확인할 수 없
 읽을 수 있다는 사실과 원천 수집 신선도를 구분한다. updated_at/응답 시각을
 수집 시각으로 꾸미지 않는다. Map은 이 정책을 고려해 초기 참조 roster를 받아야 한다.
 
+W3는 미래 target_at만 location×provider의 한 항목으로 묶고, 정렬된 target_at에
+metric 배열을 null 정렬한다. SKY 서술 문자열을 숫자로 바꾸지 않는다. 중기는 같은
+issued revision의 land/temperature 승인 head 둘이 있어야 완전 묶음이며 불일치·미확인
+원천은 이전 완전 vector stale/이전 집합 없으면503이다.
+
 W3 `known_at`은 원본 fact의 원천 시각이다. 동일 의미의 재수집·재승격에서도
 원본 값을 보존한다. `published_at` 및 `meta.next_since`는 **단조 공개 watermark**로
 별개다. 클라이언트는 모든 페이지를 끝까지 받은 뒤 마지막 next_since를 저장해
@@ -48,7 +54,7 @@ W3 `known_at`은 원본 fact의 원천 시각이다. 동일 의미의 재수집�
 검증된 집합과 watermark가 있으며 API/DB 시계 보정 후에도 발급 watermark를 재사용한다.
 
 W5는 observed와 KMA 초단기실황(nowcast)을 포함한다. 기본14일/최대31일,
-KST morning05~11/noon11~17/evening17~23, 미완 구간partial을 제공한다.
+KST morning[05,11)/noon[11,17)/evening[17,23), 미완 구간partial을 제공한다.
 sample_count는 metric 행수가 아닌 채택된 관측 시간 bucket 수다. 복수 제공처·재수집을
 중복 합산하지 않으며 의미가 확인되지 않은 누적 강수는 합산하지 않는다.
 원천별 최신 승인 generation의 reducer 진도가 부족하면 이전 완전 roster를
@@ -74,7 +80,10 @@ catalog/page 및 개별 provider/dataset cohort는5,000곳, 승인 source vector
 페이지 응답의 CPU/RSS/쿼리/latency와 수집 writer 영향을 확인한 뒤 활성화한다.
 소수 fixture 통과는 이 운영 규모 gate를 대체하지 않는다.
 
-API/code-server/publisher는 같은 NVMe artifact 절대 경로·권한을 공유해야 한다.
+`KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED` 기본값은 false이며 API·code-server의
+설정을 일치시킨다. publisher의 등록/정지 정책과 정상 승인 source bootstrap은 별도 수용한다.
+API/code-server/publisher는 같은 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT`의
+NVMe artifact 절대 경로·권한을 공유해야 한다.
 승인 inventory/W5 coverage/checkpoint/frozen snapshot/cursor TTL 및 실행 중 reader가
 필요한 파일을 GC가 지우지 않도록 live-root와 pin 계약을 수용해야 한다. 동시 읽기
 slot/파일 잠금만으로 metadata에서 파일 읽기로 넘어가는 pin/GC 경쟁이 해결됐다고

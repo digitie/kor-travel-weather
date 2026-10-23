@@ -5,35 +5,34 @@
 코드·PR merge·실배포·운영 수용은 다른 상태다. 증거 미확인을 미배포 확정으로 쓰지 않는다. 현재 daemon 정책은 최신 사용자 지시에 따라 Geo·Weather·Transport RUNNING이다. 과거 OFF 기록은 당시 이력이며 현재 실행 지시가 아니다.
 
 
-## 2026-10-23 Map 서비스 export — 계약/receipt 기반 머지, 실제 데이터 API 미완
+## 2026-10-24 Map 서비스 export — producer 구현 완료, 운영·소비자 수용은 별도
 
-[설계 정본](design/map-service-exports.md)을 보존한다. 아래는 **Weather 소유** 작업이다. 계약PR135·receipt 기반PR136과 W-MAP-03 선택 문서화는 완료했고,
-collector 연결·성공head·실제 데이터 API·요약·운영 수용은 남아 있다. Transport T1~T5는 같은 문서의 외부 연계 절일 뿐 이 저장소의 완료 항목으로 세지 않는다.
-설계 문서 PR 머지는 코드/운영 수용이 아니다. W5 관측 범위는 사용자 승인으로 기존 OBSERVED와
-실제 관측 기반 KMA 초단기실황을 포함하도록 선택 완료했다. COW는 실측 exit gate 뒤에만 채택한다.
+감사 기준 main은 `9aa0d339d016aaa80798c75de7115f14b043cbe5`(#164)다. W1~W5의
+실제 collector/승인 head·현재/예보/상태/사전 요약 reader는 구현·머지됐다.
+[현재 계약·PR 인계](reports/2026-10-23-map-service-api-handoff.md)를 따른다.
+아래 source 완료 표시는 실제 운영 bootstrap·Map 소비·ARM 비용/GC 수용을 포함하지 않는다.
 
-- [x] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비(구현·검증 완료, 전체Python738/frontend243·CI/2리뷰·격리실제API3범주/UI11 PASS, PR135 main9d75b64 머지). 기존 require_admin/x-admin-token 재사용과
-  신규 service route의 OpenAPI·타입·오류·bounded query와 웹 catchall service prefix 차단을 준비한다.
-  이 단계는 W1/W2 데이터 공개 완료가 아니다. 해제 조건: 설계 §1·6 단계1·§7의 계약 검증과
-  프록시 upstream fetch 0회, 기존 경로 유지, 기능 CI·2인 리뷰.
-- [ ] W-MAP-02 — 단계2 opt-in receipt 기반PR136 main91801d4 머지(전체756·최종집중24·CI/2리뷰·격리API/UI PASS), 실제collector/head는미완. [단계3A nonempty 내부계획/terminal 검증](reports/2026-10-23-map-export-plan-barrier.md)은 PR139 main4e92b241 머지(최종CI Python785/frontend·집중PG47·두 리뷰·격리API/UI PASS), 정상0/실제adapter·collector/3B·비용/frozen은 남았으며 W-MAP-01 뒤 성공 attempt receipt·[단계3A/B 계획](design/map-export-promotion-plan.md)의 scope 완결 barrier·독립 성공 export head와
-  W1/W2 실제 공개·W3 snapshot을 구현한다. W1/W2 공개 완료는 이 성공 head/barrier가 선행해야 한다.
-  설계 §6 단계2(receipt)→3(성공 승격)→4(실제 조회 공개)를 따른다. canonical replay/실제 수집시각,
-  failed chunk·scope barrier/owner·cursor/ETag/checkpoint를 검증하며 단계2·3만으로 완료하지 않는다.
-  해제 조건: 설계 §3·6·7의 실패 반증·live 검증 및 COW 합산 실측 exit gate.
-- [x] W-MAP-03 — W5 관측 eligibility **선택 문서화만 완료**(2026-10-23). 사용자 승인에 따라
-  기존 OBSERVED와 `python-kma-api/kma_ultra_short_nowcast`의 obsr_value 기반 실제 관측을
-  포함한다. source_metric_key T1H/RN1/REH/WSD/PTY·typed unit/결측·강수 interval 규칙은
-  [설계 W5](design/map-service-exports.md)에 명시했다. 일반 예보·외부 예측 NOWCAST는 제외한다.
-  기능 구현·초기 backfill·운영 수용은 미착수이며 W-MAP-04를 닫지 않는다.
-- [ ] W-MAP-04 — W5 bounded 사전 집계·요약 retention·초기 backfill·API. 관측 선택 W-MAP-03은
-  완료했지만 W-MAP-02의 성공 receipt/projection이 계속 선행 조건이며 구현은 미착수다.
-  기존 원본 history를 보존한다. 해제 조건: 설계 §4 W5·§7의 slot/강수/준비 상태·실패/중복
-  반증과 bounded query·기능 CI·2인 리뷰·live 수용.
-- [ ] W-MAP-05 — Map 소비자 계약 전달·수용·배포. 배포 전 실제 응답 예시/OpenAPI/PR을 Map
-  담당에게 전달하고, source_status/체크포인트/304/미래 필터 계약과 rollback을 함께 검증한다.
-  해제 조건: 설계 §7의 기능 CI·2인 리뷰·live E2E/API/UI·실측·배포 증거. 설계 PR로 완료하지 않는다.
+- [x] W-MAP-01 — 기존 X-Admin-Token 인증·DTO/OpenAPI/TS 및 웹 service 프록시 차단(#135).
+- [x] W-MAP-02 제품 — receipt/계획·성공 head와 SDK/HTTP/KMA native 수집 연결,
+  inventory·W1/W2 frozen reader·W3 외부/단기/중기 grouped reader 구현(#136~#160).
+  root/epoch·실패 stale·미승인503·publication watermark를 유지한다. reader 수명 #162와
+  source vector8,192/메타데이터 상한 #164를 포함한다.
+- [x] W-MAP-03 — 사용자 승인에 따른 OBSERVED와 KMA 실관측 NOWCAST의 W5 관측 eligibility 선택.
+  일반 예보·외부 예측 NOWCAST는 제외한다.
+- [x] W-MAP-04 제품 — 승인 관측 기반 bounded 사전 요약/coverage/checkpoint와 REST,
+  다중 제공처 eligibility·새 SDK station·교차 provider 누락/이전 roster stale를 구현(#148/#152/#163).
+  [집계](reports/2026-10-23-daily-summaries.md)와 [다중 원천](reports/2026-10-23-daily-source-eligibility.md)을 따른다.
+- [ ] W-MAP-05 — API·CS·publisher의 같은 false-default flag/공유 NVMe artifact 권한을
+  실제 배포하고 승인 source별 정상 bootstrap·필요 요약 초기 투영을 수용한다. 운영 #130 관련
+  배포 이력은 후속 #135~#164 전체 API 적용의 증거가 아니다.
+- [ ] Map 소비자 수용 — 응답 예시/OpenAPI/PR 전달 자료는 작성됐으나 실제 담당자 수령·
+  reader/Valkey·REST/UI 적용 완료는 별도 확인한다. W1 null/stale 최초 참조와 W3
+  next_since 전체 페이지 완료, W5 세 구간·미계산 stale/503을 검증한다.
+- [ ] 운영 비용/GC — 실제 configured source 수가 catalog/cohort5,000·vector8,192·inventory20,000
+  및 byte 상한을 만족하는지 확인한다. 같은 입력의 ARM CPU/RSS/PG WAL/latency·writer 영향,
+  미처리 generation/checkpoint/frozen cursor live-root 보존·GC/파일 pin 수용 전 자동 ON하지 않는다.
 
+아래 감사·인덱스는 당시 기준선이며 이미 구현된 W1~W5를 다시 만드는 목록이 아니다.
 
 [2026-10-23 API 남은 작업 감사](audits/2026-10-23-map-api-remaining.md)를 함께 읽는다.
 

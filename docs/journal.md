@@ -1,7 +1,7 @@
 ## 2026-10-24 — Map 서비스 API 문서 독립 정합성 감사
 
-- producer W1~W5와 #164 source vector8,192/catalog·cohort5,000/inventory20,000을 구분하고 인계의 Weather meta cursor·페이지4MiB·W4 단일 응답을 현재 구현에 맞췄다. API/DTO/OpenAPI 생성물·운영은 변경하지 않는다.
-- 구현과 별개인 flag/bootstrap·Map 소비·공유 artifact/GC·ARM 비용 수용은 계속 미완이다. 문서 전용 PR이며 기능 시험/운영 검증을 새로 통과했다고 주장하지 않는다.
+- producer W1~W5와 #164 source vector8,192/catalog·cohort5,000/inventory20,000을 구분하고 인계의 Weather meta cursor·페이지4MiB·W4 단일 응답을 현재 구현에 맞췄다. 현재 tasks/resume/초기 설계 상태와 W5 재투영4세대 batch·최대256세대/원본 단기예보6시간 범위도 정렬했다. API/DTO/OpenAPI 생성물·운영은 변경하지 않는다.
+- 구현과 별개인 flag/bootstrap·Map 소비·공유 artifact/GC·ARM 비용 수용은 계속 미완이다. 문서 전용 PR이며 기능 시험/운영 검증을 새로 통과했다고 주장하지 않는다. 고정 DTO로 예시8개를 검증하고 OpenAPI 경로/쿼리/상태와 문서 전용 경계까지 오프라인13개 확인을 통과했다(Weather·Transport 합계, HTTP/DB0).
 
 ## 2026-10-24 — 승인 source 용량과 제한된 메타데이터 PR164
 
