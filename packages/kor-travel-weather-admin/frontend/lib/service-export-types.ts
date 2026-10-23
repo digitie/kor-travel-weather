@@ -55,6 +55,23 @@ export type ExportForecastGroup = {
 
 export type ExportPage<T> = { items: T[]; meta: ExportMeta };
 
+export type ExportDailySummary = {
+  location_id: string;
+  date: string;
+  slot: "morning" | "noon" | "evening";
+  temp_min: number | null;
+  temp_max: number | null;
+  temp_avg: number | null;
+  humidity_avg: number | null;
+  precip_sum_mm: number | null;
+  precip_occurred: boolean | null;
+  sky_code: number | null;
+  wind_speed_avg: number | null;
+  sample_count: number;
+  source_providers: string[];
+  partial: boolean;
+};
+
 export type ExportUnavailable = {
   type?: string;
   title: string;
