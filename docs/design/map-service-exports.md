@@ -1,6 +1,6 @@
 # ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
-- 상태: **proposed, 단계1/2 기반 머지·단계3 설계**. 성공 head 기반 실제 데이터 공개·schema·운영 변경은 아직 없다.
+- 상태: **proposed, 단계1/2 기반 머지·단계3 설계**. 성공 head 기반 실제 데이터 공개·운영 DB schema 반영·운영 배포는 아직 없다.
 - 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
   COW artifact 채택은 구현 전 실측 exit gate 통과가 조건이다. 문서 머지가 구현 승인은 아니다.
 - 보존 기준 Weather main: `12c3a4adfcd7a030bedaf5346371a5684656ea71`.
