@@ -219,3 +219,61 @@ def test_dead_worker_marks_w4_pending_and_existing_repair_preserves_last_success
     assert after["last_success_at"] == before["last_success_at"]
     assert after["source_collected_at"] == before["source_collected_at"]
     assert state(repo, heads, failed)[1]["export_status_pending"] is False
+
+
+def test_superseded_success_keeps_native_and_new_owner_and_publishes_latest(
+    publisher_repository, tmp_path, monkeypatch
+):
+    from test_export_heads import _descriptor, _head
+
+    descriptor = _descriptor(publisher_repository)
+    heads, old, *_ = candidate(publisher_repository, tmp_path, monkeypatch, descriptor=descriptor)
+    before = dict(state(publisher_repository, heads, old)[1])
+    heads, latest, *_ = candidate(publisher_repository, tmp_path, monkeypatch,
+                                  descriptor=descriptor)
+    result = publish_pending_exports(publisher_repository, tmp_path)
+    assert result.results == {"PUBLISHED": 1, "SUPERSEDED": 1}
+    assert state(publisher_repository, heads, old)[0]["error_code"] == "SUPERSEDED"
+    assert dict(state(publisher_repository, heads, old)[1]) == before
+    assert _head(heads, descriptor)["generation_id"]
+    assert state(publisher_repository, heads, latest)[0]["published_at"] is not None
+    assert publish_pending_exports(publisher_repository, tmp_path).processed == 0
+
+
+@pytest.mark.parametrize("ownership", ["partial", "missing", "same_epoch", "all_new"])
+def test_superseded_requires_every_claimed_scope_with_strictly_newer_epoch(
+    publisher_repository, tmp_path, ownership
+):
+    from kortravelweather.export_heads import ExportHeads
+
+    repo = publisher_repository
+    heads = ExportHeads(repo)
+    sources = ["a" * 64, "b" * 64]
+    run = repo.start_sync_run(provider="test-publisher", dataset_key="multi-scope")
+    old = repo.begin_export_attempt(run_id=run.run_id, scope_key="multi",
+                                    planned_sources=sources, execution_mode="native")
+    heads.lifecycle.claim(old)
+    repo.finish_sync_run(run.run_id, status="success")
+    newer_run = repo.start_sync_run(provider="test-publisher", dataset_key="newer")
+    newer = repo.begin_export_attempt(
+        run_id=newer_run.run_id, scope_key="newer",
+        planned_sources=sources if ownership != "partial" else sources[:1],
+        execution_mode="native",
+    )
+    heads.lifecycle.claim(newer)
+    with repo.engine.begin() as connection:
+        if ownership == "missing":
+            connection.execute(heads.lifecycle.owners.delete().where(
+                heads.lifecycle.owners.c.source_scope == sources[1],
+            ))
+        elif ownership == "same_epoch":
+            connection.execute(heads.lifecycle.owners.update().where(
+                heads.lifecycle.owners.c.source_scope == sources[1],
+            ).values(owner_epoch=1))
+    publish_pending_exports(repo, tmp_path)
+    assert state(repo, heads, old)[0]["status"] == (
+        "failed" if ownership == "all_new" else "preparing"
+    )
+    assert state(repo, heads, old)[1]["status"] == "success"
+    assert state(repo, heads, newer)[0]["status"] == "preparing"
+    assert state(repo, heads, newer)[1]["status"] == "running"

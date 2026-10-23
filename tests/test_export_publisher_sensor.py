@@ -222,3 +222,33 @@ def test_planless_crash_is_seen_by_terminal_sweep_without_inventing_success(
             assert repo.reconcile_export_status({descriptor.provider}) == 1
             assert state(repo, heads, identity)[1]["export_status_pending"] is False
             assert "0개" in evaluate(sensor, instance, cursor=evaluated.cursor).skip_message
+
+
+def test_three_hundred_synthetic_pending_rows_resume_beyond_two_without_unbounded_batch(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    from kortravelweather.export_heads import ExportHeads
+
+    repo = publisher_repository
+    run = repo.start_sync_run(provider="test-capacity", dataset_key="synthetic")
+    for _ in range(300):
+        repo.begin_export_attempt(run_id=run.run_id, scope_key="synthetic",
+                                 planned_sources=["0" * 64], execution_mode="native")
+    repo.finish_sync_run(run.run_id, status="failed")
+    sensor, _ = build(repo, tmp_path)
+    # 실제 DB의 선택/진행과 총량 상한을 확인한다. clock을 고정하므로 이것을
+    # 운영 처리율/CPU 실측으로 사용하지 않는다.
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: 0))
+    with DagsterInstance.ephemeral() as instance:
+        first = evaluate(sensor, instance)
+        assert "256개" in first.skip_message
+        assert json.loads(first.cursor)["after"]
+        second = evaluate(sensor, instance, cursor=first.cursor)
+        assert "44개" in second.skip_message
+        assert json.loads(second.cursor)["after"] is None
+        assert "0개" in evaluate(sensor, instance, cursor=second.cursor).skip_message
+    heads = ExportHeads(repo)
+    with repo.engine.connect() as connection:
+        assert connection.execute(select(heads.lifecycle.attempts.c.status)).scalars().all() == (
+            ["failed"] * 300
+        )

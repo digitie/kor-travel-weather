@@ -966,5 +966,9 @@ class ExportHeads:
                     .where(self.heads.c.namespace == plan["namespace"])
                     .values(**values)
                 )
+            session.execute(update(self.lifecycle.attempts).where(
+                self.lifecycle.attempts.c.attempt_id == identity.attempt_id,
+                self.lifecycle.attempts.c.owner_id == identity.owner_id,
+            ).values(published_at=published_at))
             session.execute(self.pins.delete().where(self.pins.c.attempt_id == identity.attempt_id))
             return "PUBLISHED"

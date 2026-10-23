@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from uuid import UUID
@@ -11,12 +12,17 @@ from uuid import UUID
 from dagster import DefaultSensorStatus, SensorDefinition, SkipReason, sensor
 from sqlalchemy import text
 
-from kortravelweather.export_collector import dagster_status_lookup, publish_pending_exports
+from kortravelweather.export_collector import (
+    dagster_status_lookup,
+    publish_pending_exports,
+    refresh_publisher_daily,
+)
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 _TICK_SLOT = threading.BoundedSemaphore(1)
 _LEASE_KEY = "kortravelweather:export-publisher:v1"
+MAX_TICK_ATTEMPTS = 256
 
 
 def _cursor(value: str | None) -> str | None:
@@ -115,15 +121,26 @@ def build_export_publisher_sensor(
             with _publisher_lease(repository) as leased:
                 if not leased:
                     return SkipReason("다른 publisher가 실행 중이거나 lease가 불명확합니다.")
-                progress = publish_pending_exports(
-                    repository, root, cursor=after, limit=2, budget_seconds=12,
-                    dagster_status=dagster_status_lookup(context.instance),
-                    daily_summaries=True,
-                )
+                deadline, processed = time.monotonic() + 12, 0
+                lookup = dagster_status_lookup(context.instance)
+                # RAM 상한은 기존 2개 microbatch다. 총량/시간은 별도 제한한다.
+                for _ in range(MAX_TICK_ATTEMPTS // 2):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    progress = publish_pending_exports(
+                        repository, root, cursor=after, limit=2, budget_seconds=remaining,
+                        dagster_status=lookup,
+                    )
+                    processed += progress.processed
+                    after = progress.next_cursor
+                    if not progress.has_more or progress.processed == 0:
+                        break
+                refresh_publisher_daily(repository, root, deadline=deadline)
             context.update_cursor(json.dumps(
-                {"v": 1, "after": progress.next_cursor}, separators=(",", ":"),
+                {"v": 1, "after": after}, separators=(",", ":"),
             ))
-            return SkipReason(f"export publisher: {progress.processed}개 후보 확인")
+            return SkipReason(f"export publisher: {processed}개 후보 확인")
         except Exception:
             # DB URL/provider payload/token이 포함된 exception 원문을 남기지 않는다.
             context.log.warning("weather_export_publisher_deferred")

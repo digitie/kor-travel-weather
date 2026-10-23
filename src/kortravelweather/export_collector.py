@@ -264,6 +264,30 @@ def _publisher_terminal(heads, identity, dagster_status):
         run, attempt = heads.lifecycle._locked(session, identity)
         native, mode = run["status"], attempt["execution_mode"]
         orchestrator_id = attempt["orchestrator_run_id"]
+        epochs = attempt["owner_epochs"]
+        if epochs and set(epochs) == set(attempt["planned_sources"]):
+            owners = heads.lifecycle.owners
+            rows = session.execute(select(owners).where(
+                owners.c.source_scope.in_(sorted(epochs)),
+            ).order_by(owners.c.source_scope).with_for_update()).mappings().all()
+            # 모든 scope가 실제 더 새 epoch로 넘어간 것만 퇴역한다. 일부 충돌,
+            # 누락/미확정 owner는 현재 scope가 섞인 시도를 실패로 위장하지 않는다.
+            superseded = len(rows) == len(epochs) and all(
+                row["owner_epoch"] > epochs[row["source_scope"]]
+                and row["active_attempt_id"] != identity.attempt_id for row in rows
+            )
+            if superseded and session.scalar(select(heads.generations.c.generation_id).where(
+                heads.generations.c.attempt_id == identity.attempt_id,
+            )) is None:
+                session.execute(update(heads.lifecycle.attempts).where(
+                    heads.lifecycle.attempts.c.attempt_id == identity.attempt_id,
+                    heads.lifecycle.attempts.c.owner_id == identity.owner_id,
+                    heads.lifecycle.attempts.c.status.in_(["preparing", "sealed"]),
+                ).values(status="failed", error_code="SUPERSEDED"))
+                session.execute(heads.pins.delete().where(
+                    heads.pins.c.attempt_id == identity.attempt_id,
+                ))
+                return "SUPERSEDED", None
     status = None
     if native not in _FAILED_NATIVE and mode == "dagster":
         if not orchestrator_id or dagster_status is None:
@@ -327,6 +351,7 @@ def publish_pending_exports(
     """
     if not 1 <= limit <= 32 or not 0 < budget_seconds <= 60:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
+    deadline = time.monotonic() + budget_seconds
     heads, artifacts = ExportHeads(repository), ExportArtifactStore(artifact_root)
     attempts = heads.lifecycle.attempts
     with heads._transaction() as session:
@@ -336,6 +361,7 @@ def publish_pending_exports(
             .outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
             .where(
                 attempts.c.status.in_(["preparing", "sealed"]),
+                attempts.c.published_at.is_(None),
                 ~select(heads.generations.c.generation_id)
                 .where(heads.generations.c.attempt_id == attempts.c.attempt_id)
                 .exists(),
@@ -344,7 +370,6 @@ def publish_pending_exports(
         if cursor:
             query = query.where(attempts.c.attempt_id > cursor)
         rows = session.execute(query.order_by(attempts.c.attempt_id).limit(limit + 1)).all()
-    deadline = time.monotonic() + budget_seconds
     results, processed, last = {}, 0, cursor
     for row in rows[:limit]:
         if time.monotonic() >= deadline:
@@ -369,15 +394,22 @@ def publish_pending_exports(
         last = row.attempt_id
     more = processed < len(rows)
     if daily_summaries and time.monotonic() < deadline:
-        from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
-
-        try:
-            refresh_daily_summaries(repository, artifacts, limit=1)
-            if time.monotonic() < deadline:
-                prune_daily_summaries(repository)
-        except Exception:
-            logger.warning("weather_daily_summary_refresh_deferred")
+        refresh_publisher_daily(repository, artifact_root, deadline=deadline)
     return ExportPublisherProgress(processed, results, last if more else None, more)
+
+
+def refresh_publisher_daily(repository, artifact_root: Path, *, deadline: float) -> None:
+    """한 sensor sweep의 마지막에 일별 파생 작업을 한 번만 시도한다."""
+    from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
+
+    if time.monotonic() >= deadline:
+        return
+    try:
+        refresh_daily_summaries(repository, ExportArtifactStore(artifact_root), limit=1)
+        if time.monotonic() < deadline:
+            prune_daily_summaries(repository)
+    except Exception:
+        logger.warning("weather_daily_summary_refresh_deferred")
 
 
 def dagster_status_lookup(instance) -> Callable[[str], str | None]:
