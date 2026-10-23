@@ -1,8 +1,15 @@
+import os
 from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+import pytest
+from sqlalchemy import select, text
+
+from kortravelweather.export_artifacts import ExportArtifactStore
 from kortravelweather.export_daily import merge_observations, observation, summarize
+from kortravelweather.export_daily_store import daily_summary_tables, refresh_daily_summaries
+from kortravelweather.repository import Base, WeatherRepository
 
 KST = ZoneInfo("Asia/Seoul")
 KEY = ("a", "2026-10-23", "morning")
@@ -84,3 +91,62 @@ def test_order_independent_provider_winner_and_cumulative_rain_exclusion():
     result = summarize(*KEY, forward, now=NOW)
     assert result["temp_avg"] == 10 and result["precip_sum_mm"] is None
     assert result["source_providers"] == ["python-kma-api"]
+
+
+@pytest.fixture
+def daily_repository():
+    repository = WeatherRepository(os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"])
+    repository.create_schema()
+    with repository.engine.begin() as c:
+        c.execute(
+            text(
+                "TRUNCATE weather_daily_summaries, weather_daily_summary_progress, "
+                "weather_export_scope_plans, weather_export_heads, weather_export_generations, "
+                "weather_export_generation_chunks, weather_export_pending_refs, "
+                "weather_export_attempts, "
+                "weather_locations, weather_sync_runs RESTART IDENTITY CASCADE"
+            )
+        )
+    yield repository
+    repository.engine.dispose()
+
+
+def test_daily_projection_uses_only_approved_generations_and_deduplicates_replay(
+    daily_repository, tmp_path
+):
+    from datetime import timedelta
+
+    from test_export_heads import _candidate, _descriptor
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    now = datetime.now(KST)
+    day = (now - timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+    for hour, value in [(0, "10"), (0, "10"), (1, "20")]:
+        heads, identity, capture, _, _, _ = _candidate(
+            repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value
+        )
+        assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    progress = refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+    assert progress["processed"] == 3
+    table, _ = daily_summary_tables(Base.metadata)
+    with repository.engine.connect() as c:
+        row = c.execute(select(table.c.summary)).scalar_one()
+    assert row["temp_avg"] == 15 and row["sample_count"] == 2
+    assert row["source_providers"] == ["python-kma-api"]
+    assert refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))["processed"] == 0
+
+
+def test_failed_raw_commit_never_appears_in_daily_projection(daily_repository, tmp_path):
+    from test_export_heads import _candidate, _descriptor
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    heads, identity, capture, _, _, _ = _candidate(
+        repository, tmp_path, descriptor, finish="failed"
+    )
+    assert heads.promote(identity, capture.artifacts) != "PUBLISHED"
+    assert refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))["processed"] == 0
+    table, _ = daily_summary_tables(Base.metadata)
+    with repository.engine.connect() as c:
+        assert c.execute(select(table.c.summary)).first() is None
