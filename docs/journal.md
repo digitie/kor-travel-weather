@@ -1,3 +1,10 @@
+## 2026-10-23 — 중기예보 두 원천 grouped reader 초안
+
+- 같은 발표의 육상·기온을 위치별 배열로 묶는 별도 reader를 추가한다. 전체 raw
+  scope와 frozen cursor/publication watermark를 보존하고 작은 두 chunk만 cache한다.
+- 순수 계약14건/Ruff PASS. 실제 PG/API·HTTP/UI·두 리뷰·CI와 선행 통합은 아직 미완이다.
+- 정본: [중기 grouped reader](reports/2026-10-23-mid-grouped-reader.md).
+
 ## 2026-10-23 — export 실행 설정과 공유 파일 배선
 
 - API·code-server에 동일한 기본 OFF flag와 공유 named volume 아래 artifact 경로를
