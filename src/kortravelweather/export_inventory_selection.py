@@ -11,6 +11,8 @@ from .export_external import RetrievalScopeDescriptor
 from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
 from .export_inventory import export_inventory_table
+from .export_mid import MidScopeDescriptor
+from .export_mid_anchor import mid_anchor_columns
 from .export_sdk import SdkScopeDescriptor
 
 MAX_SELECTED_ROWS = 20000
@@ -23,11 +25,12 @@ SDK_NETWORKS = {
 def catalog_source_columns(catalog):
     """임의 metadata 전체를 읽지 않고 SDK anchor의 작은 allowlist만 투영한다."""
     point = catalog.c.metadata["measurement_point"]
-    return [func.left(point[key].as_string(), maximum + 1).label("point_" + key)
+    return [*mid_anchor_columns(catalog), *[
+            func.left(point[key].as_string(), maximum + 1).label("point_" + key)
             for key, maximum in [
                 ("provider", 120), ("station_id", 120), ("station_name", 200),
                 ("sido_name", 32), ("network", 120),
-            ]]
+            ]]]
 
 
 def source_max_age(dataset):
@@ -47,6 +50,9 @@ def _validate_anchor(descriptor, current):
             or descriptor.winner_policy_revision != "kma-base-v1"
         ):
             raise ExportArtifactError("승인 KMA 정규화 정책이 현재 reader와 다릅니다.")
+    elif isinstance(descriptor, MidScopeDescriptor):
+        if current.get(f"mid_{descriptor.source_part}_region") != descriptor.region_code:
+            raise ExportArtifactError("승인 중기 지역 코드가 바뀌었습니다.")
     elif isinstance(descriptor, SdkScopeDescriptor):
         station = current.get("point_station_id")
         if descriptor.provider == "python-airkorea-api" and not station:
@@ -133,7 +139,7 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
             (float(current["latitude"]), float(current["longitude"]))
             != (row["latitude"], row["longitude"])
             or (
-                row["provider"] == "python-kma-api"
+                isinstance(descriptor, ScopeDescriptor)
                 and (current["nx"], current["ny"]) != (row["nx"], row["ny"])
             )
         ):

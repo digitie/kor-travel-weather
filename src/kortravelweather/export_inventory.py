@@ -51,6 +51,7 @@ def export_inventory_table(metadata: MetaData):
 def record_approved_locations(session, metadata, *, descriptor, generation_id):
     """head CAS와 같은 TX에서 선택 위치만 갱신한다. 선택 밖 이전 승인은 유지한다."""
     from .export_heads import ScopeDescriptor
+    from .export_mid_anchor import mid_anchor_columns
 
     table = export_inventory_table(metadata)
     generations, catalog = metadata.tables["weather_export_generations"], metadata.tables[
@@ -63,6 +64,7 @@ def record_approved_locations(session, metadata, *, descriptor, generation_id):
         raise ExportArtifactError("승인 inventory의 namespace와 generation이 다릅니다.")
     locations = session.execute(select(
         catalog.c.location_id, catalog.c.latitude, catalog.c.longitude, catalog.c.nx, catalog.c.ny,
+        *mid_anchor_columns(catalog),
     ).where(
         catalog.c.location_id.in_(descriptor.location_ids), catalog.c.enabled.is_(True),
     )).mappings().all()
@@ -76,6 +78,8 @@ def record_approved_locations(session, metadata, *, descriptor, generation_id):
             continue
         if isinstance(descriptor, ScopeDescriptor):
             valid = (location["nx"], location["ny"]) == (descriptor.nx, descriptor.ny)
+        elif descriptor.coverage_contract == "kma-mid-region-v1":
+            valid = location[f"mid_{descriptor.source_part}_region"] == descriptor.region_code
         else:
             valid = (latitude, longitude) == (
                 descriptor.latitude, descriptor.longitude,

@@ -140,6 +140,10 @@ class ScopeDescriptor(BaseModel):
 
 
 def parse_scope_descriptor(value):
+    if value.get("coverage_contract") == "kma-mid-region-v1":
+        from .export_mid import MidScopeDescriptor
+
+        return MidScopeDescriptor.model_validate(value)
     if value.get("provider", "python-kma-api") == "python-kma-api":
         return ScopeDescriptor.model_validate(value)
     if value.get("coverage_contract") == "sdk-location-v1":
@@ -256,6 +260,13 @@ def source_input_digest(record: Mapping[str, Any]) -> str:
 
 def _normalize(descriptor, record, locations, *, skipped=None):
     """기존 normalizer만 사용하며 한 위치의 값만 메모리에 유지한다."""
+    from .export_mid import MidScopeDescriptor, normalize_mid_source
+
+    if isinstance(descriptor, MidScopeDescriptor):
+        # 검증도 한 위치씩 순회하도록 공개 pure replay의 iterator 계약을 따른다.
+        narrowed = descriptor.model_copy(update={"location_ids": tuple(sorted(locations))})
+        yield from normalize_mid_source(narrowed, record)
+        return
     if not isinstance(descriptor, ScopeDescriptor):
         from .export_sdk import SdkScopeDescriptor, normalize_sdk_source
 
@@ -352,10 +363,13 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
             or v.location_id not in descriptor.location_ids
             or v.weather_domain
             != (
-                descriptor.dataset_key if isinstance(descriptor, ScopeDescriptor)
+                descriptor.dataset_key if descriptor.provider == "python-kma-api"
                 else getattr(descriptor, "weather_domain", "weather")
             )
-            or v.normalization_version != descriptor.normalizer_revision
+            or v.normalization_version != (
+                "kma-v1" if descriptor.coverage_contract == "kma-mid-region-v1"
+                else descriptor.normalizer_revision
+            )
             or (descriptor.forecast_style == "nowcast" and v.target_at != plan["data_revision_at"])
             for v in values
         )
@@ -455,6 +469,12 @@ class ExportHeads:
             if isinstance(descriptor, ScopeDescriptor):
                 selection = selection.where(
                     catalog.c.nx == descriptor.nx, catalog.c.ny == descriptor.ny
+                )
+            elif descriptor.coverage_contract == "kma-mid-region-v1":
+                from .export_mid_anchor import mid_region_expression
+
+                selection = selection.where(
+                    mid_region_expression(catalog, descriptor.source_part) == descriptor.region_code
                 )
             else:
                 selection = selection.where(
@@ -614,10 +634,44 @@ class ExportHeads:
             descriptor = parse_scope_descriptor(plan["descriptor"])
             if isinstance(descriptor, ScopeDescriptor):
                 raise ExportArtifactError("KMA 응답은 별도 발표 revision 증명이 필요합니다.")
+            if descriptor.coverage_contract == "kma-mid-region-v1":
+                raise ExportArtifactError("중기는 별도 발표 revision 증명이 필요합니다.")
         # 원천 정규화 CPU 작업 동안 PG 연결과 잠금을 보유하지 않는다.
-        values = list(_normalize(descriptor, record, descriptor.location_ids))
-        expected = [semantic_point_digest(v.model_dump(mode="json")) for v in values]
+        self._bind_replayed_response(
+            identity, record, descriptor,
+            values=_normalize(descriptor, record, descriptor.location_ids),
+            revision=record["fetched_at"], policy="latest-retrieval-v1",
+        )
+
+    def bind_mid_response(self, identity: ExportAttempt, record: Mapping[str, Any]) -> None:
+        """SDK가 증명한 중기 발표 시각을 조회 시각과 분리해 고정한다."""
+        from .export_mid import MidScopeDescriptor, normalize_mid_source, prove_mid_template
+
+        with self._transaction() as session:
+            descriptor = parse_scope_descriptor(session.scalar(
+                select(self.plans.c.descriptor).where(
+                    self.plans.c.attempt_id == identity.attempt_id,
+                )
+            ))
+        if not isinstance(descriptor, MidScopeDescriptor):
+            raise ExportArtifactError("중기 지역 source 계획이 필요합니다.")
+        proof = prove_mid_template(descriptor, record)
+        self._bind_replayed_response(
+            identity, record, descriptor, values=normalize_mid_source(descriptor, record),
+            revision=proof.revision, policy="latest-issued-mid-v1",
+        )
+
+    def _bind_replayed_response(self, identity, record, descriptor, *, values, revision, policy):
+        expected = []
+        for value in values:
+            expected.append(semantic_point_digest(value.model_dump(mode="json")))
+            if len(expected) > MAX_FORECAST_POINTS:
+                raise ExportArtifactError("원천 정규화 point 상한을 넘었습니다.")
+        if not expected:
+            raise ExportArtifactError("원천의 정상 nonempty point가 필요합니다.")
         fetched, digest = record["fetched_at"], source_input_digest(record)
+        if revision > fetched:
+            raise ExportArtifactError("발표 시각이 실제 조회 이후입니다.")
         with self._transaction() as session:
             run, attempt = self.lifecycle._locked(session, identity)
             _current_owners(session, self.metadata, attempt)
@@ -654,6 +708,7 @@ class ExportHeads:
                 if (
                     current["source_input_digest"] != digest
                     or current["source_collected_at"] != fetched
+                    or current["data_revision_at"] != revision
                 ):
                     raise ExportArtifactError("완결 응답 계획은 변경할 수 없습니다.")
                 return
@@ -670,12 +725,12 @@ class ExportHeads:
                 update(self.plans)
                 .where(self.plans.c.attempt_id == identity.attempt_id)
                 .values(
-                    data_revision_at=fetched,
+                    data_revision_at=revision,
                     source_input_digest=digest,
                     source_collected_at=fetched,
                     expected_point_count=len(expected),
                     normalization_digest=_digest(sorted(expected)),
-                    normalization_evidence={"policy": "latest-retrieval-v1"},
+                    normalization_evidence={"policy": policy},
                 )
             )
 

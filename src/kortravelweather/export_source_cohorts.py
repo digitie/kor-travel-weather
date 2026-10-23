@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import insert
 from .export_artifacts import ExportArtifactError
 from .export_external_cohorts import MAX_COHORT_BYTES, MAX_EXTERNAL_TARGETS, external_cohort_table
 from .export_heads import ExportHeads, ScopeDescriptor
+from .export_mid_anchor import mid_anchor_columns
 
 
 def declare_source_cohort(repository, *, run_id, provider, dataset_key, descriptors):
@@ -44,6 +45,7 @@ def declare_source_cohort(repository, *, run_id, provider, dataset_key, descript
         locations = {row["location_id"]: row for row in s.execute(select(
             catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
             catalog.c.nx, catalog.c.ny,
+            *mid_anchor_columns(catalog),
         ).where(catalog.c.location_id.in_(ids), catalog.c.enabled.is_(True))).mappings()}
         if set(locations) != ids:
             raise ExportArtifactError("선택 source의 활성 canonical 위치가 없습니다.")
@@ -52,6 +54,8 @@ def declare_source_cohort(repository, *, run_id, provider, dataset_key, descript
                 row = locations[key]
                 if isinstance(descriptor, ScopeDescriptor):
                     valid = (row["nx"], row["ny"]) == (descriptor.nx, descriptor.ny)
+                elif descriptor.coverage_contract == "kma-mid-region-v1":
+                    valid = row[f"mid_{descriptor.source_part}_region"] == descriptor.region_code
                 else:
                     valid = (float(row["latitude"]), float(row["longitude"])) == (
                         descriptor.latitude, descriptor.longitude,
