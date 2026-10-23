@@ -343,3 +343,13 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
   실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
 
+### 실제 source inventory와 quota 회전 준비
+
+- provider/dataset/location의 마지막 승인 metadata를 head와 같은 TX에서 upsert하고
+  quota 선택 밖 이전 위치는 유지한다. source raw/fact는 복사하지 않는다.
+- 작은 namespace 키셋으로 이전 승인 head를 재투영하는 bootstrap helper와
+  native intent가 있는 source의 HTTP 전 명시 roster 선언을 추가했다.
+- inventory generation FK/live-root 계약을 명시했다. 파일 GC는 아직 없으며
+  reader·실제 수집 배선·전체 provider/mid·운영 비용 검증은 후속이다.
+- 상세 설계/task: `docs/reports/2026-10-23-export-source-inventory.md`.
+

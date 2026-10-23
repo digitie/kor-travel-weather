@@ -25,6 +25,7 @@ def external_cohort_table(metadata: MetaData):
         Column("run_id", String(36), nullable=False),
         Column("run_started_at", DateTime(timezone=True), nullable=False),
         Column("targets", JSON, nullable=False),
+        Column("descriptors", JSON),
         Column("updated_at", DateTime(timezone=True), nullable=False),
     )
 
@@ -74,6 +75,7 @@ def declare_external_cohort(repository, *, run_id, provider, dataset_key, target
             run_id=run_id,
             run_started_at=run.started_at,
             targets=selected,
+            descriptors=None,
             updated_at=datetime.now(UTC),
         )
         result = s.execute(
@@ -81,7 +83,7 @@ def declare_external_cohort(repository, *, run_id, provider, dataset_key, target
                 index_elements=["provider", "dataset_key"],
                 set_={
                     k: getattr(statement.excluded, k)
-                    for k in ["run_id", "run_started_at", "targets", "updated_at"]
+                    for k in ["run_id", "run_started_at", "targets", "descriptors", "updated_at"]
                 },
                 where=tuple_(table.c.run_started_at, table.c.run_id)
                 < tuple_(run.started_at, run_id),

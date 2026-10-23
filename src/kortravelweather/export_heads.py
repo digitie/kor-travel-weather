@@ -980,5 +980,11 @@ class ExportHeads:
                     .where(self.heads.c.namespace == plan["namespace"])
                     .values(**values)
                 )
+            from .export_inventory import record_approved_locations
+
+            record_approved_locations(
+                session, self.metadata,
+                descriptor=parse_scope_descriptor(plan["descriptor"]), generation_id=generation,
+            )
             session.execute(self.pins.delete().where(self.pins.c.attempt_id == identity.attempt_id))
             return "PUBLISHED"
