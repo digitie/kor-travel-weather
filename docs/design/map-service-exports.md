@@ -1,6 +1,6 @@
 # ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
-- 상태: **proposed, 단계1 머지·단계2 opt-in receipt 기반 구현 중**. 성공 head 기반 실제 데이터 공개·schema·운영 변경은 아직 없다.
+- 상태: **proposed, 단계1/2 기반 머지·단계3 설계**. 성공 head 기반 실제 데이터 공개·운영 DB schema 반영·운영 배포는 아직 없다.
 - 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
   COW artifact 채택은 구현 전 실측 exit gate 통과가 조건이다. 문서 머지가 구현 승인은 아니다.
 - 보존 기준 Weather main: `12c3a4adfcd7a030bedaf5346371a5684656ea71`.
@@ -124,8 +124,8 @@ attempt만 failed이고 원본 commit은 보존한다.
 
 receipt만 있는 상태는 파일 준비 완료가 아니다. publisher는 receipt·파일 존재/전체 digest·완결
 scope·terminal 성공을 모두 확인해야 하고, 누락/손상 파일로 head나 watermark를 전진시키지
-않는다. commit 뒤 worker가 죽어 파일이 없으면 이전 성공 head를 유지한다. 동일 chunk의
-idempotent replay가 canonical row/digest를 재검증해 파일을 복구할 수 있다. API read나 mutable
+않는다. commit 뒤 worker가 죽어 파일이 없으면 이전 성공 head를 유지한다. 부모SyncRun이 아직running인 동일 chunk의
+idempotent replay가 canonical row/digest를 재검증해 파일을 복구할 수 있다. terminal 뒤 누락은 새수집으로 복구한다. API read나 mutable
 current를 통해 임의로 재구성하지 않는다. 파일이 먼저 남는 orphan뿐 아니라 receipt만 남는
 불완전 attempt도 bounded 정리/재수집 대상이다. bytes 상한은 전체 worker RSS 상한이 아니며
 COW/실제 수집 활성화 전 합산 CPU·WAL·메모리·fsync 비용 gate는 그대로 적용한다.

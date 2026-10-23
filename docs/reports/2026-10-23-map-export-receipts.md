@@ -17,3 +17,10 @@
 
 
 두 번째 독립 리뷰에서 digest 경로가 FIFO이면 read open이 대기하는 P2를 확인했다. `O_NONBLOCK` open 후 동일 fd의 `fstat`로 일반 파일만 허용하도록 수정했다. FIFO·directory·symlink는 소유 child5초 상한으로 검증하며 최종 집중24 PASS(29.29초)다. frontend243 PASS·type-check PASS. 전체Python/CI는 진행 중이며 현재 원천 수집에 활성화하지 않는다.
+
+
+## 최종 수용(기반 구현)
+
+PR136은 최종9bd5f21로 James/Popper 독립 PASS·CI python/frontend PASS 후 main91801d4593fad3b95aafd7456a5d94b56dc23130에 머지했다. WSL 전체Python756 PASS1150초는6d764da에서 시작한 회귀이며 후속수정은9bd5f21 집중24 PASS29.29초와 정확한HEAD의 CI로 검증했다. frontend243 PASS/type-check PASS. 격리 실제Uvicorn API3범주(401/503·304아님), production Next/Chromium UI11 PASS, upstream service0/JS오류0이다. 공개운영배포 검증은 아니며 제품collector opt-in은OFF다.
+
+동일 chunk 재생으로 파일을 복구할 수 있는 범위는 부모 SyncRun이 아직running이고 canonical bytes/digest가 같을 때다. terminal이 된 run은 기존ingest fence가 막으므로 파일 누락을 임의복구하지 않으며, 이전head 유지·새수집으로 회복한다. 단계3 계획에서 이 경계를 명시한다.
