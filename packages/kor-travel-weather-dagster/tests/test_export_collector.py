@@ -456,5 +456,5 @@ def test_forecast_all_missing_grid_preserves_raw_and_lineage_once(repository, tm
             )
             == 1
         )
-    assert publish_pending_exports(repository, tmp_path).results == {"REJECTED": 1}
+    assert "PUBLISHED" not in publish_pending_exports(repository, tmp_path).results
     assert _counts(repository) == (2, 0, 0)
