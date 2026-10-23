@@ -1,13 +1,14 @@
 """pending 인덱스와 기존 성공 publication 시각의 migration 정합성."""
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 
 import pytest
 import test_export_publisher_recovery as fixtures
 from alembic.config import Config
-from sqlalchemy import event, inspect, select, text
+from sqlalchemy import event, inspect, literal, select, text
 
 from alembic import command
 from kortravelweather.export_collector import publish_pending_exports
@@ -72,8 +73,29 @@ def test_five_thousand_published_attempts_do_not_enter_pending_history_scan(
 
     assert "ix_weather_export_attempts_pending" in indexes(plan)
     assert plan["Actual Rows"] == 1
+    # 빈번한 microbatch에서도 generic prepared plan이 전체 성공 이력으로
+    # 되돌아가지 않아야 한다. 실제 publisher SQL/parameters를 그대로 재사용한다.
+    names = list(dict.fromkeys(re.findall(r"%\((\w+)\)s", captured[0][0])))
+    prepared = captured[0][0]
+    for ordinal, name in enumerate(names, start=1):
+        prepared = prepared.replace(f"%({name})s", f"${ordinal}")
+    with repo.engine.begin() as connection:
+        connection.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+        connection.exec_driver_sql("PREPARE weather_publisher_pending AS " + prepared)
+        try:
+            arguments = ",".join(str(literal(captured[0][1][name]).compile(
+                dialect=connection.dialect, compile_kwargs={"literal_binds": True},
+            )) for name in names)
+            generic = connection.exec_driver_sql(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) EXECUTE "
+                f"weather_publisher_pending({arguments})"
+            ).scalar_one()[0]["Plan"]
+        finally:
+            connection.exec_driver_sql("DEALLOCATE weather_publisher_pending")
+    assert "ix_weather_export_attempts_pending" in indexes(generic)
+    assert generic["Actual Rows"] == 1
     (tmp_path / "publisher-pending-explain.json").write_text(
-        json.dumps(plan, indent=2), encoding="utf-8",
+        json.dumps({"custom": plan, "generic": generic}, indent=2), encoding="utf-8",
     )
 
 

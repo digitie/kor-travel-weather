@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from kortravelcommon.deadline import call_with_deadline
-from sqlalchemy import select, update
+from sqlalchemy import literal_column, select, update
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_heads import ExportHeads, ScopeDescriptor
@@ -360,7 +360,11 @@ def publish_pending_exports(
                    heads.plans.c.attempt_id.label("plan_id"))
             .outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
             .where(
-                attempts.c.status.in_(["preparing", "sealed"]),
+                # 고정 상태를 literal로 남겨 generic plan에서도 partial index의
+                # predicate를 증명한다. 사용자 입력은 여기로 들어오지 않는다.
+                attempts.c.status.in_([
+                    literal_column("'preparing'"), literal_column("'sealed'"),
+                ]),
                 attempts.c.published_at.is_(None),
                 ~select(heads.generations.c.generation_id)
                 .where(heads.generations.c.attempt_id == attempts.c.attempt_id)

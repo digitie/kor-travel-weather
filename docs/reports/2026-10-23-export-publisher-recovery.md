@@ -96,5 +96,12 @@ EXPLAIN ANALYZE하고 pending index 사용/실제 결과 1개를 확인했다. �
 generation/head rollback, 0031 downgrade→0032 upgrade와 정확한 publication 시각 backfill,
 신규 DB 전체 migration/열·인덱스 계약도 검사했다. 전체 standalone `alembic check`는
 기존 일별 partition/FK를 제거 대상으로 표시하므로 그 실행을 PASS로 세지 않는다.
-이후 최종 통합 회귀·최종 두 리뷰·CI는 별도 정산한다. 운영 지속 처리량과 ARM 비용은
-기본 STOPPED를 해제하기 전 반드시 실측해야 한다.
+`454e880` 제품에서 publisher/실제 sensor·reader/기존 heads·daily/queue/fresh migration
+통합 97 PASS(185.99초)를 확인했다. 추가 generic prepared plan 공격에서 bind 상태
+조건이 partial index를 사용하지 않는 반례를 실제로 재현했다. 고정된 내부 상태 두 개를
+SQL literal로 남기는 최소 수정 뒤 custom/generic 둘 다 pending index와 generation
+unique index를 사용했다(실제 결과 1개, shared hit 4 blocks/read 0). 이 표본은 운영 비용
+개선율을 뜻하지 않는다. 해당 queue·atomic marker·down-up 및 시간 예산 종료 후 다음
+batch를 시작하지 않는 delta 4 PASS(8.86초), Ruff 전체/diff check를 확인했다.
+97건과 4건은 중복이 있으므로 합산하지 않는다. 최종 두 리뷰와 CI는 별도 gate다.
+운영 지속 처리량과 ARM 비용은 기본 STOPPED를 해제하기 전 반드시 실측해야 한다.

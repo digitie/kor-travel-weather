@@ -252,3 +252,26 @@ def test_three_hundred_synthetic_pending_rows_resume_beyond_two_without_unbounde
         assert connection.execute(select(heads.lifecycle.attempts.c.status)).scalars().all() == (
             ["failed"] * 300
         )
+
+
+def test_cooperative_deadline_starts_no_second_microbatch_and_keeps_resume_cursor(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    from kortravelweather.export_collector import ExportPublisherProgress
+
+    moments = iter([100, 100, 112])
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(moments)))
+    resume = "00000000-0000-0000-0000-000000000002"
+    batches = []
+
+    def batch(*args, **kwargs):
+        batches.append(kwargs)
+        return ExportPublisherProgress(2, {"NOT_READY": 2}, resume, True)
+
+    monkeypatch.setattr(module, "publish_pending_exports", batch)
+    sensor, _ = build(publisher_repository, tmp_path)
+    with DagsterInstance.ephemeral() as instance:
+        result = evaluate(sensor, instance)
+    assert len(batches) == 1 and batches[0]["budget_seconds"] == 12
+    assert batches[0]["limit"] == 2
+    assert json.loads(result.cursor)["after"] == resume
