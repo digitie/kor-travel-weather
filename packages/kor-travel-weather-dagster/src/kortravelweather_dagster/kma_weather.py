@@ -1133,7 +1133,7 @@ async def _stage_and_publish_weather(
             if remaining_values < len(group_targets):
                 raise ValueError("normalized fact 예산이 target fan-out을 수용하지 못합니다.")
             skipped: Counter[str] = Counter()
-            if export_collector is not None:
+            if export_collector is not None and len(group_targets) <= GRID_PUBLISH_LOCATIONS:
                 location = group_targets[0].location
                 prepared_exports[source_entity_id] = await asyncio.to_thread(
                     export_collector.prepare,
@@ -1206,7 +1206,10 @@ async def _stage_and_publish_weather(
                     # 원래 게시 상한 안에서만 whole-grid capture를 시도한다.
                     # 큰 grid도 원본 저장은 기존 bounded batch로 계속한다.
                     group_count = len(response.values) * len(group_targets)
-                    if 0 < group_count <= GRID_PUBLISH_VALUES:
+                    if (
+                        0 < group_count <= GRID_PUBLISH_VALUES
+                        and len(group_targets) <= GRID_PUBLISH_LOCATIONS
+                    ):
                         group_values = [
                             value.model_copy(update={"location_id": target.location.location_id})
                             for target in group_targets

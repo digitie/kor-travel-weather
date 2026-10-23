@@ -195,3 +195,42 @@ def test_missing_provider_proof_preserves_facts_and_fails_export_closed(
     assert _counts(repository) == (2, 0, 0)
     assert publish_pending_exports(repository, tmp_path).processed == 0
     assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_whole_grid_optin_preserves_fifty_location_lock_bound(repository, tmp_path):
+    from kortravelweather_dagster import kma_weather
+
+    targets = [
+        WeatherTarget(
+            WeatherLocation(
+                location_id=f"bounded-{i}",
+                name=f"bounded-{i}",
+                latitude=37.5,
+                longitude=127,
+                nx=60,
+                ny=127,
+            )
+        )
+        for i in range(51)
+    ]
+    original, locked = repository.ingest_batch, []
+
+    def ingest(**kwargs):
+        locations = {v.location_id for v in kwargs.get("values", [])}
+        if locations:
+            locked.append(len(locations))
+        assert len(locations) <= kma_weather.GRID_PUBLISH_LOCATIONS
+        return original(**kwargs)
+
+    repository.ingest_batch = ingest
+    result = run_weather_sync(
+        repository=repository,
+        client=_client(),
+        targets=targets,
+        base_datasets=frozenset({KMA_ULTRA_SHORT_NOWCAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] == 51
+    assert locked == [50, 1]
+    assert _counts(repository) == (0, 0, 0)
+    assert not list(tmp_path.glob("*.jsonl"))
