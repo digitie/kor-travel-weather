@@ -9,6 +9,7 @@ export type ExportMeta = {
   as_of?: string | null;
   next_cursor?: string | null;
   has_more?: boolean;
+  next_since?: string | null;
 };
 
 export type ExportLocation = {
@@ -40,6 +41,16 @@ export type ExportSourceStatus = {
   last_failed_at: string | null;
   last_attempt_failed: boolean;
   next_scheduled_at: string | null;
+};
+
+export type ExportForecastGroup = {
+  location_id: string;
+  provider: string;
+  forecast_style: "ultra_short" | "short" | "mid" | "external";
+  known_at: string;
+  published_at: string;
+  target_at: string[];
+  metrics: Record<string, (number | string | null)[]>;
 };
 
 export type ExportPage<T> = { items: T[]; meta: ExportMeta };
