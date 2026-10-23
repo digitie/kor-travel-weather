@@ -451,6 +451,71 @@ def test_dense_forecast_grid_is_unavailable_or_previous_stale_not_500(
         assert response.status_code == 503
 
 
+def test_issued_forecast_watermark_survives_api_clock_rollback(repository, tmp_path, monkeypatch):
+    from kortravelweather import export_forecasts
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/forecasts"
+    first = client.get(url, params={"style": "ultra_short"}, headers=HEADERS)
+    issued = datetime.fromisoformat(first.json()["meta"]["next_since"])
+
+    class SlowClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            at = issued - timedelta(minutes=1)
+            return at.astimezone(tz) if tz else at.replace(tzinfo=None)
+
+    monkeypatch.setattr(export_forecasts, "datetime", SlowClock)
+    valid = client.get(
+        url, params={"style": "ultra_short", "since": issued.isoformat()}, headers=HEADERS
+    )
+    assert valid.status_code == 200 and valid.json()["items"] == []
+    invalid = client.get(
+        url,
+        params={"style": "ultra_short", "since": (issued + timedelta(days=1)).isoformat()},
+        headers=HEADERS,
+    )
+    assert invalid.status_code == 422
+
+
+def test_legacy_null_location_index_recovers_after_same_content_recollection(repository, tmp_path):
+    from sqlalchemy import select
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect_forecast(repository, tmp_path)
+    heads = ExportHeads(repository)
+    with repository.engine.begin() as c:
+        original = [dict(row) for row in c.execute(select(heads.refs)).mappings()]
+        c.execute(update(heads.refs).values(location_ids=None))
+    known = {
+        point["location_id"]: point["known_at"]
+        for ref in original
+        for point in ExportArtifactStore(tmp_path).read(
+            ref["artifact_digest"], byte_count=ref["byte_count"], point_count=ref["point_count"]
+        )
+    }
+    client = _client(repository, tmp_path)
+    url, params = "/v1/service/exports/forecasts", {"style": "ultra_short"}
+    assert client.get(url, params=params, headers=HEADERS).status_code == 503
+    _collect_forecast(repository, tmp_path)
+    recovered = client.get(url, params=params, headers=HEADERS)
+    assert recovered.status_code == 200 and recovered.json()["meta"]["source_status"] == "ok"
+    assert {item["location_id"]: item["known_at"] for item in recovered.json()["items"]} == known
+    with repository.engine.connect() as c:
+        current = list(
+            c.execute(
+                select(heads.refs.c.artifact_digest, heads.refs.c.location_ids).join(
+                    heads.heads, heads.heads.c.generation_id == heads.refs.c.generation_id
+                )
+            )
+        )
+    assert {r.artifact_digest for r in current} == {r["artifact_digest"] for r in original}
+    assert all(row.location_ids for row in current)
+
+
 def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)

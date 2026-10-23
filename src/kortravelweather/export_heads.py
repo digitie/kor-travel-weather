@@ -732,10 +732,20 @@ class ExportHeads:
             ):
                 raise ExportArtifactError("직전 성공 manifest 상한이 다릅니다.")
             for r in parent_refs:
-                for _ in artifacts.read(
+                parent_locations = set()
+                for point in artifacts.read(
                     r["artifact_digest"], byte_count=r["byte_count"], point_count=r["point_count"]
                 ):
-                    pass
+                    if (
+                        point["location_id"] not in descriptor.location_ids
+                        or point["provider"] != descriptor.provider
+                        or point["forecast_style"] != descriptor.forecast_style
+                    ):
+                        raise ExportArtifactError("직전 성공 artifact의 위치·정책이 다릅니다.")
+                    parent_locations.add(point["location_id"])
+                # 0026에서 승인된 파일은 위치 index가 NULL이다. 같은 bytes를
+                # 재사용하면서 실제 파일에서 index만 복구해 재수집 후 공개가 재개된다.
+                r["location_ids"] = sorted(parent_locations)
         with self._transaction() as session:
             committed = (
                 session.execute(

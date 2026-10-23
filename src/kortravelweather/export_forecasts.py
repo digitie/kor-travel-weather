@@ -27,8 +27,6 @@ class FrozenForecastExports(FrozenCurrentExports):
             raise ExportSnapshotUnavailable("해당 예보 style의 전체 원천이 준비되지 않았습니다.")
         if since is not None:
             since = since.astimezone(UTC)
-            if since > datetime.now(UTC):
-                raise ExportCursorInvalid("미래 publication watermark는 사용할 수 없습니다.")
         self.style, self.since = style, since
         self.dataset = (
             "kma_ultra_short_forecast" if style == "ultra_short" else "kma_short_forecast"
@@ -50,6 +48,12 @@ class FrozenForecastExports(FrozenCurrentExports):
             c.begin(),
         ):
             c.execute(text("SET LOCAL statement_timeout = '5s'"))
+            clock = self.heads.metadata.tables["weather_export_publication_clock"]
+            watermark = c.scalar(select(clock.c.published_at).where(clock.c.clock_id == 1))
+            if watermark is None:
+                raise ExportSnapshotUnavailable("공개 watermark가 없습니다.")
+            if self.since is not None and self.since > watermark:
+                raise ExportCursorInvalid("아직 발급되지 않은 publication watermark입니다.")
             catalog = self.heads.metadata.tables["weather_locations"]
             roster = c.execute(
                 select(catalog.c.location_id, catalog.c.nx, catalog.c.ny)
@@ -137,10 +141,6 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "published_at": head.created_at.isoformat(),
                     }
                 )
-            clock = self.heads.metadata.tables["weather_export_publication_clock"]
-            watermark = c.scalar(select(clock.c.published_at).where(clock.c.clock_id == 1))
-            if watermark is None:
-                raise ExportSnapshotUnavailable("공개 watermark가 없습니다.")
             manifest = {
                 "selection": self.selection,
                 "as_of": anchor.isoformat(),
