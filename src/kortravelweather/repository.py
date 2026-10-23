@@ -66,6 +66,7 @@ from .export_artifacts import (
     canonical_export_number,
     prepare_export_chunk,
 )
+from .export_heads import export_head_tables, validate_head_capture
 from .export_lifecycle import export_lifecycle_tables, normalization_input_digest
 from .export_receipts import (
     ExportAttempt,
@@ -140,6 +141,7 @@ class Base(DeclarativeBase):
 reverse_address_tables(Base.metadata)
 export_receipt_tables(Base.metadata)
 export_lifecycle_tables(Base.metadata)
+export_head_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
 
@@ -2030,6 +2032,9 @@ class WeatherRepository:
                         raise ExportArtifactError(
                             "export 후보에는 단일 run·제한된 chunk가 필요합니다."
                         )
+                    validate_head_capture(
+                        session, Base.metadata, export_capture.attempt, records, facts,
+                    )
                     observed: dict[str, datetime] = {}
                     for key, at in export_capture.source_observed_at.items():
                         canonical_key = source_aliases.get(key, key)

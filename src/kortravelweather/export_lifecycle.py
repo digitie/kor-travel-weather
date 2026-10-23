@@ -511,9 +511,12 @@ class ExportLifecycle:
                 ]
                 for row in chunks
             ]
+            from .export_heads import seal_head_plan
+
             digest = hashlib.sha256(
                 json.dumps(
                     [
+                        seal_head_plan(session, self.metadata, identity.attempt_id),
                         attempt["plan_digest"],
                         attempt["owner_epochs"],
                         [
