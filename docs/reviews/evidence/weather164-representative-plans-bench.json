@@ -1,0 +1,42 @@
+[
+  {
+    "shape": "6806plans_7180memberships",
+    "projection": "repeated",
+    "traced": false,
+    "rows": 7180,
+    "json_wire_bytes": 2776256,
+    "wall_seconds": 0.126,
+    "peak_python_bytes": null,
+    "queries": 1
+  },
+  {
+    "shape": "6806plans_7180memberships",
+    "projection": "bounded_distinct",
+    "traced": false,
+    "rows": 7180,
+    "json_wire_bytes": 2643500,
+    "wall_seconds": 0.242,
+    "peak_python_bytes": null,
+    "queries": 2
+  },
+  {
+    "shape": "6806plans_7180memberships",
+    "projection": "repeated",
+    "traced": true,
+    "rows": 7180,
+    "json_wire_bytes": 2776256,
+    "wall_seconds": 0.564,
+    "peak_python_bytes": 24317775,
+    "queries": 1
+  },
+  {
+    "shape": "6806plans_7180memberships",
+    "projection": "bounded_distinct",
+    "traced": true,
+    "rows": 7180,
+    "json_wire_bytes": 2643500,
+    "wall_seconds": 1.078,
+    "peak_python_bytes": 24309753,
+    "queries": 2
+  }
+]
