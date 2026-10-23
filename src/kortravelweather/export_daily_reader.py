@@ -86,7 +86,7 @@ class DailySummaryExports(FrozenCurrentExports):
         )
         unconfirmed = len(statuses) != len(scopes) or any(
             attempt == "failed"
-            or run in {"failed", "partial", "skipped"}
+            or run not in {"running", "success"}
             or (run == "success" and generation is None)
             for attempt, run, generation in statuses
         )

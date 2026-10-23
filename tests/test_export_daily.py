@@ -540,3 +540,41 @@ def test_daily_page_uses_one_rr_snapshot_across_locations_and_progress(daily_rep
     assert datetime.fromisoformat(page["meta"]["source_collected_at"]) == old_clock
     next_page, _ = reader.page(limit=5000, cursor=None)
     assert [item["temp_avg"] for item in next_page["items"] if item["sample_count"]] == [20, 20]
+
+
+@pytest.mark.parametrize("terminal", ["cancelled", "abandoned", "unknown_terminal"])
+def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invalidates_304(
+    daily_repository, tmp_path, terminal
+):
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.settings import WeatherSettings
+
+    repo = daily_repository
+    descriptor = _descriptor(repo)
+    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, descriptor)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    refresh_daily_summaries(repo, ExportArtifactStore(tmp_path))
+    client = TestClient(
+        create_app(
+            WeatherSettings(
+                environment="development",
+                admin_token="daily-terminal",
+                enabled_providers=["python-kma-api"],
+                service_exports_enabled=True,
+                service_export_artifact_root=tmp_path,
+            ),
+            repo,
+        )
+    )
+    headers = {"x-admin-token": "daily-terminal"}
+    url = "/v1/service/exports/daily-summaries"
+    healthy = client.get(url, headers=headers)
+    assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    _candidate(repo, tmp_path, descriptor, finish=terminal)
+    changed = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
+    assert changed.status_code == 200
+    assert changed.json()["meta"]["source_status"] == "stale"
+    assert changed.json()["items"] == healthy.json()["items"]
