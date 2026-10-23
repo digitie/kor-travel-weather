@@ -5,7 +5,7 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from .export_heads import ScopeDescriptor, _digest
 from .export_snapshots import (
@@ -49,6 +49,7 @@ class FrozenForecastExports(FrozenCurrentExports):
             ) as c,
             c.begin(),
         ):
+            c.execute(text("SET LOCAL statement_timeout = '5s'"))
             catalog = self.heads.metadata.tables["weather_locations"]
             roster = c.execute(
                 select(catalog.c.location_id, catalog.c.nx, catalog.c.ny)

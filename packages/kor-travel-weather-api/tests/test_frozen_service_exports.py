@@ -395,6 +395,27 @@ def test_forecast_four_mib_cap_cursor_keeps_every_last_included_location(
     assert seen == ["a", "b", "c"] and len(sizes) >= 2
 
 
+def test_forecast_snapshot_metadata_lock_has_bounded_wait_and_recovers(repository, tmp_path):
+    import time
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    with repository.engine.begin() as lock:
+        lock.execute(text("LOCK TABLE weather_export_heads IN ACCESS EXCLUSIVE MODE"))
+        started = time.monotonic()
+        response = client.get(
+            "/v1/service/exports/forecasts", params={"style": "ultra_short"}, headers=HEADERS
+        )
+        elapsed = time.monotonic() - started
+        assert response.status_code == 503 and elapsed < 7
+    assert (
+        client.get(
+            "/v1/service/exports/forecasts", params={"style": "ultra_short"}, headers=HEADERS
+        ).status_code
+        == 200
+    )
+
+
 def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
