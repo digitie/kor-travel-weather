@@ -20,7 +20,13 @@ collected_at 같은 조회 clock은 계속 source identity에서 제외한다. p
 raw lineage 보존·인증값 제거, 불완전 페이지의 성공 staging 차단, 조회 clock에 독립적인
 identity와 증거 없는 응답의 구분을 검증한다. KMA32 자체는 독립2인 리뷰·Python3.10~3.13
 CI 및 Odroid 별도 프로세스의 실제 초단기실황 1회(8/8행) 검증 후 머지했다.
-이 Weather 후보의 전체/CI/리뷰 결과는 PR 검증 기록에 남긴다.
+Weather PR141은 c6c007bda1af2730b2ddc74bb202d27077c625c7 기준으로 머지했다.
+독립 적대 리뷰2인 최종 PASS, 정확 최종CI Python788(289.16초)/frontend243·타입·빌드·Ruff
+SUCCESS다. 로컬 PostgreSQL 전체788(1342.64초), frontend243·타입·Ruff도 통과했다.
+전체 로컬은 ac29059 제품에서 시작했고 최종c6는 journal제목2+/2-만 바뀐 동일제품이다.
+정확 최종후보의 격리실제TCP API3/UI11 PASS, browsererror0/upstreamservice호출0이다.
+이 API/UI 검증은 인증/503/기존 화면 수용이며 실제 export 데이터 공개나 운영 배포가 아니다.
+[최종 수용 기록](https://github.com/digitie/kor-travel-weather/pull/141#issuecomment-6359190142)을 따른다.
 
 receipt는 페이지 완결 증거다. 행의 의미·유일성·전체 source 권위·발표 revision·정상0을
 보증하지 않는다. 빈 forecast list에는 metadata가 없어 정상0 승격에 쓰지 않는다.
