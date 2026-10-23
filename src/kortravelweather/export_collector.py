@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from kortravelcommon.deadline import call_with_deadline
 from sqlalchemy import select, update
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
@@ -249,6 +252,64 @@ class ExportPublisherProgress:
     has_more: bool
 
 
+_PUBLISHER_PROBE_SLOTS = threading.BoundedSemaphore(1)
+_FAILED_NATIVE = frozenset({
+    "failed", "partial", "partial_success", "canceled", "cancelled", "skipped", "abandoned",
+})
+
+
+def _publisher_terminal(heads, identity, dagster_status):
+    """확정 terminal만 retire한다. orchestration 조회 중 business DB를 반환한다."""
+    with heads._transaction() as session:
+        run, attempt = heads.lifecycle._locked(session, identity)
+        native, mode = run["status"], attempt["execution_mode"]
+        orchestrator_id = attempt["orchestrator_run_id"]
+    status = None
+    if native not in _FAILED_NATIVE and mode == "dagster":
+        if not orchestrator_id or dagster_status is None:
+            return "NOT_READY", None
+        try:
+            status = call_with_deadline(
+                lambda: dagster_status(orchestrator_id), timeout_seconds=2,
+                slots=_PUBLISHER_PROBE_SLOTS,
+            )
+        except Exception:
+            return "NOT_READY", None
+        if status not in {"SUCCESS", "FAILURE", "CANCELED"}:
+            return "NOT_READY", None
+    if native not in _FAILED_NATIVE and status not in {"FAILURE", "CANCELED"}:
+        return None, status
+    with heads._transaction() as session:
+        run, attempt = heads.lifecycle._locked(session, identity)
+        if session.scalar(select(heads.generations.c.generation_id).where(
+            heads.generations.c.attempt_id == identity.attempt_id
+        )) is not None:
+            return "ALREADY_COMMITTED", status
+        # SUCCESS는 native commit보다 먼저 보일 수 있다. 반대로 확정 실패는
+        # running CAS만 terminalize하며 기존 partial/success와 fact 개수는 보존한다.
+        if run["status"] not in _FAILED_NATIVE and not (
+            status in {"FAILURE", "CANCELED"}
+            and attempt["orchestrator_run_id"] == orchestrator_id
+        ):
+            return "NOT_READY", status
+        if run["status"] == "running":
+            runs = heads.metadata.tables["weather_sync_runs"]
+            session.execute(update(runs).where(
+                runs.c.run_id == run["run_id"], runs.c.status == "running",
+            ).values(
+                status="failed", finished_at=datetime.now(UTC),
+                error="EXPORT_ORCHESTRATOR_TERMINAL",
+                export_status_pending=runs.c.export_status_scopes.is_not(None),
+            ))
+        session.execute(update(heads.lifecycle.attempts).where(
+            heads.lifecycle.attempts.c.attempt_id == identity.attempt_id,
+            heads.lifecycle.attempts.c.owner_id == identity.owner_id,
+            heads.lifecycle.attempts.c.status.in_(["preparing", "sealed"]),
+        ).values(status="failed", error_code="CONFIRMED_TERMINAL"))
+        session.execute(heads.pins.delete().where(heads.pins.c.attempt_id == identity.attempt_id))
+    return "REJECTED", status
+
+
 def publish_pending_exports(
     repository,
     artifact_root: Path,
@@ -289,10 +350,14 @@ def publish_pending_exports(
             break
         identity = ExportAttempt(*row)
         try:
-            outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+            outcome, _ = _publisher_terminal(heads, identity, dagster_status)
+            if outcome is None:
+                outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+                if outcome == "REJECTED":
+                    _publisher_terminal(heads, identity, dagster_status)
         except (ExportArtifactError, OSError):
             # 손상/누락 파일은 이전 head를 그대로 남긴다. 후속 sweep/재수집으로 복구한다.
-            outcome = "REJECTED"
+            outcome = "NOT_READY"
         results[outcome] = results.get(outcome, 0) + 1
         processed += 1
         last = row.attempt_id
