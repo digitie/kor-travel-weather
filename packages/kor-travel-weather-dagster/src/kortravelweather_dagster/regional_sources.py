@@ -76,17 +76,29 @@ def _regional_source_attempt(provider: str, dataset: str):
         def execute(*args, **kwargs):
             repository = kwargs["repository"]
             settings = kwargs.get("settings") or WeatherSettings()
+            exports = settings.service_exports_enabled and settings.service_export_artifact_root
             # 실제 repository의 명시 opt-in만 사용한다. 기본 OFF 시험/호출에서
             # duck-typed repository의 __getattr__까지 호출하지 않는다.
             if (
                 not isinstance(repository, WeatherRepository)
-                or not repository.export_status_enabled
+                or not (repository.export_status_enabled or exports)
                 or provider not in settings.enabled_providers
             ):
                 return function(*args, **kwargs)
-            run = repository.start_sync_run(provider=provider, dataset_key=dataset)
+            run = repository.start_sync_run(
+                provider=provider, dataset_key=dataset,
+                **({"export_cohort_required": True} if exports else {}),
+            )
             try:
-                result = function(*args, **kwargs, _status_run=run)
+                extra = {}
+                if exports:
+                    from kortravelweather.export_sdk_collection import prepare_sdk_collection
+
+                    extra["_source_export"] = prepare_sdk_collection(
+                        repository, run_id=run.run_id, provider=provider, dataset_key=dataset,
+                        artifact_root=settings.service_export_artifact_root,
+                    )
+                result = function(*args, **kwargs, _status_run=run, **extra)
                 if result.get("skipped"):
                     repository.finish_sync_run(
                         run.run_id, status="failed",
@@ -137,6 +149,7 @@ def publish_regional_records(
     build_source_record: Callable[..., dict[str, Any]],
     max_values: int,
     sync_run: Any | None = None,
+    source_export: Any | None = None,
 ) -> dict[str, Any]:
     """Create any missing anchors, then publish one run's worth of values.
 
@@ -165,6 +178,18 @@ def publish_regional_records(
         skipped_without_values = 0
         disabled = 0
         truncated = False
+        latest_sources = {}
+        if source_export is not None:
+            # 청정넷처럼 시간별 관측이 여러 개인 source도 native 이력은 모두 저장한다.
+            # 승인 current에는 최신 원천 한 건만 사용하며 임의로 관측 시각을 만들지 않는다.
+            for record in records:
+                candidate = to_location(record)
+                if candidate is not None:
+                    observed = getattr(record[0] if isinstance(record, tuple) else record,
+                                       "observed_at", None)
+                    previous = latest_sources.get(candidate.location_id)
+                    if observed is not None and (previous is None or observed > previous[0]):
+                        latest_sources[candidate.location_id] = (observed, record)
 
         def flush() -> None:
             nonlocal published
@@ -221,6 +246,22 @@ def publish_regional_records(
             if value_count + len(station_values) > max_values:
                 truncated = True
                 break
+            export_latest = latest_sources.get(existing.location_id)
+            if (
+                source_export is not None and source_export.complete
+                and existing.location_id in source_export.plans
+                and (dataset_key == KHOA_BEACH_INDEX_DATASET
+                     or (export_latest is not None and export_latest[1] is record))
+            ):
+                # 기존 native batch와 동일한 source/fact를 한 번만 ingest한다.
+                flush()
+                published += source_export.collector.ingest(
+                    source_export.plans.pop(existing.location_id),
+                    record=source, values=station_values,
+                )
+                source_count += 1
+                value_count += len(station_values)
+                continue
             # 전체 원천의 정규화 결과를 쌓지 않고 현재 chunk만 보관한다.
             # 하나의 원천 관측과 그 metric set은 같은 transaction에 둔다.
             if values and (
@@ -240,6 +281,8 @@ def publish_regional_records(
         # 늦은 원천 변환/게시 실패 뒤에도 이전 chunk와 그 저장량은 남는다.
         # 모든 source는 위에서 facts와 함께 게시했으므로 finish에는 빈 묶음만 전달한다.
         flush()
+        if source_export is not None:
+            source_export.finish()
         loaded, finished = repository.publish_and_finish(
             run_id=run.run_id,
             source_records=[],
@@ -285,14 +328,23 @@ def run_khoa_beach_index_sync(
     timeout: float | None = None,
     settings: WeatherSettings | None = None,
     _status_run: Any | None = None,
+    _source_export: Any | None = None,
 ) -> dict[str, Any]:
     skipped = skipped_when_disabled(KHOA_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
         return skipped
     with provider_request(KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET):
+        assembly = None
+        if _source_export is not None:
+            from kortravelweather.export_sdk_pages import BeachPageAssembly
+
+            assembly = BeachPageAssembly()
         places = fetch_beach_index(
-            api_key=api_key, max_places=max_places, retries=retries, timeout=timeout
+            api_key=api_key, max_places=max_places, retries=retries, timeout=timeout,
+            **({"export_assembly": assembly} if assembly is not None else {}),
         )
+    if assembly is not None and not assembly.receipt.complete:
+        _source_export.invalidate()
     return publish_regional_records(
         repository=repository,
         provider=KHOA_PROVIDER,
@@ -303,6 +355,7 @@ def run_khoa_beach_index_sync(
         build_source_record=beach_index_source_record,
         max_values=max_values,
         sync_run=_status_run,
+        source_export=_source_export,
     )
 
 
@@ -316,6 +369,7 @@ def run_krforest_mountain_sync(
     timeout: float | None = None,
     settings: WeatherSettings | None = None,
     _status_run: Any | None = None,
+    _source_export: Any | None = None,
 ) -> dict[str, Any]:
     skipped = skipped_when_disabled(KRFOREST_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
@@ -334,6 +388,7 @@ def run_krforest_mountain_sync(
         build_source_record=mountain_source_record,
         max_values=max_values,
         sync_run=_status_run,
+        source_export=_source_export,
     )
 
 
@@ -348,6 +403,7 @@ def run_krforest_dust_sync(
     timeout: float | None = None,
     settings: WeatherSettings | None = None,
     _status_run: Any | None = None,
+    _source_export: Any | None = None,
 ) -> dict[str, Any]:
     """Publish 청정넷 readings, or say why it could not.
 
@@ -391,6 +447,7 @@ def run_krforest_dust_sync(
         build_source_record=lambda pair, **kwargs: dust_source_record(pair[0], **kwargs),
         max_values=max_values,
         sync_run=_status_run,
+        source_export=_source_export,
     )
 
 
@@ -404,6 +461,7 @@ def run_krex_restarea_sync(
     lookback_hours: int = 24,
     settings: WeatherSettings | None = None,
     _status_run: Any | None = None,
+    _source_export: Any | None = None,
 ) -> dict[str, Any]:
     """Fetch and publish, owning the event loop ``KrexClient`` now requires.
 
@@ -422,7 +480,9 @@ def run_krex_restarea_sync(
     try:
         records = asyncio.run(
             _fetch_restarea_weather(
-                client, max_records=max_records, lookback_hours=lookback_hours
+                client, max_records=max_records, lookback_hours=lookback_hours,
+                **({"export_page_observer": _source_export.observe_krex_page}
+                   if _source_export is not None else {}),
             )
         )
     except Exception as exc:
@@ -442,6 +502,7 @@ def run_krex_restarea_sync(
         build_source_record=restarea_source_record,
         max_values=max_values,
         sync_run=_status_run,
+        source_export=_source_export,
     )
 
 
@@ -450,12 +511,14 @@ def _is_upstream_block(exc: BaseException) -> bool:
 
 
 async def _fetch_restarea_weather(
-    client: Any, *, max_records: int, lookback_hours: int
+    client: Any, *, max_records: int, lookback_hours: int, export_page_observer=None,
 ) -> list[Any]:
     async with client:
         with provider_request(
             KREX_PROVIDER, KREX_RESTAREA_DATASET, blocked=_is_upstream_block
         ):
             return await fetch_restarea_weather(
-                client, max_records=max_records, lookback_hours=lookback_hours
+                client, max_records=max_records, lookback_hours=lookback_hours,
+                **({"export_page_observer": export_page_observer}
+                   if export_page_observer is not None else {}),
             )

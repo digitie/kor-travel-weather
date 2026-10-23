@@ -237,6 +237,7 @@ async def fetch_restarea_weather(
     *,
     max_records: int = 2000,
     lookback_hours: int = 24,
+    export_page_observer=None,
 ) -> list[RestAreaWeather]:
     """Fetch the most recent populated hour, bounded.
 
@@ -251,6 +252,8 @@ async def fetch_restarea_weather(
     Korean source crosses for its own async-only client.
     """
     page = await client.restarea.latest_weather(lookback_hours=lookback_hours)
+    if export_page_observer is not None:
+        export_page_observer(page)
     return list(page.items)[:max_records]
 
 
