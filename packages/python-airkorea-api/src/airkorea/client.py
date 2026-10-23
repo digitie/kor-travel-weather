@@ -217,7 +217,7 @@ class AirKoreaClient:
                 "ver": ver,
             },
         )
-        return [_measurement(row, station_name=resolved_station_name) for row in _items(body)]
+        return [parse_measurement(row, station_name=resolved_station_name) for row in _items(body)]
 
     async def latest_station_measurement(
         self,
@@ -255,7 +255,7 @@ class AirKoreaClient:
                 "ver": ver,
             },
         )
-        return [_measurement(row) for row in _items(body)]
+        return [parse_measurement(row) for row in _items(body)]
 
     async def unhealthy_stations(
         self,
@@ -272,7 +272,7 @@ class AirKoreaClient:
                 "numOfRows": num_of_rows,
             },
         )
-        return [_measurement(row) for row in _items(body)]
+        return [parse_measurement(row) for row in _items(body)]
 
     async def forecast_notices(
         self,
@@ -936,11 +936,16 @@ def _int_from_mapping(mapping: Mapping[str, Any], key: str, *, default: int) -> 
         return default
 
 
-def _measurement(
+def parse_measurement(
     row: Mapping[str, Any],
     *,
     station_name: str | None = None,
 ) -> AirQualityMeasurement:
+    """측정 원문 한 행을 HTTP client와 동일한 DTO로 다시 해석한다.
+
+    입력은 이미 확보한 provider record다. header/resultCode, 페이지 완결성,
+    호출 성공이나 원천 신선도를 검증하지 않으며 네트워크를 호출하지 않는다.
+    """
     try:
         khai_grade = to_int_or_none(row.get("khaiGrade"))
         return AirQualityMeasurement(

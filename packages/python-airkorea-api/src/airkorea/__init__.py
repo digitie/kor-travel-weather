@@ -11,7 +11,7 @@ from airkorea.catalog import (
     api_catalog_params_for_method,
     get_api_catalog_entry,
 )
-from airkorea.client import SUPPORTED_ENDPOINTS, AirKoreaClient
+from airkorea.client import SUPPORTED_ENDPOINTS, AirKoreaClient, parse_measurement
 from airkorea.codes import (
     AirQualityGrade,
     DataTerm,
@@ -94,6 +94,7 @@ __version__ = "0.4.0"
 PROVIDER_NAME = "python-airkorea-api"
 
 __all__ = [
+    "parse_measurement",
     "AirKoreaAuthError",
     "AirKoreaCallContext",
     "AirKoreaClient",
