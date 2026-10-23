@@ -25,6 +25,7 @@ def upgrade():
         "weather_daily_summary_progress",
         sa.Column("progress_id", sa.Integer(), primary_key=True),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("generation_id", sa.String(36), nullable=False),
         sa.Column("source_collected_at", sa.DateTime(timezone=True)),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
     )

@@ -51,6 +51,8 @@ cursor 조건 변경은422, 15분 만료는410이며 첫 페이지부터 재시�
 summary/winner 상태는 최대31일 조회에 하루 cursor 유예를 더해 보존하며 오래된
 파생 행만 SKIP LOCKED/최대500행씩 정리한다. 승인 generation의 publication 인덱스로
 증분 처리하여 매번 전체 이력을 훑지 않는다. 동일 상태 replay는 JSON UPDATE를 생략한다.
+checkpoint는 (publication 시각, generation_id) 완전 키셋이다. 기존0026의 동일 시각
+generation도 한 tick의 상한에 걸렸다는 이유로 다음 tick에서 누락되지 않는다.
 
 API·publisher는 동일 NVMe artifact 경로·권한을 사용해야 한다. 미처리 generation은
 summary checkpoint 이전에 GC하면 안 된다. GC·전체 wall-clock/최대 RSS·모든 provider
