@@ -30,6 +30,12 @@ from sqlalchemy import (
 )
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
+from .export_capacity import (
+    MAX_SOURCE_SCOPES,
+    ExportCapacityExceeded,
+    MetadataBudget,
+    read_generation_refs,
+)
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
 
 MAX_SNAPSHOT_LOCATIONS = 5000
@@ -225,7 +231,7 @@ class FrozenCurrentExports:
                 raise ExportSnapshotUnavailable(
                     "외부 원천 선택 집합이 준비되지 않았습니다."
                 ) from exc
-        if len(descriptors) > 5000:
+        if len(descriptors) > MAX_SOURCE_SCOPES:
             raise ExportSnapshotUnavailable("현재 원천 vector 상한을 넘었습니다.")
         heads = {
             row["namespace"]: dict(row)
@@ -273,14 +279,9 @@ class FrozenCurrentExports:
                 connection, locations
             )
             generations = [heads[d.namespace]["generation_id"] for d in descriptors]
-            grouped_refs = defaultdict(list)
-            for row in connection.execute(
-                select(self.heads.refs)
-                .where(self.heads.refs.c.generation_id.in_(generations))
-                .order_by(self.heads.refs.c.ordinal)
-            ).mappings():
-                grouped_refs[row["generation_id"]].append(dict(row))
+            grouped_refs = read_generation_refs(connection, self.heads.refs, generations)
             scopes = []
+            budget = MetadataBudget()
             for descriptor in descriptors:
                 head = heads[descriptor.namespace]
                 refs = grouped_refs[head["generation_id"]]
@@ -313,6 +314,7 @@ class FrozenCurrentExports:
                         } if self.source_inventory else {}),
                     }
                 )
+                budget.add(scopes[-1])
             entries = self.heads.metadata.tables["reverse_address_entries"]
             addresses = {
                 row["target_key"]: row
@@ -359,11 +361,13 @@ class FrozenCurrentExports:
                         "sigungu_name": entry["sigungu_name"] if entry else None,
                     }
                 )
+                budget.add(items[-1])
             manifest = {"schema": 1, "scopes": scopes, "locations": items}
             if self.source_inventory:
                 manifest["unconfirmed_sources"] = unconfirmed
             if self.current_selection is not None:
                 manifest["selection"] = self.current_selection
+            MetadataBudget().add(manifest)
             digest = _digest(manifest)
             now = datetime.now(UTC)
             latest = select(self.snapshots.c.issue_order).where(
@@ -486,7 +490,7 @@ class FrozenCurrentExports:
         else:
             try:
                 frozen = self._freeze()
-            except ExportSnapshotUnavailable:
+            except (ExportSnapshotUnavailable, ExportCapacityExceeded):
                 frozen = self._previous_success()
             state = {
                 "v": 1,

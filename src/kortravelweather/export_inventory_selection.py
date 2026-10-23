@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select, tuple_
 
 from .export_artifacts import ExportArtifactError
+from .export_capacity import MAX_SOURCE_SCOPES
 from .export_external import RetrievalScopeDescriptor
 from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
@@ -244,6 +245,6 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
             descriptor, sample["generation_id"], ids, sample["source_collected_at"],
             sample["data_revision_at"], sample["generation_published_at"],
         ))
-    if not scopes or len(scopes) > 5000:
+    if not scopes or len(scopes) > MAX_SOURCE_SCOPES:
         raise ExportArtifactError("승인 source vector가 비었거나 상한을 넘었습니다.")
     return ApprovedSelection(tuple(scopes), unconfirmed)
