@@ -1,3 +1,12 @@
+## 2026-10-23 — export 실행 설정과 공유 파일 배선
+
+- API·code-server에 동일한 기본 OFF flag와 공유 named volume 아래 artifact 경로를
+  전달한다. 컨테이너별 파일 계층에 분리되어 승인 파일을 읽지 못하는 배포 누락을 막는다.
+- 기존 배포 계약 21개와 실제 독립 컨테이너 두 개의 작성→교체→guard/파일 읽기,
+  디렉터리 0700·lock 0600·파일 0400을 확인했다. [범위와 운영 gate](reports/2026-10-23-export-runtime-volume.md).
+- 운영 flag·daemon·instigator·배포는 변경하지 않았다. NVMe mountpoint·GC/pin·전체
+  source·ARM 비용·실제 Map consumer 수용은 활성화 전 남은 gate다.
+
 ## 2026-10-23 — W4 native 수집·복구·실제 일정 통합 PR151
 
 - [설계·수용 경계](reports/2026-10-23-export-status-integration.md): source 별칭 전 실제

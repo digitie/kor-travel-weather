@@ -142,6 +142,13 @@ services:
       KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+      # 두 실행 표면이 같은 승인 파일을 읽는다. 활성화는 수용 gate 이후 별도 수행한다.
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED:-false}
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT: /var/lib/kor-travel-weather/exports
+    volumes:
+      - type: volume
+        source: weather-export-artifacts
+        target: /var/lib/kor-travel-weather
     ports:
       - "127.0.0.1:14101:14101"
     command: ["uvicorn", "kortravelweather_api.app:app", "--host", "0.0.0.0", "--port", "14101"]
@@ -225,6 +232,8 @@ services:
       # deployment .env into the container that runs the retention job.
       KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
       KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED:-false}
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT: /var/lib/kor-travel-weather/exports
     expose:
       - "14106"
       - "14103"
@@ -242,6 +251,9 @@ services:
       - "127.0.0.1:14106:14106"
     volumes:
       - dagster-home:/opt/dagster/home
+      - type: volume
+        source: weather-export-artifacts
+        target: /var/lib/kor-travel-weather
       # Read-only: this is configuration, and the instance writes its run
       # storage alongside it in the volume above.  Without it Dagster runs on
       # defaults that leave a run STARTED for ever when its process dies, and
@@ -457,6 +469,7 @@ services:
 
 volumes:
   weather-postgres:
+  weather-export-artifacts:
   dagster-home:
   prometheus-data:
 
