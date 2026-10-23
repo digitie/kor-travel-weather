@@ -22,6 +22,20 @@ def upgrade():
     )
     op.create_index("ix_weather_daily_summaries_date", "weather_daily_summaries", ["date"])
     op.create_table(
+        "weather_daily_summary_coverage",
+        sa.Column("location_id", sa.String(120), primary_key=True),
+        sa.Column("namespace", sa.String(64), primary_key=True),
+        sa.Column("provider", sa.String(40), nullable=False),
+        sa.Column("source_scope", sa.String(64), nullable=False),
+        sa.Column("nx", sa.Integer()),
+        sa.Column("ny", sa.Integer()),
+        sa.Column("latitude", sa.Float()),
+        sa.Column("longitude", sa.Float()),
+        sa.Column("source_collected_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("generation_id", sa.String(36), nullable=False),
+    )
+    op.create_table(
         "weather_daily_summary_progress",
         sa.Column("progress_id", sa.Integer(), primary_key=True),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
@@ -33,4 +47,5 @@ def upgrade():
 
 def downgrade():
     op.drop_table("weather_daily_summary_progress")
+    op.drop_table("weather_daily_summary_coverage")
     op.drop_table("weather_daily_summaries")
