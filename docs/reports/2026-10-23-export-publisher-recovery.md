@@ -25,7 +25,11 @@ sensor를 Definitions에 등록하고
 같은 잠금 transaction에서 failed로 바꾸며 저장된 fact 개수는 보존한다. W4 원장은
 `export_status_pending`을 통해 기존 repair 경로로 다시 투영한다. 이미 terminal인
 native success/partial은 다시 쓰지 않는다. 따라서 native 성공 뒤 Dagster 후속 실패는
-attempt 실패와 native 성공을 별도로 보존한다. 파일 누락/손상은 확정 실행 실패로
+attempt 실패와 native 성공을 별도로 보존한다. W4 status는 native 수집 상태이며
+export 승인 상태가 아니다. current/forecast/daily reader는 같은 scope의 최신 attempt
+실패도 검사하므로 이전 승인 자료를 보존하되 stale로 응답한다. 이전 healthy ETag로
+304를 내지 않으며 이미 발급한 cursor에서도 stale 상태를 유지한다.
+파일 누락/손상은 확정 실행 실패로
 취급하지 않으며 원래 파일을 복원한 뒤 다음 sweep에서 승격할 수 있다.
 
 `NOT_READY`가 된 unknown/STARTED/metadata 조회 실패는 시간 경과만으로 reject하지
@@ -38,12 +42,20 @@ session lock을 남기지 않는다. 오류 로그에는 exception 원문/DSN/pr
 ## 검증과 남은 gate
 
 별도 소유 PostgreSQL DB에서 초기 terminal 14건이 15.53초, 실제 public Dagster
-`evaluate_tick`을 포함한 초기 24건이 27.73초에 통과했다. 실제 Dagster instance의
+`evaluate_tick`을 포함한 초기 24건이 27.73초에 통과했다. 최종 집중 회귀는 32건이
+39.23초에 통과했고, 앞선 publisher/heads/daily 통합 회귀는 72건이 81.39초에
+통과했다. 두 실행은 중복 시험을 포함하므로 합산해 서로 다른 104건으로 세지 않는다.
+Ruff 전체와 `git diff --check`도 통과했다. 실제 Dagster instance의
 SUCCESS/FAILURE/CANCELED/STARTED/없는 run과 native/attempt 결과를 대조했고
 두 번 평가해도 새 run/worker가 생기지 않는 것을 확인했다. advisory lease 충돌,
 비활성 설정의 DB 생성 0회, 오류 시 cursor 보존/engine 반환도 포함한다.
-이는 로컬 격리 검증이며 운영 활성화·부하 개선 실측을 뜻하지 않는다.
-추가 회귀와 기존 heads/daily 회귀, 두 독립 적대 리뷰, 최종 CI는 아직 gate다.
+원본 파일 복원 후 승격, 새 epoch 재시도, 실제 callback 2초 timeout의 미확정 보존,
+native running 실패의 W4 pending/기존 repair 재투영과 마지막 성공 시각 보존도 검사했다.
+API 추가 회귀 2건(최종 32건에 포함)은 current/forecast/daily 3종의 old healthy ETag
+무효화·자료 보존·기존 cursor stale를 실제 앱/TestClient로 검증했다.
+이는 로컬 격리 검증이며 운영 활성화·공개 live UI·CPU/RAM 개선 실측을 뜻하지 않는다.
+두 독립 적대 리뷰, 최종 CI와 운영 start gate는 아직 미완이다. 이 PR에는 프런트엔드
+수정이 없으며 새 UI 동작을 검증했다고 주장하지 않는다.
 파일 검증·마지막 SQL 대기와 연결 획득까지 포함한 전체 wall-clock12초를
 보장한다는 뜻은 아니며 예산·문장/잠금 상한의 실제 경계를 최종 보고에 남긴다.
 

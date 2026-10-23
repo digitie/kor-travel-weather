@@ -193,3 +193,29 @@ def test_keyset_microbatch_finishes_and_wraps_for_new_candidates(publisher_repos
     assert publish_pending_exports(publisher_repository, tmp_path, limit=2).results == {
         "PUBLISHED": 1,
     }
+
+
+def test_dead_worker_marks_w4_pending_and_existing_repair_preserves_last_success(
+    publisher_repository, tmp_path, monkeypatch
+):
+    from kortravelweather.export_status import ExportSourceStatuses
+    from kortravelweather.repository import Base
+
+    repo = publisher_repository
+    monkeypatch.setattr(repo, "export_status_enabled", True)
+    heads, first, capture, *_ = candidate(repo, tmp_path, monkeypatch)
+    assert heads.promote(first, capture.artifacts) == "PUBLISHED"
+    table = ExportSourceStatuses(Base.metadata).table
+    with repo.engine.connect() as connection:
+        before = connection.execute(select(table)).mappings().one()
+    heads, failed, *_ = candidate(repo, tmp_path, monkeypatch, dagster=True, terminal=None)
+    assert publish_pending_exports(repo, tmp_path,
+                                   dagster_status=lambda _: "FAILURE").results == {"REJECTED": 1}
+    assert state(repo, heads, failed)[1]["export_status_pending"] is True
+    assert repo.reconcile_export_status({"python-kma-api"}) == 1
+    with repo.engine.connect() as connection:
+        after = connection.execute(select(table)).mappings().one()
+    assert after["last_status"] == "failed"
+    assert after["last_success_at"] == before["last_success_at"]
+    assert after["source_collected_at"] == before["source_collected_at"]
+    assert state(repo, heads, failed)[1]["export_status_pending"] is False
