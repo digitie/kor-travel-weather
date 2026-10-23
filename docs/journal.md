@@ -276,3 +276,21 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   실제 PostgreSQL API 회귀로 확인한다. 운영 설정은 기본 OFF 그대로다.
 - 상세 계약: `docs/reports/2026-10-23-frozen-forecast-api.md`.
 
+## 2026-10-23 W4 수집 상태 projection 기반
+
+- provider/dataset/style별 작은 상태표와 terminal·일정 시각 fence를 추가했다.
+- 옛 worker/중복 terminal이 최신 상태를 덮지 않으며 실패 때 이전 성공을 보존한다.
+- PostgreSQL 14건에서 실제 동시 잠금 대기 뒤 옛 실패 거절/rollback/KST/일정 중지와
+  PK 단일 SELECT를 확인했다. 전체 CI·두 리뷰·실제 REST 연결·운영 수용은 별도다.
+- 모듈만으로 status API가 활성화되지는 않는다. native CAS/savepoint/일정 writer와
+  API pagination/ETag는 API 소유자의 통합 작업이다. W4 완료로 세지 않는다.
+- 상세 계약: `docs/reports/2026-10-23-export-source-status.md`.
+
+### W4 실제 fetch-clock와 metadata 잠금 격리 보강
+
+- canonical 별칭의 최초 fetched_at을 재수집 시각으로 오인하지 않도록 작은 run/dataset
+  실제 clock을 추가했다. clock 미확인은 null이며 finished_at으로 대신하지 않는다.
+- 상태 작업의 savepoint/statement 5초·lock 1초 상한과 더 짧은 기존 GUC 유지·복원을
+  추가했다. PostgreSQL 집중17건에서 실제 잠금 실패 후 native SQL 사용을 확인했다.
+- 원본 ingest/terminal·REST/일정 hook 통합과 두 리뷰·CI/운영 수용은 아직 별도다.
+
