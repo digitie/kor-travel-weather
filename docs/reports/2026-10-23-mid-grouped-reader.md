@@ -4,8 +4,8 @@
 
 `FrozenMidForecastExports`는 inventory에 승인된 `python-kma-api/kma_mid_forecast`의
 육상과 기온을 위치별 한 묶음으로 조합한다. 기존 예보 reader의 공식 확장 지점을
-사용하며 별도 인증·cursor 형식을 만들지 않는다. router 배선은 선행 PR 담당자가
-통합한다. 기존 수집·fact·이력·OpenAPI 필드와 운영 flag는 변경하지 않는다.
+사용하며 별도 인증·cursor 형식을 만들지 않는다. router는 mid일 때만 이 reader로
+dispatch한다. 기존 수집·fact·이력·OpenAPI 필드와 운영 flag는 변경하지 않는다.
 
 ## 불변식
 
@@ -41,6 +41,11 @@ SDK 모의 HTTP→native intent/cohort→실제 fact capture→성공 head/inven
 세 위치의 pagination·서명/limit 바인딩, 부분 승인·늦은 승인 delta, 실패 intent·좌표 변경,
 회차 불일치·TTL을 검증했다. 이 단계의 4개 PG 시험과 초기15개 순수 시험은
 19PASS(24.90초)였다. 원천 HTTP·운영 DB·daemon은 호출하거나 변경하지 않았다.
+
+같은 의미의 재수집 clock 분리, history/current query 금지와 최초 한 역할 미승인을
+더한 최종 집중16+5건은21PASS(33.64초)다. 실제 앱의 기존 service route로 인증·최초503·
+gzip·ETag304·실패 뒤200/stale·old cursor·selection/limit/서명422·TTL410과 flag OFF/토큰
+미설정 거부3건도 PASS(1.41초)다. TestClient 결과를 실제 TCP/UI로 세지 않는다.
 
 REST 인증/ETag304/gzip과 추가 PG 경계를 검증하고 두 독립 리뷰·정확 CI·실제 HTTP/UI를
 마감해야 한다. 선행 inventory/forecast reader의 최종 수정과 수집 배선도 함께 통합한다.

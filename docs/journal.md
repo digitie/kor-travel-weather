@@ -1,8 +1,11 @@
-## 2026-10-23 — 중기예보 두 원천 grouped reader 초안
+## 2026-10-23 — 중기예보 두 원천 grouped reader
 
 - 같은 발표의 육상·기온을 위치별 배열로 묶는 별도 reader를 추가한다. 전체 raw
   scope와 frozen cursor/publication watermark를 보존하고 작은 두 chunk만 cache한다.
-- 순수 계약14건/Ruff PASS. 실제 PG/API·HTTP/UI·두 리뷰·CI와 선행 통합은 아직 미완이다.
+- 순수16건+실제 새 PG5건21PASS(33.64초), 실제 앱 인증·304/gzip·stale/old cursor·
+  서명/선택·TTL·기본 OFF3건 PASS. global Ruff PASS. 실제 TCP/UI·두 리뷰·CI는 미완이다.
+- 같은 의미의 재수집에도 artifact의 원래 known_at을 유지한다. 새 수집 clock과
+  publication watermark는 각각 meta.source_collected_at과 published_at/next_since다.
 - 정본: [중기 grouped reader](reports/2026-10-23-mid-grouped-reader.md).
 
 ## 2026-10-23 — export 실행 설정과 공유 파일 배선
