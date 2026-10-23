@@ -248,7 +248,7 @@ def test_optional_pagination_must_agree_with_single_row(source, change):
     [
         {"location_ids": ("b", "a")},
         {"location_ids": ("a", "a")},
-        {"location_ids": tuple(f"loc-{i:03}" for i in range(51))},
+        {"location_ids": tuple(f"loc-{i:04}" for i in range(1001))},
         {"entity_id": "mid-temperature:other"},
         {"normalizer_revision": "other"},
     ],
