@@ -284,6 +284,24 @@ class WeatherApiProvider(HttpWeatherProvider):
         payload, metadata = self._request(
             "forecast.json" if dataset.endswith("forecast") else "current.json", params=params
         )
+        return self.normalize_response(
+            location, dataset_key=dataset, payload=payload, metadata=metadata,
+            at=at or datetime.now(UTC),
+        )
+
+    def normalize_response(
+        self,
+        location: ProviderLocation,
+        *,
+        dataset_key: str,
+        payload: Any,
+        metadata: Mapping[str, Any],
+        at: datetime,
+    ) -> ProviderResponse:
+        """저장된 응답을 네트워크 없이 기존 정규화로 다시 검증하는 경계."""
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError("응답 재검증 기준 시각에는 timezone이 필요합니다.")
+        dataset = self._dataset(dataset_key, "weatherapi_current")
         if not isinstance(payload, Mapping) or "current" not in payload:
             raise ProviderError("WeatherAPI current 필드가 없습니다.", code="schema")
         timezone = _tz(_nested(payload, "location", "tz_id"))
@@ -364,6 +382,24 @@ class OpenWeatherMapProvider(HttpWeatherProvider):
         payload, metadata = self._request(
             "forecast" if dataset.endswith("forecast") else "weather", params=params
         )
+        return self.normalize_response(
+            location, dataset_key=dataset, payload=payload, metadata=metadata,
+            at=at or datetime.now(UTC),
+        )
+
+    def normalize_response(
+        self,
+        location: ProviderLocation,
+        *,
+        dataset_key: str,
+        payload: Any,
+        metadata: Mapping[str, Any],
+        at: datetime,
+    ) -> ProviderResponse:
+        """저장된 응답을 네트워크 없이 기존 정규화로 다시 검증하는 경계."""
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError("응답 재검증 기준 시각에는 timezone이 필요합니다.")
+        dataset = self._dataset(dataset_key, "openweathermap_current")
         if not isinstance(payload, Mapping):
             raise ProviderError("OpenWeatherMap 응답이 object가 아닙니다.", code="schema")
         rows = list(payload.get("list", [])) if dataset.endswith("forecast") else [payload]
@@ -463,6 +499,24 @@ class OpenMeteoProvider(HttpWeatherProvider):
                 "wind_speed_10m,wind_direction_10m,weather_code"
             )
         payload, metadata = self._request("forecast", params=params)
+        return self.normalize_response(
+            location, dataset_key=dataset, payload=payload, metadata=metadata,
+            at=at or datetime.now(UTC),
+        )
+
+    def normalize_response(
+        self,
+        location: ProviderLocation,
+        *,
+        dataset_key: str,
+        payload: Any,
+        metadata: Mapping[str, Any],
+        at: datetime,
+    ) -> ProviderResponse:
+        """저장된 응답을 네트워크 없이 기존 정규화로 다시 검증하는 경계."""
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError("응답 재검증 기준 시각에는 timezone이 필요합니다.")
+        dataset = self._dataset(dataset_key, "open_meteo_current")
         if not isinstance(payload, Mapping):
             raise ProviderError("Open-Meteo 응답이 object가 아닙니다.", code="schema")
         current = payload.get("current") or payload.get("current_weather")
