@@ -101,9 +101,12 @@ def _cohort_descriptors(row):
     ) for item in row["targets"]]
 
 
-def approved_source_selection(connection, metadata, locations, *, expected, optional=()):
+def approved_source_selection(
+    connection, metadata, locations, *, expected, optional=(), health_location_ids=None,
+):
     """caller가 RR/5s 상한을 소유한다. 이력/fact/SDK/파일/네트워크를 조회하지 않는다."""
     expected, optional = set(expected), set(optional)
+    health_keys = None if health_location_ids is None else set(health_location_ids)
     if not expected or len(expected) > 128 or not optional.issubset(expected):
         raise ExportArtifactError("요청 source inventory 범위가 올바르지 않습니다.")
     table = export_inventory_table(metadata)
@@ -170,12 +173,15 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     if expected - optional - sources:
         raise ExportArtifactError("필수 provider/dataset의 최초 승인 위치가 없습니다.")
     now = datetime.now(UTC)
-    unconfirmed = bool(expected - sources) or any(
+    health_rows = [
+        r for r in valid.values() if health_keys is None or r["location_id"] in health_keys
+    ]
+    unconfirmed = (bool(expected - sources) if health_keys is None else False) or any(
         now - row["source_collected_at"] > source_max_age(row["dataset_key"])
         or now - row["data_revision_at"] > source_max_age(row["dataset_key"])
-        for row in valid.values()
+        for row in health_rows
     )
-    namespaces = {row["namespace"] for row in valid.values()}
+    namespaces = {row["namespace"] for row in health_rows}
     heads = metadata.tables["weather_export_heads"]
     live_heads = set(connection.scalars(select(heads.c.namespace).where(
         heads.c.namespace.in_(namespaces),
@@ -183,7 +189,7 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
     unconfirmed |= live_heads != namespaces
     owners = metadata.tables["weather_export_scope_owners"]
-    source_scopes = {row["source_scope"] for row in valid.values()}
+    source_scopes = {row["source_scope"] for row in health_rows}
     active = list(connection.execute(select(
         owners.c.source_scope, attempts.c.status, runs.c.status,
         generations.c.generation_id, owners.c.owner_epoch,
@@ -212,27 +218,37 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     for source in expected:
         row = declarations.get(source)
         if row is None:
-            unconfirmed = True  # 이전 버전의 승인 자체는 유지하되 새 intent를 꾸미지 않는다.
+            unconfirmed |= health_keys is None or any(
+                (r["provider"], r["dataset_key"]) == source for r in health_rows
+            )
+            continue
+        descriptors = _cohort_descriptors(row)
+        if health_keys is not None and not (
+            health_keys.intersection(key for d in descriptors for key in d.location_ids)
+            or any((r["provider"], r["dataset_key"]) == source for r in health_rows)
+        ):
             continue
         latest = connection.scalar(select(runs.c.run_id).where(
             runs.c.provider == source[0], runs.c.dataset_key == source[1],
             runs.c.export_cohort_required.is_(True),
         ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1))
         unconfirmed |= latest != row["run_id"] or row["native_status"] != "success"
-        descriptors = _cohort_descriptors(row)
         selected, selected_parts = set(), set()
         for descriptor in descriptors:
             if (descriptor.provider, descriptor.dataset_key) != source:
                 raise ExportArtifactError("실제 source roster가 다른 dataset을 포함합니다.")
+            descriptor_namespace = descriptor.namespace
             for key in descriptor.location_ids:
                 part = getattr(descriptor, "source_part", "main")
                 if (key, part) in selected_parts:
                     raise ExportArtifactError("실제 source roster에 동일 위치가 중복됩니다.")
                 selected_parts.add((key, part))
                 selected.add(key)
+                if health_keys is not None and key not in health_keys:
+                    continue
                 approved = valid.get((*source, key, part))
                 if approved is None or (
-                    approved["namespace"] != descriptor.namespace
+                    approved["namespace"] != descriptor_namespace
                     or approved["run_id"] != row["run_id"]
                 ):
                     unconfirmed = True

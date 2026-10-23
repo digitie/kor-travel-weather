@@ -4,11 +4,18 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, tuple_
 
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
+from .export_inventory_selection import (
+    MAX_SELECTED_ROWS,
+    SDK_NETWORKS,
+    approved_source_selection,
+    catalog_source_columns,
+    source_max_age,
+)
 from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
@@ -23,7 +30,7 @@ from .export_snapshots import (
 
 class DailySummaryExports(FrozenCurrentExports):
     def __init__(self, *args, days=14, location_id=None, providers=("python-kma-api",), **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, providers=providers, **kwargs)
         if not 1 <= days <= 31:
             raise ExportCursorInvalid("요약 기간은 1~31일입니다.")
         self.table, self.progress = daily_summary_tables(self.heads.metadata)
@@ -36,9 +43,15 @@ class DailySummaryExports(FrozenCurrentExports):
             "location_id": location_id,
             "providers": list(self.providers),
         }
+        if self.source_inventory:
+            self.selection.update({
+                "source_inventory": 1,
+                "expected_sources": [list(source) for source in sorted(self.expected_sources)],
+                "optional_sources": [list(source) for source in sorted(self.optional_sources)],
+            })
         self.resource = "daily-summaries:" + _digest(self.selection)
 
-    def _selected_coverage(self, connection, keys):
+    def _coverage_rows(self, connection, keys):
         catalog = self.heads.metadata.tables["weather_locations"]
         coverage = self.coverage
         rows = list(
@@ -46,7 +59,8 @@ class DailySummaryExports(FrozenCurrentExports):
                 select(coverage)
                 .join(catalog, catalog.c.location_id == coverage.c.location_id)
                 .where(
-                    coverage.c.location_id.in_(keys),
+                    coverage.c.location_id.in_(keys)
+                    if self.location_id or not self.source_inventory else True,
                     coverage.c.provider.in_(self.providers),
                     catalog.c.enabled.is_(True),
                     or_(
@@ -63,9 +77,20 @@ class DailySummaryExports(FrozenCurrentExports):
                     ),
                 )
                 .order_by(coverage.c.location_id, coverage.c.namespace)
+                .limit(MAX_SELECTED_ROWS + 1)
             ).mappings()
         )
-        if {r["location_id"] for r in rows} != set(keys):
+        if len(rows) > MAX_SELECTED_ROWS:
+            raise ExportSnapshotUnavailable("관측 coverage metadata 상한을 넘었습니다.")
+        return rows
+
+    def _selected_coverage(self, connection, keys):
+        rows = self._coverage_rows(connection, keys)
+        if self.source_inventory:
+            rows, unconfirmed = self._inventory_coverage(connection, keys, rows)
+        else:
+            unconfirmed = False
+        if not self.source_inventory and {r["location_id"] for r in rows} != set(keys):
             raise ExportSnapshotUnavailable("선택 위치의 승인 관측 coverage가 준비되지 않았습니다.")
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
         runs = self.heads.metadata.tables["weather_sync_runs"]
@@ -84,7 +109,8 @@ class DailySummaryExports(FrozenCurrentExports):
                 .where(owners.c.source_scope.in_(scopes))
             )
         )
-        unconfirmed = len(statuses) != len(scopes) or any(
+        self.daily_health_digest = _digest(sorted([list(row) for row in statuses], key=str))
+        unconfirmed |= len(statuses) != len(scopes) or any(
             attempt == "failed"
             or run not in {"running", "success"}
             or (run == "success" and generation is None)
@@ -92,7 +118,113 @@ class DailySummaryExports(FrozenCurrentExports):
         )
         return rows, unconfirmed
 
+    def _inventory_coverage(self, connection, keys, rows):
+        """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
+        catalog = self.heads.metadata.tables["weather_locations"]
+        locations = connection.execute(select(
+            catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
+            catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
+        ).where(catalog.c.enabled.is_(True)).order_by(catalog.c.location_id).limit(
+            MAX_SNAPSHOT_LOCATIONS + 1,
+        )).mappings().all()
+        if len(locations) > MAX_SNAPSHOT_LOCATIONS:
+            raise ExportSnapshotUnavailable("활성 catalog 상한을 넘었습니다.")
+        if self.location_id is None:
+            # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
+            keys = [row["location_id"] for row in locations]
+        keys = set(keys)
+        from .export_artifacts import ExportArtifactError
+
+        try:
+            selection = approved_source_selection(
+                connection, self.heads.metadata, locations,
+                expected=self.expected_sources, optional=self.optional_sources,
+                health_location_ids=keys if self.location_id else None,
+            )
+        except (ExportArtifactError, KeyError, TypeError, ValueError) as exc:
+            raise ExportSnapshotUnavailable("관측 source 승인 집합이 준비되지 않았습니다.") from exc
+        expected = {
+            (scope.descriptor.namespace, key): scope
+            for scope in selection.scopes for key in scope.location_ids if key in keys
+        }
+        approved_sources = {
+            (scope.descriptor.provider, scope.descriptor.dataset_key, key)
+            for scope in selection.scopes for key in scope.location_ids if key in keys
+        }
+        coverage = {(r["namespace"], r["location_id"]): r for r in rows}
+        # SDK가 이번 HTTP에서 새 관측소를 발견하면 native catalog는 먼저 저장한다.
+        # 다음 cohort 전이라도 명시된 관측망 anchor를 예보 전용/무관측0으로 오인하지 않는다.
+        known_observed = {
+            (provider, dataset, row["location_id"])
+            for row in locations if row["location_id"] in keys
+            for provider, dataset in self.expected_sources
+            if row.get("point_provider") == provider and (
+                    dataset == "airkorea_realtime_measurement"
+                    or dataset in SDK_NETWORKS
+                    and SDK_NETWORKS[dataset] == row.get("point_network")
+                    and dataset != "khoa_beach_index"
+            )
+        }
+        from .export_external_cohorts import external_cohort_table
+
+        cohorts = external_cohort_table(self.heads.metadata)
+        target = func.json_array_elements(cohorts.c.targets).column_valued(
+            "daily_target", joins_implicitly=True,
+        )
+        target_key = target.op("->>")("location_id")
+        declared = set(connection.execute(select(
+            cohorts.c.provider, cohorts.c.dataset_key, target_key,
+        ).select_from(cohorts).where(
+            tuple_(cohorts.c.provider, cohorts.c.dataset_key).in_(self.expected_sources),
+            target_key.in_(keys),
+        ).distinct().limit(MAX_SELECTED_ROWS + 1)))
+        if len(declared) > MAX_SELECTED_ROWS:
+            raise ExportSnapshotUnavailable("사전 관측 source metadata 상한을 넘었습니다.")
+        if (declared | known_observed) - approved_sources:
+            raise ExportSnapshotUnavailable("선택 관측 source의 최초 승인이 없습니다.")
+        if expected.keys() - coverage.keys():
+            # 승인 관측이 있으나 요약이 한번도 계산되지 않은 경우를 무관측0으로 꾸미지 않는다.
+            raise ExportSnapshotUnavailable("승인 관측의 사전 계산이 아직 준비되지 않았습니다.")
+        selected = [coverage[key] for key in sorted(expected)]
+        now = datetime.now(UTC)
+        unconfirmed = selection.unconfirmed or any(
+            coverage[key]["generation_id"] != scope.generation_id
+            or now - coverage[key]["source_collected_at"]
+            > source_max_age(scope.descriptor.dataset_key)
+            for key, scope in expected.items()
+        )
+        # 관측 dataset 대상이 아닌 위치는 null/sample_count=0을 제공할 수 있다.
+        # 원천 clock을 다른 위치에서 빌리지 않고 메타는 unknown/stale로 둔다.
+        return selected, unconfirmed or not expected
+
     def _freeze_daily(self):
+        try:
+            return self._freeze_daily_ready()
+        except ExportSnapshotUnavailable:
+            previous = self._previous_daily()
+            if previous is None:
+                raise
+            return previous
+
+    def _previous_daily(self):
+        now = datetime.now(UTC)
+        with self.heads._transaction() as connection:
+            previous = connection.execute(select(self.snapshots).where(
+                self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+            ).order_by(self.snapshots.c.issue_order.desc()).limit(1)).mappings().one_or_none()
+            if previous is None:
+                return None
+            if previous["expires_at"] > now and previous["manifest"].get("fallback_unconfirmed"):
+                return dict(previous)
+            row = dict(previous)
+            row.pop("issue_order", None)
+            row["manifest"] = {**row["manifest"], "fallback_unconfirmed": True}
+            row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
+                       created_at=now, expires_at=now + SNAPSHOT_TTL)
+            connection.execute(self.snapshots.insert().values(**row))
+            return row
+
+    def _freeze_daily_ready(self):
         now = datetime.now(UTC)
         with (
             self.repository.engine.connect().execution_options(
@@ -117,6 +249,7 @@ class DailySummaryExports(FrozenCurrentExports):
             today = now.astimezone(KST).date()
             manifest = {
                 "selection": self.selection,
+                "daily_resource": self.resource,
                 "locations": keys,
                 "first_date": (today - timedelta(days=self.days - 1)).isoformat(),
                 "last_date": today.isoformat(),
@@ -129,8 +262,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 c.execute(
                     select(self.snapshots)
                     .where(
-                        self.snapshots.c.manifest_digest == digest,
-                        self.snapshots.c.expires_at > now,
+                        self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
@@ -138,14 +270,21 @@ class DailySummaryExports(FrozenCurrentExports):
                 .mappings()
                 .one_or_none()
             )
-            if existing is not None:
+            if (
+                existing is not None and existing["manifest_digest"] == digest
+                and existing["expires_at"] > now
+            ):
                 return dict(existing)
             row = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": min(r["source_collected_at"] for r in coverage),
-                "data_revision_at": min(r["published_at"] for r in coverage),
+                "source_collected_at": min(
+                    (r["source_collected_at"] for r in coverage), default=None,
+                ),
+                "data_revision_at": min(
+                    (r["published_at"] for r in coverage), default=ready["published_at"],
+                ),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
             }
@@ -246,18 +385,30 @@ class DailySummaryExports(FrozenCurrentExports):
                     break
                 state["g"], state["p"] = state["g"] + 1, 0
             ready = s.execute(select(self.progress)).mappings().one_or_none()
-            coverage, unconfirmed = self._selected_coverage(s, keys)
+            try:
+                coverage, unconfirmed = self._selected_coverage(s, keys)
+            except ExportSnapshotUnavailable:
+                # 이전 승인 roster의 값은 유지한다. 처음 조회한 미준비 위치에는
+                # snapshot 자체가 없으므로 _freeze_daily가 여전히503을 반환한다.
+                coverage, unconfirmed = None, True
+                self.daily_health_digest = "coverage-unavailable"
         more = state["g"] < len(keys)
         if ready is None or ready["source_collected_at"] is None:
             raise ExportSnapshotUnavailable("사전 계산 요약 checkpoint가 없습니다.")
         # roster/날짜 범위를 고정하고 각 페이지의 최신 사전계산 값을 반환한다.
-        source = min(r["source_collected_at"] for r in coverage)
-        status = "stale" if unconfirmed or now - source > timedelta(hours=3) else "ok"
+        source = (
+            min((r["source_collected_at"] for r in coverage), default=None)
+            if coverage is not None else frozen["source_collected_at"]
+        )
+        status = "stale" if (
+            unconfirmed or source is None or manifest.get("fallback_unconfirmed")
+            or not self.source_inventory and now - source > timedelta(hours=3)
+        ) else "ok"
         page = {
             "items": output,
             "meta": {
                 "generated_at": now.isoformat(),
-                "source_collected_at": source.isoformat(),
+                "source_collected_at": source.isoformat() if source is not None else None,
                 "source_status": status,
                 "item_count": len(output),
                 "snapshot_id": frozen["snapshot_id"],
@@ -267,4 +418,6 @@ class DailySummaryExports(FrozenCurrentExports):
                 "has_more": more,
             },
         }
-        return page, 'W/"' + _digest([frozen["snapshot_id"], limit, cursor, status, output]) + '"'
+        return page, 'W/"' + _digest([
+            frozen["snapshot_id"], limit, cursor, status, output, self.daily_health_digest,
+        ]) + '"'

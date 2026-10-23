@@ -101,14 +101,21 @@ def _candidate(
     values_mutator=None,
     capture_clock_mutator=None,
     post_bind_record_mutator=None,
+    cohort=False,
 ):
     heads = ExportHeads(repository)
     revision = revision or datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(
         hours=2
     )
     run = repository.start_sync_run(
-        provider=descriptor.provider, dataset_key=descriptor.dataset_key
+        provider=descriptor.provider, dataset_key=descriptor.dataset_key,
+        **({"export_cohort_required": True} if cohort else {}),
     )
+    if cohort:
+        from kortravelweather.export_source_cohorts import declare_source_cohort
+
+        declare_source_cohort(repository, run_id=run.run_id, provider=descriptor.provider,
+                              dataset_key=descriptor.dataset_key, descriptors=[descriptor])
     identity = repository.begin_export_attempt(
         run_id=run.run_id,
         scope_key="test",
