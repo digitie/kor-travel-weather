@@ -11,3 +11,6 @@
 전용 PostgreSQL 집중18 PASS: replay0·alias/옛payload·실패A current 뒤 성공B·rollback·파일실패·commit응답유실/replay복구·KMA만료·DagsterID 누락/강등 거부·손상/byte/point상한·소유권/시각/scope 오류·chunk내용변경·pool반환후파일·실제Numeric일치. 첫 만료 fixture가 일반provider였던1실패는 정확한KMA dataset/domain/valid_at으로 수정했으며 보존정책을 바꾸지 않았다.
 
 전체 회귀·migration·합산 실측·CI·두 독립 리뷰는 남아 있다. 실제 collector의 scope계획/완결/barrier·terminal성공 승격·GC/checkpoint·API활성화는 다음 단계다. 프록시/서비스 인증 계약은 PR135 main9d75b64를 유지한다.
+
+
+첫 독립 적대 리뷰에서 보조 실패표시 UPDATE의 행 잠금이 원본 transaction을 취소할 수 있는 P1, 파일실패 후 실패표시 잠금 무한대기 P2, run_id 없는 원천이 다른 run receipt에 포함되는 P2를 발견했다. 실패표시를 별도 savepoint best effort로 격리하고 독립 후속 transaction에도 lock timeout을 설정했다. export는 모든 원천의 동일 non-null run_id를 요구한다. 실제 PG의 별도 connection이 attempt 행을 잠근 두 경로와 mixed missing-run 회귀를 추가하여 집중21 PASS(15.95초)다. 이 경합에서 원본2경로 모두 commit되고 ingest가 상한 안에 반환함을 확인했다. 현 collector opt-in은 계속 OFF다.

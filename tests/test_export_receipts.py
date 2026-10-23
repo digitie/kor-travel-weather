@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 
 from kortravelweather.export_artifacts import (
     ExportArtifactError,
@@ -489,3 +489,112 @@ def test_artifact_number_matches_actual_numeric_column(receipt_repository, tmp_p
             )
         )
     assert Decimal(point["value_number"]) == actual == Decimal("1.2345")
+
+
+@pytest.mark.parametrize("failure_stage", ["receipt", "artifact"])
+def test_export_row_lock_never_rolls_back_raw_or_blocks_forever(
+    receipt_repository, tmp_path, monkeypatch, failure_stage
+):
+    import time
+
+    repository = receipt_repository
+    record, value = _input(repository)
+    record, capture = _capture(repository, record, tmp_path)
+    attempts, _ = export_receipt_tables(Base.metadata)
+
+    def short_timeout(session):
+        session.execute(text("SET LOCAL lock_timeout = '50ms'"))
+
+    monkeypatch.setattr(repository, "_set_ingest_lock_timeout", short_timeout)
+    with repository.engine.connect() as blocker:
+        transaction = blocker.begin()
+
+        def hold_attempt():
+            blocker.execute(
+                select(attempts)
+                .where(attempts.c.attempt_id == capture.attempt.attempt_id)
+                .with_for_update()
+            ).one()
+
+        if failure_stage == "receipt":
+            hold_attempt()
+        else:
+
+            def disk_failure(_chunk):
+                # 원본 commit 이후 다른 actor가 attempt 행을 잡은 실제 경합이다.
+                hold_attempt()
+                raise OSError("disk unavailable")
+
+            monkeypatch.setattr(capture.artifacts, "publish", disk_failure)
+        started = time.monotonic()
+        try:
+            assert (
+                repository.ingest_batch(
+                    source_records=[record], values=[value], export_capture=capture
+                )
+                == 1
+            )
+            assert time.monotonic() - started < 5
+        finally:
+            transaction.rollback()
+    with repository.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(WeatherValueRow.value_id).where(
+                    WeatherValueRow.location_id == value.location_id
+                )
+            )
+            is not None
+        )
+    receipt = _receipt(repository, capture)
+    assert (receipt is None) == (failure_stage == "receipt")
+    assert not list(tmp_path.iterdir())
+
+
+def test_source_without_run_cannot_be_admitted_under_another_export_run(
+    receipt_repository, tmp_path
+):
+    from dataclasses import replace
+
+    repository = receipt_repository
+    record, value = _input(repository)
+    other, other_value = _input(repository)
+    record, capture = _capture(repository, record, tmp_path)
+    attempts, _ = export_receipt_tables(Base.metadata)
+    with repository.engine.begin() as connection:
+        connection.execute(
+            attempts.update()
+            .where(attempts.c.attempt_id == capture.attempt.attempt_id)
+            .values(
+                planned_sources=[
+                    source_scope_key(
+                        item["provider"],
+                        item["dataset_key"],
+                        item["source_entity_type"],
+                        item["source_entity_id"],
+                    )
+                    for item in (record, other)
+                ]
+            )
+        )
+    capture = replace(
+        capture,
+        source_observed_at={
+            item["source_record_key"]: datetime.now(UTC) for item in (record, other)
+        },
+    )
+    assert (
+        repository.ingest_batch(
+            source_records=[record, other], values=[value, other_value], export_capture=capture
+        )
+        == 2
+    )
+    assert _receipt(repository, capture) is None
+    assert not list(tmp_path.iterdir())
+    with repository.engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(attempts.c.status).where(attempts.c.attempt_id == capture.attempt.attempt_id)
+            )
+            == "failed"
+        )

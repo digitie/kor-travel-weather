@@ -2020,7 +2020,11 @@ class WeatherRepository:
             try:
                 # export 후보 오류가 기존 fact 저장을 되돌리지 않도록 별도 savepoint를 쓴다.
                 with session.begin_nested():
-                    if len(run_rows) != 1 or len(candidates) > MAX_CHUNK_POINTS:
+                    if (
+                        len(run_rows) != 1
+                        or len(candidates) > MAX_CHUNK_POINTS
+                        or any(record.get("run_id") not in run_rows for record in records)
+                    ):
                         raise ExportArtifactError(
                             "export 후보에는 단일 run·제한된 chunk가 필요합니다."
                         )
@@ -2069,7 +2073,16 @@ class WeatherRepository:
             except Exception:
                 if not session.is_active:
                     raise
-                self._fail_export_capture(session, export_capture, "capture_failed")
+                try:
+                    # 실패 표시도 같은 export row 잠금과 경합할 수 있다. 원본
+                    # transaction을 취소하지 않도록 이 보조 UPDATE 역시 격리한다.
+                    with session.begin_nested():
+                        self._fail_export_capture(session, export_capture, "capture_failed")
+                except Exception:
+                    if not session.is_active:
+                        raise
+                    logger.warning("weather_export_failure_record_unavailable attempt_id=%s",
+                                   export_capture.attempt.attempt_id)
                 logger.warning("weather_export_capture_failed attempt_id=%s",
                                export_capture.attempt.attempt_id)
         # The run row is locked above, so its count moves with the facts in
@@ -2166,6 +2179,7 @@ class WeatherRepository:
             except (OSError, ExportArtifactError):
                 try:
                     with self._session_factory.begin() as session:
+                        self._set_ingest_lock_timeout(session)
                         self._fail_export_capture(session, export_capture, "artifact_write_failed")
                 except Exception:
                     logger.warning("weather_export_failure_record_unavailable attempt_id=%s",
