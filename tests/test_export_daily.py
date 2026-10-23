@@ -230,7 +230,7 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
     yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
         hour=8, minute=0, second=0, microsecond=0
     )
-    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12")
+    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", cohort=True)
     assert publish_pending_exports(repository, tmp_path, daily_summaries=True).results == {
         "PUBLISHED": 1
     }
@@ -298,7 +298,8 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
         ).status_code
         == 422
     )
-    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", finish="failed")
+    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", finish="failed",
+               cohort=True)
     stale = client.get(
         url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
     )
@@ -554,7 +555,7 @@ def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invali
 
     repo = daily_repository
     descriptor = _descriptor(repo)
-    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, descriptor)
+    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, descriptor, cohort=True)
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     refresh_daily_summaries(repo, ExportArtifactStore(tmp_path))
     client = TestClient(
@@ -573,7 +574,7 @@ def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invali
     url = "/v1/service/exports/daily-summaries"
     healthy = client.get(url, headers=headers)
     assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
-    _candidate(repo, tmp_path, descriptor, finish=terminal)
+    _candidate(repo, tmp_path, descriptor, finish=terminal, cohort=True)
     changed = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
     assert changed.status_code == 200
     assert changed.json()["meta"]["source_status"] == "stale"

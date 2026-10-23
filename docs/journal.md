@@ -429,3 +429,12 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   STYLE_DATASETS/manifest/page 출력의 좁은 protected hook을 분리했다.
 - 실제 7 provider current/KHOA REST·SDK43PASS, 재확인/새 station 복구/registry10PASS.
   전체 제공처 일간 요약·최종 리뷰/CI/실제TCP/UI와 운영 비용/GC gate는 남아 있다.
+
+### 일간 요약의 다중 원천 승인 coverage
+
+- 실제 현재 dataset registry와 위치별 승인 generation에 맞춰 reducer 진도를
+  확인한다. 최초 미계산은503, 이전 요약만 있으면 stale로 유지한다.
+- 관측 dataset 대상이 아닌 예보 전용 위치는 null/sample_count=0과 unknown
+  원천 시각을 제공하고, 산림청/KREX 섭씨 `℃`를 지원한다.
+- 이력 전체 조회·새 이력 표·운영 수집 실행 없이 작은 summary/coverage만 사용한다.
+  집중 시험·두 리뷰·정확CI/실제HTTP/UI 및 운영 비용/GC gate는 수용 전이다.

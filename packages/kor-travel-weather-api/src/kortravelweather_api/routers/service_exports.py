@@ -218,17 +218,17 @@ async def _frozen_response(
         return _unavailable(request)
     # 지원하지 않는 provider를 누락한 작은 집합을 전체 정상으로 내보내지 않는다.
     selection = None
-    if resource in {"current", "forecasts"}:
+    if resource in {"current", "forecasts", "daily-summaries"}:
         try:
             selection = select_export_sources(
-                settings.enabled_providers, resource=resource, style=style, provider=provider,
+                settings.enabled_providers,
+                resource="current" if resource == "daily-summaries" else resource,
+                style=style, provider=provider,
             )
         except ExportArtifactError:
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
-    elif resource == "daily-summaries" and set(settings.enabled_providers) != {"python-kma-api"}:
-        return _unavailable(request)
     try:
         reader_class = {
             "forecasts": FrozenForecastExports,

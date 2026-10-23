@@ -54,7 +54,7 @@ def observation(point: dict[str, Any]):
     if not number.is_finite():
         return None
     metric, unit = point["metric_key"], point.get("unit")
-    if metric in {"T1H", "TEMP"} and unit == "deg_c" and -90 <= number <= 65:
+    if metric in {"T1H", "TEMP"} and unit in {"deg_c", "℃"} and -90 <= number <= 65:
         field = "temp"
     elif metric in {"REH", "HUMIDITY"} and unit == "%" and 0 <= number <= 100:
         field = "humidity"

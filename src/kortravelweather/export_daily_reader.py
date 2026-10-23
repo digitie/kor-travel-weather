@@ -9,6 +9,11 @@ from sqlalchemy import and_, or_, select, text
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
+from .export_inventory_selection import (
+    approved_source_selection,
+    catalog_source_columns,
+    source_max_age,
+)
 from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
@@ -23,7 +28,7 @@ from .export_snapshots import (
 
 class DailySummaryExports(FrozenCurrentExports):
     def __init__(self, *args, days=14, location_id=None, providers=("python-kma-api",), **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, providers=providers, **kwargs)
         if not 1 <= days <= 31:
             raise ExportCursorInvalid("요약 기간은 1~31일입니다.")
         self.table, self.progress = daily_summary_tables(self.heads.metadata)
@@ -36,6 +41,12 @@ class DailySummaryExports(FrozenCurrentExports):
             "location_id": location_id,
             "providers": list(self.providers),
         }
+        if self.source_inventory:
+            self.selection.update({
+                "source_inventory": 1,
+                "expected_sources": [list(source) for source in sorted(self.expected_sources)],
+                "optional_sources": [list(source) for source in sorted(self.optional_sources)],
+            })
         self.resource = "daily-summaries:" + _digest(self.selection)
 
     def _selected_coverage(self, connection, keys):
@@ -65,7 +76,11 @@ class DailySummaryExports(FrozenCurrentExports):
                 .order_by(coverage.c.location_id, coverage.c.namespace)
             ).mappings()
         )
-        if {r["location_id"] for r in rows} != set(keys):
+        if self.source_inventory:
+            rows, unconfirmed = self._inventory_coverage(connection, keys, rows)
+        else:
+            unconfirmed = False
+        if not self.source_inventory and {r["location_id"] for r in rows} != set(keys):
             raise ExportSnapshotUnavailable("선택 위치의 승인 관측 coverage가 준비되지 않았습니다.")
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
         runs = self.heads.metadata.tables["weather_sync_runs"]
@@ -84,13 +99,55 @@ class DailySummaryExports(FrozenCurrentExports):
                 .where(owners.c.source_scope.in_(scopes))
             )
         )
-        unconfirmed = len(statuses) != len(scopes) or any(
+        self.daily_health_digest = _digest(sorted([list(row) for row in statuses], key=str))
+        unconfirmed |= len(statuses) != len(scopes) or any(
             attempt == "failed"
             or run not in {"running", "success"}
             or (run == "success" and generation is None)
             for attempt, run, generation in statuses
         )
         return rows, unconfirmed
+
+    def _inventory_coverage(self, connection, keys, rows):
+        """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
+        catalog = self.heads.metadata.tables["weather_locations"]
+        locations = connection.execute(select(
+            catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
+            catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
+        ).where(catalog.c.enabled.is_(True)).order_by(catalog.c.location_id).limit(
+            MAX_SNAPSHOT_LOCATIONS + 1,
+        )).mappings().all()
+        if len(locations) > MAX_SNAPSHOT_LOCATIONS:
+            raise ExportSnapshotUnavailable("활성 catalog 상한을 넘었습니다.")
+        from .export_artifacts import ExportArtifactError
+
+        try:
+            selection = approved_source_selection(
+                connection, self.heads.metadata, locations,
+                expected=self.expected_sources, optional=self.optional_sources,
+                health_location_ids=keys,
+            )
+        except (ExportArtifactError, KeyError, TypeError, ValueError) as exc:
+            raise ExportSnapshotUnavailable("관측 source 승인 집합이 준비되지 않았습니다.") from exc
+        expected = {
+            (scope.descriptor.namespace, key): scope
+            for scope in selection.scopes for key in scope.location_ids if key in keys
+        }
+        coverage = {(r["namespace"], r["location_id"]): r for r in rows}
+        if expected.keys() - coverage.keys():
+            # 승인 관측이 있으나 요약이 한번도 계산되지 않은 경우를 무관측0으로 꾸미지 않는다.
+            raise ExportSnapshotUnavailable("승인 관측의 사전 계산이 아직 준비되지 않았습니다.")
+        selected = [coverage[key] for key in sorted(expected)]
+        now = datetime.now(UTC)
+        unconfirmed = selection.unconfirmed or any(
+            coverage[key]["generation_id"] != scope.generation_id
+            or now - coverage[key]["source_collected_at"]
+            > source_max_age(scope.descriptor.dataset_key)
+            for key, scope in expected.items()
+        )
+        # 관측 dataset 대상이 아닌 위치는 null/sample_count=0을 제공할 수 있다.
+        # 원천 clock을 다른 위치에서 빌리지 않고 메타는 unknown/stale로 둔다.
+        return selected, unconfirmed or not expected
 
     def _freeze_daily(self):
         now = datetime.now(UTC)
@@ -144,8 +201,12 @@ class DailySummaryExports(FrozenCurrentExports):
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": min(r["source_collected_at"] for r in coverage),
-                "data_revision_at": min(r["published_at"] for r in coverage),
+                "source_collected_at": min(
+                    (r["source_collected_at"] for r in coverage), default=None,
+                ),
+                "data_revision_at": min(
+                    (r["published_at"] for r in coverage), default=ready["published_at"],
+                ),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
             }
@@ -246,13 +307,16 @@ class DailySummaryExports(FrozenCurrentExports):
         if ready is None or ready["source_collected_at"] is None:
             raise ExportSnapshotUnavailable("사전 계산 요약 checkpoint가 없습니다.")
         # roster/날짜 범위를 고정하고 각 페이지의 최신 사전계산 값을 반환한다.
-        source = min(r["source_collected_at"] for r in coverage)
-        status = "stale" if unconfirmed or now - source > timedelta(hours=3) else "ok"
+        source = min((r["source_collected_at"] for r in coverage), default=None)
+        status = "stale" if (
+            unconfirmed or source is None
+            or not self.source_inventory and now - source > timedelta(hours=3)
+        ) else "ok"
         page = {
             "items": output,
             "meta": {
                 "generated_at": now.isoformat(),
-                "source_collected_at": source.isoformat(),
+                "source_collected_at": source.isoformat() if source is not None else None,
                 "source_status": status,
                 "item_count": len(output),
                 "snapshot_id": frozen["snapshot_id"],
@@ -262,4 +326,6 @@ class DailySummaryExports(FrozenCurrentExports):
                 "has_more": more,
             },
         }
-        return page, 'W/"' + _digest([frozen["snapshot_id"], limit, cursor, status, output]) + '"'
+        return page, 'W/"' + _digest([
+            frozen["snapshot_id"], limit, cursor, status, output, self.daily_health_digest,
+        ]) + '"'
