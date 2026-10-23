@@ -256,6 +256,8 @@ _PUBLISHER_PROBE_SLOTS = threading.BoundedSemaphore(1)
 _FAILED_NATIVE = frozenset({
     "failed", "partial", "partial_success", "canceled", "cancelled", "skipped", "abandoned",
 })
+DAILY_GENERATION_BATCH = 4
+MAX_DAILY_GENERATIONS = 256
 
 
 def _publisher_terminal(heads, identity, dagster_status):
@@ -402,18 +404,30 @@ def publish_pending_exports(
     return ExportPublisherProgress(processed, results, last if more else None, more)
 
 
-def refresh_publisher_daily(repository, artifact_root: Path, *, deadline: float) -> None:
-    """한 sensor sweep의 마지막에 일별 파생 작업을 한 번만 시도한다."""
+def refresh_publisher_daily(
+    repository, artifact_root: Path, *, deadline: float,
+) -> Mapping[str, Any]:
+    """작은 원자적 checkpoint batch를 유한하게 drain하고 마지막에 한 번 정리한다."""
     from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
 
-    if time.monotonic() >= deadline:
-        return
+    total, more = 0, True
     try:
-        refresh_daily_summaries(repository, ExportArtifactStore(artifact_root), limit=1)
+        artifacts = ExportArtifactStore(artifact_root)
+        for _ in range(MAX_DAILY_GENERATIONS // DAILY_GENERATION_BATCH):
+            if time.monotonic() >= deadline:
+                break
+            progress = refresh_daily_summaries(repository, artifacts, limit=DAILY_GENERATION_BATCH)
+            total += progress["processed"]
+            more = progress["has_more"]
+            # race/읽기 실패는 checkpoint를 추측해 넘기지 않는다. 다음 tick에 재개한다.
+            if progress["processed"] == 0 or not more:
+                break
         if time.monotonic() < deadline:
             prune_daily_summaries(repository)
     except Exception:
+        more = True
         logger.warning("weather_daily_summary_refresh_deferred")
+    return {"processed": total, "has_more": more}
 
 
 def dagster_status_lookup(instance) -> Callable[[str], str | None]:

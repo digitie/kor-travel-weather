@@ -14,8 +14,9 @@ head를 보존하고, 불확실한 orchestrator/metadata 유실은 대기 상태
 기본 STOPPED와 기존 `service_exports_enabled=false`를 유지하며 artifact 경로가
 명시된 환경에서만 평가한다. 최소 180초 간격, 2개씩 microbatch, UUID keyset 재개
 cursor를 사용한다. 한 sweep을 마치면 cursor를 비워 이전에 대기하던 후보와 새로
-생긴 후보를 다시 확인한다. tick당 최대 256개/128회와 12초 협력 예산을 함께 적용하며
+생긴 후보를 다시 확인한다. source tick당 최대 256개/128회와 8초 협력 예산을 적용하며
 후보 조회 시간도 예산에 포함한다. 총량 상한은 운영 처리율 약속이 아니다.
+일별 집계는 그 뒤 별도 4초 예산을 시작하고, 4세대씩 최대 64회/256세대를 처리한다.
 한 프로세스의 nonblocking slot과 DB별 고정 advisory
 lease를 함께 사용한다. lease용 connection 1개는 유지하지만 원본/승격 transaction은
 Dagster 상태 조회와 파일 I/O 전에 반환한다. 매 tick 소유한 engine은 dispose한다.
@@ -76,8 +77,9 @@ begin 직후와 claim 직후 각각 FAILURE/CANCELED/SUCCESS/STARTED/없는 run�
 ## 용량과 성공 이력의 반복 조회 방지
 
 고정 2개/tick은 KMA 회당 300격자를 따라가지 못하므로 작은 microbatch를 시간/총량
-상한 안에서 이어 처리한다. 일별 파생 집계는 batch마다 반복하지 않고 sweep 마지막에
-최대 한 번 시도한다. 실제 owner 표의 모든 scope가 더 큰 epoch와 다른 active attempt로
+상한 안에서 이어 처리한다. 일별 파생 집계는 source batch마다 반복하지 않고 별도
+예산으로 drain하고, 오래된 집계 정리만 마지막에 최대 한 번 수행한다.
+실제 owner 표의 모든 scope가 더 큰 epoch와 다른 active attempt로
 바뀐 경우만 이전 후보를 SUPERSEDED로 퇴역한다. native 원장/fact/새 owner/head는
 바꾸지 않는다. 일부 scope만 이동했거나 owner가 누락/동일 epoch면 추측하지 않는다.
 
@@ -105,3 +107,25 @@ unique index를 사용했다(실제 결과 1개, shared hit 4 blocks/read 0). �
 batch를 시작하지 않는 delta 4 PASS(8.86초), Ruff 전체/diff check를 확인했다.
 97건과 4건은 중복이 있으므로 합산하지 않는다. 최종 두 리뷰와 CI는 별도 gate다.
 운영 지속 처리량과 ARM 비용은 기본 STOPPED를 해제하기 전 반드시 실측해야 한다.
+
+## 일별 집계의 독립 예산과 backlog 재개
+
+후속 리뷰에서 일별 집계를 1세대/tick만 처리하면 관측 수집보다 느리고, source가
+예산을 모두 쓰면 집계 기회가 없는 경계를 확인했다. source 예산은 8초로 줄이고
+그 단계가 끝난 뒤 일별 단계에 새 4초 협력 예산을 준다. 마지막 source SQL/IO가 늦어져도
+일별 단계를 생략하지 않는다. 이는 각 단계의 최종 대기·연결 획득까지 포함한 전체
+wall-clock 12초 보장이 아니다.
+
+일별 단계는 기존 `refresh_daily_summaries`의 4세대 microbatch를 최대 64회/256세대만
+반복한다. checkpoint·요약·coverage의 같은 transaction/CAS, 예보를 포함한 publication
+순서, 관측/강수/결측 규칙을 바꾸지 않는다. race/0건/파일 오류나 예산 종료 시 중단하고
+이미 확정한 checkpoint에서 다음 tick에 재개한다. prune은 마지막에 한 번만 시도한다.
+새 worker/process/sensor와 별도 원천 조회는 추가하지 않는다.
+
+초기 집중 7 PASS(20.39초)는 실제 PG의 합성 승인 metadata와 실제 artifact로 관측
+300세대+예보 300세대를 섞어 256/256/88세대로 재개하고 관측 300곳의 기온·강수와
+coverage가 빠짐없이 남는 것을 검증했다. 이 fixture는 source 승인 권위의 추가 검증이나
+운영 처리율 측정이 아니며, 총량 검사를 위해 clock을 고정했다. 파일 누락 시 checkpoint
+유지/복원 후 재개, race·빈 완료 시 반복 중단, 4초 종료 후 새 batch 없음, source의
+마지막 대기가 예산을 넘겨도 일별 4초가 별도로 주어지는 것도 포함한다.
+최신 main 통합 뒤 집중 회귀와 최종 리뷰/CI는 별도로 정산한다.

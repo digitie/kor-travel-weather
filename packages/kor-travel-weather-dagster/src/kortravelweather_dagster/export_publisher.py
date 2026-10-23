@@ -23,6 +23,8 @@ from kortravelweather.settings import WeatherSettings
 _TICK_SLOT = threading.BoundedSemaphore(1)
 _LEASE_KEY = "kortravelweather:export-publisher:v1"
 MAX_TICK_ATTEMPTS = 256
+SOURCE_BUDGET_SECONDS = 8
+DAILY_BUDGET_SECONDS = 4
 
 
 def _cursor(value: str | None) -> str | None:
@@ -89,7 +91,7 @@ def build_export_publisher_sensor(
 ) -> SensorDefinition:
     """factory는 새 repository 소유권을 넘긴다. 모든 경로에서 dispose한다.
 
-    12초는 후보 사이 협력 예산이다. 파일검증/DB연결/마지막 SQL의 최종 대기를
+    source 8초와 별도 daily 4초는 협력 예산이다. 파일검증/DB연결/마지막 SQL 대기를
     포함한 전체 wall-time 보장은 아니다. SQL은 기존 5초/잠금 상한을 유지한다.
     """
 
@@ -121,7 +123,7 @@ def build_export_publisher_sensor(
             with _publisher_lease(repository) as leased:
                 if not leased:
                     return SkipReason("다른 publisher가 실행 중이거나 lease가 불명확합니다.")
-                deadline, processed = time.monotonic() + 12, 0
+                deadline, processed = time.monotonic() + SOURCE_BUDGET_SECONDS, 0
                 lookup = dagster_status_lookup(context.instance)
                 # RAM 상한은 기존 2개 microbatch다. 총량/시간은 별도 제한한다.
                 for _ in range(MAX_TICK_ATTEMPTS // 2):
@@ -136,11 +138,17 @@ def build_export_publisher_sensor(
                     after = progress.next_cursor
                     if not progress.has_more or progress.processed == 0:
                         break
-                refresh_publisher_daily(repository, root, deadline=deadline)
+                # source의 마지막 SQL/IO가 늦어져도 daily 기회를 빼앗지 않는다.
+                # 각 단계의 최종 대기를 합친 전체 wall 12초를 보장하지 않는다.
+                daily = refresh_publisher_daily(
+                    repository, root, deadline=time.monotonic() + DAILY_BUDGET_SECONDS,
+                )
             context.update_cursor(json.dumps(
                 {"v": 1, "after": after}, separators=(",", ":"),
             ))
-            return SkipReason(f"export publisher: {processed}개 후보 확인")
+            return SkipReason(
+                f"export publisher: {processed}개 후보 확인, 일별 {daily['processed']}세대 확인"
+            )
         except Exception:
             # DB URL/provider payload/token이 포함된 exception 원문을 남기지 않는다.
             context.log.warning("weather_export_publisher_deferred")

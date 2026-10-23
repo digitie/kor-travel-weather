@@ -259,7 +259,7 @@ def test_cooperative_deadline_starts_no_second_microbatch_and_keeps_resume_curso
 ):
     from kortravelweather.export_collector import ExportPublisherProgress
 
-    moments = iter([100, 100, 112])
+    moments = iter([100, 100, 108, 108])
     monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(moments)))
     resume = "00000000-0000-0000-0000-000000000002"
     batches = []
@@ -272,6 +272,32 @@ def test_cooperative_deadline_starts_no_second_microbatch_and_keeps_resume_curso
     sensor, _ = build(publisher_repository, tmp_path)
     with DagsterInstance.ephemeral() as instance:
         result = evaluate(sensor, instance)
-    assert len(batches) == 1 and batches[0]["budget_seconds"] == 12
+    assert len(batches) == 1 and batches[0]["budget_seconds"] == 8
     assert batches[0]["limit"] == 2
     assert json.loads(result.cursor)["after"] == resume
+
+
+def test_daily_budget_is_reserved_even_when_last_source_operation_overruns(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    from kortravelweather.export_collector import ExportPublisherProgress
+
+    clock, daily_deadlines = [100], []
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    def source(*args, **kwargs):
+        assert kwargs["budget_seconds"] == 8
+        clock[0] = 200  # 마지막 DB/IO 대기가 협력 예산을 넘은 경우다.
+        return ExportPublisherProgress(2, {"NOT_READY": 2}, None, True)
+
+    def daily(*args, **kwargs):
+        daily_deadlines.append(kwargs["deadline"])
+        return {"processed": 4, "has_more": True}
+
+    monkeypatch.setattr(module, "publish_pending_exports", source)
+    monkeypatch.setattr(module, "refresh_publisher_daily", daily)
+    sensor, _ = build(publisher_repository, tmp_path)
+    with DagsterInstance.ephemeral() as instance:
+        result = evaluate(sensor, instance)
+    assert daily_deadlines == [204]
+    assert "일별 4세대" in result.skip_message
