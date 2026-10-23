@@ -17,8 +17,8 @@ cursor를 사용한다. 한 sweep을 마치면 cursor를 비워 이전에 대기
 생긴 후보를 다시 확인한다. 한 프로세스의 nonblocking slot과 DB별 고정 advisory
 lease를 함께 사용한다. lease용 connection 1개는 유지하지만 원본/승격 transaction은
 Dagster 상태 조회와 파일 I/O 전에 반환한다. 매 tick 소유한 engine은 dispose한다.
-sensor를 Definitions에 등록하고
-운영에서 명시 start하는 단계는 root 소유이며 이 PR은 운영을 활성화하지 않는다.
+sensor는 Definitions에 등록한다. 운영에서 명시 start하는 단계는 별도 배포 gate이며
+이 PR은 운영을 활성화하지 않는다.
 
 확정 native 실패·partial·cancelled·abandoned는 attempt를 failed로 바꿔 반복 선택하지
 않는다. Dagster `FAILURE`/`CANCELED`로 죽은 worker를 확인하면 native **running**만
