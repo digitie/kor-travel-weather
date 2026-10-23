@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from functools import wraps
 from typing import Any
 
 from kortravelweather.metrics import provider_request
@@ -68,6 +69,35 @@ from kortravelweather.settings import WeatherSettings
 from . import chunked_publish
 
 
+def _regional_source_attempt(provider: str, dataset: str):
+    """W4 opt-in일 때 bulk fetch 실패도 원래 native 수집 시도로 남긴다."""
+    def decorate(function):
+        @wraps(function)
+        def execute(*args, **kwargs):
+            repository = kwargs["repository"]
+            settings = kwargs.get("settings") or WeatherSettings()
+            if not getattr(repository, "export_status_enabled", False) or (
+                provider not in settings.enabled_providers
+            ):
+                return function(*args, **kwargs)
+            run = repository.start_sync_run(provider=provider, dataset_key=dataset)
+            try:
+                result = function(*args, **kwargs, _status_run=run)
+                if result.get("skipped"):
+                    repository.finish_sync_run(
+                        run.run_id, status="failed",
+                        error="원천 수집이 자료 확보 없이 생략되었습니다.",
+                    )
+                return result
+            except Exception as exc:
+                repository.finish_sync_run(
+                    run.run_id, status="failed", error=str(redact_secrets(str(exc)))[:1000],
+                )
+                raise
+        return execute
+    return decorate
+
+
 def skipped_when_disabled(provider: str, settings: WeatherSettings) -> dict[str, Any] | None:
     """Return a skip result when the operator has not enabled this provider.
 
@@ -102,6 +132,7 @@ def publish_regional_records(
     to_values: Callable[..., list[WeatherValue]],
     build_source_record: Callable[..., dict[str, Any]],
     max_values: int,
+    sync_run: Any | None = None,
 ) -> dict[str, Any]:
     """Create any missing anchors, then publish one run's worth of values.
 
@@ -113,10 +144,12 @@ def publish_regional_records(
         raise ValueError("max_values는 양수여야 합니다.")
 
     fetched_at = datetime.now(UTC)
-    run = repository.start_sync_run(
+    run = sync_run or repository.start_sync_run(
         provider=provider, dataset_key=dataset_key, locations_total=len(records)
     )
     try:
+        if sync_run is not None:
+            repository.set_sync_run_locations_total(run.run_id, len(records))
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
         chunk_locations: set[str] = set()
@@ -237,6 +270,7 @@ def publish_regional_records(
     }
 
 
+@_regional_source_attempt(KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET)
 def run_khoa_beach_index_sync(
     *,
     repository: WeatherRepository,
@@ -246,6 +280,7 @@ def run_khoa_beach_index_sync(
     retries: int = 3,
     timeout: float | None = None,
     settings: WeatherSettings | None = None,
+    _status_run: Any | None = None,
 ) -> dict[str, Any]:
     skipped = skipped_when_disabled(KHOA_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
@@ -263,9 +298,11 @@ def run_khoa_beach_index_sync(
         to_values=beach_index_to_weather_values,
         build_source_record=beach_index_source_record,
         max_values=max_values,
+        sync_run=_status_run,
     )
 
 
+@_regional_source_attempt(KRFOREST_PROVIDER, KRFOREST_MOUNTAIN_DATASET)
 def run_krforest_mountain_sync(
     *,
     repository: WeatherRepository,
@@ -274,6 +311,7 @@ def run_krforest_mountain_sync(
     max_values: int,
     timeout: float | None = None,
     settings: WeatherSettings | None = None,
+    _status_run: Any | None = None,
 ) -> dict[str, Any]:
     skipped = skipped_when_disabled(KRFOREST_PROVIDER, settings or WeatherSettings())
     if skipped is not None:
@@ -291,9 +329,11 @@ def run_krforest_mountain_sync(
         to_values=mountain_weather_to_weather_values,
         build_source_record=mountain_source_record,
         max_values=max_values,
+        sync_run=_status_run,
     )
 
 
+@_regional_source_attempt(KRFOREST_PROVIDER, KRFOREST_DUST_DATASET)
 def run_krforest_dust_sync(
     *,
     repository: WeatherRepository,
@@ -303,6 +343,7 @@ def run_krforest_dust_sync(
     max_values: int,
     timeout: float | None = None,
     settings: WeatherSettings | None = None,
+    _status_run: Any | None = None,
 ) -> dict[str, Any]:
     """Publish 청정넷 readings, or say why it could not.
 
@@ -345,9 +386,11 @@ def run_krforest_dust_sync(
         to_values=lambda pair, **kwargs: dust_to_weather_values(pair[0], **kwargs),
         build_source_record=lambda pair, **kwargs: dust_source_record(pair[0], **kwargs),
         max_values=max_values,
+        sync_run=_status_run,
     )
 
 
+@_regional_source_attempt(KREX_PROVIDER, KREX_RESTAREA_DATASET)
 def run_krex_restarea_sync(
     *,
     repository: WeatherRepository,
@@ -356,6 +399,7 @@ def run_krex_restarea_sync(
     max_values: int,
     lookback_hours: int = 24,
     settings: WeatherSettings | None = None,
+    _status_run: Any | None = None,
 ) -> dict[str, Any]:
     """Fetch and publish, owning the event loop ``KrexClient`` now requires.
 
@@ -393,6 +437,7 @@ def run_krex_restarea_sync(
         to_values=restarea_weather_to_weather_values,
         build_source_record=restarea_source_record,
         max_values=max_values,
+        sync_run=_status_run,
     )
 
 

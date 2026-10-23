@@ -152,18 +152,6 @@ def export_fetch_clock_table(metadata: MetaData) -> Table:
     )
 
 
-def export_status_pending_table(metadata: MetaData) -> Table:
-    if "weather_export_status_pending" in metadata.tables:
-        return metadata.tables["weather_export_status_pending"]
-    return Table(
-        "weather_export_status_pending", metadata,
-        Column("run_id", String(64), ForeignKey("weather_sync_runs.run_id", ondelete="CASCADE"),
-               primary_key=True),
-        Column("provider", String(120), nullable=False, index=True),
-        Column("created_at", DateTime(timezone=True), nullable=False),
-    )
-
-
 class ExportSourceStatuses:
     """접속/transaction의 수명은 호출자가 소유한다. 내부 commit은 없다."""
 

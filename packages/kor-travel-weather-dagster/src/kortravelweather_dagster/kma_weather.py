@@ -950,22 +950,23 @@ async def _stage_and_publish_weather(
     sync_run: Any | None = None,
     export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
+    planned = set(base_datasets if base_datasets is not None else BASE_GRID_DATASETS)
+    if not include_base:
+        planned.clear()
+    if include_mid:
+        planned.add("kma_mid_forecast")
+    status_kwargs = {"export_status_datasets": planned} if getattr(
+        repository, "export_status_enabled", False,
+    ) else {}
     run = sync_run or repository.start_sync_run(
         provider=KMA_PROVIDER_NAME,
         dataset_key="kma_weather_bundle",
         locations_total=len(targets),
+        **status_kwargs,
     )
     #: Alert chunks already committed; reported even when the run fails.
     published_values = 0
     try:
-        register_status = getattr(repository, "set_export_status_datasets", None)
-        if callable(register_status):
-            planned = set(base_datasets if base_datasets is not None else BASE_GRID_DATASETS)
-            if not include_base:
-                planned.clear()
-            if include_mid:
-                planned.add("kma_mid_forecast")
-            register_status(run.run_id, planned)
         alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
         # Check each dataset against the targets it actually reads.  A single
         # grid-target check failed the alerts job -- which reads only

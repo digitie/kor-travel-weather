@@ -9,10 +9,10 @@ from kortravelweather_api.app import create_app
 from sqlalchemy import event, select, text
 
 from kortravelweather.export_artifacts import ExportArtifactError
-from kortravelweather.export_status import ExportSourceStatuses, export_status_pending_table
+from kortravelweather.export_status import ExportSourceStatuses
 from kortravelweather.export_status_reader import read_status
 from kortravelweather.export_status_scopes import dataset_scopes
-from kortravelweather.repository import Base, SourceRecordRow, WeatherRepository
+from kortravelweather.repository import Base, SourceRecordRow, SyncRunRow, WeatherRepository
 from kortravelweather.settings import WeatherSettings
 
 PROVIDER = "python-kma-api"
@@ -27,6 +27,10 @@ def repository(weather_test_database_url):
     with repo.engine.begin() as connection:
         connection.execute(text(
             "ALTER TABLE weather_sync_runs ADD COLUMN IF NOT EXISTS export_status_scopes JSON"
+        ))
+        connection.execute(text(
+            "ALTER TABLE weather_sync_runs ADD COLUMN IF NOT EXISTS export_status_pending "
+            "boolean NOT NULL DEFAULT false"
         ))
         connection.execute(ExportSourceStatuses(Base.metadata).table.delete())
     yield repo
@@ -100,13 +104,70 @@ def test_recovery_projects_only_actual_cas_rows(repository, owned):
 
 
 def test_bundle_plan_does_not_mark_other_datasets_success(repository):
-    run = repository.start_sync_run(provider=PROVIDER, dataset_key="kma_weather_bundle")
-    repository.set_export_status_datasets(run.run_id, {DATASET})
+    with pytest.raises(ValueError, match="계획"):
+        repository.start_sync_run(provider=PROVIDER, dataset_key="kma_weather_bundle")
+    with pytest.raises(ValueError, match="데이터셋"):
+        repository.start_sync_run(
+            provider=PROVIDER, dataset_key="kma_weather_bundle", export_status_datasets={"unknown"},
+        )
+    run = repository.start_sync_run(
+        provider=PROVIDER, dataset_key="kma_weather_bundle", export_status_datasets={DATASET},
+    )
     repository.finish_sync_run(run.run_id, status="failed")
     assert state(repository).last_status == "failed"
     with repository.engine.begin() as connection:
         table = ExportSourceStatuses(Base.metadata).table
         assert connection.scalar(select(table.c.dataset_key)) == DATASET
+
+
+@pytest.mark.parametrize("kind,provider,dataset,fetch_name", [
+    ("khoa", "python-khoa-api", "khoa_beach_index", "fetch_beach_index"),
+    ("mountain", "python-krforest-api", "krforest_mountain_weather", "fetch_mountain_weather"),
+    ("dust", "python-krforest-api", "krforest_dust", "fetch_dust"),
+    ("krex", "python-krex-api", "krex_restarea_weather", "_fetch_restarea_weather"),
+])
+def test_regional_fetch_failure_is_native_failure_before_publication(
+    repository, monkeypatch, kind, provider, dataset, fetch_name,
+):
+    from kortravelweather_dagster import regional_sources as regional
+
+    first = repository.start_sync_run(provider=provider, dataset_key=dataset)
+    source = records(first, clock=datetime.now(UTC))[0]
+    source.update(provider=provider, dataset_key=dataset)
+    repository.ingest_batch(source_records=[source], values=[])
+    repository.finish_sync_run(first.run_id, status="success")
+
+    def fail(**kwargs):
+        active = repository.list_sync_runs(provider=provider, dataset_key=dataset)[0]
+        assert active.run_id != first.run_id and active.status == "running"
+        raise TimeoutError("source timeout")
+
+    async def async_fail(*args, **kwargs):
+        return fail(**kwargs)
+
+    monkeypatch.setattr(regional, fetch_name, async_fail if kind == "krex" else fail)
+    settings = WeatherSettings(enabled_providers=[provider])
+    kwargs = dict(repository=repository, settings=settings, max_values=100)
+    if kind == "khoa":
+        action = regional.run_khoa_beach_index_sync
+        kwargs.update(api_key="test", max_places=100)
+    elif kind == "mountain":
+        action = regional.run_krforest_mountain_sync
+        kwargs.update(api_key="test", max_records=100)
+    elif kind == "dust":
+        action = regional.run_krforest_dust_sync
+        kwargs.update(api_key="test", hours=1, max_records=100)
+    else:
+        action = regional.run_krex_restarea_sync
+        kwargs.update(client=object(), max_records=100)
+    with pytest.raises(TimeoutError):
+        action(**kwargs)
+    with repository.engine.begin() as connection:
+        actual = ExportSourceStatuses(Base.metadata).read(
+            connection, dataset_scopes(provider, {dataset}), as_of=datetime.now(UTC),
+        )[0]
+        assert actual.last_status == "failed" and actual.last_attempt_failed
+        assert actual.last_success_at is not None and actual.source_collected_at is not None
 
 
 def test_status_real_api_auth_gzip_etag_missing_scopes_and_no_fact_reads(repository):
@@ -139,7 +200,9 @@ def test_status_real_api_auth_gzip_etag_missing_scopes_and_no_fact_reads(reposit
         assert repeat.status_code == 304 and not repeat.content
         assert client.get("/v1/service/exports/status?limit=1", headers=headers).status_code == 422
         assert not any("weather_values" in query or "weather_source_records" in query
-                       or "weather_sync_runs" in query for query in statements)
+                       for query in statements)
+        assert all("export_status_pending" in query for query in statements
+                   if "weather_sync_runs" in query)
     finally:
         event.remove(repository.engine, "before_cursor_execute", capture)
     assert repository.engine.pool.checkedout() == 0
@@ -160,6 +223,10 @@ def test_metadata_failure_does_not_rollback_native_run(repository, monkeypatch):
     run = repository.start_sync_run(provider=PROVIDER, dataset_key=DATASET)
     assert repository.finish_sync_run(run.run_id, status="success").status == "success"
     assert repository.get_sync_run(run.run_id).status == "success"
+    with repository.engine.begin() as connection:
+        assert connection.scalar(select(SyncRunRow.export_status_pending).where(
+            SyncRunRow.run_id == run.run_id,
+        )) is True
     with pytest.raises(ExportArtifactError, match="재투영"):
         read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
     monkeypatch.undo()
@@ -167,8 +234,9 @@ def test_metadata_failure_does_not_rollback_native_run(repository, monkeypatch):
     actual = next(item for item in page["items"] if item["dataset_key"] == DATASET)
     assert actual["last_status"] == "success"
     with repository.engine.begin() as connection:
-        pending = export_status_pending_table(Base.metadata)
-        assert connection.scalar(select(pending.c.run_id)) is None
+        assert not connection.scalar(select(SyncRunRow.run_id).where(
+            SyncRunRow.export_status_pending.is_(True),
+        ))
 
 
 def test_actual_status_lock_defers_projection_and_next_read_recovers(repository):
