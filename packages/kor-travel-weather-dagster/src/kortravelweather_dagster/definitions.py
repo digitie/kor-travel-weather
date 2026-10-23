@@ -42,6 +42,7 @@ from kortravelweather.settings import WeatherSettings
 
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
+from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
     ALERT_SKIP_LOG_IDS,
@@ -1549,6 +1550,7 @@ defs = Definitions(
     sensors=[
         address_refresh_sensor,
         weather_sync_recovery_sensor,
+        weather_export_publisher_sensor,
         *optional_recovery_sensors(
             {job.name: (job, _job_policy(job.name)) for job in _COLLECTION_JOBS}
         ),

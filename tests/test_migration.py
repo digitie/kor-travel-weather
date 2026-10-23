@@ -85,6 +85,12 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             inspector.get_table_names()
         )
         assert not inspector.get_foreign_keys("weather_export_attempts")
+        assert "published_at" in {
+            column["name"] for column in inspector.get_columns("weather_export_attempts")
+        }
+        assert "ix_weather_export_attempts_pending" in {
+            item["name"] for item in inspector.get_indexes("weather_export_attempts")
+        }
         assert inspector.get_foreign_keys("weather_export_chunks")[0]["referred_table"] == (
             "weather_export_attempts"
         )
@@ -126,7 +132,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0031_external_export_cohorts"
+            assert version == "0032_export_publication_pending"
             assert "weather_export_external_cohorts" in inspector.get_table_names()
             assert "weather_export_source_status" in inspector.get_table_names()
             assert "weather_export_publication_clock" in inspector.get_table_names()

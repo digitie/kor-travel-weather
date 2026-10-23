@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, update
+from kortravelcommon.deadline import call_with_deadline
+from sqlalchemy import literal_column, select, update
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_heads import ExportHeads, ScopeDescriptor
@@ -249,6 +252,90 @@ class ExportPublisherProgress:
     has_more: bool
 
 
+_PUBLISHER_PROBE_SLOTS = threading.BoundedSemaphore(1)
+_FAILED_NATIVE = frozenset({
+    "failed", "partial", "partial_success", "canceled", "cancelled", "skipped", "abandoned",
+})
+DAILY_GENERATION_BATCH = 4
+MAX_DAILY_GENERATIONS = 256
+
+
+def _publisher_terminal(heads, identity, dagster_status):
+    """확정 terminal만 retire한다. orchestration 조회 중 business DB를 반환한다."""
+    with heads._transaction() as session:
+        run, attempt = heads.lifecycle._locked(session, identity)
+        native, mode = run["status"], attempt["execution_mode"]
+        orchestrator_id = attempt["orchestrator_run_id"]
+        epochs = attempt["owner_epochs"]
+        if epochs and set(epochs) == set(attempt["planned_sources"]):
+            owners = heads.lifecycle.owners
+            rows = session.execute(select(owners).where(
+                owners.c.source_scope.in_(sorted(epochs)),
+            ).order_by(owners.c.source_scope).with_for_update()).mappings().all()
+            # 모든 scope가 실제 더 새 epoch로 넘어간 것만 퇴역한다. 일부 충돌,
+            # 누락/미확정 owner는 현재 scope가 섞인 시도를 실패로 위장하지 않는다.
+            superseded = len(rows) == len(epochs) and all(
+                row["owner_epoch"] > epochs[row["source_scope"]]
+                and row["active_attempt_id"] != identity.attempt_id for row in rows
+            )
+            if superseded and session.scalar(select(heads.generations.c.generation_id).where(
+                heads.generations.c.attempt_id == identity.attempt_id,
+            )) is None:
+                session.execute(update(heads.lifecycle.attempts).where(
+                    heads.lifecycle.attempts.c.attempt_id == identity.attempt_id,
+                    heads.lifecycle.attempts.c.owner_id == identity.owner_id,
+                    heads.lifecycle.attempts.c.status.in_(["preparing", "sealed"]),
+                ).values(status="failed", error_code="SUPERSEDED"))
+                session.execute(heads.pins.delete().where(
+                    heads.pins.c.attempt_id == identity.attempt_id,
+                ))
+                return "SUPERSEDED", None
+    status = None
+    if native not in _FAILED_NATIVE and mode == "dagster":
+        if not orchestrator_id or dagster_status is None:
+            return "NOT_READY", None
+        try:
+            status = call_with_deadline(
+                lambda: dagster_status(orchestrator_id), timeout_seconds=2,
+                slots=_PUBLISHER_PROBE_SLOTS,
+            )
+        except Exception:
+            return "NOT_READY", None
+        if status not in {"SUCCESS", "FAILURE", "CANCELED"}:
+            return "NOT_READY", None
+    if native not in _FAILED_NATIVE and status not in {"FAILURE", "CANCELED"}:
+        return None, status
+    with heads._transaction() as session:
+        run, attempt = heads.lifecycle._locked(session, identity)
+        if session.scalar(select(heads.generations.c.generation_id).where(
+            heads.generations.c.attempt_id == identity.attempt_id
+        )) is not None:
+            return "ALREADY_COMMITTED", status
+        # SUCCESS는 native commit보다 먼저 보일 수 있다. 반대로 확정 실패는
+        # running CAS만 terminalize하며 기존 partial/success와 fact 개수는 보존한다.
+        if run["status"] not in _FAILED_NATIVE and not (
+            status in {"FAILURE", "CANCELED"}
+            and attempt["orchestrator_run_id"] == orchestrator_id
+        ):
+            return "NOT_READY", status
+        if run["status"] == "running":
+            runs = heads.metadata.tables["weather_sync_runs"]
+            session.execute(update(runs).where(
+                runs.c.run_id == run["run_id"], runs.c.status == "running",
+            ).values(
+                status="failed", finished_at=datetime.now(UTC),
+                error="EXPORT_ORCHESTRATOR_TERMINAL",
+                export_status_pending=runs.c.export_status_scopes.is_not(None),
+            ))
+        session.execute(update(heads.lifecycle.attempts).where(
+            heads.lifecycle.attempts.c.attempt_id == identity.attempt_id,
+            heads.lifecycle.attempts.c.owner_id == identity.owner_id,
+            heads.lifecycle.attempts.c.status.in_(["preparing", "sealed"]),
+        ).values(status="failed", error_code="CONFIRMED_TERMINAL"))
+        session.execute(heads.pins.delete().where(heads.pins.c.attempt_id == identity.attempt_id))
+    return "REJECTED", status
+
+
 def publish_pending_exports(
     repository,
     artifact_root: Path,
@@ -266,14 +353,21 @@ def publish_pending_exports(
     """
     if not 1 <= limit <= 32 or not 0 < budget_seconds <= 60:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
+    deadline = time.monotonic() + budget_seconds
     heads, artifacts = ExportHeads(repository), ExportArtifactStore(artifact_root)
     attempts = heads.lifecycle.attempts
     with heads._transaction() as session:
         query = (
-            select(attempts.c.attempt_id, attempts.c.owner_id)
-            .join(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
+            select(attempts.c.attempt_id, attempts.c.owner_id,
+                   heads.plans.c.attempt_id.label("plan_id"))
+            .outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
             .where(
-                attempts.c.status.in_(["preparing", "sealed"]),
+                # 고정 상태를 literal로 남겨 generic plan에서도 partial index의
+                # predicate를 증명한다. 사용자 입력은 여기로 들어오지 않는다.
+                attempts.c.status.in_([
+                    literal_column("'preparing'"), literal_column("'sealed'"),
+                ]),
+                attempts.c.published_at.is_(None),
                 ~select(heads.generations.c.generation_id)
                 .where(heads.generations.c.attempt_id == attempts.c.attempt_id)
                 .exists(),
@@ -282,31 +376,58 @@ def publish_pending_exports(
         if cursor:
             query = query.where(attempts.c.attempt_id > cursor)
         rows = session.execute(query.order_by(attempts.c.attempt_id).limit(limit + 1)).all()
-    deadline = time.monotonic() + budget_seconds
     results, processed, last = {}, 0, cursor
     for row in rows[:limit]:
         if time.monotonic() >= deadline:
             break
-        identity = ExportAttempt(*row)
+        identity = ExportAttempt(row.attempt_id, row.owner_id)
         try:
-            outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+            outcome, _ = _publisher_terminal(heads, identity, dagster_status)
+            if outcome is None:
+                # begin/claim 후 declare 이전의 crash도 terminal 복구한다. plan이
+                # 없는 성공/미확정 후보를 승격하거나 성공으로 추측하지 않는다.
+                outcome = (
+                    heads.promote(identity, artifacts, dagster_status=dagster_status)
+                    if row.plan_id is not None else "NOT_READY"
+                )
+                if outcome == "REJECTED":
+                    _publisher_terminal(heads, identity, dagster_status)
         except (ExportArtifactError, OSError):
             # 손상/누락 파일은 이전 head를 그대로 남긴다. 후속 sweep/재수집으로 복구한다.
-            outcome = "REJECTED"
+            outcome = "NOT_READY"
         results[outcome] = results.get(outcome, 0) + 1
         processed += 1
         last = row.attempt_id
     more = processed < len(rows)
     if daily_summaries and time.monotonic() < deadline:
-        from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
-
-        try:
-            refresh_daily_summaries(repository, artifacts, limit=1)
-            if time.monotonic() < deadline:
-                prune_daily_summaries(repository)
-        except Exception:
-            logger.warning("weather_daily_summary_refresh_deferred")
+        refresh_publisher_daily(repository, artifact_root, deadline=deadline)
     return ExportPublisherProgress(processed, results, last if more else None, more)
+
+
+def refresh_publisher_daily(
+    repository, artifact_root: Path, *, deadline: float,
+) -> Mapping[str, Any]:
+    """작은 원자적 checkpoint batch를 유한하게 drain하고 마지막에 한 번 정리한다."""
+    from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
+
+    total, more = 0, True
+    try:
+        artifacts = ExportArtifactStore(artifact_root)
+        for _ in range(MAX_DAILY_GENERATIONS // DAILY_GENERATION_BATCH):
+            if time.monotonic() >= deadline:
+                break
+            progress = refresh_daily_summaries(repository, artifacts, limit=DAILY_GENERATION_BATCH)
+            total += progress["processed"]
+            more = progress["has_more"]
+            # race/읽기 실패는 checkpoint를 추측해 넘기지 않는다. 다음 tick에 재개한다.
+            if progress["processed"] == 0 or not more:
+                break
+        if time.monotonic() < deadline:
+            prune_daily_summaries(repository)
+    except Exception:
+        more = True
+        logger.warning("weather_daily_summary_refresh_deferred")
+    return {"processed": total, "has_more": more}
 
 
 def dagster_status_lookup(instance) -> Callable[[str], str | None]:
