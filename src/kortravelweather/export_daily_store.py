@@ -76,6 +76,12 @@ def daily_summary_tables(metadata: MetaData):
 
 
 def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit=4):
+    # checkpoint/refs 조회부터 파일 검증과 최종 summary CAS까지 한 수명이다.
+    with artifacts.guard(timeout_seconds=2, shared=True):
+        return _refresh_daily_summaries_guarded(repository, artifacts, limit=limit)
+
+
+def _refresh_daily_summaries_guarded(repository, artifacts: ExportArtifactStore, *, limit=4):
     """키셋 최대 4 generation. IO 중 PG connection과 summary 잠금을 잡지 않는다.
 
     성공 publication만 읽으므로 원본 부분 commit/실패 run은 섞이지 않는다.
@@ -119,46 +125,45 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
     now = datetime.now(UTC)
     approved_coverage = []
     # guard timeout은 획득 대기 상한이며 전체 IO의 wall deadline은 아니다.
-    with artifacts.guard(timeout_seconds=2, shared=True):
-        for row in rows:
-            if row["descriptor"]["forecast_style"] not in {"observed", "nowcast"}:
-                continue
-            chunks = refs[row["generation_id"]]
-            if not chunks or sum(c["point_count"] for c in chunks) > 5000:
-                raise ExportArtifactError("관측 요약 generation 상한을 넘었습니다.")
-            descriptor = row["descriptor"]
-            for location in descriptor["location_ids"]:
-                approved_coverage.append(
-                    {
-                        "location_id": location,
-                        "namespace": row["namespace"],
-                        "provider": descriptor["provider"],
-                        "source_scope": row["source_scope"],
-                        "nx": descriptor.get("nx"),
-                        "ny": descriptor.get("ny"),
-                        "latitude": descriptor.get("latitude"),
-                        "longitude": descriptor.get("longitude"),
-                        "source_collected_at": row["source_collected_at"],
-                        "published_at": row["created_at"],
-                        "generation_id": row["generation_id"],
-                    }
-                )
-            collected = (
-                max(collected, row["source_collected_at"])
-                if collected
-                else row["source_collected_at"]
+    for row in rows:
+        if row["descriptor"]["forecast_style"] not in {"observed", "nowcast"}:
+            continue
+        chunks = refs[row["generation_id"]]
+        if not chunks or sum(c["point_count"] for c in chunks) > 5000:
+            raise ExportArtifactError("관측 요약 generation 상한을 넘었습니다.")
+        descriptor = row["descriptor"]
+        for location in descriptor["location_ids"]:
+            approved_coverage.append(
+                {
+                    "location_id": location,
+                    "namespace": row["namespace"],
+                    "provider": descriptor["provider"],
+                    "source_scope": row["source_scope"],
+                    "nx": descriptor.get("nx"),
+                    "ny": descriptor.get("ny"),
+                    "latitude": descriptor.get("latitude"),
+                    "longitude": descriptor.get("longitude"),
+                    "source_collected_at": row["source_collected_at"],
+                    "published_at": row["created_at"],
+                    "generation_id": row["generation_id"],
+                }
             )
-            for ref in chunks:
-                for point in artifacts.read(
-                    ref["artifact_digest"],
-                    byte_count=ref["byte_count"],
-                    point_count=ref["point_count"],
-                ):
-                    parsed = observation(point)
-                    if parsed is not None and now.astimezone(KST).date() - datetime.fromisoformat(
-                        parsed[0][1]
-                    ).date() <= timedelta(days=31):
-                        grouped[parsed[0]].append(point)
+        collected = (
+            max(collected, row["source_collected_at"])
+            if collected
+            else row["source_collected_at"]
+        )
+        for ref in chunks:
+            for point in artifacts.read(
+                ref["artifact_digest"],
+                byte_count=ref["byte_count"],
+                point_count=ref["point_count"],
+            ):
+                parsed = observation(point)
+                if parsed is not None and now.astimezone(KST).date() - datetime.fromisoformat(
+                    parsed[0][1]
+                ).date() <= timedelta(days=31):
+                    grouped[parsed[0]].append(point)
     with heads._transaction() as s:
         # 단일 writer CAS. 이 잠금은 파일을 다 읽은 뒤에만 획득한다.
         s.execute(

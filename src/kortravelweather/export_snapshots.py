@@ -454,6 +454,11 @@ class FrozenCurrentExports:
             return frozen
 
     def page(self, resource: str, *, limit: int, cursor: str | None):
+        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
+        with self.artifacts.guard(timeout_seconds=2, shared=True):
+            return self._page_guarded(resource, limit=limit, cursor=cursor)
+
+    def _page_guarded(self, resource: str, *, limit: int, cursor: str | None):
         if resource not in {"locations", "current"} or not 1 <= limit <= 5000:
             raise ExportCursorInvalid("지원하지 않는 resource/limit입니다.")
         cursor_resource = (
@@ -516,63 +521,62 @@ class FrozenCurrentExports:
             more = False
             # 현재는 GC가 없으며 durable snapshot_refs가 generation의 삭제도 막는다.
             # 파일은 매 페이지 동일fd hash/count를 재검증하고 누락은 성공으로 반환하지 않는다.
-            with self.artifacts.guard(timeout_seconds=2, shared=True):
-                while state["g"] < len(scopes):
-                    scope = scopes[state["g"]]
-                    points = []
-                    selected = set(scope["location_ids"])
-                    approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
-                    for ref in scope["refs"]:
-                        for point in self.artifacts.read(
-                            ref["artifact_digest"],
-                            byte_count=ref["byte_count"],
-                            point_count=ref["point_count"],
-                        ):
-                            if (
-                                point["provider"] != scope.get("provider", "python-kma-api")
-                                or point["forecast_style"] != scope.get("forecast_style", "nowcast")
-                                or point["location_id"] not in approved_ids
-                            ):
-                                raise ExportSnapshotUnavailable(
-                                    "승인된 scope와 artifact가 다릅니다."
-                                )
-                            if point["location_id"] in selected:
-                                points.append(point)
-                    points.sort(key=lambda p: (p["location_id"], p["provider"], p["metric_key"]))
-                    if state["p"] > len(points):
-                        raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
-                    while state["p"] < len(points):
-                        point = points[state["p"]]
-                        item = {
-                            "location_id": point["location_id"],
-                            "provider": point["provider"],
-                            "metric_key": point["metric_key"],
-                            "value": float(point["value_number"])
-                            if point["value_number"] is not None
-                            else point["value_text"],
-                            "unit": point["unit"],
-                            "target_at": point["target_at"],
-                            "known_at": point["known_at"],
-                            "forecast_style": point["forecast_style"],
-                        }
-                        item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
-                        if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
-                            raise ExportSnapshotUnavailable(
-                                "단일 point가 페이지 byte 상한을 넘었습니다."
-                            )
+            while state["g"] < len(scopes):
+                scope = scopes[state["g"]]
+                points = []
+                selected = set(scope["location_ids"])
+                approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
+                for ref in scope["refs"]:
+                    for point in self.artifacts.read(
+                        ref["artifact_digest"],
+                        byte_count=ref["byte_count"],
+                        point_count=ref["point_count"],
+                    ):
                         if (
-                            len(output) >= limit
-                            or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
+                            point["provider"] != scope.get("provider", "python-kma-api")
+                            or point["forecast_style"] != scope.get("forecast_style", "nowcast")
+                            or point["location_id"] not in approved_ids
                         ):
-                            more = True
-                            break
-                        output.append(item)
-                        size += item_size
-                        state["p"] += 1
-                    if more:
+                            raise ExportSnapshotUnavailable(
+                                "승인된 scope와 artifact가 다릅니다."
+                            )
+                        if point["location_id"] in selected:
+                            points.append(point)
+                points.sort(key=lambda p: (p["location_id"], p["provider"], p["metric_key"]))
+                if state["p"] > len(points):
+                    raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
+                while state["p"] < len(points):
+                    point = points[state["p"]]
+                    item = {
+                        "location_id": point["location_id"],
+                        "provider": point["provider"],
+                        "metric_key": point["metric_key"],
+                        "value": float(point["value_number"])
+                        if point["value_number"] is not None
+                        else point["value_text"],
+                        "unit": point["unit"],
+                        "target_at": point["target_at"],
+                        "known_at": point["known_at"],
+                        "forecast_style": point["forecast_style"],
+                    }
+                    item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
+                    if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                        raise ExportSnapshotUnavailable(
+                            "단일 point가 페이지 byte 상한을 넘었습니다."
+                        )
+                    if (
+                        len(output) >= limit
+                        or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
+                    ):
+                        more = True
                         break
-                    state["g"] += 1
-                    state["p"] = 0
+                    output.append(item)
+                    size += item_size
+                    state["p"] += 1
+                if more:
+                    break
+                state["g"] += 1
+                state["p"] = 0
         now = datetime.now(UTC)
         stale = (
             frozen.get("_source_unconfirmed", False)

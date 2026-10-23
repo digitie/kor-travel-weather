@@ -307,6 +307,11 @@ class FrozenForecastExports(FrozenCurrentExports):
             return frozen
 
     def page(self, *, limit, cursor):
+        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
+        with self.artifacts.guard(timeout_seconds=2, shared=True):
+            return self._page_guarded(limit=limit, cursor=cursor)
+
+    def _page_guarded(self, *, limit, cursor):
         if cursor:
             state = self._decode(cursor)
             if state["r"] != self.resource or state["l"] != limit:
@@ -369,90 +374,89 @@ class FrozenForecastExports(FrozenCurrentExports):
         scopes = manifest["scopes"]
         if state["g"] > len(scopes):
             raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
-        with self.artifacts.guard(timeout_seconds=2, shared=True):
-            while state["g"] < len(scopes):
-                scope = scopes[state["g"]]
-                if self.since and datetime.fromisoformat(scope["published_at"]) <= self.since:
-                    state["g"], state["p"] = state["g"] + 1, 0
-                    continue
-                keys = scope["location_ids"]
-                if state["p"] > len(keys):
-                    raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
-                # 하나의 chunk를 최대 한 번 읽고 그 안의 소수 위치만 묶는다.
-                # chunk당 <=5,000 point이며 전체 격자 값을 유지하지 않는다.
-                cached_ref, cached = None, None
-                while state["p"] < len(keys):
-                    key = keys[state["p"]]
-                    refs = [r for r in scope["refs"] if key in r["location_ids"]]
-                    if len(refs) != 1:
-                        raise ExportSnapshotUnavailable(
-                            "위치가 단일 bounded chunk에 있지 않습니다."
-                        )
-                    ref = refs[0]
-                    if cached_ref != ref["artifact_digest"]:
-                        cached = defaultdict(list)
-                        for point in self.artifacts.read(
-                            ref["artifact_digest"],
-                            byte_count=ref["byte_count"],
-                            point_count=ref["point_count"],
-                        ):
-                            if (
-                                point["provider"] != scope.get("provider", "python-kma-api")
-                                or point["forecast_style"]
-                                != scope.get("forecast_style", self.style)
-                                or point["location_id"] not in ref["location_ids"]
-                            ):
-                                raise ExportSnapshotUnavailable(
-                                    "예보 artifact/index가 일치하지 않습니다."
-                                )
-                            cached[point["location_id"]].append(point)
-                        cached_ref = ref["artifact_digest"]
-                    points = cached[key]
-                    future = [p for p in points if datetime.fromisoformat(p["target_at"]) > now]
-                    if not future:
-                        raise ExportSnapshotUnavailable("현재 이후의 승인 예보가 없습니다.")
-                    targets = sorted({p["target_at"] for p in future})
-                    metrics = {
-                        metric: {
-                            p["target_at"]: (
-                                float(p["value_number"])
-                                if p["value_number"] is not None
-                                else p["value_text"]
-                            )
-                            for p in future
-                            if p["metric_key"] == metric
-                        }
-                        for metric in sorted({p["metric_key"] for p in future})
-                    }
-                    item = {
-                        "location_id": key,
-                        "provider": scope.get("provider", "python-kma-api"),
-                        "forecast_style": self.style,
-                        "known_at": max(p["known_at"] for p in points),
-                        "published_at": scope["published_at"],
-                        "target_at": targets,
-                        "metrics": {
-                            metric: [values.get(t) for t in targets]
-                            for metric, values in metrics.items()
-                        },
-                    }
-                    item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
-                    if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
-                        raise ExportSnapshotUnavailable(
-                            "한 위치의 예보가 페이지 상한을 넘었습니다."
-                        )
-                    if (
-                        len(output) >= limit
-                        or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
-                    ):
-                        more = True
-                        break
-                    output.append(item)
-                    size += item_size
-                    state["p"] += 1
-                if more:
-                    break
+        while state["g"] < len(scopes):
+            scope = scopes[state["g"]]
+            if self.since and datetime.fromisoformat(scope["published_at"]) <= self.since:
                 state["g"], state["p"] = state["g"] + 1, 0
+                continue
+            keys = scope["location_ids"]
+            if state["p"] > len(keys):
+                raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
+            # 하나의 chunk를 최대 한 번 읽고 그 안의 소수 위치만 묶는다.
+            # chunk당 <=5,000 point이며 전체 격자 값을 유지하지 않는다.
+            cached_ref, cached = None, None
+            while state["p"] < len(keys):
+                key = keys[state["p"]]
+                refs = [r for r in scope["refs"] if key in r["location_ids"]]
+                if len(refs) != 1:
+                    raise ExportSnapshotUnavailable(
+                        "위치가 단일 bounded chunk에 있지 않습니다."
+                    )
+                ref = refs[0]
+                if cached_ref != ref["artifact_digest"]:
+                    cached = defaultdict(list)
+                    for point in self.artifacts.read(
+                        ref["artifact_digest"],
+                        byte_count=ref["byte_count"],
+                        point_count=ref["point_count"],
+                    ):
+                        if (
+                            point["provider"] != scope.get("provider", "python-kma-api")
+                            or point["forecast_style"]
+                            != scope.get("forecast_style", self.style)
+                            or point["location_id"] not in ref["location_ids"]
+                        ):
+                            raise ExportSnapshotUnavailable(
+                                "예보 artifact/index가 일치하지 않습니다."
+                            )
+                        cached[point["location_id"]].append(point)
+                    cached_ref = ref["artifact_digest"]
+                points = cached[key]
+                future = [p for p in points if datetime.fromisoformat(p["target_at"]) > now]
+                if not future:
+                    raise ExportSnapshotUnavailable("현재 이후의 승인 예보가 없습니다.")
+                targets = sorted({p["target_at"] for p in future})
+                metrics = {
+                    metric: {
+                        p["target_at"]: (
+                            float(p["value_number"])
+                            if p["value_number"] is not None
+                            else p["value_text"]
+                        )
+                        for p in future
+                        if p["metric_key"] == metric
+                    }
+                    for metric in sorted({p["metric_key"] for p in future})
+                }
+                item = {
+                    "location_id": key,
+                    "provider": scope.get("provider", "python-kma-api"),
+                    "forecast_style": self.style,
+                    "known_at": max(p["known_at"] for p in points),
+                    "published_at": scope["published_at"],
+                    "target_at": targets,
+                    "metrics": {
+                        metric: [values.get(t) for t in targets]
+                        for metric, values in metrics.items()
+                    },
+                }
+                item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
+                if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                    raise ExportSnapshotUnavailable(
+                        "한 위치의 예보가 페이지 상한을 넘었습니다."
+                    )
+                if (
+                    len(output) >= limit
+                    or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
+                ):
+                    more = True
+                    break
+                output.append(item)
+                size += item_size
+                state["p"] += 1
+            if more:
+                break
+            state["g"], state["p"] = state["g"] + 1, 0
         return output, more
 
     def _health(self, manifest, frozen, now):
