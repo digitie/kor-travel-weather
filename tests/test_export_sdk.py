@@ -139,6 +139,14 @@ def test_descriptor_dataset_provider_and_entity_are_not_interchangeable():
             SdkScopeDescriptor.model_validate({**desc.model_dump(), **change})
 
 
+def test_airkorea_hourly_observation_does_not_inherit_low_frequency_36h_window():
+    desc, source, _, _ = fixture("air")
+    with pytest.raises(ExportArtifactError):
+        normalize_sdk_source(desc, {**source, "fetched_at": AT + timedelta(hours=3)})
+    desc, source, _, _ = fixture("krex")
+    assert normalize_sdk_source(desc, {**source, "fetched_at": AT + timedelta(hours=3)})
+
+
 def test_khoa_unknown_slot_duplicate_and_forecast_without_future_are_not_approved():
     desc, source, _, _ = fixture("khoa")
     row = source["payload"]["rows"][0]["rows"][0]

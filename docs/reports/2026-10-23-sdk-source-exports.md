@@ -15,7 +15,8 @@ AirKorea·산림청 산악/청정넷·KREX 휴게소·KHOA 해수욕장의 기�
 - 사전 선언한 관측소 코드/이름/좌표와 비교한다. 청정넷은 좌표가 별도 승인 catalog에만
   있으므로 측정 원문에서 좌표가 검증됐다고 주장하지 않는다.
 - 실제 관측 시각이 없는 원문은 승인하지 않는다. 기존 native 수집의 결측 처리 정책은
-  바꾸지 않는다. 관측 원문은 조회 시각 이전 36시간까지만 허용한다.
+  바꾸지 않는다. AirKorea 원문은 조회 전 3시간, 낮은 빈도로 수집하는 산림청·KREX는
+  36시간까지만 허용한다. 실제 수집 시각과 관측 대상 시각을 혼동하지 않는다.
 - KHOA 원문 장소/좌표, 날짜·오전/오후 중복, 가까운 미래 범위를 검증한다.
 - 발표 revision이 없는 원천은 `latest-retrieval-v1`이다. 최신 발표 보장은 하지 않는다.
 - 유효값이 없는 원문, 비정상 수치, 위조 source key는 export를 승인하지 않는다.
@@ -32,3 +33,8 @@ AirKorea는 path dependency이므로 vendor 실제 소스를 함께 갱신했다
 공개 parser→기존 adapter 동등성, raw 불변, 5종 source key/naive 시각 거부,
 4종 관측 시각 결측/오래된 값 거부, 잘못된 anchor, KHOA 중복/미래 없음 등
 집중 테스트 21개가 통과했다. 최종 CI·두 독립 리뷰·실제 HTTP/UI 수용은 후속 통합 뒤 수행한다.
+
+기존 receipt/capture 경계에 SDK descriptor와 domain을 연결했다. 실제 PostgreSQL에서
+5종 원천별 사전 선언→원문 독립 검증→원본 lineage/fact capture→native 성공→head 승격을
+확인했으며 기존 기본3 raw/수집/API 회귀와 합쳐 43개가 통과했다. 실제 Dagster 원천 수집
+배선과 전체 inventory/REST 통합은 아직 별도다.

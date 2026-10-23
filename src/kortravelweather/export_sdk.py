@@ -167,7 +167,8 @@ def _replay(descriptor, record):
             parsed, location_id=descriptor.entity_id, fetched_at=fetched
         )
         return source, khoa.beach_index_to_weather_values, parsed, None
-    if observed is None or not fetched - timedelta(hours=36) <= observed <= fetched:
+    max_age = 3 if dataset == "airkorea_realtime_measurement" else 36
+    if observed is None or not fetched - timedelta(hours=max_age) <= observed <= fetched:
         raise ExportArtifactError("실제 관측 시각이 없거나 허용 범위를 벗어났습니다.")
     return source, normalizer, parsed, observed
 
