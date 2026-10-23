@@ -364,6 +364,37 @@ def test_forecast_missing_head_remains_stale_on_cursor_and_does_not_replace_curr
     assert locations.json()["meta"]["source_status"] == "stale"
 
 
+def test_forecast_four_mib_cap_cursor_keeps_every_last_included_location(
+    repository, tmp_path, monkeypatch
+):
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    _collect_forecast(repository, tmp_path)
+    original = ExportArtifactStore.read
+
+    def large_projection(self, *args, **kwargs):
+        # byte-budget 단위 검증: 실제 승인/검증된 file을 읽은 뒤 DTO에서 허용하는
+        # 긴 문자열 값을 투영해, 3개 위치만으로 실제 4MiB 경계를 넘긴다.
+        for point in original(self, *args, **kwargs):
+            yield {**point, "value_number": None, "value_text": "x" * 40_000}
+
+    monkeypatch.setattr(ExportArtifactStore, "read", large_projection)
+    client = _client(repository, tmp_path)
+    params, seen, sizes = {"style": "ultra_short", "limit": 5000}, [], []
+    while True:
+        response = client.get("/v1/service/exports/forecasts", params=params, headers=HEADERS)
+        assert response.status_code == 200
+        assert len(response.content) <= 4 * 1024 * 1024
+        page = response.json()
+        seen.extend(item["location_id"] for item in page["items"])
+        sizes.append(len(page["items"]))
+        if not page["meta"]["has_more"]:
+            break
+        assert page["items"]
+        params["cursor"] = page["meta"]["next_cursor"]
+    assert seen == ["a", "b", "c"] and len(sizes) >= 2
+
+
 def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)

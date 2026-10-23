@@ -35,6 +35,12 @@ head vector와 마지막 공개 clock을 함께 고정한다. 파일 검증/DB f
   제공하되, 그 vector에도 미래 예보가 없으면 503이다.
 - 약한 ETag, gzip, 권한 거부를 제공한다. 운영 자동활성화는 하지 않는다.
 
+API·code-server·publisher는 동일한 NVMe artifact 디렉터리를 같은 권한으로
+마운트해야 한다. eMMC에 별도 artifact 복사본을 만들지 않는다. cursor TTL 동안
+승인 generation 파일을 지우지 않도록 `snapshot_refs`/pending pin을 GC 보존
+루트로 취급해야 한다. 현재 GC 구현과 운영 최대 비용 검증은 미완료이므로 이
+PR만으로 자동 ON 또는 운영 배포 완료로 판단하면 안 된다.
+
 ## 남은 범위
 
 중기/외부 제공처, W2의 모든 provider, W4 status 및 W5 미리 계산한 일간 요약은
