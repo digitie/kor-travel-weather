@@ -1,5 +1,13 @@
 # Weather 현재 인수인계
 
+## 2026-10-24 — W1~W5 source 구현과 운영 잔여 정렬
+
+- 감사 기준 main9aa0d339(#164)에는 W1 위치·W2 현재·W3 단기/중기/외부 grouped 예보·W4 상태·W5 승인 관측 사전 요약이 구현·머지돼 있다. [현재 인계와 PR](reports/2026-10-23-map-service-api-handoff.md), [남은 운영 과제](tasks.md)를 따른다.
+- 기본 service export OFF·별도 publisher 수용, source 정상 bootstrap·요약 초기 투영·공유 NVMe 권한·GC/live-root·ARM 비용과 Map 실제 소비/UI는 완료로 세지 않는다. 운영 #130 배포와 후속 API 전체 적용은 별개다.
+- source vector8,192, catalog/page·개별 cohort5,000, inventory20,000 및4MiB 페이지/8MiB chunk·manifest 상한을 구분한다. 기계 OpenAPI/DTO/예시는 현재 source와 대조했고 이번 정산은 문서만 변경한다.
+- 아래 2026-10-23 설계·단계별 미완 표시는 당시 기록이며 현재 source 미구현 목록이 아니다. daemon은 최신 사용자 정책 RUNNING을 따른다.
+
+
 ## 2026-10-23 — KMA pagination 선행 보강
 
 - KMA PR32의 검증된 public pagination receipt를 고정하고 lineage에 보존한다. [범위·키 전환·미완](reports/2026-10-23-kma-pagination-contract.md)을 따른다. Weather PR141은 전체PG788·정확CI788/frontend243·독립2리뷰·격리API3/UI11 수용 후 머지됐다. export OFF/503·운영 미배포 상태다.
