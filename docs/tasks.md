@@ -13,12 +13,14 @@
 실제 관측 기반 KMA 초단기실황을 포함하도록 선택 완료했다. COW는 실측 exit gate 뒤에만 채택한다.
 
 - [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비. 기존 require_admin/x-admin-token 재사용과
-  신규 service route의 OpenAPI·타입·오류·bounded query 계약을 준비한다. 이 단계는 W1/W2 데이터
-  공개 완료가 아니다. 해제 조건: 설계 §1·2·4·7의 계약 준비 검증, 기능 CI·2인 리뷰.
+  신규 service route의 OpenAPI·타입·오류·bounded query와 웹 catchall service prefix 차단을 준비한다.
+  이 단계는 W1/W2 데이터 공개 완료가 아니다. 해제 조건: 설계 §1·6 단계1·§7의 계약 검증과
+  프록시 upstream fetch 0회, 기존 경로 유지, 기능 CI·2인 리뷰.
 - [ ] W-MAP-02 — W-MAP-01 뒤 성공 attempt receipt·scope 완결 barrier·독립 성공 export head와
   W1/W2 실제 공개·W3 snapshot을 구현한다. W1/W2 공개 완료는 이 성공 head/barrier가 선행해야 한다.
-  zero-new-row·alias 재관측, failed chunk 차단, epoch/CAS·cursor/ETag/gzip·시간 경계와 durable
-  checkpoint를 검증한다. 해제 조건: 설계 §3·7의 실패 반증·live 검증 및 COW 합산 실측 exit gate.
+  설계 §6 단계2(receipt)→3(성공 승격)→4(실제 조회 공개)를 따른다. canonical replay/실제 수집시각,
+  failed chunk·scope barrier/owner·cursor/ETag/checkpoint를 검증하며 단계2·3만으로 완료하지 않는다.
+  해제 조건: 설계 §3·6·7의 실패 반증·live 검증 및 COW 합산 실측 exit gate.
 - [x] W-MAP-03 — W5 관측 eligibility **선택 문서화만 완료**(2026-10-23). 사용자 승인에 따라
   기존 OBSERVED와 `python-kma-api/kma_ultra_short_nowcast`의 obsr_value 기반 실제 관측을
   포함한다. source_metric_key T1H/RN1/REH/WSD/PTY·typed unit/결측·강수 interval 규칙은
