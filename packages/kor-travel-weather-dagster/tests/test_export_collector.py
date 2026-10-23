@@ -436,7 +436,7 @@ def test_forecast_all_missing_grid_preserves_raw_and_lineage_once(repository, tm
         base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
         export_artifact_root=tmp_path,
     )
-    assert result["status"] == "success" and result["values_loaded"] == 84
+    assert result["status"] == "partial" and result["values_loaded"] == 84
     assert len(empty_calls) == 1 and len(empty_calls[0]) == 1
     assert len(empty_calls[0][0]["payload"]["rows"]) == 42
     records, links = (
@@ -456,5 +456,5 @@ def test_forecast_all_missing_grid_preserves_raw_and_lineage_once(repository, tm
             )
             == 1
         )
-    assert publish_pending_exports(repository, tmp_path).results == {"PUBLISHED": 1}
-    assert _counts(repository) == (2, 1, 1)
+    assert publish_pending_exports(repository, tmp_path).results == {"REJECTED": 1}
+    assert _counts(repository) == (2, 0, 0)
