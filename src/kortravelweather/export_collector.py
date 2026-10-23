@@ -170,6 +170,13 @@ class KmaNowcastExportCollector:
         """
         if not 1 <= max_values <= 5000 or not 1 <= max_locations <= 50:
             raise ValueError("예보 공개 batch 상한이 올바르지 않습니다.")
+        if not values:
+            # 모든 값이 결측/이상값이어도 실제 조회한 raw source와 run lineage는
+            # 한 번 남긴다. 빈 export는 이전 성공 head를 대체할 수 없다.
+            if prepared:
+                self._reject(prepared.identity, "NO_NORMALIZED_POINTS")
+            heartbeat()
+            return self.repository.ingest_batch(source_records=[record], values=[])
         bound = False
         if prepared:
             try:

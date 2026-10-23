@@ -268,7 +268,7 @@ def test_semantically_small_complete_response_keeps_existing_success_head(reposi
     assert _counts(repository) == (4, 2, 2)
 
 
-def _forecast_client(*, short=False, truncated=False, start_hour=1):
+def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=None):
     from datetime import timedelta
 
     from kma.time_utils import parse_kma_datetime
@@ -299,7 +299,7 @@ def _forecast_client(*, short=False, truncated=False, start_hour=1):
                         nx=int(q["nx"]),
                         ny=int(q["ny"]),
                         category=category,
-                        fcstValue=value,
+                        fcstValue="9999" if int(q["nx"]) == empty_grid else value,
                         fcstDate=at.strftime("%Y%m%d"),
                         fcstTime=at.strftime("%H%M"),
                     )
@@ -414,3 +414,47 @@ def test_forecast_cannot_replace_missing_near_term_with_distant_complete_window(
     assert result["status"] == "success" and result["values_loaded"] > 0
     assert _counts(repository) == (2, 0, 0)
     assert publish_pending_exports(repository, tmp_path).processed == 0
+
+
+def test_forecast_all_missing_grid_preserves_raw_and_lineage_once(repository, tmp_path):
+    from kortravelweather_dagster.kma_weather import KMA_ULTRA_SHORT_FORECAST
+
+    from kortravelweather.repository import Base
+
+    original, empty_calls = repository.ingest_batch, []
+
+    def ingest(**kwargs):
+        if not kwargs.get("values"):
+            empty_calls.append(kwargs["source_records"])
+        return original(**kwargs)
+
+    repository.ingest_batch = ingest
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(empty_grid=61),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] == 84
+    assert len(empty_calls) == 1 and len(empty_calls[0]) == 1
+    assert len(empty_calls[0][0]["payload"]["rows"]) == 42
+    records, links = (
+        Base.metadata.tables["weather_source_records"],
+        Base.metadata.tables["weather_sync_run_sources"],
+    )
+    with repository.engine.connect() as c:
+        source_key = c.scalar(
+            select(records.c.source_record_key).where(records.c.source_entity_id == "grid:61:127")
+        )
+        assert source_key is not None
+        assert (
+            c.scalar(
+                select(func.count())
+                .select_from(links)
+                .where(links.c.source_record_key == source_key)
+            )
+            == 1
+        )
+    assert publish_pending_exports(repository, tmp_path).results == {"PUBLISHED": 1}
+    assert _counts(repository) == (2, 1, 1)
