@@ -34,6 +34,16 @@ export 증거 실패는 기존 native raw/fact 저장을 막지 않으며 native
   해당 KMA 전체 원천이 준비되면 제공할 수 있다.
 - 선택 cohort 변경·실패·미승인은 이전 승인 vector를 stale로 유지한다. 제공처 필터와
   cursor는 결합되어 조건을 바꾸면422이며, 최초 승인 전에는503이다.
+- cohort의 최신 native 실행 성공과 각 위치 head의 해당 run 승인도 함께 확인한다.
+  attempt 생성/claim 이전 실패는 이전 owner를 바꾸지 않으므로 owner만으로 건강함을
+  판단하지 않는다. prepare 잠금 시간 초과 뒤 HTTP 실패도 current/forecast 기존 페이지와
+  cursor를 stale로 표시하고 이전 healthy ETag의304를 차단한다.
+- cohort 선언 자체 실패는 native 실행 시작 INSERT에 원자적으로 저장한
+  `export_cohort_required` fence로 감지한다. provider/dataset별 부분 index의 최신 한 행만
+  확인하며 기존 opt-in하지 않은 실행은 제외한다. 작은 파생 roster 쓰기 실패가 원래
+  수집을 막지 않으면서 이전 정상304로 숨지도 않게 한다.
+- 공통 asset export 배선은 현재 승인 가능한 KMA 기본3 dataset에만 연결한다.
+  미지원 중기예보/특보는 export flag ON이어도 기존 수집 경로를 그대로 실행한다.
 
 원천 계약 근거: [Open-Meteo](https://open-meteo.com/en/docs),
 [WeatherAPI](https://www.weatherapi.com/docs/),

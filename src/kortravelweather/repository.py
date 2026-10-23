@@ -546,6 +546,10 @@ class SyncRunRow(Base):
             "ix_weather_sync_runs_export_pending", "provider", "started_at", "run_id",
             postgresql_where=text("export_status_pending = true"),
         ),
+        Index(
+            "ix_weather_sync_runs_export_cohort", "provider", "dataset_key", "started_at", "run_id",
+            postgresql_where=text("export_cohort_required IS TRUE"),
+        ),
         # A provider/dataset may have at most one live run.  The application
         # checks first for a useful error message, while this partial unique
         # index closes the check-then-insert race between workers.
@@ -588,6 +592,9 @@ class SyncRunRow(Base):
         JSON(none_as_null=True),
     )
     export_status_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"),
+    )
+    export_cohort_required: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false"),
     )
 
@@ -3613,6 +3620,7 @@ class WeatherRepository:
     def start_sync_run(
         self, *, provider: str, dataset_key: str, locations_total: int = 0,
         export_status_datasets: set[str] | None = None,
+        export_cohort_required: bool = False,
     ) -> SyncRun:
         if self.export_status_enabled and dataset_key == "kma_weather_bundle" and (
             export_status_datasets is None
@@ -3673,6 +3681,7 @@ class WeatherRepository:
                 session.add(SyncRunRow(
                     **run.model_dump(), orchestrator_run_id=self.orchestrator_run_id,
                     export_status_scopes=[self._status_scope_dict(key) for key in scopes] or None,
+                    export_cohort_required=export_cohort_required,
                 ))
         except IntegrityError as exc:
             # The partial unique index on running rows: another start of the
