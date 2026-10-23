@@ -1,5 +1,7 @@
 # Weather 남은 작업
 
+- [ ] **Next.js 보안 갱신 — Next.js 16.4.3**. 의존성·잠금 파일과 필요한 호환 설정을 갱신하고 WSL 프론트엔드 검증을 통과했다. PR CI·독립 리뷰와 운영 반영은 별도다. [검증·잔여 취약점](journal.md).
+
 아래 기존 인덱스는 2026-10-17 main39aafe0 기준 이력이다. 현재 PR #118의 부분 수용과 남은 게이트는 아래 최신 절을 따른다. 문서 PR 생성 전 감사 조회에서 OPEN PR0이었다. [전체 감사·증거·선행 관계](audits/2026-10-17-remaining-work.md)를 함께 읽는다. 과거 이전 백로그는 [deploy/n150.md](../deploy/n150.md)에 보존한다. vendored python-airkorea-api의 tasks/resume/journal은 별도 provider 문서다.
 
 코드·PR merge·실배포·운영 수용은 다른 상태다. 증거 미확인을 미배포 확정으로 쓰지 않는다. 현재 daemon 정책은 최신 사용자 지시에 따라 Geo·Weather·Transport RUNNING이다. 과거 OFF 기록은 당시 이력이며 현재 실행 지시가 아니다.

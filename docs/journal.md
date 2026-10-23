@@ -1,3 +1,11 @@
+## 2026-10-24 — Next.js 16.4.3 보안 의존성 갱신
+
+- Next.js 15에서 `16.4.3`으로 정확히 고정하고 잠금 파일을 재생성했다. 사용하는 `eslint-config-next`도 `16.4.3`으로 맞췄다.
+- ESLint 16 flat config로 전환했다. React Compiler 전용 규칙 4개는 기존 동작을 보존하도록 별도 도입까지 끄고, 기존 Hooks 규칙은 유지한다. lint는 기존 전체 문서 로그아웃 이동에 대한 경고 1건과 종료 코드 0이다.
+- WSL Linux Node 22.22.2에서 프론트엔드 기존 테스트 243건과 lint·type-check·build PASS. 빌드가 생성한 타입 선언과 필요한 JSX 설정을 반영했다.
+- 같은 시점 `npm audit` 전체 보고: 총 9→6건, critical 3→2건. `next` 항목은 제거됐지만 다른 패키지 취약점은 남아 있다. 강제 자동 수정이나 요청 외 major 의존성 갱신은 하지 않았다.
+- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·독립 리뷰·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
+
 ## 2026-10-24 — Map 서비스 API 문서 독립 정합성 감사
 
 - producer W1~W5와 #164 source vector8,192/catalog·cohort5,000/inventory20,000을 구분하고 인계의 Weather meta cursor·페이지4MiB·W4 단일 응답을 현재 구현에 맞췄다. 현재 tasks/resume/초기 설계 상태와 W5 재투영4세대 batch·최대256세대/원본 단기예보6시간 범위도 정렬했다. API/DTO/OpenAPI 생성물·운영은 변경하지 않는다.
