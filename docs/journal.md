@@ -329,4 +329,8 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   native 성공과 각 head의 승인 run 일치를 동일 reader snapshot에서 확인한다.
 - 새 attempt/owner가 생기지 않은 HTTP 실패도 current/forecast의 이전 집합과 cursor를
   stale로 유지하고 이전 healthy ETag304를 막는 실제 PostgreSQL/API 회귀를 추가했다.
+- cohort 쓰기 자체 실패도 native 시작 INSERT의 원자적 opt-in fence와 부분 index의
+  최신 한 행으로 확인한다. 기존 opt-in하지 않은 실행은 무시하며 이력 전체를 읽지 않는다.
+- export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
+  실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
 

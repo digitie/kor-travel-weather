@@ -489,8 +489,9 @@ def test_external_forecast_actual_job_groups_and_publication_delta_preserve_know
 
 
 @pytest.mark.parametrize("forecast", [False, True])
+@pytest.mark.parametrize("failure_phase", ["prepare", "cohort"])
 def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner(
-    external_repository, tmp_path, monkeypatch, forecast
+    external_repository, tmp_path, monkeypatch, forecast, failure_phase
 ):
     from fastapi.testclient import TestClient
     from kortravelweather_api.app import create_app
@@ -538,12 +539,23 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
     headers = {"x-admin-token": "cohort-failure"}
     healthy = client.get(url, params=params, headers=headers)
     assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    # 이 기능을 요청하지 않은 기존 native 실행은 opt-in roster를 덮지 않는다.
+    legacy = repo.start_sync_run(provider="open_meteo", dataset_key=dataset)
+    repo.finish_sync_run(legacy.run_id, status="success")
+    assert client.get(url, params=params, headers={
+        **headers, "if-none-match": healthy.headers["etag"],
+    }).status_code == 304
     old_attempt_ids = set(a.attempt_id for a in attempts)
 
     def fail_before_claim(**kwargs):
         raise TimeoutError("bounded attempt prepare lock timeout")
 
-    monkeypatch.setattr(repo, "begin_export_attempt", fail_before_claim)
+    if failure_phase == "prepare":
+        monkeypatch.setattr(repo, "begin_export_attempt", fail_before_claim)
+    else:
+        from kortravelweather import export_external_cohorts
+
+        monkeypatch.setattr(export_external_cohorts, "declare_external_cohort", fail_before_claim)
     with pytest.raises(ProviderError):
         run_external_weather_sync(
             repository=repo,
@@ -565,3 +577,38 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
     continued = client.get(url, params={**params, "cursor": cursor}, headers=headers)
     assert continued.status_code == 200
     assert continued.json()["meta"]["source_status"] == "stale"
+
+
+def test_latest_native_cohort_fence_uses_selective_partial_index(external_repository):
+    from sqlalchemy import select
+    from sqlalchemy.dialects import postgresql
+
+    from kortravelweather.export_heads import ExportHeads
+
+    repo = external_repository
+    runs = ExportHeads(repo).metadata.tables["weather_sync_runs"]
+    provider = "index-" + uuid.uuid4().hex
+    now = datetime.now(UTC)
+    with repo.engine.begin() as c:
+        c.execute(runs.insert(), [
+            {"run_id": "index-" + uuid.uuid4().hex, "provider": provider,
+             "dataset_key": "history", "status": "success", "started_at": now,
+             "export_cohort_required": False}
+            for _ in range(5000)
+        ])
+        key = "index-" + uuid.uuid4().hex
+        c.execute(runs.insert().values(
+            run_id=key, provider=provider, dataset_key="current", status="failed",
+            started_at=now, export_cohort_required=True,
+        ))
+        c.exec_driver_sql("ANALYZE weather_sync_runs")
+        query = select(runs.c.run_id).where(
+            runs.c.provider == provider, runs.c.dataset_key == "current",
+            runs.c.export_cohort_required.is_(True),
+        ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1)
+        statement = str(query.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        ))
+        plan = "\n".join(c.exec_driver_sql("EXPLAIN (ANALYZE, BUFFERS) " + statement).scalars())
+        assert "ix_weather_sync_runs_export_cohort" in plan
+        assert "Seq Scan" not in plan and c.scalar(query) == key

@@ -116,10 +116,14 @@ def run_external_weather_sync(
     if max_response_rows <= 0 or max_values <= 0 or max_payload_bytes <= 0:
         raise ValueError("external weather budget은 양수여야 합니다.")
 
+    exports_requested = export_artifact_root is not None and provider.provider_key in {
+        "open_meteo", "weatherapi", "openweathermap",
+    }
     run = repository.start_sync_run(
         provider=provider.provider_key,
         dataset_key=dataset_key,
         locations_total=len(target_list),
+        **({"export_cohort_required": True} if exports_requested else {}),
     )
     staged_sources: list[dict[str, Any]] = []
     staged_values = []
@@ -132,11 +136,7 @@ def run_external_weather_sync(
     staged_payload_bytes = 0
     sent_at: float | None = None
     export_collector, prepared = None, None
-    if export_artifact_root is not None and provider.provider_key in {
-        "open_meteo",
-        "weatherapi",
-        "openweathermap",
-    }:
+    if exports_requested:
         try:
             from kortravelweather.export_external_cohorts import declare_external_cohort
             from kortravelweather.export_external_collector import ExternalExportCollector

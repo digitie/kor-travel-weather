@@ -120,6 +120,16 @@ def selected_external_descriptors(connection, metadata, locations, providers, *,
     result = []
     expected_runs = {}
     for row in cohorts:
+        # native INSERT와 원자적으로 저장된 intent를 작은 부분 index에서 한 행만
+        # 읽는다. roster 자체의 잠금/쓰기 실패도 이전 성공으로 숨기지 않는다.
+        latest = connection.scalar(
+            select(runs.c.run_id).where(
+                runs.c.provider == row["provider"], runs.c.dataset_key == row["dataset_key"],
+                runs.c.export_cohort_required.is_(True),
+            ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1)
+        )
+        if latest != row["run_id"]:
+            raise ExportArtifactError("최신 native 수집 선택 선언이 확인되지 않았습니다.")
         # claim 이전 prepare 실패는 source owner에 흔적을 남기지 않는다. HTTP 전
         # roster의 native 실행도 확인해야 이전 성공 owner가 실패를 가리지 못한다.
         if row["native_status"] != "success":

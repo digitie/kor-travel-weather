@@ -484,7 +484,10 @@ def _make_kma_dataset_asset(
                 sync_run=run,
                 **(
                     {"export_artifact_root": settings.service_export_artifact_root}
-                    if settings.service_exports_enabled and settings.service_export_artifact_root
+                    if (
+                        settings.service_exports_enabled and settings.service_export_artifact_root
+                        and include_base and not include_mid and not include_alerts
+                    )
                     else {}
                 ),
             )
