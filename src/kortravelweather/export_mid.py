@@ -38,7 +38,7 @@ class MidScopeDescriptor(BaseModel):
     source_part: Literal["land", "temperature"]
     region_code: str = Field(min_length=1, max_length=32)
     forecast_style: Literal["mid"] = "mid"
-    location_ids: tuple[str, ...] = Field(min_length=1, max_length=50)
+    location_ids: tuple[str, ...] = Field(min_length=1, max_length=1000)
     normalizer_revision: str
     winner_policy_revision: Literal["latest-issued-mid-v1"] = "latest-issued-mid-v1"
     coverage_contract: Literal["kma-mid-region-v1"] = "kma-mid-region-v1"
@@ -152,7 +152,7 @@ def _checked_values(descriptor, item, record, revision):
     return tuple(result)
 
 
-def prove_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) -> MidSourceProof:
+def _prove_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) -> MidSourceProof:
     """한 지역의 완전한 1행을 검증한다. 전국 집합·SDK pagination 완결을 주장하지 않는다."""
     try:
         if any(
@@ -246,5 +246,22 @@ def prove_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) 
         raise ExportArtifactError("중기 원천의 요청·응답 재해석 증명이 불완전합니다.") from exc
 
 
+def prove_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) -> MidSourceProof:
+    """소수 위치의 전체 증거. 큰 지역은 template과 streaming 경로를 사용한다."""
+    if len(descriptor.location_ids) > 50:
+        raise ExportArtifactError("중기 전체 값 복원은 50곳까지 허용합니다. template을 사용하세요.")
+    return _prove_mid_source(descriptor, record)
+
+
+def prove_mid_template(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) -> MidSourceProof:
+    """지역 공유 원문의 26/16개 값만 복원한다. 위치별 전체 목록을 만들지 않는다."""
+    return _prove_mid_source(
+        descriptor.model_copy(update={"location_ids": descriptor.location_ids[:1]}), record
+    )
+
+
 def normalize_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]):
-    return prove_mid_source(descriptor, record).values
+    template = prove_mid_template(descriptor, record)
+    for location in descriptor.location_ids:
+        for value in template.values:
+            yield value.model_copy(update={"location_id": location})

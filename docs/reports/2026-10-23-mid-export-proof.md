@@ -7,7 +7,7 @@
 이 변경만으로 실제 수집 배선, head 승격, REST 응답의 중기 지원을 완료하지 않는다.
 기존 수집·fact·이력·API DTO·운영 flag를 변경하지 않는다.
 
-- scope는 provider·dataset·지역·land/temperature·정렬된 위치 목록(최대 50곳)·
+- scope는 provider·dataset·지역·land/temperature·정렬된 위치 목록(최대 1,000곳)·
   정규화/선택 정책으로 고정한다. 발표 시각은 namespace가 아닌 data revision이다.
 - source record의 기존 canonical hash, 원천 identity, SDK endpoint·요청 지역·첫
   페이지·행 수·발표 회차와 timezone-aware fetch 시각을 확인한다.
@@ -42,7 +42,21 @@
 
 - 공개 `DataGoKrClient`와 httpx offline transport로 만든 실제 SDK DTO를 기존
   `_source_spec`으로 저장한 뒤 네트워크 없이 복원했다. 외부 원천 호출은 없다.
-- 집중 86건 PASS: land/temperature 값·lineage·UTC revision, 정책 namespace,
+- 집중 90건 PASS: land/temperature 값·lineage·UTC revision, 정책 namespace,
   올바른 hash를 다시 계산한 원문 변조·빈/복수 행·필수 구간 누락·숫자·지역·endpoint·
   시각·가용 지연·선택적 receipt·scope 상한을 검사한다.
 - 전체 Ruff PASS. 두 독립 리뷰 및 정확 CI는 PR에서 별도 수용한다.
+
+## 큰 지역의 스트리밍 fan-out
+
+같은 육상예보 지역을 여러 기온예보 지역이 공유한다. 이를 50곳마다 독립 claim으로
+나누면 같은 source scope의 소유권을 서로 덮을 수 있다. descriptor는 한 지역의
+최대1,000곳을 선언하고 한 원문·한 owner를 유지한다. 원문을 검증하는
+`prove_mid_template`은 첫 위치의 26/16개 템플릿만 보관한다.
+`normalize_mid_source`는 이 템플릿을 위치별로 하나씩 내보내는 iterator다.
+50곳을 넘는 전체 목록 복원(`prove_mid_source`)은 명시적으로 거절한다.
+
+집중90건 중 새4건은 기존 소수 위치 정규화와 semantic digest가 같고 1,000곳의
+26,000/16,000값을 순회할 때 tracemalloc peak가2MiB 미만임을 검사한다.
+이는 격리 Python 순회 할당 검사이며 전체 collector RSS·운영 ARM 비용 개선 수치는
+아니다. 실제 수집·head·REST 배선과 bounded batch 저장은 별도 후속이다.
