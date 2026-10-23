@@ -14,6 +14,7 @@ MAX_SOURCE_SCOPES = 8192
 MAX_GENERATION_REFS = 65536
 REF_FETCH_ROWS = 64
 MAX_REF_LOCATION_BYTES = 64 * 1024
+MAX_SCOPE_PLAN_BYTES = 256 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MANIFEST_STATE_RESERVE = 128
 
@@ -79,3 +80,35 @@ def read_generation_refs(connection, table, generation_ids):
     finally:
         result.close()
     return grouped
+
+
+def read_scope_plans(connection, table, attempt_ids):
+    """위치별 inventory에 반복된 descriptor를 attempt마다 한 번만 읽는다."""
+    attempt_ids = tuple(dict.fromkeys(attempt_ids))
+    if len(attempt_ids) > MAX_SOURCE_SCOPES:
+        raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
+    if not attempt_ids:
+        return {}
+    oversized = func.octet_length(cast(table.c.descriptor, Text)) > MAX_SCOPE_PLAN_BYTES
+    statement = select(
+        table.c.attempt_id,
+        case((oversized, None), else_=table.c.descriptor).label("descriptor"),
+        oversized.label("oversized_descriptor"),
+    ).where(table.c.attempt_id.in_(attempt_ids)).order_by(table.c.attempt_id).limit(
+        MAX_SOURCE_SCOPES + 1,
+    ).execution_options(
+        stream_results=True, yield_per=REF_FETCH_ROWS, max_row_buffer=REF_FETCH_ROWS,
+    )
+    budget, plans = MetadataBudget(), {}
+    result = connection.execute(statement)
+    try:
+        for row in result.mappings():
+            if row["oversized_descriptor"] or row["descriptor"] is None:
+                raise ExportCapacityExceeded("승인 source plan 메타데이터 상한을 넘었습니다.")
+            budget.add(row["descriptor"])
+            plans[row["attempt_id"]] = row["descriptor"]
+    finally:
+        result.close()
+    if set(plans) != set(attempt_ids):
+        raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
+    return plans

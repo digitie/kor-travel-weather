@@ -103,3 +103,42 @@ def test_pg_oversized_refs_fail_closed_and_close_cursor(refs_connection, monkeyp
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.read_generation_refs(connection, table, ["generation"])
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
+
+
+@pytest.mark.parametrize("failure", [None, "missing", "oversized", "total_budget"])
+def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, failure):
+    connection, refs = refs_connection
+    plans = Table(
+        "plans_" + uuid.uuid4().hex, refs.metadata,
+        Column("attempt_id", String(36), primary_key=True), Column("descriptor", JSON),
+        prefixes=["TEMPORARY"],
+    )
+    plans.create(connection)
+    value = {"location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)]}
+    if failure == "oversized":
+        value["oversized"] = "x" * (capacity.MAX_SCOPE_PLAN_BYTES + 1)
+    connection.execute(plans.insert(), [{"attempt_id": part, "descriptor": value}
+                                       for part in ["land", "temperature"]])
+    wanted = ["land", "temperature"] * 1000
+    if failure == "missing":
+        wanted.append("absent")
+    elif failure == "total_budget":
+        original = capacity.MetadataBudget
+        monkeypatch.setattr(capacity, "MetadataBudget", lambda: original(1))
+    if failure:
+        with pytest.raises(capacity.ExportCapacityExceeded):
+            capacity.read_scope_plans(connection, plans, wanted)
+    else:
+        assert capacity.read_scope_plans(connection, plans, wanted) == {
+            "land": value, "temperature": value,
+        }
+    assert connection.exec_driver_sql("SELECT 1").scalar() == 1
+
+
+def test_manifest_state_reserve_fits_fallback_marker_at_exact_limit():
+    value = {"padding": ""}
+    overhead = capacity.MetadataBudget().add(value)
+    normal_maximum = capacity.MAX_MANIFEST_BYTES - capacity.MANIFEST_STATE_RESERVE
+    value["padding"] = "x" * (normal_maximum - overhead)
+    assert capacity.MetadataBudget(normal_maximum).add(value) == normal_maximum
+    capacity.MetadataBudget().add(dict(value, capacity_limited=True))
