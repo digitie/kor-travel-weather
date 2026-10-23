@@ -219,7 +219,7 @@ class KmaNowcastExportCollector:
             keys.append(key)
             batch, locations = [], 0
 
-        for location_id in location_ids:
+        for location_id in sorted(location_ids):
             if batch and (len(batch) + len(values) > max_values or locations >= max_locations):
                 flush()
             batch.extend(v.model_copy(update={"location_id": location_id}) for v in values)

@@ -268,3 +268,11 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 이미 저장된 행은 재호출하지 않았다. 상세 결과와 daemon 재가동 뒤의 별도 queued/started
 관측은 [전체 주소 수동 갱신 수용](audits/2026-10-19-address-full-cycle.md)에 기록했다.
 예약 작업과 장기 자동복구는 이번 수용 범위가 아니다.
+# 2026-10-23 Map KMA 예보 배열 API
+
+- W3 초단기/단기 예보를 승인 generation vector와 위치별 chunk index로 제공한다.
+- 원본 known_at과 publication 시각을 분리하고 next_since 델타를 도입했다.
+- 늦은 commit, 동일 clock, 같은 bytes 재승격, 빈 델타, cursor/주소 fallback 격리를
+  실제 PostgreSQL API 회귀로 확인한다. 운영 설정은 기본 OFF 그대로다.
+- 상세 계약: `docs/reports/2026-10-23-frozen-forecast-api.md`.
+

@@ -111,7 +111,11 @@ class FrozenCurrentExports:
                 or value["v"] != 1
                 or not isinstance(value["s"], str)
                 or len(value["s"]) != 36
-                or value["r"] not in {"locations", "current"}
+                or (
+                    value["r"] not in {"locations", "current"}
+                    and re.fullmatch(r"forecasts:(ultra_short|short):[0-9a-f]{64}", value["r"])
+                    is None
+                )
                 or type(value["l"]) is not int
                 or not 1 <= value["l"] <= 5000
             ):
@@ -300,7 +304,9 @@ class FrozenCurrentExports:
         with self.heads._transaction() as session:
             row = (
                 session.execute(
-                    select(self.snapshots).order_by(self.snapshots.c.created_at.desc()).limit(1)
+                    select(self.snapshots)
+                    .where(self.snapshots.c.manifest["selection"]["kind"].as_string().is_(None))
+                    .order_by(self.snapshots.c.created_at.desc()).limit(1)
                 )
                 .mappings()
                 .one_or_none()

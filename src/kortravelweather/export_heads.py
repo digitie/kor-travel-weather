@@ -23,11 +23,13 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
     Table,
     UniqueConstraint,
+    func,
     select,
     text,
     update,
@@ -178,6 +180,7 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("point_count", Integer, nullable=False),
         Column("created_at", DateTime(timezone=True), nullable=False),
         CheckConstraint("point_count > 0", name="ck_weather_generation_nonempty"),
+        Index("ix_weather_export_generations_publication", "created_at", "generation_id"),
     )
     heads = Table(
         names[2],
@@ -203,6 +206,7 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("artifact_digest", String(64), nullable=False, index=True),
         Column("byte_count", Integer, nullable=False),
         Column("point_count", Integer, nullable=False),
+        Column("location_ids", JSON),
         UniqueConstraint("generation_id", "artifact_digest", name="uq_weather_generation_artifact"),
     )
     pins = Table(
@@ -212,6 +216,12 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("chunk_key", String(64), primary_key=True),
         Column("artifact_digest", String(64), nullable=False, index=True),
         Column("created_at", DateTime(timezone=True), nullable=False),
+    )
+    Table(
+        "weather_export_publication_clock",
+        metadata,
+        Column("clock_id", Integer, primary_key=True),
+        Column("published_at", DateTime(timezone=True), nullable=False),
     )
     return plans, generations, heads, chunks, pins
 
@@ -675,6 +685,7 @@ class ExportHeads:
         semantic, seen, count, locations = [], set(), 0, set()
         descriptor = ScopeDescriptor.model_validate(plan["descriptor"])
         for r in receipts:
+            chunk_locations = set()
             for point in artifacts.read(
                 r["artifact_digest"], byte_count=r["byte_count"], point_count=r["point_count"]
             ):
@@ -702,7 +713,9 @@ class ExportHeads:
                 seen.add(key)
                 semantic.append(semantic_point_digest(point))
                 locations.add(point["location_id"])
+                chunk_locations.add(point["location_id"])
                 count += 1
+            r["location_ids"] = sorted(chunk_locations)
         if (
             count != plan["expected_point_count"]
             or not count
@@ -721,10 +734,20 @@ class ExportHeads:
             ):
                 raise ExportArtifactError("직전 성공 manifest 상한이 다릅니다.")
             for r in parent_refs:
-                for _ in artifacts.read(
+                parent_locations = set()
+                for point in artifacts.read(
                     r["artifact_digest"], byte_count=r["byte_count"], point_count=r["point_count"]
                 ):
-                    pass
+                    if (
+                        point["location_id"] not in descriptor.location_ids
+                        or point["provider"] != descriptor.provider
+                        or point["forecast_style"] != descriptor.forecast_style
+                    ):
+                        raise ExportArtifactError("직전 성공 artifact의 위치·정책이 다릅니다.")
+                    parent_locations.add(point["location_id"])
+                # 0026에서 승인된 파일은 위치 index가 NULL이다. 같은 bytes를
+                # 재사용하면서 실제 파일에서 index만 복구해 재수집 후 공개가 재개된다.
+                r["location_ids"] = sorted(parent_locations)
         with self._transaction() as session:
             committed = (
                 session.execute(
@@ -771,6 +794,28 @@ class ExportHeads:
             ):
                 return "CONFLICT"
             generation = str(uuid4())
+            clock = self.metadata.tables["weather_export_publication_clock"]
+            # fact/원천 known_at과 별도인 공개 watermark다. 파일 IO 후의 작은
+            # 최종 metadata TX만 직렬화하며 reader는 같은 RR snapshot으로 읽는다.
+            clock_statement = insert(clock).values(
+                clock_id=1,
+                published_at=func.greatest(
+                    func.clock_timestamp(),
+                    select(func.max(self.generations.c.created_at)).scalar_subquery()
+                    + text("interval '1 microsecond'"),
+                ),
+            )
+            published_at = session.scalar(
+                clock_statement.on_conflict_do_update(
+                    index_elements=["clock_id"],
+                    set_={
+                        "published_at": func.greatest(
+                            clock.c.published_at + text("interval '1 microsecond'"),
+                            clock_statement.excluded.published_at,
+                        )
+                    },
+                ).returning(clock.c.published_at)
+            )
             session.execute(
                 self.generations.insert().values(
                     generation_id=generation,
@@ -783,7 +828,7 @@ class ExportHeads:
                     source_collected_at=collected,
                     content_digest=content,
                     point_count=count,
-                    created_at=datetime.now(UTC),
+                    created_at=published_at,
                 )
             )
             session.execute(
@@ -795,6 +840,7 @@ class ExportHeads:
                         artifact_digest=r["artifact_digest"],
                         byte_count=r["byte_count"],
                         point_count=r["point_count"],
+                        location_ids=r.get("location_ids"),
                     )
                     for i, r in enumerate(parent_refs if reuse else receipts)
                 ],

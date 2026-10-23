@@ -14,6 +14,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
@@ -40,6 +41,7 @@ class ExportMeta(BaseModel):
     as_of: AwareDatetime | None = None
     next_cursor: str | None = None
     has_more: bool = False
+    next_since: AwareDatetime | None = None
 
 
 class ExportLocation(BaseModel):
@@ -76,6 +78,18 @@ class ExportSourceStatus(BaseModel):
     last_failed_at: AwareDatetime | None
     last_attempt_failed: bool
     next_scheduled_at: AwareDatetime | None
+
+
+class ExportForecastGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    provider: str
+    forecast_style: Literal["ultra_short", "short", "mid", "external"]
+    known_at: AwareDatetime
+    published_at: AwareDatetime
+    target_at: list[AwareDatetime]
+    metrics: dict[str, list[float | str | None]]
 
 
 Item = TypeVar("Item")
@@ -158,7 +172,14 @@ def _matches_etag(header: str, etag: str) -> bool:
 
 
 async def _frozen_response(
-    request: Request, resource: str, limit: int, cursor: str | None, *, provider: str | None = None
+    request: Request,
+    resource: str,
+    limit: int,
+    cursor: str | None,
+    *,
+    provider: str | None = None,
+    style: str | None = None,
+    since: AwareDatetime | None = None,
 ) -> Response:
     settings = request.app.state.settings
     if (
@@ -168,20 +189,27 @@ async def _frozen_response(
     ):
         return _unavailable(request)
     # 지원하지 않는 provider를 누락한 작은 집합을 전체 정상으로 내보내지 않는다.
-    if resource == "current":
+    if resource in {"current", "forecasts"}:
         required = {provider} if provider else set(settings.enabled_providers)
         if required != {"python-kma-api"}:
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
     try:
-        reader = FrozenCurrentExports(
+        reader_class = FrozenForecastExports if resource == "forecasts" else FrozenCurrentExports
+        reader = reader_class(
             request.app.state.repository,
             ExportArtifactStore(settings.service_export_artifact_root),
             signing_key=settings.admin_token.get_secret_value(),
+            **({"style": style, "since": since} if resource == "forecasts" else {}),
         )
         page, etag = await to_thread.run_sync(
-            partial(reader.page, resource, limit=limit, cursor=cursor),
+            partial(
+                reader.page,
+                *([] if resource == "forecasts" else [resource]),
+                limit=limit,
+                cursor=cursor,
+            ),
             limiter=request.app.state.service_export_limiter,
         )
     except ExportCursorInvalid:
@@ -190,7 +218,11 @@ async def _frozen_response(
         return _unavailable(request, status=410, code="EXPORT_SNAPSHOT_EXPIRED")
     except (ExportArtifactError, OSError, SQLAlchemyError):
         return _unavailable(request)
-    model = ExportLocation if resource == "locations" else ExportCurrentValue
+    model = {
+        "locations": ExportLocation,
+        "current": ExportCurrentValue,
+        "forecasts": ExportForecastGroup,
+    }[resource]
     page = ExportPage[model].model_validate(page).model_dump(mode="json")
     headers = {
         "etag": etag,
@@ -233,3 +265,20 @@ async def export_status(
     cursor: Cursor = None,
 ) -> JSONResponse:
     return _unavailable(request)
+
+
+@router.get("/forecasts", response_model=ExportPage[ExportForecastGroup])
+async def export_forecasts(
+    request: Request,
+    style: Annotated[Literal["ultra_short", "short", "mid", "external"], Query()],
+    limit: Limit = 500,
+    cursor: Cursor = None,
+    provider: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
+    since: Annotated[
+        AwareDatetime | None,
+        Query(description="공개 publication watermark. 이전 응답 meta.next_since를 사용"),
+    ] = None,
+) -> Response:
+    return await _frozen_response(
+        request, "forecasts", limit, cursor, provider=provider, style=style, since=since
+    )

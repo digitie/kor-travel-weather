@@ -1,0 +1,89 @@
+{
+  "items": [
+    {
+      "location_id": "a",
+      "provider": "python-kma-api",
+      "forecast_style": "ultra_short",
+      "known_at": "2026-10-23T09:51:59.512408Z",
+      "published_at": "2026-10-23T09:51:59.826451Z",
+      "target_at": [
+        "2026-10-23T10:00:00Z",
+        "2026-10-23T11:00:00Z",
+        "2026-10-23T12:00:00Z",
+        "2026-10-23T13:00:00Z",
+        "2026-10-23T14:00:00Z",
+        "2026-10-23T15:00:00Z"
+      ],
+      "metrics": {
+        "PTY": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "REH": [
+          50.0,
+          50.0,
+          50.0,
+          50.0,
+          50.0,
+          50.0
+        ],
+        "RN1": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "SKY": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "T1H": [
+          18.4,
+          18.4,
+          18.4,
+          18.4,
+          18.4,
+          18.4
+        ],
+        "VEC": [
+          120.0,
+          120.0,
+          120.0,
+          120.0,
+          120.0,
+          120.0
+        ],
+        "WSD": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    }
+  ],
+  "meta": {
+    "generated_at": "2026-10-23T09:51:59.917850Z",
+    "source_collected_at": "2026-10-23T09:51:59.501747Z",
+    "source_status": "ok",
+    "item_count": 1,
+    "snapshot_id": "d21ca433-2ec5-4682-a0a3-205170ce2aa0",
+    "snapshot_generated_at": "2026-10-23T09:51:59.907095Z",
+    "as_of": "2026-10-23T09:51:59.917850Z",
+    "next_cursor": "eyJnIjowLCJsIjoxLCJwIjoxLCJyIjoiZm9yZWNhc3RzOnVsdHJhX3Nob3J0OjkyN2I5ZTE1MzY2M2NlMTgyNzdiNDU0M2YwMTE3ZTU5ZjI0OTg0OTVlOWEzZDc2ZDExNzc1NDMzODYzYTgzZjMiLCJzIjoiZDIxY2E0MzMtMmVjNS00NjgyLWEwYTMtMjA1MTcwY2UyYWEwIiwidiI6MX0Y1DORBrhsq_PsOCIdHyNchpi_KlbEiEYj_GyN6oP4fg",
+    "has_more": true,
+    "next_since": "2026-10-23T09:51:59.826451Z"
+  }
+}
