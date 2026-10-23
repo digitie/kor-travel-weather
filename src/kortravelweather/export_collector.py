@@ -55,11 +55,25 @@ class KmaNowcastExportCollector:
                 "weather_export_failure_record_deferred attempt_id=%s", identity.attempt_id
             )
 
-    def prepare(self, *, entity_id: str, nx: int, ny: int, location_ids: Sequence[str]):
+    def prepare(
+        self,
+        *,
+        entity_id: str,
+        nx: int,
+        ny: int,
+        location_ids: Sequence[str],
+        dataset_key: str = "kma_ultra_short_nowcast",
+    ):
         """HTTP 요청 전 선택/grid/policy를 고정한다. 실패 시 원본 경로만 계속한다."""
         identity = None
         try:
             descriptor = ScopeDescriptor(
+                dataset_key=dataset_key,
+                forecast_style={
+                    "kma_ultra_short_nowcast": "nowcast",
+                    "kma_ultra_short_forecast": "ultra_short",
+                    "kma_short_forecast": "short",
+                }[dataset_key],
                 entity_type="weather_response",
                 entity_id=entity_id,
                 nx=nx,
@@ -67,7 +81,11 @@ class KmaNowcastExportCollector:
                 location_ids=tuple(sorted(location_ids)),
                 normalizer_revision="kma-v1",
                 winner_policy_revision="kma-base-v1",
-                coverage_contract="kma-grid-nowcast-v1",
+                coverage_contract=(
+                    "kma-grid-nowcast-v1"
+                    if dataset_key == "kma_ultra_short_nowcast"
+                    else "kma-grid-forecast-v1"
+                ),
             )
             runs = self.heads.metadata.tables["weather_sync_runs"]
             with self.heads._transaction() as session:
@@ -131,6 +149,84 @@ class KmaNowcastExportCollector:
                 logger.warning(
                     "weather_export_seal_failed attempt_id=%s", prepared.identity.attempt_id
                 )
+                self._reject(prepared.identity, "PLAN_SEAL_FAILED")
+        return loaded
+
+    def ingest_fanout(
+        self,
+        prepared,
+        *,
+        record,
+        values,
+        location_ids,
+        max_values=2500,
+        max_locations=50,
+        heartbeat=lambda: None,
+    ):
+        """예보 전체를 만들지 않고 기존 위치·fact batch 상한으로 원본/receipt를 저장한다.
+
+        export proof 실패 후에도 원본 ingest는 한 번씩만 수행한다. 마지막 chunk와
+        정상 run 종료를 확인하기 전에는 head가 공개되지 않는다.
+        """
+        if not 1 <= max_values <= 5000 or not 1 <= max_locations <= 50:
+            raise ValueError("예보 공개 batch 상한이 올바르지 않습니다.")
+        bound = False
+        if prepared:
+            try:
+                self.heads.bind_kma_response(prepared.identity, record)
+                bound = True
+            except Exception:
+                self._reject(prepared.identity, "SOURCE_PROOF_FAILED")
+                logger.warning(
+                    "weather_forecast_export_bind_failed attempt_id=%s",
+                    prepared.identity.attempt_id,
+                )
+        loaded, batch, locations, keys = 0, [], 0, []
+
+        def flush():
+            nonlocal loaded, batch, locations, bound
+            if not batch:
+                return
+            heartbeat()
+            capture = None
+            key = f"grid-{len(keys):04d}"
+            if bound:
+                try:
+                    self.heads.lifecycle.expect_chunk(
+                        prepared.identity, key, records=[record], values=batch
+                    )
+                    capture = ExportCapture(
+                        prepared.identity,
+                        key,
+                        {record["source_record_key"]: record["fetched_at"]},
+                        self.artifacts,
+                    )
+                except Exception:
+                    bound = False
+                    self._reject(prepared.identity, "CHUNK_PLAN_FAILED")
+            loaded += self.repository.ingest_batch(
+                source_records=[record],
+                values=batch,
+                **({"export_capture": capture} if capture else {}),
+            )
+            keys.append(key)
+            batch, locations = [], 0
+
+        for location_id in location_ids:
+            if batch and (len(batch) + len(values) > max_values or locations >= max_locations):
+                flush()
+            batch.extend(v.model_copy(update={"location_id": location_id}) for v in values)
+            locations += 1
+            if len(batch) >= max_values:
+                flush()
+        flush()
+        if bound:
+            try:
+                self.heads.lifecycle.close_source(
+                    prepared.identity, prepared.descriptor.source_scope, keys
+                )
+                self.heads.lifecycle.close_plan(prepared.identity)
+            except Exception:
                 self._reject(prepared.identity, "PLAN_SEAL_FAILED")
         return loaded
 

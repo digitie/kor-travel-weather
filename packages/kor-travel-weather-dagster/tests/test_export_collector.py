@@ -266,3 +266,130 @@ def test_semantically_small_complete_response_keeps_existing_success_head(reposi
     assert result["status"] == "success"
     assert publish_pending_exports(repository, tmp_path).processed == 0
     assert _counts(repository) == (4, 2, 2)
+
+
+def _forecast_client(*, short=False, truncated=False):
+    from datetime import timedelta
+
+    from kma.time_utils import parse_kma_datetime
+
+    def respond(request):
+        q = request.url.params
+        base = parse_kma_datetime(q["base_date"], q["base_time"])
+        hours = 72 if short else 6
+        metrics = {
+            "TMP" if short else "T1H": "18.4",
+            "PCP" if short else "RN1": "0",
+            "REH": "50",
+            "PTY": "0",
+            "SKY": "1",
+            "VEC": "120",
+            "WSD": "1",
+        }
+        if short:
+            metrics["POP"] = "0"
+        rows = []
+        for hour in range(1, hours + 1):
+            at = (base + timedelta(hours=hour)).replace(minute=0)
+            for category, value in metrics.items():
+                rows.append(
+                    dict(
+                        baseDate=q["base_date"],
+                        baseTime=q["base_time"],
+                        nx=int(q["nx"]),
+                        ny=int(q["ny"]),
+                        category=category,
+                        fcstValue=value,
+                        fcstDate=at.strftime("%Y%m%d"),
+                        fcstTime=at.strftime("%H%M"),
+                    )
+                )
+        if truncated:
+            rows = rows[: len(metrics)]
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                    "body": {
+                        "pageNo": 1,
+                        "numOfRows": 1000,
+                        "totalCount": len(rows),
+                        "items": {"item": rows},
+                    },
+                }
+            },
+        )
+
+    return KmaClient(
+        "private-key", session=httpx.AsyncClient(transport=httpx.MockTransport(respond)), retries=0
+    )
+
+
+@pytest.mark.parametrize("short", [False, True])
+def test_actual_forecast_fanout_publishes_only_complete_bounded_chunks(repository, tmp_path, short):
+    from kortravelweather_dagster.kma_weather import KMA_SHORT_FORECAST, KMA_ULTRA_SHORT_FORECAST
+
+    targets = [
+        WeatherTarget(
+            WeatherLocation(
+                location_id=f"forecast-{i:03d}",
+                name=f"예보 {i}",
+                latitude=37.5,
+                longitude=127,
+                nx=60,
+                ny=127,
+            )
+        )
+        for i in range(50)
+    ]
+    original, batches = repository.ingest_batch, []
+
+    def ingest(**kwargs):
+        values = kwargs.get("values", [])
+        batches.append((len(values), len({v.location_id for v in values})))
+        assert len(values) <= 2500 and len({v.location_id for v in values}) <= 50
+        return original(**kwargs)
+
+    repository.ingest_batch = ingest
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(short=short),
+        targets=targets,
+        base_datasets=frozenset({KMA_SHORT_FORECAST if short else KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    expected = 50 * (72 * 8 if short else 6 * 7)
+    assert result["status"] == "success" and result["values_loaded"] == expected
+    assert _counts(repository) == (1, 0, 0)
+    for _ in range(32):
+        progress = publish_pending_exports(repository, tmp_path)
+        if progress.results == {"PUBLISHED": 1}:
+            break
+        assert progress.results == {"NOT_READY": 1}
+    else:
+        pytest.fail("bounded publisher가 완결 예보를 승격하지 못했습니다.")
+    assert _counts(repository) == (1, 1, 1)
+    heads = ExportHeads(repository)
+    with repository.engine.connect() as connection:
+        assert connection.scalar(select(heads.generations.c.point_count)) == expected
+    assert sum(points for points, _ in batches) == expected
+    if short:
+        assert len(batches) > 8  # 한 reconcile tick을 넘는 실제 다중 chunk
+
+
+def test_forecast_complete_pagination_but_missing_hours_keeps_facts_unpublished(
+    repository, tmp_path
+):
+    from kortravelweather_dagster.kma_weather import KMA_ULTRA_SHORT_FORECAST
+
+    result = run_weather_sync(
+        repository=repository,
+        client=_forecast_client(truncated=True),
+        targets=_targets(),
+        base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] > 0
+    assert _counts(repository) == (2, 0, 0)
+    assert publish_pending_exports(repository, tmp_path).processed == 0

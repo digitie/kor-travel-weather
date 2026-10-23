@@ -1054,15 +1054,22 @@ async def _stage_and_publish_weather(
         export_collector = None
         prepared_exports = {}
         if export_artifact_root is not None:
-            # 기존 혼합 batch를 명시 단일 실황 모드에서만 분리한다.
+            # 기존 혼합 batch를 명시 단일 KMA grid dataset에서만 분리한다.
             # OFF인 기존 경로의 chunk/메모리/성공 의미를 그대로 둔다.
             if (
                 not include_base
-                or base_datasets != frozenset({KMA_ULTRA_SHORT_NOWCAST})
+                or len(base_datasets) != 1
+                or not base_datasets.issubset(
+                    {
+                        KMA_ULTRA_SHORT_NOWCAST,
+                        KMA_ULTRA_SHORT_FORECAST,
+                        KMA_SHORT_FORECAST,
+                    }
+                )
                 or include_mid
                 or include_alerts
             ):
-                raise ValueError("export opt-in은 단일 KMA 초단기실황 job만 지원합니다.")
+                raise ValueError("export opt-in은 단일 KMA 격자 실황/예보 job만 지원합니다.")
             from kortravelweather.export_collector import KmaNowcastExportCollector
 
             export_collector = KmaNowcastExportCollector(
@@ -1141,6 +1148,7 @@ async def _stage_and_publish_weather(
                     nx=location.nx,
                     ny=location.ny,
                     location_ids=[target.location.location_id for target in group_targets],
+                    dataset_key=next(iter(base_datasets)),
                 )
             responses = await stage_grid(
                 client=client,
@@ -1203,6 +1211,19 @@ async def _stage_and_publish_weather(
                     )
                 if export_collector is not None:
                     record = {**response.source_record, "run_id": run.run_id}
+                    if record["dataset_key"] != KMA_ULTRA_SHORT_NOWCAST:
+                        published_values += await asyncio.to_thread(
+                            export_collector.ingest_fanout,
+                            prepared_exports.pop(record["source_entity_id"], None),
+                            record=record,
+                            values=response.values,
+                            location_ids=[target.location.location_id for target in group_targets],
+                            max_values=GRID_PUBLISH_VALUES,
+                            max_locations=GRID_PUBLISH_LOCATIONS,
+                            heartbeat=keep_alive,
+                        )
+                        normalized_values_total += len(response.values) * len(group_targets)
+                        continue
                     # 원래 게시 상한 안에서만 whole-grid capture를 시도한다.
                     # 큰 grid도 원본 저장은 기존 bounded batch로 계속한다.
                     group_count = len(response.values) * len(group_targets)
