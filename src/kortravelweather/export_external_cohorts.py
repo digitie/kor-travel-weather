@@ -7,7 +7,6 @@ from sqlalchemy import JSON, Column, DateTime, MetaData, String, Table, select, 
 from sqlalchemy.dialects.postgresql import insert
 
 from .export_artifacts import ExportArtifactError
-from .export_external import RetrievalScopeDescriptor
 from .export_heads import ExportHeads
 
 MAX_EXTERNAL_TARGETS = 5000
@@ -32,6 +31,7 @@ def external_cohort_table(metadata: MetaData):
 
 def declare_external_cohort(repository, *, run_id, provider, dataset_key, targets):
     """더 최근 시작 run만 roster를 갱신한다. API는 provider cartesian을 추측하지 않는다."""
+    from .export_external import RetrievalScopeDescriptor
     if not 1 <= len(targets) <= MAX_EXTERNAL_TARGETS:
         raise ExportArtifactError("외부 수집 선택 집합 상한이 올바르지 않습니다.")
     selected = []
@@ -98,3 +98,51 @@ def declare_external_cohort(repository, *, run_id, provider, dataset_key, target
                     "최신 roster 소유권이 바뀌었거나 동일 run 선언이 다릅니다."
                 )
     return selected
+
+
+def selected_external_descriptors(connection, metadata, locations, providers, *, forecast=False):
+    """호출자는 같은 MVCC snapshot에서 catalog/head와 이 선택 집합을 함께 읽는다."""
+    from .export_external import RetrievalScopeDescriptor
+    table = external_cohort_table(metadata)
+    suffix = "forecast" if forecast else "current"
+    expected = {(provider, f"{provider}_{suffix}") for provider in providers}
+    cohorts = list(
+        connection.execute(
+            select(table).where(tuple_(table.c.provider, table.c.dataset_key).in_(expected))
+        ).mappings()
+    )
+    if {(r["provider"], r["dataset_key"]) for r in cohorts} != expected:
+        raise ExportArtifactError("요청 provider의 실제 수집 선택 집합이 준비되지 않았습니다.")
+    catalog = {r["location_id"]: r for r in locations}
+    result = []
+    for row in cohorts:
+        targets = row["targets"]
+        if not isinstance(targets, list) or not 1 <= len(targets) <= MAX_EXTERNAL_TARGETS:
+            raise ExportArtifactError("수집 선택 집합 상한이 올바르지 않습니다.")
+        seen = set()
+        for target in targets:
+            key = target["location_id"]
+            item = catalog.get(key)
+            if (
+                key in seen
+                or item is None
+                or any(
+                    float(item[field]) != float(target[field])
+                    for field in ["latitude", "longitude"]
+                )
+            ):
+                raise ExportArtifactError("수집 선택 집합과 현재 위치 catalog가 다릅니다.")
+            seen.add(key)
+            result.append(
+                RetrievalScopeDescriptor(
+                    provider=row["provider"],
+                    dataset_key=row["dataset_key"],
+                    forecast_style="short" if forecast else "observed",
+                    entity_id=key,
+                    location_ids=(key,),
+                    latitude=target["latitude"],
+                    longitude=target["longitude"],
+                    normalizer_revision=f"{row['provider']}-v1",
+                )
+            )
+    return sorted(result, key=lambda d: (d.provider, d.entity_id))

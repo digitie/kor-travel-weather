@@ -11,6 +11,7 @@ depends_on = None
 
 
 def upgrade():
+    op.alter_column("weather_export_snapshots", "source_collected_at", nullable=True)
     op.create_table(
         "weather_export_external_cohorts",
         sa.Column("provider", sa.String(40), primary_key=True),
@@ -24,3 +25,5 @@ def upgrade():
 
 def downgrade():
     op.drop_table("weather_export_external_cohorts")
+    op.execute("DELETE FROM weather_export_snapshots WHERE source_collected_at IS NULL")
+    op.alter_column("weather_export_snapshots", "source_collected_at", nullable=False)

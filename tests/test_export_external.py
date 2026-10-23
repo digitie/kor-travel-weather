@@ -11,7 +11,7 @@ from test_external_providers import FakeResponse, FixtureTransport
 
 from kortravelweather.export_heads import semantic_point_digest
 from kortravelweather.providers import OpenMeteoProvider, OpenWeatherMapProvider, WeatherApiProvider
-from kortravelweather.providers.base import ProviderLocation
+from kortravelweather.providers.base import ProviderError, ProviderLocation
 
 LOCATION = ProviderLocation("export-test", 37.5, 127, {})
 AT = datetime(2026, 10, 23, 8, tzinfo=UTC)
@@ -317,3 +317,172 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
         heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
         for a in attempts
     )
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+
+    from kortravelweather.settings import WeatherSettings
+
+    client = TestClient(
+        create_app(
+            WeatherSettings(
+                environment="development",
+                admin_token="external-current",
+                enabled_providers=["open_meteo", "python-khoa-api"],
+                service_exports_enabled=True,
+                service_export_artifact_root=tmp_path,
+            ),
+            repo,
+        )
+    )
+    url, headers = "/v1/service/exports/current", {"x-admin-token": "external-current"}
+    assert client.get(url).status_code == 401
+    healthy = client.get(url, headers=headers)
+    assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    assert len(healthy.json()["items"]) == 6
+    assert {v["provider"] for v in healthy.json()["items"]} == {"open_meteo"}
+    assert healthy.headers["content-encoding"] == "gzip"
+    assert (
+        client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]}).status_code
+        == 304
+    )
+    first = client.get(url, params={"limit": 1}, headers=headers).json()
+    items, cursor = list(first["items"]), first["meta"]["next_cursor"]
+    while cursor:
+        page = client.get(url, params={"limit": 1, "cursor": cursor}, headers=headers)
+        assert page.status_code == 200
+        items.extend(page.json()["items"])
+        cursor = page.json()["meta"]["next_cursor"]
+    assert len(items) == 6 and len({(v["location_id"], v["metric_key"]) for v in items}) == 6
+    assert (
+        client.get(
+            url,
+            params={"provider": "weatherapi", "limit": 1, "cursor": first["meta"]["next_cursor"]},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+    with pytest.raises(ProviderError):
+        run_external_weather_sync(
+            repository=repo,
+            provider=OpenMeteoProvider(transport=FixtureTransport(FakeResponse({}))),
+            targets=locations,
+            dataset_key="open_meteo_current",
+            export_artifact_root=tmp_path,
+        )
+    stale = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
+    assert stale.status_code == 200 and stale.json()["meta"]["source_status"] == "stale"
+    assert stale.json()["items"] == healthy.json()["items"]
+    continued = client.get(
+        url, params={"limit": 1, "cursor": first["meta"]["next_cursor"]}, headers=headers
+    )
+    assert continued.status_code == 200 and continued.json()["meta"]["source_status"] == "stale"
+
+
+def test_external_forecast_actual_job_groups_and_publication_delta_preserve_known_at(
+    external_repository, tmp_path
+):
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from kortravelweather_dagster.external_weather import run_external_weather_sync
+    from sqlalchemy import select
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_heads import ExportHeads
+    from kortravelweather.export_receipts import ExportAttempt
+    from kortravelweather.models import WeatherLocation
+    from kortravelweather.settings import WeatherSettings
+
+    repo = external_repository
+    locations = [ProviderLocation("forecast-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(2)]
+    for target in locations:
+        repo.create_location(
+            WeatherLocation(
+                location_id=target.location_id,
+                name="외부 예보",
+                latitude=37.5,
+                longitude=127,
+            )
+        )
+
+    def collect():
+        result = run_external_weather_sync(
+            repository=repo,
+            provider=OpenMeteoProvider(
+                transport=FixtureTransport(
+                    *[
+                        FakeResponse(
+                            _external_payload("open_meteo", forecast=True, at=datetime.now(UTC))
+                        )
+                        for _ in locations
+                    ]
+                )
+            ),
+            targets=locations,
+            dataset_key="open_meteo_forecast",
+            export_artifact_root=tmp_path,
+        )
+        heads = ExportHeads(repo)
+        with repo.engine.connect() as c:
+            attempts = list(
+                c.execute(
+                    select(
+                        heads.lifecycle.attempts.c.attempt_id, heads.lifecycle.attempts.c.owner_id
+                    ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])
+                )
+            )
+        assert all(
+            heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+            for a in attempts
+        )
+
+    collect()
+    client = TestClient(
+        create_app(
+            WeatherSettings(
+                environment="development",
+                admin_token="external-forecast",
+                enabled_providers=["open_meteo", "python-kma-api"],
+                service_exports_enabled=True,
+                service_export_artifact_root=tmp_path,
+            ),
+            repo,
+        )
+    )
+    url, headers = "/v1/service/exports/forecasts", {"x-admin-token": "external-forecast"}
+    params = {"style": "external", "limit": 1}
+    first = client.get(url, params=params, headers=headers)
+    assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
+    assert (
+        client.get(
+            url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
+        ).status_code
+        == 304
+    )
+    items, page = [], first.json()
+    while True:
+        items.extend(page["items"])
+        if not page["meta"]["has_more"]:
+            break
+        page = client.get(
+            url, params={**params, "cursor": page["meta"]["next_cursor"]}, headers=headers
+        ).json()
+    assert len(items) == 2 and all(item["forecast_style"] == "external" for item in items)
+    assert all(
+        len(values) == len(item["target_at"])
+        for item in items
+        for values in item["metrics"].values()
+    )
+    assert all(
+        datetime.fromisoformat(at) > datetime.now(UTC) for item in items for at in item["target_at"]
+    )
+    watermark = page["meta"]["next_since"]
+    empty = client.get(url, params={**params, "since": watermark}, headers=headers)
+    assert empty.status_code == 200 and empty.json()["items"] == []
+    collect()
+    changed = client.get(url, params={"style": "external", "since": watermark}, headers=headers)
+    assert changed.status_code == 200 and len(changed.json()["items"]) == 2
+    assert {item["location_id"]: item["known_at"] for item in items} == {
+        item["location_id"]: item["known_at"] for item in changed.json()["items"]
+    }
+    assert changed.json()["meta"]["next_since"] > watermark
