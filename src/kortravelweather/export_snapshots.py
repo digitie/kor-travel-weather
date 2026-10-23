@@ -456,6 +456,24 @@ class FrozenCurrentExports:
                 for key in scope["location_ids"]
             )
             stale |= [tuple(row) for row in roster] != expected
+            # cursor로 같은 reader handle을 이어 읽어도 현재 head 유효성을 확인한다.
+            # 이전 manifest를 반환했다는 메모리 flag만으로는 다음 요청에 stale이
+            # 사라져 삭제/복구 중인 source를 정상이라고 표시할 수 있다.
+            current_namespaces = set(
+                session.scalars(
+                    select(self.heads.heads.c.namespace)
+                    .join(
+                        self.heads.generations,
+                        self.heads.generations.c.generation_id == self.heads.heads.c.generation_id,
+                    )
+                    .where(
+                        self.heads.heads.c.namespace.in_(
+                            [scope["namespace"] for scope in manifest["scopes"]]
+                        )
+                    )
+                )
+            )
+            stale |= current_namespaces != {scope["namespace"] for scope in manifest["scopes"]}
             statuses = session.execute(
                 select(attempts.c.status, runs.c.status, self.heads.generations.c.generation_id)
                 .select_from(

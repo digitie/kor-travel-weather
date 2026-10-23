@@ -209,6 +209,32 @@ def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp
     assert stale.headers["etag"] != first.headers["etag"]
 
 
+def test_removed_head_remains_stale_on_existing_and_fallback_cursors(repository, tmp_path):
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/current?limit=1"
+    first = client.get(url, headers=HEADERS)
+    cursor = first.json()["meta"]["next_cursor"]
+    before = client.get(url, params={"cursor": cursor}, headers=HEADERS)
+    assert before.json()["meta"]["source_status"] == "ok"
+    with repository.engine.begin() as connection:
+        connection.execute(ExportHeads(repository).heads.delete())
+    fallback = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    assert fallback.status_code == 200
+    assert fallback.json()["meta"]["source_status"] == "stale"
+    for continued_cursor in [cursor, fallback.json()["meta"]["next_cursor"]]:
+        continued = client.get(
+            url,
+            params={"cursor": continued_cursor},
+            headers={**HEADERS, "if-none-match": before.headers["etag"]},
+        )
+        assert continued.status_code == 200
+        assert continued.json()["meta"]["source_status"] == "stale"
+        assert continued.json()["items"] == before.json()["items"]
+
+
 def test_expired_cursor_returns_410_without_success_or_etag(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
