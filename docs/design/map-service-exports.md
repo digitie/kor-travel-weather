@@ -32,6 +32,16 @@
 설정·서명키를 만들지 않는다. 이 불일치는 PR·Map 응답 예시에 명시하고 coordinator가 필요하면
 사용자 선택을 확인한다. Weather 웹 프록시로 token을 브라우저에 노출하지 않는다.
 
+`packages/kor-travel-weather-admin/frontend/app/api/weather/[...path]/route.ts`는 현재 모든
+전달 경로에 서버의 x-admin-token을 붙인다. token이 화면에 노출되지 않아도 이 catchall을 통해
+로그인 브라우저가 service export를 대신 호출할 수 있으므로 **W-MAP-01에서 service prefix를
+명시 차단**한다. 정규화된 `v1/service/exports` 자체와 하위 경로를 모든 method에서 token 주입/
+upstream URL 생성·fetch 전에404로 거부한다. 인코딩·중복 구분자 등은 거부하거나 동일한 정규
+경로로 검사해 우회하지 못하게 한다. 회귀 조건은 정상/하위/인코딩 경로·method·브라우저 제공
+header와 관계없이 upstream fetch 0회이며, 기존 weather/admin 프록시 경로는 유지하는 것이다.
+이는 새 인증 체계가 아니라 기존 웹 프록시의 대리 호출 경계다. Map의 서버간 직접 API 호출은
+기존 require_admin으로 검증하며, service route를 데이터 공개하는 PR보다 먼저 이 guard를 둔다.
+
 현재 `app.py::custom_openapi`는 `/v1/admin/`만 AdminToken security/401을 명시하므로
 새 service 경로에도 같은 scheme/에러 선언을 추가해야 한다. router dependency만 적용하고
 OpenAPI에는 공개로 남기는 실수를 막는다.
