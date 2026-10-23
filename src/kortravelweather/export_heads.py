@@ -142,6 +142,10 @@ class ScopeDescriptor(BaseModel):
 def parse_scope_descriptor(value):
     if value.get("provider", "python-kma-api") == "python-kma-api":
         return ScopeDescriptor.model_validate(value)
+    if value.get("coverage_contract") == "sdk-location-v1":
+        from .export_sdk import SdkScopeDescriptor
+
+        return SdkScopeDescriptor.model_validate(value)
     from .export_external import RetrievalScopeDescriptor
 
     return RetrievalScopeDescriptor.model_validate(value)
@@ -252,6 +256,11 @@ def source_input_digest(record: Mapping[str, Any]) -> str:
 def _normalize(descriptor, record, locations, *, skipped=None):
     """기존 normalizer만 사용하며 한 위치의 값만 메모리에 유지한다."""
     if not isinstance(descriptor, ScopeDescriptor):
+        from .export_sdk import SdkScopeDescriptor, normalize_sdk_source
+
+        if isinstance(descriptor, SdkScopeDescriptor):
+            yield from normalize_sdk_source(descriptor, record)
+            return
         from .export_external import normalize_external_source
 
         yield from normalize_external_source(descriptor, record)
@@ -341,7 +350,10 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
             or v.forecast_style.value != descriptor.forecast_style
             or v.location_id not in descriptor.location_ids
             or v.weather_domain
-            != (descriptor.dataset_key if isinstance(descriptor, ScopeDescriptor) else "weather")
+            != (
+                descriptor.dataset_key if isinstance(descriptor, ScopeDescriptor)
+                else getattr(descriptor, "weather_domain", "weather")
+            )
             or v.normalization_version != descriptor.normalizer_revision
             or (descriptor.forecast_style == "nowcast" and v.target_at != plan["data_revision_at"])
             for v in values
@@ -590,8 +602,6 @@ class ExportHeads:
 
     def bind_external_response(self, identity: ExportAttempt, record: Mapping[str, Any]) -> None:
         """저장 raw를 기존 adapter로 독립 재검증하고 실제 조회 시각을 revision으로 쓴다."""
-        from .export_external import RetrievalScopeDescriptor, normalize_external_source
-
         with self._transaction() as session:
             plan = (
                 session.execute(
@@ -600,9 +610,11 @@ class ExportHeads:
                 .mappings()
                 .one()
             )
-            descriptor = RetrievalScopeDescriptor.model_validate(plan["descriptor"])
+            descriptor = parse_scope_descriptor(plan["descriptor"])
+            if isinstance(descriptor, ScopeDescriptor):
+                raise ExportArtifactError("KMA 응답은 별도 발표 revision 증명이 필요합니다.")
         # 원천 정규화 CPU 작업 동안 PG 연결과 잠금을 보유하지 않는다.
-        values = normalize_external_source(descriptor, record)
+        values = list(_normalize(descriptor, record, descriptor.location_ids))
         expected = [semantic_point_digest(v.model_dump(mode="json")) for v in values]
         fetched, digest = record["fetched_at"], source_input_digest(record)
         with self._transaction() as session:

@@ -26,9 +26,9 @@ dependencies = [
   "prometheus-client>=0.20,<1",
   "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@b77fc5ad980e5baa0138ec05e7e13af67bd83859",
   "python-airkorea-api",
-  "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@38a2b74aabc1c077ebd2e1aa5ad3b2a70ffc8dd5",
+  "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@9c952bb8613472ccd4e532d1267680ab23d66dbd",
   "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@270ef7a9884bef1f995e2f8fb43c5fb1e9da7905",
-  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@1a37a0108fa837351aa6bb6644052f325ae76daf",
+  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@0fc9da96f2da4b8312244d93254af1fed9f34099",
   "pyproj>=3.5",
 ]
 
