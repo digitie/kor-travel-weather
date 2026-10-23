@@ -1,3 +1,7 @@
+## 2026-10-23 — 실제 KMA 실황 collector opt-in 배선
+
+- [실제 collector·독립 publisher와 미완](reports/2026-10-23-map-export-collector.md): 실제 KmaClient→기존 정상화→단일 grid 전체 capture→exact native/Dagster 성공 publisher를 구현했다. 집중PG32 PASS, 기본 OFF·API503 유지. 전국 sensor/reader/W3/W5·비용 gate·운영 수용은 남는다.
+
 ## 2026-10-23 — Map export 단일 KMA 실황 성공 head 구현 중
 
 - [3B 범위·안전장치·미완](reports/2026-10-23-map-export-success-heads.md): 불변 요청계획, public pagination/정규화 증거, 성공 generation CAS, 같은 내용 파일 재사용을 구현했다. 검증·두 적대 리뷰·CI 대기이며 기존 collector OFF·API503이다. 실제 W1~W5/전국 완결·비용 gate는 계속 남는다.
