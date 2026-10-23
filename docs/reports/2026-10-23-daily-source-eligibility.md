@@ -18,6 +18,9 @@ REST는 현재 dataset registry의 실제 승인 위치를 사용한다. 같은 
 수집 시각이 없으면 source_collected_at=null/source_status=stale다. 기본 요청의
 필수 현재 dataset이 미준비면 전체를 축소 성공하지 않고 이전 전체 집합의
 stale/최초503을 유지한다. 기존 cursor도 새 원천의 미계산을 건강도에 반영한다.
+SDK가 새 station을 발견해 HTTP 전 cohort에는 아직 없더라도 canonical
+measurement_point의 활성 관측 provider/network가 확인되면 최초 관측 coverage를
+요구한다. 미승인/아직 모름은 예보 전용의 무관측0과 구분하며 개별 최초 조회는503이다.
 
 source별 신선도는 current와 같은 정책을 따른다(지역 SDK36시간, HTTP·실황3시간).
 선택 위치의 원천/coverage/작은 summary/checkpoint는 한 REPEATABLE READ에서

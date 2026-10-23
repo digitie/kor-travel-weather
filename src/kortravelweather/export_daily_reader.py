@@ -11,6 +11,7 @@ from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
 from .export_inventory_selection import (
     MAX_SELECTED_ROWS,
+    SDK_NETWORKS,
     approved_source_selection,
     catalog_source_columns,
     source_max_age,
@@ -146,6 +147,19 @@ class DailySummaryExports(FrozenCurrentExports):
             for scope in selection.scopes for key in scope.location_ids if key in keys
         }
         coverage = {(r["namespace"], r["location_id"]): r for r in rows}
+        # SDK가 이번 HTTP에서 새 관측소를 발견하면 native catalog는 먼저 저장한다.
+        # 다음 cohort 전이라도 명시된 관측망 anchor를 예보 전용/무관측0으로 오인하지 않는다.
+        known_observed = {
+            row["location_id"] for row in locations if row["location_id"] in keys and any(
+                row.get("point_provider") == provider and (
+                    dataset == "airkorea_realtime_measurement"
+                    or dataset in SDK_NETWORKS
+                    and SDK_NETWORKS[dataset] == row.get("point_network")
+                    and dataset != "khoa_beach_index"
+                )
+                for provider, dataset in self.expected_sources
+            )
+        }
         from .export_external_cohorts import external_cohort_table
 
         cohorts = external_cohort_table(self.heads.metadata)
@@ -157,7 +171,7 @@ class DailySummaryExports(FrozenCurrentExports):
             tuple_(cohorts.c.provider, cohorts.c.dataset_key).in_(self.expected_sources),
             target_key.in_(keys),
         ).distinct().limit(MAX_SNAPSHOT_LOCATIONS + 1)))
-        if declared - {row["location_id"] for row in rows}:
+        if (declared | known_observed) - {row["location_id"] for row in rows}:
             raise ExportSnapshotUnavailable("사전 계획된 관측 위치의 최초 요약이 없습니다.")
         if expected.keys() - coverage.keys():
             # 승인 관측이 있으나 요약이 한번도 계산되지 않은 경우를 무관측0으로 꾸미지 않는다.
