@@ -12,3 +12,8 @@
 - 법정동/시도/시군구는기존common reverse address의현재coordinate_key와일치할때만쓴다. geo/외부주소API를호출하지않는다.
 
 이전기본reader 집중18PASS71.07초, migration포함별도21회귀PASS였으며 strict8category/최종source상태변경후의전체/집중/CI·2적대리뷰·실제TCP API/UI는진행예정이다. 비용gate/GC·전국초기적재·운영활성화는미완이다.
+
+## 적대 리뷰와 이전 성공 유지 보강
+
+- ETag에 snapshot handle의 epoch(snapshot_id)를 포함한다. 같은data/vector라도 TTL후 새cursor가발급되면304로옛만료cursor를재사용하지않도록200/새ETag를준다. clock+16분·동일manifest·새cursor정상/옛cursor410회귀를추가한다.
+- 새catalog scope가아직검증되지않으면이전승인manifest를stale로유지한다. readerTTL과승인data보존기간을분리하고만료된handle은새TTL handle로다시고정한다. 기존frozen cursor도현재catalog roster불일치를stale로표시한다. 최초승인집합이없으면503이다.

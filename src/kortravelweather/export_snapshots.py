@@ -194,6 +194,8 @@ class FrozenCurrentExports:
                         "namespace": descriptor.namespace,
                         "generation_id": head["generation_id"],
                         "source_scope": descriptor.source_scope,
+                        "nx": descriptor.nx,
+                        "ny": descriptor.ny,
                         "location_ids": list(descriptor.location_ids),
                         "refs": refs,
                     }
@@ -281,6 +283,39 @@ class FrozenCurrentExports:
             )
             return row
 
+    def _previous_success(self):
+        # reader TTL와 마지막 승인 data manifest의 수명은 다르다. 새 handle만 만든다.
+        with self.heads._transaction() as session:
+            row = (
+                session.execute(
+                    select(self.snapshots).order_by(self.snapshots.c.created_at.desc()).limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise ExportSnapshotUnavailable("이전 승인 집합이 없습니다.")
+            frozen = dict(row)
+            now = datetime.now(UTC)
+            if frozen["expires_at"] <= now:
+                frozen.update(
+                    snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
+                )
+                session.execute(self.snapshots.insert().values(**frozen))
+                session.execute(
+                    self.refs.insert(),
+                    [
+                        {
+                            "snapshot_id": frozen["snapshot_id"],
+                            "ordinal": i,
+                            "generation_id": scope["generation_id"],
+                        }
+                        for i, scope in enumerate(frozen["manifest"]["scopes"])
+                    ],
+                )
+            frozen["_source_unconfirmed"] = True
+            return frozen
+
     def page(self, resource: str, *, limit: int, cursor: str | None):
         if resource not in {"locations", "current"} or not 1 <= limit <= 5000:
             raise ExportCursorInvalid("지원하지 않는 resource/limit입니다.")
@@ -302,7 +337,10 @@ class FrozenCurrentExports:
                     )
                 frozen = dict(frozen)
         else:
-            frozen = self._freeze()
+            try:
+                frozen = self._freeze()
+            except ExportSnapshotUnavailable:
+                frozen = self._previous_success()
             state = {"v": 1, "s": frozen["snapshot_id"], "r": resource, "l": limit, "g": 0, "p": 0}
         manifest = frozen["manifest"]
         output, size = [], 0
@@ -370,12 +408,26 @@ class FrozenCurrentExports:
                     state["p"] = 0
         now = datetime.now(UTC)
         stale = (
-            now - frozen["source_collected_at"] > SOURCE_MAX_AGE
+            frozen.get("_source_unconfirmed", False)
+            or now - frozen["source_collected_at"] > SOURCE_MAX_AGE
             or now - frozen["data_revision_at"] > SOURCE_MAX_AGE
         )
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
         runs = self.heads.metadata.tables["weather_sync_runs"]
         with self.heads._transaction() as session:
+            catalog = self.heads.metadata.tables["weather_locations"]
+            roster = session.execute(
+                select(catalog.c.location_id, catalog.c.nx, catalog.c.ny)
+                .where(catalog.c.enabled.is_(True))
+                .order_by(catalog.c.location_id)
+                .limit(MAX_SNAPSHOT_LOCATIONS + 1)
+            ).all()
+            expected = sorted(
+                (key, scope["nx"], scope["ny"])
+                for scope in manifest["scopes"]
+                for key in scope["location_ids"]
+            )
+            stale |= [tuple(row) for row in roster] != expected
             statuses = session.execute(
                 select(attempts.c.status, runs.c.status, self.heads.generations.c.generation_id)
                 .select_from(
@@ -411,5 +463,11 @@ class FrozenCurrentExports:
             "has_more": more,
         }
         # generated_at은 ETag에 넣지 않는다. 데이터/vector/페이지/상태 변화는 포함한다.
-        etag = '"' + _digest([frozen["manifest_digest"], resource, limit, cursor, status]) + '"'
+        etag = (
+            '"'
+            + _digest(
+                [frozen["snapshot_id"], frozen["manifest_digest"], resource, limit, cursor, status]
+            )
+            + '"'
+        )
         return {"items": output, "meta": meta}, etag

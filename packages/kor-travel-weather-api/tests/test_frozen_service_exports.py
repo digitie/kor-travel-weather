@@ -256,3 +256,57 @@ def test_disabled_default_preserves_503_even_when_success_heads_exist(repository
         .status_code
         == 503
     )
+
+
+def test_new_unconfirmed_catalog_scope_keeps_previous_success_stale(repository, tmp_path):
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    first = client.get("/v1/service/exports/locations?limit=1", headers=HEADERS).json()
+    repository.create_location(
+        WeatherLocation(
+            location_id="new", name="아직 수집 전", latitude=37.5, longitude=127, nx=62, ny=127
+        )
+    )
+    latest = client.get("/v1/service/exports/locations", headers=HEADERS)
+    assert latest.status_code == 200 and latest.json()["meta"]["source_status"] == "stale"
+    assert {row["location_id"] for row in latest.json()["items"]} == {"a", "b", "c"}
+    continued = client.get(
+        "/v1/service/exports/locations",
+        params={"limit": 1, "cursor": first["meta"]["next_cursor"]},
+        headers=HEADERS,
+    )
+    assert continued.status_code == 200 and continued.json()["meta"]["source_status"] == "stale"
+
+
+def test_identical_manifest_after_reader_ttl_gets_new_etag_and_usable_cursor(
+    repository, tmp_path, monkeypatch
+):
+    from kortravelweather import export_snapshots
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/current"
+    first = client.get(url, params={"limit": 1}, headers=HEADERS)
+    base = datetime.now(UTC)
+
+    class AdvancedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return (base + timedelta(minutes=16)).astimezone(tz or UTC)
+
+    monkeypatch.setattr(export_snapshots, "datetime", AdvancedClock)
+    renewed = client.get(
+        url, params={"limit": 1}, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+    )
+    assert renewed.status_code == 200 and renewed.headers["etag"] != first.headers["etag"]
+    assert renewed.json()["meta"]["snapshot_id"] != first.json()["meta"]["snapshot_id"]
+    next_page = client.get(
+        url, params={"limit": 1, "cursor": renewed.json()["meta"]["next_cursor"]}, headers=HEADERS
+    )
+    assert next_page.status_code == 200
+    assert (
+        client.get(
+            url, params={"limit": 1, "cursor": first.json()["meta"]["next_cursor"]}, headers=HEADERS
+        ).status_code
+        == 410
+    )
