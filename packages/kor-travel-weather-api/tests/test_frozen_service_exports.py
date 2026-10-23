@@ -217,7 +217,7 @@ def test_removed_head_remains_stale_on_existing_and_fallback_cursors(repository,
     url = "/v1/service/exports/current?limit=1"
     first = client.get(url, headers=HEADERS)
     cursor = first.json()["meta"]["next_cursor"]
-    before = client.get(url, params={"cursor": cursor}, headers=HEADERS)
+    before = client.get(url, params={"cursor": cursor, "limit": 1}, headers=HEADERS)
     assert before.json()["meta"]["source_status"] == "ok"
     with repository.engine.begin() as connection:
         connection.execute(ExportHeads(repository).heads.delete())
@@ -227,7 +227,7 @@ def test_removed_head_remains_stale_on_existing_and_fallback_cursors(repository,
     for continued_cursor in [cursor, fallback.json()["meta"]["next_cursor"]]:
         continued = client.get(
             url,
-            params={"cursor": continued_cursor},
+            params={"cursor": continued_cursor, "limit": 1},
             headers={**HEADERS, "if-none-match": before.headers["etag"]},
         )
         assert continued.status_code == 200
