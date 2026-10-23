@@ -38,3 +38,10 @@ AirKorea는 path dependency이므로 vendor 실제 소스를 함께 갱신했다
 5종 원천별 사전 선언→원문 독립 검증→원본 lineage/fact capture→native 성공→head 승격을
 확인했으며 기존 기본3 raw/수집/API 회귀와 합쳐 43개가 통과했다. 실제 Dagster 원천 수집
 배선과 전체 inventory/REST 통합은 아직 별도다.
+
+공개 Page의 total_count/페이지 번호·크기/원문 행 수가 일치하는지 별도 receipt로
+확인한다. KHOA는 원문 행 pagination 뒤 페이지 내부에서 해수욕장 DTO를 만들므로
+한 장소의 예보가 페이지 경계에 나뉠 수 있다. 전체 페이지 완료 후 공개 parser로
+장소별 원문을 조합하며, 중복 날짜·구간/축소/개수 변동은 승인하지 않는다.
+파싱 실패행 제외·누락 페이지·개수/size 변동·추가 페이지·중복 구간 등 13개 회귀를
+통과했다. 이 helper는 아직 수집 경로에 배선하지 않았으며 원래 fact는 변경하지 않는다.
