@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
+from kortravelweather.export_locations import FrozenLocationExports
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
@@ -217,7 +218,32 @@ async def _frozen_response(
     # 지원하지 않는 provider를 누락한 작은 집합을 전체 정상으로 내보내지 않는다.
     if resource in {"current", "forecasts", "daily-summaries"}:
         required = {provider} if provider else set(settings.enabled_providers)
-        if required != {"python-kma-api"}:
+        if resource == "current" or (resource == "forecasts" and style == "external"):
+            from kortravelweather.export_external import ADAPTERS
+            from kortravelweather.providers.catalog import provider_spec
+
+            try:
+                required = {
+                    key
+                    for key in required
+                    if any(
+                        dataset.forecast == (resource == "forecasts")
+                        for dataset in provider_spec(key).datasets
+                    )
+                }
+            except KeyError:
+                return _unavailable(request)
+            if resource == "forecasts":
+                required.discard("python-kma-api")
+                supported = set(ADAPTERS)
+            else:
+                supported = {"python-kma-api", *ADAPTERS}
+        elif resource == "forecasts":
+            required &= {"python-kma-api"}
+            supported = {"python-kma-api"}
+        else:
+            supported = {"python-kma-api"}
+        if not required or not required.issubset(supported):
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
@@ -225,11 +251,17 @@ async def _frozen_response(
         reader_class = {
             "forecasts": FrozenForecastExports,
             "daily-summaries": DailySummaryExports,
+            "locations": FrozenLocationExports,
         }.get(resource, FrozenCurrentExports)
         reader = reader_class(
             request.app.state.repository,
             ExportArtifactStore(settings.service_export_artifact_root),
             signing_key=settings.admin_token.get_secret_value(),
+            **(
+                {"providers": sorted(required)}
+                if resource == "current" or (resource == "forecasts" and style == "external")
+                else {}
+            ),
             **({"style": style, "since": since} if resource == "forecasts" else {}),
             **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
         )
@@ -276,6 +308,7 @@ async def export_locations(
     limit: Limit = 500,
     cursor: Cursor = None,
 ) -> JSONResponse:
+    """활성 catalog 전체 reference. 원천 조회 시각 미확인은 null/stale로 표시한다."""
     return await _frozen_response(request, "locations", limit, cursor)
 
 
@@ -286,6 +319,7 @@ async def export_current(
     cursor: Cursor = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
 ) -> Response:
+    """관측 dataset이 있는 provider의 승인 선택 집합. 미지원/미승인 scope는503이다."""
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
 
@@ -303,7 +337,9 @@ async def export_status(
     try:
         page, etag = await to_thread.run_sync(
             partial(
-                read_status, request.app.state.repository, set(settings.enabled_providers),
+                read_status,
+                request.app.state.repository,
+                set(settings.enabled_providers),
                 as_of=kst_now(),
             ),
             limiter=request.app.state.service_export_limiter,
@@ -312,7 +348,8 @@ async def export_status(
         return _unavailable(request)
     body = ExportPage[ExportSourceStatus].model_validate(page).model_dump(mode="json")
     headers = {
-        "etag": etag, "vary": "Accept-Encoding",
+        "etag": etag,
+        "vary": "Accept-Encoding",
         "cache-control": "private, max-age=0, must-revalidate",
         "x-source-status": body["meta"]["source_status"],
     }

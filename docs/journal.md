@@ -321,3 +321,25 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 원본 fact/이력/기본 OFF를 유지하고 publisher 명시 opt-in만 제공한다.
 - 상세: `docs/reports/2026-10-23-daily-summaries.md`.
 
+# 2026-10-23 W1 독립 reference와 외부 현재·예보 export
+
+- Open-Meteo/WeatherAPI/OpenWeatherMap은 기존 정규화를 원천 raw에서 네트워크 없이
+  독립 재실행하고 요청 좌표/전체 시간·배열/필수 metric/급감을 검증한다.
+- HTTP 전 실제 quota/sampling cohort를 보존하고 native 성공·소유권·파일 증명 뒤
+  current/external forecast를 제공한다. KMA style은 해당 KMA scope만 선택한다.
+- W1 reference는 날씨 head와 분리했다. 실제 catalog fetch clock은 아직 없으므로
+  source_collected_at=null/stale로 표시하고 updated_at을 원천 시각으로 쓰지 않는다.
+- 기본 OFF/원본 fact·이력은 유지한다. 전체 provider/mid, 두 리뷰/CI/운영 비용·GC
+  gate는 진행 중이다. 상세: `docs/reports/2026-10-23-external-exports.md`.
+
+### 최신 cohort의 native 실패와 승인 확인
+
+- 독립 리뷰에서 발견한 claim 이전 prepare 실패 경계를 보완했다. 최신 cohort의
+  native 성공과 각 head의 승인 run 일치를 동일 reader snapshot에서 확인한다.
+- 새 attempt/owner가 생기지 않은 HTTP 실패도 current/forecast의 이전 집합과 cursor를
+  stale로 유지하고 이전 healthy ETag304를 막는 실제 PostgreSQL/API 회귀를 추가했다.
+- cohort 쓰기 자체 실패도 native 시작 INSERT의 원자적 opt-in fence와 부분 index의
+  최신 한 행으로 확인한다. 기존 opt-in하지 않은 실행은 무시하며 이력 전체를 읽지 않는다.
+- export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
+  실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
+

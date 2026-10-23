@@ -1,6 +1,7 @@
 // Map 서버간 API의 타입 계약이다. 브라우저 호출 함수·서비스 토큰은 제공하지 않는다.
 export type ExportMeta = {
   generated_at: string;
+  // catalog 원천 clock 미확인은 null/stale다. 갱신 시각으로 대신 해석하지 않는다.
   source_collected_at: string | null;
   source_status: "ok" | "stale" | "failed";
   item_count: number;
@@ -49,6 +50,7 @@ export type ExportForecastGroup = {
   location_id: string;
   provider: string;
   forecast_style: "ultra_short" | "short" | "mid" | "external";
+  // 원천 fact 시각이다. 델타 재개는 모든 페이지 반영 후 meta.next_since를 쓴다.
   known_at: string;
   published_at: string;
   target_at: string[];

@@ -25,6 +25,63 @@ TOKEN = "private-service-token"
 HEADERS = {"x-admin-token": TOKEN}
 
 
+def test_location_reference_is_independent_of_weather_heads_and_keeps_unknown_clock(
+    repository, tmp_path
+):
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/locations"
+    assert client.get(url, headers=HEADERS).status_code == 503
+    for key in ["a", "b", "c"]:
+        repository.create_location(
+            WeatherLocation(
+                location_id=key,
+                name="원래 " + key,
+                latitude=37.5,
+                longitude=127,
+            )
+        )
+    first = client.get(url, params={"limit": 1}, headers=HEADERS)
+    assert first.status_code == 200
+    assert first.json()["meta"]["source_collected_at"] is None
+    assert first.json()["meta"]["source_status"] == "stale"
+    assert (
+        client.get(
+            url, params={"limit": 1}, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+        ).status_code
+        == 304
+    )
+    catalog = Base.metadata.tables["weather_locations"]
+    repository.create_location(
+        WeatherLocation(
+            location_id="d",
+            name="추가",
+            latitude=37.5,
+            longitude=127,
+        )
+    )
+    with repository.engine.begin() as c:
+        c.execute(catalog.update().where(catalog.c.location_id == "b").values(name="변경"))
+    old, cursor = list(first.json()["items"]), first.json()["meta"]["next_cursor"]
+    while cursor:
+        page = client.get(url, params={"limit": 1, "cursor": cursor}, headers=HEADERS)
+        assert page.status_code == 200
+        old.extend(page.json()["items"])
+        cursor = page.json()["meta"]["next_cursor"]
+    assert [(r["location_id"], r["name"]) for r in old] == [
+        ("a", "원래 a"),
+        ("b", "원래 b"),
+        ("c", "원래 c"),
+    ]
+    latest = client.get(url, headers=HEADERS)
+    assert latest.status_code == 200 and len(latest.json()["items"]) == 4
+    with repository.engine.begin() as c:
+        # 원천 catalog가 갑자기 빈 응답으로 대체된 장애를 재현한다.
+        c.execute(catalog.delete())
+    retained = client.get(url, headers=HEADERS)
+    assert retained.status_code == 200 and retained.json()["items"] == latest.json()["items"]
+    assert retained.json()["meta"]["source_status"] == "stale"
+
+
 @pytest.fixture
 def repository():
     repository = WeatherRepository(os.environ["KOR_TRAVEL_WEATHER_TEST_DATABASE_URL"])
@@ -552,7 +609,9 @@ def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository,
         assert client.get(url).status_code == 401
         r = client.get(url, headers=HEADERS)
         assert r.status_code == 200 and len(r.json()["items"]) == count
-        assert r.json()["meta"]["source_status"] == "ok"
+        assert r.json()["meta"]["source_status"] == ("ok" if resource == "current" else "stale")
+        if resource == "locations":
+            assert r.json()["meta"]["source_collected_at"] is None
         assert r.headers["content-encoding"] == "gzip"
         assert (
             client.get(
@@ -713,7 +772,9 @@ def test_disabled_default_preserves_503_even_when_success_heads_exist(repository
     )
 
 
-def test_new_unconfirmed_catalog_scope_keeps_previous_success_stale(repository, tmp_path):
+def test_new_catalog_reference_is_visible_without_weather_and_existing_cursor_stays_fixed(
+    repository, tmp_path
+):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
     first = client.get("/v1/service/exports/locations?limit=1", headers=HEADERS).json()
@@ -724,13 +785,15 @@ def test_new_unconfirmed_catalog_scope_keeps_previous_success_stale(repository, 
     )
     latest = client.get("/v1/service/exports/locations", headers=HEADERS)
     assert latest.status_code == 200 and latest.json()["meta"]["source_status"] == "stale"
-    assert {row["location_id"] for row in latest.json()["items"]} == {"a", "b", "c"}
+    assert {row["location_id"] for row in latest.json()["items"]} == {"a", "b", "c", "new"}
+    assert latest.json()["meta"]["source_collected_at"] is None
     continued = client.get(
         "/v1/service/exports/locations",
         params={"limit": 1, "cursor": first["meta"]["next_cursor"]},
         headers=HEADERS,
     )
     assert continued.status_code == 200 and continued.json()["meta"]["source_status"] == "stale"
+    assert all(row["location_id"] != "new" for row in continued.json()["items"])
 
 
 def test_identical_manifest_after_reader_ttl_gets_new_etag_and_usable_cursor(
@@ -774,11 +837,12 @@ def test_locations_page_byte_cap_preserves_all_valid_unicode_items(
     from uuid import uuid4
 
     from kortravelweather.export_artifacts import ExportArtifactStore
-    from kortravelweather.export_snapshots import MAX_PAGE_BYTES, FrozenCurrentExports
+    from kortravelweather.export_locations import FrozenLocationExports
+    from kortravelweather.export_snapshots import MAX_PAGE_BYTES
 
     _collect(repository, tmp_path)
-    reader = FrozenCurrentExports(repository, ExportArtifactStore(tmp_path), signing_key=TOKEN)
-    frozen = reader._freeze()
+    reader = FrozenLocationExports(repository, ExportArtifactStore(tmp_path), signing_key=TOKEN)
+    frozen = reader._freeze_locations()
     frozen = dict(frozen, snapshot_id=str(uuid4()), manifest=copy.deepcopy(frozen["manifest"]))
     frozen["manifest"]["locations"] = [
         dict(
@@ -795,7 +859,7 @@ def test_locations_page_byte_cap_preserves_all_valid_unicode_items(
     table, _ = export_snapshot_tables(Base.metadata)
     with repository.engine.begin() as connection:
         connection.execute(table.insert().values(**frozen))
-    monkeypatch.setattr(FrozenCurrentExports, "_freeze", lambda self: frozen)
+    monkeypatch.setattr(FrozenLocationExports, "_freeze_locations", lambda self: frozen)
     client = _client(repository, tmp_path)
     first = client.get(
         "/v1/service/exports/locations",

@@ -23,7 +23,7 @@ from .export_snapshots import (
 class FrozenForecastExports(FrozenCurrentExports):
     def __init__(self, *args, style, since=None, **kwargs):
         super().__init__(*args, **kwargs)
-        if style not in {"ultra_short", "short"}:
+        if style not in {"ultra_short", "short", "external"}:
             raise ExportSnapshotUnavailable("해당 예보 style의 전체 원천이 준비되지 않았습니다.")
         if since is not None:
             since = since.astimezone(UTC)
@@ -36,6 +36,13 @@ class FrozenForecastExports(FrozenCurrentExports):
             "style": style,
             "since": since.isoformat() if since else None,
         }
+        if style == "external":
+            from .export_external import ADAPTERS
+
+            if not self.current_providers or not set(self.current_providers).issubset(ADAPTERS):
+                raise ExportSnapshotUnavailable("요청 외부 provider 전체가 준비되지 않았습니다.")
+            self.selection["providers"] = list(self.current_providers)
+            self.selection["provider_signature"] = _digest(self.current_providers)
         self.resource = f"forecasts:{style}:{_digest(self.selection)}"
 
     def _freeze_forecasts(self):
@@ -56,7 +63,13 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportCursorInvalid("아직 발급되지 않은 publication watermark입니다.")
             catalog = self.heads.metadata.tables["weather_locations"]
             roster = c.execute(
-                select(catalog.c.location_id, catalog.c.nx, catalog.c.ny)
+                select(
+                    catalog.c.location_id,
+                    catalog.c.nx,
+                    catalog.c.ny,
+                    catalog.c.latitude,
+                    catalog.c.longitude,
+                )
                 .where(catalog.c.enabled.is_(True))
                 .order_by(catalog.c.location_id)
                 .limit(MAX_SNAPSHOT_LOCATIONS + 1)
@@ -64,7 +77,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if not roster or len(roster) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("활성 위치 전체가 준비되지 않았습니다.")
             groups = defaultdict(list)
-            for key, nx, ny in roster:
+            for key, nx, ny, _latitude, _longitude in roster:
+                if self.style == "external":
+                    continue
                 if nx is None or ny is None:
                     raise ExportSnapshotUnavailable("위치 grid가 준비되지 않았습니다.")
                 groups[nx, ny].append(key)
@@ -87,6 +102,24 @@ class FrozenForecastExports(FrozenCurrentExports):
                 )
                 for (nx, ny), keys in sorted(groups.items())
             ]
+            if self.style == "external":
+                from .export_artifacts import ExportArtifactError
+                from .export_external_cohorts import selected_external_descriptors
+
+                try:
+                    descriptors = selected_external_descriptors(
+                        c,
+                        self.heads.metadata,
+                        [r._mapping for r in roster],
+                        self.current_providers,
+                        forecast=True,
+                    )
+                except (ExportArtifactError, KeyError, ValueError, TypeError) as exc:
+                    raise ExportSnapshotUnavailable(
+                        "외부 예보 선택 집합이 준비되지 않았습니다."
+                    ) from exc
+            if len(descriptors) > 5000:
+                raise ExportSnapshotUnavailable("예보 source vector 상한을 넘었습니다.")
             heads = {
                 r.namespace: r
                 for r in c.execute(
@@ -134,8 +167,10 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "namespace": d.namespace,
                         "source_scope": d.source_scope,
                         "generation_id": head.generation_id,
-                        "nx": d.nx,
-                        "ny": d.ny,
+                        "nx": getattr(d, "nx", None),
+                        "ny": getattr(d, "ny", None),
+                        "provider": d.provider,
+                        "forecast_style": d.forecast_style,
                         "location_ids": list(d.location_ids),
                         "refs": chunks,
                         "published_at": head.created_at.isoformat(),
@@ -196,6 +231,8 @@ class FrozenForecastExports(FrozenCurrentExports):
                         self.snapshots.c.manifest["selection"]["style"].as_string() == self.style,
                         self.snapshots.c.manifest["selection"]["since"].as_string()
                         == self.selection["since"],
+                        self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
+                        == self.selection.get("provider_signature"),
                     )
                     .order_by(self.snapshots.c.created_at.desc())
                     .limit(1)
@@ -288,8 +325,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                             point_count=ref["point_count"],
                         ):
                             if (
-                                point["provider"] != "python-kma-api"
-                                or point["forecast_style"] != self.style
+                                point["provider"] != scope.get("provider", "python-kma-api")
+                                or point["forecast_style"]
+                                != scope.get("forecast_style", self.style)
                                 or point["location_id"] not in ref["location_ids"]
                             ):
                                 raise ExportSnapshotUnavailable(
@@ -316,7 +354,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                     }
                     item = {
                         "location_id": key,
-                        "provider": "python-kma-api",
+                        "provider": scope.get("provider", "python-kma-api"),
                         "forecast_style": self.style,
                         "known_at": max(p["known_at"] for p in points),
                         "published_at": scope["published_at"],
@@ -375,7 +413,13 @@ class FrozenForecastExports(FrozenCurrentExports):
             catalog = self.heads.metadata.tables["weather_locations"]
             actual = sorted(
                 s.execute(
-                    select(catalog.c.location_id, catalog.c.nx, catalog.c.ny)
+                    select(
+                        catalog.c.location_id,
+                        catalog.c.nx,
+                        catalog.c.ny,
+                        catalog.c.latitude,
+                        catalog.c.longitude,
+                    )
                     .where(catalog.c.enabled.is_(True))
                     .limit(MAX_SNAPSHOT_LOCATIONS + 1)
                 ).all()
@@ -383,7 +427,25 @@ class FrozenForecastExports(FrozenCurrentExports):
             expected = sorted(
                 (k, scope["nx"], scope["ny"]) for scope in scopes for k in scope["location_ids"]
             )
-            stale |= [tuple(r) for r in actual] != expected
+            if self.style == "external":
+                from .export_artifacts import ExportArtifactError
+                from .export_external_cohorts import selected_external_descriptors
+
+                try:
+                    descriptors = selected_external_descriptors(
+                        s,
+                        self.heads.metadata,
+                        [r._mapping for r in actual],
+                        self.current_providers,
+                        forecast=True,
+                    )
+                    stale |= {d.namespace for d in descriptors} != {
+                        scope["namespace"] for scope in scopes
+                    }
+                except (ExportArtifactError, KeyError, ValueError, TypeError):
+                    stale = True
+            else:
+                stale |= [tuple(r)[:3] for r in actual] != expected
             current = set(
                 s.scalars(
                     select(self.heads.heads.c.namespace).where(
@@ -411,7 +473,7 @@ class FrozenForecastExports(FrozenCurrentExports):
             or len(statuses) != len(scopes)
             or any(
                 a == "failed"
-                or run in {"failed", "partial", "skipped"}
+                or run not in {"running", "success"}
                 or (run == "success" and generation is None)
                 for a, run, generation in statuses
             )
