@@ -289,12 +289,12 @@ def test_late_forecast_commit_after_watermark_is_in_next_delta(repository, tmp_p
             tmp_path,
             targets=targets[:2],
             wait=wait,
-            run_scope="forecast-partition-grid60",
+            run_scope="kma_ultra_short_forecast",
         )
         assert entered.wait(10)
         try:
             _collect_forecast(
-                repository, tmp_path, targets=targets[2:], run_scope="forecast-partition-grid61"
+                repository, tmp_path, targets=targets[2:], run_scope="kma_weather_bundle"
             )
             checkpoint = client.get(url, params={"style": "ultra_short"}, headers=HEADERS).json()[
                 "meta"
