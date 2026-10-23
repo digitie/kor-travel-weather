@@ -958,11 +958,17 @@ async def _stage_and_publish_weather(
     status_kwargs = {"export_status_datasets": planned} if getattr(
         repository, "export_status_enabled", False,
     ) else {}
+    base_export_mode = (
+        export_artifact_root is not None and include_base and not include_mid and not include_alerts
+        and base_datasets is not None and len(base_datasets) == 1
+        and base_datasets.issubset(BASE_GRID_DATASETS)
+    )
     run = sync_run or repository.start_sync_run(
         provider=KMA_PROVIDER_NAME,
-        dataset_key="kma_weather_bundle",
+        dataset_key=next(iter(base_datasets)) if base_export_mode else "kma_weather_bundle",
         locations_total=len(targets),
         **status_kwargs,
+        **({"export_cohort_required": True} if base_export_mode else {}),
     )
     #: Alert chunks already committed; reported even when the run fails.
     published_values = 0
@@ -1085,6 +1091,16 @@ async def _stage_and_publish_weather(
             export_collector = KmaNowcastExportCollector(
                 repository, run_id=run.run_id, artifact_root=export_artifact_root
             )
+            try:
+                from kortravelweather.export_kma_cohort import declare_kma_grid_cohort
+
+                declare_kma_grid_cohort(
+                    repository, run_id=run.run_id, dataset_key=next(iter(base_datasets)),
+                    grid_groups=grid_groups,
+                )
+            except Exception:
+                # export metadata 불가용은 원래 격자 수집을 실패시키지 않는다.
+                logger.warning("kma_export_cohort_deferred run_id=%s", run.run_id)
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
         alert_sources: list[dict[str, Any]] = []

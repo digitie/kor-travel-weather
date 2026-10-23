@@ -23,6 +23,7 @@ from kortravelweather.export_snapshots import (
     ExportSnapshotExpired,
     FrozenCurrentExports,
 )
+from kortravelweather.export_source_registry import select_export_sources
 from kortravelweather.export_status_reader import read_status
 from kortravelweather.models import kst_now
 
@@ -216,37 +217,18 @@ async def _frozen_response(
     ):
         return _unavailable(request)
     # 지원하지 않는 provider를 누락한 작은 집합을 전체 정상으로 내보내지 않는다.
-    if resource in {"current", "forecasts", "daily-summaries"}:
-        required = {provider} if provider else set(settings.enabled_providers)
-        if resource == "current" or (resource == "forecasts" and style == "external"):
-            from kortravelweather.export_external import ADAPTERS
-            from kortravelweather.providers.catalog import provider_spec
-
-            try:
-                required = {
-                    key
-                    for key in required
-                    if any(
-                        dataset.forecast == (resource == "forecasts")
-                        for dataset in provider_spec(key).datasets
-                    )
-                }
-            except KeyError:
-                return _unavailable(request)
-            if resource == "forecasts":
-                required.discard("python-kma-api")
-                supported = set(ADAPTERS)
-            else:
-                supported = {"python-kma-api", *ADAPTERS}
-        elif resource == "forecasts":
-            required &= {"python-kma-api"}
-            supported = {"python-kma-api"}
-        else:
-            supported = {"python-kma-api"}
-        if not required or not required.issubset(supported):
+    selection = None
+    if resource in {"current", "forecasts"}:
+        try:
+            selection = select_export_sources(
+                settings.enabled_providers, resource=resource, style=style, provider=provider,
+            )
+        except ExportArtifactError:
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
+    elif resource == "daily-summaries" and set(settings.enabled_providers) != {"python-kma-api"}:
+        return _unavailable(request)
     try:
         reader_class = {
             "forecasts": FrozenForecastExports,
@@ -258,8 +240,9 @@ async def _frozen_response(
             ExportArtifactStore(settings.service_export_artifact_root),
             signing_key=settings.admin_token.get_secret_value(),
             **(
-                {"providers": sorted(required)}
-                if resource == "current" or (resource == "forecasts" and style == "external")
+                {"providers": selection.providers, "source_inventory": True,
+                 "expected_sources": selection.expected, "optional_sources": selection.optional}
+                if selection is not None
                 else {}
             ),
             **({"style": style, "since": since} if resource == "forecasts" else {}),
