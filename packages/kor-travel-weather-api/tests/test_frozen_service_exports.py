@@ -416,6 +416,41 @@ def test_forecast_snapshot_metadata_lock_has_bounded_wait_and_recovers(repositor
     )
 
 
+@pytest.mark.parametrize("previous", [False, True])
+def test_dense_forecast_grid_is_unavailable_or_previous_stale_not_500(
+    repository, tmp_path, previous
+):
+    if previous:
+        _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 1}
+    first = client.get(url, params=params, headers=HEADERS) if previous else None
+    for i in range(49 if previous else 51):
+        repository.create_location(
+            WeatherLocation(
+                location_id=f"dense-{i}",
+                name=f"동일격자 {i}",
+                latitude=37.5,
+                longitude=127,
+                nx=60,
+                ny=127,
+            )
+        )
+    response = client.get(url, params=params, headers=HEADERS)
+    if previous:
+        assert response.status_code == 200
+        assert response.json()["meta"]["source_status"] == "stale"
+        assert response.json()["items"] == first.json()["items"]
+        continued = client.get(
+            url,
+            params={**params, "cursor": response.json()["meta"]["next_cursor"]},
+            headers=HEADERS,
+        )
+        assert continued.status_code == 200 and continued.json()["meta"]["source_status"] == "stale"
+    else:
+        assert response.status_code == 503
+
+
 def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)

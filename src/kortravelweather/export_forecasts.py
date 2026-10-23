@@ -64,6 +64,10 @@ class FrozenForecastExports(FrozenCurrentExports):
                 if nx is None or ny is None:
                     raise ExportSnapshotUnavailable("위치 grid가 준비되지 않았습니다.")
                 groups[nx, ny].append(key)
+            if any(len(keys) > 50 for keys in groups.values()):
+                raise ExportSnapshotUnavailable(
+                    "50개 위치를 넘는 예보 grid는 아직 준비되지 않았습니다."
+                )
             descriptors = [
                 ScopeDescriptor(
                     dataset_key=self.dataset,
