@@ -1,5 +1,12 @@
 # Weather 현재 인수인계
 
+## 2026-10-23 — Map service API 계약·인증 경계 구현 시작
+
+- W-MAP-01: `/v1/service/exports/locations,current,status`의 DTO/OpenAPI/TS와 기존 `require_admin`/`x-admin-token` 인증을 추가했다. 성공 head가 아직 없어 인증 후503 `EXPORT_NOT_READY`이며 빈200·304를 반환하지 않는다. DB/provider 조회도 하지 않는다.
+- 웹 catchall은 service 경로와 URL 재해석이 가능한 dot/separator/percent 경로를 토큰 주입·URL 생성 전에404로 차단한다. 기존 정규 weather/admin 전달과 query를 유지한다. 프록시 우회18개 재현 뒤 수정했고 집중 UI53개·API11개가 통과했다.
+- 전체 회귀·CI·독립2인 리뷰·live 수용은 대기다. W1/W2 실제 데이터·W4 상태값 공개, 성공 receipt/승격·ETag/gzip/cursor snapshot·W3/W5는 아직 구현 완료가 아니다. 다음은 W-MAP-02 기반과 Transport T5 guard다.
+
+
 
 ## 2026-10-23 Map 서비스 export 설계 — proposed, 구현 미착수
 

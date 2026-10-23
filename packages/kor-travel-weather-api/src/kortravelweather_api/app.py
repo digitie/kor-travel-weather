@@ -30,6 +30,7 @@ from kortravelweather.settings import WeatherSettings, get_settings
 
 from . import __version__
 from .response import Problem, request_id
+from .routers.service_exports import router as service_export_router
 from .routers.weather import admin_router, router
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,7 @@ def create_app(
 
     api.include_router(router)
     api.include_router(admin_router)
+    api.include_router(service_export_router)
 
     def custom_openapi() -> dict[str, object]:
         if api.openapi_schema:
@@ -282,9 +284,14 @@ def create_app(
                     continue
                 responses = operation.setdefault("responses", {})
                 responses["422"] = problem_response("Request validation failed")
-                if path.startswith("/v1/admin/"):
+                if path.startswith(("/v1/admin/", "/v1/service/")):
                     operation["security"] = [{"AdminToken": []}]
                     responses["401"] = problem_response("Admin authentication required")
+                if path.startswith("/v1/service/") and "503" in responses:
+                    response = responses["503"]
+                    response["content"] = {"application/problem+json": {
+                        "schema": {"$ref": "#/components/schemas/ExportUnavailable"},
+                    }}
                 if "{location_id}" in path or "{run_id}" in path:
                     responses["404"] = problem_response("Resource not found")
                 operation_name = operation.get("operationId", "").split("_")[0]

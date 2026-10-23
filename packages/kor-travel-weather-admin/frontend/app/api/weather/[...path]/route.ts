@@ -57,8 +57,22 @@ async function readBody(request: NextRequest): Promise<ArrayBuffer | null | unde
   return body;
 }
 
+// Next catchall은 이미 decoding한 segment를 준다. URL이 dot/separator/percent를
+// 다시 해석할 여지를 남기지 않고, 서비스 경로는 서버 토큰 대입 전에 거부한다.
+function browserProxyPathAllowed(path: string[]): boolean {
+  if (path.length === 0 || path.some((part) =>
+    !part || part === "." || part === ".." || /[%\\/\s?#\u0000-\u001f\u007f]/u.test(part)
+  )) return false;
+  return !(path[0] === "v1" && path[1] === "service");
+}
+
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params;
+  if (!browserProxyPathAllowed(path)) {
+    return Response.json({ detail: "요청 경로를 찾을 수 없습니다." }, {
+      status: 404, headers: { "cache-control": "no-store, private" },
+    });
+  }
   if (request.signal.aborted) return unavailable(499);
   const target = new URL(`${apiBase()}/${path.join("/")}`);
   // Preserve repeated query keys such as marker batches (`location_id`);

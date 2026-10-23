@@ -12,7 +12,7 @@
 설계 문서 PR 머지는 코드/운영 수용이 아니다. W5 관측 범위는 사용자 승인으로 기존 OBSERVED와
 실제 관측 기반 KMA 초단기실황을 포함하도록 선택 완료했다. COW는 실측 exit gate 뒤에만 채택한다.
 
-- [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비. 기존 require_admin/x-admin-token 재사용과
+- [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비(구현 중, 집중API11/프록시53 PASS, 전체회귀/CI/2리뷰/live 대기). 기존 require_admin/x-admin-token 재사용과
   신규 service route의 OpenAPI·타입·오류·bounded query와 웹 catchall service prefix 차단을 준비한다.
   이 단계는 W1/W2 데이터 공개 완료가 아니다. 해제 조건: 설계 §1·6 단계1·§7의 계약 검증과
   프록시 upstream fetch 0회, 기존 경로 유지, 기능 CI·2인 리뷰.

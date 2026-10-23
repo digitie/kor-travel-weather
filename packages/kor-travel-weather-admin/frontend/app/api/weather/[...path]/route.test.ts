@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GET, POST } from "./route";
+import { DELETE, GET, PATCH, POST, PUT } from "./route";
 
 const context = (path = ["v1", "weather", "locations"]) => ({ params: Promise.resolve({ path }) });
 const request = (method = "GET", signal?: AbortSignal) => new NextRequest(
@@ -15,6 +15,7 @@ const socketFailure = () => Object.assign(new TypeError("fetch failed: private d
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -283,4 +284,57 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(body.locked).toBe(false);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+});
+
+
+describe("Map service API의 브라우저 대리 호출 차단", () => {
+  const blocked = [
+    ["v1", "service"], ["v1", "service", "exports"],
+    ["v1", "service", "exports", "locations"],
+    ["v1", "service", "exports", "current"],
+    ["v1", "service", "exports", "forecasts"],
+    ["v1", "service", "exports", "status"],
+    ["v1", "service", "exports", "daily-summaries"],
+    ["v1", "%73ervice", "exports"], ["v1", "%2573ervice", "exports"],
+    ["v1", "weather", "..", "service", "exports"],
+    ["v1", "weather", "%2e%2e", "service", "exports"],
+    ["v1", "weather", "%252e%252e", "service", "exports"],
+    ["v1/service/exports"], ["v1", "service%2fexports"],
+    ["v1", "service%5cexports"], ["v1", "service\\exports"],
+    ["v1", "", "service", "exports"], ["v1", "service", "exports?x"],
+  ];
+  it.each(blocked.map((path) => [path.join("/"), path] as const))(
+    "%s는 모든 지원 method에서 upstream을 호출하지 않는다", async (_name, path) => {
+      const fetcher = vi.fn().mockResolvedValue(Response.json({ leaked: true }));
+      vi.stubGlobal("fetch", fetcher);
+      vi.stubEnv("WEATHER_ADMIN_TOKEN", "private-server-token");
+      vi.stubEnv("WEATHER_API_INTERNAL_URL", "invalid URL must never be constructed");
+      for (const method of ["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"] as const) {
+        const handler = { GET, HEAD: GET, POST, PATCH, PUT, DELETE }[method];
+        const incoming = new NextRequest("http://localhost/api/weather/v1/service/exports", {
+          method, headers: { "x-admin-token": "browser-token", authorization: "Bearer browser" },
+        });
+        const response = await handler(incoming, context([...path]));
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        expect(await response.text()).not.toContain("private-server-token");
+      }
+      expect(fetcher).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([["v1", "weather", "locations"], ["v1", "admin", "locations"]])(
+    "기존 정규 경로 %j는 서버 인증과 query를 유지한다", async (...path) => {
+      vi.stubEnv("WEATHER_ADMIN_TOKEN", "server-token");
+      vi.stubEnv("WEATHER_API_INTERNAL_URL", "http://127.0.0.1:14101");
+      const fetcher = vi.fn().mockResolvedValue(Response.json({ data: [] }));
+      vi.stubGlobal("fetch", fetcher);
+      const response = await GET(request(), context(path));
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0][1].headers.get("x-admin-token")).toBe("server-token");
+      expect(String(fetcher.mock.calls[0][0])).toContain(path.join("/"));
+    },
+  );
 });
