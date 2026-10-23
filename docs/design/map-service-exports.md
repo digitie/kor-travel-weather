@@ -1,6 +1,6 @@
 # ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
-- 상태: **proposed, 구현 미착수**. 문서만 저장하며 코드·schema·운영 변경은 없다.
+- 상태: **proposed, 단계1 계약·인증 경계 구현 중**. 성공 head 기반 실제 데이터 공개·schema·운영 변경은 아직 없다.
 - 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
   COW artifact 채택은 구현 전 실측 exit gate 통과가 조건이다. 문서 머지가 구현 승인은 아니다.
 - 보존 기준 Weather main: `12c3a4adfcd7a030bedaf5346371a5684656ea71`.
@@ -591,10 +591,7 @@ W-MAP-02는 단계2나3만 끝나도 완료가 아니다. W-MAP-04의 성공 rec
 
 ## 9. 문서 보존과 현재 진행 상태
 
-이 문서는 설계 proposed 상태로 보존한다. W1~W5/T1~T5의 기능 구현·API 배포·실측 수용은
-아직 시작하지 않았다. 현재 code/DTO/OpenAPI/TS를 바꾸지 않았으므로 명세 예시는 제안 계약이며
-운영 endpoint가 존재한다고 해석하지 않는다. Weather 기존 `/v1/service/exports` 부재와 기존
-AdminToken 재사용은 §1의 사실/제안 구분을 따른다.
+이 문서는 설계 proposed 상태로 보존한다. 단계1에서 Weather W1/W2/W4의 DTO/OpenAPI/TS·인증 및 웹 프록시 차단을 구현 중이다. 완결된 성공 head가 없으므로 현재 응답은 인증 후503이며 실제 집합·상태 공개는 아니다. W3/W5·성공 receipt/승격·snapshot/ETag/gzip 구현과 API 운영 배포·실측 수용은 아직 남아 있다. §1의 기존 코드 관측은 설계 기준 commit 당시 사실이다.
 
 작업 의존은 W-MAP-01(계약 준비) → W-MAP-02(성공 head/barrier 및 W1/W2 실제 공개)다.
 W-MAP-03(관측 선택 문서화)은 완료했다. W-MAP-04(W5 구현)는 계속 W-MAP-02의
