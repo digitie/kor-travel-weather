@@ -331,8 +331,9 @@ def publish_pending_exports(
     attempts = heads.lifecycle.attempts
     with heads._transaction() as session:
         query = (
-            select(attempts.c.attempt_id, attempts.c.owner_id)
-            .join(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
+            select(attempts.c.attempt_id, attempts.c.owner_id,
+                   heads.plans.c.attempt_id.label("plan_id"))
+            .outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
             .where(
                 attempts.c.status.in_(["preparing", "sealed"]),
                 ~select(heads.generations.c.generation_id)
@@ -348,11 +349,16 @@ def publish_pending_exports(
     for row in rows[:limit]:
         if time.monotonic() >= deadline:
             break
-        identity = ExportAttempt(*row)
+        identity = ExportAttempt(row.attempt_id, row.owner_id)
         try:
             outcome, _ = _publisher_terminal(heads, identity, dagster_status)
             if outcome is None:
-                outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+                # begin/claim 후 declare 이전의 crash도 terminal 복구한다. plan이
+                # 없는 성공/미확정 후보를 승격하거나 성공으로 추측하지 않는다.
+                outcome = (
+                    heads.promote(identity, artifacts, dagster_status=dagster_status)
+                    if row.plan_id is not None else "NOT_READY"
+                )
                 if outcome == "REJECTED":
                     _publisher_terminal(heads, identity, dagster_status)
         except (ExportArtifactError, OSError):

@@ -62,3 +62,11 @@ API 추가 회귀 2건(최종 32건에 포함)은 current/forecast/daily 3종의
 운영 start gate는 API/CS 설정과 artifact 경로·읽기 권한의 일치, 정의 등록 및 migration
 상태, exact SUCCESS 조회 권한, 두 리뷰와 CI, 제한된 실제 수집/승격/실패 후 복구 검증이다.
 이 PR의 sensor 기본 상태는 STOPPED이며 daemon의 다른 schedule/sensor 상태를 바꾸지 않는다.
+
+## plan 선언 전 crash 복구
+
+초기 리뷰에서 begin/claim 뒤 plan INSERT 전 crash가 후보 INNER JOIN에서 제외되는
+경계를 실제 sensor/PG 시험으로 재현했다(기대 1개, 실제 0개). 후보를 LEFT JOIN으로
+찾아 plan 없는 실행도 확정 terminal은 복구하며, plan 없는 성공/미확정은 승격하지 않는다.
+begin 직후와 claim 직후 각각 FAILURE/CANCELED/SUCCESS/STARTED/없는 run을 검증한
+중간 집중 실행은 42 PASS(50.51초)다. 이후 용량/소유권 보강과 최종 검증은 별도다.

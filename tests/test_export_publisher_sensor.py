@@ -167,3 +167,58 @@ def test_process_slot_skips_before_repository_creation(publisher_repository, tmp
         assert not owned and result.cursor is None and not result.run_requests
     finally:
         module._TICK_SLOT.release()
+
+
+@pytest.mark.parametrize("claim", [False, True])
+@pytest.mark.parametrize("status,native_terminal,expected", [
+    (DagsterRunStatus.FAILURE, None, "failed"),
+    (DagsterRunStatus.CANCELED, None, "failed"),
+    (DagsterRunStatus.SUCCESS, None, "preparing"),
+    (DagsterRunStatus.SUCCESS, "success", "preparing"),
+    (DagsterRunStatus.STARTED, None, "preparing"),
+    (None, None, "preparing"),
+])
+def test_planless_crash_is_seen_by_terminal_sweep_without_inventing_success(
+    publisher_repository, tmp_path, monkeypatch, claim, status, native_terminal, expected,
+):
+    from test_export_heads import _descriptor
+
+    from kortravelweather.export_heads import ExportHeads
+
+    repo = publisher_repository
+    monkeypatch.setattr(repo, "export_status_enabled", True)
+    descriptor = _descriptor(repo)
+    heads = ExportHeads(repo)
+    with DagsterInstance.ephemeral() as instance:
+        run_id = "missing-planless-worker"
+        if status is not None:
+            run_id = instance.create_run_for_job(metadata_only_job, status=status).run_id
+        monkeypatch.setattr(repo, "orchestrator_run_id", run_id)
+        run = repo.start_sync_run(provider=descriptor.provider, dataset_key=descriptor.dataset_key)
+        identity = repo.begin_export_attempt(
+            run_id=run.run_id, scope_key="planless-crash",
+            planned_sources=[descriptor.source_scope], execution_mode="dagster",
+        )
+        if claim:
+            heads.lifecycle.claim(identity)
+        if native_terminal:
+            repo.finish_sync_run(run.run_id, status=native_terminal)
+        # begin/claim은 commit했지만 declare를 호출하기 전에 worker가 끝난 상태다.
+        with repo.engine.connect() as connection:
+            assert connection.scalar(select(heads.plans.c.attempt_id)) is None
+        sensor, _ = build(repo, tmp_path)
+        evaluated = evaluate(sensor, instance)
+        assert "1개" in evaluated.skip_message
+        attempt, native = state(repo, heads, identity)
+        assert attempt["status"] == expected
+        assert native["status"] == (
+            "failed" if expected == "failed" else native_terminal or "running"
+        )
+        assert native["values_loaded"] == 0
+        with repo.engine.connect() as connection:
+            assert connection.scalar(select(heads.generations.c.generation_id)) is None
+        if expected == "failed":
+            assert native["export_status_pending"] is True
+            assert repo.reconcile_export_status({descriptor.provider}) == 1
+            assert state(repo, heads, identity)[1]["export_status_pending"] is False
+            assert "0개" in evaluate(sensor, instance, cursor=evaluated.cursor).skip_message
