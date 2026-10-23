@@ -215,6 +215,7 @@ def test_source_cohort_requires_atomic_native_intent_and_preserves_exact_plan(ex
         declare_source_cohort(repo, run_id=run.run_id, provider="open_meteo",
                               dataset_key="open_meteo_current", descriptors=[descriptor])
     repo.finish_sync_run(run.run_id, status="failed")
+
     run = repo.start_sync_run(provider="open_meteo", dataset_key="open_meteo_current",
                               export_cohort_required=True)
     args = {"run_id": run.run_id, "provider": "open_meteo",
@@ -227,3 +228,53 @@ def test_source_cohort_requires_atomic_native_intent_and_preserves_exact_plan(ex
     assert saved["descriptors"] == [descriptor.model_dump(mode="json")]
     assert saved["targets"] == [{"location_id": key, "latitude": 37.5, "longitude": 127.0}]
     repo.finish_sync_run(run.run_id, status="failed")
+
+
+
+def test_current_inventory_reader_retains_rotation_and_failed_cursor_stays_stale(
+    external_repository, tmp_path,
+):
+    from kortravelweather.export_snapshots import FrozenCurrentExports
+
+    repo = external_repository
+    catalog = ExportHeads(repo).metadata.tables["weather_locations"]
+    with repo.engine.begin() as c:
+        previous = list(c.scalars(select(catalog.c.location_id).where(catalog.c.enabled.is_(True))))
+        c.execute(catalog.update().values(enabled=False))
+    try:
+        targets = [ProviderLocation("reader-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(2)]
+        for target in targets:
+            repo.create_location(WeatherLocation(
+                location_id=target.location_id, name="순환 수집 reader",
+                latitude=37.5, longitude=127,
+            ))
+        _publish(repo, tmp_path, targets)
+        reader = FrozenCurrentExports(
+            repo, ExportArtifactStore(tmp_path), signing_key="inventory-cursor",
+            providers=["open_meteo"], source_inventory=True,
+            expected_sources=[("open_meteo", "open_meteo_current")],
+        )
+        first, etag = reader.page("current", limit=1, cursor=None)
+        assert first["meta"]["source_status"] == "ok"
+        cursor = first["meta"]["next_cursor"]
+        assert cursor
+        _publish(repo, tmp_path, targets[:1])
+        rotated, _ = reader.page("current", limit=5000, cursor=None)
+        assert rotated["meta"]["source_status"] == "ok" and len(rotated["items"]) == 6
+        assert {item["location_id"] for item in rotated["items"]} == {
+            target.location_id for target in targets
+        }
+        failed = repo.start_sync_run(provider="open_meteo", dataset_key="open_meteo_current",
+                                     export_cohort_required=True)
+        repo.finish_sync_run(failed.run_id, status="failed")
+        stale, changed = reader.page("current", limit=1, cursor=None)
+        assert stale["meta"]["source_status"] == "stale" and changed != etag
+        continued, _ = reader.page("current", limit=1, cursor=cursor)
+        assert continued["meta"]["source_status"] == "stale"
+    finally:
+        with repo.engine.begin() as c:
+            c.execute(catalog.update().values(enabled=False))
+            if previous:
+                c.execute(catalog.update().where(catalog.c.location_id.in_(previous)).values(
+                    enabled=True,
+                ))

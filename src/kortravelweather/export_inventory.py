@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from math import isfinite
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -41,6 +42,9 @@ def export_inventory_table(metadata: MetaData):
         Column("nx", Integer), Column("ny", Integer),
         Column("source_collected_at", DateTime(timezone=True), nullable=False),
         Column("published_at", DateTime(timezone=True), nullable=False),
+        CheckConstraint(
+            "source_part IN ('main','land','temperature')", name="ck_weather_export_inventory_part",
+        ),
     )
 
 

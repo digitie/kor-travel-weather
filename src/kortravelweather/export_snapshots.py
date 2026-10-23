@@ -78,7 +78,8 @@ def export_snapshot_tables(metadata: MetaData):
 
 class FrozenCurrentExports:
     def __init__(
-        self, repository, artifacts: ExportArtifactStore, *, signing_key: str, providers=None
+        self, repository, artifacts: ExportArtifactStore, *, signing_key: str, providers=None,
+        source_inventory=False, expected_sources=(), optional_sources=(),
     ):
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
@@ -87,6 +88,9 @@ class FrozenCurrentExports:
         self.snapshots, self.refs = export_snapshot_tables(self.heads.metadata)
         self.artifacts = artifacts
         self.current_providers = tuple(sorted(set(providers or ["python-kma-api"])))
+        self.source_inventory = source_inventory
+        self.expected_sources = tuple(expected_sources)
+        self.optional_sources = tuple(optional_sources)
         self.current_selection = (
             None
             if self.current_providers == ("python-kma-api",)
@@ -96,6 +100,15 @@ class FrozenCurrentExports:
                 "providers": list(self.current_providers),
             }
         )
+        if source_inventory:
+            self.current_selection = {
+                "kind": "current", "providers": list(self.current_providers),
+                "source_inventory": 1,
+                "signature": _digest([
+                    self.current_providers, sorted(self.expected_sources),
+                    sorted(self.optional_sources), 1,
+                ]),
+            }
         # 인증 체계는 기존 service header 그대로다. 이것은 cursor 변조 방지 전용이다.
         self.key = hmac.digest(signing_key.encode(), b"weather-export-cursor-v1", "sha256")
 
@@ -142,6 +155,76 @@ class FrozenCurrentExports:
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise ExportCursorInvalid("cursor 형식/서명이 올바르지 않습니다.") from exc
 
+    def _select_current_scopes(self, connection, locations):
+        if self.source_inventory:
+            from .export_inventory_selection import approved_source_selection
+
+            try:
+                selection = approved_source_selection(
+                    connection, self.heads.metadata, locations,
+                    expected=self.expected_sources, optional=self.optional_sources,
+                )
+            except (ExportArtifactError, KeyError, ValueError, TypeError) as exc:
+                raise ExportSnapshotUnavailable(
+                    "실제 승인 source 집합이 준비되지 않았습니다."
+                ) from exc
+            selected = {item.descriptor.namespace: item.location_ids for item in selection.scopes}
+            heads = {item.descriptor.namespace: {
+                "generation_id": item.generation_id,
+                "source_collected_at": item.source_collected_at,
+                "data_revision_at": item.data_revision_at,
+            } for item in selection.scopes}
+            return (
+                [item.descriptor for item in selection.scopes], heads, selected,
+                selection.unconfirmed,
+            )
+        grids = defaultdict(list)
+        for location in locations:
+            if "python-kma-api" in self.current_providers:
+                if location["nx"] is None or location["ny"] is None:
+                    raise ExportSnapshotUnavailable("활성 location grid가 준비되지 않았습니다.")
+                grids[(location["nx"], location["ny"])].append(location["location_id"])
+        descriptors = [
+            ScopeDescriptor(
+                entity_type="weather_response",
+                entity_id=f"grid:{nx}:{ny}",
+                nx=nx,
+                ny=ny,
+                location_ids=tuple(sorted(keys)),
+                normalizer_revision="kma-v1",
+                winner_policy_revision="kma-base-v1",
+                coverage_contract="kma-grid-nowcast-v1",
+            )
+            for (nx, ny), keys in sorted(grids.items())
+        ]
+        external = set(self.current_providers) - {"python-kma-api"}
+        if external:
+            from .export_external_cohorts import selected_external_descriptors
+
+            try:
+                descriptors.extend(
+                    selected_external_descriptors(
+                        connection, self.heads.metadata, locations, external
+                    )
+                )
+            except (ExportArtifactError, KeyError, ValueError, TypeError) as exc:
+                raise ExportSnapshotUnavailable(
+                    "외부 원천 선택 집합이 준비되지 않았습니다."
+                ) from exc
+        if len(descriptors) > 5000:
+            raise ExportSnapshotUnavailable("현재 원천 vector 상한을 넘었습니다.")
+        heads = {
+            row["namespace"]: dict(row)
+            for row in connection.execute(
+                select(self.heads.heads).where(
+                    self.heads.heads.c.namespace.in_([d.namespace for d in descriptors])
+                )
+            ).mappings()
+        }
+        if len(heads) != len(descriptors):
+            raise ExportSnapshotUnavailable("선택 위치 전체의 성공 head가 준비되지 않았습니다.")
+        return descriptors, heads, None, False
+
     def _freeze(self):
         # catalog와 head vector를 동일 MVCC에서 읽는다. 파일 I/O는 이 TX 밖이다.
         with (
@@ -152,6 +235,8 @@ class FrozenCurrentExports:
         ):
             connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
             catalog = self.heads.metadata.tables["weather_locations"]
+            from .export_inventory_selection import catalog_source_columns
+
             locations = list(
                 connection.execute(
                     select(
@@ -161,6 +246,7 @@ class FrozenCurrentExports:
                         catalog.c.longitude,
                         catalog.c.nx,
                         catalog.c.ny,
+                        *(catalog_source_columns(catalog) if self.source_inventory else []),
                     )
                     .where(catalog.c.enabled.is_(True))
                     .order_by(catalog.c.location_id)
@@ -169,51 +255,9 @@ class FrozenCurrentExports:
             )
             if not locations or len(locations) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("활성 location 전체 집합이 준비되지 않았습니다.")
-            grids = defaultdict(list)
-            for location in locations:
-                if "python-kma-api" in self.current_providers:
-                    if location["nx"] is None or location["ny"] is None:
-                        raise ExportSnapshotUnavailable("활성 location grid가 준비되지 않았습니다.")
-                    grids[(location["nx"], location["ny"])].append(location["location_id"])
-            descriptors = [
-                ScopeDescriptor(
-                    entity_type="weather_response",
-                    entity_id=f"grid:{nx}:{ny}",
-                    nx=nx,
-                    ny=ny,
-                    location_ids=tuple(sorted(keys)),
-                    normalizer_revision="kma-v1",
-                    winner_policy_revision="kma-base-v1",
-                    coverage_contract="kma-grid-nowcast-v1",
-                )
-                for (nx, ny), keys in sorted(grids.items())
-            ]
-            external = set(self.current_providers) - {"python-kma-api"}
-            if external:
-                from .export_external_cohorts import selected_external_descriptors
-
-                try:
-                    descriptors.extend(
-                        selected_external_descriptors(
-                            connection, self.heads.metadata, locations, external
-                        )
-                    )
-                except (ExportArtifactError, KeyError, ValueError, TypeError) as exc:
-                    raise ExportSnapshotUnavailable(
-                        "외부 원천 선택 집합이 준비되지 않았습니다."
-                    ) from exc
-            if len(descriptors) > 5000:
-                raise ExportSnapshotUnavailable("현재 원천 vector 상한을 넘었습니다.")
-            heads = {
-                row["namespace"]: dict(row)
-                for row in connection.execute(
-                    select(self.heads.heads).where(
-                        self.heads.heads.c.namespace.in_([d.namespace for d in descriptors])
-                    )
-                ).mappings()
-            }
-            if len(heads) != len(descriptors):
-                raise ExportSnapshotUnavailable("선택 위치 전체의 성공 head가 준비되지 않았습니다.")
+            descriptors, heads, selected, unconfirmed = self._select_current_scopes(
+                connection, locations
+            )
             generations = [heads[d.namespace]["generation_id"] for d in descriptors]
             grouped_refs = defaultdict(list)
             for row in connection.execute(
@@ -243,8 +287,16 @@ class FrozenCurrentExports:
                         "ny": getattr(descriptor, "ny", None),
                         "provider": descriptor.provider,
                         "forecast_style": descriptor.forecast_style,
-                        "location_ids": list(descriptor.location_ids),
+                        "location_ids": list(
+                            selected[descriptor.namespace] if selected else descriptor.location_ids
+                        ),
                         "refs": refs,
+                        **({
+                            "approved_location_ids": list(descriptor.location_ids),
+                            "dataset_key": descriptor.dataset_key,
+                            "source_collected_at": head["source_collected_at"].isoformat(),
+                            "data_revision_at": head["data_revision_at"].isoformat(),
+                        } if self.source_inventory else {}),
                     }
                 )
             entries = self.heads.metadata.tables["reverse_address_entries"]
@@ -294,6 +346,8 @@ class FrozenCurrentExports:
                     }
                 )
             manifest = {"schema": 1, "scopes": scopes, "locations": items}
+            if self.source_inventory:
+                manifest["unconfirmed_sources"] = unconfirmed
             if self.current_selection is not None:
                 manifest["selection"] = self.current_selection
             digest = _digest(manifest)
@@ -445,6 +499,7 @@ class FrozenCurrentExports:
                     scope = scopes[state["g"]]
                     points = []
                     selected = set(scope["location_ids"])
+                    approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
                     for ref in scope["refs"]:
                         for point in self.artifacts.read(
                             ref["artifact_digest"],
@@ -454,12 +509,13 @@ class FrozenCurrentExports:
                             if (
                                 point["provider"] != scope.get("provider", "python-kma-api")
                                 or point["forecast_style"] != scope.get("forecast_style", "nowcast")
-                                or point["location_id"] not in selected
+                                or point["location_id"] not in approved_ids
                             ):
                                 raise ExportSnapshotUnavailable(
                                     "승인된 scope와 artifact가 다릅니다."
                                 )
-                            points.append(point)
+                            if point["location_id"] in selected:
+                                points.append(point)
                     points.sort(key=lambda p: (p["location_id"], p["provider"], p["metric_key"]))
                     if state["p"] > len(points):
                         raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
@@ -501,10 +557,26 @@ class FrozenCurrentExports:
             or now - frozen["source_collected_at"] > SOURCE_MAX_AGE
             or now - frozen["data_revision_at"] > SOURCE_MAX_AGE
         )
+        if self.source_inventory:
+            from .export_inventory_selection import source_max_age
+
+            stale = frozen.get("_source_unconfirmed", False) or manifest["unconfirmed_sources"]
+            stale |= any(
+                now - datetime.fromisoformat(scope[key]) > source_max_age(scope["dataset_key"])
+                for scope in manifest["scopes"]
+                for key in ("source_collected_at", "data_revision_at")
+            )
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
         runs = self.heads.metadata.tables["weather_sync_runs"]
-        with self.heads._transaction() as session:
+        with (
+            self.repository.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as session, session.begin(),
+        ):
+            session.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
             catalog = self.heads.metadata.tables["weather_locations"]
+            from .export_inventory_selection import catalog_source_columns
+
             roster = session.execute(
                 select(
                     catalog.c.location_id,
@@ -512,41 +584,61 @@ class FrozenCurrentExports:
                     catalog.c.ny,
                     catalog.c.latitude,
                     catalog.c.longitude,
+                    *(catalog_source_columns(catalog) if self.source_inventory else []),
                 )
                 .where(catalog.c.enabled.is_(True))
                 .order_by(catalog.c.location_id)
                 .limit(MAX_SNAPSHOT_LOCATIONS + 1)
             ).all()
-            expected = sorted(
-                (key, scope["nx"], scope["ny"])
-                for scope in manifest["scopes"]
-                if scope.get("provider", "python-kma-api") == "python-kma-api"
-                for key in scope["location_ids"]
-            )
-            if "python-kma-api" in self.current_providers:
-                stale |= [tuple(row)[:3] for row in roster] != expected
-            else:
-                stale |= [
-                    (row.location_id, float(row.latitude), float(row.longitude)) for row in roster
-                ] != [
-                    (row["location_id"], row["latitude"], row["longitude"])
-                    for row in manifest["locations"]
-                ]
-            external = set(self.current_providers) - {"python-kma-api"}
-            if external:
-                from .export_external_cohorts import selected_external_descriptors
+            stale |= len(roster) > MAX_SNAPSHOT_LOCATIONS
+            if self.source_inventory:
+                from .export_inventory_selection import approved_source_selection
 
                 try:
-                    current_external = selected_external_descriptors(
-                        session, self.heads.metadata, [row._mapping for row in roster], external
+                    latest = approved_source_selection(
+                        session, self.heads.metadata, [row._mapping for row in roster],
+                        expected=self.expected_sources, optional=self.optional_sources,
                     )
-                    stale |= {d.namespace for d in current_external} != {
-                        scope["namespace"]
+                    stale |= latest.unconfirmed or {
+                        (item.descriptor.namespace, item.location_ids) for item in latest.scopes
+                    } != {
+                        (scope["namespace"], tuple(scope["location_ids"]))
                         for scope in manifest["scopes"]
-                        if scope.get("provider", "python-kma-api") != "python-kma-api"
                     }
                 except (ExportArtifactError, KeyError, ValueError, TypeError):
                     stale = True
+            else:
+                expected = sorted(
+                    (key, scope["nx"], scope["ny"])
+                    for scope in manifest["scopes"]
+                    if scope.get("provider", "python-kma-api") == "python-kma-api"
+                    for key in scope["location_ids"]
+                )
+                if "python-kma-api" in self.current_providers:
+                    stale |= [tuple(row)[:3] for row in roster] != expected
+                else:
+                    stale |= [
+                        (row.location_id, float(row.latitude), float(row.longitude))
+                        for row in roster
+                    ] != [
+                        (row["location_id"], row["latitude"], row["longitude"])
+                        for row in manifest["locations"]
+                    ]
+                external = set(self.current_providers) - {"python-kma-api"}
+                if external:
+                    from .export_external_cohorts import selected_external_descriptors
+
+                    try:
+                        current_external = selected_external_descriptors(
+                            session, self.heads.metadata, [row._mapping for row in roster], external
+                        )
+                        stale |= {d.namespace for d in current_external} != {
+                            scope["namespace"]
+                            for scope in manifest["scopes"]
+                            if scope.get("provider", "python-kma-api") != "python-kma-api"
+                        }
+                    except (ExportArtifactError, KeyError, ValueError, TypeError):
+                        stale = True
             # cursor로 같은 reader handle을 이어 읽어도 현재 head 유효성을 확인한다.
             # 이전 manifest를 반환했다는 메모리 flag만으로는 다음 요청에 stale이
             # 사라져 삭제/복구 중인 source를 정상이라고 표시할 수 있다.
@@ -581,7 +673,7 @@ class FrozenCurrentExports:
                     )
                 )
             ).all()
-        stale |= len(statuses) != len(manifest["scopes"]) or any(
+        stale |= len(statuses) != len({s["source_scope"] for s in manifest["scopes"]}) or any(
             a == "failed"
             or run not in {"running", "success"}
             or (run == "success" and generation is None)

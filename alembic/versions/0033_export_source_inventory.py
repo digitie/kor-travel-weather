@@ -28,6 +28,9 @@ def upgrade():
         sa.Column("nx", sa.Integer()), sa.Column("ny", sa.Integer()),
         sa.Column("source_collected_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "source_part IN ('main','land','temperature')", name="ck_weather_export_inventory_part",
+        ),
     )
     op.create_index(
         "ix_weather_export_approved_locations_namespace", "weather_export_approved_locations",

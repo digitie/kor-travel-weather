@@ -60,3 +60,10 @@ W1 catalog source clock은 현재 null/stale이며 updated_at으로 대체하지
 - [ ] OpenAPI/TS·실제 HTTP/UI·두 적대리뷰·CI와 배포 전 비용/GC gate
 
 현재 table와 helper 회귀 단계이며 전체 API/운영 배포 완료가 아니다.
+
+내부 frozen current reader의 명시 source_inventory 모드는 승인 합집합을 선택하고
+선택 밖 artifact point는 검증 후 출력에서 제외한다. source별 clock/필수 coverage 및
+최신 native 실패를 매 페이지의 같은 RR에서 재확인하므로 이전 cursor도 stale를 유지한다.
+기본 router는 아직 이 모드로 전환하지 않았다. 실제 PostgreSQL current quota·cursor 회귀와
+기존 frozen API/SDK/외부 수집을 합쳐107개가 통과했다. 0032 의존성 통합 전이므로
+0033 migration 전체 검증이나 운영 활성화 통과를 뜻하지 않는다.
