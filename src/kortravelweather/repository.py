@@ -66,6 +66,7 @@ from .export_artifacts import (
     canonical_export_number,
     prepare_export_chunk,
 )
+from .export_lifecycle import export_lifecycle_tables, normalization_input_digest
 from .export_receipts import (
     ExportAttempt,
     ExportCapture,
@@ -138,6 +139,7 @@ class Base(DeclarativeBase):
 # 파생 주소는 원천 주소·좌표와 분리해 같은 소비자 DB에 저장한다.
 reverse_address_tables(Base.metadata)
 export_receipt_tables(Base.metadata)
+export_lifecycle_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
 
@@ -2040,9 +2042,17 @@ class WeatherRepository:
                     if any(fact.source_key not in required for fact in candidates):
                         raise ExportArtifactError("검증된 원천과 point lineage가 다릅니다.")
                     points: dict[tuple[str, datetime | None], dict[str, Any]] = {}
+                    source_scopes = {str(record["source_record_key"]): source_scope_key(
+                        str(record["provider"]), str(record["dataset_key"]),
+                        str(record["source_entity_type"]), str(record["source_entity_id"]),
+                    ) for record in records}
+                    source_points: dict[str, set[tuple[str, datetime | None]]] = {
+                        scope: set() for scope in source_scopes.values()
+                    }
                     for fact in candidates:
                         key = (fact.value_id, fact.known_at)
                         row = stored_facts[key]
+                        source_points[source_scopes[row.source_record_key]].add(key)
                         # 입력 alias가 아니라 실제 persisted row·canonical 복합 PK를 보존한다.
                         point = self._value_model(row).model_dump(mode="json", exclude={"payload"})
                         point["value_id"] = row.value_id
@@ -2067,7 +2077,12 @@ class WeatherRepository:
                         for record in records
                     ]
                     record_export_chunk(session, metadata=Base.metadata, capture=export_capture,
-                                        run_id=run_id, covered_sources=covered, chunk=chunk)
+                                        run_id=run_id, covered_sources=covered, chunk=chunk,
+                                        input_point_count=len(facts),
+                                        input_digest=normalization_input_digest(facts),
+                                        source_point_counts={
+                                            key: len(keys) for key, keys in source_points.items()
+                                        })
                 if prepared is not None:
                     prepared.append(chunk)
             except Exception:

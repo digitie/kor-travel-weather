@@ -1,5 +1,10 @@
 
 
+## 2026-10-23 — Map export 단계3A 구현 중
+
+- 예상chunk/source 완결·scope epoch fencing·정확한native/Dagster terminal 성공 검증을 추가한다. [구현/검증/미완경계](reports/2026-10-23-map-export-plan-barrier.md). 집중PG40 PASS, migration/full/CI/2리뷰는 진행 중이다.
+- 기존 collector opt-in OFF·API503을 유지한다. 실제head/COW/frozen API·W5가 끝났다는 의미가 아니다. 운영 변경은 없다.
+
 ## 2026-10-23 — 남은 API 작업 독립 감사
 
 - [W1~W5 요구사항·코드·PR·검증·운영 구분](audits/2026-10-23-map-api-remaining.md)을 작성했다. 실제 데이터 공개는 미완이며 계약/receipt 머지를 전체API 완료로 세지 않는다.
