@@ -348,11 +348,22 @@ def test_concurrent_daily_reducers_commit_one_checkpoint(daily_repository, tmp_p
     gate = Barrier(2)
 
     class RacingStore(ExportArtifactStore):
+        inside_guard = False
+
         @contextmanager
         def guard(self, **kwargs):
             with super().guard(**kwargs):
-                yield
-            # 두 실제 reader가 같은 checkpoint의 파일 검증을 끝낸 후 CAS한다.
+                self.inside_guard = True
+                try:
+                    yield
+                finally:
+                    self.inside_guard = False
+
+        def read(self, *args, **kwargs):
+            yield from super().read(*args, **kwargs)
+            # 두 reader가 같은 checkpoint의 파일 검증을 끝내고 CAS 전 만난다.
+            # 공개 guard는 이제 CAS까지 감싸므로 guard exit에서 기다리면 늦다.
+            assert self.inside_guard
             gate.wait(timeout=10)
 
     with ThreadPoolExecutor(max_workers=2) as executor:

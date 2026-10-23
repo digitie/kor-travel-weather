@@ -1,0 +1,18 @@
+[
+  {
+    "shape": "mid1000locations2parts",
+    "projection": "repeated",
+    "rows": 2000,
+    "json_wire_bytes": 80743000,
+    "wall_seconds": 1.032,
+    "peak_python_bytes": 175544515
+  },
+  {
+    "shape": "mid1000locations2parts",
+    "projection": "bounded_distinct",
+    "rows": 2000,
+    "json_wire_bytes": 80743,
+    "wall_seconds": 0.018,
+    "peak_python_bytes": 758537
+  }
+]

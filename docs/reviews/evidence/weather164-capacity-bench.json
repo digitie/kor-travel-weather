@@ -1,0 +1,102 @@
+{
+  "kind": "synthetic_private_pg_metadata_only",
+  "production_performance_claim": false,
+  "excludes": [
+    "inventory selection/catalog/head SQL",
+    "artifact file reads",
+    "native collection/HTTP",
+    "real ARM measurements"
+  ],
+  "results": [
+    {
+      "source_scopes": 6806,
+      "refs": 6806,
+      "constructed_scopes": 6806,
+      "outcome": "accepted",
+      "normalized_manifest_bytes": 5234815,
+      "wall_seconds": 0.484,
+      "traced": false,
+      "peak_python_bytes": null,
+      "retained_python_bytes": null,
+      "ref_sql_queries": 1,
+      "cursor_observations": [
+        {
+          "named_cursor": true,
+          "yield_per": 64
+        }
+      ]
+    },
+    {
+      "source_scopes": 6806,
+      "refs": 6806,
+      "constructed_scopes": 6806,
+      "outcome": "accepted",
+      "normalized_manifest_bytes": 5234815,
+      "wall_seconds": 2.798,
+      "traced": true,
+      "peak_python_bytes": 38848296,
+      "retained_python_bytes": 12761130,
+      "ref_sql_queries": 1,
+      "cursor_observations": [
+        {
+          "named_cursor": true,
+          "yield_per": 64
+        }
+      ]
+    },
+    {
+      "source_scopes": 8192,
+      "refs": 17792,
+      "constructed_scopes": 8192,
+      "outcome": "accepted",
+      "normalized_manifest_bytes": 8375125,
+      "wall_seconds": 0.905,
+      "traced": false,
+      "peak_python_bytes": null,
+      "retained_python_bytes": null,
+      "ref_sql_queries": 1,
+      "cursor_observations": [
+        {
+          "named_cursor": true,
+          "yield_per": 64
+        }
+      ]
+    },
+    {
+      "source_scopes": 8192,
+      "refs": 17792,
+      "constructed_scopes": 8192,
+      "outcome": "accepted",
+      "normalized_manifest_bytes": 8375125,
+      "wall_seconds": 4.85,
+      "traced": true,
+      "peak_python_bytes": 63537026,
+      "retained_python_bytes": 21748310,
+      "ref_sql_queries": 1,
+      "cursor_observations": [
+        {
+          "named_cursor": true,
+          "yield_per": 64
+        }
+      ]
+    },
+    {
+      "source_scopes": 8192,
+      "refs": 17992,
+      "constructed_scopes": 8192,
+      "outcome": "rejected_budget",
+      "normalized_manifest_bytes": null,
+      "wall_seconds": 4.13,
+      "traced": true,
+      "peak_python_bytes": 21894824,
+      "retained_python_bytes": 21891143,
+      "ref_sql_queries": 1,
+      "cursor_observations": [
+        {
+          "named_cursor": true,
+          "yield_per": 64
+        }
+      ]
+    }
+  ]
+}

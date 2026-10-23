@@ -1,3 +1,17 @@
+## 2026-10-24 — 승인 source 용량과 제한된 메타데이터 PR164
+
+- source vector8,192와 catalog/page/cohort5,000을 분리하고 refs/불변 계획을64행
+  server cursor·JSON 예산으로 읽는다. 위치별 큰 descriptor 반복을 제거한다.
+- capacity 초과는 별도 불변 stale handle로 보존하고 정상 freeze 때 회복한다.
+  후보 PG65PASS/208.46초, main통합24PASS/44.24초, fastpath19PASS/33.10초(중복 합산 안함).
+- [격리 크기·비용/한계](reports/2026-10-23-export-capacity.md): 중기 공유 계획의 메모리
+  저감과 작은 계획 다수의 검사 CPU 비용 증가를 함께 기록했다. 운영/ARM 성능 주장이 아니다.
+- PR163의 source별 W5 coverage·선택 건강도와 기존 guard/pool 반환을 보존했다.
+  원천 호출·운영/flag·schema·GC 변경0. 정확 CI·리뷰·HTTP/UI는 PR에서 정산한다.
+- 722a42d 정확CI는1269PASS/일간 경합 시험1FAIL이었다. guard가 CAS까지 확장된 뒤
+  늦어진 시험 barrier만 실제 read 소진 후 SH 내부/CAS 전으로 이동했고 CAS 단언은 유지했다.
+  새 소유 PG에서 동일 회귀5회 연속 PASS. 제품 변경0이며 새 정확CI 결과는 PR에서 정산한다.
+
 ## 2026-10-23 — 중기예보 두 원천 grouped reader
 
 - 같은 발표의 육상·기온을 위치별 배열로 묶는 별도 reader를 추가한다. 전체 raw

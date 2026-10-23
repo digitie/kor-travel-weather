@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select, tuple_
 
 from .export_artifacts import ExportArtifactError
+from .export_capacity import MAX_SOURCE_SCOPES, read_scope_plans
 from .export_external import RetrievalScopeDescriptor
 from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
@@ -116,17 +117,19 @@ def approved_source_selection(
         metadata.tables["weather_export_attempts"], metadata.tables["weather_sync_runs"]
     )
     rows = connection.execute(select(
-        table, plans.c.descriptor, attempts.c.run_id,
+        table, plans.c.attempt_id.label("plan_attempt_id"), attempts.c.run_id,
         generations.c.data_revision_at, generations.c.created_at.label("generation_published_at"),
     ).select_from(
         table.join(generations, table.c.generation_id == generations.c.generation_id)
         .join(attempts, generations.c.attempt_id == attempts.c.attempt_id)
-        .join(plans, plans.c.attempt_id == attempts.c.attempt_id)
+        .outerjoin(plans, plans.c.attempt_id == attempts.c.attempt_id)
     ).where(tuple_(table.c.provider, table.c.dataset_key).in_(expected)).order_by(
         table.c.provider, table.c.dataset_key, table.c.location_id,
     ).limit(MAX_SELECTED_ROWS + 1)).mappings().all()
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
+    if any(row["plan_attempt_id"] is None for row in rows):
+        raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
     catalog = {row["location_id"]: row for row in locations}
     missing = {row["location_id"] for row in rows} - catalog.keys()
     if missing:
@@ -139,14 +142,21 @@ def approved_source_selection(
             # 실제 catalog 유실은 이전 완전 snapshot으로 fallback해야 한다.
             raise ExportArtifactError("승인 source의 canonical catalog 행이 유실됐습니다.")
     valid, sources = {}, set()
+    plans_by_attempt = read_scope_plans(
+        connection, plans, [row["plan_attempt_id"] for row in rows
+                            if row["location_id"] in catalog],
+    )
+    parsed_plans = {key: parse_scope_descriptor(value) for key, value in plans_by_attempt.items()}
+    plan_namespaces = {key: value.namespace for key, value in parsed_plans.items()}
     descriptors_by_namespace = {}
     for row in rows:
         current = catalog.get(row["location_id"])
         if current is None:
             continue  # 위에서 같은 MVCC의 명시 enabled=False만 확인했다.
-        if row["namespace"] not in descriptors_by_namespace:
-            descriptors_by_namespace[row["namespace"]] = parse_scope_descriptor(row["descriptor"])
-        descriptor = descriptors_by_namespace[row["namespace"]]
+        descriptor = parsed_plans[row["plan_attempt_id"]]
+        if plan_namespaces[row["plan_attempt_id"]] != row["namespace"]:
+            raise ExportArtifactError("승인 inventory와 불변 source plan이 다릅니다.")
+        descriptors_by_namespace[row["namespace"]] = descriptor
         _validate_anchor(descriptor, current)
         if (
             (float(current["latitude"]), float(current["longitude"]))
@@ -227,6 +237,7 @@ def approved_source_selection(
         for descriptor in descriptors:
             if (descriptor.provider, descriptor.dataset_key) != source:
                 raise ExportArtifactError("실제 source roster가 다른 dataset을 포함합니다.")
+            descriptor_namespace = descriptor.namespace
             for key in descriptor.location_ids:
                 part = getattr(descriptor, "source_part", "main")
                 if (key, part) in selected_parts:
@@ -237,7 +248,7 @@ def approved_source_selection(
                     continue
                 approved = valid.get((*source, key, part))
                 if approved is None or (
-                    approved["namespace"] != descriptor.namespace
+                    approved["namespace"] != descriptor_namespace
                     or approved["run_id"] != row["run_id"]
                 ):
                     unconfirmed = True
@@ -259,6 +270,6 @@ def approved_source_selection(
             descriptor, sample["generation_id"], ids, sample["source_collected_at"],
             sample["data_revision_at"], sample["generation_published_at"],
         ))
-    if not scopes or len(scopes) > 5000:
+    if not scopes or len(scopes) > MAX_SOURCE_SCOPES:
         raise ExportArtifactError("승인 source vector가 비었거나 상한을 넘었습니다.")
     return ApprovedSelection(tuple(scopes), unconfirmed)

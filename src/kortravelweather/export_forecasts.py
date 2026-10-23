@@ -8,6 +8,14 @@ from uuid import uuid4
 
 from sqlalchemy import select, text
 
+from .export_capacity import (
+    MANIFEST_STATE_RESERVE,
+    MAX_MANIFEST_BYTES,
+    MAX_SOURCE_SCOPES,
+    ExportCapacityExceeded,
+    MetadataBudget,
+    read_generation_refs,
+)
 from .export_heads import ScopeDescriptor, _digest
 from .export_inventory_selection import approved_source_selection, catalog_source_columns
 from .export_snapshots import (
@@ -142,7 +150,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                     raise ExportSnapshotUnavailable(
                         "외부 예보 선택 집합이 준비되지 않았습니다."
                     ) from exc
-            if len(descriptors) > 5000:
+            if len(descriptors) > MAX_SOURCE_SCOPES:
                 raise ExportSnapshotUnavailable("예보 source vector 상한을 넘었습니다.")
             heads = {} if self.source_inventory else {
                 r.namespace: r
@@ -167,16 +175,11 @@ class FrozenForecastExports(FrozenCurrentExports):
                 ) for namespace, head in selected_heads.items()}
             if len(heads) != len(descriptors):
                 raise ExportSnapshotUnavailable("모든 위치의 승인된 예보가 필요합니다.")
-            refs = defaultdict(list)
-            for ref in c.execute(
-                select(self.heads.refs)
-                .where(
-                    self.heads.refs.c.generation_id.in_([r.generation_id for r in heads.values()])
-                )
-                .order_by(self.heads.refs.c.ordinal)
-            ).mappings():
-                refs[ref["generation_id"]].append(dict(ref))
+            refs = read_generation_refs(
+                c, self.heads.refs, [r.generation_id for r in heads.values()],
+            )
             scopes = []
+            budget = MetadataBudget()
             for d in descriptors:
                 head = heads[d.namespace]
                 chunks = refs[head.generation_id]
@@ -209,6 +212,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "data_revision_at": head.data_revision_at.isoformat(),
                     }
                 )
+                budget.add(scopes[-1])
             manifest = {
                 "selection": self.selection,
                 "as_of": anchor.isoformat(),
@@ -217,6 +221,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "unconfirmed_sources": unconfirmed,
             }
             manifest = self._prepare_manifest(manifest)
+            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
             digest = _digest(manifest)
             latest = select(self.snapshots.c.issue_order).where(
                 self.snapshots.c.manifest["selection"]["kind"].as_string() == "forecasts",
@@ -330,6 +335,8 @@ class FrozenForecastExports(FrozenCurrentExports):
         else:
             try:
                 frozen = self._freeze_forecasts()
+            except ExportCapacityExceeded:
+                frozen = self._capacity_fallback(self._previous_forecasts())
             except ExportSnapshotUnavailable:
                 frozen = self._previous_forecasts()
             state = {
@@ -344,7 +351,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
         output, more = self._page_items(manifest, state, limit, now)
-        stale = self._health(manifest, frozen, now)
+        stale = bool(manifest.get("capacity_limited")) or self._health(manifest, frozen, now)
         status = "stale" if stale else "ok"
         page = {
             "items": output,
