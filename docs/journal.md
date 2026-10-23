@@ -1,4 +1,11 @@
 
+## 2026-10-23 — Map API 단계1 머지·단계2 receipt 기반 구현 중
+
+- 계약·인증 경계 PR135는 두 독립 리뷰·CI·전체Python738/frontend243·격리실제API3범주/UI11 뒤 main9d75b64로 머지했다. 운영 배포는 아직 하지 않았다.
+- 단계2 opt-in receipt·canonical 불변 후보를 구현했다. 신규 insert0/CAS0도 persisted정본으로 기록하고, 이번 재관측 clock을 최초 known_at과 분리한다. 파일은 원본commit/pool반환 후 저장하며 파일실패가 기존 원본 성공을 취소하지 않는다. 전용PG집중18 PASS.
+- [검증·미완 범위](reports/2026-10-23-map-export-receipts.md). 실제 collector 활성화·scope완결/terminal성공 승격·실제API/ETag/gzip·W5는 아직 미완이며 API는503 계약을 유지한다.
+
+
 ## 2026-10-23 — Map service API 계약·인증 경계 구현 시작
 
 - W-MAP-01: `/v1/service/exports/locations,current,status`의 DTO/OpenAPI/TS와 기존 `require_admin`/`x-admin-token` 인증을 추가했다. 성공 head가 아직 없어 인증 후503 `EXPORT_NOT_READY`이며 빈200·304를 반환하지 않는다. DB/provider 조회도 하지 않는다.

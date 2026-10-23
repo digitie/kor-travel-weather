@@ -81,6 +81,13 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
         command.upgrade(config, "head")
 
         inspector = inspect(engine)
+        assert {"weather_export_attempts", "weather_export_chunks"}.issubset(
+            inspector.get_table_names()
+        )
+        assert not inspector.get_foreign_keys("weather_export_attempts")
+        assert inspector.get_foreign_keys("weather_export_chunks")[0]["referred_table"] == (
+            "weather_export_attempts"
+        )
         assert "ck_weather_locations_latitude" in {
             item["name"] for item in inspector.get_check_constraints("weather_locations")
         }
@@ -91,43 +98,57 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             item["name"] for item in inspector.get_indexes("weather_sync_runs")
         }
         catalog_index = next(
-            item for item in inspector.get_indexes("weather_locations")
+            item
+            for item in inspector.get_indexes("weather_locations")
             if item["name"] == "ix_weather_locations_enabled_name_id"
         )
         assert catalog_index["column_names"] == ["name", "location_id"]
         assert set(catalog_index["include_columns"]) == {
-            "latitude", "longitude", "nx", "ny", "region_code", "enabled",
+            "latitude",
+            "longitude",
+            "nx",
+            "ny",
+            "region_code",
+            "enabled",
         }
         assert "enabled IS TRUE" in catalog_index["dialect_options"]["postgresql_where"]
         provider_marker_index = next(
-            item for item in inspector.get_indexes("weather_current_values")
+            item
+            for item in inspector.get_indexes("weather_current_values")
             if item["name"] == "ix_weather_current_values_provider_marker"
         )
         assert provider_marker_index["column_names"][:3] == [
-            "location_id", "provider", "metric_key",
+            "location_id",
+            "provider",
+            "metric_key",
         ]
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0022_provider_marker_index"
+            assert version == "0023_export_receipts"
             retention_index = next(
-                item for item in inspect(engine).get_indexes("weather_values")
+                item
+                for item in inspect(engine).get_indexes("weather_values")
                 if item["name"] == "ix_weather_values_short_forecast_retention"
             )
             assert retention_index["column_names"] == ["valid_at", "known_at", "value_id"]
             predicate = retention_index["dialect_options"]["postgresql_where"]
             for column, value in (
-                ("provider", "python-kma-api"), ("dataset_key", "kma_short_forecast"),
-                ("weather_domain", "kma_short_forecast"), ("forecast_style", "short"),
+                ("provider", "python-kma-api"),
+                ("dataset_key", "kma_short_forecast"),
+                ("weather_domain", "kma_short_forecast"),
+                ("forecast_style", "short"),
             ):
                 assert column in predicate and f"'{value}'" in predicate
             assert "valid_at IS NOT NULL" in predicate
             assert predicate.count(" AND ") == 4 and " OR " not in predicate
-            assert connection.execute(text(
-                "SELECT indisvalid,indisready FROM pg_index WHERE "
-                "indexrelid='ix_weather_values_short_forecast_retention'::regclass"
-            )).one() == (True, True)
+            assert connection.execute(
+                text(
+                    "SELECT indisvalid,indisready FROM pg_index WHERE "
+                    "indexrelid='ix_weather_values_short_forecast_retention'::regclass"
+                )
+            ).one() == (True, True)
             assert "orchestrator_run_id" in {
                 column["name"] for column in inspect(engine).get_columns("weather_sync_runs")
             }
@@ -144,15 +165,13 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             # The nearby bundle reads warnings from the projection on their own
             # budget; without this index that read walks the whole slice.
             projection_indexes = {
-                item["name"]
-                for item in inspect(engine).get_indexes("weather_current_values")
+                item["name"] for item in inspect(engine).get_indexes("weather_current_values")
             }
             assert "ix_weather_current_values_alert_lookup" in projection_indexes
             # Without this the bundle read ranks a location's whole slice.
             assert "ix_weather_current_values_location_current" in projection_indexes
             projection_columns = {
-                item["name"]
-                for item in inspect(engine).get_columns("weather_current_values")
+                item["name"] for item in inspect(engine).get_columns("weather_current_values")
             }
             # The bundle sort keys must live on the pointer table, or the
             # per-location limit cannot be applied before the fact join.
@@ -244,11 +263,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
                 )
             )
         with pytest.raises(Exception, match="immutable"), engine.begin() as connection:
-            connection.execute(
-                text(
-                    "DELETE FROM weather_values WHERE value_id='immutable-value'"
-                )
-            )
+            connection.execute(text("DELETE FROM weather_values WHERE value_id='immutable-value'"))
     finally:
         get_settings.cache_clear()
 
@@ -303,12 +318,8 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
         repository.create_schema()
         with engine.connect() as connection:
             from_create_all = _index_definitions(connection)
-            from_create_all.update(
-                _index_definitions(connection, "weather_current_values")
-            )
-            from_create_all.update(
-                _index_definitions(connection, "weather_sync_run_sources")
-            )
+            from_create_all.update(_index_definitions(connection, "weather_current_values"))
+            from_create_all.update(_index_definitions(connection, "weather_sync_run_sources"))
 
         # 2) schema built by the migration chain
         with engine.begin() as connection:
@@ -317,12 +328,8 @@ def test_create_all_and_alembic_build_identical_marker_indexes(monkeypatch) -> N
         command.upgrade(Config("alembic.ini"), "head")
         with engine.connect() as connection:
             from_alembic = _index_definitions(connection)
-            from_alembic.update(
-                _index_definitions(connection, "weather_current_values")
-            )
-            from_alembic.update(
-                _index_definitions(connection, "weather_sync_run_sources")
-            )
+            from_alembic.update(_index_definitions(connection, "weather_current_values"))
+            from_alembic.update(_index_definitions(connection, "weather_sync_run_sources"))
 
         for name in _MARKER_INDEXES + _PROJECTION_INDEXES:
             assert name in from_create_all, f"{name} missing from create_all schema"
@@ -418,10 +425,7 @@ def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
 
         def oids(connection) -> dict[str, int]:
             rows = connection.execute(
-                text(
-                    "SELECT relname, oid FROM pg_class "
-                    "WHERE relname = ANY(:names)"
-                ),
+                text("SELECT relname, oid FROM pg_class WHERE relname = ANY(:names)"),
                 {"names": list(names)},
             ).all()
             return {name: oid for name, oid in rows}
@@ -688,9 +692,7 @@ def test_the_bundle_ordering_is_served_by_its_index(monkeypatch) -> None:
             # planner to care.  Disabling the alternative is what makes the
             # question "can this index serve the ordering" answerable at all.
             connection.execute(text("SET enable_seqscan = off"))
-            plan = "\n".join(
-                line for (line,) in connection.execute(text("EXPLAIN " + statement))
-            )
+            plan = "\n".join(line for (line,) in connection.execute(text("EXPLAIN " + statement)))
 
         assert "ix_weather_current_values_location_current" in plan, (
             f"the bundle read does not use its index:\n{plan}"

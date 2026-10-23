@@ -1,6 +1,6 @@
 # ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
-- 상태: **proposed, 단계1 계약·인증 경계 구현 중**. 성공 head 기반 실제 데이터 공개·schema·운영 변경은 아직 없다.
+- 상태: **proposed, 단계1 머지·단계2 opt-in receipt 기반 구현 중**. 성공 head 기반 실제 데이터 공개·schema·운영 변경은 아직 없다.
 - 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
   COW artifact 채택은 구현 전 실측 exit gate 통과가 조건이다. 문서 머지가 구현 승인은 아니다.
 - 보존 기준 Weather main: `12c3a4adfcd7a030bedaf5346371a5684656ea71`.
@@ -115,13 +115,20 @@ Weather 현재 pointer는 run의 중간 chunk commit을 이미 볼 수 있으며
 되돌리는 기능이 없다. 그래서 mutable current pointer에서 dirty group을 나중에 읽어 묶는 방법은
 성공 snapshot 보장의 근거가 될 수 없다.
 
-권장 경로는 collector의 기존 bounded 정규화·게시 흐름에서 **attempt 전용 candidate artifact**를
-stream serialize하는 것이다. 원천 raw를 복제하지 않고 정규화 결과/정확한 `(value_id, known_at)`/
-source_record_key/run/attempt·logical point를 기록한다. NVMe 파일은 원자 rename 후 checksum을
-확정하고, 해당 chunk가 실제 commit됐음을 증명하는 manifest row/commit receipt를 **그 chunk
-DB transaction에 함께** 남긴다. 파일만 생기고 transaction이 실패하면 orphan GC 대상이며,
-DB commit 뒤 파일 손실/불일치는 export 완료 실패다. 느린 파일 I/O와 PG transaction 중첩 시간은
-실측·제한하고 source fetch 동안 transaction을 열지 않는다.
+단계2 구현은 collector의 bounded 정규화·검증 흐름에서 canonical persisted point를 한 chunk
+최대5000개/8MiB의 불변 bytes로 준비한다. DB에는 해당 bytes의 hash·개수·scope·이번 실제
+수집 시각을 원본 chunk와 같은 transaction의 receipt로 남긴다. **파일 fsync/원자 rename은
+DB commit과 pool 반환 뒤 수행**한다. 원본 수집 실패·PG 잠금 연장으로 export 파일 오류를
+전파하지 않기 위한 구체화이며, 초안의 파일 선행 쓰기 순서를 대체한다. 파일 오류면 export
+attempt만 failed이고 원본 commit은 보존한다.
+
+receipt만 있는 상태는 파일 준비 완료가 아니다. publisher는 receipt·파일 존재/전체 digest·완결
+scope·terminal 성공을 모두 확인해야 하고, 누락/손상 파일로 head나 watermark를 전진시키지
+않는다. commit 뒤 worker가 죽어 파일이 없으면 이전 성공 head를 유지한다. 동일 chunk의
+idempotent replay가 canonical row/digest를 재검증해 파일을 복구할 수 있다. API read나 mutable
+current를 통해 임의로 재구성하지 않는다. 파일이 먼저 남는 orphan뿐 아니라 receipt만 남는
+불완전 attempt도 bounded 정리/재수집 대상이다. bytes 상한은 전체 worker RSS 상한이 아니며
+COW/실제 수집 활성화 전 합산 CPU·WAL·메모리·fsync 비용 gate는 그대로 적용한다.
 
 여기서 **accepted는 신규 insert 행 또는 source current CAS 성공 행만을 뜻하지 않는다**.
 현재 attempt가 원문·logical identity·typed normalized value를 검증한 **정확한 persisted fact

@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from cryptography.fernet import Fernet, InvalidToken
 from kortravelcommon.reverse_address import reverse_address_tables
@@ -58,6 +59,21 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_col
 from sqlalchemy.types import TypeDecorator
 
 from .alerts import ALERT_MAX_AGE, active_alert_values
+from .export_artifacts import (
+    MAX_CHUNK_POINTS,
+    ExportArtifactError,
+    PreparedExportChunk,
+    canonical_export_number,
+    prepare_export_chunk,
+)
+from .export_receipts import (
+    ExportAttempt,
+    ExportCapture,
+    create_export_attempt,
+    export_receipt_tables,
+    record_export_chunk,
+    source_scope_key,
+)
 from .metrics import (
     observe_history_purged,
     observe_stale_recovered,
@@ -121,6 +137,9 @@ class Base(DeclarativeBase):
 
 # 파생 주소는 원천 주소·좌표와 분리해 같은 소비자 DB에 저장한다.
 reverse_address_tables(Base.metadata)
+export_receipt_tables(Base.metadata)
+
+logger = logging.getLogger(__name__)
 
 
 class AwareDateTime(TypeDecorator[datetime]):
@@ -1821,6 +1840,8 @@ class WeatherRepository:
         facts: list[WeatherValue],
         *,
         skipped: set[str] | None = None,
+        export_capture: ExportCapture | None = None,
+        prepared: list[PreparedExportChunk] | None = None,
     ) -> int:
         """Publish ``records`` and ``facts``; see ``ingest_batch``.
 
@@ -1995,6 +2016,62 @@ class WeatherRepository:
         # logical point, so refresh after all inserts and keep only its newest
         # candidate.
         self._refresh_current_projection_session(session, candidates)
+        if export_capture is not None:
+            try:
+                # export 후보 오류가 기존 fact 저장을 되돌리지 않도록 별도 savepoint를 쓴다.
+                with session.begin_nested():
+                    if len(run_rows) != 1 or len(candidates) > MAX_CHUNK_POINTS:
+                        raise ExportArtifactError(
+                            "export 후보에는 단일 run·제한된 chunk가 필요합니다."
+                        )
+                    observed: dict[str, datetime] = {}
+                    for key, at in export_capture.source_observed_at.items():
+                        canonical_key = source_aliases.get(key, key)
+                        if at.tzinfo is None or at.utcoffset() is None:
+                            raise ExportArtifactError("원천 재관측 시각에는 timezone이 필요합니다.")
+                        observed[canonical_key] = min(observed.get(canonical_key, at), at)
+                    required = {str(record["source_record_key"]) for record in records}
+                    if not required or not required.issubset(observed):
+                        raise ExportArtifactError("이번 원천 fetch의 실제 시각이 누락됐습니다.")
+                    if any(fact.source_key not in required for fact in candidates):
+                        raise ExportArtifactError("검증된 원천과 point lineage가 다릅니다.")
+                    points: dict[tuple[str, datetime | None], dict[str, Any]] = {}
+                    for fact in candidates:
+                        key = (fact.value_id, fact.known_at)
+                        row = stored_facts[key]
+                        # 입력 alias가 아니라 실제 persisted row·canonical 복합 PK를 보존한다.
+                        point = self._value_model(row).model_dump(mode="json", exclude={"payload"})
+                        point["value_id"] = row.value_id
+                        if row.value_number is not None:
+                            point["value_number"] = canonical_export_number(row.value_number)
+                        point["observation_evidence"] = {
+                            name: row.payload[name] for name in (
+                                "obsr_value", "obsrValue", "category", "base_date",
+                                "base_time", "nx", "ny",
+                            ) if name in (row.payload or {})
+                        }
+                        points[key] = point
+                    chunk = prepare_export_chunk(
+                        (points[key] for key in sorted(points)),
+                        source_collected_at=min(observed[key] for key in required),
+                    )
+                    (run_id,) = run_rows
+                    covered = [
+                        source_scope_key(str(record["provider"]), str(record["dataset_key"]),
+                                         str(record["source_entity_type"]),
+                                         str(record["source_entity_id"]))
+                        for record in records
+                    ]
+                    record_export_chunk(session, metadata=Base.metadata, capture=export_capture,
+                                        run_id=run_id, covered_sources=covered, chunk=chunk)
+                if prepared is not None:
+                    prepared.append(chunk)
+            except Exception:
+                if not session.is_active:
+                    raise
+                self._fail_export_capture(session, export_capture, "capture_failed")
+                logger.warning("weather_export_capture_failed attempt_id=%s",
+                               export_capture.attempt.attempt_id)
         # The run row is locked above, so its count moves with the facts in
         # the same commit.  A run published in chunks then reports what it
         # loaded even when something else terminalizes it -- the stale-run
@@ -2032,29 +2109,70 @@ class WeatherRepository:
                 time.sleep(INGEST_LOCK_RETRY_SECONDS)
         raise AssertionError("unreachable")
 
+    @staticmethod
+    def _fail_export_capture(session: Session, capture: ExportCapture, code: str) -> None:
+        attempts, _ = export_receipt_tables(Base.metadata)
+        session.execute(update(attempts).where(
+            attempts.c.attempt_id == capture.attempt.attempt_id,
+            attempts.c.owner_id == capture.attempt.owner_id,
+            attempts.c.status == "preparing",
+        ).values(status="failed", error_code=code))
+
+    def begin_export_attempt(
+        self, *, run_id: str, scope_key: str, planned_sources: Sequence[str],
+        execution_mode: Literal["native", "dagster"],
+    ) -> ExportAttempt:
+        with self._session_factory.begin() as session:
+            self._set_ingest_lock_timeout(session)
+            return create_export_attempt(
+                session, metadata=Base.metadata, run_id=run_id, scope_key=scope_key,
+                planned_sources=planned_sources, execution_mode=execution_mode,
+                orchestrator_run_id=self.orchestrator_run_id,
+            )
+
     def ingest_batch(
         self,
         *,
         source_records: list[Mapping[str, Any]] | None = None,
         values: list[WeatherValue] | None = None,
+        export_capture: ExportCapture | None = None,
     ) -> int:
-        """원천 record와 normalized facts를 한 transaction으로 publish한다.
-
-        The transaction holds the advisory lock of every location in
-        ``values`` until it commits, so callers with many locations publish
-        them in location chunks (see ``kortravelweather_dagster.kma_weather``).
-        """
+        """원천·fact를 원자적으로 저장한다. export는 명시적으로 선택할 때만 기록한다."""
         records = source_records or []
         facts = values or []
         if not records and not facts:
             return 0
+        if export_capture is None:
+            def ordinary_step() -> int:
+                with self._session_factory.begin() as session:
+                    self._set_ingest_lock_timeout(session)
+                    return self._ingest_batch_session(session, records, facts)
+            return self._retry_lock_race(ordinary_step)
 
-        def step() -> int:
+        def step() -> tuple[int, PreparedExportChunk | None]:
+            prepared: list[PreparedExportChunk] = []
             with self._session_factory.begin() as session:
                 self._set_ingest_lock_timeout(session)
-                return self._ingest_batch_session(session, records, facts)
+                loaded = self._ingest_batch_session(
+                    session, records, facts, export_capture=export_capture, prepared=prepared,
+                )
+            return loaded, prepared[0] if prepared else None
 
-        return self._retry_lock_race(step)
+        loaded, chunk = self._retry_lock_race(step)
+        if export_capture is not None and chunk is not None:
+            try:
+                # DB commit 뒤 파일을 쓴다. publisher는 receipt와 파일 digest 둘 다 확인해야 한다.
+                export_capture.artifacts.publish(chunk)
+            except (OSError, ExportArtifactError):
+                try:
+                    with self._session_factory.begin() as session:
+                        self._fail_export_capture(session, export_capture, "artifact_write_failed")
+                except Exception:
+                    logger.warning("weather_export_failure_record_unavailable attempt_id=%s",
+                                   export_capture.attempt.attempt_id)
+                logger.warning("weather_export_artifact_write_failed attempt_id=%s",
+                               export_capture.attempt.attempt_id)
+        return loaded
 
     def ingest_skip_locked(
         self,

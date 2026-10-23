@@ -12,11 +12,11 @@
 설계 문서 PR 머지는 코드/운영 수용이 아니다. W5 관측 범위는 사용자 승인으로 기존 OBSERVED와
 실제 관측 기반 KMA 초단기실황을 포함하도록 선택 완료했다. COW는 실측 exit gate 뒤에만 채택한다.
 
-- [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비(구현·검증 완료, 전체Python738/frontend243·CI/2리뷰·격리실제API3범주/UI11 PASS, PR135 머지 대기). 기존 require_admin/x-admin-token 재사용과
+- [ ] W-MAP-01 — W1/W2/W4 DTO·auth·status 계약 준비(구현·검증 완료, 전체Python738/frontend243·CI/2리뷰·격리실제API3범주/UI11 PASS, PR135 main9d75b64 머지). 기존 require_admin/x-admin-token 재사용과
   신규 service route의 OpenAPI·타입·오류·bounded query와 웹 catchall service prefix 차단을 준비한다.
   이 단계는 W1/W2 데이터 공개 완료가 아니다. 해제 조건: 설계 §1·6 단계1·§7의 계약 검증과
   프록시 upstream fetch 0회, 기존 경로 유지, 기능 CI·2인 리뷰.
-- [ ] W-MAP-02 — W-MAP-01 뒤 성공 attempt receipt·scope 완결 barrier·독립 성공 export head와
+- [ ] W-MAP-02 — 단계2 opt-in receipt 구현 중(집중PG18 PASS). W-MAP-01 뒤 성공 attempt receipt·scope 완결 barrier·독립 성공 export head와
   W1/W2 실제 공개·W3 snapshot을 구현한다. W1/W2 공개 완료는 이 성공 head/barrier가 선행해야 한다.
   설계 §6 단계2(receipt)→3(성공 승격)→4(실제 조회 공개)를 따른다. canonical replay/실제 수집시각,
   failed chunk·scope barrier/owner·cursor/ETag/checkpoint를 검증하며 단계2·3만으로 완료하지 않는다.
