@@ -1675,6 +1675,159 @@
           }
         ]
       }
+    },
+    "/v1/service/exports/forecasts": {
+      "get": {
+        "tags": [
+          "service exports"
+        ],
+        "summary": "Export Forecasts",
+        "operationId": "export_forecasts_v1_service_exports_forecasts_get",
+        "parameters": [
+          {
+            "name": "style",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "ultra_short",
+                "short",
+                "mid",
+                "external"
+              ],
+              "type": "string",
+              "title": "Style"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 5000,
+              "minimum": 1,
+              "default": 500,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "공개 publication watermark. 이전 응답 meta.next_since를 사용",
+              "title": "Since"
+            },
+            "description": "공개 publication watermark. 이전 응답 meta.next_since를 사용"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportPage_ExportForecastGroup_"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "고정 snapshot TTL 만료. 첫 페이지부터 재시작",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportUnavailable"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "데이터/vector/페이지/상태가 변경되지 않음"
+          },
+          "503": {
+            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportUnavailable"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Admin authentication required",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "AdminToken": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2095,6 +2248,78 @@
         ],
         "title": "ExportCurrentValue"
       },
+      "ExportForecastGroup": {
+        "properties": {
+          "location_id": {
+            "type": "string",
+            "title": "Location Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "forecast_style": {
+            "type": "string",
+            "enum": [
+              "ultra_short",
+              "short",
+              "mid",
+              "external"
+            ],
+            "title": "Forecast Style"
+          },
+          "known_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Known At"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          },
+          "target_at": {
+            "items": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "type": "array",
+            "title": "Target At"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Metrics"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "location_id",
+          "provider",
+          "forecast_style",
+          "known_at",
+          "published_at",
+          "target_at",
+          "metrics"
+        ],
+        "title": "ExportForecastGroup"
+      },
       "ExportLocation": {
         "properties": {
           "location_id": {
@@ -2256,6 +2481,18 @@
             "type": "boolean",
             "title": "Has More",
             "default": false
+          },
+          "next_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Since"
           }
         },
         "additionalProperties": false,
@@ -2288,6 +2525,27 @@
           "meta"
         ],
         "title": "ExportPage[ExportCurrentValue]"
+      },
+      "ExportPage_ExportForecastGroup_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExportForecastGroup"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/ExportMeta"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "items",
+          "meta"
+        ],
+        "title": "ExportPage[ExportForecastGroup]"
       },
       "ExportPage_ExportLocation_": {
         "properties": {

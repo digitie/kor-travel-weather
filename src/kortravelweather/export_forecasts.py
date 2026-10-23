@@ -293,12 +293,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                             cached[point["location_id"]].append(point)
                         cached_ref = ref["artifact_digest"]
                     points = cached[key]
-                    future = [
-                        p
-                        for p in points
-                        if datetime.fromisoformat(p["target_at"])
-                        > datetime.fromisoformat(manifest["as_of"])
-                    ]
+                    future = [p for p in points if datetime.fromisoformat(p["target_at"]) > now]
                     if not future:
                         raise ExportSnapshotUnavailable("현재 이후의 승인 예보가 없습니다.")
                     targets = sorted({p["target_at"] for p in future})
@@ -354,7 +349,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "item_count": len(output),
                 "snapshot_id": frozen["snapshot_id"],
                 "snapshot_generated_at": frozen["created_at"].isoformat(),
-                "as_of": manifest["as_of"],
+                "as_of": now.isoformat(),
                 "next_cursor": self._encode(state) if more else None,
                 "has_more": more,
                 "next_since": manifest["next_since"],
@@ -366,6 +361,9 @@ class FrozenForecastExports(FrozenCurrentExports):
     def _health(self, manifest, frozen, now):
         scopes = manifest["scopes"]
         stale = now - frozen["source_collected_at"] > timedelta(
+            hours=3 if self.style == "ultra_short" else 9
+        )
+        stale |= now - frozen["data_revision_at"] > timedelta(
             hours=3 if self.style == "ultra_short" else 9
         )
         with self.heads._transaction() as s:

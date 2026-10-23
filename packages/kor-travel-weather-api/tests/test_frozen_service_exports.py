@@ -132,6 +132,238 @@ def _client(repository, tmp_path, *, providers=None, enabled=True):
     return TestClient(create_app(settings, repository))
 
 
+def _collect_forecast(repository, root, *, targets=None, wait=None, run_scope=None):
+    from kma.time_utils import parse_kma_datetime
+    from kortravelweather_dagster.kma_weather import KMA_ULTRA_SHORT_FORECAST
+
+    def respond(request):
+        if wait:
+            wait()
+        q = request.url.params
+        base = parse_kma_datetime(q["base_date"], q["base_time"])
+        rows = []
+        for hour in range(1, 7):
+            at = (base + timedelta(hours=hour)).replace(minute=0)
+            for category, value in {
+                "T1H": "18.4",
+                "RN1": "0",
+                "REH": "50",
+                "PTY": "0",
+                "SKY": "1",
+                "VEC": "120",
+                "WSD": "1",
+            }.items():
+                rows.append(
+                    dict(
+                        baseDate=q["base_date"],
+                        baseTime=q["base_time"],
+                        nx=int(q["nx"]),
+                        ny=int(q["ny"]),
+                        category=category,
+                        fcstValue=value,
+                        fcstDate=at.strftime("%Y%m%d"),
+                        fcstTime=at.strftime("%H%M"),
+                    )
+                )
+        return httpx.Response(
+            200,
+            json={
+                "response": {
+                    "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+                    "body": {
+                        "pageNo": 1,
+                        "numOfRows": 1000,
+                        "totalCount": len(rows),
+                        "items": {"item": rows},
+                    },
+                }
+            },
+        )
+
+    provider = KmaClient(
+        "private-key", session=httpx.AsyncClient(transport=httpx.MockTransport(respond)), retries=0
+    )
+    if targets is None:
+        targets = [
+            WeatherTarget(
+                WeatherLocation(
+                    location_id=key,
+                    name=key,
+                    latitude=37.5,
+                    longitude=127,
+                    nx=nx,
+                    ny=127,
+                )
+            )
+            for key, nx in [("a", 60), ("b", 60), ("c", 61)]
+        ]
+    result = run_weather_sync(
+        repository=repository,
+        client=provider,
+        targets=targets,
+        base_datasets=frozenset({KMA_ULTRA_SHORT_FORECAST}),
+        export_artifact_root=root,
+        sync_run=(
+            repository.start_sync_run(provider="python-kma-api", dataset_key=run_scope)
+            if run_scope
+            else None
+        ),
+    )
+    assert result["status"] == "success"
+    publish_pending_exports(repository, root)
+    return targets
+
+
+def test_forecast_groups_auth_gzip_cursor_and_empty_publication_delta(repository, tmp_path):
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/forecasts"
+    params = {"style": "ultra_short", "limit": 1}
+    assert client.get(url, params=params).status_code == 401
+    first = client.get(url, params=params, headers=HEADERS)
+    assert first.status_code == 200 and first.headers["content-encoding"] == "gzip"
+    assert first.json()["meta"]["source_status"] == "ok"
+    assert (
+        client.get(
+            url, params=params, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+        ).status_code
+        == 304
+    )
+    groups, page = [], first.json()
+    while True:
+        groups.extend(page["items"])
+        if not page["meta"]["has_more"]:
+            break
+        page = client.get(
+            url, params={**params, "cursor": page["meta"]["next_cursor"]}, headers=HEADERS
+        ).json()
+    assert {g["location_id"] for g in groups} == {"a", "b", "c"}
+    for group in groups:
+        assert datetime.fromisoformat(group["known_at"]) < datetime.fromisoformat(
+            group["published_at"]
+        )
+        assert all(len(v) == len(group["target_at"]) for v in group["metrics"].values())
+        assert all(
+            datetime.fromisoformat(t) > datetime.fromisoformat(page["meta"]["as_of"])
+            for t in group["target_at"]
+        )
+    watermark = page["meta"]["next_since"]
+    empty = client.get(url, params={"style": "ultra_short", "since": watermark}, headers=HEADERS)
+    assert empty.status_code == 200 and empty.json()["items"] == []
+    assert empty.json()["meta"]["source_status"] == "ok"
+    _collect_forecast(repository, tmp_path)
+    changed = client.get(url, params={"style": "ultra_short", "since": watermark}, headers=HEADERS)
+    assert changed.status_code == 200 and len(changed.json()["items"]) == 3
+    # 동일 bytes 재승격 때 원본 known_at은 보존하고 publication 시각만 바뀐다.
+    assert {g["location_id"]: g["known_at"] for g in changed.json()["items"]} == {
+        g["location_id"]: g["known_at"] for g in groups
+    }
+    assert changed.json()["meta"]["next_since"] > watermark
+    assert (
+        client.get(
+            url,
+            params={"style": "short", "limit": 1, "cursor": first.json()["meta"]["next_cursor"]},
+            headers=HEADERS,
+        ).status_code
+        == 422
+    )
+
+
+def test_late_forecast_commit_after_watermark_is_in_next_delta(repository, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    targets = _collect_forecast(repository, tmp_path)
+    entered, release = Event(), Event()
+
+    def wait():
+        entered.set()
+        assert release.wait(20)
+
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/forecasts"
+    with ThreadPoolExecutor(1) as pool:
+        late = pool.submit(
+            _collect_forecast,
+            repository,
+            tmp_path,
+            targets=targets[:2],
+            wait=wait,
+            run_scope="forecast-partition-grid60",
+        )
+        assert entered.wait(10)
+        try:
+            _collect_forecast(
+                repository, tmp_path, targets=targets[2:], run_scope="forecast-partition-grid61"
+            )
+            checkpoint = client.get(url, params={"style": "ultra_short"}, headers=HEADERS).json()[
+                "meta"
+            ]["next_since"]
+        finally:
+            release.set()
+        late.result(timeout=30)
+    delta = client.get(url, params={"style": "ultra_short", "since": checkpoint}, headers=HEADERS)
+    assert delta.status_code == 200
+    assert {g["location_id"] for g in delta.json()["items"]} == {"a", "b"}
+    assert all(
+        datetime.fromisoformat(g["known_at"])
+        < datetime.fromisoformat(checkpoint)
+        < datetime.fromisoformat(g["published_at"])
+        for g in delta.json()["items"]
+    )
+
+
+def test_forecast_publication_clock_increases_when_server_time_repeats(
+    repository, tmp_path, monkeypatch
+):
+    from sqlalchemy import literal, select
+
+    from kortravelweather import export_heads
+
+    _collect_forecast(repository, tmp_path)
+    clock = Base.metadata.tables["weather_export_publication_clock"]
+    with repository.engine.connect() as c:
+        first = c.scalar(select(clock.c.published_at))
+    monkeypatch.setattr(export_heads.func, "clock_timestamp", lambda: literal(first))
+    _collect_forecast(repository, tmp_path)
+    with repository.engine.connect() as c:
+        second = c.scalar(select(clock.c.published_at))
+    assert second > first
+    _collect_forecast(repository, tmp_path)
+    with repository.engine.connect() as c:
+        third = c.scalar(select(clock.c.published_at))
+    assert third > second
+
+
+def test_forecast_missing_head_remains_stale_on_cursor_and_does_not_replace_current_fallback(
+    repository, tmp_path
+):
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    current = client.get("/v1/service/exports/locations", headers=HEADERS)
+    _collect_forecast(repository, tmp_path)
+    params = {"style": "ultra_short", "limit": 1}
+    url = "/v1/service/exports/forecasts"
+    initial = client.get(url, params=params, headers=HEADERS)
+    cursor = initial.json()["meta"]["next_cursor"]
+    heads = ExportHeads(repository)
+    with repository.engine.begin() as c:
+        c.execute(heads.heads.delete())
+    fallback = client.get(url, params=params, headers=HEADERS)
+    continued = client.get(url, params={**params, "cursor": cursor}, headers=HEADERS)
+    assert fallback.status_code == continued.status_code == 200
+    assert (
+        fallback.json()["meta"]["source_status"]
+        == continued.json()["meta"]["source_status"]
+        == "stale"
+    )
+    locations = client.get("/v1/service/exports/locations", headers=HEADERS)
+    assert locations.status_code == 200 and locations.json()["items"] == current.json()["items"]
+    assert locations.json()["meta"]["source_status"] == "stale"
+
+
 def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
