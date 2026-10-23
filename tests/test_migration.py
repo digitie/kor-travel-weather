@@ -133,6 +133,10 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
             assert version == "0033_export_source_inventory"
+            snapshot_order = next(column for column in inspector.get_columns(
+                "weather_export_snapshots"
+            ) if column["name"] == "issue_order")
+            assert snapshot_order["identity"] and not snapshot_order["nullable"]
             approved_indexes = inspector.get_indexes("weather_export_approved_locations")
             assert any(item["column_names"] == ["generation_id"] for item in approved_indexes)
             assert any(item["column_names"] == ["namespace"] for item in approved_indexes)
