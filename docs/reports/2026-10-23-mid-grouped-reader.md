@@ -47,6 +47,29 @@ SDK 모의 HTTP→native intent/cohort→실제 fact capture→성공 head/inven
 gzip·ETag304·실패 뒤200/stale·old cursor·selection/limit/서명422·TTL410과 flag OFF/토큰
 미설정 거부3건도 PASS(1.41초)다. TestClient 결과를 실제 TCP/UI로 세지 않는다.
 
-REST 인증/ETag304/gzip과 추가 PG 경계를 검증하고 두 독립 리뷰·정확 CI·실제 HTTP/UI를
-마감해야 한다. 선행 inventory/forecast reader의 최종 수정과 수집 배선도 함께 통합한다.
+이후 추가 PG·두 독립 리뷰·실제 HTTP/UI와 선행 통합까지 아래 증거로 마감했다.
+정확 CI와 main 통합은 PR에서 별도로 수용한다.
 운영 배포·flag 활성화·daemon 변경·ARM 비용 개선은 아직 완료하지 않았다.
+
+## 최종 수용 증거
+
+- 제품 고정 `ba70683eb1d8f8b582b060295b169a14643ce987`: 승인된 #159의 전체 제공처
+  선택·예보 hook, #158의 실제 중기 collector, #161의 공유 읽기 잠금을 통합했다.
+  자체 reader와 제한적인 mid route dispatch를 두 독립 리뷰어가 FULL 검토하고
+  마지막 통합 delta까지 PASS/OPEN P0·P1·P2=0으로 폐쇄했다.
+- 해당 제품의 PG/순수/API 집중·실제 OS 공유 잠금·중기 native 회귀29건은
+  PASS(84.49초), 전체 Ruff PASS다. 원래 값 파일을 재사용하는 재승격에서도
+  known_at 불변·meta.source_collected_at 진전을 확인했다.
+- 동일 고정 git archive에서 새 전용 PG(0001~0033)와 uvicorn을 실행한 중기 실제
+  TCP19건 PASS: 권한·최초503·gzip·SKY/null 정렬·304·위치 페이지·위조/limit/since422·
+  부분 승인과 old cursor stale·늦은 승인 delta·native 실패 시304 금지·TTL410.
+- 동일 API 제품을 별도 실행한 전체 제공처 실제 TCP11건과 production frontend의
+  UI11건도 PASS다. frontend tree `2d4043c541e2b25b6fc7368f456b439bda1269a9`의
+  모든 tracked blob과 기존 검증된 BUILD_ID를 실행 전후 직접 대조했다.
+  UI route mock0·브라우저 오류0, wrapper/모든 command exit0을 확인했다.
+- 전용 DB와 API/frontend 프로세스·브라우저 컨테이너, 별도 중기 시험용 PostgreSQL
+  컨테이너까지 정리했다. 원천 HTTP는 SDK 모의 응답이며 실제 원천·운영 API·daemon을
+  변경하거나 운영 ARM 비용 개선율을 측정한 결과가 아니다.
+- 정확 제품 CI는 PR의 run `39969236234`에서 마감한다. 외부 수용 영수증은 작업
+  audit의 `weather160-mid-tcp-report.json`과 `weather160-ba-final-*.json`이며,
+  이 문서만의 후속 변경은 승인 제품과의 tree 동일성을 별도로 확인한다.

@@ -3,7 +3,10 @@
 - 같은 발표의 육상·기온을 위치별 배열로 묶는 별도 reader를 추가한다. 전체 raw
   scope와 frozen cursor/publication watermark를 보존하고 작은 두 chunk만 cache한다.
 - 순수16건+실제 새 PG5건21PASS(33.64초), 실제 앱 인증·304/gzip·stale/old cursor·
-  서명/선택·TTL·기본 OFF3건 PASS. global Ruff PASS. 실제 TCP/UI·두 리뷰·CI는 미완이다.
+  서명/선택·TTL·기본 OFF3건 PASS. 선행 통합 뒤 관련29건 PASS/전체 Ruff PASS.
+- 제품 `ba70683e`에서 두 독립 최종 리뷰 PASS/OPEN0, 중기 실제 TCP19건과
+  전체 제공처 TCP11건+동일 API의 production frontend UI11건 PASS. 정확 CI와
+  main 통합 수용은 PR에 남긴다. 운영 flag OFF·실원천 호출0을 유지했다.
 - 같은 의미의 재수집에도 artifact의 원래 known_at을 유지한다. 새 수집 clock과
   publication watermark는 각각 meta.source_collected_at과 published_at/next_since다.
 - 정본: [중기 grouped reader](reports/2026-10-23-mid-grouped-reader.md).
