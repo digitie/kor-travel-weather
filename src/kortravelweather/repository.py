@@ -77,7 +77,7 @@ from .export_receipts import (
     source_scope_key,
 )
 from .export_snapshots import export_snapshot_tables
-from .export_status import export_status_table
+from .export_status import export_fetch_clock_table, export_status_table
 from .metrics import (
     observe_history_purged,
     observe_stale_recovered,
@@ -146,6 +146,7 @@ export_lifecycle_tables(Base.metadata)
 export_head_tables(Base.metadata)
 export_snapshot_tables(Base.metadata)
 export_status_table(Base.metadata)
+export_fetch_clock_table(Base.metadata)
 
 logger = logging.getLogger(__name__)
 

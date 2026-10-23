@@ -35,7 +35,22 @@ def upgrade():
             name="ck_weather_export_source_status_terminal",
         ),
     )
+    op.create_table(
+        "weather_export_run_fetch_clocks",
+        sa.Column(
+            "run_id", sa.String(64),
+            sa.ForeignKey("weather_sync_runs.run_id", ondelete="CASCADE"), primary_key=True,
+        ),
+        sa.Column("provider", sa.String(120), primary_key=True),
+        sa.Column("dataset_key", sa.String(160), primary_key=True),
+        sa.Column("first_fetched_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("last_fetched_at", sa.DateTime(timezone=True), nullable=False),
+        sa.CheckConstraint(
+            "first_fetched_at <= last_fetched_at", name="ck_weather_export_fetch_clock_order"
+        ),
+    )
 
 
 def downgrade():
+    op.drop_table("weather_export_run_fetch_clocks")
     op.drop_table("weather_export_source_status")

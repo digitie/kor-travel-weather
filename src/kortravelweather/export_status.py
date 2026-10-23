@@ -7,6 +7,8 @@ API는 이 표만 읽고 fact 이력이나 Dagster workspace를 다시 조회하
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -16,12 +18,15 @@ from sqlalchemy import (
     Column,
     Connection,
     DateTime,
+    ForeignKey,
     MetaData,
     String,
     Table,
     case,
+    func,
     or_,
     select,
+    text,
     tuple_,
 )
 from sqlalchemy.dialects.postgresql import insert
@@ -36,6 +41,32 @@ def _utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("상태 시각에는 timezone이 필요합니다.")
     return value.astimezone(UTC)
+
+
+@contextmanager
+def status_transaction(connection: Connection) -> Iterator[None]:
+    """짧은 metadata 작업을 savepoint/상한 안에 두고 caller GUC를 복원한다.
+
+    오류는 caller가 이 context 밖에서 처리한다. rollback한 savepoint가 timeout
+    설정과 파생 쓰기를 되돌리므로 native transaction을 계속 사용할 수 있다.
+    """
+    with connection.begin_nested():
+        previous = dict(connection.execute(text(
+            "SELECT name, setting::bigint FROM pg_settings "
+            "WHERE name IN ('statement_timeout','lock_timeout')"
+        )).tuples().all())
+        limits = {"statement_timeout": 5000, "lock_timeout": 1000}
+        values = {
+            key: f"{min(previous[key], value) if previous[key] > 0 else value}ms"
+            for key, value in limits.items()
+        }
+        setting = text(
+            "SELECT set_config('statement_timeout', :statement_timeout, true), "
+            "set_config('lock_timeout', :lock_timeout, true)"
+        )
+        connection.execute(setting, values)
+        yield
+        connection.execute(setting, {key: f"{value}ms" for key, value in previous.items()})
 
 
 @dataclass(frozen=True, order=True, slots=True)
@@ -101,11 +132,32 @@ def export_status_table(metadata: MetaData) -> Table:
     )
 
 
+def export_fetch_clock_table(metadata: MetaData) -> Table:
+    if "weather_export_run_fetch_clocks" in metadata.tables:
+        return metadata.tables["weather_export_run_fetch_clocks"]
+    return Table(
+        "weather_export_run_fetch_clocks",
+        metadata,
+        Column(
+            "run_id", String(64),
+            ForeignKey("weather_sync_runs.run_id", ondelete="CASCADE"), primary_key=True,
+        ),
+        Column("provider", String(120), primary_key=True),
+        Column("dataset_key", String(160), primary_key=True),
+        Column("first_fetched_at", DateTime(timezone=True), nullable=False),
+        Column("last_fetched_at", DateTime(timezone=True), nullable=False),
+        CheckConstraint(
+            "first_fetched_at <= last_fetched_at", name="ck_weather_export_fetch_clock_order"
+        ),
+    )
+
+
 class ExportSourceStatuses:
     """접속/transaction의 수명은 호출자가 소유한다. 내부 commit은 없다."""
 
     def __init__(self, metadata: MetaData):
         self.table = export_status_table(metadata)
+        self.fetch_clocks = export_fetch_clock_table(metadata)
 
     @staticmethod
     def _identity(key: SourceKey) -> dict[str, str]:
@@ -132,7 +184,6 @@ class ExportSourceStatuses:
             not 1 <= len(run_id) <= 64
             or status not in TERMINALS
             or finished < started
-            or (status == "success" and collected is None)
             or (collected is not None and collected > finished)
         ):
             raise ValueError("수집 terminal 상태/시각이 올바르지 않습니다.")
@@ -176,6 +227,57 @@ class ExportSourceStatuses:
             where=newer,
         ).returning(self.table.c.provider))
         return result.scalar_one_or_none() is not None
+
+    def record_fetch_clock(
+        self,
+        connection: Connection,
+        *,
+        run_id: str,
+        provider: str,
+        dataset_key: str,
+        fetched_at: datetime,
+        last_fetched_at: datetime | None = None,
+    ) -> bool:
+        """별칭 교체 전 실제 fetch 범위를 run/dataset 배치당 한 번 저장한다.
+
+        caller는 native run의 running/owner fence를 통과한 ingest transaction에서만
+        호출한다. 같은 raw의 예전 canonical fetched_at을 전달하면 안 된다.
+        """
+        SourceKey(provider, dataset_key, "observed")
+        first = _utc(fetched_at)
+        last = _utc(last_fetched_at) if last_fetched_at is not None else first
+        if not 1 <= len(run_id) <= 64 or first > last:
+            raise ValueError("원천 fetch 범위가 올바르지 않습니다.")
+        statement = insert(self.fetch_clocks).values(
+            run_id=run_id, provider=provider, dataset_key=dataset_key,
+            first_fetched_at=first, last_fetched_at=last,
+        )
+        old, new = self.fetch_clocks.c, statement.excluded
+        result = connection.execute(statement.on_conflict_do_update(
+            index_elements=[old.run_id, old.provider, old.dataset_key],
+            set_={
+                "first_fetched_at": func.least(old.first_fetched_at, new.first_fetched_at),
+                "last_fetched_at": func.greatest(old.last_fetched_at, new.last_fetched_at),
+            },
+            where=or_(
+                new.first_fetched_at < old.first_fetched_at,
+                new.last_fetched_at > old.last_fetched_at,
+            ),
+        ).returning(self.fetch_clocks.c.run_id))
+        return result.scalar_one_or_none() is not None
+
+    def fetch_clock(
+        self, connection: Connection, *, run_id: str, provider: str, dataset_key: str
+    ) -> datetime | None:
+        SourceKey(provider, dataset_key, "observed")
+        if not 1 <= len(run_id) <= 64:
+            raise ValueError("원천 fetch 실행 식별자가 올바르지 않습니다.")
+        row = connection.scalar(select(self.fetch_clocks.c.first_fetched_at).where(
+            self.fetch_clocks.c.run_id == run_id,
+            self.fetch_clocks.c.provider == provider,
+            self.fetch_clocks.c.dataset_key == dataset_key,
+        ))
+        return _utc(row) if row is not None else None
 
     def record_schedule(
         self,

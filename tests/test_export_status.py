@@ -6,9 +6,11 @@ from queue import Queue
 from time import monotonic, sleep
 
 import pytest
-from sqlalchemy import MetaData, create_engine, event, select, text
+from sqlalchemy import create_engine, event, select, text
+from sqlalchemy.exc import OperationalError
 
-from kortravelweather.export_status import ExportSourceStatuses, SourceKey
+from kortravelweather.export_status import ExportSourceStatuses, SourceKey, status_transaction
+from kortravelweather.repository import Base, SyncRunRow
 
 NOW = datetime(2026, 10, 23, 9, tzinfo=UTC)
 KEY = SourceKey("python-kma-api", "kma_short_forecast", "short")
@@ -17,9 +19,12 @@ KEY = SourceKey("python-kma-api", "kma_short_forecast", "short")
 @pytest.fixture
 def store(weather_test_database_url):
     engine = create_engine(weather_test_database_url)
-    statuses = ExportSourceStatuses(MetaData())
+    statuses = ExportSourceStatuses(Base.metadata)
+    SyncRunRow.__table__.create(engine, checkfirst=True)
     statuses.table.create(engine, checkfirst=True)
+    statuses.fetch_clocks.create(engine, checkfirst=True)
     with engine.begin() as connection:
+        connection.execute(statuses.fetch_clocks.delete())
         connection.execute(statuses.table.delete())
     yield engine, statuses
     engine.dispose()
@@ -157,7 +162,6 @@ def test_delayed_failure_waiting_for_new_success_cannot_replace_it(store):
 @pytest.mark.parametrize("change", [
     {"started_at": NOW.replace(tzinfo=None)},
     {"finished_at": NOW - timedelta(seconds=1)},
-    {"source_collected_at": None},
     {"source_collected_at": NOW + timedelta(hours=1)},
     {"status": "running"},
     {"run_id": ""},
@@ -196,3 +200,79 @@ def test_scope_and_query_bounds_are_checked(store):
                 statuses.read(connection, keys, as_of=NOW)
         with pytest.raises(ValueError):
             statuses.record_schedule(connection, KEY, evaluated_at=NOW, next_scheduled_at=NOW)
+
+
+def test_native_success_can_keep_unknown_source_clock_without_fabrication(store):
+    engine, statuses = store
+    with engine.begin() as connection:
+        assert statuses.record_terminal(
+            connection, KEY, run_id="unknown-clock", started_at=NOW,
+            finished_at=NOW + timedelta(seconds=20), status="success",
+        )
+        row = statuses.read(connection, (KEY,), as_of=NOW)[0]
+        assert row.last_success_at == NOW + timedelta(seconds=20)
+        assert row.source_collected_at is None and not row.last_attempt_failed
+
+
+def test_actual_fetch_clock_is_dataset_scoped_monotone_and_rollback_safe(store):
+    engine, statuses = store
+    with engine.begin() as connection:
+        connection.execute(SyncRunRow.__table__.insert().values(
+            run_id="fetch-clock", provider=KEY.provider, dataset_key="bundle",
+            status="running", started_at=NOW,
+        ))
+        common = dict(run_id="fetch-clock", provider=KEY.provider, dataset_key=KEY.dataset_key)
+        assert statuses.record_fetch_clock(connection, **common, fetched_at=NOW)
+        assert not statuses.record_fetch_clock(connection, **common, fetched_at=NOW)
+        assert statuses.record_fetch_clock(
+            connection, **common, fetched_at=NOW - timedelta(seconds=1),
+            last_fetched_at=NOW + timedelta(seconds=1),
+        )
+        assert statuses.fetch_clock(connection, **common) == NOW - timedelta(seconds=1)
+        assert statuses.fetch_clock(connection, **(common | {"dataset_key": "other"})) is None
+        with pytest.raises(RuntimeError), connection.begin_nested():
+            statuses.record_fetch_clock(
+                connection, **common, fetched_at=NOW - timedelta(hours=1)
+            )
+            raise RuntimeError("test projection rollback")
+        assert statuses.fetch_clock(connection, **common) == NOW - timedelta(seconds=1)
+        connection.execute(SyncRunRow.__table__.delete().where(
+            SyncRunRow.__table__.c.run_id == "fetch-clock"
+        ))
+        assert statuses.fetch_clock(connection, **common) is None
+
+
+def test_bounded_context_restores_settings_and_never_relaxes_stricter_limits(store):
+    engine, _statuses = store
+    with engine.begin() as connection:
+        connection.exec_driver_sql("SET LOCAL statement_timeout = '200ms'")
+        connection.exec_driver_sql("SET LOCAL lock_timeout = '50ms'")
+        original = connection.execute(text(
+            "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')"
+        )).one()
+        with status_transaction(connection):
+            assert connection.execute(text(
+                "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')"
+            )).one() == original
+        assert connection.execute(text(
+            "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')"
+        )).one() == original
+
+
+def test_projection_lock_timeout_leaves_owner_transaction_usable(store):
+    engine, statuses = store
+    with engine.begin() as locker:
+        terminal(locker, statuses)
+        with engine.begin() as owner:
+            owner.exec_driver_sql("SET LOCAL statement_timeout = '0'")
+            owner.exec_driver_sql("SET LOCAL lock_timeout = '0'")
+            owner.exec_driver_sql("CREATE TEMP TABLE w4_owner_marker(value int) ON COMMIT DROP")
+            owner.exec_driver_sql("INSERT INTO w4_owner_marker VALUES (42)")
+            started = monotonic()
+            with pytest.raises(OperationalError), status_transaction(owner):
+                terminal(owner, statuses, offset=1, status="failed")
+            assert monotonic() - started < 3
+            assert owner.scalar(text("SELECT value FROM w4_owner_marker")) == 42
+            assert owner.execute(text(
+                "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')"
+            )).one() == ("0", "0")

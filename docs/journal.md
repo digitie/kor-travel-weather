@@ -286,3 +286,11 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   API pagination/ETag는 API 소유자의 통합 작업이다. W4 완료로 세지 않는다.
 - 상세 계약: `docs/reports/2026-10-23-export-source-status.md`.
 
+### W4 실제 fetch-clock와 metadata 잠금 격리 보강
+
+- canonical 별칭의 최초 fetched_at을 재수집 시각으로 오인하지 않도록 작은 run/dataset
+  실제 clock을 추가했다. clock 미확인은 null이며 finished_at으로 대신하지 않는다.
+- 상태 작업의 savepoint/statement 5초·lock 1초 상한과 더 짧은 기존 GUC 유지·복원을
+  추가했다. PostgreSQL 집중17건에서 실제 잠금 실패 후 native SQL 사용을 확인했다.
+- 원본 ingest/terminal·REST/일정 hook 통합과 두 리뷰·CI/운영 수용은 아직 별도다.
+
