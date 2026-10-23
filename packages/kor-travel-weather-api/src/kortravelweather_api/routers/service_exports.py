@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from datetime import date
 from functools import partial
 from typing import Annotated, Generic, Literal, TypeVar
 
@@ -14,12 +15,14 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
     FrozenCurrentExports,
 )
+from kortravelweather.export_status_reader import read_status
 from kortravelweather.models import kst_now
 
 from ..auth import require_admin
@@ -73,7 +76,9 @@ class ExportSourceStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str
+    dataset_key: str
     forecast_style: ExportStyle
+    last_status: str | None
     last_success_at: AwareDatetime | None
     last_failed_at: AwareDatetime | None
     last_attempt_failed: bool
@@ -90,6 +95,25 @@ class ExportForecastGroup(BaseModel):
     published_at: AwareDatetime
     target_at: list[AwareDatetime]
     metrics: dict[str, list[float | str | None]]
+
+
+class ExportDailySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    date: date
+    slot: Literal["morning", "noon", "evening"]
+    temp_min: float | None
+    temp_max: float | None
+    temp_avg: float | None
+    humidity_avg: float | None
+    precip_sum_mm: float | None
+    precip_occurred: bool | None
+    sky_code: int | None
+    wind_speed_avg: float | None
+    sample_count: int = Field(ge=0, le=6)
+    source_providers: list[str]
+    partial: bool
 
 
 Item = TypeVar("Item")
@@ -180,6 +204,8 @@ async def _frozen_response(
     provider: str | None = None,
     style: str | None = None,
     since: AwareDatetime | None = None,
+    days: int = 14,
+    location_id: str | None = None,
 ) -> Response:
     settings = request.app.state.settings
     if (
@@ -189,24 +215,28 @@ async def _frozen_response(
     ):
         return _unavailable(request)
     # 지원하지 않는 provider를 누락한 작은 집합을 전체 정상으로 내보내지 않는다.
-    if resource in {"current", "forecasts"}:
+    if resource in {"current", "forecasts", "daily-summaries"}:
         required = {provider} if provider else set(settings.enabled_providers)
         if required != {"python-kma-api"}:
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
     try:
-        reader_class = FrozenForecastExports if resource == "forecasts" else FrozenCurrentExports
+        reader_class = {
+            "forecasts": FrozenForecastExports,
+            "daily-summaries": DailySummaryExports,
+        }.get(resource, FrozenCurrentExports)
         reader = reader_class(
             request.app.state.repository,
             ExportArtifactStore(settings.service_export_artifact_root),
             signing_key=settings.admin_token.get_secret_value(),
             **({"style": style, "since": since} if resource == "forecasts" else {}),
+            **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
         )
         page, etag = await to_thread.run_sync(
             partial(
                 reader.page,
-                *([] if resource == "forecasts" else [resource]),
+                *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
                 limit=limit,
                 cursor=cursor,
             ),
@@ -222,6 +252,7 @@ async def _frozen_response(
         "locations": ExportLocation,
         "current": ExportCurrentValue,
         "forecasts": ExportForecastGroup,
+        "daily-summaries": ExportDailySummary,
     }[resource]
     page = ExportPage[model].model_validate(page).model_dump(mode="json")
     headers = {
@@ -261,10 +292,37 @@ async def export_current(
 @router.get("/status", response_model=ExportPage[ExportSourceStatus])
 async def export_status(
     request: Request,
-    limit: Limit = 500,
-    cursor: Cursor = None,
-) -> JSONResponse:
-    return _unavailable(request)
+) -> Response:
+    """최대 128개의 작은 상태 목록. 전체를 한 응답으로 반환한다."""
+    settings = request.app.state.settings
+    if not settings.service_exports_enabled:
+        return _unavailable(request)
+    # 과거 미구현 계약의 cursor/limit을 조용히 무시하지 않는다.
+    if request.query_params:
+        return _unavailable(request, status=422, code="EXPORT_STATUS_QUERY_INVALID")
+    try:
+        page, etag = await to_thread.run_sync(
+            partial(
+                read_status, request.app.state.repository, set(settings.enabled_providers),
+                as_of=kst_now(),
+            ),
+            limiter=request.app.state.service_export_limiter,
+        )
+    except (ExportArtifactError, SQLAlchemyError):
+        return _unavailable(request)
+    body = ExportPage[ExportSourceStatus].model_validate(page).model_dump(mode="json")
+    headers = {
+        "etag": etag, "vary": "Accept-Encoding",
+        "cache-control": "private, max-age=0, must-revalidate",
+        "x-source-status": body["meta"]["source_status"],
+    }
+    if _matches_etag(request.headers.get("if-none-match", ""), etag):
+        return Response(status_code=304, headers=headers)
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    if _accepts_gzip(request.headers.get("accept-encoding", "")):
+        payload = gzip.compress(payload, compresslevel=4, mtime=0)
+        headers["content-encoding"] = "gzip"
+    return Response(payload, media_type="application/json", headers=headers)
 
 
 @router.get("/forecasts", response_model=ExportPage[ExportForecastGroup])
@@ -281,4 +339,17 @@ async def export_forecasts(
 ) -> Response:
     return await _frozen_response(
         request, "forecasts", limit, cursor, provider=provider, style=style, since=since
+    )
+
+
+@router.get("/daily-summaries", response_model=ExportPage[ExportDailySummary])
+async def export_daily_summaries(
+    request: Request,
+    days: Annotated[int, Query(ge=1, le=31)] = 14,
+    location_id: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
+    limit: Limit = 500,
+    cursor: Cursor = None,
+) -> Response:
+    return await _frozen_response(
+        request, "daily-summaries", limit, cursor, days=days, location_id=location_id
     )

@@ -55,6 +55,7 @@ dagster = [
   "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@e746e4b81b9b62dd1a74ca90ba0a1204951c2885#subdirectory=packages/py/kor-travel-common",
   "dagster==1.13.24",
   "dagster-webserver==1.13.24",
+  "croniter>=6,<7",
   # Backs run/event-log/schedule storage with PostgreSQL instead of Dagster's
   # SQLite default; see deploy/dagster.yaml for why. dagster-postgres does not
   # share dagster's own version numbering (dagster 1.13.N ships with

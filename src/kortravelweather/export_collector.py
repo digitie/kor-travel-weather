@@ -257,6 +257,7 @@ def publish_pending_exports(
     limit: int = 4,
     budget_seconds: float = 20,
     dagster_status: Callable[[str], str | None] | None = None,
+    daily_summaries: bool = False,
 ):
     """keyset sweep을 재개한다. pending 한 건이 뒤 성공 후보를 막지 않는다.
 
@@ -296,6 +297,15 @@ def publish_pending_exports(
         processed += 1
         last = row.attempt_id
     more = processed < len(rows)
+    if daily_summaries and time.monotonic() < deadline:
+        from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
+
+        try:
+            refresh_daily_summaries(repository, artifacts, limit=1)
+            if time.monotonic() < deadline:
+                prune_daily_summaries(repository)
+        except Exception:
+            logger.warning("weather_daily_summary_refresh_deferred")
     return ExportPublisherProgress(processed, results, last if more else None, more)
 
 

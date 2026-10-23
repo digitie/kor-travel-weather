@@ -126,7 +126,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0028_export_source_status"
+            assert version == "0030_export_run_scopes"
             assert "weather_export_source_status" in inspector.get_table_names()
             assert "weather_export_publication_clock" in inspector.get_table_names()
             assert any(
