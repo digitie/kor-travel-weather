@@ -343,6 +343,18 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - export 활성화가 기존 중기예보/특보 asset에 미지원 인자를 전달하지 않도록 제한하고
   실제 asset→기존 수집의 두 제공처 경로 호출을 회귀 검증했다.
 
+### 공개 SDK 원문 재해석과 페이지 완결 검증
+
+- AirKorea·산림청 산악/청정넷·KREX·KHOA 공개 parser와 기존 Weather 정규화를 재사용해
+  관측소/시각/수치/source key를 검증하고 기존 native capture·성공 head에 연결했다.
+- AirKorea 실제 vendor 소스와 KHOA/KREX 최종 SDK pin을 함께 갱신했다. 원본 라이선스와
+  provenance를 보존했다. KHOA 원문 좌표의 NaN/무한대/범위 밖/bool도 거절한다.
+- SDK typed DTO만으로 전국 완결을 주장하지 않는다. 작은 페이지 receipt와 KHOA 장소별
+  원문 조합을 추가하고 누락·개수 변동·중복 구간을 거부한다.
+- 실제 Dagster source 배선·누적 inventory·전체 provider/mid REST·GC/운영 비용 gate는
+  후속이다. 운영 flag OFF와 기존 수집/API를 유지한다.
+- 상세 계약/검증: `docs/reports/2026-10-23-sdk-source-exports.md`.
+
 ### 실제 source inventory와 quota 회전 준비
 
 - provider/dataset/location의 마지막 승인 metadata를 head와 같은 TX에서 upsert하고

@@ -147,6 +147,29 @@ def test_airkorea_hourly_observation_does_not_inherit_low_frequency_36h_window()
     assert normalize_sdk_source(desc, {**source, "fetched_at": AT + timedelta(hours=3)})
 
 
+@pytest.mark.parametrize("field,coordinate", [
+    (field, value) for field in ("lat", "lot")
+    for value in ("NaN", "+Infinity", "-Infinity", True, False, 181, -181)
+])
+def test_khoa_raw_coordinate_rejection_is_not_hidden_by_source_key_mismatch(field, coordinate):
+    desc, source, _, _ = fixture("khoa")
+    if isinstance(coordinate, bool):
+        desc = desc.model_copy(update={
+            "latitude" if field == "lat" else "longitude": float(coordinate),
+        })
+    rows = source["payload"]["rows"][0]["rows"]
+    rows[0][field] = coordinate
+    parsed = parse_beach_index_place(Observatory(
+        id=desc.station_id, name=desc.station_name,
+        latitude=desc.latitude, longitude=desc.longitude,
+    ), rows)
+    forged = khoa.beach_index_source_record(parsed, location_id=desc.entity_id, fetched_at=AT)
+    # SDK는 anchor 문맥만 신뢰하므로 정상 forecast와 정확한 원문 key를 반환한다.
+    assert parsed.forecasts and forged["source_record_key"] != source["source_record_key"]
+    with pytest.raises(ExportArtifactError, match="좌표"):
+        normalize_sdk_source(desc, forged)
+
+
 def test_khoa_unknown_slot_duplicate_and_forecast_without_future_are_not_approved():
     desc, source, _, _ = fixture("khoa")
     row = source["payload"]["rows"][0]["rows"][0]

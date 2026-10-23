@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from datetime import timedelta
+from math import isfinite
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -83,7 +84,10 @@ def _raw(record, *, air=False):
 
 
 def _match_coordinates(latitude, longitude, descriptor):
-    if latitude is None or longitude is None or (
+    if latitude is None or longitude is None or any(
+        isinstance(value, bool) or not isfinite(float(value)) or not -bound <= float(value) <= bound
+        for value, bound in ((latitude, 90), (longitude, 180))
+    ) or (
         abs(float(latitude) - descriptor.latitude) > 0.000001
         or abs(float(longitude) - descriptor.longitude) > 0.000001
     ):
