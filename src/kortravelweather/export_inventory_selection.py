@@ -176,7 +176,8 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     source_scopes = {row["source_scope"] for row in valid.values()}
     active = list(connection.execute(select(
         owners.c.source_scope, attempts.c.status, runs.c.status,
-        generations.c.generation_id,
+        generations.c.generation_id, owners.c.owner_epoch,
+        func.left(attempts.c.owner_epochs[owners.c.source_scope].as_string(), 32),
     ).select_from(owners.join(
         attempts, owners.c.active_attempt_id == attempts.c.attempt_id,
     ).join(runs, runs.c.run_id == attempts.c.run_id).outerjoin(
@@ -187,7 +188,8 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     unconfirmed |= len(active) != len(source_scopes) or any(
         attempt == "failed" or native not in {"running", "success"}
         or native == "success" and generation is None
-        for _, attempt, native, generation in active
+        or claimed_epoch != str(epoch)
+        for _, attempt, native, generation, epoch, claimed_epoch in active
     )
     cohorts = external_cohort_table(metadata)
     declarations = {
