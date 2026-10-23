@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 
 from kma.time_utils import latest_mid_fcst_time
 
@@ -16,7 +17,27 @@ from kortravelweather.providers.kma import (
 logger = logging.getLogger(__name__)
 
 
-def mid_descriptors(targets):
+@dataclass(frozen=True)
+class MidNativeScope:
+    source_part: str
+    region_code: str
+    location_ids: tuple[str, ...]
+
+    @property
+    def entity_id(self):
+        return f"mid-{self.source_part}:{self.region_code}"
+
+    def descriptor(self):
+        return MidScopeDescriptor(
+            entity_id=self.entity_id,
+            source_part=self.source_part,
+            region_code=self.region_code,
+            location_ids=self.location_ids,
+            normalizer_revision=f"kma-mid-{self.source_part}-v1",
+        )
+
+
+def _native_scopes(targets):
     groups, seen = {}, set()
     for target in targets:
         if not target.has_mid:
@@ -31,15 +52,13 @@ def mid_descriptors(targets):
             seen.add((key, part))
             groups.setdefault((part, region), []).append(key)
     return [
-        MidScopeDescriptor(
-            entity_id=f"mid-{part}:{region}",
-            source_part=part,
-            region_code=region,
-            location_ids=tuple(sorted(keys)),
-            normalizer_revision=f"kma-mid-{part}-v1",
-        )
+        MidNativeScope(part, region, tuple(sorted(keys)))
         for (part, region), keys in sorted(groups.items())
     ]
+
+
+def mid_descriptors(targets):
+    return [scope.descriptor() for scope in _native_scopes(targets)]
 
 
 def _declare_cohort(repository, run_id, descriptors):
@@ -94,17 +113,20 @@ async def collect_mid_exports(
 
     if data_client is None:
         raise ValueError("중기예보에는 DataGoKrClient가 필요합니다.")
-    descriptors = mid_descriptors(targets)
-    if not descriptors:
+    scopes = _native_scopes(targets)
+    if not scopes:
         raise ValueError("중기예보 지역이 비어 있습니다.")
     collector, prepared = None, {}
     try:
+        # export의 source/location 상한은 native 유효 입력의 상한과 다르다.
+        # 큰 지역 등 승인 불가도 원래 bounded 원본 저장을 막지 않는다.
+        descriptors = [scope.descriptor() for scope in scopes]
         # roster와 모든 source plan은 첫 HTTP 전에 선언한다. 선언 실패를 이전
         # 정상 run으로 숨기지 않도록 native INSERT의 intent가 별도로 남는다.
         await asyncio.to_thread(_declare_cohort, repository, run_id, descriptors)
         collector = MidExportCollector(repository, run_id=run_id, artifact_root=artifact_root)
         for descriptor in descriptors:
-            prepared[descriptor.namespace] = await asyncio.to_thread(
+            prepared[descriptor.entity_id] = await asyncio.to_thread(
                 collector.prepare,
                 descriptor=descriptor,
             )
@@ -114,31 +136,39 @@ async def collect_mid_exports(
     # SDK 회차를 한 번만 선택해 land/temperature 모두에 동일하게 명시한다.
     tm_fc = latest_mid_fcst_time(kst_now())
     requests = rows_total = normalized = accepted = loaded = 0
-    for descriptor in descriptors:
+    for descriptor in scopes:
         heartbeat()
         if rows_total >= max_response_rows or normalized >= max_values:
             raise ValueError("중기예보 응답/정규화 예산이 소진되었습니다.")
-        fetched = kst_now()
         method = (
             data_client.mid_land_forecast
             if descriptor.source_part == "land"
             else data_client.mid_temperature_forecast
         )
-        rows = _bounded_rows(
-            await _kma_provider_call(
-                lambda method=method, region=descriptor.region_code: method(
-                    reg_id=region, tm_fc=tm_fc
+        for verification in range(2):
+            heartbeat()
+            fetched = kst_now()
+            rows = _bounded_rows(
+                await _kma_provider_call(
+                    lambda method=method, region=descriptor.region_code: method(
+                        reg_id=region, tm_fc=tm_fc
+                    ),
+                    dataset="kma_mid_forecast",
+                    retries=retries,
                 ),
-                dataset="kma_mid_forecast",
-                retries=retries,
-            ),
-            limit=min(1, max_response_rows - rows_total),
-            label="중기 지역 원천",
-        )
-        requests += 1
-        rows_total += len(rows)
+                limit=min(1, max_response_rows - rows_total),
+                label="중기 지역 원천",
+            )
+            requests += 1
+            rows_total += len(rows)
+            if rows:
+                break
+            if verification == 0:
+                # transport 재시도는 SDK가 소유한다. 명시 성공의 빈 집합만 같은
+                # 회차로 한 번 재확인하며 새 발표 회차/계획을 만들어 성공으로 숨기지 않는다.
+                await asyncio.sleep(0.2)
         if not rows:
-            raise ValueError("중기예보 응답이 비어 있습니다.")
+            raise ValueError("중기예보 빈 응답을 재확인했으나 전체 원천을 확인할 수 없습니다.")
         _mid_region(rows, descriptor.region_code)
         record = {
             **_source_spec(
@@ -179,7 +209,7 @@ async def collect_mid_exports(
         else:
             loaded += await asyncio.to_thread(
                 collector.ingest_fanout,
-                prepared.get(descriptor.namespace),
+                prepared.get(descriptor.entity_id),
                 record=record,
                 values=template,
                 location_ids=descriptor.location_ids,

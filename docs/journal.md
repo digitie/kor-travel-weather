@@ -416,3 +416,15 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   확인했다. 관련PG10건14.01초·실제asset ON/OFF21건·Ruff PASS.
 - 초기 검증 두 실패는 공개SDK 예외 문구와 publisher REJECTED 상태의 기대값 오류였고
   테스트만 수정했다. source 자체 변경은 없다. 두 리뷰·정확 CI/REST/UI는 후속이다.
+### 중기 빈 응답 재확인
+
+- root 자체 점검에서 빈 성공 응답 재확인 요건이 빠진 점을 찾아 같은 회차·계획으로
+  1회만 재확인하도록 보강했다. transport 재시도는 SDK 경계를 유지한다.
+- 집중8건/Ruff PASS. 원천이 계속 비면 native 실패/이전 승인 유지 경로를 사용한다.
+### export와 native 선택 상한 분리
+
+- root 자체 점검에서 descriptor1,000곳 상한이 기존 native 입력까지 막을 수 있는
+  경계를 찾아 작은 native scope와 export descriptor를 분리했다. 승인 불가면
+  원본 bounded 저장만 계속한다.1,001곳42,042값 포함 집중9건/Ruff PASS.
+- 빈 응답 재확인 추가 후 관련PG12건25.38초 PASS도 확인했다. 새 범위 분리와 최종
+  선행155수정 통합 후 실제PG를 다시 확인하고 정확 CI/리뷰를 수용한다.

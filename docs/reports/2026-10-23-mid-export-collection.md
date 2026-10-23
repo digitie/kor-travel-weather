@@ -23,7 +23,7 @@
 ## 검증 및 남은 수용
 
 - 실제 공개 `DataGoKrClient`+offline httpx transport, 기존 native runner를 실행한
-  집중6건 PASS: pre-HTTP 전체 계획, 같은 회차/지역 요청 dedupe,120곳 큰 지역,
+  집중9건 PASS: pre-HTTP 전체 계획, 같은 회차/지역 요청 dedupe,120곳 큰 지역,
   cohort 실패의 원본 저장, 메모리·예산 상한, 중복 위치·역할 거절.
 - 기존 OFF KMA runner23건 PASS(실 PostgreSQL1건은 이 집중 실행에서 제외).
 - 새 전용 DB의0001→0033 migration 뒤 실제 native capture→3개 head 승격→6개
@@ -37,3 +37,9 @@
 초기 PostgreSQL 검증의 두 실패는 SDK가 HTTP 예외 문구를 일반화하는 계약과
 publisher 결과가 `FAILED`가 아닌 `REJECTED`라는 시험 기대값 불일치였다.
 제품 코드를 바꾸지 않고 실제 공개 예외·반환 상태에 맞춰 수정 후10건이 통과했다.
+명시 성공의 빈 응답은 같은 계획·발표 회차로0.2초 뒤 한 번 재확인한다. 계속 빈
+경우 native를 실패시키며 이전 승인 집합을 유지한다. transport 오류 재시도는 SDK에
+맡긴다. 빈 첫 응답 후 정상/지속 빈 응답의 두 공개SDK 회귀를 추가했다.
+export descriptor의지역당1,000곳 상한은 native 입력 상한과 구분한다. 이를 넘는
+유효한 기존 지역은 export 승인만 보류하고 원래 원본을50곳/2,500값씩 저장한다.
+1,001곳·42,042값 회귀로 사전 export 검증이 native 저장을 막지 않음을 확인했다.

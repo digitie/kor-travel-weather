@@ -117,7 +117,16 @@ def setup(monkeypatch):
     return events
 
 
-def execute(events, *, count=3, fail=False, max_values=500000, max_response_rows=1000):
+def execute(
+    events,
+    *,
+    count=3,
+    fail=False,
+    max_values=500000,
+    max_response_rows=1000,
+    empty_first=False,
+    empty_always=False,
+):
     repository = Repository()
 
     def handler(request):
@@ -127,14 +136,20 @@ def execute(events, *, count=3, fail=False, max_values=500000, max_response_rows
         events.append(("request", part, region))
         if fail and part == "temperature":
             raise httpx.ConnectError("offline fixture", request=request)
+        first_land = len([e for e in events if e[0] == "request" and e[1] == "land"]) == 1
+        items = (
+            []
+            if part == "land" and (empty_always or (empty_first and first_land))
+            else [_raw(part, region)]
+        )
         return httpx.Response(
             200,
             json={
                 "response": {
                     "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
                     "body": {
-                        "items": {"item": [_raw(part, region)]},
-                        "totalCount": 1,
+                        "items": {"item": items},
+                        "totalCount": len(items),
                         "pageNo": 1,
                         "numOfRows": 10,
                     },
@@ -212,3 +227,24 @@ def test_duplicate_location_role_rejected_before_first_http(setup):
     with pytest.raises(ValueError):
         mid_export.mid_descriptors(selected + copy.deepcopy(selected))
     assert not setup
+
+
+def test_one_empty_success_is_reconfirmed_with_same_issue_and_plan(setup):
+    repository, result = execute(setup, empty_first=True)
+    assert result["requests_fetched"] == 4
+    assert result["values_loaded"] == 126 and repository.run.status == "success"
+    assert len([e for e in setup if e[0] == "prepare"]) == 3
+
+
+def test_persistent_empty_success_stops_after_one_reconfirmation(setup):
+    with pytest.raises(ValueError, match="재확인"):
+        execute(setup, empty_always=True)
+    assert len([e for e in setup if e[0] == "request"]) == 2
+
+
+def test_export_descriptor_limit_does_not_block_larger_native_region(setup):
+    repository, result = execute(setup, count=1001)
+    assert result["values_loaded"] == 42 * 1001
+    assert not any(e[0] in {"cohort", "prepare"} for e in setup)
+    assert max(locations for locations, _ in repository.batches) <= 50
+    assert max(values for _, values in repository.batches) <= 2500
