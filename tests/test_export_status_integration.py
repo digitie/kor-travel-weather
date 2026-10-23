@@ -1,13 +1,15 @@
 """W4가 실제 native 실행/CAS/재수집/중단 복구와 연결되는지 검증한다."""
 
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 
 import pytest
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
 from sqlalchemy import event, select, text
 
-from kortravelweather.export_status import ExportSourceStatuses
+from kortravelweather.export_artifacts import ExportArtifactError
+from kortravelweather.export_status import ExportSourceStatuses, export_status_pending_table
 from kortravelweather.export_status_reader import read_status
 from kortravelweather.export_status_scopes import dataset_scopes
 from kortravelweather.repository import Base, SourceRecordRow, WeatherRepository
@@ -158,6 +160,36 @@ def test_metadata_failure_does_not_rollback_native_run(repository, monkeypatch):
     run = repository.start_sync_run(provider=PROVIDER, dataset_key=DATASET)
     assert repository.finish_sync_run(run.run_id, status="success").status == "success"
     assert repository.get_sync_run(run.run_id).status == "success"
+    with pytest.raises(ExportArtifactError, match="재투영"):
+        read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
+    monkeypatch.undo()
+    page, _ = read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
+    actual = next(item for item in page["items"] if item["dataset_key"] == DATASET)
+    assert actual["last_status"] == "success"
+    with repository.engine.begin() as connection:
+        pending = export_status_pending_table(Base.metadata)
+        assert connection.scalar(select(pending.c.run_id)) is None
+
+
+def test_actual_status_lock_defers_projection_and_next_read_recovers(repository):
+    first = repository.start_sync_run(provider=PROVIDER, dataset_key=DATASET)
+    repository.ingest_batch(source_records=records(first, clock=datetime.now(UTC)), values=[])
+    repository.finish_sync_run(first.run_id, status="success")
+    second = repository.start_sync_run(provider=PROVIDER, dataset_key=DATASET)
+    table = ExportSourceStatuses(Base.metadata).table
+    with repository.engine.begin() as holder:
+        holder.execute(select(table).with_for_update()).all()
+        started = monotonic()
+        assert repository.finish_sync_run(second.run_id, status="failed").status == "failed"
+        assert monotonic() - started < 4
+        assert repository.get_sync_run(second.run_id).status == "failed"
+        with pytest.raises(ExportArtifactError, match="재투영"):
+            read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
+    page, _ = read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
+    actual = next(item for item in page["items"] if item["dataset_key"] == DATASET)
+    assert actual["last_status"] == "failed" and actual["last_attempt_failed"]
+    assert actual["last_success_at"] is not None
+    assert repository.engine.pool.checkedout() == 0
 
 
 def test_status_off_keeps_derived_tables_empty(repository):

@@ -53,6 +53,7 @@ from sqlalchemy import (
     values,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
@@ -82,10 +83,11 @@ from .export_status import (
     ExportSourceStatuses,
     SourceKey,
     export_fetch_clock_table,
+    export_status_pending_table,
     export_status_table,
     status_transaction,
 )
-from .export_status_scopes import dataset_scopes
+from .export_status_scopes import dataset_scopes, status_scopes
 from .metrics import (
     observe_history_purged,
     observe_stale_recovered,
@@ -155,6 +157,7 @@ export_head_tables(Base.metadata)
 export_snapshot_tables(Base.metadata)
 export_status_table(Base.metadata)
 export_fetch_clock_table(Base.metadata)
+export_status_pending_table(Base.metadata)
 daily_summary_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
@@ -3547,6 +3550,7 @@ class WeatherRepository:
             return
         # canonical raw의 옛 fetched_at으로 대체하기 전 실제 이번 응답 시각을 보존한다.
         grouped: dict[tuple[str, str, str], tuple[datetime, datetime]] = {}
+        allowed = {(key.provider, key.dataset_key) for key in status_scopes()}
         try:
             for record in records:
                 fetched = record.get("fetched_at")
@@ -3556,7 +3560,7 @@ class WeatherRepository:
                 if fetched.tzinfo is None or fetched.utcoffset() is None:
                     continue
                 identity = (str(run_id), str(record["provider"]), str(record["dataset_key"]))
-                if not dataset_scopes(identity[1], {identity[2]}):
+                if (identity[1], identity[2]) not in allowed:
                     continue
                 previous = grouped.get(identity, (fetched, fetched))
                 grouped[identity] = (min(previous[0], fetched), max(previous[1], fetched))
@@ -3579,6 +3583,12 @@ class WeatherRepository:
         if not self.export_status_enabled or not row.export_status_scopes:
             return
         try:
+            pending = export_status_pending_table(Base.metadata)
+            # 상태 행 경합으로 투영을 미뤄도 재시도 의도를 native terminal과 함께 남긴다.
+            with status_transaction(session.connection()):
+                session.execute(pg_insert(pending).values(
+                    run_id=row.run_id, provider=row.provider, created_at=kst_now(),
+                ).on_conflict_do_nothing(index_elements=[pending.c.run_id]))
             scopes = tuple(SourceKey(**item) for item in row.export_status_scopes)
             allowed = set(dataset_scopes(row.provider, {key.dataset_key for key in scopes}))
             if len(scopes) > 128 or len(set(scopes)) != len(scopes) or set(scopes) != allowed:
@@ -3595,8 +3605,32 @@ class WeatherRepository:
                         started_at=row.started_at, finished_at=row.finished_at,
                         status=row.status, source_collected_at=fetched,
                     )
+                session.execute(pending.delete().where(pending.c.run_id == row.run_id))
         except (SQLAlchemyError, TypeError, ValueError):
             logger.warning("export terminal 상태를 저장하지 못했습니다.")
+
+    def reconcile_export_status(self, providers: set[str], *, limit: int = 1) -> int:
+        """작은 pending queue의 실행 PK만 조회하여 유한하게 재투영한다.
+
+        API는 한 실행까지만 복구를 시도한다. 상태 행 lock 경합은 최대 1초에서
+        미루며, 아직 pending이 있으면 reader가 빈/옛 정상 응답을 내보내지 않는다.
+        """
+        if not self.export_status_enabled:
+            return 0
+        if not 1 <= limit <= 8:
+            raise ValueError("상태 재투영은 한 번에 1~8개 실행까지 허용합니다.")
+        pending = export_status_pending_table(Base.metadata)
+        with self._session_factory.begin() as session, status_transaction(session.connection()):
+            run_ids = session.scalars(select(pending.c.run_id).where(
+                pending.c.provider.in_(providers),
+            ).order_by(pending.c.created_at, pending.c.run_id).limit(limit).with_for_update(
+                skip_locked=True,
+            )).all()
+            for run_id in run_ids:
+                row = session.get(SyncRunRow, run_id)  # native 실행 PK, fact 이력 조회 없음
+                if row is not None and row.status != "running":
+                    self._project_export_terminal(session, row)
+            return len(run_ids)
 
     def start_sync_run(
         self, *, provider: str, dataset_key: str, locations_total: int = 0

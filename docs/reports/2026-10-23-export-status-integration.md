@@ -4,7 +4,7 @@
 
 상태표 기반 PR #149 뒤에서 native 수집 실행의 terminal CAS, 실제 응답 시각,
 중단 복구, 상태 REST를 연결한다. W5 PR #148의 0029 뒤에 nullable 실행 scope
-열만 추가하는 0030을 둔다. 기존 이력·수집 결과와 기존 API를 바꾸지 않는다.
+열과 작은 재투영 대기표를 추가하는 0030을 둔다. 기존 이력·수집 결과와 기존 API를 바꾸지 않는다.
 현재 구현·검증 중이며 운영 활성화 또는 전체 Map API 완료를 뜻하지 않는다.
 
 `service_exports_enabled` 기본값은 false다. 활성화한 repository만 상태를 투영한다.
@@ -26,8 +26,12 @@ native 종료 시각을 수집 시각으로 대체하지 않는다.
 
 작은 파생 쓰기는 savepoint, statement 최대 5초·lock 최대 1초를 사용한다. 더 엄격한
 기존 상한은 유지한다. 파생 쓰기 실패는 경고로 기록하고 기존 수집 transaction을
-계속 사용할 수 있게 한다. 이 경로는 마지막으로 **기록된** terminal을 제공하며,
-상태 저장 실패 뒤의 재투영/운영 경고 수용은 rollout 검토에서 별도로 확인한다.
+계속 사용할 수 있게 한다. native terminal과 같은 transaction에 실행 PK별 재투영
+대기 기록을 먼저 남기고 투영 성공 때 지운다. 상태 행 경합 때문에 투영을 못 해도
+대기 기록은 남는다. 상태 조회는 대기 실행 한 건만 PK로 복구를 시도하며, 해당
+provider에 미처리 실행이 있으면 옛 성공에 304를 주지 않고 503을 반환한다. 다음
+조회에서 잠금이 풀렸으면 복구한다. 사실 이력 전체 스캔과 수집 재실행은 하지 않는다.
+실행 보존 정책이 native 실행을 정리하면 대기 기록도 FK CASCADE로 정리된다.
 
 ## REST 계약
 
@@ -49,9 +53,15 @@ source_collected_at은 필수 데이터셋의 실제 수집 시각이 모두 있
 하나라도 모르면 null이다. generated_at을 제외한 의미 기반 weak ETag로 304를 지원하고
 gzip을 지원한다. DB 연결은 JSON 직렬화·압축 전에 반환한다.
 
+실제 Dagster tick의 public evaluate_tick 결과를 위임해 기존 중복 억제와
+RunRequest/config/tags를 보존한다. 다음 시각은 등록된 cron·timezone을 croniter로
+계산한다. 모듈 import/definition load 때 DB를 연결하지 않는다. active 실행 때문에
+새 run을 생략하는 tick도 일정은 기록한다. 시각 없는 수동 평가와 명시적 중지/불명은
+null이며, 중지 후 tick이 없으면 이전 예정 시각이 지난 뒤 reader가 null로 보여 준다.
+기본 default_status로 현재 실행 상태를 추측하거나 API가 workspace를 조회하지 않는다.
+
 ## 남은 수용 조건
 
-- 실제 스케줄 평가와 next_scheduled_at 연결 및 stopped/unknown 만료 검증
 - 정상·실패·별칭 재수집·중단 복구·동시 실행·상태 잠금 실패의 PostgreSQL 회귀
 - 실제 HTTP/기존 UI, OpenAPI/TypeScript, 전체 CI, 독립 적대 리뷰 2명
 - Map 담당에게 최종 PR·응답 예시 전달 후 consumer 계약 수용
