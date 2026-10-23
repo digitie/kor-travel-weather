@@ -2,7 +2,7 @@
 
 ## 2026-10-23 — KMA pagination 선행 보강
 
-- KMA PR32의 검증된 public pagination receipt를 고정하고 lineage에 보존한다. [범위·키 전환·미완](reports/2026-10-23-kma-pagination-contract.md)을 따른다. Weather 전체/CI/두 리뷰는 PR gate이며 export OFF/503·운영 미배포 상태다.
+- KMA PR32의 검증된 public pagination receipt를 고정하고 lineage에 보존한다. [범위·키 전환·미완](reports/2026-10-23-kma-pagination-contract.md)을 따른다. Weather PR141은 전체PG788·정확CI788/frontend243·독립2리뷰·격리API3/UI11 수용 후 머지됐다. export OFF/503·운영 미배포 상태다.
 
 ## 2026-10-23 — Map export 내부 완결 검증 PR139 머지
 
