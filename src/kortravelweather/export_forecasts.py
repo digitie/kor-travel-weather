@@ -190,7 +190,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()
@@ -234,7 +234,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
                         == self.selection.get("provider_signature"),
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()
@@ -244,6 +244,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportSnapshotUnavailable("이전 승인 예보가 없습니다.")
             frozen, now = dict(row), datetime.now(UTC)
             if frozen["expires_at"] <= now:
+                frozen.pop("issue_order", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
                 )

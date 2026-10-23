@@ -36,6 +36,24 @@ def upgrade():
 
 
 def upgrade_schema():
+    op.add_column("weather_export_snapshots", sa.Column(
+        "issue_order", sa.BigInteger(), sa.Identity(), nullable=False,
+    ))
+    # 기존 handle은 이전(created_at,snapshot_id) 순서를 한 번만 고정한다.
+    # 이후 발급은 DB identity sequence를 사용하며 OS 시계 역행과 분리한다.
+    op.execute(sa.text(
+        "WITH ranked AS (SELECT snapshot_id, row_number() OVER "
+        "(ORDER BY created_at,snapshot_id) AS n FROM weather_export_snapshots) "
+        "UPDATE weather_export_snapshots AS s SET issue_order=r.n "
+        "FROM ranked AS r WHERE s.snapshot_id=r.snapshot_id"
+    ))
+    op.execute(sa.text(
+        "SELECT setval(pg_get_serial_sequence('weather_export_snapshots','issue_order'), "
+        "COALESCE(max(issue_order),1),count(*)>0) FROM weather_export_snapshots"
+    ))
+    op.create_index(
+        "ix_weather_export_snapshots_issue_order", "weather_export_snapshots", ["issue_order"],
+    )
     op.add_column("weather_export_external_cohorts", sa.Column("descriptors", sa.JSON()))
     op.create_table(
         "weather_export_approved_locations",
@@ -75,3 +93,4 @@ def downgrade():
         op.drop_index("ix_weather_export_heads_generation_id", table_name="weather_export_heads")
         op.drop_table("weather_export_approved_locations")
         op.drop_column("weather_export_external_cohorts", "descriptors")
+        op.drop_column("weather_export_snapshots", "issue_order")

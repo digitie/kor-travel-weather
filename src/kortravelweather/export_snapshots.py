@@ -15,7 +15,19 @@ from uuid import uuid4
 
 from kortravelcommon.address_providers import VworldKakaoAddressResolver
 from kortravelcommon.reverse_address import AddressTarget
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, MetaData, String, Table, select
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Column,
+    DateTime,
+    ForeignKey,
+    Identity,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    select,
+)
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
@@ -48,6 +60,7 @@ def export_snapshot_tables(metadata: MetaData):
         "weather_export_snapshots",
         metadata,
         Column("snapshot_id", String(36), primary_key=True),
+        Column("issue_order", BigInteger, Identity(), nullable=False, index=True),
         Column("manifest_digest", String(64), nullable=False, index=True),
         Column("manifest", JSON, nullable=False),
         Column("source_collected_at", DateTime(timezone=True)),
@@ -352,21 +365,21 @@ class FrozenCurrentExports:
                 manifest["selection"] = self.current_selection
             digest = _digest(manifest)
             now = datetime.now(UTC)
-            latest = select(self.snapshots.c.created_at).where(
+            latest = select(self.snapshots.c.issue_order).where(
                 self.snapshots.c.manifest["selection"]["kind"].as_string().is_(None)
                 if self.current_selection is None
                 else self.snapshots.c.manifest["selection"]["signature"].as_string()
                 == self.current_selection["signature"]
-            ).order_by(self.snapshots.c.created_at.desc()).limit(1).correlate(None).scalar_subquery()
+            ).order_by(self.snapshots.c.issue_order.desc()).limit(1).correlate(None).scalar_subquery()
             existing = (
                 connection.execute(
                     select(self.snapshots)
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
-                        self.snapshots.c.created_at == latest,
+                        self.snapshots.c.issue_order == latest,
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()
@@ -409,7 +422,7 @@ class FrozenCurrentExports:
                         else self.snapshots.c.manifest["selection"]["signature"].as_string()
                         == self.current_selection["signature"]
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()
@@ -420,6 +433,7 @@ class FrozenCurrentExports:
             frozen = dict(row)
             now = datetime.now(UTC)
             if frozen["expires_at"] <= now:
+                frozen.pop("issue_order", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
                 )

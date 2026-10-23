@@ -132,7 +132,7 @@ class DailySummaryExports(FrozenCurrentExports):
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
                     )
-                    .order_by(self.snapshots.c.created_at.desc())
+                    .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
                 .mappings()

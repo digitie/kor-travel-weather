@@ -82,3 +82,10 @@ KREX는 raw list 개수와 typed items/전체 개수를 맞춰 부분 파싱을 
 export opt-in은 station별 추가 metadata/capture transaction을 사용한다. OFF의 원래
 50위치 chunk는 유지하며, 실제 ARM CPU/메모리·잠금 대기·wall clock 실측 전에는
 이 배선이 성능 개선을 완료했다고 주장하거나 운영 flag를 켜지 않는다.
+
+snapshot의 공개 handle 순서는 `issue_order` DB identity sequence로 보존한다.
+OS/API 시계가 역행해도 최신 fallback이 과거의 더 작은 집합을 다시 고르지 않는다.
+기존 handle은 migration에서 `(created_at,snapshot_id)` 순서로 한 번 부여하며 이후에는
+wall clock을 발급순서로 쓰지 않는다. created_at/TTL 응답 의미는 그대로다. 만료 handle을
+갱신할 때는 새 sequence를 받고 기존 순서를 복사하지 않는다. 공유 reference/current/
+forecast/daily reader의 latest 선택도 이 순서를 따른다. ORM·migration 모두 index를 둔다.
