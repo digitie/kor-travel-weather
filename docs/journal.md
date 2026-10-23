@@ -323,3 +323,10 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 기본 OFF/원본 fact·이력은 유지한다. 전체 provider/mid, 두 리뷰/CI/운영 비용·GC
   gate는 진행 중이다. 상세: `docs/reports/2026-10-23-external-exports.md`.
 
+### 최신 cohort의 native 실패와 승인 확인
+
+- 독립 리뷰에서 발견한 claim 이전 prepare 실패 경계를 보완했다. 최신 cohort의
+  native 성공과 각 head의 승인 run 일치를 동일 reader snapshot에서 확인한다.
+- 새 attempt/owner가 생기지 않은 HTTP 실패도 current/forecast의 이전 집합과 cursor를
+  stale로 유지하고 이전 healthy ETag304를 막는 실제 PostgreSQL/API 회귀를 추가했다.
+

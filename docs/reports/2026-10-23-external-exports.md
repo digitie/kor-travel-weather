@@ -34,6 +34,10 @@ export 증거 실패는 기존 native raw/fact 저장을 막지 않으며 native
   해당 KMA 전체 원천이 준비되면 제공할 수 있다.
 - 선택 cohort 변경·실패·미승인은 이전 승인 vector를 stale로 유지한다. 제공처 필터와
   cursor는 결합되어 조건을 바꾸면422이며, 최초 승인 전에는503이다.
+- cohort의 최신 native 실행 성공과 각 위치 head의 해당 run 승인도 함께 확인한다.
+  attempt 생성/claim 이전 실패는 이전 owner를 바꾸지 않으므로 owner만으로 건강함을
+  판단하지 않는다. prepare 잠금 시간 초과 뒤 HTTP 실패도 current/forecast 기존 페이지와
+  cursor를 stale로 표시하고 이전 healthy ETag의304를 차단한다.
 
 원천 계약 근거: [Open-Meteo](https://open-meteo.com/en/docs),
 [WeatherAPI](https://www.weatherapi.com/docs/),
