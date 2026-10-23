@@ -76,8 +76,12 @@ def _regional_source_attempt(provider: str, dataset: str):
         def execute(*args, **kwargs):
             repository = kwargs["repository"]
             settings = kwargs.get("settings") or WeatherSettings()
-            if not getattr(repository, "export_status_enabled", False) or (
-                provider not in settings.enabled_providers
+            # 실제 repository의 명시 opt-in만 사용한다. 기본 OFF 시험/호출에서
+            # duck-typed repository의 __getattr__까지 호출하지 않는다.
+            if (
+                not isinstance(repository, WeatherRepository)
+                or not repository.export_status_enabled
+                or provider not in settings.enabled_providers
             ):
                 return function(*args, **kwargs)
             run = repository.start_sync_run(provider=provider, dataset_key=dataset)
