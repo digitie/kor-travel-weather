@@ -516,6 +516,34 @@ def test_legacy_null_location_index_recovers_after_same_content_recollection(rep
     assert all(row.location_ids for row in current)
 
 
+def test_legacy_clock_bootstrap_is_after_existing_future_publication(repository, tmp_path):
+    from sqlalchemy import select
+
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect_forecast(repository, tmp_path)
+    heads = ExportHeads(repository)
+    ahead = datetime.now(UTC) + timedelta(minutes=2)
+    with repository.engine.begin() as c:
+        c.execute(update(heads.generations).values(created_at=ahead))
+        c.execute(Base.metadata.tables["weather_export_publication_clock"].delete())
+    _collect_forecast(repository, tmp_path)
+    with repository.engine.connect() as c:
+        clock = c.scalar(
+            select(Base.metadata.tables["weather_export_publication_clock"].c.published_at)
+        )
+    assert clock > ahead
+    response = _client(repository, tmp_path).get(
+        "/v1/service/exports/forecasts",
+        params={"style": "ultra_short", "since": ahead.isoformat()},
+        headers=HEADERS,
+    )
+    assert response.status_code == 200 and len(response.json()["items"]) == 3
+    assert all(
+        datetime.fromisoformat(item["published_at"]) > ahead for item in response.json()["items"]
+    )
+
+
 def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)

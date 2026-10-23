@@ -23,6 +23,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -179,6 +180,7 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("point_count", Integer, nullable=False),
         Column("created_at", DateTime(timezone=True), nullable=False),
         CheckConstraint("point_count > 0", name="ck_weather_generation_nonempty"),
+        Index("ix_weather_export_generations_publication", "created_at", "generation_id"),
     )
     heads = Table(
         names[2],
@@ -795,19 +797,24 @@ class ExportHeads:
             clock = self.metadata.tables["weather_export_publication_clock"]
             # fact/원천 known_at과 별도인 공개 watermark다. 파일 IO 후의 작은
             # 최종 metadata TX만 직렬화하며 reader는 같은 RR snapshot으로 읽는다.
+            clock_statement = insert(clock).values(
+                clock_id=1,
+                published_at=func.greatest(
+                    func.clock_timestamp(),
+                    select(func.max(self.generations.c.created_at)).scalar_subquery()
+                    + text("interval '1 microsecond'"),
+                ),
+            )
             published_at = session.scalar(
-                insert(clock)
-                .values(clock_id=1, published_at=func.clock_timestamp())
-                .on_conflict_do_update(
+                clock_statement.on_conflict_do_update(
                     index_elements=["clock_id"],
                     set_={
                         "published_at": func.greatest(
                             clock.c.published_at + text("interval '1 microsecond'"),
-                            func.clock_timestamp(),
+                            clock_statement.excluded.published_at,
                         )
                     },
-                )
-                .returning(clock.c.published_at)
+                ).returning(clock.c.published_at)
             )
             session.execute(
                 self.generations.insert().values(
