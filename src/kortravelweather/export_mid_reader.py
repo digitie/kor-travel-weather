@@ -164,7 +164,7 @@ class FrozenMidForecastExports(FrozenForecastExports):
             raise ExportCursorInvalid("중기 위치 cursor의 범위가 올바르지 않습니다.")
         output, size = [], 0
         caches = {"land": {}, "temperature": {}}
-        with self.artifacts.guard(timeout_seconds=2):
+        with self.artifacts.guard(timeout_seconds=2, shared=True):
             while state["g"] < len(pairs):
                 pair = pairs[state["g"]]
                 if self.since is not None and _at(pair["published_at"]) <= self.since:

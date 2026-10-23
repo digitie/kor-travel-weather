@@ -3,7 +3,6 @@
 import asyncio
 import re
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -14,8 +13,8 @@ from sqlalchemy import event, select, update
 from test_export_external import external_repository as external_repository
 from test_export_mid import _raw
 
-from kortravelweather.export_collector import KmaNowcastExportCollector
 from kortravelweather.export_mid import MidScopeDescriptor, normalize_mid_source
+from kortravelweather.export_mid_collector import MidExportCollector
 from kortravelweather.export_mid_reader import FrozenMidForecastExports
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
@@ -24,11 +23,6 @@ from kortravelweather.export_snapshots import (
 )
 from kortravelweather.export_source_cohorts import declare_source_cohort
 from kortravelweather.models import WeatherLocation
-
-
-class Collector(KmaNowcastExportCollector):
-    def _bind_source(self, prepared, record):
-        self.heads.bind_mid_response(prepared.identity, record)
 
 
 def _locations(repo):
@@ -53,16 +47,12 @@ def _collect(repo, root, *, publish=("land", "temperature"), seed=True):
     )
     declare_source_cohort(repo, run_id=run.run_id, provider="python-kma-api",
                           dataset_key="kma_mid_forecast", descriptors=descriptors)
-    collector = Collector(repo, run_id=run.run_id, artifact_root=root)
+    collector = MidExportCollector(repo, run_id=run.run_id, artifact_root=root)
     prepared = []
     for descriptor in descriptors:
-        identity = repo.begin_export_attempt(
-            run_id=run.run_id, scope_key=descriptor.namespace,
-            planned_sources=[descriptor.source_scope], execution_mode="native",
-        )
-        collector.heads.lifecycle.claim(identity)
-        collector.heads.declare(identity, descriptor)
-        prepared.append(SimpleNamespace(identity=identity, descriptor=descriptor))
+        plan = collector.prepare(descriptor=descriptor)
+        assert plan is not None
+        prepared.append(plan)
     tm_fc = latest_mid_fcst_time(datetime.now(UTC))
 
     async def response(part):
