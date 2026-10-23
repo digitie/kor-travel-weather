@@ -13,7 +13,7 @@ from kortravelweather_dagster.kma_weather import (
     WeatherTarget,
     run_weather_sync,
 )
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 
 from kortravelweather.export_collector import publish_pending_exports
 from kortravelweather.export_snapshots import export_snapshot_tables
@@ -23,6 +23,58 @@ from kortravelweather.settings import WeatherSettings
 
 TOKEN = "private-service-token"
 HEADERS = {"x-admin-token": TOKEN}
+
+
+def test_location_full_small_full_then_catalog_loss_keeps_latest_full(repository, tmp_path):
+    for key in ("a", "b", "c"):
+        repository.create_location(WeatherLocation(
+            location_id=key, name=key, latitude=37.5, longitude=127,
+        ))
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/locations"
+    first = client.get(url, headers=HEADERS).json()
+    catalog = Base.metadata.tables["weather_locations"]
+    with repository.engine.begin() as c:
+        c.execute(catalog.update().where(
+            catalog.c.location_id.in_(["b", "c"])
+        ).values(enabled=False))
+    assert len(client.get(url, headers=HEADERS).json()["items"]) == 1
+    with repository.engine.begin() as c:
+        c.execute(catalog.update().values(enabled=True))
+    restored = client.get(url, headers=HEADERS).json()
+    assert len(restored["items"]) == 3
+    assert restored["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
+    with repository.engine.begin() as c:
+        c.execute(catalog.delete().where(catalog.c.location_id.in_(["b", "c"])))
+    fallback = client.get(url, headers=HEADERS).json()
+    assert len(fallback["items"]) == 3 and fallback["meta"]["source_status"] == "stale"
+
+
+def test_forecast_full_small_full_then_head_loss_keeps_latest_full(repository, tmp_path):
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 5000}
+    first = client.get(url, params=params, headers=HEADERS).json()
+    catalog = Base.metadata.tables["weather_locations"]
+    with repository.engine.begin() as c:
+        c.execute(catalog.update().where(catalog.c.location_id == "c").values(enabled=False))
+    assert len(client.get(url, params=params, headers=HEADERS).json()["items"]) == 2
+    with repository.engine.begin() as c:
+        c.execute(catalog.update().values(enabled=True))
+    restored = client.get(url, params=params, headers=HEADERS).json()
+    assert len(restored["items"]) == 3
+    assert restored["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
+    heads = ExportHeads(repository)
+    with repository.engine.begin() as c:
+        c.execute(heads.heads.delete().where(heads.heads.c.namespace.in_(
+            c.scalars(select(heads.plans.c.namespace).where(
+                heads.plans.c.descriptor["entity_id"].as_string() == "grid:61:127",
+            )).all(),
+        )))
+    fallback = client.get(url, params=params, headers=HEADERS).json()
+    assert len(fallback["items"]) == 3 and fallback["meta"]["source_status"] == "stale"
 
 
 def test_location_reference_is_independent_of_weather_heads_and_keeps_unknown_clock(

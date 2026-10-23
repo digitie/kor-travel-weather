@@ -140,6 +140,8 @@ class FrozenLocationExports(FrozenCurrentExports):
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
+                        self.snapshots.c.issue_order == previous["issue_order"]
+                        if previous else False,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)

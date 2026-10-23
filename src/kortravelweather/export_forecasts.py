@@ -218,12 +218,21 @@ class FrozenForecastExports(FrozenCurrentExports):
             }
             manifest = self._prepare_manifest(manifest)
             digest = _digest(manifest)
+            latest = select(self.snapshots.c.issue_order).where(
+                self.snapshots.c.manifest["selection"]["kind"].as_string() == "forecasts",
+                self.snapshots.c.manifest["selection"]["style"].as_string() == self.style,
+                self.snapshots.c.manifest["selection"]["since"].as_string()
+                == self.selection["since"],
+                self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
+                == self.selection.get("provider_signature"),
+            ).order_by(self.snapshots.c.issue_order.desc()).limit(1).correlate(None).scalar_subquery()
             previous = (
                 c.execute(
                     select(self.snapshots)
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
+                        self.snapshots.c.issue_order == latest,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
