@@ -147,3 +147,37 @@ def test_actual_regional_runner_prepares_then_captures_full_sdk_response(
             ).where(cohorts.c.provider == descriptor.provider)).all()
         assert selected.unconfirmed and len(selected.scopes) == 1
         assert pending == ["failed"]  # 영구 preparing 재시도 queue로 남기지 않는다.
+
+
+@pytest.mark.parametrize("export_complete", [None, False, True])
+def test_late_bad_anchor_preserves_native_earlier_chunks_with_export_on_or_off(
+    external_repository, monkeypatch, export_complete,
+):
+    from kortravelweather_dagster import chunked_publish
+    from kortravelweather_dagster.regional_sources import publish_regional_records
+    from pydantic import ValidationError
+    from test_regional_sources import KNOWN_AT, _mountain
+
+    from kortravelweather.export_sdk_collection import SdkCollectionContext
+
+    repo = external_repository
+    monkeypatch.setattr(chunked_publish, "PUBLISH_CHUNK_LOCATIONS", 2)
+    records = [_mountain(obs_id=f"late{i}", latitude=99 if i == 3 else 37.5)
+               for i in range(4)]
+    context = None if export_complete is None else SdkCollectionContext(
+        collector=None, complete=export_complete,
+    )
+    with pytest.raises(ValidationError):
+        publish_regional_records(
+            repository=repo, provider=krforest.KRFOREST_PROVIDER,
+            dataset_key=krforest.KRFOREST_MOUNTAIN_DATASET, records=records,
+            to_location=krforest.station_location,
+            to_values=krforest.mountain_weather_to_weather_values,
+            build_source_record=krforest.mountain_source_record, max_values=1000,
+            source_export=context,
+        )
+    one = len(krforest.mountain_weather_to_weather_values(
+        records[0], location_id="test", source_record_key="test", known_at=KNOWN_AT,
+    ))
+    failed = repo.list_sync_runs()[0]
+    assert failed.status == "failed" and failed.values_loaded == one * 2

@@ -125,12 +125,22 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
     catalog = {row["location_id"]: row for row in locations}
+    missing = {row["location_id"] for row in rows} - catalog.keys()
+    if missing:
+        catalog_table = metadata.tables["weather_locations"]
+        disabled = set(connection.scalars(select(catalog_table.c.location_id).where(
+            catalog_table.c.location_id.in_(missing), catalog_table.c.enabled.is_(False),
+        )))
+        if missing - disabled:
+            # 활성 roster에서 보이지 않는 것과 운영자가 명시 비활성화한 것은 다르다.
+            # 실제 catalog 유실은 이전 완전 snapshot으로 fallback해야 한다.
+            raise ExportArtifactError("승인 source의 canonical catalog 행이 유실됐습니다.")
     valid, sources = {}, set()
     descriptors_by_namespace = {}
     for row in rows:
         current = catalog.get(row["location_id"])
         if current is None:
-            continue  # 명시 비활성화한 위치는 새 snapshot에 포함하지 않는다.
+            continue  # 위에서 같은 MVCC의 명시 enabled=False만 확인했다.
         if row["namespace"] not in descriptors_by_namespace:
             descriptors_by_namespace[row["namespace"]] = parse_scope_descriptor(row["descriptor"])
         descriptor = descriptors_by_namespace[row["namespace"]]
@@ -155,6 +165,13 @@ def approved_source_selection(connection, metadata, locations, *, expected, opti
         or now - row["data_revision_at"] > source_max_age(row["dataset_key"])
         for row in valid.values()
     )
+    namespaces = {row["namespace"] for row in valid.values()}
+    heads = metadata.tables["weather_export_heads"]
+    live_heads = set(connection.scalars(select(heads.c.namespace).where(
+        heads.c.namespace.in_(namespaces),
+    )))
+    # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
+    unconfirmed |= live_heads != namespaces
     cohorts = external_cohort_table(metadata)
     declarations = {
         (row["provider"], row["dataset_key"]): row for row in connection.execute(select(

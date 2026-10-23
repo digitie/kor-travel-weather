@@ -179,17 +179,23 @@ def publish_regional_records(
         disabled = 0
         truncated = False
         latest_sources = {}
-        if source_export is not None:
+        if source_export is not None and source_export.complete:
             # 청정넷처럼 시간별 관측이 여러 개인 source도 native 이력은 모두 저장한다.
             # 승인 current에는 최신 원천 한 건만 사용하며 임의로 관측 시각을 만들지 않는다.
-            for record in records:
-                candidate = to_location(record)
-                if candidate is not None:
-                    observed = getattr(record[0] if isinstance(record, tuple) else record,
-                                       "observed_at", None)
-                    previous = latest_sources.get(candidate.location_id)
-                    if observed is not None and (previous is None or observed > previous[0]):
-                        latest_sources[candidate.location_id] = (observed, record)
+            try:
+                for record in records:
+                    candidate = to_location(record)
+                    if candidate is not None:
+                        observed = getattr(record[0] if isinstance(record, tuple) else record,
+                                           "observed_at", None)
+                        previous = latest_sources.get(candidate.location_id)
+                        if observed is not None and (previous is None or observed > previous[0]):
+                            latest_sources[candidate.location_id] = (observed, record)
+            except Exception:
+                # 선행 export 검사 때문에 원래 native chunk의 commit 시점을 앞당겨
+                # 실패시키지 않는다. 본래 순회에서 같은 원천에 도달할 때 실패한다.
+                source_export.invalidate()
+                latest_sources.clear()
 
         def flush() -> None:
             nonlocal published
