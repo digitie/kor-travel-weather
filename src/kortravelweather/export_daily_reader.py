@@ -269,6 +269,11 @@ class DailySummaryExports(FrozenCurrentExports):
             return row
 
     def page(self, *, limit, cursor):
+        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
+        with self.artifacts.guard(timeout_seconds=2, shared=True):
+            return self._page_guarded(limit=limit, cursor=cursor)
+
+    def _page_guarded(self, *, limit, cursor):
         if cursor:
             state = self._decode(cursor)
             if state["r"] != self.resource or state["l"] != limit:

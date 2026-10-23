@@ -235,6 +235,10 @@ async def _frozen_response(
             "daily-summaries": DailySummaryExports,
             "locations": FrozenLocationExports,
         }.get(resource, FrozenCurrentExports)
+        if resource == "forecasts" and style == "mid":
+            from kortravelweather.export_mid_reader import FrozenMidForecastExports
+
+            reader_class = FrozenMidForecastExports
         reader = reader_class(
             request.app.state.repository,
             ExportArtifactStore(settings.service_export_artifact_root),
