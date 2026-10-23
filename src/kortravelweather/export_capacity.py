@@ -29,19 +29,30 @@ class MetadataBudget:
     def __init__(self, maximum=MAX_MANIFEST_BYTES):
         self.maximum = maximum
         self.used = 0
-
-    def add(self, value):
-        encoder = json.JSONEncoder(
+        self.encoder = json.JSONEncoder(
             ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"),
             allow_nan=False,
         )
+
+    def add(self, value):
         try:
-            for part in encoder.iterencode(value):
+            for part in self.encoder.iterencode(value):
                 self.used += len(part.encode("utf-8"))
                 if self.used > self.maximum:
                     raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
         except (ValueError, TypeError, UnicodeError, OverflowError) as exc:
             raise ExportCapacityExceeded("승인 manifest JSON이 올바르지 않습니다.") from exc
+        return self.used
+
+    def add_bounded_record(self, value, maximum):
+        """SQL에서 개별 크기를 제한한 record만 C encoder로 빠르게 계산한다."""
+        try:
+            size = len(self.encoder.encode(value).encode("utf-8"))
+        except (ValueError, TypeError, UnicodeError, OverflowError) as exc:
+            raise ExportCapacityExceeded("승인 manifest JSON이 올바르지 않습니다.") from exc
+        self.used += size
+        if size > maximum or self.used > self.maximum:
+            raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
         return self.used
 
 
@@ -75,7 +86,7 @@ def read_generation_refs(connection, table, generation_ids):
             if count > MAX_GENERATION_REFS or row["oversized_locations"]:
                 raise ExportCapacityExceeded("승인 artifact 참조 상한을 넘었습니다.")
             ref = {key: value for key, value in row.items() if key != "oversized_locations"}
-            budget.add(ref)
+            budget.add_bounded_record(ref, MAX_REF_LOCATION_BYTES + 512)
             grouped[ref["generation_id"]].append(ref)
     finally:
         result.close()
@@ -105,7 +116,7 @@ def read_scope_plans(connection, table, attempt_ids):
         for row in result.mappings():
             if row["oversized_descriptor"] or row["descriptor"] is None:
                 raise ExportCapacityExceeded("승인 source plan 메타데이터 상한을 넘었습니다.")
-            budget.add(row["descriptor"])
+            budget.add_bounded_record(row["descriptor"], MAX_SCOPE_PLAN_BYTES)
             plans[row["attempt_id"]] = row["descriptor"]
     finally:
         result.close()

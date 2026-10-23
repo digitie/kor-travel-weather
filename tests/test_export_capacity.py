@@ -18,6 +18,9 @@ def test_budget_matches_digest_json_utf8_and_exact_boundary():
         value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"),
     ).encode("utf-8"))
     assert capacity.MetadataBudget(expected).add(value) == expected
+    assert capacity.MetadataBudget(expected).add_bounded_record(value, expected) == expected
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.MetadataBudget().add_bounded_record(value, expected - 1)
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.MetadataBudget(expected - 1).add(value)
     budget = capacity.MetadataBudget(expected * 2)
@@ -42,6 +45,8 @@ def test_source_vector_is_independent_of_location_cohort_and_artifact_caps():
 def test_invalid_json_is_a_capacity_error(invalid):
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.MetadataBudget().add(invalid)
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.MetadataBudget().add_bounded_record(invalid, capacity.MAX_SCOPE_PLAN_BYTES)
 
 
 @pytest.fixture
