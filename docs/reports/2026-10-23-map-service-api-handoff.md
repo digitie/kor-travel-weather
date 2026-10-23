@@ -48,7 +48,9 @@ W5는 observed와 KMA 초단기실황(nowcast)을 포함한다. 기본14일/최�
 KST morning05~11/noon11~17/evening17~23, 미완 구간partial을 제공한다.
 sample_count는 metric 행수가 아닌 채택된 관측 시간 bucket 수다. 복수 제공처·재수집을
 중복 합산하지 않으며 의미가 확인되지 않은 누적 강수는 합산하지 않는다.
-원천별 최신 승인 generation의 reducer 진도가 부족하면 stale/최초coverage503이다.
+원천별 최신 승인 generation의 reducer 진도가 부족하면 이전 완전 roster를
+stale로 유지하며 이전 성공 집합이 없는 선택만503이다. 기존 cursor도 새 원천의
+미처리를 stale로 표시하고 TTL 뒤 fallback은 새 handle로 발급한다.
 관측 dataset 대상이 아닌 예보 전용 위치는 null/sample_count0이며 빌려 쓸 원천 clock이
 없으면 null/stale다. 요청은 작은 summary/coverage 표만 읽고 날짜 이력 전체를 집계하지 않는다.
 

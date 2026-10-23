@@ -378,7 +378,7 @@ async def export_daily_summaries(
     limit: Limit = 500,
     cursor: Cursor = None,
 ) -> Response:
-    """승인 관측의 작은 사전 요약. 원천별 reducer 지연은 stale/최초 미계산은503."""
+    """승인 관측의 사전 요약. 미계산은 이전 완전 집합stale/이전 집합이 없으면503."""
     return await _frozen_response(
         request, "daily-summaries", limit, cursor, days=days, location_id=location_id
     )

@@ -66,7 +66,7 @@ def test_daily_inventory_requires_reducer_for_each_source_and_allows_forecast_on
 
     with monkeypatch.context() as bounded:
         bounded.setattr(daily_reader, "MAX_SELECTED_ROWS", 1)
-        assert client.get(path, params={"days": 1}, headers=headers).status_code == 503
+        assert client.get(path, params={"days": 3}, headers=headers).status_code == 503
     with repo.engine.begin() as connection:
         connection.execute(update(table).where(table.c.provider == "python-krex-api").values(
             generation_id="previous-approved-generation",
@@ -77,8 +77,16 @@ def test_daily_inventory_requires_reducer_for_each_source_and_allows_forecast_on
     assert lagging.status_code == 200 and lagging.json()["meta"]["source_status"] == "stale"
     assert lagging.json()["items"] == healthy.json()["items"]
     with repo.engine.begin() as connection:
+        krex_key = connection.scalar(select(table.c.location_id).where(
+            table.c.provider == "python-krex-api",
+        ).limit(1))
         connection.execute(table.delete().where(table.c.provider == "python-krex-api"))
-    assert client.get(path, params={"days": 1}, headers=headers).status_code == 503
+    retained = client.get(path, params={"days": 1}, headers=headers)
+    assert retained.status_code == 200 and retained.json()["meta"]["source_status"] == "stale"
+    assert retained.json()["items"] == healthy.json()["items"]
+    assert client.get(
+        path, params={"days": 1, "location_id": krex_key}, headers=headers,
+    ).status_code == 503
 
 
 def test_predeclared_unapproved_observation_is_not_forecast_only_zero(
@@ -115,3 +123,77 @@ def test_predeclared_unapproved_observation_is_not_forecast_only_zero(
     response = client.get("/v1/service/exports/daily-summaries", params={"location_id": "new-krex"},
                           headers={"x-admin-token": "pending-daily"})
     assert response.status_code == 503
+
+
+def test_new_approved_location_waits_for_reducer_without_losing_previous_full_roster(
+    external_repository, tmp_path,
+):
+    from datetime import UTC, datetime, timedelta
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from sqlalchemy import update
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_heads import ExportHeads
+    from kortravelweather.models import WeatherLocation
+    from kortravelweather.settings import WeatherSettings
+
+    repo = external_repository
+    descriptor = _descriptor(repo)
+    original = descriptor.location_ids[0]
+    for key in ("daily-b", "daily-c", "daily-d"):
+        repo.create_location(WeatherLocation(
+            location_id=key, name=key, latitude=37.5, longitude=127, nx=60, ny=127,
+            enabled=key != "daily-d",
+        ))
+    descriptor = descriptor.model_copy(update={
+        "entity_id": "grid:60:127",
+        "location_ids": tuple(sorted([original, "daily-b", "daily-c"])),
+    })
+    heads, identity, capture, *_ = _candidate(repo, tmp_path, descriptor, cohort=True)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    _drain(repo, tmp_path)
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="daily-fallback", enabled_providers=["python-kma-api"],
+        service_exports_enabled=True, service_export_artifact_root=tmp_path,
+    ), repo))
+    headers = {"x-admin-token": "daily-fallback"}
+    path, params = "/v1/service/exports/daily-summaries", {"days": 1}
+    healthy = client.get(path, params=params, headers=headers)
+    assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    assert len(healthy.json()["items"]) == 9
+    first = client.get(path, params={**params, "limit": 1}, headers=headers)
+    cursor = first.json()["meta"]["next_cursor"]
+    catalog = ExportHeads(repo).metadata.tables["weather_locations"]
+    with repo.engine.begin() as connection:
+        connection.execute(update(catalog).where(
+            catalog.c.location_id == "daily-d",
+        ).values(enabled=True))
+    descriptor = descriptor.model_copy(update={
+        "location_ids": tuple(sorted([*descriptor.location_ids, "daily-d"])),
+    })
+    heads, identity, capture, *_ = _candidate(repo, tmp_path, descriptor, cohort=True)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    pending = client.get(path, params=params, headers={
+        **headers, "if-none-match": healthy.headers["etag"],
+    })
+    assert pending.status_code == 200 and pending.json()["meta"]["source_status"] == "stale"
+    assert pending.json()["items"] == healthy.json()["items"]
+    old = client.get(path, params={**params, "limit": 1, "cursor": cursor}, headers=headers)
+    assert old.status_code == 200 and old.json()["meta"]["source_status"] == "stale"
+    assert client.get(
+        path, params={**params, "location_id": "daily-d"}, headers=headers,
+    ).status_code == 503
+    from kortravelweather.export_snapshots import export_snapshot_tables
+
+    snapshots, _ = export_snapshot_tables(heads.metadata)
+    with repo.engine.begin() as connection:
+        connection.execute(update(snapshots).values(expires_at=datetime.now(UTC)-timedelta(seconds=1)))
+    refreshed = client.get(path, params=params, headers=headers)
+    assert refreshed.status_code == 200 and refreshed.json()["items"] == healthy.json()["items"]
+    assert refreshed.json()["meta"]["snapshot_id"] != pending.json()["meta"]["snapshot_id"]
+    _drain(repo, tmp_path)
+    ready = client.get(path, params=params, headers=headers)
+    assert ready.status_code == 200 and ready.json()["meta"]["source_status"] == "ok"
+    assert len(ready.json()["items"]) == 12

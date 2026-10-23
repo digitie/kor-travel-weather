@@ -50,7 +50,7 @@ class DailySummaryExports(FrozenCurrentExports):
             })
         self.resource = "daily-summaries:" + _digest(self.selection)
 
-    def _selected_coverage(self, connection, keys):
+    def _coverage_rows(self, connection, keys):
         catalog = self.heads.metadata.tables["weather_locations"]
         coverage = self.coverage
         rows = list(
@@ -58,7 +58,8 @@ class DailySummaryExports(FrozenCurrentExports):
                 select(coverage)
                 .join(catalog, catalog.c.location_id == coverage.c.location_id)
                 .where(
-                    coverage.c.location_id.in_(keys),
+                    coverage.c.location_id.in_(keys)
+                    if self.location_id or not self.source_inventory else True,
                     coverage.c.provider.in_(self.providers),
                     catalog.c.enabled.is_(True),
                     or_(
@@ -80,6 +81,10 @@ class DailySummaryExports(FrozenCurrentExports):
         )
         if len(rows) > MAX_SELECTED_ROWS:
             raise ExportSnapshotUnavailable("관측 coverage metadata 상한을 넘었습니다.")
+        return rows
+
+    def _selected_coverage(self, connection, keys):
+        rows = self._coverage_rows(connection, keys)
         if self.source_inventory:
             rows, unconfirmed = self._inventory_coverage(connection, keys, rows)
         else:
@@ -123,6 +128,9 @@ class DailySummaryExports(FrozenCurrentExports):
         )).mappings().all()
         if len(locations) > MAX_SNAPSHOT_LOCATIONS:
             raise ExportSnapshotUnavailable("활성 catalog 상한을 넘었습니다.")
+        if self.location_id is None:
+            # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
+            keys = [row["location_id"] for row in locations]
         from .export_artifacts import ExportArtifactError
 
         try:
@@ -167,6 +175,33 @@ class DailySummaryExports(FrozenCurrentExports):
         return selected, unconfirmed or not expected
 
     def _freeze_daily(self):
+        try:
+            return self._freeze_daily_ready()
+        except ExportSnapshotUnavailable:
+            previous = self._previous_daily()
+            if previous is None:
+                raise
+            return previous
+
+    def _previous_daily(self):
+        now = datetime.now(UTC)
+        with self.heads._transaction() as connection:
+            previous = connection.execute(select(self.snapshots).where(
+                self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+            ).order_by(self.snapshots.c.issue_order.desc()).limit(1)).mappings().one_or_none()
+            if previous is None:
+                return None
+            if previous["expires_at"] > now and previous["manifest"].get("fallback_unconfirmed"):
+                return dict(previous)
+            row = dict(previous)
+            row.pop("issue_order", None)
+            row["manifest"] = {**row["manifest"], "fallback_unconfirmed": True}
+            row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
+                       created_at=now, expires_at=now + SNAPSHOT_TTL)
+            connection.execute(self.snapshots.insert().values(**row))
+            return row
+
+    def _freeze_daily_ready(self):
         now = datetime.now(UTC)
         with (
             self.repository.engine.connect().execution_options(
@@ -191,6 +226,7 @@ class DailySummaryExports(FrozenCurrentExports):
             today = now.astimezone(KST).date()
             manifest = {
                 "selection": self.selection,
+                "daily_resource": self.resource,
                 "locations": keys,
                 "first_date": (today - timedelta(days=self.days - 1)).isoformat(),
                 "last_date": today.isoformat(),
@@ -203,8 +239,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 c.execute(
                     select(self.snapshots)
                     .where(
-                        self.snapshots.c.manifest_digest == digest,
-                        self.snapshots.c.expires_at > now,
+                        self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
@@ -212,7 +247,10 @@ class DailySummaryExports(FrozenCurrentExports):
                 .mappings()
                 .one_or_none()
             )
-            if existing is not None:
+            if (
+                existing is not None and existing["manifest_digest"] == digest
+                and existing["expires_at"] > now
+            ):
                 return dict(existing)
             row = {
                 "snapshot_id": str(uuid4()),
@@ -319,14 +357,23 @@ class DailySummaryExports(FrozenCurrentExports):
                     break
                 state["g"], state["p"] = state["g"] + 1, 0
             ready = s.execute(select(self.progress)).mappings().one_or_none()
-            coverage, unconfirmed = self._selected_coverage(s, keys)
+            try:
+                coverage, unconfirmed = self._selected_coverage(s, keys)
+            except ExportSnapshotUnavailable:
+                # 이전 승인 roster의 값은 유지한다. 처음 조회한 미준비 위치에는
+                # snapshot 자체가 없으므로 _freeze_daily가 여전히503을 반환한다.
+                coverage, unconfirmed = None, True
+                self.daily_health_digest = "coverage-unavailable"
         more = state["g"] < len(keys)
         if ready is None or ready["source_collected_at"] is None:
             raise ExportSnapshotUnavailable("사전 계산 요약 checkpoint가 없습니다.")
         # roster/날짜 범위를 고정하고 각 페이지의 최신 사전계산 값을 반환한다.
-        source = min((r["source_collected_at"] for r in coverage), default=None)
+        source = (
+            min((r["source_collected_at"] for r in coverage), default=None)
+            if coverage is not None else frozen["source_collected_at"]
+        )
         status = "stale" if (
-            unconfirmed or source is None
+            unconfirmed or source is None or manifest.get("fallback_unconfirmed")
             or not self.source_inventory and now - source > timedelta(hours=3)
         ) else "ok"
         page = {

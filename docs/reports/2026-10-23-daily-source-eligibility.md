@@ -7,14 +7,17 @@ W5는 KMA 초단기실황과 SDK·HTTP 현재 관측의 승인 artifact를 기�
 
 REST는 현재 dataset registry의 실제 승인 위치를 사용한다. 같은 위치에 여러
 원천이 있으면 **각 namespace의 최신 승인 generation**이 reducer coverage에
-도달했는지 확인한다. 최초 coverage가 없으면503, 이전 coverage만 있으면 기존
-요약을 유지하고 stale로 표시하여 건강한 이전 ETag304로 감추지 않는다.
+도달했는지 확인한다. 최초 coverage가 없고 이전 성공 집합도 없으면503, 이전
+성공 집합이 있으면 단조 issue_order의 최신 snapshot roster를 유지하고 stale로
+표시한다. TTL이 지났으면 새 handle로 복제하여 옛 cursor를 연장하지 않는다.
+이전 coverage만 있어도 기존 요약을 유지하고 stale로 표시하여 정상304로 감추지 않는다.
 한 제공처가 준비됐다는 이유로 다른 제공처의 reducer 지연을 정상으로 처리하지 않는다.
 
 예보만 있는 KHOA 위치는 승인 관측이 없는 상태와 구분한다. 관측 원천의 대상이
 아닌 위치는 없는 구간을 null/sample_count=0으로 내보낼 수 있으며, 빌려 쓸 원천
 수집 시각이 없으면 source_collected_at=null/source_status=stale다. 기본 요청의
-필수 현재 dataset이 최초 미준비면 전체를 축소 성공하지 않고503을 유지한다.
+필수 현재 dataset이 미준비면 전체를 축소 성공하지 않고 이전 전체 집합의
+stale/최초503을 유지한다. 기존 cursor도 새 원천의 미계산을 건강도에 반영한다.
 
 source별 신선도는 current와 같은 정책을 따른다(지역 SDK36시간, HTTP·실황3시간).
 선택 위치의 원천/coverage/작은 summary/checkpoint는 한 REPEATABLE READ에서
