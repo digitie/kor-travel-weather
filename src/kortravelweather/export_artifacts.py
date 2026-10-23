@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -118,8 +119,10 @@ class ExportArtifactStore:
             raise ExportArtifactError("export receipt 상한이 올바르지 않습니다.")
         path = self._path(digest)
         # 검증한 동일 fd의 bounded 내용을 파싱한다. symlink를 따라가지 않는다.
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ExportArtifactError("export artifact는 일반 파일이어야 합니다.")
             payload = stream.read(MAX_CHUNK_BYTES + 1)
         if len(payload) != byte_count or hashlib.sha256(payload).hexdigest() != digest:
             raise ExportArtifactError("export artifact가 없거나 손상됐습니다.")

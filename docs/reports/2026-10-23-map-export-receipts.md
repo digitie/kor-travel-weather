@@ -14,3 +14,6 @@
 
 
 첫 독립 적대 리뷰에서 보조 실패표시 UPDATE의 행 잠금이 원본 transaction을 취소할 수 있는 P1, 파일실패 후 실패표시 잠금 무한대기 P2, run_id 없는 원천이 다른 run receipt에 포함되는 P2를 발견했다. 실패표시를 별도 savepoint best effort로 격리하고 독립 후속 transaction에도 lock timeout을 설정했다. export는 모든 원천의 동일 non-null run_id를 요구한다. 실제 PG의 별도 connection이 attempt 행을 잠근 두 경로와 mixed missing-run 회귀를 추가하여 집중21 PASS(15.95초)다. 이 경합에서 원본2경로 모두 commit되고 ingest가 상한 안에 반환함을 확인했다. 현 collector opt-in은 계속 OFF다.
+
+
+두 번째 독립 리뷰에서 digest 경로가 FIFO이면 read open이 대기하는 P2를 확인했다. `O_NONBLOCK` open 후 동일 fd의 `fstat`로 일반 파일만 허용하도록 수정했다. FIFO·directory·symlink는 소유 child5초 상한으로 검증하며 최종 집중24 PASS(29.29초)다. frontend243 PASS·type-check PASS. 전체Python/CI는 진행 중이며 현재 원천 수집에 활성화하지 않는다.

@@ -598,3 +598,32 @@ def test_source_without_run_cannot_be_admitted_under_another_export_run(
             )
             == "failed"
         )
+
+
+@pytest.mark.parametrize("kind", ["fifo", "directory", "symlink"])
+def test_artifact_nonregular_paths_fail_without_blocking(tmp_path, kind):
+    import hashlib
+    import subprocess
+    import sys
+
+    digest = hashlib.sha256(b"").hexdigest()
+    path = tmp_path / (digest + ".jsonl")
+    if kind == "fifo":
+        os.mkfifo(path, 0o400)
+    elif kind == "directory":
+        path.mkdir()
+    else:
+        target = tmp_path / "target"
+        target.write_bytes(b"")
+        path.symlink_to(target)
+    code = (
+        "from pathlib import Path\n"
+        "from kortravelweather.export_artifacts import ExportArtifactStore, ExportArtifactError\n"
+        "try:\n"
+        f" list(ExportArtifactStore(Path({str(tmp_path)!r})).read({digest!r}, "
+        "byte_count=0, point_count=0))\n"
+        "except (ExportArtifactError, OSError): pass\n"
+        "else: raise AssertionError('nonregular artifact accepted')\n"
+    )
+    # FIFO open의 이전 무기한 대기는 소유 child timeout으로 한정한다.
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=5)
