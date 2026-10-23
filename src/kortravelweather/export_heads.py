@@ -705,13 +705,11 @@ class ExportHeads:
                 if committed["owner_id"] != identity.owner_id:
                     raise ExportArtifactError("이미 확정된 generation의 소유권이 다릅니다.")
                 return "ALREADY_COMMITTED"
-        if (
-            self.lifecycle.reconcile(
-                identity, artifacts, dagster_status=dagster_status, max_chunks=8
-            )
-            != "ELIGIBLE"
-        ):
-            return "NOT_READY"
+        readiness = self.lifecycle.reconcile(
+            identity, artifacts, dagster_status=dagster_status, max_chunks=8
+        )
+        if readiness != "ELIGIBLE":
+            return readiness
         with self._transaction() as session:
             run, attempt = self.lifecycle._locked(session, identity)
             _current_owners(session, self.metadata, attempt)
@@ -987,5 +985,9 @@ class ExportHeads:
                 session, self.metadata,
                 descriptor=parse_scope_descriptor(plan["descriptor"]), generation_id=generation,
             )
+            session.execute(update(self.lifecycle.attempts).where(
+                self.lifecycle.attempts.c.attempt_id == identity.attempt_id,
+                self.lifecycle.attempts.c.owner_id == identity.owner_id,
+            ).values(published_at=published_at))
             session.execute(self.pins.delete().where(self.pins.c.attempt_id == identity.attempt_id))
             return "PUBLISHED"

@@ -16,6 +16,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -69,6 +70,7 @@ def export_receipt_tables(metadata: MetaData) -> tuple[Table, Table]:
         Column("plan_closed_at", DateTime(timezone=True)),
         Column("seal_digest", String(64)),
         Column("sealed_at", DateTime(timezone=True)),
+        Column("published_at", DateTime(timezone=True)),
         Column("status", String(16), nullable=False),
         Column("error_code", String(64)),
         Column("created_at", DateTime(timezone=True), nullable=False),
@@ -80,6 +82,11 @@ def export_receipt_tables(metadata: MetaData) -> tuple[Table, Table]:
             "execution_mode != 'dagster' OR orchestrator_run_id IS NOT NULL",
             name="ck_weather_export_dagster_id",
         ),
+    )
+    Index(
+        "ix_weather_export_attempts_pending", attempts.c.attempt_id,
+        postgresql_where=(attempts.c.status.in_(["preparing", "sealed"])
+                          & attempts.c.published_at.is_(None)),
     )
     chunks = Table(
         "weather_export_chunks",
