@@ -18,7 +18,8 @@
   한국어 서술 문자열은 보존한다. known_at은 두 원천의 실제 조회 시각 중 늦은 값이며
   publication 시각으로 바꾸지 않는다. 공통 메타의 source_collected_at은 raw vector 최소값이다.
   같은 의미의 재확인은 이전 artifact를 재사용할 수 있다. 파일의 과거 known_at은
-  issued~승인 source clock 범위로 검증하고 응답 known_at은 실제 새 승인 clock을 쓴다.
+  issued~승인 source clock 범위로 검증하고 응답 known_at은 원래 fact clock을 보존한다.
+  재확인 시각은 meta.source_collected_at으로 구분한다.
 - delta 판단은 두 part의 publication 중 늦은 값이다. 같은 RR에서 받은 기존 publication
   watermark를 next_since로 유지해, 늦게 승인된 한 part를 건너뛰지 않는다.
 - cursor의 g는 위치 인덱스이며 p는0이다. 기존 서명·selection/limit 바인딩·TTL410·위조422를

@@ -156,8 +156,9 @@ def test_actual_partial_late_publication_preserves_old_vector_stale_then_delta(
     complete, _ = handle.page(limit=5000, cursor=None)
     assert complete["meta"]["source_status"] == "ok" and len(complete["items"]) == 3
     assert complete["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
-    # 같은 의미의 파일은 재사용하되 실제 새 승인 source clock을 반환한다.
-    assert complete["items"][0]["known_at"] > first["items"][0]["known_at"]
+    # 같은 의미의 파일은 재사용하고 fact clock과 실제 새 수집 clock을 구분한다.
+    assert complete["items"][0]["known_at"] == first["items"][0]["known_at"]
+    assert complete["meta"]["source_collected_at"] > first["meta"]["source_collected_at"]
     delta, _ = _reader(repo, later, since=since).page(limit=5000, cursor=None)
     assert len(delta["items"]) == 3 and delta["meta"]["source_status"] == "ok"
     assert datetime.fromisoformat(delta["meta"]["next_since"]) > since

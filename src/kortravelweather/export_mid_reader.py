@@ -191,10 +191,9 @@ class FrozenMidForecastExports(FrozenForecastExports):
                     )
                 item = {
                     "location_id": key, "provider": MID_SOURCE[0], "forecast_style": "mid",
-                    # 동일 의미 값을 재수집하면 승인 head는 원래 파일을 재사용한다.
-                    # fact의 옛 known_at을 바꾸지 않고 실제 재확인 clock은 head에서 읽는다.
-                    "known_at": max(_at(scopes[pair[part]]["source_collected_at"])
-                                    for part in ("land", "temperature")).isoformat(),
+                    # 같은 의미의 재확인은 과거 파일을 재사용한다. fact known_at은
+                    # 그대로 반환하고 새 수집 시각은 meta.source_collected_at으로 구분한다.
+                    "known_at": max(_at(point["known_at"]) for point in points).isoformat(),
                     "published_at": pair["published_at"],
                     "target_at": [target.isoformat() for target in targets],
                     "metrics": {metric: [values.get(target) for target in targets]
