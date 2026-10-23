@@ -312,3 +312,14 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 원본 fact/이력/기본 OFF를 유지하고 publisher 명시 opt-in만 제공한다.
 - 상세: `docs/reports/2026-10-23-daily-summaries.md`.
 
+# 2026-10-23 W1 독립 reference와 외부 현재·예보 export
+
+- Open-Meteo/WeatherAPI/OpenWeatherMap은 기존 정규화를 원천 raw에서 네트워크 없이
+  독립 재실행하고 요청 좌표/전체 시간·배열/필수 metric/급감을 검증한다.
+- HTTP 전 실제 quota/sampling cohort를 보존하고 native 성공·소유권·파일 증명 뒤
+  current/external forecast를 제공한다. KMA style은 해당 KMA scope만 선택한다.
+- W1 reference는 날씨 head와 분리했다. 실제 catalog fetch clock은 아직 없으므로
+  source_collected_at=null/stale로 표시하고 updated_at을 원천 시각으로 쓰지 않는다.
+- 기본 OFF/원본 fact·이력은 유지한다. 전체 provider/mid, 두 리뷰/CI/운영 비용·GC
+  gate는 진행 중이다. 상세: `docs/reports/2026-10-23-external-exports.md`.
+

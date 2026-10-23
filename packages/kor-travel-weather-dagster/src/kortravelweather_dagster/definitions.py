@@ -482,6 +482,11 @@ def _make_kma_dataset_asset(
                 # network attempts per endpoint.
                 retries=0,
                 sync_run=run,
+                **(
+                    {"export_artifact_root": settings.service_export_artifact_root}
+                    if settings.service_exports_enabled and settings.service_export_artifact_root
+                    else {}
+                ),
             )
             if result.get("values_skipped"):
                 # KMA reports a station without an observation as Missing
@@ -870,6 +875,12 @@ def _make_external_provider_asset(provider_key: str):
                             fetch_timeout_seconds=_fetch_deadline_seconds(runtime),
                             min_request_interval_seconds=(
                                 runtime.provider_min_request_interval_seconds.get(provider_key, 0.0)
+                            ),
+                            **(
+                                {"export_artifact_root": runtime.service_export_artifact_root}
+                                if runtime.service_exports_enabled
+                                and runtime.service_export_artifact_root
+                                else {}
                             ),
                         )
                     )

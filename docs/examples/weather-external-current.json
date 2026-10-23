@@ -1,0 +1,26 @@
+{
+  "items": [
+    {
+      "location_id": "external-a",
+      "provider": "open_meteo",
+      "metric_key": "HUMIDITY",
+      "value": 50.0,
+      "unit": "%",
+      "target_at": "2026-10-23T11:00:00Z",
+      "known_at": "2026-10-23T11:36:38.565553Z",
+      "forecast_style": "observed"
+    }
+  ],
+  "meta": {
+    "generated_at": "2026-10-23T11:36:38.826536Z",
+    "source_collected_at": "2026-10-23T11:36:38.565553Z",
+    "source_status": "ok",
+    "item_count": 1,
+    "snapshot_id": "f6ab85d8-4ee0-4a64-868b-9c426f600597",
+    "snapshot_generated_at": "2026-10-23T11:36:38.822021Z",
+    "as_of": "2026-10-23T11:36:38.822021Z",
+    "next_cursor": "eyJnIjowLCJsIjoxLCJwIjoxLCJyIjoiY3VycmVudDowZDMzNzkwMWQyY2Y4OWM1YmU3MjIzZGRkMDYyYzEzNGFjMWFiOTkzMTg1YzJhNzE0OGU1NGQ1ODNmZGViZjM5IiwicyI6ImY2YWI4NWQ4LTRlZTAtNGE2NC04NjhiLTljNDI2ZjYwMDU5NyIsInYiOjF97KL7LPpEXdIEMFcvwsHJEbjCc_oWba7LQjuoVjPH1bQ",
+    "has_more": true,
+    "next_since": null
+  }
+}

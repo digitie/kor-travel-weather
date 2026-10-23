@@ -308,6 +308,7 @@ async def export_locations(
     limit: Limit = 500,
     cursor: Cursor = None,
 ) -> JSONResponse:
+    """활성 catalog 전체 reference. 원천 조회 시각 미확인은 null/stale로 표시한다."""
     return await _frozen_response(request, "locations", limit, cursor)
 
 
@@ -318,6 +319,7 @@ async def export_current(
     cursor: Cursor = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=120)] = None,
 ) -> Response:
+    """관측 dataset이 있는 provider의 승인 선택 집합. 미지원/미승인 scope는503이다."""
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
 

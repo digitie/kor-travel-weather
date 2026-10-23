@@ -1361,6 +1361,7 @@
           "service exports"
         ],
         "summary": "Export Locations",
+        "description": "활성 catalog 전체 reference. 원천 조회 시각 미확인은 null/stale로 표시한다.",
         "operationId": "export_locations_v1_service_exports_locations_get",
         "parameters": [
           {
@@ -1462,6 +1463,7 @@
           "service exports"
         ],
         "summary": "Export Current",
+        "description": "관측 dataset이 있는 provider의 승인 선택 집합. 미지원/미승인 scope는503이다.",
         "operationId": "export_current_v1_service_exports_current_get",
         "parameters": [
           {
