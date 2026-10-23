@@ -23,16 +23,20 @@ from .export_snapshots import (
 
 
 class FrozenForecastExports(FrozenCurrentExports):
+    STYLE_DATASETS = {
+        "ultra_short": "kma_ultra_short_forecast",
+        "short": "kma_short_forecast",
+        "external": "kma_short_forecast",
+    }
+
     def __init__(self, *args, style, since=None, **kwargs):
         super().__init__(*args, **kwargs)
-        if style not in {"ultra_short", "short", "external"}:
+        if style not in self.STYLE_DATASETS:
             raise ExportSnapshotUnavailable("해당 예보 style의 전체 원천이 준비되지 않았습니다.")
         if since is not None:
             since = since.astimezone(UTC)
         self.style, self.since = style, since
-        self.dataset = (
-            "kma_ultra_short_forecast" if style == "ultra_short" else "kma_short_forecast"
-        )
+        self.dataset = self.STYLE_DATASETS[style]
         self.selection = {
             "kind": "forecasts",
             "style": style,
@@ -198,6 +202,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "location_ids": list(selected[d.namespace] if selected else d.location_ids),
                         "approved_location_ids": list(d.location_ids),
                         "dataset_key": d.dataset_key,
+                        "source_part": getattr(d, "source_part", "main"),
                         "refs": chunks,
                         "published_at": head.created_at.isoformat(),
                         "source_collected_at": head.source_collected_at.isoformat(),
@@ -211,6 +216,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "next_since": watermark.isoformat(),
                 "unconfirmed_sources": unconfirmed,
             }
+            manifest = self._prepare_manifest(manifest)
             digest = _digest(manifest)
             previous = (
                 c.execute(
@@ -322,6 +328,33 @@ class FrozenForecastExports(FrozenCurrentExports):
         manifest, now = frozen["manifest"], datetime.now(UTC)
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
+        output, more = self._page_items(manifest, state, limit, now)
+        stale = self._health(manifest, frozen, now)
+        status = "stale" if stale else "ok"
+        page = {
+            "items": output,
+            "meta": {
+                "generated_at": now.isoformat(),
+                "source_collected_at": frozen["source_collected_at"].isoformat(),
+                "source_status": status,
+                "item_count": len(output),
+                "snapshot_id": frozen["snapshot_id"],
+                "snapshot_generated_at": frozen["created_at"].isoformat(),
+                "as_of": now.isoformat(),
+                "next_cursor": self._encode(state) if more else None,
+                "has_more": more,
+                "next_since": manifest["next_since"],
+            },
+        }
+        etag = 'W/"' + _digest([frozen["snapshot_id"], cursor, limit, status, output]) + '"'
+        return page, etag
+
+    def _prepare_manifest(self, manifest):
+        """특수 source 조합도 완결을 검증한 뒤 불변 manifest로 보존한다."""
+        return manifest
+
+    def _page_items(self, manifest, state, limit, now):
+        """일반 source의 기존 bounded 페이지 출력을 그대로 유지한다."""
         output, size, more = [], 0, False
         scopes = manifest["scopes"]
         if state["g"] > len(scopes):
@@ -410,25 +443,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 if more:
                     break
                 state["g"], state["p"] = state["g"] + 1, 0
-        stale = self._health(manifest, frozen, now)
-        status = "stale" if stale else "ok"
-        page = {
-            "items": output,
-            "meta": {
-                "generated_at": now.isoformat(),
-                "source_collected_at": frozen["source_collected_at"].isoformat(),
-                "source_status": status,
-                "item_count": len(output),
-                "snapshot_id": frozen["snapshot_id"],
-                "snapshot_generated_at": frozen["created_at"].isoformat(),
-                "as_of": now.isoformat(),
-                "next_cursor": self._encode(state) if more else None,
-                "has_more": more,
-                "next_since": manifest["next_since"],
-            },
-        }
-        etag = 'W/"' + _digest([frozen["snapshot_id"], cursor, limit, status, output]) + '"'
-        return page, etag
+        return output, more
 
     def _health(self, manifest, frozen, now):
         if self.source_inventory:

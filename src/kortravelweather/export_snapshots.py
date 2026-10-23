@@ -140,7 +140,7 @@ class FrozenCurrentExports:
                     value["r"] not in {"locations", "current"}
                     and re.fullmatch(r"current:[0-9a-f]{64}", value["r"]) is None
                     and re.fullmatch(
-                        r"forecasts:(ultra_short|short|external):[0-9a-f]{64}", value["r"]
+                        r"forecasts:(ultra_short|short|mid|external):[0-9a-f]{64}", value["r"]
                     )
                     is None
                     and re.fullmatch(r"daily-summaries:[0-9a-f]{64}", value["r"]) is None
