@@ -132,7 +132,14 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0032_export_publication_pending"
+            assert version == "0033_export_source_inventory"
+            approved_indexes = inspector.get_indexes("weather_export_approved_locations")
+            assert any(item["column_names"] == ["generation_id"] for item in approved_indexes)
+            assert any(item["column_names"] == ["namespace"] for item in approved_indexes)
+            primary = inspector.get_pk_constraint("weather_export_approved_locations")
+            assert primary["constrained_columns"] == [
+                "provider", "dataset_key", "location_id", "source_part",
+            ]
             assert "weather_export_external_cohorts" in inspector.get_table_names()
             assert "weather_export_source_status" in inspector.get_table_names()
             assert "weather_export_publication_clock" in inspector.get_table_names()

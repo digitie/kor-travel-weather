@@ -365,3 +365,13 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   reader·실제 수집 배선·전체 provider/mid·운영 비용 검증은 후속이다.
 - 상세 설계/task: `docs/reports/2026-10-23-export-source-inventory.md`.
 
+### AirKorea 승인 source 실제 수집 연결
+
+- 명시 export opt-in일 때만 native 시작 intent와 HTTP 전 canonical 측정소 roster를
+  고정하고, 기존 public SDK 정규화 결과를 원본 fact/lineage와 함께 캡처한다.
+- 원천 실패 다음에도 이전 승인 값과 cursor는 남으며 source 상태를 stale로 유지한다.
+  기존 OFF 경로와 기존 AirKorea의 요청 실패 집계 동작은 유지한다.
+- quota 회전 current reader, 기존 AirKorea/asset와 0033 실제 upgrade를 포함한
+  PostgreSQL 집중 43개 및 전체 Ruff를 확인했다. 전체 SDK 배선·REST 기본 선택과
+  운영 비용/GC gate는 아직 후속이며 운영 설정은 변경하지 않았다.
+
