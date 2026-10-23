@@ -76,7 +76,9 @@ class WeatherRepositoryResource(ConfigurableResource):
             if self.database_url
             else WeatherSettings()
         )
-        repository = WeatherRepository(settings.database_url)
+        repository = WeatherRepository(
+            settings.database_url, export_status_enabled=settings.service_exports_enabled,
+        )
         if not settings.is_production:
             try:
                 repository.create_schema()

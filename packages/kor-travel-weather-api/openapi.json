@@ -1581,39 +1581,8 @@
           "service exports"
         ],
         "summary": "Export Status",
+        "description": "최대 128개의 작은 상태 목록. 전체를 한 응답으로 반환한다.",
         "operationId": "export_status_v1_service_exports_status_get",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 5000,
-              "minimum": 1,
-              "default": 500,
-              "title": "Limit"
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 4096
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Cursor"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2893,6 +2862,10 @@
             "type": "string",
             "title": "Provider"
           },
+          "dataset_key": {
+            "type": "string",
+            "title": "Dataset Key"
+          },
           "forecast_style": {
             "type": "string",
             "enum": [
@@ -2904,6 +2877,17 @@
               "external"
             ],
             "title": "Forecast Style"
+          },
+          "last_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Status"
           },
           "last_success_at": {
             "anyOf": [
@@ -2950,7 +2934,9 @@
         "type": "object",
         "required": [
           "provider",
+          "dataset_key",
           "forecast_style",
+          "last_status",
           "last_success_at",
           "last_failed_at",
           "last_attempt_failed",

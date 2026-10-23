@@ -22,6 +22,7 @@ from kortravelweather.export_snapshots import (
     ExportSnapshotExpired,
     FrozenCurrentExports,
 )
+from kortravelweather.export_status_reader import read_status
 from kortravelweather.models import kst_now
 
 from ..auth import require_admin
@@ -75,7 +76,9 @@ class ExportSourceStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str
+    dataset_key: str
     forecast_style: ExportStyle
+    last_status: str | None
     last_success_at: AwareDatetime | None
     last_failed_at: AwareDatetime | None
     last_attempt_failed: bool
@@ -289,10 +292,37 @@ async def export_current(
 @router.get("/status", response_model=ExportPage[ExportSourceStatus])
 async def export_status(
     request: Request,
-    limit: Limit = 500,
-    cursor: Cursor = None,
-) -> JSONResponse:
-    return _unavailable(request)
+) -> Response:
+    """최대 128개의 작은 상태 목록. 전체를 한 응답으로 반환한다."""
+    settings = request.app.state.settings
+    if not settings.service_exports_enabled:
+        return _unavailable(request)
+    # 과거 미구현 계약의 cursor/limit을 조용히 무시하지 않는다.
+    if request.query_params:
+        return _unavailable(request, status=422, code="EXPORT_STATUS_QUERY_INVALID")
+    try:
+        page, etag = await to_thread.run_sync(
+            partial(
+                read_status, request.app.state.repository, set(settings.enabled_providers),
+                as_of=kst_now(),
+            ),
+            limiter=request.app.state.service_export_limiter,
+        )
+    except (ExportArtifactError, SQLAlchemyError):
+        return _unavailable(request)
+    body = ExportPage[ExportSourceStatus].model_validate(page).model_dump(mode="json")
+    headers = {
+        "etag": etag, "vary": "Accept-Encoding",
+        "cache-control": "private, max-age=0, must-revalidate",
+        "x-source-status": body["meta"]["source_status"],
+    }
+    if _matches_etag(request.headers.get("if-none-match", ""), etag):
+        return Response(status_code=304, headers=headers)
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    if _accepts_gzip(request.headers.get("accept-encoding", "")):
+        payload = gzip.compress(payload, compresslevel=4, mtime=0)
+        headers["content-encoding"] = "gzip"
+    return Response(payload, media_type="application/json", headers=headers)
 
 
 @router.get("/forecasts", response_model=ExportPage[ExportForecastGroup])

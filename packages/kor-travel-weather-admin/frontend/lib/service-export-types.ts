@@ -36,7 +36,9 @@ export type ExportCurrentValue = {
 
 export type ExportSourceStatus = {
   provider: string;
+  dataset_key: string;
   forecast_style: "observed" | "nowcast" | "ultra_short" | "short" | "mid" | "external";
+  last_status: string | null;
   last_success_at: string | null;
   last_failed_at: string | null;
   last_attempt_failed: boolean;

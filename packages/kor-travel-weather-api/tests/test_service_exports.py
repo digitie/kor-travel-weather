@@ -76,8 +76,11 @@ def test_service_openapi_has_existing_security_and_typed_failed_response(export_
         assert unavailable["application/problem+json"]["schema"] == {
             "$ref": "#/components/schemas/ExportUnavailable",
         }
-        limit = next(p for p in operation["parameters"] if p["name"] == "limit")
-        assert limit["schema"]["maximum"] == 5000
+        if resource == "status":
+            assert not operation.get("parameters")  # 최대 128개의 작은 전체 목록
+        else:
+            limit = next(p for p in operation["parameters"] if p["name"] == "limit")
+            assert limit["schema"]["maximum"] == 5000
     unavailable = document["components"]["schemas"]["ExportUnavailable"]
     assert unavailable["properties"]["meta"] == {"$ref": "#/components/schemas/ExportMeta"}
     assert document["components"]["securitySchemes"]["AdminToken"]["name"] == "x-admin-token"
