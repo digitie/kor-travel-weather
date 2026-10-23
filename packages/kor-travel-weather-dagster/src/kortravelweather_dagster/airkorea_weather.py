@@ -317,9 +317,12 @@ async def _run_airkorea_weather_sync(
                 for source in sources:
                     keep_alive(measurement_run.run_id)
                     published += await asyncio.to_thread(
-                        export_collector.ingest, export_plans.get(source["source_entity_id"]),
+                        export_collector.ingest, export_plans.pop(source["source_entity_id"], None),
                         record=source, values=by_source.pop(source["source_record_key"], []),
                     )
+                for prepared in export_plans.values():
+                    if prepared is not None:
+                        export_collector._reject(prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED")
             else:
                 for chunk_sources, chunk in chunk_publications(sources, values):
                     published += await asyncio.to_thread(

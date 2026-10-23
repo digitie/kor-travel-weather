@@ -398,6 +398,28 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 - 기존86건과 스트리밍4건을 함께90PASS/Ruff PASS.1,000곳 순회의 tracemalloc peak
   2MiB 미만을 확인했으며 운영 RSS/CPU 개선이나 실제 배선 완료로 세지 않는다.
 
+### SDK 관측망 실제 수집 연결
+
+- 산악·청정넷·KREX·KHOA의 native 시작에 명시 export intent를 함께 저장하고
+  기존 canonical anchor의 작은 필드만 읽어 HTTP 전에 source 계획을 고정한다.
+- KREX 부분 파싱/개수 불일치는 승인하지 않는다. KHOA는 공개 Page의 원문 수를
+  검증해 페이지에 나뉜 장소 예보를 조합하며, 불완전하면 기존 native 경로만 보존한다.
+- 반환되지 않은 source 계획은 실패로 마감해 영구 preparing 재시도를 피한다.
+  청정넷 과거 관측은 기존 native 이력에 모두 남기고 최신 한 건만 current에 승인한다.
+- 기존 regional/OFF와 SDK page 회귀를 포함한 집중62건 뒤 보완한 실제4종 native
+  runner/부분 KREX 회귀4건을 확인했다. 운영 CPU/메모리 비용은 별도 실측 gate다.
+
+### inventory 적대 리뷰의 복구 경계 보완
+
+- 승인 위치가 활성 roster에 없을 때 같은 RR에서 명시 비활성화만 제외한다.
+  실제 catalog 유실은 이전 완전 vector와 cursor를 stale로 보존한다. disable→reenable
+  후 과거의 더 작은 snapshot이 fallback으로 선택되지 않도록 최신 handle만 재사용한다.
+- 0033 upgrade/downgrade에 statement60초/lock5초 상한을 두고 더 짧은 caller 설정을
+  보존·복원한다. 실패 시 Alembic TX가 DDL/설정을 함께 rollback한다.
+- 선행 최신 관측 선택의 잘못된 anchor는 export만 무효화하고 원래 native 순회의
+  실패 시점과 이미 저장한 chunk를 보존한다. 시험의 export metadata도 매번 격리한다.
+
+
 # 2026-10-23 중기 전용 job의 export 배선
 
 - 명시 opt-in 중기 job에서 실제 source roster/사전 계획과 capture를 연결한다.

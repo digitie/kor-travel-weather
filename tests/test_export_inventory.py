@@ -1,7 +1,7 @@
 """quota 회전에 선택하지 않은 위치의 승인과 파일 root를 잃지 않는다."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import delete, select
@@ -232,7 +232,7 @@ def test_source_cohort_requires_atomic_native_intent_and_preserves_exact_plan(ex
 
 
 def test_current_inventory_reader_retains_rotation_and_failed_cursor_stays_stale(
-    external_repository, tmp_path,
+    external_repository, tmp_path, monkeypatch,
 ):
     from kortravelweather.export_snapshots import FrozenCurrentExports
 
@@ -264,6 +264,40 @@ def test_current_inventory_reader_retains_rotation_and_failed_cursor_stays_stale
         assert {item["location_id"] for item in rotated["items"]} == {
             target.location_id for target in targets
         }
+        deleted = repo.get_location(targets[1].location_id)
+        import kortravelweather.export_snapshots as snapshots_module
+
+        wall = {"now": datetime.now(UTC) + timedelta(minutes=2)}
+
+        class SnapshotClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return wall["now"].astimezone(tz)
+
+        monkeypatch.setattr(snapshots_module, "datetime", SnapshotClock)
+        with repo.engine.begin() as c:
+            c.execute(catalog.update().where(
+                catalog.c.location_id == deleted.location_id,
+            ).values(enabled=False))
+        disabled, _ = reader.page("current", limit=5000, cursor=None)
+        assert len(disabled["items"]) == 3  # 명시적인 비활성화만 새 vector에서 제외한다.
+        with repo.engine.begin() as c:
+            c.execute(catalog.update().where(
+                catalog.c.location_id == deleted.location_id,
+            ).values(enabled=True))
+        wall["now"] -= timedelta(minutes=1)
+        restored, _ = reader.page("current", limit=5000, cursor=None)
+        assert len(restored["items"]) == 6
+        assert restored["meta"]["snapshot_generated_at"] < disabled["meta"]["snapshot_generated_at"]
+        with repo.engine.begin() as c:
+            # 승인 artifact가 native 이력 보존 기간보다 오래 남은 이전/복구 경계.
+            c.exec_driver_sql("TRUNCATE TABLE weather_values CASCADE")
+            c.execute(catalog.delete().where(catalog.c.location_id == deleted.location_id))
+        lost, _ = reader.page("current", limit=5000, cursor=None)
+        assert len(lost["items"]) == 6 and lost["meta"]["source_status"] == "stale"
+        lost_cursor, _ = reader.page("current", limit=1, cursor=cursor)
+        assert lost_cursor["meta"]["source_status"] == "stale"
+        repo.create_location(deleted)
         failed = repo.start_sync_run(provider="open_meteo", dataset_key="open_meteo_current",
                                      export_cohort_required=True)
         repo.finish_sync_run(failed.run_id, status="failed")
