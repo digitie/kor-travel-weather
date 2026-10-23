@@ -151,7 +151,10 @@ def _accepts_gzip(header: str) -> bool:
 
 
 def _matches_etag(header: str, etag: str) -> bool:
-    return any(value.strip().removeprefix("W/") in {etag, "*"} for value in header.split(","))
+    return any(
+        value.strip().removeprefix("W/") in {etag.removeprefix("W/"), "*"}
+        for value in header.split(",")
+    )
 
 
 async def _frozen_response(

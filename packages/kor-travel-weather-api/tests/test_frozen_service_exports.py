@@ -144,12 +144,29 @@ def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository,
         assert r.headers["content-encoding"] == "gzip"
         assert (
             client.get(
-                url, headers={**HEADERS, "if-none-match": '"other", W/' + r.headers["etag"]}
+                url,
+                headers={
+                    **HEADERS,
+                    "if-none-match": '"other", ' + r.headers["etag"].removeprefix("W/"),
+                },
             ).status_code
             == 304
         )
         plain = client.get(url, headers={**HEADERS, "accept-encoding": "gzip;q=0"})
         assert plain.status_code == 200 and "content-encoding" not in plain.headers
+        assert r.headers["etag"].startswith('W/"') and plain.headers["etag"] == r.headers["etag"]
+        assert plain.json()["meta"]["generated_at"] != r.json()["meta"]["generated_at"]
+        assert (
+            client.get(
+                url,
+                headers={
+                    **HEADERS,
+                    "accept-encoding": "identity",
+                    "if-none-match": r.headers["etag"],
+                },
+            ).status_code
+            == 304
+        )
 
 
 def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path):
@@ -310,3 +327,51 @@ def test_identical_manifest_after_reader_ttl_gets_new_etag_and_usable_cursor(
         ).status_code
         == 410
     )
+
+
+def test_locations_page_byte_cap_preserves_all_valid_unicode_items(
+    repository, tmp_path, monkeypatch
+):
+    import copy
+    from uuid import uuid4
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_snapshots import MAX_PAGE_BYTES, FrozenCurrentExports
+
+    _collect(repository, tmp_path)
+    reader = FrozenCurrentExports(repository, ExportArtifactStore(tmp_path), signing_key=TOKEN)
+    frozen = reader._freeze()
+    frozen = dict(frozen, snapshot_id=str(uuid4()), manifest=copy.deepcopy(frozen["manifest"]))
+    frozen["manifest"]["locations"] = [
+        dict(
+            location_id=f"loc-{i:05d}-" + "a" * 110,
+            name="🙂" * 200,
+            latitude=37.5,
+            longitude=127.0,
+            legal_dong_code=None,
+            sido_name=None,
+            sigungu_name=None,
+        )
+        for i in range(5000)
+    ]
+    table, _ = export_snapshot_tables(Base.metadata)
+    with repository.engine.begin() as connection:
+        connection.execute(table.insert().values(**frozen))
+    monkeypatch.setattr(FrozenCurrentExports, "_freeze", lambda self: frozen)
+    client = _client(repository, tmp_path)
+    first = client.get(
+        "/v1/service/exports/locations",
+        params={"limit": 5000},
+        headers={**HEADERS, "accept-encoding": "identity"},
+    )
+    assert first.status_code == 200 and len(first.content) <= MAX_PAGE_BYTES
+    assert 0 < len(first.json()["items"]) < 5000 and first.json()["meta"]["has_more"]
+    next_page = client.get(
+        "/v1/service/exports/locations",
+        params={"limit": 5000, "cursor": first.json()["meta"]["next_cursor"]},
+        headers={**HEADERS, "accept-encoding": "identity"},
+    )
+    assert next_page.status_code == 200 and len(next_page.content) <= MAX_PAGE_BYTES
+    assert not next_page.json()["meta"]["has_more"]
+    items = first.json()["items"] + next_page.json()["items"]
+    assert len(items) == len({row["location_id"] for row in items}) == 5000

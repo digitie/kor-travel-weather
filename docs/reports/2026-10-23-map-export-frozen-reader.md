@@ -17,3 +17,6 @@
 
 - ETag에 snapshot handle의 epoch(snapshot_id)를 포함한다. 같은data/vector라도 TTL후 새cursor가발급되면304로옛만료cursor를재사용하지않도록200/새ETag를준다. clock+16분·동일manifest·새cursor정상/옛cursor410회귀를추가한다.
 - 새catalog scope가아직검증되지않으면이전승인manifest를stale로유지한다. readerTTL과승인data보존기간을분리하고만료된handle은새TTL handle로다시고정한다. 기존frozen cursor도현재catalog roster불일치를stale로표시한다. 최초승인집합이없으면503이다.
+
+- location/current 모두 envelope여유8KiB를제외한4MiB bytebudget과continuation을적용한다. 유효5000location×200개4byte문자 회귀에서2페이지/누락·중복0/본문4MiB이하를확인한다.
+- generated_at/압축표현의byte차이는강한동일성이아니므로weakETag를사용한다. gzip/identity·서로다른generated_at에서동일의미304, snapshotTTL epoch교체시새200을구분한다.

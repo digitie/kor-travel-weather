@@ -22,6 +22,7 @@ from .export_heads import ExportHeads, ScopeDescriptor, _digest
 
 MAX_SNAPSHOT_LOCATIONS = 5000
 MAX_PAGE_BYTES = 4 * 1024 * 1024
+PAGE_META_RESERVE = 8192
 SNAPSHOT_TTL = timedelta(minutes=15)
 SOURCE_MAX_AGE = timedelta(hours=3)
 
@@ -348,7 +349,16 @@ class FrozenCurrentExports:
             start = state["p"]
             if state["g"] != 0 or start > len(manifest["locations"]):
                 raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
-            output = manifest["locations"][start : start + limit]
+            for item in manifest["locations"][start : start + limit]:
+                item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
+                if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                    raise ExportSnapshotUnavailable(
+                        "단일 location이 페이지 byte 상한을 넘었습니다."
+                    )
+                if size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                    break
+                output.append(item)
+                size += item_size
             state["p"] = start + len(output)
             more = state["p"] < len(manifest["locations"])
         else:
@@ -395,8 +405,15 @@ class FrozenCurrentExports:
                             "known_at": point["known_at"],
                             "forecast_style": point["forecast_style"],
                         }
-                        item_size = len(json.dumps(item, ensure_ascii=False).encode())
-                        if len(output) >= limit or size + item_size > MAX_PAGE_BYTES:
+                        item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
+                        if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                            raise ExportSnapshotUnavailable(
+                                "단일 point가 페이지 byte 상한을 넘었습니다."
+                            )
+                        if (
+                            len(output) >= limit
+                            or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
+                        ):
                             more = True
                             break
                         output.append(item)
