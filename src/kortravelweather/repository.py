@@ -66,6 +66,7 @@ from .export_artifacts import (
     canonical_export_number,
     prepare_export_chunk,
 )
+from .export_lifecycle import export_lifecycle_tables, normalization_input_digest
 from .export_receipts import (
     ExportAttempt,
     ExportCapture,
@@ -138,6 +139,7 @@ class Base(DeclarativeBase):
 # 파생 주소는 원천 주소·좌표와 분리해 같은 소비자 DB에 저장한다.
 reverse_address_tables(Base.metadata)
 export_receipt_tables(Base.metadata)
+export_lifecycle_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
 
@@ -2067,7 +2069,9 @@ class WeatherRepository:
                         for record in records
                     ]
                     record_export_chunk(session, metadata=Base.metadata, capture=export_capture,
-                                        run_id=run_id, covered_sources=covered, chunk=chunk)
+                                        run_id=run_id, covered_sources=covered, chunk=chunk,
+                                        input_point_count=len(facts),
+                                        input_digest=normalization_input_digest(facts))
                 if prepared is not None:
                     prepared.append(chunk)
             except Exception:

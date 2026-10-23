@@ -64,6 +64,11 @@ def export_receipt_tables(metadata: MetaData) -> tuple[Table, Table]:
         Column("orchestrator_run_id", String(64)),
         Column("planned_sources", JSON, nullable=False),
         Column("plan_digest", String(64), nullable=False),
+        Column("owner_epochs", JSON),
+        Column("plan_reference_count", Integer, nullable=False, default=0, server_default="0"),
+        Column("plan_closed_at", DateTime(timezone=True)),
+        Column("seal_digest", String(64)),
+        Column("sealed_at", DateTime(timezone=True)),
         Column("status", String(16), nullable=False),
         Column("error_code", String(64)),
         Column("created_at", DateTime(timezone=True), nullable=False),
@@ -161,6 +166,8 @@ def record_export_chunk(
     run_id: str,
     covered_sources: Sequence[str],
     chunk: PreparedExportChunk,
+    input_point_count: int | None = None,
+    input_digest: str | None = None,
 ) -> None:
     if (
         not capture.chunk_key
@@ -189,6 +196,13 @@ def record_export_chunk(
     ):
         raise ExportArtifactError("export attempt 소유권이 일치하지 않습니다.")
     covered = sorted(set(covered_sources))
+    if attempt["owner_epochs"] is not None:
+        from .export_lifecycle import validate_planned_capture
+
+        validate_planned_capture(
+            session, metadata, attempt, capture.chunk_key, covered,
+            input_point_count=input_point_count, input_digest=input_digest,
+        )
     if not covered or not set(covered).issubset(attempt["planned_sources"]):
         raise ExportArtifactError("export chunk가 예정 scope를 벗어났습니다.")
     expected = dict(
@@ -212,7 +226,7 @@ def record_export_chunk(
         if any(existing[name] != value for name, value in expected.items()):
             raise ExportArtifactError("export chunk 재시도의 내용이 다릅니다.")
         return
-    if attempt["status"] != "preparing":
+    if attempt["status"] != "preparing" or attempt["plan_closed_at"] is not None:
         raise ExportArtifactError("봉인된 export attempt에는 chunk를 추가할 수 없습니다.")
     session.execute(
         chunks.insert().values(
