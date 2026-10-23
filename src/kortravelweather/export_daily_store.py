@@ -76,6 +76,9 @@ def daily_summary_tables(metadata: MetaData):
 
 
 def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit=4):
+    """metadata 조회·파일 검증·최종 요약 CAS를 하나의 읽기 수명으로 보호한다."""
+    if not 1 <= limit <= 8:
+        raise ValueError("요약 tick의 generation 상한은 1~8입니다.")
     # checkpoint/refs 조회부터 파일 검증과 최종 summary CAS까지 한 수명이다.
     with artifacts.guard(timeout_seconds=2, shared=True):
         return _refresh_daily_summaries_guarded(repository, artifacts, limit=limit)
@@ -87,8 +90,6 @@ def _refresh_daily_summaries_guarded(repository, artifacts: ExportArtifactStore,
     성공 publication만 읽으므로 원본 부분 commit/실패 run은 섞이지 않는다.
     checkpoint와 요약 변경은 하나의 짧은 transaction으로 확정한다.
     """
-    if not 1 <= limit <= 8:
-        raise ValueError("요약 tick의 generation 상한은 1~8입니다.")
     heads = ExportHeads(repository)
     summaries, progress = daily_summary_tables(heads.metadata)
     coverage = daily_coverage_table(heads.metadata)
