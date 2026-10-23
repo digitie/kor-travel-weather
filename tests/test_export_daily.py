@@ -250,3 +250,30 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
     )
     assert stale.status_code == 200 and stale.json()["meta"]["source_status"] == "stale"
     assert stale.json()["items"] == first.json()["items"]
+
+
+def test_daily_retention_is_bounded_and_keeps_cursor_day_grace(daily_repository):
+    from datetime import timedelta
+
+    from kortravelweather.export_daily_store import prune_daily_summaries
+
+    table, _ = daily_summary_tables(Base.metadata)
+    today, now = datetime.now(KST).date(), datetime.now(KST)
+    with daily_repository.engine.begin() as c:
+        for age in [31, 32, 33]:
+            day = today - timedelta(days=age)
+            c.execute(
+                table.insert().values(
+                    location_id="retention",
+                    date=day,
+                    slot="morning",
+                    summary=summarize("retention", day.isoformat(), "morning", {}, now=now),
+                    hourly_winners={},
+                    updated_at=now,
+                )
+            )
+    assert prune_daily_summaries(daily_repository, limit=1) == 1
+    assert prune_daily_summaries(daily_repository, limit=1) == 1
+    assert prune_daily_summaries(daily_repository, limit=1) == 0
+    with daily_repository.engine.connect() as c:
+        assert list(c.scalars(select(table.c.date))) == [today - timedelta(days=31)]
