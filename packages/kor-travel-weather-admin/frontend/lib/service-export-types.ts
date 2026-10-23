@@ -53,3 +53,9 @@ export type ExportUnavailable = {
   errors?: Record<string, unknown>[];
   meta: ExportMeta;
 };
+
+// 고정 snapshot cursor는 resource/limit에 묶이며 만료 뒤 첫 페이지부터 재시작한다.
+export type ExportCursorError = ExportUnavailable & {
+  status: 410 | 422;
+  code: "EXPORT_SNAPSHOT_EXPIRED" | "EXPORT_CURSOR_INVALID";
+};

@@ -76,6 +76,7 @@ from .export_receipts import (
     record_export_chunk,
     source_scope_key,
 )
+from .export_snapshots import export_snapshot_tables
 from .metrics import (
     observe_history_purged,
     observe_stale_recovered,
@@ -142,6 +143,7 @@ reverse_address_tables(Base.metadata)
 export_receipt_tables(Base.metadata)
 export_lifecycle_tables(Base.metadata)
 export_head_tables(Base.metadata)
+export_snapshot_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
 

@@ -62,6 +62,10 @@ _WEAK_ADMIN_TOKENS = {
 class WeatherSettings(BaseSettings):
     """kor-travel-weather 런타임 설정."""
 
+    # 성공 projection/비용 gate 수용 전에는 운영에서 켜지 않는다.
+    service_exports_enabled: bool = False
+    service_export_artifact_root: Path | None = None
+
     # 위치별 마지막 확인일 + 달력 6개월. 수동 실행은 기한 전에도 허용한다.
     address_refresh_auto_enabled: bool = True
     address_refresh_batch_size: int = Field(default=50, ge=1, le=500)

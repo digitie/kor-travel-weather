@@ -1,3 +1,7 @@
+## 2026-10-23 — W1/W2 승인 KMA 실황 frozen reader 구현 중
+
+- [scope·cursor·미완 경계](reports/2026-10-23-map-export-frozen-reader.md): 실제 REST200/304·gzip·고정generation vector·TTL410·cursor422와 strict8category공개정책을 구현 중이다. 기본OFF이며전체provider/W3/W4/W5·비용gate·운영수용은남는다.
+
 ## 2026-10-23 — 실제 KMA 실황 collector opt-in 배선
 
 - [실제 collector·독립 publisher와 미완](reports/2026-10-23-map-export-collector.md): 실제 KmaClient→기존 정상화→단일 grid 전체 capture→exact native/Dagster 성공 publisher를 구현했다. 집중PG32 PASS, 기본 OFF·API503 유지. 전국 sensor/reader/W3/W5·비용 gate·운영 수용은 남는다.
