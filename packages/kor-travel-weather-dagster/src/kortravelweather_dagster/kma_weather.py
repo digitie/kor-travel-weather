@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mappin
 from contextlib import AsyncExitStack, aclosing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
 
@@ -837,6 +838,7 @@ def run_weather_sync(
     data_client: Any | None = None,
     retries: int = 0,
     sync_run: Any | None = None,
+    export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     """Own the event loop KmaClient/DataGoKrClient now require for the run.
 
@@ -874,6 +876,7 @@ def run_weather_sync(
             data_client=data_client,
             retries=retries,
             sync_run=sync_run,
+            export_artifact_root=export_artifact_root,
         )
     )
 
@@ -897,6 +900,7 @@ async def _run_weather_sync(
     data_client: Any | None = None,
     retries: int = 0,
     sync_run: Any | None = None,
+    export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     """두 격자까지 선행 요청하고 한 게시자가 제한된 배치로 저장한다."""
     async with AsyncExitStack() as clients:
@@ -921,6 +925,7 @@ async def _run_weather_sync(
             data_client=data_client,
             retries=retries,
             sync_run=sync_run,
+            export_artifact_root=export_artifact_root,
         )
 
 
@@ -943,6 +948,7 @@ async def _stage_and_publish_weather(
     data_client: Any | None = None,
     retries: int = 0,
     sync_run: Any | None = None,
+    export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     run = sync_run or repository.start_sync_run(
         provider=KMA_PROVIDER_NAME,
@@ -1045,6 +1051,23 @@ async def _stage_and_publish_weather(
             raise ValueError(
                 f"중기예보 지역 조합 수가 상한을 초과했습니다: {len(mid_groups)} > {mid_limit}"
             )
+        export_collector = None
+        prepared_exports = {}
+        if export_artifact_root is not None:
+            # 기존 혼합 batch를 명시 단일 실황 모드에서만 분리한다.
+            # OFF인 기존 경로의 chunk/메모리/성공 의미를 그대로 둔다.
+            if (
+                not include_base
+                or base_datasets != frozenset({KMA_ULTRA_SHORT_NOWCAST})
+                or include_mid
+                or include_alerts
+            ):
+                raise ValueError("export opt-in은 단일 KMA 초단기실황 job만 지원합니다.")
+            from kortravelweather.export_collector import KmaNowcastExportCollector
+
+            export_collector = KmaNowcastExportCollector(
+                repository, run_id=run.run_id, artifact_root=export_artifact_root
+            )
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
         alert_sources: list[dict[str, Any]] = []
@@ -1110,6 +1133,15 @@ async def _stage_and_publish_weather(
             if remaining_values < len(group_targets):
                 raise ValueError("normalized fact 예산이 target fan-out을 수용하지 못합니다.")
             skipped: Counter[str] = Counter()
+            if export_collector is not None and len(group_targets) <= GRID_PUBLISH_LOCATIONS:
+                location = group_targets[0].location
+                prepared_exports[source_entity_id] = await asyncio.to_thread(
+                    export_collector.prepare,
+                    entity_id=source_entity_id,
+                    nx=location.nx,
+                    ny=location.ny,
+                    location_ids=[target.location.location_id for target in group_targets],
+                )
             responses = await stage_grid(
                 client=client,
                 target=group_targets[0],
@@ -1144,7 +1176,7 @@ async def _stage_and_publish_weather(
             responses: list[StagedResponse],
             skipped: Counter[str],
         ) -> None:
-            nonlocal response_rows_total, normalized_values_total, values_accepted
+            nonlocal response_rows_total, normalized_values_total, values_accepted, published_values
             if len(sources) >= KMA_STAGE_SOURCES:
                 await flush_grid_batch()
             keep_alive()
@@ -1169,6 +1201,29 @@ async def _stage_and_publish_weather(
                         f"provider response row 수가 상한을 초과했습니다: "
                         f"{response_rows_total} > {max_response_rows}"
                     )
+                if export_collector is not None:
+                    record = {**response.source_record, "run_id": run.run_id}
+                    # 원래 게시 상한 안에서만 whole-grid capture를 시도한다.
+                    # 큰 grid도 원본 저장은 기존 bounded batch로 계속한다.
+                    group_count = len(response.values) * len(group_targets)
+                    if (
+                        0 < group_count <= GRID_PUBLISH_VALUES
+                        and len(group_targets) <= GRID_PUBLISH_LOCATIONS
+                    ):
+                        group_values = [
+                            value.model_copy(update={"location_id": target.location.location_id})
+                            for target in group_targets
+                            for value in response.values
+                        ]
+                        published = await asyncio.to_thread(
+                            export_collector.ingest,
+                            prepared_exports.pop(record["source_entity_id"], None),
+                            record=record,
+                            values=group_values,
+                        )
+                        published_values += published
+                        normalized_values_total += group_count
+                        continue
                 sources.append({**response.source_record, "run_id": run.run_id})
                 # One immutable response is fanned out to every catalog anchor
                 # sharing its grid/region. Append one fact at a time so the
