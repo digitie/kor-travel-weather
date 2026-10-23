@@ -353,12 +353,19 @@ class FrozenCurrentExports:
                 manifest["selection"] = self.current_selection
             digest = _digest(manifest)
             now = datetime.now(UTC)
+            latest = select(self.snapshots.c.created_at).where(
+                self.snapshots.c.manifest["selection"]["kind"].as_string().is_(None)
+                if self.current_selection is None
+                else self.snapshots.c.manifest["selection"]["signature"].as_string()
+                == self.current_selection["signature"]
+            ).order_by(self.snapshots.c.created_at.desc()).limit(1).correlate(None).scalar_subquery()
             existing = (
                 connection.execute(
                     select(self.snapshots)
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
+                        self.snapshots.c.created_at == latest,
                     )
                     .order_by(self.snapshots.c.created_at.desc())
                     .limit(1)

@@ -408,3 +408,13 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   청정넷 과거 관측은 기존 native 이력에 모두 남기고 최신 한 건만 current에 승인한다.
 - 기존 regional/OFF와 SDK page 회귀를 포함한 집중62건 뒤 보완한 실제4종 native
   runner/부분 KREX 회귀4건을 확인했다. 운영 CPU/메모리 비용은 별도 실측 gate다.
+
+### inventory 적대 리뷰의 복구 경계 보완
+
+- 승인 위치가 활성 roster에 없을 때 같은 RR에서 명시 비활성화만 제외한다.
+  실제 catalog 유실은 이전 완전 vector와 cursor를 stale로 보존한다. disable→reenable
+  후 과거의 더 작은 snapshot이 fallback으로 선택되지 않도록 최신 handle만 재사용한다.
+- 0033 upgrade/downgrade에 statement60초/lock5초 상한을 두고 더 짧은 caller 설정을
+  보존·복원한다. 실패 시 Alembic TX가 DDL/설정을 함께 rollback한다.
+- 선행 최신 관측 선택의 잘못된 anchor는 export만 무효화하고 원래 native 순회의
+  실패 시점과 이미 저장한 chunk를 보존한다. 시험의 export metadata도 매번 격리한다.

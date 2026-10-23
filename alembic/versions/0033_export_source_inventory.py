@@ -1,5 +1,7 @@
 """quota 선택 밖 위치도 유지하는 작은 위치별 승인 source inventory."""
 
+from contextlib import contextmanager
+
 import sqlalchemy as sa
 
 from alembic import op
@@ -10,7 +12,30 @@ branch_labels = None
 depends_on = None
 
 
+@contextmanager
+def bounded_ddl():
+    connection = op.get_bind()
+    previous = dict(connection.execute(sa.text(
+        "SELECT name, setting::bigint FROM pg_settings "
+        "WHERE name IN ('statement_timeout', 'lock_timeout')"
+    )).all())
+    for name, maximum in (("statement_timeout", 60000), ("lock_timeout", 5000)):
+        bounded = min(previous[name] or maximum, maximum)
+        connection.execute(sa.text("SELECT set_config(:name, :value, true)"),
+                           {"name": name, "value": f"{bounded}ms"})
+    yield
+    # 실패 시 Alembic transaction rollback이 LOCAL 설정/DDL/버전을 함께 되돌린다.
+    for name, value in previous.items():
+        connection.execute(sa.text("SELECT set_config(:name, :value, true)"),
+                           {"name": name, "value": f"{value}ms"})
+
+
 def upgrade():
+    with bounded_ddl():
+        upgrade_schema()
+
+
+def upgrade_schema():
     op.add_column("weather_export_external_cohorts", sa.Column("descriptors", sa.JSON()))
     op.create_table(
         "weather_export_approved_locations",
@@ -46,6 +71,7 @@ def upgrade():
 
 
 def downgrade():
-    op.drop_index("ix_weather_export_heads_generation_id", table_name="weather_export_heads")
-    op.drop_table("weather_export_approved_locations")
-    op.drop_column("weather_export_external_cohorts", "descriptors")
+    with bounded_ddl():
+        op.drop_index("ix_weather_export_heads_generation_id", table_name="weather_export_heads")
+        op.drop_table("weather_export_approved_locations")
+        op.drop_column("weather_export_external_cohorts", "descriptors")
