@@ -136,6 +136,8 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
                 .with_for_update()
             ).scalar_one_or_none()
             state = merge_observations(row or {}, points, key=key, now=now)
+            if row is not None and state == row:
+                continue
             values = {
                 "summary": summarize(*key, state, now=now),
                 "hourly_winners": state,
