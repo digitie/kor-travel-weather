@@ -8,11 +8,13 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Index,
     Integer,
     MetaData,
     String,
     Table,
     select,
+    tuple_,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert
@@ -36,6 +38,7 @@ def daily_summary_tables(metadata: MetaData):
         Column("summary", JSON, nullable=False),
         Column("hourly_winners", JSON, nullable=False),
         Column("updated_at", DateTime(timezone=True), nullable=False),
+        Index("ix_weather_daily_summaries_date", "date"),
     )
     progress = Table(
         "weather_daily_summary_progress",
@@ -158,3 +161,31 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
             )
         )
     return {"processed": len(rows), "has_more": len(rows) == limit}
+
+
+def prune_daily_summaries(repository, *, limit=500):
+    """최대31일 조회에 하루 cursor 유예를 더해 오래된 파생 요약만 작게 지운다."""
+    if not 1 <= limit <= 1000:
+        raise ValueError("요약 정리 상한은 1~1000입니다.")
+    heads = ExportHeads(repository)
+    table, _ = daily_summary_tables(heads.metadata)
+    cutoff = datetime.now(KST).date() - timedelta(days=31)
+    with heads._transaction() as s:
+        keys = list(
+            s.execute(
+                select(table.c.location_id, table.c.date, table.c.slot)
+                .where(table.c.date < cutoff)
+                .order_by(table.c.date, table.c.location_id, table.c.slot)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        )
+        if keys:
+            s.execute(
+                table.delete().where(
+                    tuple_(table.c.location_id, table.c.date, table.c.slot).in_(
+                        [tuple(k) for k in keys]
+                    )
+                )
+            )
+    return len(keys)

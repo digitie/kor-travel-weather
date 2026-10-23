@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_summary_tables
@@ -171,12 +171,38 @@ class DailySummaryExports(FrozenCurrentExports):
                     break
                 state["g"], state["p"] = state["g"] + 1, 0
             ready = s.execute(select(self.progress)).mappings().one_or_none()
+            owners, attempts, plans = (
+                self.heads.lifecycle.owners,
+                self.heads.lifecycle.attempts,
+                self.heads.plans,
+            )
+            runs = self.heads.metadata.tables["weather_sync_runs"]
+            unconfirmed = s.scalar(
+                select(
+                    select(attempts.c.attempt_id)
+                    .select_from(
+                        owners.join(attempts, owners.c.active_attempt_id == attempts.c.attempt_id)
+                        .join(plans, plans.c.attempt_id == attempts.c.attempt_id)
+                        .join(runs, runs.c.run_id == attempts.c.run_id)
+                    )
+                    .where(
+                        plans.c.descriptor["forecast_style"]
+                        .as_string()
+                        .in_(["observed", "nowcast"]),
+                        or_(
+                            attempts.c.status == "failed",
+                            runs.c.status.not_in(["running", "success"]),
+                        ),
+                    )
+                    .exists()
+                )
+            )
         more = state["g"] < len(keys)
         if ready is None or ready["source_collected_at"] is None:
             raise ExportSnapshotUnavailable("사전 계산 요약 checkpoint가 없습니다.")
         # roster/날짜 범위를 고정하고 각 페이지의 최신 사전계산 값을 반환한다.
         source = ready["source_collected_at"]
-        status = "stale" if now - source > timedelta(hours=3) else "ok"
+        status = "stale" if unconfirmed or now - source > timedelta(hours=3) else "ok"
         page = {
             "items": output,
             "meta": {

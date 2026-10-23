@@ -150,3 +150,97 @@ def test_failed_raw_commit_never_appears_in_daily_projection(daily_repository, t
     table, _ = daily_summary_tables(Base.metadata)
     with repository.engine.connect() as c:
         assert c.execute(select(table.c.summary)).first() is None
+
+
+def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
+    daily_repository, tmp_path
+):
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from sqlalchemy import event
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_collector import publish_pending_exports
+    from kortravelweather.settings import WeatherSettings
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12")
+    assert publish_pending_exports(repository, tmp_path, daily_summaries=True).results == {
+        "PUBLISHED": 1
+    }
+    client = TestClient(
+        create_app(
+            WeatherSettings(
+                environment="development",
+                admin_token="daily-test-token",
+                enabled_providers=["python-kma-api"],
+                service_exports_enabled=True,
+                service_export_artifact_root=tmp_path,
+            ),
+            repository,
+        )
+    )
+    headers = {"x-admin-token": "daily-test-token"}
+    url, params = "/v1/service/exports/daily-summaries", {"days": 2, "limit": 2}
+    assert client.get(url, params=params).status_code == 401
+    statements = []
+
+    def record_sql(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", record_sql)
+    try:
+        first = client.get(url, params=params, headers=headers)
+        assert first.status_code == 200 and first.headers["content-encoding"] == "gzip"
+        assert (
+            client.get(
+                url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
+            ).status_code
+            == 304
+        )
+        items, page = [], first.json()
+        while True:
+            items.extend(page["items"])
+            if not page["meta"]["has_more"]:
+                break
+            page = client.get(
+                url, params={**params, "cursor": page["meta"]["next_cursor"]}, headers=headers
+            ).json()
+        assert len(items) == 6 and len({(item["date"], item["slot"]) for item in items}) == 6
+        winner = next(
+            item
+            for item in items
+            if item["date"] == yesterday.date().isoformat() and item["slot"] == "morning"
+        )
+        assert winner["temp_avg"] == 12 and winner["sample_count"] == 1
+        assert all(
+            item["sample_count"] == 0 and item["temp_avg"] is None
+            for item in items
+            if item is not winner
+        )
+        assert not any(
+            "weather_values" in statement or "hourly_winners" in statement
+            for statement in statements
+        )
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", record_sql)
+    assert (
+        client.get(
+            url,
+            params={"days": 3, "limit": 2, "cursor": first.json()["meta"]["next_cursor"]},
+            headers=headers,
+        ).status_code
+        == 422
+    )
+    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", finish="failed")
+    stale = client.get(
+        url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
+    )
+    assert stale.status_code == 200 and stale.json()["meta"]["source_status"] == "stale"
+    assert stale.json()["items"] == first.json()["items"]
