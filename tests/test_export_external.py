@@ -250,3 +250,70 @@ def test_actual_external_capture_native_success_promotes_without_changing_fact_i
         )
         assert head["data_revision_at"] == record["fetched_at"]
         assert head["source_collected_at"] == record["fetched_at"]
+
+
+def test_actual_external_job_declares_whole_selection_before_http_and_publishes_each_source(
+    external_repository, tmp_path
+):
+    from kortravelweather_dagster.external_weather import run_external_weather_sync
+    from sqlalchemy import select
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_external_cohorts import external_cohort_table
+    from kortravelweather.export_heads import ExportHeads
+    from kortravelweather.export_receipts import ExportAttempt
+    from kortravelweather.models import WeatherLocation
+
+    repo = external_repository
+    locations = [ProviderLocation("job-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(2)]
+    for target in locations:
+        repo.create_location(
+            WeatherLocation(
+                location_id=target.location_id,
+                name="실제 외부 job",
+                latitude=37.5,
+                longitude=127,
+            )
+        )
+    table = external_cohort_table(ExportHeads(repo).metadata)
+
+    class CohortCheckedTransport(FixtureTransport):
+        def request(self, *args, **kwargs):
+            with repo.engine.connect() as c:
+                row = c.execute(
+                    select(table.c.targets).where(
+                        table.c.provider == "open_meteo",
+                        table.c.dataset_key == "open_meteo_current",
+                    )
+                ).scalar_one()
+            assert {v["location_id"] for v in row} == {v.location_id for v in locations}
+            return super().request(*args, **kwargs)
+
+    transport = CohortCheckedTransport(
+        *[
+            FakeResponse(_external_payload("open_meteo", forecast=False, at=datetime.now(UTC)))
+            for _ in locations
+        ]
+    )
+    result = run_external_weather_sync(
+        repository=repo,
+        provider=OpenMeteoProvider(transport=transport),
+        targets=locations,
+        dataset_key="open_meteo_current",
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["requests_fetched"] == 2
+    heads = ExportHeads(repo)
+    with repo.engine.connect() as c:
+        attempts = list(
+            c.execute(
+                select(
+                    heads.lifecycle.attempts.c.attempt_id, heads.lifecycle.attempts.c.owner_id
+                ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])
+            )
+        )
+    assert len(attempts) == 2
+    assert all(
+        heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+        for a in attempts
+    )

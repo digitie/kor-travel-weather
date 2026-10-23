@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from kortravelcommon.deadline import call_with_deadline
@@ -26,6 +28,7 @@ from .chunked_publish import chunk_publications, uncited_sources
 _PUBLISH_BATCH_VALUES = 5_000
 _PUBLISH_BATCH_SOURCES = 25
 _PUBLISH_BATCH_PAYLOAD_BYTES = 10_000_000
+logger = logging.getLogger(__name__)
 
 
 def _bounded_payload_size(payload: Any, *, max_bytes: int) -> int:
@@ -87,6 +90,7 @@ def run_external_weather_sync(
     fetch_timeout_seconds: float | None = None,
     min_request_interval_seconds: float = 0.0,
     publish_batch_values: int = _PUBLISH_BATCH_VALUES,
+    export_artifact_root: Path | None = None,
 ) -> dict[str, Any]:
     """응답을 bounded batch로 stage하며 publish한다.
 
@@ -127,8 +131,38 @@ def run_external_weather_sync(
     normalized_values_total = 0
     staged_payload_bytes = 0
     sent_at: float | None = None
+    export_collector, prepared = None, None
+    if export_artifact_root is not None and provider.provider_key in {
+        "open_meteo",
+        "weatherapi",
+        "openweathermap",
+    }:
+        try:
+            from kortravelweather.export_external_cohorts import declare_external_cohort
+            from kortravelweather.export_external_collector import ExternalExportCollector
+
+            # HTTP 前에 실제 quota/sampling 선택 집합을 보존한다. 실패는 원본과 격리한다.
+            declare_external_cohort(
+                repository,
+                run_id=run.run_id,
+                provider=provider.provider_key,
+                dataset_key=dataset_key,
+                targets=target_list,
+            )
+            export_collector = ExternalExportCollector(
+                repository, run_id=run.run_id, artifact_root=export_artifact_root
+            )
+        except Exception:
+            logger.warning("external_export_cohort_deferred run_id=%s", run.run_id)
     try:
         for target in target_list:
+            prepared = (
+                export_collector.prepare(
+                    location=target, provider=provider.provider_key, dataset_key=dataset_key
+                )
+                if export_collector
+                else None
+            )
             heartbeat = getattr(repository, "heartbeat_sync_run", None)
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
@@ -167,6 +201,21 @@ def run_external_weather_sync(
                 for value in response.values
             ):
                 raise ValueError("provider 응답 fact의 provider/dataset 계약이 요청과 다릅니다.")
+            if export_collector is not None and len(response.values) <= 2500:
+                # 기존 단일 원천 batch 상한 내에서만 capture한다. 원본 DB 오류 후 재시도
+                # ingest하지 않으며 export proof 오류는 collector 안에서 raw와 격리한다.
+                published_values += export_collector.ingest(
+                    prepared,
+                    record={**response.source_record, "run_id": run.run_id},
+                    values=response.values,
+                )
+                normalized_values_total += len(response.values)
+                source_record_keys.append(response.source_record["source_record_key"])
+                if callable(heartbeat) and heartbeat(run.run_id) is False:
+                    raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+                continue
+            if prepared is not None:
+                export_collector._reject(prepared.identity, "SOURCE_BATCH_TOO_LARGE")
             staged_sources.append({**response.source_record, "run_id": run.run_id})
             staged_values.extend(response.values)
             normalized_values_total += len(response.values)
@@ -190,9 +239,7 @@ def run_external_weather_sync(
                 staged_values = []
                 staged_payload_bytes = 0
         for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
-            published_values += repository.ingest_batch(
-                source_records=chunk_sources, values=chunk
-            )
+            published_values += repository.ingest_batch(source_records=chunk_sources, values=chunk)
         # The finish carries only responses that produced no fact, so it
         # holds no location lock.
         loaded, finished = repository.publish_and_finish(
@@ -204,6 +251,8 @@ def run_external_weather_sync(
             values_loaded_offset=published_values,
         )
     except Exception as exc:
+        if prepared is not None:
+            export_collector._reject(prepared.identity, "SOURCE_OR_NATIVE_FAILED")
         repository.finish_sync_run(
             run.run_id,
             status="failed",

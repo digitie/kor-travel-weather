@@ -67,6 +67,7 @@ from .export_artifacts import (
     prepare_export_chunk,
 )
 from .export_daily_store import daily_summary_tables
+from .export_external_cohorts import external_cohort_table
 from .export_heads import export_head_tables, validate_head_capture
 from .export_lifecycle import export_lifecycle_tables, normalization_input_digest
 from .export_receipts import (
@@ -156,6 +157,7 @@ export_snapshot_tables(Base.metadata)
 export_status_table(Base.metadata)
 export_fetch_clock_table(Base.metadata)
 daily_summary_tables(Base.metadata)
+external_cohort_table(Base.metadata)
 
 logger = logging.getLogger(__name__)
 
