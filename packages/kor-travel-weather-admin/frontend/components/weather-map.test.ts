@@ -31,9 +31,9 @@ const javascript = ts.transpileModule(
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
 ).outputText;
 const effect = new Function(
-  "mapLocations", "mode", "refreshToken", "markerRefreshRef", "summariesRef",
+  "WEATHER_KINDS", "mapLocations", "mode", "refreshToken", "markerRefreshRef", "summariesRef",
   "setSummaries", "getMarkerSummaries", "providerFilter", "kindFilter", javascript,
-) as (...args: unknown[]) => (() => void) | undefined;
+).bind(null, ["alert", "nowcast", "ultra_short", "short", "mid", "observed"].map((value) => ({ value }))) as (...args: unknown[]) => (() => void) | undefined;
 
 type Pending = {
   ids: string[];

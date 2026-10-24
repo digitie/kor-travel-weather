@@ -451,7 +451,9 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         // 다음 chunk 선택과 증가 사이에는 await가 없어 worker끼리 중복 배정하지 않는다.
         const chunk = chunks[nextChunk++];
         try {
-          const response = await getMarkerSummaries(chunk, controller.signal, providerFilter, kindFilter);
+          // 무필터 API의 기존 현재값 전용 계약과 달리 지도는 선택한 예보도 요청한다.
+          const response = await getMarkerSummaries(chunk, controller.signal, providerFilter,
+            kindFilter ?? WEATHER_KINDS.map((kind) => kind.value));
           if (cancelled) return;
           for (const item of response.data) summariesRef.current[item.location_id] = item;
           // 느린 다른 요청을 기다리지 않고 성공한 위치를 보존·표시한다.
@@ -526,7 +528,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                   <span className="list-pin" /><span><strong>{location.name}</strong><small>{location.location_id} · {location.latitude.toFixed(3)}, {location.longitude.toFixed(3)}</small></span><span className="list-arrow">›</span>
                 </button>
               ))}
-              {!visibleLocations.length ? <div className="empty">검색 결과가 없습니다.</div> : null}
+              {!sourceLoading && !sourceError && !visibleLocations.length ? <div className="empty">검색 결과가 없습니다.</div> : null}
             </div>
           </MapTabPanel>
         {selected && detailOpen ? <MapDetailOverlay ref={detailRef} className="weather-inspector" aria-label="선택한 위치 상세" onDismiss={closeDetail}>

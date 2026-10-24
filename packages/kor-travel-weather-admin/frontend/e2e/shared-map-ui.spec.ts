@@ -24,6 +24,7 @@ for (const width of [375, 1440]) test(`공통 날씨 종류·필터·오버레�
   await expect(page).toHaveURL(/\/weather$/, { timeout: 30_000 });
   const kinds = page.getByRole("group", { name: "종류 필터" });
   for (const label of ["특보", "실황", "초단기", "단기", "중기", "관측"]) await expect(kinds.getByRole("button", { name: label, exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => queries.some((query) => query.getAll("kind").length === 6)).toBe(true);
   const sizes = await page.locator("[data-slot=map-filter-bar]").evaluate((element) => [
     element.querySelector('input[type="search"]')!, element.querySelector(".kt-map-select-trigger")!, element.querySelector(".kt-map-kinds > button")!,
   ].map((node) => ({ height: node.getBoundingClientRect().height, top: node.getBoundingClientRect().top, width: node.getBoundingClientRect().width })));
@@ -53,4 +54,20 @@ for (const width of [375, 1440]) test(`공통 날씨 종류·필터·오버레�
   await expect(page.getByRole("searchbox", { name: "위치 검색" })).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: `test-results/weather-shared-ui-${width}.png`, fullPage: true });
+
+  await page.getByRole("tab", { name: "목록", exact: true }).click();
+  let releaseCatalog: (() => Promise<void>) | undefined;
+  await page.route("**/api/weather/**/locations?**", async (route) => {
+    releaseCatalog = () => route.fulfill({ status: 502, json: { error: "fixture catalog failure" } });
+  });
+  await kinds.getByRole("button", { name: "초단기", exact: true }).click();
+  await expect.poll(() => Boolean(releaseCatalog)).toBe(true);
+  await expect(page.getByText("검색 결과가 없습니다.", { exact: true })).toHaveCount(0);
+  await releaseCatalog!();
+  await expect(page.getByText("선택한 소스의 위치를 불러오지 못했습니다. 다시 선택해 주세요.", { exact: true })).toBeVisible();
+  await expect(page.getByText("검색 결과가 없습니다.", { exact: true })).toHaveCount(0);
+  await page.unroute("**/api/weather/**/locations?**");
+  await page.route("**/api/weather/**/locations?**", (route) => route.fulfill({ json: { data: [], meta: {} } }));
+  await kinds.getByRole("button", { name: "단기", exact: true }).click();
+  await expect(page.getByText("검색 결과가 없습니다.", { exact: true })).toBeVisible();
 });
