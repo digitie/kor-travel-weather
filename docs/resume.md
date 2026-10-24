@@ -1,5 +1,10 @@
 # Weather 현재 인수인계
 
+## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
+
+- 현재 상태: npm 보안 갱신·여섯 프로젝트 버전 정합 후보. [버전과 예외](npm-security-alignment-2026-10-24.md).
+- 다음 한 작업: WSL/CI·두 독립 리뷰·N150 후보 UI 검증을 완료하고 PR을 머지한다. 운영 배포는 별도다.
+
 ## 2026-10-24 — 현재 상태: Next.js 보안 갱신 후보
 
 - `next`와 사용하는 `eslint-config-next`를 `16.4.3`으로 고정했다. WSL 프론트엔드 테스트 243건·lint·type-check·build PASS. 변경 범위와 남은 취약점은 [작업 기록](journal.md)을 따른다.
