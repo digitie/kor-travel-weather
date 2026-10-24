@@ -28,6 +28,17 @@ class ForecastStyle(StrEnum):
     OBSERVED = "observed"
 
 
+class WeatherKind(StrEnum):
+    """지도 종류. 특보는 forecast_style과 별도로 판정한다."""
+
+    ALERT = "alert"
+    NOWCAST = "nowcast"
+    ULTRA_SHORT = "ultra_short"
+    SHORT = "short"
+    MID = "mid"
+    OBSERVED = "observed"
+
+
 class TimelineBucket(StrEnum):
     ULTRA_SHORT = "ultra_short"
     SHORT = "short"

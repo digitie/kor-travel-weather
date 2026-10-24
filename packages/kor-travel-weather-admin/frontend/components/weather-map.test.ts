@@ -19,7 +19,7 @@ function visit(node: ts.Node) {
     markerMemo = node.initializer;
   }
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect"
-    && node.arguments[1]?.getText(tree) === "[mapLocations, mode, refreshToken, providerFilter]") {
+    && node.arguments[1]?.getText(tree) === "[mapLocations, mode, refreshToken, providerFilter, kindFilter]") {
     callback = node.arguments[0] as ts.ArrowFunction;
   }
   ts.forEachChild(node, visit);
@@ -32,7 +32,7 @@ const javascript = ts.transpileModule(
 ).outputText;
 const effect = new Function(
   "mapLocations", "mode", "refreshToken", "markerRefreshRef", "summariesRef",
-  "setSummaries", "getMarkerSummaries", "providerFilter", javascript,
+  "setSummaries", "getMarkerSummaries", "providerFilter", "kindFilter", javascript,
 ) as (...args: unknown[]) => (() => void) | undefined;
 
 type Pending = {
@@ -69,7 +69,7 @@ function mount(count = 240, options: { mode?: string; token?: number; prefix?: s
   const token = options.token ?? 0;
   const cleanup = effect(
     Array.from({ length: count }, (_, index) => ({ location_id: (options.prefix ?? "a") + index })),
-    options.mode ?? "map", token, { current: JSON.stringify([token, undefined]) }, summariesRef, setSummaries, getMarkerSummaries,
+    options.mode ?? "map", token, { current: JSON.stringify([token, undefined, undefined]) }, summariesRef, setSummaries, getMarkerSummaries,
   );
   return { cleanup, setSummaries, summariesRef };
 }
@@ -243,7 +243,7 @@ describe("상한이 있는 마커 worker queue", () => {
     const before = pending.length;
     const cleanup = effect(
       [{ location_id: "a0" }, { location_id: "a1" }],
-      "map", 0, { current: JSON.stringify([0, undefined]) }, old.summariesRef,
+      "map", 0, { current: JSON.stringify([0, undefined, undefined]) }, old.summariesRef,
       vi.fn(), getMarkerSummaries,
     );
     expect(pending).toHaveLength(before + 1);
@@ -258,7 +258,7 @@ describe("마커 모델 참조 보존", () => {
     if (!markerMemo) throw new Error("marker 모델의 useMemo가 필요합니다.");
     const render = new Function(
       "useMemo", "mapLocations", "selectedId", "summaries", "setSelectedId",
-      "markerState", "markerTemperature", "markerCondition", "markerRefreshRef", "providerFilter", "refreshToken",
+      "markerState", "markerTemperature", "markerCondition", "markerRefreshRef", "providerFilter", "refreshToken", "kindFilter", "setDetailOpen", "requestAnimationFrame", "detailRef",
       ts.transpileModule("return " + markerMemo.getText(tree), {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
@@ -281,7 +281,7 @@ describe("마커 모델 참조 보존", () => {
       useMemo, points, selectedId, summaries, select,
       () => ({ kind: "clear", label: "맑음" }),
       (summary: { temperature?: number } | undefined) => summary?.temperature ?? null,
-      (kind: string) => kind, { current: JSON.stringify([0, undefined]) }, undefined, 0,
+      (kind: string) => kind, { current: JSON.stringify([0, undefined, undefined]) }, undefined, 0, undefined, vi.fn(), vi.fn(), { current: null },
     ) as Array<{
       id: string; selected: boolean; temperature: number | null;
       lngLat: number[]; title: string; onClick: () => void;

@@ -113,6 +113,112 @@ def test_detail_filter_runs_before_limit(filtered_client, suffix):
     assert {row["provider"] for row in data} == {"openweathermap"}
 
 
+@pytest.mark.parametrize("style", ["nowcast", "ultra_short", "short", "mid", "observed"])
+def test_kind_selects_before_detail_limit_and_catalog_count(filtered_client, style):
+    repo = filtered_client.app.state.repository
+    now = datetime.now(UTC)
+    repo.upsert_values([WeatherValue(
+        location_id="krforest-location", provider="openweathermap", dataset_key="weather",
+        weather_domain="weather", forecast_style=style, metric_key="TEMP", value_number=7,
+        target_at=now + timedelta(hours=1), known_at=now, collected_at=now,
+        source_record_key="openweathermap-krforest-location",
+    )])
+    query = f"provider=openweathermap&kind={style}"
+    catalog = filtered_client.get(f"/v1/weather/locations?{query}&limit=1").json()
+    assert catalog["meta"]["page"]["total"] == 1
+    assert catalog["data"][0]["location_id"] == "krforest-location"
+    for history in ["false", "true"]:
+        response = filtered_client.get(
+            f"/v1/weather/locations/krforest-location/forecast?{query}&history={history}&limit=1",
+        )
+        assert response.status_code == 200, response.text
+        rows = response.json()["data"]
+        assert len(rows) == 1
+        assert {row["forecast_style"] for row in rows} == {style}
+        assert {row["provider"] for row in rows} == {"openweathermap"}
+
+
+def test_kind_forecast_marker_keeps_future_values_separate_from_current(filtered_client):
+    response = filtered_client.get(
+        "/v1/weather/markers?location_id=krforest-location&provider=openweathermap&kind=short",
+    )
+    assert response.status_code == 200, response.text
+    marker = response.json()["data"][0]
+    assert marker["latest"] == []
+    assert marker["forecast"]
+    assert {row["forecast_style"] for row in marker["forecast"]} == {"short"}
+    assert marker["alerts"] == []
+    assert [row["target_at"] for row in marker["forecast"]] == sorted(
+        row["target_at"] for row in marker["forecast"]
+    )
+    union = filtered_client.get(
+        "/v1/weather/markers?location_id=krforest-location&kind=observed&kind=short",
+    ).json()["data"][0]
+    assert {row["forecast_style"] for row in union["latest"]} == {"observed"}
+    assert {row["forecast_style"] for row in union["forecast"]} == {"short"}
+
+
+def test_kind_marker_preserves_infrequent_metric_before_limit(filtered_client):
+    repo = filtered_client.app.state.repository
+    now = datetime.now(UTC)
+    rows = [WeatherValue(
+        location_id="krforest-location", provider="openweathermap", dataset_key="weather",
+        weather_domain="weather", forecast_style="observed", metric_key="TEMP", value_number=15,
+        target_at=now - timedelta(minutes=i), known_at=now,
+        source_record_key="openweathermap-krforest-location",
+    ) for i in range(81)]
+    rows.append(WeatherValue(
+        location_id="krforest-location", provider="openweathermap", dataset_key="weather",
+        weather_domain="weather", forecast_style="observed", metric_key="SKY", value_number=3,
+        target_at=now - timedelta(hours=3), known_at=now,
+        source_record_key="openweathermap-krforest-location",
+    ))
+    repo.upsert_values(rows)
+    marker = filtered_client.get(
+        "/v1/weather/markers?location_id=krforest-location&provider=openweathermap&kind=observed",
+    ).json()["data"][0]
+    assert {row["metric_key"] for row in marker["latest"]} == {"TEMP", "SKY"}
+    assert len(marker["latest"]) == 2
+
+
+def test_alert_kind_is_disjoint_from_observed_and_matches_same_provider(filtered_client):
+    repo = filtered_client.app.state.repository
+    now = datetime.now(UTC)
+    repo.upsert_location(WeatherLocation(location_id="alert-only", name="특보 전용",
+                                        latitude=37, longitude=127))
+    repo.record_source(source_record_key="kind-alert", provider="python-kma-api",
+                       dataset_key="regional_WARNING", source_entity_type="response",
+                       source_entity_id="kind-alert", payload={}, fetched_at=now)
+    repo.upsert_values([WeatherValue(
+        location_id="alert-only", provider="python-kma-api", dataset_key="regional_WARNING",
+        weather_domain="weather", forecast_style="observed", metric_key="TEXT",
+        value_text="호우주의보 발표", target_at=now, known_at=now,
+        valid_until=now + timedelta(hours=6), source_record_key="kind-alert",
+    )])
+    path = "/v1/weather/locations?provider=python-kma-api&search=alert-only"
+    assert filtered_client.get(path + "&kind=observed").json()["data"] == []
+    assert filtered_client.get(path + "&kind=alert").json()["meta"]["page"]["total"] == 1
+    assert filtered_client.get(path + "&kind=alert&provider=missing").json()["data"]
+    assert filtered_client.get(
+        "/v1/weather/locations?provider=openweathermap&kind=alert",
+    ).json()["data"] == []
+    rows = filtered_client.get(
+        "/v1/weather/locations/alert-only/latest?kind=observed&limit=1",
+    ).json()["data"]
+    assert rows == []
+    marker = filtered_client.get(
+        "/v1/weather/markers?location_id=alert-only&kind=alert",
+    ).json()["data"][0]
+    assert marker["latest"] == [] and marker["forecast"] == []
+    assert len(marker["alerts"]) == 1
+
+
+@pytest.mark.parametrize("path", ["locations", "locations/krforest-location/latest",
+                                  "locations/krforest-location/forecast", "markers"])
+def test_unknown_kind_is_rejected(filtered_client, path):
+    assert filtered_client.get(f"/v1/weather/{path}?kind=unknown").status_code == 422
+
+
 def test_marker_filter_and_empty_provider(filtered_client):
     path = "/v1/weather/markers?location_id=krforest-location"
     body = filtered_client.get(path + "&provider=openweathermap").json()

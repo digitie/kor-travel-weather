@@ -1,3 +1,9 @@
+## 2026-10-24 — 공용 지도 작업면 채택 후보
+
+특보·실황·초단기·단기·중기·관측 종류 필터를 제공한다. 제공처와 종류는 같은 저장 행에서 LIMIT 전에 선택한다. 특보는 observed와 분리한다. 마커는 metric별 대표를 보존하고 미래 예보는 별도 forecast 배열로 반환한다. OpenAPI와 TypeScript client를 함께 갱신했다. KMA 중기 문자열·강수 우선순위를 보강하고 상세는 지도 위에서 닫기/Escape·포커스 반환을 지원한다.
+
+WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 필터30px·176px·PC한줄·실제좌표/줌·종류요청·상세배치·선택위치이동·Escape/포커스·가로 overflow2 PASS. 독립 Popper 지적을 반영했다. 전체 Python·CI·최종 소비자 통합 gate는 아직 정산 전이다. [정산](reports/2026-10-24-shared-map-ui.md). 다음은 후보 CI/최종 소비자 검증이며 자체 운영 빌드·배포는 하지 않는다.
+
 # Weather 현재 인수인계
 
 ## 2026-10-23 — KMA pagination 선행 보강

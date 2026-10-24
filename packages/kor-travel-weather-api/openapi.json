@@ -97,6 +97,29 @@
             "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
           },
           {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WeatherKind"
+                  },
+                  "minItems": 1,
+                  "maxItems": 6
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택",
+              "title": "Kind"
+            },
+            "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택"
+          },
+          {
             "name": "weather_only",
             "in": "query",
             "required": false,
@@ -267,6 +290,29 @@
             "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
           },
           {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WeatherKind"
+                  },
+                  "minItems": 1,
+                  "maxItems": 6
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택",
+              "title": "Kind"
+            },
+            "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택"
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -432,6 +478,29 @@
               "title": "Provider"
             },
             "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WeatherKind"
+                  },
+                  "minItems": 1,
+                  "maxItems": 6
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택",
+              "title": "Kind"
+            },
+            "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택"
           },
           {
             "name": "limit",
@@ -680,6 +749,29 @@
               "title": "Provider"
             },
             "description": "날씨 제공처. 여러 번 지정하면 OR로 선택"
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WeatherKind"
+                  },
+                  "minItems": 1,
+                  "maxItems": 6
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택",
+              "title": "Kind"
+            },
+            "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택"
           }
         ],
         "responses": {
@@ -3962,6 +4054,19 @@
         ],
         "title": "ValidationError"
       },
+      "WeatherKind": {
+        "type": "string",
+        "enum": [
+          "alert",
+          "nowcast",
+          "ultra_short",
+          "short",
+          "mid",
+          "observed"
+        ],
+        "title": "WeatherKind",
+        "description": "지도 종류. 특보는 forecast_style과 별도로 판정한다."
+      },
       "WeatherMarkerOut": {
         "properties": {
           "location_id": {
@@ -3984,6 +4089,13 @@
             },
             "type": "array",
             "title": "Latest"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherValueOut"
+            },
+            "type": "array",
+            "title": "Forecast"
           },
           "alerts": {
             "items": {
