@@ -1,3 +1,16 @@
+## 2026-10-24 — 공용 지도 작업면 채택 후보
+
+최신 main106a31e의 보안 정합을 보존했다. 현재 날씨/미래 예보의 마커 시각 혼합을 재현·수정하고
+WSL 타입/lint·frontend253·빌드와 Chromium375/1440px2개를 통과했다. 최종 CI·독립 재리뷰는 진행한다.
+Python CI1280통과/2실패의 고정 발표/현재 조회 시각 혼합 fixture를 수정했고 격리PG 관련89개/Ruff PASS다.
+전체 CI를 다시 확인한다. 운영의18시간 제한과 UI 실행 소스는 변경하지 않았다.
+ee82c26 전체CI가 통과했다. 이후 전체6종 선택의 예보 마커 누락과 catalog 대기/실패의 empty 혼동을 수정하고
+WSL 타입/lint·253개·빌드와 지연/502/정상empty를 포함한 UI2개를 통과했다. 최종 재리뷰/새head CI를 확인한다.
+
+특보·실황·초단기·단기·중기·관측 종류 필터를 제공한다. 제공처와 종류는 같은 저장 행에서 LIMIT 전에 선택한다. 특보는 observed와 분리한다. 마커는 metric별 대표를 보존하고 미래 예보는 별도 forecast 배열로 반환한다. OpenAPI와 TypeScript client를 함께 갱신했다. KMA 중기 문자열·강수 우선순위를 보강하고 상세는 지도 위에서 닫기/Escape·포커스 반환을 지원한다.
+
+WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 필터30px·176px·PC한줄·실제좌표/줌·종류요청·상세배치·선택위치이동·Escape/포커스·가로 overflow2 PASS. 독립 Popper 지적을 반영했다. 전체 Python·CI·최종 소비자 통합 gate는 아직 정산 전이다. [정산](reports/2026-10-24-shared-map-ui.md). 다음은 후보 CI/최종 소비자 검증이며 자체 운영 빌드·배포는 하지 않는다.
+
 # Weather 현재 인수인계
 
 ## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합

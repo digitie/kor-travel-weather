@@ -40,6 +40,8 @@ export type Location = {
   metadata: Record<string, unknown>;
 };
 
+export type WeatherKind = "alert" | "nowcast" | "ultra_short" | "short" | "mid" | "observed";
+
 export type WeatherValue = {
   value_id: string;
   location_id: string;
@@ -102,6 +104,7 @@ export type WeatherMarker = {
   location_id: string;
   measurement_point: MeasurementPoint | null;
   latest: WeatherValue[];
+  forecast?: WeatherValue[];
   alerts: WeatherValue[];
 };
 
@@ -187,20 +190,25 @@ function appendProviders(query: URLSearchParams, providers?: readonly string[]) 
   for (const provider of providers ?? []) query.append("provider", provider);
 }
 
-export function getPublicLocations(limit = 1000, offset = 0, providers?: string[], signal?: AbortSignal, weatherOnly = false): Promise<ApiEnvelope<Location[]>> {
+function appendKinds(query: URLSearchParams, kinds?: readonly WeatherKind[]) {
+  for (const kind of kinds ?? []) query.append("kind", kind);
+}
+
+export function getPublicLocations(limit = 1000, offset = 0, providers?: string[], signal?: AbortSignal, weatherOnly = false, kinds?: WeatherKind[]): Promise<ApiEnvelope<Location[]>> {
   const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   appendProviders(query, providers);
+  appendKinds(query, kinds);
   if (weatherOnly) query.set("weather_only", "true");
   return request<Location[]>(`/v1/weather/locations?${query}`, { signal });
 }
 
-export async function getAllPublicLocations(providers?: string[], signal?: AbortSignal, weatherOnly = false): Promise<Location[]> {
-  if (providers?.length === 0) return [];
+export async function getAllPublicLocations(providers?: string[], signal?: AbortSignal, weatherOnly = false, kinds?: WeatherKind[]): Promise<Location[]> {
+  if (providers?.length === 0 || kinds?.length === 0) return [];
   const pageSize = 1000;
   const all: Location[] = [];
   let offset = 0;
   while (true) {
-    const page = await getPublicLocations(pageSize, offset, providers, signal, weatherOnly);
+    const page = await getPublicLocations(pageSize, offset, providers, signal, weatherOnly, kinds);
     all.push(...page.data);
     if (page.data.length < pageSize) return all;
     offset += page.data.length;
@@ -240,9 +248,10 @@ export function updateLocation(
   });
 }
 
-export function getLatest(locationId: string, limit = 200, signal?: AbortSignal, providers?: string[]): Promise<ApiEnvelope<WeatherValue[]>> {
+export function getLatest(locationId: string, limit = 200, signal?: AbortSignal, providers?: string[], kinds?: WeatherKind[]): Promise<ApiEnvelope<WeatherValue[]>> {
   const query = new URLSearchParams({ limit: String(limit) });
   appendProviders(query, providers);
+  appendKinds(query, kinds);
   return request<WeatherValue[]>(
     `/v1/weather/locations/${encodeURIComponent(locationId)}/latest?${query}`,
     { signal },
@@ -274,9 +283,11 @@ export function getForecast(
   limit = 200,
   signal?: AbortSignal,
   providers?: string[],
+  kinds?: WeatherKind[],
 ): Promise<ApiEnvelope<WeatherValue[]>> {
   const query = new URLSearchParams({ limit: String(limit) });
   appendProviders(query, providers);
+  appendKinds(query, kinds);
   if (from) query.set("from", from);
   if (to) query.set("to", to);
   return request<WeatherValue[]>(
@@ -317,9 +328,11 @@ export function getMarkerSummaries(
   locationIds: string[],
   signal?: AbortSignal,
   providers?: string[],
+  kinds?: WeatherKind[],
 ): Promise<ApiEnvelope<WeatherMarker[]>> {
   const query = new URLSearchParams();
   appendProviders(query, providers);
+  appendKinds(query, kinds);
   for (const locationId of locationIds) query.append("location_id", locationId);
   return request<WeatherMarker[]>(`/v1/weather/markers?${query.toString()}`, { signal });
 }

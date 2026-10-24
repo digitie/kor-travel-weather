@@ -1,6 +1,7 @@
 @import "tailwindcss/theme.css";
 @import "tailwindcss/utilities.css";
 @import "@kor-travel/ui/dagster.css";
+@import "@kor-travel/ui/map-controls.css";
 @import "@kor-travel/tokens/theme.css";
 @source "../node_modules/@kor-travel/ui/dist";
 
@@ -2498,3 +2499,10 @@ tbody tr:hover {
   padding: 0;
   accent-color: var(--brand);
 }
+
+/* Feature 지도와 같은 공용 컨트롤·지도 위 상세 패널 */
+.weather-workbench .map-card,
+.weather-workbench .map-canvas { height: 70dvh; min-height: 28rem; }
+.weather-workbench .list-panel { height: 70dvh; min-height: 28rem; overflow-y: auto; }
+.weather-workbench .kt-map-detail { overflow: auto; }
+.weather-workbench .inspector-actions { flex-wrap: wrap; }

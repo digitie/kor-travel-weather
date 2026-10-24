@@ -13,3 +13,7 @@ registry 발행 대신 이 개발 후보를 고정하며 추후 이관 시 버�
 UI dev.6는 Common `091d4fe1dda8eacf43b453ad39b4f2e42e9e80fc`에서 `npm pack`으로 만들었다.
 UI 소스는 main `efcd671207d7f9e2fb01251bab6854a8d543279a`와 동일하다.
 실행 검색·상태 필터·50행 페이지·상세를 포함하며 인증과 API는 소비 앱이 소유한다.
+
+## 공용 지도 작업면 dev.7 (2026-10-24)
+
+Common source `e79816afb3c19b1b1e2fc1486b809c2ee3d34d6e`. `kor-travel-ui-0.1.0-dev.7.tgz` SHA256 `4445c694013bd19fb57d3655cfc25d86e99a6733d655524718be3bf769ba7422`. Map/Transport/Weather 동일 산출물이다. 기존 후보는 보존한다. [검증](../../../../docs/reports/2026-10-24-shared-map-ui.md).

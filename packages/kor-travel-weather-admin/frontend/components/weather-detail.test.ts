@@ -10,14 +10,14 @@ const tree = ts.createSourceFile("weather-map.tsx", source, ts.ScriptTarget.Late
 let callback: ts.Expression | undefined;
 function visit(node: ts.Node) {
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect"
-    && node.arguments[1]?.getText(tree) === "[refreshToken, selectedLocationId, providerFilter]") callback = node.arguments[0];
+    && node.arguments[1]?.getText(tree) === "[refreshToken, selectedLocationId, providerFilter, kindFilter]") callback = node.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(tree);
 if (!callback) throw new Error("상세 effect를 찾지 못했습니다.");
 const setters = ["setValues", "setForecast", "setMessage", "setForecastMessage",
   "setLastRefreshedAt", "setLoading", "setForecastLoading"];
-const effect = new Function("selectedLocationId", "providerFilter", ...setters, "getLatest", "getForecast", "forecastWindowStart",
+const effect = new Function("selectedLocationId", "providerFilter", ...setters, "getLatest", "getForecast", "forecastWindowStart", "kindFilter",
   ts.transpileModule("return (" + callback.getText(tree) + ")();", {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText,

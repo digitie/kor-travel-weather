@@ -9,20 +9,21 @@ import {
 export type SourceOption = { value: string; label: string; count?: number };
 
 type Props = {
+  id?: string;
   options: SourceOption[];
   // null은 전체, 빈 배열은 선택 없음이다. 둘을 구별해 전체 해제도 지원한다.
   value: string[] | null;
   onChange: (value: string[] | null) => void;
 };
 
-export function SourceMultiSelect({ options, value, onChange }: Props) {
+export function SourceMultiSelect({ id, options, value, onChange }: Props) {
   const selected = options.filter((option) => value === null || value.includes(option.value));
   const label = value === null ? "모든 소스" : selected.length === 0 ? "소스 선택"
     : selected.length === 1 ? selected[0].label : `${selected.length}개 소스`;
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="secondary source-filter-trigger" aria-label="날씨 소스 필터" disabled={!options.length}>
+        <button id={id} type="button" className="kt-map-select-trigger" aria-label="날씨 소스 필터" disabled={!options.length}>
           <SlidersHorizontal size={15} aria-hidden="true" />
           <span>{label}</span><ChevronDown size={14} aria-hidden="true" />
         </button>

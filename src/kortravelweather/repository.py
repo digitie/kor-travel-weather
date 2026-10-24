@@ -41,6 +41,7 @@ from sqlalchemy import (
     create_engine,
     delete,
     desc,
+    false,
     func,
     literal,
     not_,
@@ -95,7 +96,7 @@ from .metrics import (
     observe_sync_finished,
     observe_sync_started,
 )
-from .models import PurgeReport, SyncRun, WeatherLocation, WeatherValue, kst_now
+from .models import PurgeReport, SyncRun, WeatherKind, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
     DEFAULT_PARTITION,
     DETACHED_DEFAULT,
@@ -1405,6 +1406,7 @@ class WeatherRepository:
         search: str | None = None,
         providers: Sequence[str] | None = None,
         weather_only: bool = False,
+        kinds: Sequence[WeatherKind] | None = None,
         limit: int | None = 100,
         offset: int = 0,
         include_metadata: bool = True,
@@ -1429,8 +1431,8 @@ class WeatherRepository:
             )
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
-            if providers is not None or weather_only:
-                stmt = stmt.where(self._catalog_values_exist(providers, weather_only))
+            if providers is not None or weather_only or kinds is not None:
+                stmt = stmt.where(self._catalog_values_exist(providers, weather_only, kinds))
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -1455,13 +1457,14 @@ class WeatherRepository:
         search: str | None = None,
         providers: Sequence[str] | None = None,
         weather_only: bool = False,
+        kinds: Sequence[WeatherKind] | None = None,
     ) -> int:
         with self._session_factory() as session:
             stmt = select(func.count()).select_from(WeatherLocationRow)
             if enabled_only:
                 stmt = stmt.where(WeatherLocationRow.enabled.is_(True))
-            if providers is not None or weather_only:
-                stmt = stmt.where(self._catalog_values_exist(providers, weather_only))
+            if providers is not None or weather_only or kinds is not None:
+                stmt = stmt.where(self._catalog_values_exist(providers, weather_only, kinds))
             if search:
                 needle = f"%{search.strip()}%"
                 stmt = stmt.where(
@@ -1471,7 +1474,23 @@ class WeatherRepository:
             return int(session.scalar(stmt) or 0)
 
     @staticmethod
-    def _catalog_values_exist(providers: Sequence[str] | None, weather_only: bool):
+    def _kind_predicate(row, kinds: Sequence[WeatherKind]):
+        # 특보는 observed로도 저장된다. 관측/실황/예보와 배타적으로 구분한다.
+        alert = or_(
+            row.metric_key == "ALERT",
+            row.weather_domain.ilike("%alert%"),
+            row.weather_domain.ilike("%warning%"),
+            row.dataset_key.ilike("%alert%"),
+            row.dataset_key.ilike("%warning%"),
+        )
+        normal = row.forecast_style.in_(tuple(kind for kind in kinds if kind != "alert"))
+        return or_(alert if "alert" in kinds else false(), and_(not_(alert), normal))
+
+    @staticmethod
+    def _catalog_values_exist(
+        providers: Sequence[str] | None, weather_only: bool,
+        kinds: Sequence[WeatherKind] | None = None,
+    ):
         # 제공처와 일반값은 동일 행에서 판정한다. 다른 제공처의 TEMP 때문에
         # KMA 특보 전용 위치가 KMA 일반 날씨에 섞이면 안 된다.
         stmt = select(WeatherCurrentValueRow.location_id).where(
@@ -1489,6 +1508,8 @@ class WeatherRepository:
                 WeatherCurrentValueRow.dataset_key.ilike("%alert%"),
                 WeatherCurrentValueRow.dataset_key.ilike("%warning%"),
             )))
+        if kinds is not None:
+            stmt = stmt.where(WeatherRepository._kind_predicate(WeatherCurrentValueRow, kinds))
         return stmt.exists()
 
     def _record_source_session(
@@ -2632,10 +2653,12 @@ class WeatherRepository:
         from_at: datetime | None = None,
         to_at: datetime | None = None,
         providers: Sequence[str] | None = None,
+        kinds: Sequence[WeatherKind] | None = None,
         dataset_key: str | None = None,
         metric_key: str | None = None,
         weather_domain: str | None = None,
         metric_keys: Sequence[str] | None = None,
+        per_metric: bool = False,
         exclude_alerts: bool = False,
         alerts_only: bool = False,
         alert_active_at: datetime | None = None,
@@ -2656,6 +2679,17 @@ class WeatherRepository:
             )).label("location_id"))
             .subquery("current_value_locations")
         )
+        if per_metric:
+            if not metric_keys:
+                return result
+            metrics = select(func.unnest(bindparam(
+                "current_metric_keys", list(metric_keys), type_=ARRAY(String),
+            )).label("metric_key")).subquery("current_value_metrics")
+            requested_locations = select(
+                requested_locations.c.location_id, metrics.c.metric_key,
+            ).select_from(requested_locations.join(metrics, true())).subquery(
+                "current_value_location_metrics",
+            )
         # 고정 정렬식은 generic plan에서도 기존 expression index와 일치해야 한다.
         current_styles = tuple(literal(style, literal_execute=True)
                                for style in ("observed", "nowcast"))
@@ -2706,6 +2740,10 @@ class WeatherRepository:
             .order_by(*order)
             .limit(limit_per_location)
         )
+        if per_metric:
+            candidate = candidate.where(
+                WeatherCurrentValueRow.metric_key == requested_locations.c.metric_key,
+            )
         if prefer_current:
             # "현재 날씨" falls back to a forecast only once observed/nowcast is
             # exhausted, and the fallback must be the nearest slot that has
@@ -2728,6 +2766,8 @@ class WeatherRepository:
             candidate = candidate.where(
                 WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers)))
             )
+        if kinds is not None:
+            candidate = candidate.where(self._kind_predicate(WeatherCurrentValueRow, kinds))
         if from_at is not None:
             candidate = candidate.where(WeatherCurrentValueRow.target_at >= from_at)
         if to_at is not None:
@@ -2840,6 +2880,7 @@ class WeatherRepository:
     def latest_values(
         self, location_id: str, *, limit: int = 100, now: datetime | None = None,
         providers: Sequence[str] | None = None,
+        kinds: Sequence[WeatherKind] | None = None,
     ) -> list[WeatherValue]:
         with self._session_factory() as session:
             return self._current_value_models_many(
@@ -2849,6 +2890,7 @@ class WeatherRepository:
                 prefer_current=True,
                 now=now,
                 providers=providers,
+                kinds=kinds,
             ).get(location_id, [])
 
     def latest_values_many(
@@ -2883,6 +2925,7 @@ class WeatherRepository:
         limit_per_location: int = 80,
         now: datetime | None = None,
         providers: Sequence[str] | None = None,
+        kinds: Sequence[WeatherKind] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the small current projection needed to render map markers.
 
@@ -2897,6 +2940,37 @@ class WeatherRepository:
         if limit_per_location <= 0:
             raise ValueError("limit_per_location은 양수여야 합니다.")
         marker_instant = now or kst_now()
+        if kinds is not None:
+            # 종류 미지정은 기존 최적화 경로를 유지한다. 명시한 종류는 LIMIT 전에
+            # 선택하고 현재값/가까운 예보/특보가 서로의 행 예산을 소모하지 않게 한다.
+            groups = [
+                [kind for kind in kinds if kind in ("observed", "nowcast")],
+                [kind for kind in kinds if kind in ("ultra_short", "short", "mid")],
+                [kind for kind in kinds if kind == "alert"],
+            ]
+            groups = [group for group in groups if group]
+            result: dict[str, list[WeatherValue]] = {key: [] for key in location_ids}
+            if not groups:
+                return result
+            budget = max(1, limit_per_location // len(groups))
+            with self._session_factory() as session:
+                for group in groups:
+                    is_forecast = group[0] in ("ultra_short", "short", "mid")
+                    is_alert = group[0] == "alert"
+                    rows = self._current_value_models_many(
+                        session, location_ids, limit_per_location=budget if is_alert else 1,
+                        prefer_current=not is_forecast and not is_alert,
+                        newest_first=not is_forecast, now=marker_instant,
+                        from_at=marker_instant.replace(minute=0, second=0, microsecond=0)
+                        if is_forecast else None,
+                        providers=providers, kinds=group,
+                        metric_keys=None if is_alert else _MARKER_METRIC_KEYS[:budget],
+                        per_metric=not is_alert,
+                        alert_active_at=marker_instant if is_alert else None,
+                    )
+                    for key, values in rows.items():
+                        result[key].extend(values)
+            return result
         # PostgreSQL's DISTINCT ON can use the marker lookup index to read
         # one recent row per location/metric without ranking all append-only
         # revisions.  Keep the generic window-query fallback for SQLite and
@@ -3399,6 +3473,7 @@ class WeatherRepository:
         from_at: datetime | None = None,
         to_at: datetime | None = None,
         providers: Sequence[str] | None = None,
+        kinds: Sequence[WeatherKind] | None = None,
         dataset_key: str | None = None,
         metric_key: str | None = None,
         limit: int = 500,
@@ -3416,6 +3491,7 @@ class WeatherRepository:
                     from_at=from_at,
                     to_at=to_at,
                     providers=providers,
+                    kinds=kinds,
                     dataset_key=dataset_key,
                     metric_key=metric_key,
                     exclude_alerts=exclude_alerts,
@@ -3432,6 +3508,8 @@ class WeatherRepository:
                 stmt = stmt.where(
                     WeatherValueRow.provider.in_(tuple(dict.fromkeys(providers)))
                 )
+            if kinds is not None:
+                stmt = stmt.where(self._kind_predicate(WeatherValueRow, kinds))
             if from_at is not None:
                 stmt = stmt.where(timestamp >= from_at)
             if to_at is not None:

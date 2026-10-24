@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.alerts import active_alert_values
-from kortravelweather.models import SyncRun, WeatherLocation, WeatherValue, kst_now
+from kortravelweather.models import SyncRun, WeatherKind, WeatherLocation, WeatherValue, kst_now
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
     WeatherRepository,
@@ -29,6 +29,17 @@ ProviderFilter = Annotated[
     Query(alias="provider", min_length=1, max_length=32,
           description="날씨 제공처. 여러 번 지정하면 OR로 선택"),
 ]
+
+
+KindFilter = Annotated[
+    list[WeatherKind] | None,
+    Query(alias="kind", min_length=1, max_length=6,
+          description="종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택"),
+]
+
+
+def _kind_kwargs(kinds: list[WeatherKind] | None) -> dict[str, Any]:
+    return {"kinds": kinds} if kinds is not None else {}
 
 
 def _provider_kwargs(providers: list[str] | None) -> dict[str, Any]:
@@ -175,6 +186,7 @@ class WeatherMarkerOut(BaseModel):
     location_id: str
     measurement_point: MeasurementPointOut | None = None
     latest: list[WeatherValueOut] = Field(default_factory=list)
+    forecast: list[WeatherValueOut] = Field(default_factory=list)
     alerts: list[WeatherValueOut] = Field(default_factory=list)
 
 
@@ -439,6 +451,7 @@ async def list_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
     providers: ProviderFilter = None,
+    kinds: KindFilter = None,
     weather_only: bool = Query(default=False, description="특보 외 일반값이 있는 위치만 선택"),
     enabled: bool = Query(default=True, include_in_schema=False),
     search: str | None = None,
@@ -446,7 +459,7 @@ async def list_locations(
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, Any]:
     started = perf_counter()
-    filters = _provider_kwargs(providers)
+    filters = {**_provider_kwargs(providers), **_kind_kwargs(kinds)}
     if weather_only:
         filters["weather_only"] = True
     rows = await run_in_threadpool(
@@ -489,6 +502,7 @@ async def latest(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
     providers: ProviderFilter = None,
+    kinds: KindFilter = None,
     limit: int = Query(default=100, ge=1, le=1000),
 ) -> dict[str, Any]:
     started = perf_counter()
@@ -496,7 +510,8 @@ async def latest(
     if location is None or not location.enabled:
         raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
     rows = await run_in_threadpool(
-        repo.latest_values, location_id, limit=limit, **_provider_kwargs(providers),
+        repo.latest_values, location_id, limit=limit,
+        **_provider_kwargs(providers), **_kind_kwargs(kinds),
     )
     # ``latest_values`` includes alert facts for the location.  Apply the
     # same active-alert projection used by markers/resolve so a named latest
@@ -523,6 +538,7 @@ async def forecast(
     metric_key: str | None = None,
     history: bool = Query(default=False, description="수정 revision까지 반환"),
     providers: ProviderFilter = None,
+    kinds: KindFilter = None,
     limit: int = Query(default=500, ge=1, le=5000),
 ) -> dict[str, Any]:
     try:
@@ -546,7 +562,7 @@ async def forecast(
         limit=limit,
         include_revisions=history,
         exclude_alerts=True,
-        **_provider_kwargs(providers),
+        **_provider_kwargs(providers), **_kind_kwargs(kinds),
     )
     return envelope(
         request,
@@ -802,6 +818,7 @@ async def marker_summaries(
     repo: Annotated[WeatherRepository, Depends(repository)],
     location_ids: Annotated[list[str] | None, Query(alias="location_id", min_length=1)] = None,
     providers: ProviderFilter = None,
+    kinds: KindFilter = None,
 ) -> dict[str, Any]:
     """Return current/alert marker state for a bounded visible-location batch."""
     started = perf_counter()
@@ -812,7 +829,7 @@ async def marker_summaries(
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="요청이 취소되었습니다.")
         return await _marker_summaries(
-            request, repo, location_ids, started=started, providers=providers,
+            request, repo, location_ids, started=started, providers=providers, kinds=kinds,
         )
 
 
@@ -823,6 +840,7 @@ async def _marker_summaries(
     *,
     started: float,
     providers: list[str] | None = None,
+    kinds: list[WeatherKind] | None = None,
 ) -> dict[str, Any]:
     """입장이 허용된 마커 배치만 조회·변환한다."""
     # Keep the public marker endpoint bounded even when a client accidentally
@@ -850,7 +868,8 @@ async def _marker_summaries(
         # alerts while retaining the weather-code/temperature rows needed by
         # the map.
         marker_by_location = await run_in_threadpool(
-            marker_many, valid_ids, limit_per_location=80, **_provider_kwargs(providers)
+            marker_many, valid_ids, limit_per_location=80,
+            **_provider_kwargs(providers), **_kind_kwargs(kinds)
         )
         latest_by_location = marker_by_location
         alert_by_location = marker_by_location
@@ -886,7 +905,9 @@ async def _marker_summaries(
         }
     data: list[dict[str, Any]] = []
     for location_id in valid_ids:
-        latest, _, latest_alerts = _split_weather_values(latest_by_location.get(location_id, []))
+        latest, forecast, latest_alerts = _split_weather_values(
+            latest_by_location.get(location_id, []),
+        )
         # 운영 marker projection은 같은 묶음을 공유한다. 특보 판정은 한 번만
         # 수행하되 별도 alerts를 돌려주는 기존 repository double도 지원한다.
         if alert_by_location is latest_by_location:
@@ -901,6 +922,7 @@ async def _marker_summaries(
                     by_id[location_id], distance_km=0.0
                 ),
                 latest=[value_out(row) for row in latest],
+                forecast=[value_out(row) for row in forecast] if kinds is not None else [],
                 alerts=[value_out(row) for row in alerts],
             ).model_dump(mode="json")
         )
