@@ -17,7 +17,10 @@ const actions = [
   ["success", clearDurableLoginFailures],
 ] as const;
 
-beforeEach(() => vi.spyOn(console, "warn").mockImplementation(() => {}));
+beforeEach(() => {
+  // Vitest 5는 반환된 함수를 정리 훅으로 실행하므로 spy를 반환하지 않는다.
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+});
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
