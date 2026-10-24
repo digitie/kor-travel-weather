@@ -1,10 +1,31 @@
 ## 2026-10-24 — 공용 지도 작업면 채택 후보
 
+최신 main106a31e의 보안 정합을 보존했다. 현재 날씨/미래 예보의 마커 시각 혼합을 재현·수정하고
+WSL 타입/lint·frontend253·빌드와 Chromium375/1440px2개를 통과했다. 최종 CI·독립 재리뷰는 진행한다.
+
 특보·실황·초단기·단기·중기·관측 종류 필터를 제공한다. 제공처와 종류는 같은 저장 행에서 LIMIT 전에 선택한다. 특보는 observed와 분리한다. 마커는 metric별 대표를 보존하고 미래 예보는 별도 forecast 배열로 반환한다. OpenAPI와 TypeScript client를 함께 갱신했다. KMA 중기 문자열·강수 우선순위를 보강하고 상세는 지도 위에서 닫기/Escape·포커스 반환을 지원한다.
 
 WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 필터30px·176px·PC한줄·실제좌표/줌·종류요청·상세배치·선택위치이동·Escape/포커스·가로 overflow2 PASS. 독립 Popper 지적을 반영했다. 전체 Python·CI·최종 소비자 통합 gate는 아직 정산 전이다. [정산](reports/2026-10-24-shared-map-ui.md). 다음은 후보 CI/최종 소비자 검증이며 자체 운영 빌드·배포는 하지 않는다.
 
 # Weather 현재 인수인계
+
+## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
+
+- 현재 상태: npm 보안·공통 버전 소스 정합 및 WSL 검증 완료. [버전과 예외](npm-security-alignment-2026-10-24.md). 최종 CI·UI·머지 상태의 정본은 [PR](https://github.com/digitie/kor-travel-weather/pull/166)이다.
+- 다음 한 작업: 운영 반영을 요청받으면 Manager 정본과 현재 배포 런북에 따라 릴리스를 적용한다. 소스 머지와 운영 배포는 구분한다.
+
+## 2026-10-24 — 현재 상태: Next.js 보안 갱신 후보
+
+- `next`와 사용하는 `eslint-config-next`를 `16.4.3`으로 고정했다. WSL 프론트엔드 테스트 243건·lint·type-check·build PASS. 변경 범위와 남은 취약점은 [작업 기록](journal.md)을 따른다.
+- 다음 한 작업: Draft PR의 CI를 확인한다. James/Popper 독립 사전 리뷰는 추가 P0/P1 없이 마쳤다. 운영 배포·실제 서비스 UI 수용은 별도이며 기존 운영 과제는 아래 기록을 보존한다.
+
+## 2026-10-24 — W1~W5 source 구현과 운영 잔여 정렬
+
+- 감사 기준 main9aa0d339(#164)에는 W1 위치·W2 현재·W3 단기/중기/외부 grouped 예보·W4 상태·W5 승인 관측 사전 요약이 구현·머지돼 있다. [현재 인계와 PR](reports/2026-10-23-map-service-api-handoff.md), [남은 운영 과제](tasks.md)를 따른다.
+- 기본 service export OFF·별도 publisher 수용, source 정상 bootstrap·요약 초기 투영·공유 NVMe 권한·GC/live-root·ARM 비용과 Map 실제 소비/UI는 완료로 세지 않는다. 운영 #130 배포와 후속 API 전체 적용은 별개다.
+- source vector8,192, catalog/page·개별 cohort5,000, inventory20,000 및4MiB 페이지/8MiB chunk·manifest 상한을 구분한다. 기계 OpenAPI/DTO/예시는 현재 source와 대조했고 이번 정산은 문서만 변경한다.
+- 아래 2026-10-23 설계·단계별 미완 표시는 당시 기록이며 현재 source 미구현 목록이 아니다. daemon은 최신 사용자 정책 RUNNING을 따른다.
+
 
 ## 2026-10-23 — KMA pagination 선행 보강
 

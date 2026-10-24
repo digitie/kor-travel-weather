@@ -1,8 +1,32 @@
 ## 2026-10-24 — 공용 지도 작업면 채택 후보
 
+최신 main106a31e의 보안 의존성을 통합했다. Popper가 현재 맑음20도와 미래 비10도가 강수20도로
+섞이는 P2를 재현해 현재값 우선·예보 대상 시각 일치로 수정했다. WSL 타입/lint·253개·빌드와
+375/1440px Chromium2개 PASS, 사용자 DB4개는 보존했다. 최종 CI/후보 독립 재확인은 별도다.
+
 특보·실황·초단기·단기·중기·관측 종류 필터를 제공한다. 제공처와 종류는 같은 저장 행에서 LIMIT 전에 선택한다. 특보는 observed와 분리한다. 마커는 metric별 대표를 보존하고 미래 예보는 별도 forecast 배열로 반환한다. OpenAPI와 TypeScript client를 함께 갱신했다. KMA 중기 문자열·강수 우선순위를 보강하고 상세는 지도 위에서 닫기/Escape·포커스 반환을 지원한다.
 
 WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 필터30px·176px·PC한줄·실제좌표/줌·종류요청·상세배치·선택위치이동·Escape/포커스·가로 overflow2 PASS. 독립 Popper 지적을 반영했다. 전체 Python·CI·최종 소비자 통합 gate는 아직 정산 전이다. [정산](reports/2026-10-24-shared-map-ui.md). 다음은 후보 CI/최종 소비자 검증이며 자체 운영 빌드·배포는 하지 않는다.
+## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
+
+- 이 저장소의 기존 프론트엔드/공용 테스트 243개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](npm-security-alignment-2026-10-24.md).
+- 직접/전이 npm 의존성과 잠금 파일을 갱신하고 여섯 프로젝트의 공통 버전을 맞췄다.
+- 호환성 예외·미수정 상류 권고·검증 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+- 소스·잠금 파일 정합과 WSL 검증을 완료했다. 최종 CI·두 독립 확인·N150 후보 UI 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-weather/pull/166)에서 정산하며 통과 확인 전 머지하지 않는다.
+
+## 2026-10-24 — Next.js 16.4.3 보안 의존성 갱신
+
+- Next.js 15에서 `16.4.3`으로 정확히 고정하고 잠금 파일을 재생성했다. 사용하는 `eslint-config-next`도 `16.4.3`으로 맞췄다.
+- ESLint 16 flat config로 전환했다. React Compiler 전용 규칙 4개는 기존 동작을 보존하도록 별도 도입까지 끄고, 기존 Hooks 규칙은 유지한다. lint는 기존 전체 문서 로그아웃 이동에 대한 경고 1건과 종료 코드 0이다.
+- WSL Linux Node 22.22.2에서 프론트엔드 기존 테스트 243건과 lint·type-check·build PASS. 빌드가 생성한 타입 선언과 필요한 JSX 설정을 반영했다.
+- 같은 시점 `npm audit` 전체 보고: 총 9→6건, critical 3→2건. `next` 항목은 제거됐지만 다른 패키지 취약점은 남아 있다. 강제 자동 수정이나 요청 외 major 의존성 갱신은 하지 않았다.
+- James(프론트/UI)·Popper(빌드/운영) 독립 사전 리뷰에서 이 저장소의 추가 P0/P1은 없었다. 실제 서비스 UI와 CI 이후 머지 게이트를 대체하지 않는다.
+- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
+
+## 2026-10-24 — Map 서비스 API 문서 독립 정합성 감사
+
+- producer W1~W5와 #164 source vector8,192/catalog·cohort5,000/inventory20,000을 구분하고 인계의 Weather meta cursor·페이지4MiB·W4 단일 응답을 현재 구현에 맞췄다. 현재 tasks/resume/초기 설계 상태와 W5 재투영4세대 batch·최대256세대/원본 단기예보6시간 범위도 정렬했다. API/DTO/OpenAPI 생성물·운영은 변경하지 않는다.
+- 구현과 별개인 flag/bootstrap·Map 소비·공유 artifact/GC·ARM 비용 수용은 계속 미완이다. 문서 전용 PR이며 기능 시험/운영 검증을 새로 통과했다고 주장하지 않는다. 고정 DTO로 예시8개를 검증하고 OpenAPI 경로/쿼리/상태와 문서 전용 경계까지 오프라인13개 확인을 통과했다(Weather·Transport 합계, HTTP/DB0).
 
 ## 2026-10-24 — 승인 source 용량과 제한된 메타데이터 PR164
 

@@ -160,12 +160,20 @@ function isInViewport(location: Location, viewport: MapViewport) {
   );
 }
 
+function markerValues(summary: WeatherMarker): WeatherValue[] {
+  // 현재값이 있으면 미래 예보의 강수·온도를 섞지 않는다.
+  if (summary.latest.length) return summary.latest;
+  const forecast = summary.forecast ?? [];
+  const next = Math.min(...forecast.map((row) => Date.parse(row.target_at)).filter(Number.isFinite));
+  return forecast.filter((row) => Date.parse(row.target_at) === next);
+}
+
 function markerState(summary: WeatherMarker | undefined): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
   if (summary.alerts.length) {
     return { kind: "alert", glyph: "!", label: `특보 ${summary.alerts.length}건` };
   }
-  const rows = [...summary.latest, ...(summary.forecast ?? [])];
+  const rows = markerValues(summary);
   const codeRows = rows.filter((row) =>
     ["WEATHER_CODE", "weather_code", "SKY", "PTY"].includes(row.metric_key),
   );
@@ -196,7 +204,7 @@ function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
 
 function markerTemperature(summary: WeatherMarker | undefined): number | null {
   if (!summary) return null;
-  const row = [...summary.latest, ...(summary.forecast ?? [])].find((value) =>
+  const row = markerValues(summary).find((value) =>
     ["T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(value.metric_key),
   );
   if (!row) return null;

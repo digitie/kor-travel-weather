@@ -13,5 +13,11 @@ Map/Transport/Weather가 같은 산출물과 lock integrity를 고정한다.
 
 WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 필터30px·176px·PC한줄·실제좌표/줌·종류요청·상세배치·선택위치이동·Escape/포커스·가로 overflow2 PASS. 독립 Popper 지적을 반영했다. 전체 Python·CI·최종 소비자 통합 gate는 아직 정산 전이다.
 
+최신 main106a31e의 Next16.4.3·React19.3.1·MapLibre6.15 보안 정합을 통합하고 Base UI1.9를 고정했다.
+현재값과 미래 강수를 섞어 표시하던 Popper P2를 재현해 현재값 우선·예보는 같은 가장 이른 대상 시각으로
+상태와 온도를 선택하도록 수정했다. 미래 시각의 온도를 빌려오지 않는 회귀를 포함해 WSL 타입/lint·253개·빌드와
+375/1440px Chromium2개(12.2초)가 통과했다. 배경은 실제 MapLibre이며 API 응답은 결정적 fixture로 UI를 검증했다.
+원본의 사용자 untracked DB4개는 보존했다. 전체 CI와 정확 후보 독립 재확인은 별도 gate다.
+
 사용자 지시로 운영 빌드·배포는 다른 통합 에이전트가 담당하며 이 후보는 배포하지 않았다.
 Weather 종류 필터는 API/UI를 함께 반영해야 한다. UI만 먼저 배포하면 서버 필터가 적용되지 않는다.

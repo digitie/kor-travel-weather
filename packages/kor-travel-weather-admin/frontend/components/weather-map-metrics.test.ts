@@ -9,14 +9,14 @@ const tree = ts.createSourceFile("weather-map.tsx", source, ts.ScriptTarget.Late
 const helpers: string[] = [];
 const cards: string[] = [];
 function visit(node: ts.Node) {
-  if (ts.isFunctionDeclaration(node) && ["valueFor", "markerTemperature"].includes(node.name?.text ?? "")) {
+  if (ts.isFunctionDeclaration(node) && ["valueFor", "markerValues", "markerTemperature"].includes(node.name?.text ?? "")) {
     helpers.push(node.getText(tree));
   }
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "valueFor") cards.push(node.getText(tree));
   ts.forEachChild(node, visit);
 }
 visit(tree);
-if (helpers.length !== 2 || cards.length !== 4) throw new Error("날씨 카드 helper를 찾지 못했습니다.");
+if (helpers.length !== 3 || cards.length !== 4) throw new Error("날씨 카드 helper를 찾지 못했습니다.");
 const javascript = ts.transpileModule(
   helpers.join("\n") + `\nreturn { markerTemperature, cards: values => [${cards.join(",")}] };`,
   { compilerOptions: { target: ts.ScriptTarget.ES2022 } },

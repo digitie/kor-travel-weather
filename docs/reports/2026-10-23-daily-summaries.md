@@ -6,9 +6,11 @@ morning [05,11), noon [11,17), evening [17,23) KST 요약을 제공한다. 기�
 
 ## 원천과 집계 정책
 
-원본 수집 TX에서 집계하지 않는다. 별도 publisher의 명시 `daily_summaries=True`
-옵션이 승인 generation만 키셋으로 최대 한 개 읽고, 작은 표에 요약과 checkpoint를
-함께 commit한다. 파일 IO 중에는 PG connection을 보유하지 않는다. 원본 fact·이력·
+원본 수집 TX에서 집계하지 않는다. 별도 publisher가 승인 generation만 키셋으로
+읽고 작은 원자적 batch로 요약과 checkpoint를 함께 commit한다. #152의 bounded
+재투영은4세대 batch를 deadline/진도·실패 검사와 함께 유한 반복하며, 한 호출의
+최대256세대 예산과 마지막 한 번의 파생 정리를 사용한다. 각 batch의 checkpoint를
+재개하므로 이 상한이 늦은 generation을 영구 누락시키지 않는다. 파일 IO 중에는 PG connection을 보유하지 않는다. 원본 fact·이력·
 보존 정책은 변경하지 않는다. 실패·부분 성공 run의 미승인 자료는 요약에 섞이지 않는다.
 
 KMA NOWCAST 실관측과 observed 자료를 포함하고 미래/예보 자료는 제외한다.
@@ -71,10 +73,12 @@ summary checkpoint 이전에 GC하면 안 된다. GC·전체 wall-clock/최대 R
 
 ## 구현 상태
 
-이 PR은 KMA 승인 관측 기반의 실제 reducer/REST를 구현한다. 아직 all-provider
-export가 준비되지 않은 기본 다중 provider 요청은503으로 실패한다. 외부 provider의
-관측 승인 경로가 연결되면 같은 reducer가 해당 자료를 받아 실제 winner만 반영한다.
-W4/다른 W3 provider/운영 비용·GC gate까지 완료됐다는 뜻이 아니다.
+최초 #148은 KMA 승인 관측 reducer/REST를 구현했고 #152가 bounded 재투영/publisher,
+#163이 실제 다중 제공처 관측 선택·최신 generation coverage·새 SDK station 누락과
+이전 완전 roster fallback을 보강했다. [현재 원천 eligibility](2026-10-23-daily-source-eligibility.md)를
+함께 따른다. 예보 전용 KHOA는 관측으로 편입하지 않는다. 필수 관측 미준비/미계산은
+이전 전체 roster stale, 이전 집합이 없으면503이며 한 제공처의 승인이 다른 제공처의
+누락을 가리지 않는다. source 구현 완료와 운영 비용·GC·초기 투영/Map 수용은 별개다.
 
 ## 검증 범위
 
