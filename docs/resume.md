@@ -2,8 +2,8 @@
 
 ## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
 
-- 현재 상태: npm 보안 갱신·여섯 프로젝트 버전 정합 후보. [버전과 예외](npm-security-alignment-2026-10-24.md).
-- 다음 한 작업: WSL/CI·두 독립 리뷰·N150 후보 UI 검증을 완료하고 PR을 머지한다. 운영 배포는 별도다.
+- 현재 상태: npm 보안·공통 버전 소스 정합 및 WSL 검증 완료. [버전과 예외](npm-security-alignment-2026-10-24.md). 최종 CI·UI·머지 상태의 정본은 [PR](https://github.com/digitie/kor-travel-weather/pull/166)이다.
+- 다음 한 작업: 운영 반영을 요청받으면 Manager 정본과 현재 배포 런북에 따라 릴리스를 적용한다. 소스 머지와 운영 배포는 구분한다.
 
 ## 2026-10-24 — 현재 상태: Next.js 보안 갱신 후보
 
