@@ -1,3 +1,19 @@
+## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
+
+- 이 저장소의 기존 프론트엔드/공용 테스트 243개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](npm-security-alignment-2026-10-24.md).
+- 직접/전이 npm 의존성과 잠금 파일을 갱신하고 여섯 프로젝트의 공통 버전을 맞췄다.
+- 호환성 예외·미수정 상류 권고·검증 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+- 소스·잠금 파일 정합과 WSL 검증을 완료했다. 최종 CI·두 독립 확인·N150 후보 UI 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-weather/pull/166)에서 정산하며 통과 확인 전 머지하지 않는다.
+
+## 2026-10-24 — Next.js 16.4.3 보안 의존성 갱신
+
+- Next.js 15에서 `16.4.3`으로 정확히 고정하고 잠금 파일을 재생성했다. 사용하는 `eslint-config-next`도 `16.4.3`으로 맞췄다.
+- ESLint 16 flat config로 전환했다. React Compiler 전용 규칙 4개는 기존 동작을 보존하도록 별도 도입까지 끄고, 기존 Hooks 규칙은 유지한다. lint는 기존 전체 문서 로그아웃 이동에 대한 경고 1건과 종료 코드 0이다.
+- WSL Linux Node 22.22.2에서 프론트엔드 기존 테스트 243건과 lint·type-check·build PASS. 빌드가 생성한 타입 선언과 필요한 JSX 설정을 반영했다.
+- 같은 시점 `npm audit` 전체 보고: 총 9→6건, critical 3→2건. `next` 항목은 제거됐지만 다른 패키지 취약점은 남아 있다. 강제 자동 수정이나 요청 외 major 의존성 갱신은 하지 않았다.
+- James(프론트/UI)·Popper(빌드/운영) 독립 사전 리뷰에서 이 저장소의 추가 P0/P1은 없었다. 실제 서비스 UI와 CI 이후 머지 게이트를 대체하지 않는다.
+- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
+
 ## 2026-10-24 — Map 서비스 API 문서 독립 정합성 감사
 
 - producer W1~W5와 #164 source vector8,192/catalog·cohort5,000/inventory20,000을 구분하고 인계의 Weather meta cursor·페이지4MiB·W4 단일 응답을 현재 구현에 맞췄다. 현재 tasks/resume/초기 설계 상태와 W5 재투영4세대 batch·최대256세대/원본 단기예보6시간 범위도 정렬했다. API/DTO/OpenAPI 생성물·운영은 변경하지 않는다.

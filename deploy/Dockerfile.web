@@ -1,9 +1,9 @@
-FROM node:22-alpine AS dependencies
+FROM node:22.23.1-alpine AS dependencies
 WORKDIR /app
 COPY packages/kor-travel-weather-admin/frontend/package.json \
      packages/kor-travel-weather-admin/frontend/package-lock.json ./
 COPY packages/kor-travel-weather-admin/frontend/vendor ./vendor
-RUN npm ci --ignore-scripts --no-audit --no-fund
+RUN npx --yes npm@12.0.1 ci --ignore-scripts --no-audit --no-fund
 
 FROM dependencies AS builder
 COPY packages/kor-travel-weather-admin/frontend ./
@@ -17,7 +17,7 @@ ARG NEXT_PUBLIC_DAGSTER_URL=https://weather-dagster.digitie.mywire.org
 ENV NEXT_PUBLIC_DAGSTER_URL=$NEXT_PUBLIC_DAGSTER_URL
 RUN npm run build
 
-FROM node:22-alpine AS runner
+FROM node:22.23.1-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1
