@@ -19,5 +19,10 @@ WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 
 375/1440px Chromium2개(12.2초)가 통과했다. 배경은 실제 MapLibre이며 API 응답은 결정적 fixture로 UI를 검증했다.
 원본의 사용자 untracked DB4개는 보존했다. 전체 CI와 정확 후보 독립 재확인은 별도 gate다.
 
+첫 최종 Python CI는1280개 통과·2개 실패였다. 실패는 고정2026-10-23 중기 발표에 현재 조회 시각을 붙여
+18시간 유효기간을 넘긴 기존 native head fixture였다. 실제 lifecycle 시각에 맞는 최근06/18시 fixture를 사용하도록
+테스트만 갱신했다. 운영의18시간 제한은 유지하며 격리 PostgreSQL에서 관련89개와 Ruff를 통과했다.
+최신 전체 Python CI를 다시 확인한다. 프론트엔드 실행 소스는 e5a6d1b와 같다.
+
 사용자 지시로 운영 빌드·배포는 다른 통합 에이전트가 담당하며 이 후보는 배포하지 않았다.
 Weather 종류 필터는 API/UI를 함께 반영해야 한다. UI만 먼저 배포하면 서버 필터가 적용되지 않는다.

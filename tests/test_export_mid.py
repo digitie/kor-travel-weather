@@ -38,12 +38,12 @@ def _rehash(record):
     record["source_record_key"] = "sr_" + hashlib.sha256(text.encode()).hexdigest()[:48]
 
 
-def _source(part):
+def _source(part, *, tm_fc="202610231800"):
     raw = _raw(part)
 
     async def load():
         def handle(incoming):
-            assert incoming.url.params["tmFc"] == "202610231800"
+            assert incoming.url.params["tmFc"] == tm_fc
             assert incoming.url.params["regId"] == raw["regId"]
             return httpx.Response(
                 200,
@@ -63,7 +63,7 @@ def _source(part):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as session:
             client = DataGoKrClient("offline-test", session=session, retries=0)
             method = client.mid_land_forecast if part == "land" else client.mid_temperature_forecast
-            return await method(reg_id=raw["regId"], tm_fc="202610231800")
+            return await method(reg_id=raw["regId"], tm_fc=tm_fc)
 
     rows = asyncio.run(load())
     descriptor = MidScopeDescriptor(
