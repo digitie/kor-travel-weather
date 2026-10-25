@@ -41,7 +41,7 @@ rsync -a --exclude=node_modules --exclude=.next --exclude=test-results --exclude
 | 기존 `e2e/shared-map-ui.spec.ts` | Chromium·Firefox × 375/1440px, 4개 PASS |
 | 신규 `e2e/compact-map-ui.spec.ts` | Chromium·Firefox × 375×812/1440×900, 4개 PASS |
 
-총 UI 8개 PASS(최종 실행 41.4초). 임시 Playwright 설정은 기존 두 파일을 `workers:1`로 실행하고 Chromium/Firefox
+초기 runtime 후보 `cef6f46`의 UI 8개 PASS(실행 41.4초). 임시 Playwright 설정은 기존 두 파일을 `workers:1`로 실행하고 Chromium/Firefox
 프로젝트를 지정했다. Chromium은 SwiftShader, Firefox는 `webgl.force-enabled`·소프트웨어 렌더링을 사용했다.
 375px 신규 시나리오는 `hasTouch:true`로 실제 `pointer:coarse`와 44px hit area를 확인했다.
 
@@ -49,7 +49,9 @@ rsync -a --exclude=node_modules --exclude=.next --exclude=test-results --exclude
 
 1. 제목·상세의 `i`를 키보드로 열고 닫는다. 팝업 Escape는 상세를 유지하고 `i`로 초점이 돌아온다.
    상세 Escape는 검색 입력으로 초점을 돌린다.
-2. 위치 ID·좌표·긴 원본 키는 팝업에서만 보이고 32개 원본의 목록은 팝업 내부에서 스크롤한다.
+2. 위치 ID·좌표·긴 원본 키는 팝업에서만 보이고 32개 측정값의 원본 키 목록은 팝업 내부에서 스크롤한다.
+   여러 metric이 같은 원본 키를 공유하므로 `측정값별 원본 키`로 안내하고 원본 응답 개수로 부르지 않는다.
+   3개 metric의 동일 원본 키·미제공 키·최근 측정값 개수32를 함께 검증한다.
    팝업이 화면 좌우를 넘지 않고 스크롤 중 배경 페이지 위치가 변하지 않는다.
 3. 라이트·다크에서 공용 surface/text/brand/focus/warning/destructive 색상이 Weather 토큰과 같고,
    팝업 표면도 해당 프로젝트 표면을 따른다.
@@ -60,6 +62,13 @@ rsync -a --exclude=node_modules --exclude=.next --exclude=test-results --exclude
 `C:/Users/digit/.codex/visualizations/2026/10/25/weather-ui-compact/`에 보관했다.
 예: `weather-compact-chromium-375-light.png`, `weather-compact-chromium-375-light-info.png`,
 `weather-compact-firefox-1440-dark.png`, `compact-ui.json`.
+
+Popper의 P2 후속 수정은 metric 수를 원본 응답 개수로 부르던 표현을 `측정값별 원본 키`로 바꾼 것이다.
+KMA처럼 여러 metric이 같은 `source_record_key`를 공유하는 목록과 키 미제공을 검증했고,
+이 수정에서 WSL `npm run type-check`와 같은 브라우저 UI8개를 다시 통과했다(36.4초).
+새 증적은 위 산출물 폴더의 `source-key-p2/`에 보관한다. 표의 Vitest253·lint는 초기 후보 검증이며
+이 문구 수정에서 반복 실행하지 않았다. 독립 James의 PASS는 초기 `cef6f46` 대상이고,
+수정 뒤 새 SHA의 독립 재검토·CI는 PR #169에서 별도로 확인한다.
 
 ## 남은 수용과 경계
 

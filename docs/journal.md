@@ -1,5 +1,11 @@
 ## 2026-10-25 — 작은 UI 첫 묶음: Weather 톤·보조 안내·헤더 밀도
 
+- 독립 James는 runtime 후보 `cef6f46355babda2e25210a63344e8e64dfc93fc`를 PASS로 검토했다.
+  Popper는 metric 수를 원본 응답 수처럼 부른 `원본 레코드 N개`의 의미 불일치를 P2로 지적했다.
+  여러 metric의 같은 `source_record_key` 공유를 보존하며 개수 없는 `측정값별 원본 키`로 바로잡았다.
+  공유 키·미제공 키·최근 측정값 실제 개수와 내부 스크롤을 fixture로 검증했다. WSL 타입·같은 브라우저 UI8개 재검증 PASS(36.4초)다.
+  수정 후 새 SHA의 재검토는 아직 미완이며
+  후속 CI·독립 재검토·최종 머지의 정본은 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)다.
 - 공용 `--kt-*` 색상·폰트·초점·그림자를 Weather navy/dark 토큰에 연결했다. Common 패키지는 dev.7 유지다.
 - 지도 제목/상세의 긴 안내·위치 ID·좌표·출처·원본 키를 제목 옆 `i`로 옮겼다. 특보·수집 시각·오래됨·오류는 바로 보인다.
   수집 시각을 조회 완료 시각으로 대체하지 않는다. `/weather`의 헤더 카드/이중 여백만 compact로 줄였고 coarse 버튼44px를 보장했다.

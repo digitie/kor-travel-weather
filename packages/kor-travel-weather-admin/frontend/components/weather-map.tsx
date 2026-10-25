@@ -547,7 +547,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                       <ul>{Array.from(new Map(values.map((value) => [`${value.provider}/${value.dataset_key}`, value])).values()).map((value) => (
                         <li key={`${value.provider}/${value.dataset_key}`}>{providerLabels.get(value.provider) ?? value.provider} · {datasetLabels.get(value.dataset_key) ?? value.dataset_key}</li>
                       ))}</ul>
-                      <details><summary>원본 레코드 {values.length}개</summary><dl className="info-metadata">{values.map((value) => <div key={value.value_id}><dt>{value.metric_name ?? value.metric_key}</dt><dd>{value.source_record_key || "원본 키 없음"}</dd></div>)}</dl></details>
+                      <details><summary>측정값별 원본 키</summary><dl className="info-metadata">{values.map((value) => <div key={value.value_id}><dt>{value.metric_name ?? value.metric_key}</dt><dd>{value.source_record_key || "원본 키 없음"}</dd></div>)}</dl></details>
                     </div> : null}
                   </InfoButton></div>
                   <div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div>

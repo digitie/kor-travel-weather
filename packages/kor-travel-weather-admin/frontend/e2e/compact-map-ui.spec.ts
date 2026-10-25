@@ -11,7 +11,8 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   const location = { location_id: "compact-map-fixture", name: "날씨 상세 시험 위치", latitude: 36.2, longitude: 127.8, nx: null, ny: null, region_code: null, enabled: true, metadata: {} };
   const sourceKey = "fixture-source-record-key-with-full-lineage-20261025";
   const value = { value_id: "temperature", location_id: location.location_id, provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: sourceKey };
-  const readings = [value, ...Array.from({ length: 31 }, (_, index) => ({ ...value, value_id: `extra-${index}`, metric_key: `fixture-${index}`, metric_name: `추가 시험값 ${index}`, source_record_key: `${sourceKey}-${index}` }))];
+  // 같은 원본 응답에서 파생한 여러 metric과 원본 키 미제공을 구분한다.
+  const readings = [value, ...Array.from({ length: 31 }, (_, index) => ({ ...value, value_id: `extra-${index}`, metric_key: `fixture-${index}`, metric_name: `추가 시험값 ${index}`, source_record_key: index < 2 ? sourceKey : index === 2 ? "" : `${sourceKey}-${index}` }))];
   await page.route("**/api/weather/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
     const data = pathname.endsWith("/providers") ? [{ provider: "python-kma-api", label: "기상청", datasets: [{ key: "nowcast", label: "초단기실황" }] }]
@@ -48,6 +49,7 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   await expect(detail.locator(".inspector-freshness")).toContainText("수집");
   await expect(detail.getByText("기상특보", { exact: true })).toBeVisible();
   await expect(detail.getByText("호우주의보 · 주의", { exact: true })).toBeVisible();
+  await expect(detail.locator(".inspector-section").filter({ hasText: "최근 측정값" }).getByText("32개", { exact: true })).toBeVisible();
   await expect(detail.locator(".inspector-heading")).not.toContainText(location.location_id);
   await expect(page.getByText(sourceKey, { exact: true })).toHaveCount(0);
 
@@ -61,8 +63,16 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
     await expect(popup).toContainText(location.location_id);
     await expect(popup).toContainText("36.2000, 127.8000");
     await expect(popup).toContainText("기상청 · 초단기실황");
-    await popup.getByText("원본 레코드 32개", { exact: true }).click();
-    await expect(popup.getByText(sourceKey, { exact: true })).toBeVisible();
+    await popup.getByText("측정값별 원본 키", { exact: true }).click();
+    const lineageRows = popup.locator("details .info-metadata > div");
+    await expect(lineageRows).toHaveCount(32);
+    for (const [index, metric] of ["기온", "추가 시험값 0", "추가 시험값 1"].entries()) {
+      await expect(lineageRows.nth(index).locator("dt")).toHaveText(metric);
+      await expect(lineageRows.nth(index).locator("dd")).toHaveText(sourceKey);
+    }
+    await expect(lineageRows.nth(3).locator("dd")).toHaveText("원본 키 없음");
+    await expect(popup.getByText(sourceKey, { exact: true })).toHaveCount(3);
+    await expect(popup.getByText(sourceKey, { exact: true }).first()).toBeVisible();
     const popupBox = await popup.boundingBox();
     expect(popupBox!.x).toBeGreaterThanOrEqual(0);
     expect(popupBox!.x + popupBox!.width).toBeLessThanOrEqual(width);
