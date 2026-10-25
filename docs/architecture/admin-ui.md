@@ -25,8 +25,10 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
 - 모든 비동기 panel은 loading, empty, error 상태를 같은 위치에 표시한다. latest
   projection과 forecast history는 서로 다른 섹션으로 구분한다.
 - 2026-10-25 [사전 조사](../research/2026-10-25-weather-ux.md)와
-  [공용 지도·정보 우선순위 설계](../design/2026-10-25-weather-map-improvements.md)는 후속 미구현 계획이다.
+  [공용 지도·정보 우선순위 설계](../design/2026-10-25-weather-map-improvements.md)는 단계별 후속 계획이다.
   기존 메뉴/조회 흐름을 유지하고 Map 외곽·가용 높이·Weather 토큰 연결·시간별 정보와 필요한 API를 보완한다.
+  첫 [작은 UI 묶음](../reports/2026-10-25-weather-ui-compact.md)은 Weather navy/dark 토큰 연결과 제목·상세 메타의
+  `i`, `/weather` 전용 compact 헤더만 반영했다. 특보·오류·오래됨·수집 시각은 접지 않으며 공용 높이 전체 수용은 미완이다.
 - 로그인·로그아웃을 포함한 상태 변경 요청은 Docker Manager와 동일하게
   등록된 same-origin Origin 검증과 HttpOnly signed session을 거친다. 로그인 응답은
   검증된 `username`과 안전한 local `next`를 반환하고 세션 cookie는 `SameSite=Strict`다.

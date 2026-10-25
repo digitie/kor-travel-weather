@@ -1,3 +1,12 @@
+## 2026-10-25 — 첫 작은 UI 묶음
+
+- 현재 상태: Weather navy/dark 공용 토큰 연결, 지도 제목·상세 메타 `i`, `/weather` 전용 compact 헤더를 구현했다.
+  수집 시각 없음·오래됨·특보·오류는 바로 보인다. coarse 포인터의 `i`는 44px이다.
+- 로컬 검증: WSL 타입/lint(기존 경고1)·Vitest253개·Chromium/Firefox PC/모바일 UI8개 PASS.
+  [범위·증거·미완](reports/2026-10-25-weather-ui-compact.md). 최종 CI·독립 리뷰·머지 상태는 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)가 정본이다.
+- 다음 한 작업: C-MAP-01 공용 외곽·실제 가용 높이를 Map 회귀와 함께 구현하고 양 소비자가 채택한다.
+  현재 모바일 지도 시작 약427~441px는 목표240px 이내를 충족하지 않는다. 실제 운영 타일·기상 자료·배포는 이 fixture 검증과 별도다.
+
 ## 2026-10-25 — 앱·웹 조사와 지도 후속 설계 문서
 
 - 현재 상태: [웹·Android/iOS 조사](research/2026-10-25-weather-ux.md)와
