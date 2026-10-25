@@ -162,7 +162,11 @@ export function VWorldMapView({
       instance.addControl(control, "bottom-right");
       controls.push(control);
     }
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => instance.resize());
+    // keepMounted 탭이 숨겨진 0×0 상태에서 resize하면 중심 좌표가 틀어질 수 있다.
+    // 다시 보일 때의 양수 크기 관측과 지도 탭 effect가 실제 resize를 수행한다.
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      if (container.clientWidth > 0 && container.clientHeight > 0) instance.resize();
+    });
     resizeObserver?.observe(container);
 
     return () => {

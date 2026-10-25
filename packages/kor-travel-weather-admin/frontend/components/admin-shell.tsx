@@ -64,7 +64,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
   if (pathname === "/login") return <main className="login-content">{children}</main>;
 
   return (
-    <div className="weather-shell">
+    <div className="weather-shell" data-layout={pathname === "/weather" ? "map" : undefined}>
       <a className="skip-link" href="#main-content">본문으로 건너뛰기</a>
       <div className="app-grid" data-testid="admin-shell">
         <aside className="rail" aria-label="관리자 사이드바" data-slot="admin-shell-rail">

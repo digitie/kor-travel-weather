@@ -22,6 +22,9 @@ for (const width of [375, 1440]) test(`공통 날씨 종류·필터·오버레�
   await page.locator('input[name="password"]').fill(process.env.E2E_UI_PASSWORD!);
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   await expect(page).toHaveURL(/\/weather$/, { timeout: 30_000 });
+  await expect(page.locator('[data-slot="map-workspace"]')).toBeVisible();
+  const filterToggle = page.getByRole("button", { name: /^지도 필터/ });
+  if (await filterToggle.isVisible()) await filterToggle.click();
   const kinds = page.getByRole("group", { name: "종류 필터" });
   for (const label of ["특보", "실황", "초단기", "단기", "중기", "관측"]) await expect(kinds.getByRole("button", { name: label, exact: true })).toBeVisible({ timeout: 30_000 });
   await expect.poll(() => queries.some((query) => query.getAll("kind").length === 6)).toBe(true);
@@ -41,9 +44,8 @@ for (const width of [375, 1440]) test(`공통 날씨 종류·필터·오버레�
   await page.locator(".location-list").getByRole("button", { name: /종류 시험 위치/ }).click();
   const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
   await expect(detail).toBeVisible();
-  await expect(detail).toHaveCSS("position", "absolute");
   await expect(page.locator(".kt-map-coordinates")).toContainText("center 127.8000, 36.2000");
-  const stage = await page.locator(".kt-map-stage").boundingBox();
+  const stage = await page.locator(".kt-map-stage:visible").boundingBox();
   const overlay = await detail.boundingBox();
   expect(overlay!.x).toBeGreaterThanOrEqual(stage!.x);
   expect(overlay!.x + overlay!.width).toBeLessThanOrEqual(stage!.x + stage!.width + 1);

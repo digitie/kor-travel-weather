@@ -97,7 +97,7 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
     await popup.evaluate((element) => { element.scrollTop = element.scrollHeight; });
     expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
     await popup.evaluate((element) => { element.scrollTop = 0; });
-    await testInfo.attach(`지도와 상세 치수 ${width}px ${theme}`, { body: JSON.stringify({ stage: await page.locator(".kt-map-stage").boundingBox(), detail: await detail.boundingBox(), popup: popupBox, tone }), contentType: "application/json" });
+    await testInfo.attach(`지도와 상세 치수 ${width}px ${theme}`, { body: JSON.stringify({ stage: await page.locator(".kt-map-stage:visible").boundingBox(), detail: await detail.boundingBox(), popup: popupBox, tone }), contentType: "application/json" });
     await page.screenshot({ path: `test-results/weather-compact-${testInfo.project.name}-${width}-${theme}-info.png`, fullPage: true });
     await page.keyboard.press("Escape");
     await expect(popup).toHaveCount(0);
@@ -116,7 +116,8 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   await detail.focus();
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
-  await expect(page.getByRole("searchbox", { name: "위치 검색" })).toBeFocused();
+  if (width === 375) await expect(page.getByRole("button", { name: /^지도 필터/ })).toBeFocused();
+  else await expect(page.getByRole("searchbox", { name: "위치 검색" })).toBeFocused();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
 });

@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@kor-travel/tokens": "file:vendor/kor-travel-tokens-0.1.0.tgz",
-    "@kor-travel/ui": "file:vendor/kor-travel-ui-0.1.0-dev.7.tgz",
+    "@kor-travel/ui": "file:vendor/kor-travel-ui-0.1.0-dev.8.tgz",
     "@base-ui/react": "1.9.0",
     "@radix-ui/react-dropdown-menu": "2.2.1",
     "@tanstack/react-query": "5.104.5",

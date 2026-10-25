@@ -1,10 +1,23 @@
+## 2026-10-25 — 공용 지도 작업면 높이·필터/상세 슬롯·확장 첫 후보
+
+- `/weather` shell만 유한한 남은 높이를 공용 작업면으로 전달한다. 모바일 메뉴 한 줄, 기본 필터 접기,
+  공용 summary/detail header/body와 목록 단일 스크롤을 연결하고 `70dvh`/최소 `28rem` 중복 높이를 제거했다.
+- 글자200%의 실제 지도 부족·상세 body0, Chromium resize 입력 초점, 숨은 출처 trigger와 남은 portal 메뉴를 재현했다.
+  공용 명시 확장·header/body 예약·초점 보강과 앱 소유 출처 메뉴 닫기 책임을 분리해 해결했다.
+- Common `20953b`/정규 pack `65480d…`에서 타입/lint(기존 경고1)·Vitest253개·핵심 UI10개 PASS다.
+  200% 확장 stage285px·상세 body122px에서 기온/특보/최신을 스크롤로 읽고 닫기44·중첩 Escape·원복 초점을 확인했다.
+  출처 메뉴 기준점이 숨겨지면 닫고, 일반 outside 검색 클릭의 초점은 유지한다.
+- 여섯 날씨 종류·제공처/LIMIT 요청·캐시 세대·abort·시각/원본값·인증은 보존한다. 백엔드·SDK·DB·운영 변경은 없다.
+  [범위·후보별 치수·검증 경계](reports/2026-10-25-weather-map-workspace.md). 전체 UI·package build·Docker·CI·리뷰·머지는 아직 정산 전이다.
+
 ## 2026-10-25 — 작은 UI 첫 묶음: Weather 톤·보조 안내·헤더 밀도
 
 - 독립 James는 runtime 후보 `cef6f46355babda2e25210a63344e8e64dfc93fc`를 PASS로 검토했다.
   Popper는 metric 수를 원본 응답 수처럼 부른 `원본 레코드 N개`의 의미 불일치를 P2로 지적했다.
   여러 metric의 같은 `source_record_key` 공유를 보존하며 개수 없는 `측정값별 원본 키`로 바로잡았다.
   공유 키·미제공 키·최근 측정값 실제 개수와 내부 스크롤을 fixture로 검증했다. WSL 타입·같은 브라우저 UI8개 재검증 PASS(36.4초)다.
-  수정 후 새 SHA의 재검토는 아직 미완이며
+  수정 후 최종 source `415bba5edc53550baf2bc5f937a91a3dacd56c5e`는 두 독립 리뷰와 CI를 통과해
+  main `931502e8c2724c4a471326685d6df10d972438d3`로 머지됐다.
   후속 CI·독립 재검토·최종 머지의 정본은 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)다.
 - 공용 `--kt-*` 색상·폰트·초점·그림자를 Weather navy/dark 토큰에 연결했다. Common 패키지는 dev.7 유지다.
 - 지도 제목/상세의 긴 안내·위치 ID·좌표·출처·원본 키를 제목 옆 `i`로 옮겼다. 특보·수집 시각·오래됨·오류는 바로 보인다.
