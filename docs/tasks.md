@@ -1,5 +1,15 @@
 # Weather 남은 작업
 
+## 2026-10-25 — 조사 기반 지도·날씨 정보 후속
+
+[웹·Android/iOS 조사](research/2026-10-25-weather-ux.md)와 [설계·수용 기준](design/2026-10-25-weather-map-improvements.md)을 따른다.
+기존 admin 메뉴·조회 구조를 유지하며 필요한 API만 보완한다. 아래 기능은 이번 문서 PR에서 구현 완료로 세지 않는다.
+
+- [ ] **C-MAP-01 / P0** — Common 담당 공유 작업: Map 기준 외곽·가용 높이·상세 슬롯/테마 계약·Map 회귀·패키지 인계. Transport와 같은 작업이며 별도 구현하지 않는다.
+- [ ] **W-UX-01 / P0** — 공용 외곽·전체 가용 높이·Weather 톤 적용, 실제 버전/치수·PC/모바일·Firefox 포함 수용.
+- [ ] **W-UX-02 / P1** — 특보·선택 시각·이후 시간별 흐름 우선 상세, 관심 요소·출처 i·관측/미래 분리 유지.
+- [ ] **W-UX-03 / P1** — 기존 forecast/marker 계약, DB 밖 목적지 좌표→적합 저장 anchor/부재·대표성·필터 보강, 주소/실행/교통 연결·API 동일 시나리오 수용.
+
 아래 기존 인덱스는 2026-10-17 main39aafe0 기준 이력이다. 현재 PR #118의 부분 수용과 남은 게이트는 아래 최신 절을 따른다. 문서 PR 생성 전 감사 조회에서 OPEN PR0이었다. [전체 감사·증거·선행 관계](audits/2026-10-17-remaining-work.md)를 함께 읽는다. 과거 이전 백로그는 [deploy/n150.md](../deploy/n150.md)에 보존한다. vendored python-airkorea-api의 tasks/resume/journal은 별도 provider 문서다.
 
 코드·PR merge·실배포·운영 수용은 다른 상태다. 증거 미확인을 미배포 확정으로 쓰지 않는다. 현재 daemon 정책은 최신 사용자 지시에 따라 Geo·Weather·Transport RUNNING이다. 과거 OFF 기록은 당시 이력이며 현재 실행 지시가 아니다.
