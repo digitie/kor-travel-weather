@@ -3,8 +3,11 @@
 - 현재 상태: [웹·Android/iOS 조사](research/2026-10-25-weather-ux.md)와
   [후속 설계](design/2026-10-25-weather-map-improvements.md)를 작성했다. 기존 admin 흐름을 유지하고 필요한 API만 보완한다.
   source에 이미 있는 overlay·종류·현재/미래 분리는 보존하며 부모/높이·공용 토큰·정보 우선순위를 개선 대상으로 삼았다.
-- 다음 한 작업: 문서 두 차례 정합 점검 뒤 독립 적대 리뷰어 1명 검토·수정, 문서 Draft PR을 CI 결과 없이 머지한다.
-  [검토 기록](reports/2026-10-25-weather-design-review.md). 기능 코드·DB·운영·빌드·배포는 이번 범위에서 변경하지 않는다.
+- 문서 검토 상태: 두 차례 정합 점검과 독립 Popper 1명의 P2 수정 재검토 PASS를 마쳤다.
+  [검토 기록](reports/2026-10-25-weather-design-review.md). 최종 머지 상태는
+  [Weather #168](https://github.com/digitie/kor-travel-weather/pull/168)·[Transport #130](https://github.com/digitie/kor-travel-transport/pull/130)이 정본이다.
+- 다음 구현의 선행 작업: C-MAP-01과 함께 실제 배포 버전·부모/높이·프로젝트 토큰을 대조한다.
+  기능 코드·DB·운영·빌드·배포는 이번 문서 작업에서 변경하지 않았다.
 - 구현은 C-MAP-01/W-UX-01~03 미완 작업으로 추적한다. 아래 과거 fixture/UI 통과 기록은 현재 운영 지도 치수·데이터 정상의 보증이 아니다.
 
 ## 2026-10-24 — 공용 지도 작업면 채택 후보

@@ -27,9 +27,15 @@ Transport와 C-MAP-01·W-UX 작업 ID·선행 관계·가용 높이/치수·테�
 Popper 1명이 양쪽 문서를 읽기 전용 검토했고 P0/P1 없이 Weather P2 1건을 지적했다.
 즐겨찾기/DB 등록의 의미와 미등록 목적지 이름→좌표→저장 anchor 연결·provider/kind·부재 수용이 모호한 문제다.
 현재 nearby/resolve의 필터 부재와 역지오코딩 경계를 확인하고 조사·설계·W-UX-03 및 수용 시나리오를 보완했다.
-기존 Geo 계약 검증/지도 지점 대안·대표성/미제공·자동등록/추가 수집 없음도 명시했다. 동일 리뷰어의 재확인을 진행한다.
+기존 Geo 계약 검증/지도 지점 대안·대표성/미제공·자동등록/추가 수집 없음도 명시했다.
+동일 리뷰어가 Weather `abc05abe271188559c1255970691a5cc83c9c2ce`/Transport `10f37d8073a8b038498f3b7ef0e0f00a0fe5c29b`를
+재검토해 **PASS, 기존 P2 해소·잔여 P0/P1/P2 없음**을 확인했다. 이후 수정은 결과·원장·인수인계 정산뿐이다.
 
 문서 Draft PR: [Weather #168](https://github.com/digitie/kor-travel-weather/pull/168),
 [공동 Transport #130](https://github.com/digitie/kor-travel-transport/pull/130).
+최종 머지 상태·SHA는 두 PR의 GitHub 메타데이터가 정본이다. 사용자 지시대로 이번 문서 PR은 CI 결과를 기다리지 않는다.
+
+신규 문서의 상대 링크 6개·교차 저장소 링크 3개 대상 존재와 양쪽 문서 전용 범위를 확인했다.
+최종 정산은 양쪽 각각 Markdown 8개이며 `git diff --check`를 통과했다. 외부 참조 전체의 실시간 가용성 검사는 아니다.
 
 애플리케이션 테스트·빌드·Docker·운영 배포는 실행하지 않는다. 문서의 수용 시나리오는 후속 구현 목표다.
