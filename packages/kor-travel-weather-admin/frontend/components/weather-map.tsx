@@ -24,6 +24,7 @@ import {
 import type { WeatherCondition } from "@/lib/weather-clusters";
 
 import { SourceMultiSelect, type SourceOption } from "@/components/source-multi-select";
+import { InfoButton } from "@/components/info-button";
 
 type WeatherMapProps = {
   locations: Location[];
@@ -341,7 +342,6 @@ export function WeatherMap({ locations }: WeatherMapProps) {
       .filter((timestamp) => Number.isFinite(timestamp));
     return timestamps.length ? new Date(Math.max(...timestamps)) : null;
   }, [values]);
-  const freshnessTimestamp = latestCollectedAt ?? lastRefreshedAt;
   const isFresh = latestCollectedAt !== null && Date.now() - latestCollectedAt.getTime() <= 2 * 60 * 60 * 1000;
 
   function closeDetail() {
@@ -534,7 +534,30 @@ export function WeatherMap({ locations }: WeatherMapProps) {
         {selected && detailOpen ? <MapDetailOverlay ref={detailRef} className="weather-inspector" aria-label="선택한 위치 상세" onDismiss={closeDetail}>
           {selected ? (
             <>
-              <div className="inspector-heading"><div><span className="eyebrow">선택한 위치</span><h2>{selected.name}</h2><p>{selected.location_id} · {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</p><div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{freshnessTimestamp ? freshnessTimestamp.toLocaleString("ko-KR") : "수집 시각 없음"}</small>{lastRefreshedAt ? <small>확인 {lastRefreshedAt.toLocaleTimeString("ko-KR")}</small> : null}<small>{values[0] ? (providerLabels.get(values[0].provider) ?? values[0].provider) : "제공처 없음"} · {values[0] ? (datasetLabels.get(values[0].dataset_key) ?? values[0].dataset_key) : "데이터셋 없음"}</small>{values[0]?.source_record_key ? <small>원본 {values[0].source_record_key.slice(0, 12)}…</small> : null}</div></div><div className="inspector-actions"><button type="button" className="icon-button" aria-label="상세 닫기" onClick={closeDetail}><X size={17} /></button><button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button><button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button></div></div>
+              <div className="inspector-heading">
+                <div>
+                  <div className="inspector-title"><h2>{selected.name}</h2><InfoButton label="위치·데이터 출처">
+                    <dl className="info-metadata">
+                      <div><dt>위치 ID</dt><dd>{selected.location_id}</dd></div>
+                      <div><dt>좌표</dt><dd>{selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}</dd></div>
+                      {lastRefreshedAt ? <div><dt>조회 시각</dt><dd>{lastRefreshedAt.toLocaleString("ko-KR")}</dd></div> : null}
+                    </dl>
+                    {values.length ? <div className="info-source-list">
+                      <strong>최근 측정값 출처</strong>
+                      <ul>{Array.from(new Map(values.map((value) => [`${value.provider}/${value.dataset_key}`, value])).values()).map((value) => (
+                        <li key={`${value.provider}/${value.dataset_key}`}>{providerLabels.get(value.provider) ?? value.provider} · {datasetLabels.get(value.dataset_key) ?? value.dataset_key}</li>
+                      ))}</ul>
+                      <details><summary>원본 레코드 {values.length}개</summary><dl className="info-metadata">{values.map((value) => <div key={value.value_id}><dt>{value.metric_name ?? value.metric_key}</dt><dd>{value.source_record_key || "원본 키 없음"}</dd></div>)}</dl></details>
+                    </div> : null}
+                  </InfoButton></div>
+                  <div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div>
+                </div>
+                <div className="inspector-actions">
+                  <button type="button" className="icon-button" aria-label="상세 닫기" onClick={closeDetail}><X size={17} /></button>
+                  <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button>
+                  <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button>
+                </div>
+              </div>
               {loading ? <div className="loading-block" role="status" aria-live="polite">날씨 조회 중…</div> : null}
                 {message ? <div className="empty" role="status">{message}</div> : null}
                 {selectedSummary?.measurement_point ? (

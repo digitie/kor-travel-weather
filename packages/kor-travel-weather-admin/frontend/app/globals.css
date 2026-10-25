@@ -1167,11 +1167,18 @@ tbody tr:hover {
 }
 
 .inspector-heading h2 {
-  margin-top: 0.25rem;
-  font-size: 1.25rem;
+  margin: 0;
+  font-size: 1.0625rem;
   font-weight: 700;
   letter-spacing: -0.025em;
   overflow-wrap: anywhere;
+}
+
+.inspector-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 .inspector-heading p {
@@ -1188,7 +1195,7 @@ tbody tr:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
-  margin-top: 0.75rem;
+  margin-top: 0.375rem;
 }
 
 .inspector-freshness small {
@@ -2506,3 +2513,54 @@ tbody tr:hover {
 .weather-workbench .list-panel { height: 70dvh; min-height: 28rem; overflow-y: auto; }
 .weather-workbench .kt-map-detail { overflow: auto; }
 .weather-workbench .inspector-actions { flex-wrap: wrap; }
+
+/* Transport의 제목 옆 안내 패턴을 Weather 토큰으로 재사용한다. */
+.info-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: transparent;
+  border-radius: 50%;
+  color: var(--text-secondary);
+  background: transparent;
+}
+.info-button:hover { color: var(--text-primary); background: var(--surface-subtle); }
+.info-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.info-positioner { z-index: var(--kt-z-overlay); }
+.info-popup {
+  width: min(22rem, calc(100vw - 24px));
+  max-height: min(24rem, var(--available-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-elevated);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.info-popup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+  font-weight: 600;
+}
+.info-popup-heading h2 { margin: 0; font-size: inherit; }
+.info-metadata { display: grid; gap: 0.5rem; margin: 0; }
+.info-metadata dt { color: var(--text-secondary); }
+.info-metadata dd { margin: 0; }
+.info-source-list { margin-top: 0.75rem; }
+.info-source-list ul { margin: 0.375rem 0; padding-left: 1rem; }
+.info-source-list summary { cursor: pointer; }
+.info-source-list details .info-metadata { margin-top: 0.5rem; }

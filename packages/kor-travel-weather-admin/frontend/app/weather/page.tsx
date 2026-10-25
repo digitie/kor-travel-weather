@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
+import { InfoButton } from "@/components/info-button";
 import { WeatherMap } from "@/components/weather-map";
 import { getAllPublicLocations, Location } from "@/lib/api";
 
@@ -29,8 +30,7 @@ export default function WeatherPage() {
   return (
     <>
       <PageHeader
-        actions={<span className="status on">활성 위치 {locations.length || "—"}곳</span>}
-        description="지도에서 위치를 선택하면 최신 관측값과 예보를 확인할 수 있습니다."
+        actions={<><InfoButton label="날씨 지도">위치를 선택하면 최신 관측값과 예보를 확인할 수 있습니다. 종류와 데이터 출처로 표시할 자료를 좁힐 수 있습니다.</InfoButton><span className="status on">활성 위치 {locations.length || "—"}곳</span></>}
         section="날씨 탐색"
         title="날씨 지도"
       />
