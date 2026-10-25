@@ -1,8 +1,10 @@
 # Weather 작은 UI 묶음 구현·로컬 검증
 
 작성일 2026-10-25(KST). [설계](../design/2026-10-25-weather-map-improvements.md)의
-W-UX-01·02 중 색상·안내·헤더 밀도만 부분 구현했다. 최종 CI·독립 리뷰·머지 상태는
-[Weather PR #169](https://github.com/digitie/kor-travel-weather/pull/169)의 Checks와 리뷰 기록이 정본이다.
+W-UX-01·02 중 색상·안내·헤더 밀도만 부분 구현했다. [Weather PR #169](https://github.com/digitie/kor-travel-weather/pull/169)는
+최종 source `415bba5edc53550baf2bc5f937a91a3dacd56c5e`의 CI·독립 두 리뷰를 거쳐 main
+`931502e8c2724c4a471326685d6df10d972438d3`로 머지됐다. Checks와 리뷰 기록이 정본이다.
+지도 높이·필터 접기·공용 상세 슬롯의 후속은 [다음 작업면 묶음](2026-10-25-weather-map-workspace.md)에서 추적한다.
 
 ## 변경 범위
 
@@ -68,9 +70,11 @@ KMA처럼 여러 metric이 같은 `source_record_key`를 공유하는 목록과 
 이 수정에서 WSL `npm run type-check`와 같은 브라우저 UI8개를 다시 통과했다(36.4초).
 새 증적은 위 산출물 폴더의 `source-key-p2/`에 보관한다. 표의 Vitest253·lint는 초기 후보 검증이며
 이 문구 수정에서 반복 실행하지 않았다. 독립 James의 PASS는 초기 `cef6f46` 대상이고,
-수정 뒤 새 SHA의 독립 재검토·CI는 PR #169에서 별도로 확인한다.
+수정 뒤 최종 source의 독립 재검토·CI와 머지는 PR #169에서 확인한다.
 
 ## 남은 수용과 경계
+
+아래는 PR #169 정산 시점의 범위다. 후속 지도 치수와 추가 브라우저 검증은 위 작업면 기록을 따른다.
 
 - 지도는 키 없는 단색 배경으로 UI만 검증했다. **운영 VWorld 타일·실제 기상 자료 성공의 증거가 아니다.**
 - compact 헤더로 여백은 줄었지만 모바일 지도 시작은 Chromium 약427px·Firefox 약441px다.

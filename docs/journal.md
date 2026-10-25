@@ -1,10 +1,48 @@
+## 2026-10-25 — 지도 타일 회복·목록 경고 가림 P2 수정과 Common 최종 pin
+
+- source `3554f7c`의 CI40176053743 전체 SUCCESS·Docker253/type·native Chromium 실제 API/타일375/1440 PASS는 이전 후보의 증거로 보존한다.
+- 독립 Popper·James가 최초 load 이후 타일503→회복 때 오류가 남는 P2를 각각 지적했다.
+  운영 키 없이 실제 MapLibre의 타일 요청에 PNG/503을 주입해 양 브라우저에서 재현했다.
+  동일 키의 성공만 해제한 중간 후보도 실패 범위를 벗어난 정상 pan 뒤 경고가 남아 양 브라우저로 다시 재현했다.
+  실제 loaded 이벤트와 공개 `Map.coveringTiles()`의 현재 표시 범위를 idle·style/tiles 완료와 함께 판정한다.
+  현재 화면에 실패 타일이 없을 때만 지도 오류를 지우며 private 필드·새 네트워크 wrapper는 사용하지 않는다.
+  MapLibre는 errored 타일도 load/idle 완료로 세므로 최초 load의 무조건 해제를 제거하고, 지속503·최초503과 날씨 요청 오류는 보존한다.
+- James의 `/providers`503 목록 경고 가림도 실제 앱 hit-test로 재현했다. 첫행 중앙이 경고에 막히던 상태를
+  정상 flow의 경고+남은 높이의 단일 목록 스크롤로 바꿨다. 첫행 클릭·상세·닫기·경고 접근을 양 브라우저로 확인했다.
+- Common 제품 `a74ac808752fd6d6062e529909fd0dd656724f08`/dev.8 pack SHA256
+  `71d9f6ce8c178e3c66a47593a70a7fd9274938587ef9d96c1c7023673370059f`를 vendor/lock/출처에 고정했다.
+  공용 boolean 빈 슬롯 보강을 포함하며 Weather는 기존 detail=null 계약을 보존한다.
+- WSL 타입/lint(기존 경고1)·19파일253개·package build·Chromium/Firefox 기존32+목록 회귀2=34개(2.6분),
+  실제 엔진의 동일 타일/정상 다른 범위 pan·zoom 회복/지속503/최초503 주입10개(1.3분)와 diff 확인 PASS다.
+  안내는 `지도 표시 오류 · 목록 보기`로 줄여 일부 오류를 전체 지도 불가로 설명하지 않는다. 운영 VWorld 서비스 수용과 구분한다.
+  PID·명령·CWD 소유를 확인한 전용24135 서버만 중지하고 증거·소스는 보존했다.
+  [재현·최종 검증](reports/2026-10-25-weather-map-workspace.md). 새 source CI·Docker·독립 재리뷰·머지는 [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)이 정본이며 아직 별도다.
+
+## 2026-10-25 — 공용 지도 작업면 높이·필터/상세 슬롯·확장 로컬 수용
+
+- `/weather` shell만 유한한 남은 높이를 공용 작업면으로 전달한다. 모바일 메뉴 한 줄, 기본 필터 접기,
+  공용 summary/detail header/body와 목록 단일 스크롤을 연결하고 `70dvh`/최소 `28rem` 중복 높이를 제거했다.
+- 글자200%의 실제 지도 부족·상세 body0, Chromium resize 입력 초점, 숨은 출처 trigger와 남은 portal 메뉴를 재현했다.
+  공용 명시 확장·header/body 예약·초점 보강과 앱 소유 출처 메뉴 닫기 책임을 분리해 해결했다.
+- Common `20953b`/정규 pack `65480d…`에서 타입/lint(기존 경고1)·Vitest253개·핵심 UI10개 PASS다.
+  200% 확장 stage285px·상세 body122px에서 기온/특보/최신을 스크롤로 읽고 닫기44·중첩 Escape·원복 초점을 확인했다.
+  출처 메뉴 기준점이 숨겨지면 닫고, 일반 outside 검색 클릭의 초점은 유지한다.
+- 후속으로 200% zoom72px와 상세27px 겹침, resize 중 이미 옮긴 외부 focus를 메뉴 닫기가 빼앗는 경계를 재현했다.
+  zoom group 아이콘의 최대/터치44px와 외부 focus 보존 guard를 적용했다. 공용 `f15511a`/pack `866aca…`를 최종 고정하고
+  WSL 타입/lint(기존 경고1)·Vitest253·package build·Chromium/Firefox UI32개(2.2분)를 통과했다.
+  375/320 시작233px, PC 아래24px, 200% 확장 body122px·zoom 비겹침과 양방향 resize focus·중첩 Escape를 확인했다.
+- 여섯 날씨 종류·제공처/LIMIT 요청·캐시 세대·abort·시각/원본값·인증은 보존한다. 백엔드·SDK·DB·운영 변경은 없다.
+  [범위·후보별 치수·검증 경계](reports/2026-10-25-weather-map-workspace.md).
+  최종 Docker·CI·독립 리뷰·머지는 [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)에서 정산한다.
+
 ## 2026-10-25 — 작은 UI 첫 묶음: Weather 톤·보조 안내·헤더 밀도
 
 - 독립 James는 runtime 후보 `cef6f46355babda2e25210a63344e8e64dfc93fc`를 PASS로 검토했다.
   Popper는 metric 수를 원본 응답 수처럼 부른 `원본 레코드 N개`의 의미 불일치를 P2로 지적했다.
   여러 metric의 같은 `source_record_key` 공유를 보존하며 개수 없는 `측정값별 원본 키`로 바로잡았다.
   공유 키·미제공 키·최근 측정값 실제 개수와 내부 스크롤을 fixture로 검증했다. WSL 타입·같은 브라우저 UI8개 재검증 PASS(36.4초)다.
-  수정 후 새 SHA의 재검토는 아직 미완이며
+  수정 후 최종 source `415bba5edc53550baf2bc5f937a91a3dacd56c5e`는 두 독립 리뷰와 CI를 통과해
+  main `931502e8c2724c4a471326685d6df10d972438d3`로 머지됐다.
   후속 CI·독립 재검토·최종 머지의 정본은 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)다.
 - 공용 `--kt-*` 색상·폰트·초점·그림자를 Weather navy/dark 토큰에 연결했다. Common 패키지는 dev.7 유지다.
 - 지도 제목/상세의 긴 안내·위치 ID·좌표·출처·원본 키를 제목 옆 `i`로 옮겼다. 특보·수집 시각·오래됨·오류는 바로 보인다.

@@ -1065,16 +1065,6 @@ tbody tr:hover {
   gap: 1rem;
 }
 
-.map-card {
-  position: relative;
-  min-width: 0;
-  min-height: 34rem;
-  overflow: hidden;
-  border: 1px solid var(--surface-muted);
-  border-radius: var(--radius-panel);
-  background: var(--card);
-}
-
 .map-panel[hidden],
 .list-panel[hidden] {
   display: none;
@@ -1082,8 +1072,8 @@ tbody tr:hover {
 
 .map-canvas {
   width: 100%;
-  height: 34rem;
-  min-height: 34rem;
+  height: 100%;
+  min-height: 0;
   background: var(--surface-subtle);
 }
 
@@ -1146,22 +1136,10 @@ tbody tr:hover {
   min-height: var(--control-h);
 }
 
-.weather-inspector {
-  min-width: 0;
-  border: 1px solid var(--surface-muted);
-  border-radius: var(--radius-panel);
-  background: var(--card);
-  overflow: hidden;
-}
-
 .inspector-heading {
-  display: flex;
+  display: block;
   min-width: 0;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 1rem;
-  border-bottom: 1px solid var(--surface-muted);
+  padding: 0;
 }
 
 .inspector-heading > div:first-child {
@@ -1205,10 +1183,14 @@ tbody tr:hover {
   font-size: 0.6875rem;
 }
 
+.weather-current-status { margin-top: 0; padding: 0.5rem 1rem; }
+
 .inspector-actions {
   display: flex;
   flex-shrink: 0;
+  justify-content: flex-end;
   gap: 0.25rem;
+  padding: 0 1rem 0.75rem;
 }
 
 .icon-button {
@@ -1354,8 +1336,7 @@ tbody tr:hover {
 }
 
 .location-list {
-  max-height: 34rem;
-  overflow: auto;
+  min-height: 0;
 }
 
 .location-list button {
@@ -2243,15 +2224,6 @@ tbody tr:hover {
     flex: 1;
   }
 
-  .map-card,
-  .map-canvas {
-    min-height: 27rem;
-  }
-
-  .map-canvas {
-    height: 27rem;
-  }
-
   .forecast-row {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2509,11 +2481,7 @@ tbody tr:hover {
   accent-color: var(--brand);
 }
 
-/* Feature 지도와 같은 공용 컨트롤·지도 위 상세 패널 */
-.weather-workbench .map-card,
-.weather-workbench .map-canvas { height: 70dvh; min-height: 28rem; }
-.weather-workbench .list-panel { height: 70dvh; min-height: 28rem; overflow-y: auto; }
-.weather-workbench .kt-map-detail { overflow: auto; }
+/* 도메인 내용만 조정하고 작업면·상세 외곽과 높이는 Common이 소유한다. */
 .weather-workbench .inspector-actions { flex-wrap: wrap; }
 
 /* Transport의 제목 옆 안내 패턴을 Weather 토큰으로 재사용한다. */
@@ -2578,4 +2546,51 @@ tbody tr:hover {
 
 @media (pointer: coarse) {
   .info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .weather-shell[data-layout="map"] { --weather-map-control-size: 44px; }
+}
+
+/* 날씨 지도에서만 shell의 남은 공간을 작업면으로 전달한다. */
+.weather-shell[data-layout="map"] { height: 100dvh; min-height: 0; }
+.weather-shell[data-layout="map"] .app-grid { height: 100%; min-height: 0; }
+.weather-shell[data-layout="map"] .main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.weather-shell[data-layout="map"] .page-header-wrap { flex: 0 0 auto; }
+.weather-shell[data-layout="map"] .weather-workbench { flex: 1 1 0; min-height: 0; margin-bottom: 1.5rem; }
+.weather-shell[data-layout="map"] .maplibregl-ctrl-group > button { width: var(--weather-map-control-size, min(var(--control-h), 44px)); min-width: var(--weather-map-control-size, min(var(--control-h), 44px)); height: var(--weather-map-control-size, min(var(--control-h), 44px)); min-height: var(--weather-map-control-size, min(var(--control-h), 44px)); }
+.weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) .app-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) :is(.rail, .page-header-wrap) { display: none; }
+.weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) .weather-workbench { margin: var(--space-3xs); }
+.weather-inspector .metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr)); }
+.weather-map-notice {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-elevated);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.weather-map-notice[role="alert"] { border-color: var(--destructive); }
+
+@media (width < 64rem) {
+  .weather-shell[data-layout="map"] .app-grid { grid-template-columns: minmax(0, 1fr); }
+  .weather-shell[data-layout="map"] .rail { height: auto; min-height: 0; position: static; border-right: 0; border-bottom: 1px solid var(--border); }
+  .weather-shell[data-layout="map"] .app-grid { grid-template-rows: auto minmax(0, 1fr); }
+  .weather-shell[data-layout="map"] .rail-shell { height: auto; flex-direction: row; align-items: center; gap: var(--space-2xs); padding: var(--space-3xs) var(--space-2xs); }
+  .weather-shell[data-layout="map"] .rail-header { height: auto; flex: 0 0 auto; }
+  .weather-shell[data-layout="map"] .brand { width: 44px; height: 44px; align-items: center; justify-content: center; }
+  .weather-shell[data-layout="map"] .brand-mark { width: 2rem; height: 2rem; border-radius: var(--radius-control); }
+  .weather-shell[data-layout="map"] .brand-wordmark,
+  .weather-shell[data-layout="map"] .brand-subtitle { display: none; }
+  .weather-shell[data-layout="map"] .rail-nav { flex: 1 1 0; flex-direction: row; overflow-x: auto; overflow-y: hidden; }
+  .weather-shell[data-layout="map"] .rail-nav [data-slot="app-menu"] { padding: 0; }
+  .weather-shell[data-layout="map"] .rail-footer { display: none; }
+  .weather-shell[data-layout="map"] .page-header-compact { padding: 0 var(--space-2xs); }
+  .weather-shell[data-layout="map"] .weather-workbench { margin: var(--space-3xs) var(--space-2xs) max(var(--space-2xs), env(safe-area-inset-bottom)); }
 }

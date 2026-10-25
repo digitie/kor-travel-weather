@@ -1,11 +1,28 @@
+## 2026-10-25 — 공용 지도 작업면 높이·접기·확장 로컬 수용
+
+- 현재 상태: `/weather` 전용 bounded shell과 Common dev.8 작업면·필터·상세 슬롯을 연결했다.
+  고정 `70dvh`/최소 높이·이중 목록 스크롤을 제거하고 모바일 지도 시작과 남은 높이를 실측했다.
+  [변경·후보 증거·미완](reports/2026-10-25-weather-map-workspace.md).
+- 독립 리뷰의 타일 회복 후 경고 잔류와 출처503 목록 첫행 가림을 실제 앱·양 브라우저로 재현·수정했다.
+  실제 성공·현재 표시 범위를 함께 확인해 지도 오류만 해제하고 목록 경고는 정상 flow에 둔다.
+- 최종 로컬 검증: Common `a74ac80`/pack `71d9f6…`에서 타입/lint(기존 경고1)·Vitest253·package build·
+  두 브라우저 전체 UI34개와 타일 주입10개 PASS다. 기존32개에 출처503 목록 회귀2개를 추가했다.
+  모바일 기본 stage 시작233px, PC 아래 여백24px, 글자200% 확장 stage285px·상세 body122px를 확인했다.
+  zoom44px 비겹침·원복·중첩 Escape·카메라/양방향 초점·출처 portal의 외부 focus를 보존했다.
+- 다음 한 작업: [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)의 후속 source Docker·CI·독립 두 리뷰를 정산한다.
+  이전 `3554f7c`의 CI40176053743·Docker253/type·별도 실제 API/타일 PASS를 새 source 통과로 대체하지 않는다.
+  API/수집/DB·운영 타일/배포 수용과 W-UX-02/03의 날씨 정보 기능은 별도다.
+
 ## 2026-10-25 — 첫 작은 UI 묶음
 
-- 현재 상태: Weather navy/dark 공용 토큰 연결, 지도 제목·상세 메타 `i`, `/weather` 전용 compact 헤더를 구현했다.
+- 현재 상태: Weather navy/dark 공용 토큰 연결, 지도 제목·상세 메타 `i`, `/weather` 전용 compact 헤더를 구현하고
+  PR #169를 main `931502e8`로 머지했다.
   수집 시각 없음·오래됨·특보·오류는 바로 보인다. coarse 포인터의 `i`는 44px이다.
 - 로컬 검증: WSL 타입/lint(기존 경고1)·Vitest253개·Chromium/Firefox PC/모바일 UI8개 PASS.
   [범위·증거·미완](reports/2026-10-25-weather-ui-compact.md). 최종 CI·독립 리뷰·머지 상태는 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)가 정본이다.
-- 다음 한 작업: C-MAP-01 공용 외곽·실제 가용 높이를 Map 회귀와 함께 구현하고 양 소비자가 채택한다.
-  현재 모바일 지도 시작 약427~441px는 목표240px 이내를 충족하지 않는다. 실제 운영 타일·기상 자료·배포는 이 fixture 검증과 별도다.
+- 후속 작업: C-MAP-01 공용 외곽·실제 가용 높이를 Map 회귀와 함께 구현하고 양 소비자가 채택한다.
+  이 묶음 당시 모바일 지도 시작 약427~441px는 목표240px 이내를 충족하지 않았다. 후속 실측은 위 최신 절을 따른다.
+  실제 운영 타일·기상 자료·배포는 fixture 검증과 별도다.
 
 ## 2026-10-25 — 앱·웹 조사와 지도 후속 설계 문서
 

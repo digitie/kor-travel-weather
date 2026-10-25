@@ -62,6 +62,7 @@ export type VWorldMapViewProps = {
   onLoad?: (map: MapLibreMap) => void;
   onMoveEnd?: (map: MapLibreMap, event: MapLibreEvent) => void;
   onError?: (event: maplibregl.ErrorEvent) => void;
+  onRecover?: () => void;
 };
 
 type MapContextValue = MapLibreMap | null;
@@ -86,6 +87,7 @@ export function VWorldMapView({
   onLoad,
   onMoveEnd,
   onError,
+  onRecover,
 }: VWorldMapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -94,11 +96,13 @@ export function VWorldMapView({
   const onLoadRef = useRef(onLoad);
   const onMoveEndRef = useRef(onMoveEnd);
   const onErrorRef = useRef(onError);
+  const onRecoverRef = useRef(onRecover);
   useLayoutEffect(() => {
     onLoadRef.current = onLoad;
     onMoveEndRef.current = onMoveEnd;
     onErrorRef.current = onError;
-  }, [onLoad, onMoveEnd, onError]);
+    onRecoverRef.current = onRecover;
+  }, [onLoad, onMoveEnd, onError, onRecover]);
 
   const initialOptionsRef = useRef({
     center,
@@ -138,7 +142,18 @@ export function VWorldMapView({
       onLoadRef.current?.(instance);
     };
     const handleMoveEnd = (event: MapLibreEvent) => onMoveEndRef.current?.(instance, event);
+    const failedTiles = new Map<string, maplibregl.ErrorEvent>();
+    let recoveryBlocked = false;
+    let rasterErrorShown = false;
+    type RasterTileEvent = { sourceId?: string; tile?: { tileID?: { key: string }; state?: string } };
+    const rasterTileKey = (event: RasterTileEvent) => event.sourceId && event.tile?.tileID && instance.getSource(event.sourceId)?.type === "raster"
+      ? `${event.sourceId}/${event.tile.tileID.key}` : null;
     const handleError = (event: maplibregl.ErrorEvent) => {
+      const key = rasterTileKey(event as maplibregl.ErrorEvent & RasterTileEvent);
+      if (key) {
+        failedTiles.set(key, event);
+        rasterErrorShown = true;
+      } else recoveryBlocked = true;
       if (onErrorRef.current) {
         onErrorRef.current(event);
         return;
@@ -147,9 +162,28 @@ export function VWorldMapView({
       // VWorld keys are embedded in tile URLs. Never log the raw URL.
       console.warn("[VWorldMapView]", error?.message ?? "map error", redactVWorldUrl(error?.url) ?? "");
     };
+    const handleSourceData = (event: maplibregl.MapSourceDataEvent) => {
+      const key = rasterTileKey(event);
+      if (key && event.tile?.state === "loaded") failedTiles.delete(key);
+    };
+    const handleIdle = () => {
+      // load/idle은 errored 타일도 완료로 센다. 공개 coveringTiles로 현재 화면의 실패를 확인한다.
+      if (recoveryBlocked || !instance.isStyleLoaded() || !instance.areTilesLoaded()) return;
+      const visibleTiles = new Set(Object.entries(instance.getStyle().sources).flatMap(([sourceId, source]) => source.type === "raster"
+        ? instance.coveringTiles({ tileSize: source.tileSize ?? 512, minzoom: source.minzoom, maxzoom: source.maxzoom, roundZoom: true }).map((tile) => `${sourceId}/${tile.key}`)
+        : []));
+      const visibleError = Array.from(failedTiles).find(([key]) => visibleTiles.has(key))?.[1];
+      if (visibleError && !rasterErrorShown) handleError(visibleError);
+      else if (!visibleError && rasterErrorShown && visibleTiles.size) {
+        rasterErrorShown = false;
+        onRecoverRef.current?.();
+      }
+    };
     instance.once("load", handleLoad);
     instance.on("moveend", handleMoveEnd);
     instance.on("error", handleError);
+    instance.on("sourcedata", handleSourceData);
+    instance.on("idle", handleIdle);
 
     const controls: maplibregl.IControl[] = [];
     if (navigation) {
@@ -162,13 +196,19 @@ export function VWorldMapView({
       instance.addControl(control, "bottom-right");
       controls.push(control);
     }
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => instance.resize());
+    // keepMounted 탭이 숨겨진 0×0 상태에서 resize하면 중심 좌표가 틀어질 수 있다.
+    // 다시 보일 때의 양수 크기 관측과 지도 탭 effect가 실제 resize를 수행한다.
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      if (container.clientWidth > 0 && container.clientHeight > 0) instance.resize();
+    });
     resizeObserver?.observe(container);
 
     return () => {
       resizeObserver?.disconnect();
       instance.off("moveend", handleMoveEnd);
       instance.off("error", handleError);
+      instance.off("sourcedata", handleSourceData);
+      instance.off("idle", handleIdle);
       controls.forEach((control) => {
         try { instance.removeControl(control); } catch { /* map is already tearing down */ }
       });

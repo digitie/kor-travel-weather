@@ -1,9 +1,9 @@
 "use client";
 
-import { Bell, CalendarDays, Cloud, Crosshair, Eye, RefreshCw, Thermometer, Timer, Wind, X } from "lucide-react";
+import { Bell, CalendarDays, Cloud, Crosshair, Eye, RefreshCw, Thermometer, Timer, Wind } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapDetailOverlay, MapFilterBar, MapFilterField, MapKindFilter, MapTabs, MapTabPanel, MapViewTabs, type MapViewportReadout } from "@kor-travel/ui/map-controls";
+import { MapDetailOverlay, MapFilterBar, MapFilterField, MapFilterPanel, MapKindFilter, MapStage, MapTabs, MapTabPanel, MapViewTabs, MapWorkspace, type MapViewportReadout } from "@kor-travel/ui/map-controls";
 
 import {
   forecastWindowStart,
@@ -28,6 +28,9 @@ import { InfoButton } from "@/components/info-button";
 
 type WeatherMapProps = {
   locations: Location[];
+  catalogLoading?: boolean;
+  catalogError?: string | null;
+  onRetryCatalog?: () => void;
 };
 
 function valueFor(values: WeatherValue[], ...keys: string[]) {
@@ -222,7 +225,7 @@ const WEATHER_KINDS = [
   { value: "observed", label: "관측", icon: <Eye aria-hidden="true" /> },
 ] satisfies { value: WeatherKind; label: string; icon: React.ReactNode }[];
 
-export function WeatherMap({ locations }: WeatherMapProps) {
+export function WeatherMap({ locations, catalogLoading = false, catalogError, onRetryCatalog }: WeatherMapProps) {
   const map = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const [selectedId, setSelectedId] = useState(locations[0]?.location_id ?? "");
@@ -235,6 +238,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [forecastLoading, setForecastLoading] = useState(false);
   const [forecastMessage, setForecastMessage] = useState("");
   const [message, setMessage] = useState("");
+  const [mapError, setMapError] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const [summaries, setSummaries] = useState<Record<string, WeatherMarker>>({});
@@ -251,6 +255,7 @@ export function WeatherMap({ locations }: WeatherMapProps) {
   const [detailOpen, setDetailOpen] = useState(false);
   const detailRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const providerFilter = selectedSources ?? undefined;
   const sourceKey = JSON.stringify([selectedSources, kindFilter]);
   const needsSourceCatalog = selectedSources !== null || kindFilter !== undefined;
@@ -346,7 +351,10 @@ export function WeatherMap({ locations }: WeatherMapProps) {
 
   function closeDetail() {
     setDetailOpen(false);
-    searchRef.current?.focus();
+    const target = searchRef.current?.getClientRects().length ? searchRef.current
+      : filterTriggerRef.current?.getClientRects().length ? filterTriggerRef.current
+      : map.current?.getCanvas();
+    target?.focus({ preventScroll: true });
   }
 
   useEffect(() => {
@@ -478,62 +486,19 @@ export function WeatherMap({ locations }: WeatherMapProps) {
     requestAnimationFrame(() => map.current?.resize());
   }, [mode]);
 
-  return (
-    <section className="weather-workbench" aria-label="지도 기반 날씨 조회">
-      <MapFilterBar>
-        <MapKindFilter options={WEATHER_KINDS} value={selectedKinds} onToggle={(value) => {
-          const kind = value as WeatherKind;
-          setSelectedKinds((previous) => previous.includes(kind) ? previous.filter((item) => item !== kind) : [...previous, kind]);
-          setDetailOpen(false);
-        }} />
-        <MapFilterField label="장소 검색" htmlFor="weather-location-search">
-          <input id="weather-location-search" ref={searchRef} type="search" aria-label="위치 검색" placeholder="도시·위치 검색" value={query} onChange={(event) => setQuery(event.target.value)} />
-        </MapFilterField>
-        <MapFilterField label="데이터 출처" htmlFor="weather-source-filter">
-          <SourceMultiSelect id="weather-source-filter" options={sourceOptions} value={selectedSources} onChange={setSelectedSources} />
-        </MapFilterField>
-      </MapFilterBar>
-
-      {sourceLoading ? <p className="muted-note" role="status">소스별 위치 조회 중…</p> : null}
-      {sourceError ? <p className="muted-note" role="alert">{sourceError}</p> : null}
-      {sourceListError ? <p className="muted-note" role="alert">{sourceListError}</p> : null}
-      <MapTabs value={mode} onValueChange={(value) => setMode(value as "map" | "list")}>
-        <MapViewTabs ariaLabel="조회 방식" viewport={mapViewport} count={mode === "map" ? mapLocations.length : visibleLocations.length} status={sourceLoading ? "조회 중…" : undefined} />
-        <div className="map-card kt-map-stage">
-          <MapTabPanel value="map" className="map-panel" keepMounted>
-            <VWorldMapView
-              apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
-              center={selectedCenter}
-              className="map-canvas"
-              layerType="Base"
-              onLoad={(instance) => {
-                map.current = instance;
-                setMapReady(true);
-                syncViewport(instance);
-              }}
-              onMoveEnd={(instance) => syncViewport(instance)}
-              onError={() => setMessage("VWorld 지도를 불러오지 못했습니다. 날씨 데이터는 계속 확인할 수 있습니다.")}
-              zoom={selected ? 7.2 : 6}
-            >
-              <VWorldWeatherClusters
-                markers={markers}
-              />
-            </VWorldMapView>
-            <div className="map-legend"><span className="legend-dot" /> 지도 표시 위치 <span className="legend-muted">{mapLocations.length}/{visibleLocations.length}곳</span></div>
-          </MapTabPanel>
-          <MapTabPanel value="list" className="list-panel" keepMounted>
-            <div className="location-list map-list-overlay">
-              {visibleLocations.map((location) => (
-                <button aria-pressed={selectedId === location.location_id} key={location.location_id} type="button" className={selectedId === location.location_id ? "selected" : ""} onClick={() => { setSelectedId(location.location_id); setDetailOpen(true); setMode("map"); requestAnimationFrame(() => { map.current?.resize(); map.current?.jumpTo({ center: [location.longitude, location.latitude], zoom: Math.max(map.current.getZoom(), 10) }); detailRef.current?.focus(); }); }}>
-                  <span className="list-pin" /><span><strong>{location.name}</strong><small>{location.location_id} · {location.latitude.toFixed(3)}, {location.longitude.toFixed(3)}</small></span><span className="list-arrow">›</span>
-                </button>
-              ))}
-              {!sourceLoading && !sourceError && !visibleLocations.length ? <div className="empty">검색 결과가 없습니다.</div> : null}
+  const filterLabel = ["지도 필터", selectedKinds.length === WEATHER_KINDS.length ? null : selectedKinds.length === 1 ? WEATHER_KINDS.find((kind) => kind.value === selectedKinds[0])?.label : `종류 ${selectedKinds.length}개`, selectedSources === null ? null : selectedSources.length === 1 ? providerLabels.get(selectedSources[0]) ?? selectedSources[0] : `출처 ${selectedSources.length}개`, query.trim() ? "검색 적용" : null].filter(Boolean).join(" · ");
+  const visibleMapError = mode === "map" ? mapError : "";
+  const mapNotice = catalogLoading || catalogError || sourceLoading || sourceError || sourceListError || visibleMapError || !visibleLocations.length ? (
+            <div className="weather-map-notice" role={catalogError || sourceError || sourceListError || visibleMapError ? "alert" : "status"} aria-live="polite">
+              {catalogLoading ? <span>위치 카탈로그를 불러오는 중…</span> : catalogError ? <><span>{catalogError}</span>{onRetryCatalog ? <button type="button" className="secondary" onClick={onRetryCatalog}>다시 시도</button> : null}</> : !locations.length && !visibleLocations.length && !sourceLoading ? <span>활성화된 위치가 없습니다.</span> : !sourceLoading && !sourceError && !visibleLocations.length ? <span>검색 결과가 없습니다.</span> : null}
+              {sourceError ? <span>{sourceError}</span> : null}
+              {sourceListError ? <span>{sourceListError}</span> : null}
+              {!catalogLoading && sourceLoading ? <span>선택 조건의 위치 조회 중…</span> : null}
+              {visibleMapError ? <span>{visibleMapError}</span> : null}
             </div>
-          </MapTabPanel>
-        {selected && detailOpen ? <MapDetailOverlay ref={detailRef} className="weather-inspector" aria-label="선택한 위치 상세" onDismiss={closeDetail}>
-          {selected ? (
-            <>
+          ) : null;
+  const detailPanel = selected && detailOpen ? (
+    <MapDetailOverlay key={selected.location_id} ref={detailRef} className="weather-inspector" aria-label="선택한 위치 상세" onDismiss={closeDetail} collapsible header={
               <div className="inspector-heading">
                 <div>
                   <div className="inspector-title"><h2>{selected.name}</h2><InfoButton label="위치·데이터 출처">
@@ -550,25 +515,12 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                       <details><summary>측정값별 원본 키</summary><dl className="info-metadata">{values.map((value) => <div key={value.value_id}><dt>{value.metric_name ?? value.metric_key}</dt><dd>{value.source_record_key || "원본 키 없음"}</dd></div>)}</dl></details>
                     </div> : null}
                   </InfoButton></div>
-                  <div className="inspector-freshness"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div>
-                </div>
-                <div className="inspector-actions">
-                  <button type="button" className="icon-button" aria-label="상세 닫기" onClick={closeDetail}><X size={17} /></button>
-                  <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button>
-                  <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button>
                 </div>
               </div>
+    }>
+              <div className="inspector-freshness weather-current-status"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div>
               {loading ? <div className="loading-block" role="status" aria-live="polite">날씨 조회 중…</div> : null}
                 {message ? <div className="empty" role="status">{message}</div> : null}
-                {selectedSummary?.measurement_point ? (
-                  <div className="measurement-point">
-                    <span className="section-label">측정 지점</span>
-                    <strong>{selectedSummary.measurement_point?.station_name}</strong>
-                    <small>
-                      {selectedSummary.measurement_point?.address ?? ""} · {selectedSummary.measurement_point?.distance_km.toFixed(1)}km
-                    </small>
-                  </div>
-                ) : null}
                 {selectedSummary?.alerts.length ? (
                   <div className="alert-panel" role="status">
                     <strong>기상특보</strong>
@@ -581,8 +533,21 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                 ) : null}
                 {!loading ? <>
                 <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "RN1", "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
+                <div className="inspector-actions">
+                  <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button>
+                  <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button>
+                </div>
                 <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
                 </> : null}
+                {selectedSummary?.measurement_point ? (
+                  <div className="measurement-point">
+                    <span className="section-label">측정 지점</span>
+                    <strong>{selectedSummary.measurement_point?.station_name}</strong>
+                    <small>
+                      {selectedSummary.measurement_point?.address ?? ""} · {selectedSummary.measurement_point?.distance_km.toFixed(1)}km
+                    </small>
+                  </div>
+                ) : null}
                 <div className="inspector-section forecast-section">
                   <div className="section-label"><span>예보 미리보기</span><span>{forecast.length}개</span></div>
                   {forecastLoading ? <div className="loading-block" role="status">예보 조회 중…</div> : forecastMessage ? <div className="empty" role="status">{forecastMessage}</div> : groupedForecast.length ? (
@@ -602,11 +567,64 @@ export function WeatherMap({ locations }: WeatherMapProps) {
                     </div>
                   ) : <p className="muted-note">예보 데이터가 없습니다.</p>}
                 </div>
-            </>
-          ) : <div className="empty">지도에서 위치를 선택하세요.</div>}
-        </MapDetailOverlay> : null}
-        </div>
+    </MapDetailOverlay>
+  ) : null;
+
+  return (
+    <MapWorkspace expandable className="weather-workbench" role="region" aria-label="지도 기반 날씨 조회">
+      <MapFilterPanel label={filterLabel} triggerRef={filterTriggerRef}>
+      <MapFilterBar>
+        <MapKindFilter options={WEATHER_KINDS} value={selectedKinds} onToggle={(value) => {
+          const kind = value as WeatherKind;
+          setSelectedKinds((previous) => previous.includes(kind) ? previous.filter((item) => item !== kind) : [...previous, kind]);
+          setDetailOpen(false);
+        }} />
+        <MapFilterField label="장소 검색" htmlFor="weather-location-search">
+          <input id="weather-location-search" ref={searchRef} type="search" aria-label="위치 검색" placeholder="도시·위치 검색" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </MapFilterField>
+        <MapFilterField label="데이터 출처" htmlFor="weather-source-filter">
+          <SourceMultiSelect id="weather-source-filter" options={sourceOptions} value={selectedSources} onChange={setSelectedSources} fallbackFocusRef={filterTriggerRef} />
+        </MapFilterField>
+      </MapFilterBar>
+      </MapFilterPanel>
+      <MapTabs value={mode} onValueChange={(value) => setMode(value as "map" | "list")}>
+        <MapViewTabs ariaLabel="조회 방식" viewport={mapViewport} count={mode === "map" ? mapLocations.length : visibleLocations.length} />
+        <MapTabPanel value="map" className="map-panel" keepMounted>
+          <MapStage view="map" summary={mode === "map" ? mapNotice : null} detail={mode === "map" ? detailPanel : null}>
+            <VWorldMapView
+              apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
+              center={selectedCenter}
+              className="map-canvas"
+              layerType="Base"
+              onLoad={(instance) => {
+                map.current = instance;
+                setMapReady(true);
+                syncViewport(instance);
+              }}
+              onMoveEnd={(instance) => syncViewport(instance)}
+              onError={() => setMapError("지도 표시 오류 · 목록 보기")}
+              onRecover={() => setMapError("")}
+              zoom={selected ? 7.2 : 6}
+            >
+              <VWorldWeatherClusters
+                markers={markers}
+              />
+            </VWorldMapView>
+          </MapStage>
+        </MapTabPanel>
+        <MapTabPanel value="list" className="list-panel" keepMounted>
+          {mode === "list" ? mapNotice : null}
+          <MapStage view="list">
+            <div className="location-list map-list-overlay">
+              {visibleLocations.map((location) => (
+                <button aria-pressed={selectedId === location.location_id} key={location.location_id} type="button" className={selectedId === location.location_id ? "selected" : ""} onClick={() => { setSelectedId(location.location_id); setDetailOpen(true); setMode("map"); requestAnimationFrame(() => { map.current?.resize(); map.current?.jumpTo({ center: [location.longitude, location.latitude], zoom: Math.max(map.current.getZoom(), 10) }); detailRef.current?.focus(); }); }}>
+                  <span className="list-pin" /><span><strong>{location.name}</strong><small>{location.location_id} · {location.latitude.toFixed(3)}, {location.longitude.toFixed(3)}</small></span><span className="list-arrow">›</span>
+                </button>
+              ))}
+            </div>
+          </MapStage>
+        </MapTabPanel>
       </MapTabs>
-    </section>
+    </MapWorkspace>
   );
 }
