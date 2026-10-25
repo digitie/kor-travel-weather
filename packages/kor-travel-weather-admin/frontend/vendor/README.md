@@ -20,8 +20,8 @@ Common source `e79816afb3c19b1b1e2fc1486b809c2ee3d34d6e`. `kor-travel-ui-0.1.0-d
 
 ## 남은 높이·필터 접기·상세 슬롯 dev.8 (2026-10-25)
 
-Common source `20953b7707f6dd46324bf6b15548a26a5d9b8880`의 `git archive`에서 만든
+Common source `f15511a2f1d6137b1b9cae509de763e09b8337f0`의 `git archive`에서 만든
 `kor-travel-ui-0.1.0-dev.8.tgz`를 고정한다. SHA256은
-`65480d85e1ebfc6a7fd4c65ecc66e539c6f57e90fe0743c3877827266f117169`이다.
+`866aca74b0c29d2487fac2640bccce468134ce0c7faba540782abf61106328ec`이다.
 `MapWorkspace`·`MapFilterPanel`·`MapStage`와 `MapDetailOverlay`의 header/body·접기를 소비하며,
 API·기상 종류·선택·인증은 Weather가 소유한다. dev.6/dev.7은 이력으로 보존한다.

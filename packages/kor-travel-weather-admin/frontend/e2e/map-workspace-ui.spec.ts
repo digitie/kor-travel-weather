@@ -67,6 +67,10 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     expect(metrics.stage.height).toBeGreaterThan(100);
     expect(Math.abs(metrics.canvas.height - metrics.stage.height)).toBeLessThanOrEqual(2);
     expect(await page.locator('[role="application"]').getAttribute("data-vworld-key")).toBe("missing");
+    if (viewport.width !== 1440) {
+      await expect(page.locator(".maplibregl-ctrl-zoom-in")).toHaveCSS("width", "44px");
+      await expect(page.locator(".maplibregl-ctrl-zoom-in")).toHaveCSS("height", "44px");
+    }
 
     const toggle = page.getByRole("button", { name: /^지도 필터/ });
     const compactFilters = await toggle.isVisible();
@@ -158,6 +162,25 @@ test.describe("반응형 필터 초점", () => {
     await search.click();
     await expect(menu).not.toBeVisible();
     await expect(search).toBeFocused();
+    await toggle.click();
+    await page.getByRole("button", { name: "지도 크게 보기", exact: true }).click();
+    const workspace = page.locator('[data-slot="map-workspace"]');
+    await toggle.click();
+    const source = page.getByRole("button", { name: "날씨 소스 필터", exact: true });
+    await source.click();
+    await page.keyboard.press("Escape");
+    await expect(menu).not.toBeVisible();
+    await expect(source).toBeFocused();
+    await expect(workspace).toHaveAttribute("data-expanded", "true");
+    await toggle.click();
+    await page.getByRole("button", { name: "원래 화면으로", exact: true }).click();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await source.click();
+    await expect(menu).toBeVisible();
+    await page.evaluate(() => window.addEventListener("resize", () => document.querySelector<HTMLButtonElement>('button[aria-label="날씨 지도 안내"]')!.focus(), { once: true }));
+    await page.setViewportSize({ width: 375, height: 812 });
+    await expect(menu).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "날씨 지도 안내", exact: true })).toBeFocused();
   });
   test("좁은 화면 전환은 숨은 검색에서 필터 버튼으로 초점을 돌리고 조건을 보존한다", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
@@ -184,6 +207,7 @@ test.describe("반응형 필터 초점", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await expect(search).toBeVisible();
     await expect(search).toHaveValue("지도 작업면");
+    await expect.poll(() => page.locator('[data-slot="map-filter-panel-body"]').evaluate((element) => element.contains(document.activeElement) && document.activeElement instanceof HTMLElement && document.activeElement.getClientRects().length > 0)).toBe(true);
     const restored = await layoutMetrics(page);
     expect(Math.abs(restored.canvas.height - restored.stage.height)).toBeLessThanOrEqual(2);
   });
@@ -224,7 +248,7 @@ test.describe("작은 화면 글자 확대", () => {
     await page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ }).click();
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
     await expect(detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })).toBeVisible();
-    const detailMetrics = await detail.evaluate((element) => Object.fromEntries(Object.entries({ detail: element, header: element.querySelector('[data-slot="map-detail-header"]')!, body: element.querySelector('[data-slot="map-detail-body"]')!, close: element.querySelector('button[aria-label="상세 닫기"]')!, freshness: element.querySelector(".weather-current-status")!, alert: element.querySelector(".alert-panel")!, temperature: element.querySelector(".metric-card.primary")! }).map(([name, node]) => {
+    const detailMetrics = await detail.evaluate((element) => Object.fromEntries(Object.entries({ detail: element, header: element.querySelector('[data-slot="map-detail-header"]')!, body: element.querySelector('[data-slot="map-detail-body"]')!, close: element.querySelector('button[aria-label="상세 닫기"]')!, freshness: element.querySelector(".weather-current-status")!, alert: element.querySelector(".alert-panel")!, temperature: element.querySelector(".metric-card.primary")!, zoomIn: document.querySelector(".maplibregl-ctrl-zoom-in")!, zoomOut: document.querySelector(".maplibregl-ctrl-zoom-out")! }).map(([name, node]) => {
       const box = node.getBoundingClientRect();
       return [name, { x: box.x, y: box.y, width: box.width, height: box.height, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight }];
     })));
@@ -232,10 +256,13 @@ test.describe("작은 화면 글자 확대", () => {
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-320-text200-detail.png`, fullPage: true });
     await expect(detail.getByRole("button", { name: "상세 닫기", exact: true })).toBeInViewport({ ratio: 1 });
     expect(detailMetrics.body.height).toBeGreaterThan(0);
+    expect(detailMetrics.detail.x + detailMetrics.detail.width).toBeLessThanOrEqual(detailMetrics.zoomIn.x);
+    expect([detailMetrics.zoomIn.width, detailMetrics.zoomIn.height]).toEqual([44, 44]);
     for (const content of [detail.getByText("최신", { exact: true }), detail.getByText("호우주의보 · 주의", { exact: true }), detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })]) {
       await content.scrollIntoViewIfNeeded();
       await expect(content).toBeInViewport({ ratio: 0.9 });
     }
+    await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-320-text200-temperature.png`, fullPage: true });
     const info = detail.getByRole("button", { name: "위치·데이터 출처 안내", exact: true });
     await info.click();
     const popup = page.getByRole("dialog", { name: "위치·데이터 출처", exact: true });

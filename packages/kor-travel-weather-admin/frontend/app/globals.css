@@ -2546,6 +2546,7 @@ tbody tr:hover {
 
 @media (pointer: coarse) {
   .info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .weather-shell[data-layout="map"] { --weather-map-control-size: 44px; }
 }
 
 /* 날씨 지도에서만 shell의 남은 공간을 작업면으로 전달한다. */
@@ -2554,6 +2555,7 @@ tbody tr:hover {
 .weather-shell[data-layout="map"] .main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .weather-shell[data-layout="map"] .page-header-wrap { flex: 0 0 auto; }
 .weather-shell[data-layout="map"] .weather-workbench { flex: 1 1 0; min-height: 0; margin-bottom: 1.5rem; }
+.weather-shell[data-layout="map"] .maplibregl-ctrl-group > button { width: var(--weather-map-control-size, min(var(--control-h), 44px)); min-width: var(--weather-map-control-size, min(var(--control-h), 44px)); height: var(--weather-map-control-size, min(var(--control-h), 44px)); min-height: var(--weather-map-control-size, min(var(--control-h), 44px)); }
 .weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) .app-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
 .weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) :is(.rail, .page-header-wrap) { display: none; }
 .weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) .weather-workbench { margin: var(--space-3xs); }

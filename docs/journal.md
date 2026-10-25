@@ -1,4 +1,4 @@
-## 2026-10-25 — 공용 지도 작업면 높이·필터/상세 슬롯·확장 첫 후보
+## 2026-10-25 — 공용 지도 작업면 높이·필터/상세 슬롯·확장 로컬 수용
 
 - `/weather` shell만 유한한 남은 높이를 공용 작업면으로 전달한다. 모바일 메뉴 한 줄, 기본 필터 접기,
   공용 summary/detail header/body와 목록 단일 스크롤을 연결하고 `70dvh`/최소 `28rem` 중복 높이를 제거했다.
@@ -7,8 +7,13 @@
 - Common `20953b`/정규 pack `65480d…`에서 타입/lint(기존 경고1)·Vitest253개·핵심 UI10개 PASS다.
   200% 확장 stage285px·상세 body122px에서 기온/특보/최신을 스크롤로 읽고 닫기44·중첩 Escape·원복 초점을 확인했다.
   출처 메뉴 기준점이 숨겨지면 닫고, 일반 outside 검색 클릭의 초점은 유지한다.
+- 후속으로 200% zoom72px와 상세27px 겹침, resize 중 이미 옮긴 외부 focus를 메뉴 닫기가 빼앗는 경계를 재현했다.
+  zoom group 아이콘의 최대/터치44px와 외부 focus 보존 guard를 적용했다. 공용 `f15511a`/pack `866aca…`를 최종 고정하고
+  WSL 타입/lint(기존 경고1)·Vitest253·package build·Chromium/Firefox UI32개(2.2분)를 통과했다.
+  375/320 시작233px, PC 아래24px, 200% 확장 body122px·zoom 비겹침과 양방향 resize focus·중첩 Escape를 확인했다.
 - 여섯 날씨 종류·제공처/LIMIT 요청·캐시 세대·abort·시각/원본값·인증은 보존한다. 백엔드·SDK·DB·운영 변경은 없다.
-  [범위·후보별 치수·검증 경계](reports/2026-10-25-weather-map-workspace.md). 전체 UI·package build·Docker·CI·리뷰·머지는 아직 정산 전이다.
+  [범위·후보별 치수·검증 경계](reports/2026-10-25-weather-map-workspace.md).
+  최종 Docker·CI·독립 리뷰·머지는 [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)에서 정산한다.
 
 ## 2026-10-25 — 작은 UI 첫 묶음: Weather 톤·보조 안내·헤더 밀도
 

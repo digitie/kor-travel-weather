@@ -1,11 +1,12 @@
-## 2026-10-25 — 공용 지도 작업면 높이·접기·확장 첫 후보
+## 2026-10-25 — 공용 지도 작업면 높이·접기·확장 로컬 수용
 
 - 현재 상태: `/weather` 전용 bounded shell과 Common dev.8 작업면·필터·상세 슬롯을 연결했다.
   고정 `70dvh`/최소 높이·이중 목록 스크롤을 제거하고 모바일 지도 시작과 남은 높이를 실측했다.
   [변경·후보 증거·미완](reports/2026-10-25-weather-map-workspace.md).
-- 로컬 검증: Common `20953b`/pack `65480d…`에서 타입/lint(기존 경고1)·Vitest253개·핵심 UI10개 PASS다.
-  글자200%는 확장 stage285px·상세 body122px에서 필수 날씨를 읽고 원복·중첩 Escape·카메라/초점을 보존했다.
-- 다음 한 작업: 320/가로/414/768·초기 상태·기존 출처/테마를 포함한 전체 회귀와 package build·Docker·CI·독립 두 리뷰를 정산한다.
+- 로컬 검증: Common `f15511a`/pack `866aca…`에서 타입/lint(기존 경고1)·Vitest253·package build·두 브라우저 전체 UI32개 PASS다.
+  모바일 기본 stage 시작233px, PC 아래 여백24px, 글자200% 확장 stage285px·상세 body122px를 확인했다.
+  zoom44px 비겹침·원복·중첩 Escape·카메라/양방향 초점·출처 portal의 외부 focus를 보존했다.
+- 다음 한 작업: [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)의 최종 source Docker·CI·독립 두 리뷰를 정산한다.
   API/수집/DB·운영 타일/배포 수용과 W-UX-02/03의 날씨 정보 기능은 별도다.
 
 ## 2026-10-25 — 첫 작은 UI 묶음

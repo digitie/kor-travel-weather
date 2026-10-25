@@ -21,6 +21,7 @@ type Props = {
 export function SourceMultiSelect({ id, options, value, onChange, fallbackFocusRef }: Props) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const trigger = triggerRef.current;
     if (!open || !trigger || typeof ResizeObserver === "undefined") return;
@@ -42,9 +43,12 @@ export function SourceMultiSelect({ id, options, value, onChange, fallbackFocusR
           <span>{label}</span><ChevronDown size={14} aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" aria-label="날씨 소스 선택" onCloseAutoFocus={(event) => {
+      <DropdownMenuContent ref={contentRef} align="start" aria-label="날씨 소스 선택" onCloseAutoFocus={(event) => {
         if (!triggerRef.current?.getClientRects().length) {
           event.preventDefault();
+          const active = document.activeElement;
+          if (active instanceof HTMLElement && active !== document.body && active !== document.documentElement
+            && !contentRef.current?.contains(active) && active.getClientRects().length) return;
           fallbackFocusRef?.current?.focus({ preventScroll: true });
         }
       }}>

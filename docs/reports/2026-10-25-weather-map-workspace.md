@@ -5,6 +5,7 @@ C-MAP-01·W-UX-01을 위한 frontend 변경이다. 첫 색상·안내 묶음
 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)는 source
 `415bba5edc53550baf2bc5f937a91a3dacd56c5e`에서 검증한 뒤 main
 `931502e8c2724c4a471326685d6df10d972438d3`로 머지됐다. 이 문서는 그 후속 작업을 기록한다.
+현재 변경의 CI·독립 리뷰·최종 머지 정본은 [Weather PR #170](https://github.com/digitie/kor-travel-weather/pull/170)이다.
 
 ## 구현 범위
 
@@ -23,7 +24,11 @@ C-MAP-01·W-UX-01을 위한 frontend 변경이다. 첫 색상·안내 묶음
 - 목록은 공용 stage의 스크롤 하나만 사용한다. 상세 닫기/Escape 후 검색 입력이 숨겨져 있으면
   보이는 필터 버튼으로 초점을 돌린다. 지도/목록은 canvas를 유지한다.
 - Weather 소유 출처 메뉴는 `open`을 제어하고 자기 trigger가 숨겨지는지 관찰해 portal을 닫는다.
-  숨겨진 trigger 대신 공용 필터 버튼으로 초점을 돌린다. 외부 검색 입력을 클릭한 일반 닫기는 해당 입력의 초점을 유지한다.
+  숨겨진 trigger 대신 공용 필터 버튼으로 초점을 돌린다. 외부 검색 입력을 클릭한 일반 닫기와
+  resize 중 이미 보이는 외부 요소로 옮긴 초점은 유지한다.
+- MapLibre의 확대·축소 아이콘 버튼은 기본 크기를 보존하며 최대44px, coarse 포인터는44px로 맞췄다.
+  글자200%에서 기존 `--control-h`가72px가 되어 공용 예약 영역을 넘던 문제를 실제 재현해 수정했다.
+  이 규칙은 `/weather`의 `.maplibregl-ctrl-group > button`에만 적용한다.
 - 글자 200%에서 기본 화면의 지도·상세가 작아지는 실측을 바탕으로 공용 `MapWorkspace expandable`을
   채택한다. `지도 크게 보기`는 기존 작업면의 DOM·조건·지도 엔진을 유지하고 이 route의 메뉴·제목만 숨긴다.
   `원래 화면으로`와 처리되지 않은 Escape로 복귀한다. 별도 fullscreen·portal·동적 높이 hook은 만들지 않는다.
@@ -32,8 +37,8 @@ API·SDK·수집·DB·인증은 변경하지 않았다. 특보/실황/초단기/
 제공처·종류를 LIMIT 전에 적용하는 요청, 현재값/미래 예보 분리, marker 세대 캐시·abort·부분 성공은 보존한다.
 지도 오류는 선택 위치의 날씨 요청 오류와 분리해 지도 summary에서 확인한다.
 
-Common source `20953b7707f6dd46324bf6b15548a26a5d9b8880`의 정규 `git archive` pack을 vendor/lock으로 고정했다.
-`kor-travel-ui-0.1.0-dev.8.tgz` SHA256은 `65480d85e1ebfc6a7fd4c65ecc66e539c6f57e90fe0743c3877827266f117169`다.
+Common source `f15511a2f1d6137b1b9cae509de763e09b8337f0`의 정규 `git archive` pack을 vendor/lock으로 고정했다.
+`kor-travel-ui-0.1.0-dev.8.tgz` SHA256은 `866aca74b0c29d2487fac2640bccce468134ce0c7faba540782abf61106328ec`다.
 
 ## 검증 방법
 
@@ -72,22 +77,49 @@ viewport에서 읽을 수 있는지도 확인한다. `.toBeVisible()`만으로 c
 | Chromium 1440→375 필터 축소 | 검색 focus가 숨은 입력에서 body로 떨어지는 실패 재현. 공용 후속 보강 대상으로 전달 |
 | `20953b` 글자200% | 기본 로딩/성공 y436/h124 동일 → 확장 y279/h285. 상세 header103/body122/닫기44×44. 본문 스크롤로 최신·특보·20°C 읽기 PASS |
 | `20953b` + 앱 출처 메뉴 복구 | 두 브라우저 입력 resize focus·portal 닫기/필터 버튼 복귀·일반 outside 검색 초점 유지 PASS |
+| 확대·축소 아이콘 겹침 | 200%에서 버튼72×72·x232와 상세 right259의27px 겹침 재현. 앱 소유 group 버튼 상한 후44×44·x260으로 비겹침 PASS |
+| resize 중 외부 초점 | 이미 제목 `i`에 옮긴 초점을 출처 메뉴 닫기가 빼앗는 실패 재현. 보이는 외부 focus를 보존하는 guard 후 두 브라우저 PASS |
 
 초기 카메라 readout 드리프트는 안정화 전 값을 비교한 영향과 분리했다. dev.7 baseline과 새 작업면의 실제 pan→목록→지도는
 같은 중심/줌을 유지했다. 새 작업면에서도 0크기 guard 유무의 해당 경로가 모두 통과해, 이를 Firefox 회귀 수정의 인과 증거로 부르지 않는다.
-숨겨진 0×0 canvas에는 `resize()`를 보내지 않고 다시 보이는 양수 크기에서 갱신하는 최소 guard만 둔다.
+`ResizeObserver`의 숨겨진 0×0 크기 관측은 무시하고 다시 보이는 양수 크기에서 갱신하는 최소 guard만 둔다.
 
 증거는 `C:/Users/digit/.codex/visualizations/2026/10/25/weather-map-workspace/`에 보관한다.
 `canonical-content-scroll/`, `canonical-spacing-text200/`, `expansion-preview-ca2a225/`는 문제 재현의 JSON·PNG다.
-현재 `candidate-20953b-minimum/`의 UI10개는 두 브라우저의 375/1440·200%·반응형 입력·출처 메뉴 시나리오를
-42.8초에 통과한 증거다. 같은 `65480d…` pin에서 타입·lint(오류0/기존 경고1)·Vitest19파일/253개도 PASS했다.
+`candidate-20953b-minimum/`의 선행 UI10개 PASS와 첫 source `9a1e1a3`의 CI/Docker 결과는 이전 후보의 증거다.
+최종 `f15511a`/pack `866aca…`와 앱의 아이콘 상한·외부 focus guard를 함께 소비한 검증은
+`final-f15511a/`의 `workspace-ui.json`, PNG, 재현 설정과 `weather-workspace-f155-validation.log`가 정본이다.
+
+| 최종 로컬 검증 | 결과 |
+|---|---|
+| `npm run type-check` | PASS |
+| `npm run lint` | 오류0·기존 `window.location.assign` 경고1 |
+| `npm test -- --run` | 19파일/253개 PASS |
+| `npm run build` | PASS. 컴파일2.8초·TypeScript2.1초, 15개 페이지 생성 |
+| 두 브라우저 UI | Chromium/Firefox 전체32개 PASS(2.2분) |
+
+전체32개는 기존 공용 종류/출처4개·메타 팝업/테마4개와 작업면24개다. 375/320/1440·가로812·414/768·글자200%,
+catalog 로딩/빈 응답/503, 단일 목록 스크롤, 실제 pan 후 지도/목록 왕복·회전/resize, 필터 조건 보존을 포함한다.
+양방향 반응형 전환 뒤 초점이 보이는 필터 안에 남고, portal 기준점이 숨겨지면 닫히며 이미 보이는 외부 focus는 보존한다.
 200%에서 `i` Escape는 상세와 확장을 유지하고 상세 Escape는 상세만 닫는다. 다음 Escape와 복귀 버튼은 원래 화면·버튼 초점을
-복원하며 canvas DOM·카메라를 유지한다. 전체 UI·package build·Docker·CI·리뷰는 정산 중이다.
+복원하며 canvas DOM·카메라를 유지한다. 필수 상태·특보·기온은 본문 스크롤 후 실제 viewport90%로 읽을 수 있다.
+
+| 최종 환경(두 브라우저 동일) | stage y/높이/아래 여백 |
+|---|---|
+| 375×812 | 233 / 575 / 4px |
+| 320×568 | 233 / 331 / 4px |
+| 1440×900 | 152 / 724 / 24px |
+| 812×375 | 203 / 168 / 4px |
+| 414×896 | 233 / 659 / 4px |
+| 768×896 | 287 / 605 / 4px |
+| 320×568 글자200% | 기본 로딩/성공436 / 124 / 8px → 명시 확장279 / 285 / 4px |
+
+200% 확장의 상세 body122px·닫기44×44, 상세 right259px·zoom left260px로 조작 영역이 겹치지 않는다.
+검증을 마친 전용24135 개발 서버는 중지했고 소스 복사본·스크린샷·보고서는 보존했다.
 
 ## 남은 수용과 경계
 
-- 남은 전체 UI는 320/가로/414/768·초기 로딩/빈 응답/실패와 기존 두 파일의 종류/출처·긴 원본 키·라이트/다크 회귀를 포함한다.
-- package build·Docker 2차·CI·독립 두 리뷰와 공용 Common/Map/Transport 통합 게이트는 아직 이 로컬 결과에 포함하지 않는다.
+- 최종 source의 Docker 2차·CI·독립 두 리뷰와 공용 Common/Map/Transport 통합 게이트는 PR #170에서 별도 정산한다.
 - 키 없는 단색 배경으로 UI를 검증했다. 운영 VWorld 타일·실제 기상 제공처 성공이나 실기기 Android/iOS 수용의 증거가 아니다.
 - W-UX-02의 시간별 우선 구성·관심 요소·시각 선택, W-UX-03의 주소/교통/실행 연결과 API 보완은 이번 범위가 아니다.
 - CI·독립 두 리뷰·Docker 2차·머지·배포는 별도 게이트다. 이 로컬 후보 기록으로 완료를 추정하지 않는다.
