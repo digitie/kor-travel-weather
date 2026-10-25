@@ -19,11 +19,14 @@ feature 대신 weather location과 provider run을 중심으로 구성한다.
 
 - 좌측 rail은 데스크톱에서 고정되고 62rem 이하에서는 map admin과 같이 가로
   navigation으로 바뀐다. 320px 폭에서도 버튼·입력은 44px touch target을 유지한다.
-- `/weather`는 지도와 inspector를 동시에 제공하고 `Map/List` 탭으로 목록을
-  지도 위 overlay로 전환한다. 지도는 OSM raster와 attribution을 사용하며 위치
-  데이터는 public enabled catalog만 읽는다.
+- `/weather`는 VWorld 지도/목록 탭과 동일 stage 내부의 선택 상세 overlay를 제공한다.
+  지도·attribution과 public enabled 위치 catalog를 사용한다. 상세의 존재와
+  실제 운영에서의 외곽·가용 높이 수용은 별개다.
 - 모든 비동기 panel은 loading, empty, error 상태를 같은 위치에 표시한다. latest
   projection과 forecast history는 서로 다른 섹션으로 구분한다.
+- 2026-10-25 [사전 조사](../research/2026-10-25-weather-ux.md)와
+  [공용 지도·정보 우선순위 설계](../design/2026-10-25-weather-map-improvements.md)는 후속 미구현 계획이다.
+  기존 메뉴/조회 흐름을 유지하고 Map 외곽·가용 높이·Weather 토큰 연결·시간별 정보와 필요한 API를 보완한다.
 - 로그인·로그아웃을 포함한 상태 변경 요청은 Docker Manager와 동일하게
   등록된 same-origin Origin 검증과 HttpOnly signed session을 거친다. 로그인 응답은
   검증된 `username`과 안전한 local `next`를 반환하고 세션 cookie는 `SameSite=Strict`다.
