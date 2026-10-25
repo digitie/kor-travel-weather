@@ -24,6 +24,12 @@ Transport와 C-MAP-01·W-UX 작업 ID·선행 관계·가용 높이/치수·테�
 
 ## 독립 적대적 리뷰와 머지
 
-진행 전. 동일한 리뷰어 1명의 양쪽 검토·수정·재검토 및 PR 결과를 기록한다.
+Popper 1명이 양쪽 문서를 읽기 전용 검토했고 P0/P1 없이 Weather P2 1건을 지적했다.
+즐겨찾기/DB 등록의 의미와 미등록 목적지 이름→좌표→저장 anchor 연결·provider/kind·부재 수용이 모호한 문제다.
+현재 nearby/resolve의 필터 부재와 역지오코딩 경계를 확인하고 조사·설계·W-UX-03 및 수용 시나리오를 보완했다.
+기존 Geo 계약 검증/지도 지점 대안·대표성/미제공·자동등록/추가 수집 없음도 명시했다. 동일 리뷰어의 재확인을 진행한다.
+
+문서 Draft PR: [Weather #168](https://github.com/digitie/kor-travel-weather/pull/168),
+[공동 Transport #130](https://github.com/digitie/kor-travel-transport/pull/130).
 
 애플리케이션 테스트·빌드·Docker·운영 배포는 실행하지 않는다. 문서의 수용 시나리오는 후속 구현 목표다.
