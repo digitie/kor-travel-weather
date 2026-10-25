@@ -1,3 +1,23 @@
+## 2026-10-25 — 지도 타일 회복·목록 경고 가림 P2 수정과 Common 최종 pin
+
+- source `3554f7c`의 CI40176053743 전체 SUCCESS·Docker253/type·native Chromium 실제 API/타일375/1440 PASS는 이전 후보의 증거로 보존한다.
+- 독립 Popper·James가 최초 load 이후 타일503→회복 때 오류가 남는 P2를 각각 지적했다.
+  운영 키 없이 실제 MapLibre의 타일 요청에 PNG/503을 주입해 양 브라우저에서 재현했다.
+  동일 키의 성공만 해제한 중간 후보도 실패 범위를 벗어난 정상 pan 뒤 경고가 남아 양 브라우저로 다시 재현했다.
+  실제 loaded 이벤트와 공개 `Map.coveringTiles()`의 현재 표시 범위를 idle·style/tiles 완료와 함께 판정한다.
+  현재 화면에 실패 타일이 없을 때만 지도 오류를 지우며 private 필드·새 네트워크 wrapper는 사용하지 않는다.
+  MapLibre는 errored 타일도 load/idle 완료로 세므로 최초 load의 무조건 해제를 제거하고, 지속503·최초503과 날씨 요청 오류는 보존한다.
+- James의 `/providers`503 목록 경고 가림도 실제 앱 hit-test로 재현했다. 첫행 중앙이 경고에 막히던 상태를
+  정상 flow의 경고+남은 높이의 단일 목록 스크롤로 바꿨다. 첫행 클릭·상세·닫기·경고 접근을 양 브라우저로 확인했다.
+- Common 제품 `a74ac808752fd6d6062e529909fd0dd656724f08`/dev.8 pack SHA256
+  `71d9f6ce8c178e3c66a47593a70a7fd9274938587ef9d96c1c7023673370059f`를 vendor/lock/출처에 고정했다.
+  공용 boolean 빈 슬롯 보강을 포함하며 Weather는 기존 detail=null 계약을 보존한다.
+- WSL 타입/lint(기존 경고1)·19파일253개·package build·Chromium/Firefox 기존32+목록 회귀2=34개(2.6분),
+  실제 엔진의 동일 타일/정상 다른 범위 pan·zoom 회복/지속503/최초503 주입10개(1.3분)와 diff 확인 PASS다.
+  안내는 `지도 표시 오류 · 목록 보기`로 줄여 일부 오류를 전체 지도 불가로 설명하지 않는다. 운영 VWorld 서비스 수용과 구분한다.
+  PID·명령·CWD 소유를 확인한 전용24135 서버만 중지하고 증거·소스는 보존했다.
+  [재현·최종 검증](reports/2026-10-25-weather-map-workspace.md). 새 source CI·Docker·독립 재리뷰·머지는 [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)이 정본이며 아직 별도다.
+
 ## 2026-10-25 — 공용 지도 작업면 높이·필터/상세 슬롯·확장 로컬 수용
 
 - `/weather` shell만 유한한 남은 높이를 공용 작업면으로 전달한다. 모바일 메뉴 한 줄, 기본 필터 접기,

@@ -3,10 +3,14 @@
 - 현재 상태: `/weather` 전용 bounded shell과 Common dev.8 작업면·필터·상세 슬롯을 연결했다.
   고정 `70dvh`/최소 높이·이중 목록 스크롤을 제거하고 모바일 지도 시작과 남은 높이를 실측했다.
   [변경·후보 증거·미완](reports/2026-10-25-weather-map-workspace.md).
-- 로컬 검증: Common `f15511a`/pack `866aca…`에서 타입/lint(기존 경고1)·Vitest253·package build·두 브라우저 전체 UI32개 PASS다.
+- 독립 리뷰의 타일 회복 후 경고 잔류와 출처503 목록 첫행 가림을 실제 앱·양 브라우저로 재현·수정했다.
+  실제 성공·현재 표시 범위를 함께 확인해 지도 오류만 해제하고 목록 경고는 정상 flow에 둔다.
+- 최종 로컬 검증: Common `a74ac80`/pack `71d9f6…`에서 타입/lint(기존 경고1)·Vitest253·package build·
+  두 브라우저 전체 UI34개와 타일 주입10개 PASS다. 기존32개에 출처503 목록 회귀2개를 추가했다.
   모바일 기본 stage 시작233px, PC 아래 여백24px, 글자200% 확장 stage285px·상세 body122px를 확인했다.
   zoom44px 비겹침·원복·중첩 Escape·카메라/양방향 초점·출처 portal의 외부 focus를 보존했다.
-- 다음 한 작업: [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)의 최종 source Docker·CI·독립 두 리뷰를 정산한다.
+- 다음 한 작업: [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)의 후속 source Docker·CI·독립 두 리뷰를 정산한다.
+  이전 `3554f7c`의 CI40176053743·Docker253/type·별도 실제 API/타일 PASS를 새 source 통과로 대체하지 않는다.
   API/수집/DB·운영 타일/배포 수용과 W-UX-02/03의 날씨 정보 기능은 별도다.
 
 ## 2026-10-25 — 첫 작은 UI 묶음

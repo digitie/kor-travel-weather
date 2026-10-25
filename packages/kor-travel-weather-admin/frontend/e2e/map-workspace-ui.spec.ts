@@ -1,7 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 // UI 작업면 fixture다. 실제 기상 제공처·운영 타일 수용과 구분한다.
-async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; emptyCatalog?: boolean; failedCatalog?: boolean } = {}) {
+async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; emptyCatalog?: boolean; failedCatalog?: boolean; failedProviders?: boolean } = {}) {
   const stamp = new Date().toISOString();
   const locations = Array.from({ length: 80 }, (_, index) => ({ location_id: `workspace-${index}`, name: index === 0 ? "지도 작업면 시험 위치" : `시험 위치 ${index}`, latitude: 36.2, longitude: 127.8, nx: null, ny: null, region_code: null, enabled: true, metadata: {} }));
   const value = { value_id: "temperature", location_id: "workspace-0", provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: "workspace-fixture-source-record-key-with-full-lineage" };
@@ -10,6 +11,10 @@ async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; em
   await page.route("**/api/weather/**", async (route) => {
     const url = new URL(route.request().url());
     queries.push(url);
+    if (url.pathname.endsWith("/providers") && options.failedProviders) {
+      await route.fulfill({ status: 503, json: { detail: "시험 출처 목록 조회 실패" } });
+      return;
+    }
     if (url.pathname.endsWith("/locations") && options.delayedCatalog) {
       await new Promise<void>((resolve) => { releaseCatalog = async () => { await route.fulfill({ json: { data: locations, meta: {} } }); resolve(); }; });
       return;
@@ -292,6 +297,31 @@ test.describe("작은 화면 글자 확대", () => {
 
 test.describe("초기 조회 상태", () => {
   test.use({ viewport: { width: 375, height: 812 }, hasTouch: true });
+  test("출처 조회 실패 안내가 목록 첫행을 가리지 않는다", async ({ page }, testInfo) => {
+    test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
+    await page.route("**/req/wmts/1.0.0/layout-tile-fixture-only/**", (route) => route.fulfill({ contentType: "image/png", body: readFileSync("e2e/fixtures/vworld-tile.png") }));
+    await openWorkspace(page, { failedProviders: true });
+    await page.getByRole("tab", { name: "목록", exact: true }).click();
+    const warning = page.getByText("소스 목록을 불러오지 못했습니다. 페이지를 새로고침해 주세요.", { exact: true });
+    await expect(warning).toBeVisible();
+    const first = page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ });
+    const hit = await first.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const target = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return { hit: element.contains(target), firstRow: { top: box.top, bottom: box.bottom }, blockingClass: target?.className, blockingText: target?.textContent?.slice(0, 100) };
+    });
+    await testInfo.attach("출처 오류와 첫행 hit-test", { body: JSON.stringify(hit), contentType: "application/json" });
+    await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-375-source-error-list.png`, fullPage: true });
+    expect(hit.hit).toBe(true);
+    await first.click();
+    const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
+    await expect(detail.getByRole("heading", { name: "지도 작업면 시험 위치", exact: true })).toBeVisible();
+    await detail.getByRole("button", { name: "상세 닫기", exact: true }).click();
+    await page.getByRole("tab", { name: "목록", exact: true }).click();
+    await expect(warning).toBeInViewport();
+    await expect(first).toBeInViewport();
+    await expect(page.locator(".location-list")).not.toHaveCSS("overflow-y", "auto");
+  });
   for (const state of ["loading", "empty", "failed"] as const) test(`${state}에서도 지도 작업면 유지`, async ({ page }, testInfo) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
     const controls = await openWorkspace(page, { delayedCatalog: state === "loading", emptyCatalog: state === "empty", failedCatalog: state === "failed" });

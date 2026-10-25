@@ -599,11 +599,11 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
               onLoad={(instance) => {
                 map.current = instance;
                 setMapReady(true);
-                setMapError("");
                 syncViewport(instance);
               }}
               onMoveEnd={(instance) => syncViewport(instance)}
-              onError={() => setMapError("VWorld 지도를 불러오지 못했습니다. 목록에서 날씨를 확인할 수 있습니다.")}
+              onError={() => setMapError("지도 표시 오류 · 목록 보기")}
+              onRecover={() => setMapError("")}
               zoom={selected ? 7.2 : 6}
             >
               <VWorldWeatherClusters
@@ -613,7 +613,8 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
           </MapStage>
         </MapTabPanel>
         <MapTabPanel value="list" className="list-panel" keepMounted>
-          <MapStage view="list" summary={mode === "list" ? mapNotice : null}>
+          {mode === "list" ? mapNotice : null}
+          <MapStage view="list">
             <div className="location-list map-list-overlay">
               {visibleLocations.map((location) => (
                 <button aria-pressed={selectedId === location.location_id} key={location.location_id} type="button" className={selectedId === location.location_id ? "selected" : ""} onClick={() => { setSelectedId(location.location_id); setDetailOpen(true); setMode("map"); requestAnimationFrame(() => { map.current?.resize(); map.current?.jumpTo({ center: [location.longitude, location.latitude], zoom: Math.max(map.current.getZoom(), 10) }); detailRef.current?.focus(); }); }}>

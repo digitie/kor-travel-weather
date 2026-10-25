@@ -8,7 +8,8 @@
 
 - [ ] **C-MAP-01 / P0** — Common 담당 공유 작업: Map 기준 외곽·가용 높이·상세 슬롯/테마 계약·Map 회귀·패키지 인계. Transport와 같은 작업이며 별도 구현하지 않는다.
 - [ ] **W-UX-01 / P0** — 톤·compact 헤더 PR #169 머지 완료. 공용 dev.8 작업면·남은 높이·필터/상세 접기·명시 확장을 구현·검증 중이다.
-  [최종 로컬 실측](reports/2026-10-25-weather-map-workspace.md)의 전체 UI32·타입/lint/253단위·package build는 PASS다.
+  [최종 로컬 실측](reports/2026-10-25-weather-map-workspace.md)의 Common `a74ac80`/pack `71d9f6…`·UI34·타일 주입10·타입/lint/253단위·package build는 PASS다.
+  독립 리뷰의 타일 회복 안내·목록 첫행 가림 P2를 실제 앱으로 재현·수정했다.
   [PR #170](https://github.com/digitie/kor-travel-weather/pull/170)의 최종 Docker·CI·독립 리뷰와 양 소비자/Common 통합 수용은 남아 있다.
 - [ ] **W-UX-02 / P1** — 출처 i·긴 메타 압축 부분 구현. 특보·선택 시각·이후 시간별 흐름 우선 상세, 관심 요소·관측/미래 분리 유지의 전체 수용은 남아 있음.
 - [ ] **W-UX-03 / P1** — 기존 forecast/marker 계약, DB 밖 목적지 좌표→적합 저장 anchor/부재·대표성·필터 보강, 주소/실행/교통 연결·API 동일 시나리오 수용.

@@ -2562,6 +2562,7 @@ tbody tr:hover {
 .weather-inspector .metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr)); }
 .weather-map-notice {
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
