@@ -1,3 +1,12 @@
+## 2026-10-25 — 작은 UI 첫 묶음: Weather 톤·보조 안내·헤더 밀도
+
+- 공용 `--kt-*` 색상·폰트·초점·그림자를 Weather navy/dark 토큰에 연결했다. Common 패키지는 dev.7 유지다.
+- 지도 제목/상세의 긴 안내·위치 ID·좌표·출처·원본 키를 제목 옆 `i`로 옮겼다. 특보·수집 시각·오래됨·오류는 바로 보인다.
+  수집 시각을 조회 완료 시각으로 대체하지 않는다. `/weather`의 헤더 카드/이중 여백만 compact로 줄였고 coarse 버튼44px를 보장했다.
+- WSL 타입/lint(기존 경고1)·Vitest253개·Chromium/Firefox PC/모바일 UI8개 PASS.
+  [기록과 잔여 경계](reports/2026-10-25-weather-ui-compact.md). 최종 CI·독립 리뷰·머지는 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)의 결과를 따른다.
+- 지도 가용 높이·모바일 시작 목표·시간별 우선 상세/API는 미완이며 운영 타일/배포 성공으로 세지 않는다. 운영 빌드·배포는 수행하지 않았다.
+
 ## 2026-10-25 — 웹·Android/iOS 조사와 Weather 지도 후속 설계
 
 - 날씨알리미·Windy·지도/유가·공항 자료의 공식 설명·공개 화면·개별 후기를 조사해

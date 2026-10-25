@@ -493,6 +493,8 @@ h3 {
   line-height: 1.25;
 }
 
+.page-title { display: flex; min-width: 0; align-items: center; gap: 0.25rem; }
+
 .page-header .description {
   max-width: 65ch;
   margin: 0;
@@ -2564,3 +2566,16 @@ tbody tr:hover {
 .info-source-list ul { margin: 0.375rem 0; padding-left: 1rem; }
 .info-source-list summary { cursor: pointer; }
 .info-source-list details .info-metadata { margin-top: 0.5rem; }
+
+/* 지도 페이지의 중첩 헤더 카드를 걷어내고 검색 영역에 바로 연결한다. */
+.page-header-compact { padding-top: 0.75rem; }
+.page-header-compact .page-header { padding: 0; border: 0; border-radius: 0; background: transparent; }
+.page-header-compact .page-header-copy { width: 100%; }
+.page-header-compact .page-context { display: none; }
+.page-header-compact .page-header-row { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.page-header-compact .page-header-actions { width: auto; }
+.page-header-compact + .weather-workbench { margin-top: 0.75rem; }
+
+@media (pointer: coarse) {
+  .info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+}

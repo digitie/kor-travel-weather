@@ -118,14 +118,18 @@ export function PageHeader({
   description,
   section,
   actions,
+  info,
+  compact = false,
 }: {
   title: string;
   description?: string;
   section?: string;
   actions?: React.ReactNode;
+  info?: React.ReactNode;
+  compact?: boolean;
 }) {
   return (
-    <header className="page-header-wrap" data-slot="admin-shell-header">
+    <header className={compact ? "page-header-wrap page-header-compact" : "page-header-wrap"} data-slot="admin-shell-header">
       <div className="page-header">
         <div className="page-header-copy">
           <div className="page-context">
@@ -133,7 +137,7 @@ export function PageHeader({
             <span className="page-path">{usePathname()}</span>
           </div>
           <div className="page-header-row">
-            <h1>{title}</h1>
+            <div className="page-title"><h1>{title}</h1>{info}</div>
             {actions ? <div className="page-header-actions">{actions}</div> : null}
           </div>
           {description ? <p className="description">{description}</p> : null}

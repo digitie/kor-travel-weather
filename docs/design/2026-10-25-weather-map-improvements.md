@@ -1,6 +1,7 @@
 # Weather 지도·상세의 공용 구조와 정보 우선순위 개선 설계
 
-작성일 2026-10-25(KST). 상태: **미구현 후속 설계**. 이번 PR은 문서만 변경한다.
+작성일 2026-10-25(KST). 상태: **단계별 후속 설계**. 최초 문서 PR은 문서만 변경했다.
+색상·안내·compact 헤더의 첫 UI 묶음은 [부분 구현·검증 기록](../reports/2026-10-25-weather-ui-compact.md)을 따른다.
 [사전 조사](../research/2026-10-25-weather-ux.md),
 [Transport 공용 계약·전체 작업 계획](https://github.com/digitie/kor-travel-transport/blob/main/docs/design/2026-10-25-mobility-improvements.md)을 함께 읽는다.
 
@@ -103,7 +104,8 @@ Weather DB에 없는 여행 목적지는 이름 검색만 추가해서 날씨가
 
 ## 5. 작업과 수용 기준
 
-모든 항목은 후속 미구현 작업이다. [tasks.md](../tasks.md)에서 추적한다.
+아래 항목의 전체 수용은 미완이다. 색상·출처 안내·compact 헤더만 첫 UI 묶음에서 부분 구현했으며,
+공용 가용 높이·정보 재구성·API 보완은 [tasks.md](../tasks.md)에서 계속 추적한다.
 P0는 사용자가 필요한 지도 접근/기본 기능, P1은 정보 우선순위·선택과 계약 개선이다.
 
 | ID | 소유·선행 | 완료 조건 |

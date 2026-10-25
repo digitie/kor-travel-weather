@@ -1,5 +1,12 @@
 # 완료 작업
 
+## 2026-10-25 — 첫 작은 UI 묶음 구현·로컬 검증
+
+- [x] **W-UI-BATCH-01 구현·로컬 검증** — Weather navy/dark `--kt-*` 연결, 지도 제목/상세 메타 `i`,
+  `/weather`만 compact 헤더, coarse 포인터 44px 버튼을 반영했다. WSL 타입·lint·253개와 Chromium/Firefox UI8개 PASS.
+  [검증·미완 경계](reports/2026-10-25-weather-ui-compact.md), 최종 CI·독립 리뷰·머지는 [PR #169](https://github.com/digitie/kor-travel-weather/pull/169)가 정본이다.
+- C-MAP-01/W-UX-01~03 전체 수용·실제 운영 타일·전체 가용 높이·배포는 완료로 세지 않는다.
+
 ## 2026-10-25 — 웹·Android/iOS 조사와 날씨 지도 설계 문서
 
 - [x] **W-UX-DOC-01 문서 작성·검토** — [사전 조사](research/2026-10-25-weather-ux.md)와
