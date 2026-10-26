@@ -96,6 +96,9 @@ WSL2의 전용 PostgreSQL 16에서 다음을 확인했다. 운영 DB에는 DDL·
 - 전체 pytest의 첫 후속 실행은 기존 구조 테스트 1개 실패·178개 통과 후 중단했다.
   이 실패는 위 구조 회귀 갱신으로 해결했고 정확한 후속 전체 실행·CI·독립 2인 리뷰는 진행 중이다.
   이전 window 실험의 전체 실행도 178개 후 중단한 기록이며 전체 통과로 세지 않는다.
+- 첫 후보 `5ba2fd1`은 CI Python 1299개·frontend 257개 및 lint/type/build를 통과했다.
+  그 소스의 로컬 전체 실행은 원래 worktree를 불변 보존한 채 자연 완료를 기다린다.
+  아래 migration 보호 보강은 별도 worktree/DB에서 검증하며 새 정확 SHA의 CI·두 리뷰를 받는다.
 
 인덱스 비용은 별도의 전용 DB 두 개에 동일한 합성 projection 10만 행을 넣어 측정했다.
 4개 concurrent build는 각각 0.147~0.197초, 추가 인덱스 합계 약 23.35MB였다.
@@ -103,12 +106,35 @@ WSL2의 전용 PostgreSQL 16에서 다음을 확인했다. 운영 DB에는 DDL·
 31.122ms/WAL 1,511,776B였다. FK를 제거한 projection만의 합성 비용으로 수집 전체나
 운영 빌드 시간으로 외삽하지 않는다. 쓰기 증폭과 공간 비용이 실제로 추가된다.
 
+## 리뷰 후 migration 보호 보강
+
+독립 리뷰에서 이름만 같은 다른 table의 invalid index를 회수할 위험과 valid wrong-definition을
+건너뛸 위험, current_schema와 실제 table schema가 다른 경계를 발견했다. 후속0034는
+`to_regclass`가 가리키는 실제 table OID·namespace를 사용해 4이름 전체를 DDL 전에 검산한다.
+키/방향/NULL 정렬·INCLUDE·부분 predicate·표현·default opclass/collation·unique/live/ready를
+대조하고 충돌하면 index 삭제나 revision 승격 전에 실패한다. 생성·삭제는 실제 schema를
+명시하며, 동일 table·정확 정의의 invalid index만 회수한다. 관측 가능한 다른 index build가
+진행 중이면 재시도하지 않는다. 생성 후에도 정확 정의와 valid/ready를 다시 확인한다.
+
+운영 DB는 기존 읽기 전용 관측의 SHOW로 PostgreSQL 16.10(160010)을 확인했다.
+predicate는 PostgreSQL16의 원래 IN과 pg_get_indexdef 재생성에서 생기는 두 정확한
+binary-coercion 형식만 허용한다. 임의 SQL 문자열 정규화나 추측으로 같은 의미라고 판단하지
+않는다. 맞지 않는 valid 인덱스도 자동 재생성·삭제하지 않는다.
+
+이 후속은 기존 migration 11개와 다른 table valid/invalid 충돌, 8종 잘못된 정의,
+search_path 첫 schema가 다른 경우, downgrade 직전 foreign index 교체를 합친 31개 회귀를
+별도 전용 DB에서 통과했다. 초기 보호 코드의 SQL alias/canonical 표현 검산 실패 이력도
+보존한다. 새 source를 원래 전체 실행 도중에 덮어쓰지 않았다. 간헐적인 WSL launcher
+0x8007274c는 Python 진입 전 실패로 구분하며, 기존 실행·수집 실패로 추정하거나
+WSL/VM/Docker 서비스를 재시작하지 않았다.
+
 ## 수집과 배포 조건
 
-2026-10-26 23:03:56Z 관측에서 비정기 단기예보는 204,075값으로 계속 증가했다.
+2026-10-26 23:25:34Z 관측에서 비정기 단기예보는 287,900값으로 계속 증가했다.
 지역 묶음은 해변80·휴게소1135·산림 dust3269·산악4824 저장 후 자연 종료했다.
 비정기 초단기예보 30,162값·실황 3,635값, WeatherAPI current1650/forecast52,020값도
-자연 종료했다. OpenMeteo와 정기 초단기예보, 단기예보의 실제 worker가 남아 있었다.
+자연 종료했다. OpenMeteo current는2660값 저장 후 성공했고 forecast는34,944값으로
+진행 중이었다. 정기 실황은 queued, 단기예보/OpenMeteo의 실제 worker가 남아 있었다.
 Claude Code가 시작한 batch의 정확한 귀속은 확인되지 않았으며, 비정기 run 관측과 구별한다.
 
 당시 instigator는 21 RUNNING/2 STOPPED였다. publisher는 RUNNING이고 retention/native

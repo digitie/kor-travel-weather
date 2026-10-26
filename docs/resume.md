@@ -2,10 +2,13 @@
 
 - 현재: 운영95020의 지도 면적·상세 통과와 별도로60ID 지연/504·미확인 구름을 재현했다.
   별도 후보는0034 인덱스4개·제공처 대표 병합·특보512키 스트리밍·실패 재조회를 포함한다.
-- 집중PG15/계약27·frontend257/type/lint/build·Ruff 통과. 정확 전체회귀·CI·독립2인 리뷰,
+- 집중PG15/계약27·migration보호31·frontend257/type/lint/build·Ruff 통과. 후속 정확SHA 전체CI·독립2인 리뷰,
   수집/queued/실worker 자연 종료 후 공식 배포와 실제 마커 값 수용이 다음 작업이다.
 - 새 이미지 교체 완료가 아니다. daemon/PG/타 프로젝트 유지와 배포직전 instigator 개별
   상태를 보존한다. [실측·남은 수용·되돌리기](reports/2026-10-27-marker-batch-and-unknown.md).
+
+첫 후보5ba2의 CI Python1299/frontend257은 통과했다. 리뷰의 인덱스 소유/정의·schema
+충돌 보호를 별도 worktree/DB에서 보강했으며 원본 전체 실행과 운영 수집은 보존했다.
 
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
 
