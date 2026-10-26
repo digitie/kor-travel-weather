@@ -42,6 +42,9 @@ _LIVE_GAUGE_FILE = re.compile(
 _PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary)_(?P<pid>[0-9]+)\.db$")
 _GAUGE_FILE = re.compile(r"^gauge_[^_]+_(?P<pid>[0-9]+)\.db$")
 _KNOWN_PROCESS_FILE = re.compile(r"^(?:counter|histogram|summary|gauge)_.+\.db$")
+# 한 preflight 안에서만 정상 raw key를 보존한다. 상한 초과는 원 검증으로 돌아간다.
+_VALIDATED_KEYS_MAX_ENTRIES = 4096
+_VALIDATED_KEYS_MAX_CHARS = 256 * 1024
 _MALFORMED_FILE_ERRORS = (
     OSError,
     OverflowError,
@@ -131,6 +134,8 @@ def _readable_multiprocess_files(path: str) -> list[str]:
     """
     files = glob.glob(os.path.join(path, "*.db"))
     readable: list[str] = []
+    validated_keys: set[str] = set()
+    validated_key_chars = 0
     for filename in files:
         basename = os.path.basename(filename)
         gauge_match = _GAUGE_FILE.fullmatch(basename)
@@ -146,8 +151,16 @@ def _readable_multiprocess_files(path: str) -> list[str]:
             for key, _, _, _ in MmapedDict.read_all_values_from_file(filename):
                 # ``MultiProcessCollector`` decodes this JSON later.  Decode
                 # it during preflight so one torn key cannot blank a scrape.
-                if not _valid_metric_key(key):
-                    raise ValueError("invalid multiprocess metric key")
+                if not isinstance(key, str) or key not in validated_keys:
+                    if not _valid_metric_key(key):
+                        raise ValueError("invalid multiprocess metric key")
+                    if (
+                        isinstance(key, str)
+                        and len(validated_keys) < _VALIDATED_KEYS_MAX_ENTRIES
+                        and len(key) <= _VALIDATED_KEYS_MAX_CHARS - validated_key_chars
+                    ):
+                        validated_keys.add(key)
+                        validated_key_chars += len(key)
         except FileNotFoundError:
             continue
         except _MALFORMED_FILE_ERRORS:

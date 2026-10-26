@@ -1,3 +1,11 @@
+## 2026-10-26 — metrics scrape의 중복 raw key 검증 제한 메모
+
+- 최신 main5d7에서 별도 branch와 [Draft PR #171](https://github.com/digitie/kor-travel-weather/pull/171)을 만들고 설계571db9d→구현86f4c15를 작게 push했다. 원본 미커밋 metrics 파일4개는 보존했다.
+- preflight 지역 set4096개/262144문자만 보존하며 초과 새 key는 원 검증을 계속한다. 새 scrape·merge-race 재시도는 새 set이다. merge·무결성·파일 격리·수집/API 계약은 그대로다.
+- 새10회귀 PASS/전체Ruff PASS, 합성979×64KiB/32key endpoint fresh ABBA×2는 CPU 중앙0.135418→0.081760초/응답5152B 전체 동일이다. 운영 ARM·whole수집·RSS 개선은 수용하지 않았다.
+- 로컬 기본 PG autouse 연결거부 및 구 Common/KMA import 실패는 환경 이력으로 분리했다. frontend CI는86f4에서 PASS지만 Python/최종 head CI·두 독립 리뷰는 아직 미완이다. main merge·운영 적용은 Root의 후속 범위다.
+- [설계·회귀·측정과 한계](design/2026-10-26-metrics-scrape-key-validation.md). 과거 기록은 아래 원문으로 보존한다.
+
 ## 2026-10-25 — 지도 타일 회복·목록 경고 가림 P2 수정과 Common 최종 pin
 
 - source `3554f7c`의 CI40176053743 전체 SUCCESS·Docker253/type·native Chromium 실제 API/타일375/1440 PASS는 이전 후보의 증거로 보존한다.

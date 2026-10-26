@@ -1,3 +1,10 @@
+## 2026-10-26 — metrics key 검증 메모 PR #171 진행 중
+
+- [PR #171](https://github.com/digitie/kor-travel-weather/pull/171)은 scrape 안의 정상 raw key만4096개/262144문자로 메모한다. 상한 초과는 원 검증 fallback이며 cross-scrape cache·inode/mtime 신뢰는 없다.
+- 구현86f4의 새10회귀·Ruff 및 frontend CI PASS. 정확한 Python/최종 head CI와 두 독립 리뷰가 남아 있다. 구 로컬 venv의 Common/KMA import 실패와 PG autouse 연결거부는 제품 실패로 세지 않았다.
+- 합성 파일979개/32key의 endpoint CPU·whole bytes 동등성만 비교했으며 운영 ARM·전체 수집·RSS 개선을 주장하지 않는다. [설계와 증거](design/2026-10-26-metrics-scrape-key-validation.md).
+- 현재 main merge·운영 적용·서비스/수집 설정 변경은 하지 않았다. 기존 원본 dirty4개와 아래 이력은 보존한다.
+
 ## 2026-10-25 — 공용 지도 작업면 높이·접기·확장 로컬 수용
 
 - 현재 상태: `/weather` 전용 bounded shell과 Common dev.8 작업면·필터·상세 슬롯을 연결했다.

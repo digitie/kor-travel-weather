@@ -1,5 +1,9 @@
 # Weather 남은 작업
 
+## 2026-10-26 — metrics scrape CPU 후속
+
+- [ ] **W-METRICS-01 / P1** — [Draft PR #171](https://github.com/digitie/kor-travel-weather/pull/171)의 per-preflight raw key 제한 메모 구현·새10회귀·합성 endpoint 비교 완료. 최종 head Python/frontend CI·두 독립 리뷰 및 Root main merge가 남았다. 운영 적용/실제 ARM CPU·장시간 수용은 별도이며 자동 수집·설정 변경은 하지 않는다. [범위·측정·미완](design/2026-10-26-metrics-scrape-key-validation.md).
+
 ## 2026-10-25 — 조사 기반 지도·날씨 정보 후속
 
 [웹·Android/iOS 조사](research/2026-10-25-weather-ux.md)와 [설계·수용 기준](design/2026-10-25-weather-map-improvements.md)을 따른다.
