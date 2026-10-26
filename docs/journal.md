@@ -1,3 +1,19 @@
+## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
+
+- PR #171의 최종74482는 정확 lock CI Python1292·frontend253/type/lint/build 및 독립2인
+  검토를 통과했고 같은 전체 tree의 main `95020bd5`로 병합됐다. 아래 초안/실패 기록은
+  당시 상태로 보존한다.
+- 2026-10-26 공식 배포에서 API·code-server·웹 세 이미지가95020으로 교체되고 migration0033을
+  적용했다. API/CS는 healthy, 웹은 healthcheck 없이 running이다. 공개 UI21개는14.970초에
+  통과했고 로그인/쿠키·메뉴/지도·기존 자료 조회·재조회·로그아웃/보호화면·정확 정리를 확인했다.
+- 기존 CS metrics listener의 단일 GET은2241B·HTTP200/server_up1·0.066120초다. 앞선 감사도구의
+  source/scrape 단계 FAIL과 구분한다. 실제 memo-hit 횟수·운영 CPU/RSS 개선·장시간 안정성은
+  미측정이며 기존 합성 CPU 비교를 운영 효과로 환산하지 않는다.
+- 2026-10-26 07:06Z에 원래21RUNNING/2STOPPED만 복원했다. export publisher와 native recovery는
+  STOPPED를 유지하고 Map 연동 신규 활성화0·공유 daemon/타 instigator 변경0이다.
+- 이 문서 작업은 저장 원장만 검산했다. 새 배포/수집/HTTP/SSH/PG 실행0이며 원본 미커밋 metrics
+  파일4개는 보존했다. [범위·원장·남은 수용](reports/2026-10-27-weather171-deployment-closure.md).
+
 ## 2026-10-26 — metrics scrape의 중복 raw key 검증 제한 메모
 
 - 최신 main5d7에서 별도 branch와 [Draft PR #171](https://github.com/digitie/kor-travel-weather/pull/171)을 만들고 설계571db9d→구현86f4c15를 작게 push했다. 원본 미커밋 metrics 파일4개는 보존했다.
