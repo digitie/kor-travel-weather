@@ -492,7 +492,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
 
   const filterLabel = ["지도 필터", selectedKinds.length === WEATHER_KINDS.length ? null : selectedKinds.length === 1 ? WEATHER_KINDS.find((kind) => kind.value === selectedKinds[0])?.label : `종류 ${selectedKinds.length}개`, selectedSources === null ? null : selectedSources.length === 1 ? providerLabels.get(selectedSources[0]) ?? selectedSources[0] : `출처 ${selectedSources.length}개`, query.trim() ? "검색 적용" : null].filter(Boolean).join(" · ");
   const visibleMapError = mode === "map" ? mapError : "";
-  const visibleMarkerError = mode === "map" ? markerError : "";
+  const visibleMarkerError = mode === "map" && mapLocations.length > 0 ? markerError : "";
   const mapNotice = catalogLoading || catalogError || sourceLoading || sourceError || sourceListError || visibleMapError || visibleMarkerError || !visibleLocations.length ? (
             <div className="weather-map-notice" role={catalogError || sourceError || sourceListError || visibleMapError || visibleMarkerError ? "alert" : "status"} aria-live="polite">
               {catalogLoading ? <span>위치 카탈로그를 불러오는 중…</span> : catalogError ? <><span>{catalogError}</span>{onRetryCatalog ? <button type="button" className="secondary" onClick={onRetryCatalog}>다시 시도</button> : null}</> : !locations.length && !visibleLocations.length && !sourceLoading ? <span>활성화된 위치가 없습니다.</span> : !sourceLoading && !sourceError && !visibleLocations.length ? <span>검색 결과가 없습니다.</span> : null}

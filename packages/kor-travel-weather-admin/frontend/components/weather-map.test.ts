@@ -317,7 +317,7 @@ describe("마커 모델 참조 보존", () => {
 });
 
 describe("마커 조회 실패와 미확인 값", () => {
-  it("지도 실패 후 목록 전환 시 무반응 재조회 버튼을 숨기고 지도로 돌아오면 다시 조회한다", async () => {
+  const visible = (() => {
     let expression: ts.Expression | undefined;
     function find(node: ts.Node) {
       if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "visibleMarkerError") {
@@ -327,7 +327,10 @@ describe("마커 조회 실패와 미확인 값", () => {
     }
     find(tree);
     if (!expression) throw new Error("모드별 마커 오류 노출 조건이 필요합니다.");
-    const visible = new Function("mode", "markerError", "return " + expression.getText(tree));
+    return new Function("mode", "markerError", "mapLocations = [{}]", "return " + expression.getText(tree));
+  })();
+
+  it("지도 실패 후 목록 전환 시 무반응 재조회 버튼을 숨기고 지도로 돌아오면 다시 조회한다", async () => {
     const pending = setupFetch();
     const old = mount(1);
     pending[0].resolve(new Response("Gateway", { status: 504 }));
@@ -347,6 +350,29 @@ describe("마커 조회 실패와 미확인 값", () => {
     await flush();
     expect(map.summariesRef.current).toHaveProperty("a0");
     map.cleanup?.();
+  });
+
+  it.each(["검색 결과 없음", "종류 모두 해제"])("504 이후 %s이면 옛 오류·재조회를 숨기고 위치 복귀 때 조회한다", async () => {
+    const pending = setupFetch();
+    const old = mount(1);
+    pending[0].resolve(new Response("Gateway", { status: 504 }));
+    await flush();
+    const error = old.setMarkerError.mock.calls.find(([message]) => Boolean(message))?.[0];
+    expect(error).toBeTruthy();
+    old.cleanup?.();
+
+    const empty = mount(0);
+    expect(visible("map", error, [])).toBe("");
+    expect(pending).toHaveLength(1);
+    empty.cleanup?.();
+
+    const restored = mount(1);
+    expect(pending).toHaveLength(2);
+    expect(restored.setMarkerError).toHaveBeenCalledWith("");
+    pending[1].resolve(envelope());
+    await flush();
+    expect(restored.summariesRef.current).toHaveProperty("a0");
+    restored.cleanup?.();
   });
 
   it("504 응답은 정상적인 구름 상태로 숨기지 않고 재조회 가능한 오류를 남긴다", async () => {
