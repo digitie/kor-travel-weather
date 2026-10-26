@@ -52,9 +52,10 @@ class SdkCollectionContext:
             receipt = SdkPageReceipt()
             if page.page_no is None and page.num_of_rows is None:
                 # restWeatherList는 페이지 없이 count와 전체 list만 준다. 그 전체 개수는
-                # HTTP 전에 고정한 roster(활성+비활성 catalog) 크기와도 같아야 한다.
+                # HTTP 전에 고정한 roster와 맞아야 한다. 활성 위치는 모두 있어야 하고,
+                # 운영자가 비활성화한 위치는 응답에 있어도 없어도 된다.
                 receipt.add_snapshot(page, raw_count=len(raw))
-                if receipt.total != len(self.plans) + len(self.ignored_ids):
+                if not len(self.plans) <= receipt.total <= len(self.plans) + len(self.ignored_ids):
                     self.invalidate("roster_mismatch")
                     return
             else:

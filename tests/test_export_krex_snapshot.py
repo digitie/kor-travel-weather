@@ -38,9 +38,11 @@ def _context(enabled, disabled=0):
     )
 
 
-def test_unpaged_snapshot_matching_roster_keeps_export_open():
+@pytest.mark.parametrize("rows", [2, 3])
+def test_unpaged_snapshot_matching_roster_keeps_export_open(rows):
+    # 활성 2곳은 모두 있어야 하고, 비활성 1곳은 응답에 있어도 없어도 된다.
     context = _context(enabled=2, disabled=1)
-    context.observe_krex_page(_page(_rows(3)))
+    context.observe_krex_page(_page(_rows(rows)))
     assert context.complete
 
 
@@ -52,8 +54,8 @@ def test_unpaged_snapshot_matching_roster_keeps_export_open():
         # 페이지 필드가 하나만 있는 응답은 전체 snapshot도, 완결 페이지도 아니다.
         lambda: _page(_rows(3), page_no=1),
         lambda: _page(_rows(3), num_of_rows=1000),
-        # 전체 snapshot이 HTTP 전에 고정한 roster(활성+비활성) 크기와 다르다.
-        lambda: _page(_rows(2)),
+        # 전체 snapshot이 활성 roster보다 작거나 활성+비활성 roster보다 크다.
+        lambda: _page(_rows(1)),
         lambda: _page(_rows(4)),
     ],
 )
