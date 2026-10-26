@@ -67,6 +67,10 @@
 - [ ] W-DEP-01 / P1: Manager 정본의 옛 Weather probe와 실제 안전 override drift를 공통 소유자가 최신 main에 통합. #486/#488의 구 head를 blind merge하거나 현재 운영이 kill-probe라 단정하지 않는다.
 - [ ] W-OPS-03 / P2: native/Common 단일 retry 소유권·선택 센서 상태·첫 평가/중단재개 수용. OFF에서 자동 활성화하지 않는다.
 - [ ] W-OPS-04 / P2: 별도 승인된 재개 뒤 정기6시간 정리 처리량/deferred·미래 보존/진행 이벤트 수용.
+  2026-10-27: 운영 job이 10-20 22:50Z 마지막 성공 뒤 상시 FAILURE(최근7일 FAILURE835)임을 읽기 전용으로 실측했다.
+  원인(인덱스 머리 dead 재탐색·진척에도 Failure)과 수정(위치 이어 읽기·ctid 삭제·진척0만 실패)은
+  [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)와 [보존정책 2026-10-27 절](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
+  남은 수용: 배포 뒤 첫 run SUCCESS·`resumed` 전환·`backlog_lag_seconds` 감소와 처리량/유입 비교.
 - [ ] W-OPS-05 / P2: 같은 workload CPU/RSS·3h/12h 포함24h OOM/swap·실제 memory 정책 수용. PR #118의 고정 격자 입력 RSS 약15% 감소·DB 포함 CPU 동등 및 복구2건은 아래와 같이 부분 수용했으며 전체·장시간 조건은 남는다.
 - [ ] W-DOC-01 / P2: 실제 경로/효과 증거 확정 뒤 옛 runbook 현행 절차만 최소 갱신. T-WEA-03/04는 조건부 후보로 유지한다.
 - [ ] W-OPS-06 / P2: 회수 sensor 예산·정체 경보(2026-10-21 PR) 배포 뒤 수용. code-server 재빌드, 규칙 reload, `ktw_sync_recovery_stalled` series(dagster job, 0) 존재, sensor tick이 `stall:null` cursor로 성공하는지 확인. daemon 재개는 별도 승인.

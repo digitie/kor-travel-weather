@@ -1,3 +1,12 @@
+## 2026-10-27 — Common aa232ad·단기예보 정리 수정 PR #174
+
+- 현재 상태: [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)는 Python만 다룬다. Common
+  `aa232ad` 고정과 `weather_short_forecast_retention_job` 상시 실패 수정(위치 이어 읽기·ctid 삭제·진척0만
+  Failure)이다. n150 CI-parity 게이트와 GitHub CI·독립 리뷰 결과는 PR이 정본이다.
+- 다음 한 작업: 머지·배포 뒤 job 첫 run SUCCESS(`resumed=false`→다음 run `true`)와 `backlog_lag_seconds`
+  감소를 확인한다([확인 방법](shortterm-retention.md#배포-후-확인)). 이어서 `@kor-travel/ui` dev.9를 별도
+  PR로 vendoring한다(로그인 hydration 준비 전 입력·제출 비활성).
+
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
 
 - PR #171의 최종74482는 정확 lock CI Python1292·frontend253/type/lint/build 및 독립2인

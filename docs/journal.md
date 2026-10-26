@@ -1,3 +1,18 @@
+## 2026-10-27 — Common aa232ad 고정과 단기예보 정리 상시 실패 수정(PR #174)
+
+- Common pin을 `e746e4b` → main `aa232ad5f255233184de80eceaab2e9b6ccb00c9`로 바꿨다(pyproject 두 파일·
+  uv.lock·health 채택 시험). 그 사이 Python 변경은 #44 `daemon_pool`의 opt-in
+  `KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS`(60|180)뿐이며 공용 daemon 전용이라 Weather 코드 변경은 없다.
+  `@kor-travel/ui` dev.9 vendoring은 이 PR 머지 뒤 별도 PR로 한다.
+- odroid 읽기 전용 실측: `weather_short_forecast_retention_job`은 10-20 22:50Z 마지막 성공 뒤 상시 FAILURE
+  (최근7일 FAILURE835). a164db3 커밋 메시지의 "성공 0"은 그 뒤 기간의 뜻이다. 매 batch가 부분
+  인덱스 머리의 dead 약236만 항목(1020/1021/1022, 마지막 autovacuum 10-20~22)을 후보 SELECT와 EXISTS로
+  두 번 지났고(머리 탐색 cold 15.3초·34,708 read), 진척이 있어도 완료가 아니면 Failure였다.
+- 수정: 부분 인덱스 순서의 위치 이어 읽기(batch는 앞 마지막 키 뒤, 실행은 앞 materialization의
+  `resume_*`), 잠근 행의 tableoid+ctid 삭제, lock_timeout 대기(SKIP LOCKED 제거), 잠금/timeout은 batch
+  연기, 진척0만 Failure. [원인·동작·확인 방법](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
+- 운영 쓰기·VACUUM·DDL은 하지 않았다. 남은 한계는 pointer FK 검사의 무작위 PK 탐색 비용이다.
+
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
 
 - PR #171의 최종74482는 정확 lock CI Python1292·frontend253/type/lint/build 및 독립2인
