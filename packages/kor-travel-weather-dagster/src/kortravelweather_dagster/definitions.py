@@ -37,7 +37,12 @@ from kortravelweather.providers.krex import KREX_PROVIDER, UpstreamBlocked
 from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
-from kortravelweather.retention import run_short_forecast_retention, short_forecast_cutoff
+from kortravelweather.retention import (
+    ShortForecastKey,
+    made_progress,
+    run_short_forecast_retention,
+    short_forecast_cutoff,
+)
 from kortravelweather.settings import WeatherSettings
 
 from .address_refresh import address_refresh_job, address_refresh_sensor
@@ -1220,18 +1225,46 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
     try:
         result = run_short_forecast_retention(
             repository, cutoff=short_forecast_cutoff(kst_now()), dry_run=False,
-            on_progress=log_progress,
+            on_progress=log_progress, after=_short_retention_resume_key(context),
         )
     finally:
         repository.engine.dispose()
     context.add_output_metadata(result)
-    if result["status"] != "complete_snapshot":
-        # raise 뒤 STEP_OUTPUT이 없어도 Failure 이벤트 자체에 미완료 이유를 남긴다.
+    if not made_progress(result):
+        # 진척 0(연기·잠금/timeout·머리 탐색 실패)만 실패다. raise 뒤 STEP_OUTPUT이
+        # 없어도 Failure 이벤트 자체에 결과 metadata를 남긴다.
         raise Failure(
-            description="단기예보 정리가 유한 예산 안에 완료되지 않았습니다.",
+            description="단기예보 정리가 이번 실행에서 진척 없이 끝났습니다.",
             metadata=result,
         )
+    if result["status"] != "complete_snapshot":
+        # 지운 행이 있으면 성공이다. 남은 backlog는 다음 실행이 위치에서 이어 정리한다.
+        context.log.warning(
+            "단기예보 정리 backlog 남음 status=%s facts_deleted=%s backlog_lag_seconds=%s "
+            "error_class=%s",
+            result["status"], result["facts_deleted"], result.get("backlog_lag_seconds"),
+            result.get("error_class"),
+        )
     return result
+
+
+def _short_retention_resume_key(context: AssetExecutionContext) -> ShortForecastKey | None:
+    """앞 성공 실행이 materialization metadata에 남긴 정리 위치.
+
+    위치 이하의 만료 행은 이미 지웠고 수집은 경계보다 오래된 행을 새로 저장하지 않으므로
+    이어 읽어도 빠뜨리지 않는다. 기록이 없거나 모양이 다르면 None이고, 그때만 첫 선택이
+    인덱스 머리의 죽은 항목을 지난다.
+    """
+    instance = getattr(context, "instance", None)
+    if instance is None:
+        return None
+    event = instance.get_latest_materialization_event(context.asset_key)
+    materialization = event.asset_materialization if event is not None else None
+    if materialization is None:
+        return None
+    return ShortForecastKey.from_metadata({
+        key: getattr(value, "value", value) for key, value in materialization.metadata.items()
+    })
 
 
 #: 모든 작업이 같은 asset graph를 사용하도록 자산을 한 번만 선언한다.

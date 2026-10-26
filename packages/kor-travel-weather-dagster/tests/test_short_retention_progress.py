@@ -14,7 +14,7 @@ NOW = datetime(2026, 10, 17, 12, tzinfo=UTC)
 
 
 def _context(purge):
-    logs, outputs, disposed, observations = [], [], [], []
+    logs, outputs, disposed, observations, warnings = [], [], [], [], []
     repo = SimpleNamespace(
         purge_expired_short_forecast=purge,
         engine=SimpleNamespace(dispose=lambda: disposed.append(True)),
@@ -26,8 +26,12 @@ def _context(purge):
         asset_key=AssetKey("weather_short_forecast_retention"),
         log_event=observations.append,
         observations=observations,
+        warnings=warnings,
         add_output_metadata=outputs.append,
-        log=SimpleNamespace(info=lambda message, *args: logs.append(message % args)),
+        log=SimpleNamespace(
+            info=lambda message, *args: logs.append(message % args),
+            warning=lambda message, *args: warnings.append(message % args),
+        ),
     )
     return context, logs, outputs, disposed
 
@@ -44,23 +48,41 @@ def _execute(context):
     return definitions.weather_short_forecast_retention.op.compute_fn.decorated_fn(context)
 
 
-@pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
-def test_incomplete_failure_itself_carries_result_metadata(monkeypatch, status):
-    result = dict(
+def _result(status, facts_deleted):
+    return dict(
         operation_id="fixture-operation", cutoff=NOW.isoformat(), dry_run=False,
-        batches=1, matched_in_batches=1, pointers_deleted=1, facts_deleted=1,
-        remaining=True, status=status, elapsed_seconds=1.0,
+        batches=1, matched_in_batches=facts_deleted, pointers_deleted=facts_deleted,
+        facts_deleted=facts_deleted, remaining=True, status=status, elapsed_seconds=1.0,
         last_batch_elapsed_seconds=0.1, remaining_budget_seconds=59.0,
+        error_class=None, backlog_lag_seconds=3600.0,
     )
+
+
+@pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
+def test_zero_progress_failure_itself_carries_result_metadata(monkeypatch, status):
+    result = _result(status, 0)
     monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
     context, _, outputs, disposed = _context(lambda **_: None)
     with pytest.raises(Failure) as failure:
         _execute(context)
+    assert "진척 없이" in failure.value.description
     assert failure.value.metadata["status"].value == status
-    assert failure.value.metadata["facts_deleted"].value == 1
+    assert failure.value.metadata["facts_deleted"].value == 0
     assert failure.value.metadata["remaining"].value is True
     assert failure.value.metadata["operation_id"].value == "fixture-operation"
     assert outputs == [result] and disposed == [True]
+
+
+@pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
+def test_partial_progress_with_backlog_is_success_not_failure(monkeypatch, status):
+    """운영 2026-10-20~26: 매 실행 약1만 행을 지우고도 Failure였다. 진척은 성공이다."""
+    result = _result(status, 10000)
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    context, _, outputs, disposed = _context(lambda **_: None)
+    assert _execute(context) is result
+    assert outputs == [result] and disposed == [True]
+    assert len(context.warnings) == 1 and "backlog" in context.warnings[0]
+    assert "facts_deleted=10000" in context.warnings[0]
 
 
 def test_sql_exception_keeps_prior_committed_progress_without_success(monkeypatch):
@@ -211,6 +233,59 @@ def test_committed_observation_survives_sql_failure_and_instance_reopen(
         assert failure.event_specific_data.user_failure_data is None
         assert failure.event_specific_data.error.cause.cls_name == "OperationalError"
         assert not any(event.event_type_value == "STEP_OUTPUT" for event in events)
+
+
+def test_next_run_resumes_after_the_previous_runs_last_deleted_key(monkeypatch, tmp_path):
+    """실제 SDK 저장소: 부분 진척 run은 SUCCESS이고, 다음 run은 그 위치에서 이어 고른다."""
+    first = retention.ShortForecastKey(
+        datetime(2026, 10, 15, 3, tzinfo=UTC), datetime(2026, 10, 13, 2, tzinfo=UTC), "a" * 64,
+    )
+    second = retention.ShortForecastKey(
+        datetime(2026, 10, 15, 4, tzinfo=UTC), datetime(2026, 10, 13, 5, tzinfo=UTC), "b" * 64,
+    )
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return dict(_report(remaining=True, matched=1000), last_key=first)
+        if len(calls) == 2:
+            # 같은 run의 다음 batch가 잠금 timeout으로 연기됐다. 앞 commit은 진척이다.
+            return dict(_report(remaining=None, matched=0, deferred=True),
+                        last_key=None, error_class="LockNotAvailable")
+        return dict(_report(remaining=False, matched=5), last_key=second)
+
+    repo = SimpleNamespace(
+        purge_expired_short_forecast=purge, engine=SimpleNamespace(dispose=lambda: None),
+    )
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    job_name = "short_retention_resume_test"
+    selected = Definitions(
+        assets=[definitions.weather_short_forecast_retention],
+        jobs=[define_asset_job(job_name)],
+        resources={"weather_repository": SimpleNamespace(create_repository=lambda: repo)},
+    )
+    with DagsterInstance.local_temp(
+        str(tmp_path), overrides={"telemetry": {"enabled": False}},
+    ) as instance:
+        job = selected.resolve_job_def(job_name)
+        first_run = job.execute_in_process(instance=instance, raise_on_error=False)
+        assert first_run.success
+        assert [call["after"] for call in calls] == [None, first]
+        assert calls[0]["statement_timeout_ms"] == retention.HEAD_STATEMENT_TIMEOUT_MS
+        second_run = job.execute_in_process(instance=instance, raise_on_error=False)
+        assert second_run.success
+        # 두 번째 run의 첫 선택은 머리가 아니라 앞 run이 지운 마지막 키 뒤에서 시작한다.
+        assert calls[2]["after"] == first
+        assert calls[2]["statement_timeout_ms"] == retention.STATEMENT_TIMEOUT_MS
+        event = instance.get_latest_materialization_event(
+            AssetKey("weather_short_forecast_retention"),
+        )
+        metadata = {
+            key: value.value for key, value in event.asset_materialization.metadata.items()
+        }
+        assert metadata["status"] == "complete_snapshot" and metadata["resumed"] is True
+        assert retention.ShortForecastKey.from_metadata(metadata) == second
 
 
 def test_only_committed_whitelisted_progress_becomes_an_observation(monkeypatch):
