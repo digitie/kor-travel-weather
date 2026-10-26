@@ -50,6 +50,7 @@ from sqlalchemy import (
     select,
     text,
     true,
+    union_all,
     update,
     values,
 )
@@ -421,6 +422,12 @@ class WeatherValueRow(Base):
 
 _MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
 _PROVIDER_MARKER_PREDICATE = "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+_MARKER_CURRENT_PREDICATE = (
+    _PROVIDER_MARKER_PREDICATE + " AND forecast_style IN ('observed', 'nowcast')"
+)
+_MARKER_FORECAST_PREDICATE = (
+    _PROVIDER_MARKER_PREDICATE + " AND forecast_style IN ('ultra_short', 'short', 'mid')"
+)
 
 
 class WeatherCurrentValueRow(Base):
@@ -493,6 +500,37 @@ class WeatherCurrentValueRow(Base):
             text(_CURRENT_PREFERENCE_EXPRESSION),
             text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
             text("value_id DESC"), postgresql_where=text(_PROVIDER_MARKER_PREDICATE),
+        ),
+        # 종류별 마커는 제공처 미지정도 metric/target prefix에서 바로 대표를 찾는다.
+        # 현재값은 최신 target, 예보는 가까운 target을 쓰므로 방향을 분리한다.
+        Index(
+            "ix_weather_current_values_marker_current",
+            text("location_id"), text("metric_key"), text("target_at DESC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_CURRENT_PREDICATE),
+            postgresql_include=["provider", "forecast_style", "weather_domain", "dataset_key"],
+        ),
+        Index(
+            "ix_weather_current_values_marker_forecast",
+            text("location_id"), text("metric_key"), text("target_at ASC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_FORECAST_PREDICATE),
+            postgresql_include=["provider", "forecast_style", "weather_domain", "dataset_key"],
+        ),
+        # 단일 제공처를 선택한 generic plan도 다른 제공처의 이력을 훑지 않는다.
+        Index(
+            "ix_weather_current_values_marker_provider_current",
+            text("location_id"), text("provider"), text("metric_key"), text("target_at DESC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_CURRENT_PREDICATE),
+            postgresql_include=["forecast_style", "weather_domain", "dataset_key"],
+        ),
+        Index(
+            "ix_weather_current_values_marker_provider_forecast",
+            text("location_id"), text("provider"), text("metric_key"), text("target_at ASC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_FORECAST_PREDICATE),
+            postgresql_include=["forecast_style", "weather_domain", "dataset_key"],
         ),
         # The fact table is partitioned by ``known_at``, so its primary key is
         # ``(value_id, known_at)`` and a reference has to name both.  The
@@ -2695,7 +2733,11 @@ class WeatherRepository:
                                for style in ("observed", "nowcast"))
         timestamp = WeatherCurrentValueRow.target_at
         order: list[Any] = []
-        if prefer_current:
+        current_marker = per_metric and kinds is not None and set(kinds) <= {"observed", "nowcast"}
+        forecast_marker = per_metric and kinds is not None and set(kinds) <= {
+            "ultra_short", "short", "mid",
+        }
+        if prefer_current and not current_marker:
             order.append(
                 case(
                     (
@@ -2744,6 +2786,20 @@ class WeatherRepository:
             candidate = candidate.where(
                 WeatherCurrentValueRow.metric_key == requested_locations.c.metric_key,
             )
+            if current_marker or forecast_marker:
+                # 고정 부분 인덱스 조건만 literal이다. 실제 요청 필터와 시각은 계속
+                # bind로 유지해 prepared generic plan에서도 인덱스를 증명한다.
+                styles = ("observed", "nowcast") if current_marker else (
+                    "ultra_short", "short", "mid",
+                )
+                candidate = candidate.where(
+                    WeatherCurrentValueRow.metric_key.in_(tuple(
+                        literal(key, literal_execute=True) for key in _MARKER_METRIC_KEYS
+                    )),
+                    WeatherCurrentValueRow.forecast_style.in_(tuple(
+                        literal(style, literal_execute=True) for style in styles
+                    )),
+                )
         if prefer_current:
             # "현재 날씨" falls back to a forecast only once observed/nowcast is
             # exhausted, and the fallback must be the nearest slot that has
@@ -2797,43 +2853,90 @@ class WeatherRepository:
                 alert_filter if alerts_only else not_(alert_filter)
             )
         if alert_active_at is not None:
-            # Mirror ``active_alert_values``: the max-age bound applies only to
-            # announcements with no explicit end time.  A typhoon or heat
-            # advisory carries ``valid_until`` and stays active well past three
-            # days, so a plain ``target_at`` window would hide exactly the
-            # warnings that matter most.
-            #
-            # ``valid_until`` is the one sort/filter column still on the fact,
-            # so the join belongs here rather than beside the other options: a
-            # predicate added without it compiles to a silent cross join.
-            candidate = candidate.join(
-                WeatherValueRow,
-                and_(
-                    WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
-                    WeatherValueRow.known_at == WeatherCurrentValueRow.known_at,
-                ),
-            ).where(
-                or_(
-                    WeatherCurrentValueRow.target_at >= alert_active_at - ALERT_MAX_AGE,
-                    WeatherValueRow.valid_until > alert_active_at,
-                )
-            )
-        candidate = candidate.lateral().alias("current_value_candidates")
-        pairs = session.execute(
-            select(
-                requested_locations.c.location_id, candidate.c.value_id, candidate.c.known_at,
-            ).select_from(requested_locations.join(candidate, true()))
-        ).all()
+            # 유효 특보는 LIMIT 전에 판정한다. 오래된 명시 종료시각을 생략하지
+            # 않되 후보와 원본 키 배열은 512행씩 읽어 이력 전체를 메모리에 쌓지 않는다.
+            pointer_rows = session.execute(candidate.limit(None).order_by(None).add_columns(
+                requested_locations.c.location_id.label("location_id"),
+                WeatherCurrentValueRow.target_at.label("target_at"),
+                WeatherCurrentValueRow.source_record_key.label("source_record_key"),
+                WeatherCurrentValueRow.forecast_style.label("forecast_style"),
+                WeatherCurrentValueRow.metric_key.label("metric_key"),
+            ).execution_options(yield_per=512))
+            winners: dict[str, list[Any]] = {}
+            cutoff = alert_active_at - ALERT_MAX_AGE
+            for pointers in pointer_rows.partitions(512):
+                active = {(p.value_id, p.known_at) for p in pointers if p.target_at >= cutoff}
+                older = [p for p in pointers if p.target_at < cutoff]
+                if older:
+                    alert_keys = func.unnest(
+                        bindparam("alert_value_ids", [p.value_id for p in older],
+                                  type_=ARRAY(String)),
+                        bindparam("alert_known_ats", [p.known_at for p in older],
+                                  type_=ARRAY(AwareDateTime())),
+                    ).table_valued("value_id", "known_at").render_derived(name="marker_alert_keys")
+                    clocks = [p.known_at for p in older]
+                    active.update(session.execute(select(
+                        WeatherValueRow.value_id, WeatherValueRow.known_at,
+                    ).join(alert_keys, and_(
+                        WeatherValueRow.value_id == alert_keys.c.value_id,
+                        WeatherValueRow.known_at == alert_keys.c.known_at,
+                    )).where(
+                        WeatherValueRow.known_at >= min(clocks),
+                        WeatherValueRow.known_at <= max(clocks),
+                        WeatherValueRow.valid_until > alert_active_at,
+                    )).all())
+                for pointer in pointers:
+                    if (pointer.value_id, pointer.known_at) in active:
+                        winners.setdefault(pointer.location_id, []).append(pointer)
+                for key, choices in winners.items():
+                    choices.sort(key=lambda p: (
+                        p.known_at, p.source_record_key is not None,
+                        p.source_record_key or "", p.value_id,
+                    ), reverse=True)
+                    if newest_first:
+                        choices.sort(key=lambda p: p.target_at, reverse=True)
+                    else:
+                        choices.sort(key=lambda p: (p.target_at, p.metric_key))
+                    if prefer_current:
+                        choices.sort(key=lambda p: p.forecast_style not in ("observed", "nowcast"))
+                    winners[key] = choices[:limit_per_location]
+            pairs = [(p.location_id, p.value_id, p.known_at)
+                     for choices in winners.values() for p in choices]
+        else:
+            if per_metric and providers is not None and len(set(providers)) > 1:
+                # 다중 제공처도 각각의 정렬된 prefix에서 대표만 읽은 뒤 병합한다.
+                # IN 전체 이력을 먼저 정렬하면 generic plan의 비용이 다시 커진다.
+                per_provider = union_all(*[
+                    candidate.add_columns(
+                        WeatherCurrentValueRow.target_at.label("target_at"),
+                        WeatherCurrentValueRow.source_record_key.label("source_record_key"),
+                    ).where(WeatherCurrentValueRow.provider == provider).correlate(
+                        requested_locations,
+                    ) for provider in dict.fromkeys(providers)
+                ]).subquery("marker_provider_candidates")
+                candidate = select(per_provider.c.value_id, per_provider.c.known_at).order_by(
+                    per_provider.c.target_at.desc() if newest_first else per_provider.c.target_at,
+                    per_provider.c.known_at.desc().nullslast(),
+                    per_provider.c.source_record_key.desc().nullslast(),
+                    per_provider.c.value_id.desc(),
+                ).limit(limit_per_location)
+            candidate = candidate.lateral().alias("current_value_candidates")
+            pairs = session.execute(
+                select(
+                    requested_locations.c.location_id, candidate.c.value_id, candidate.c.known_at,
+                ).select_from(requested_locations.join(candidate, true()))
+            ).all()
         if not pairs:
             return result
         # UUID만 조회하면 모든 날짜 partition을 탐색하고 다른 revision도 섞인다.
         # 배열의 같은 인덱스가 정확한 복합 키이며, 범위 조건은 partition을 제거한다.
         keys = func.unnest(
-            bindparam("current_value_ids", [row.value_id for row in pairs], type_=ARRAY(String)),
-            bindparam("current_known_ats", [row.known_at for row in pairs],
+            bindparam("current_value_ids", [value_id for _, value_id, _ in pairs],
+                      type_=ARRAY(String)),
+            bindparam("current_known_ats", [known_at for _, _, known_at in pairs],
                       type_=ARRAY(AwareDateTime())),
         ).table_valued("value_id", "known_at").render_derived(name="current_fact_keys")
-        clocks = [row.known_at for row in pairs]
+        clocks = [known_at for _, _, known_at in pairs]
         rows = session.scalars(
             select(WeatherValueRow).join(keys, and_(
                 WeatherValueRow.value_id == keys.c.value_id,

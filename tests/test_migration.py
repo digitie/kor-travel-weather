@@ -132,7 +132,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0033_export_source_inventory"
+            assert version == "0034_marker_kind_indexes"
             snapshot_order = next(column for column in inspector.get_columns(
                 "weather_export_snapshots"
             ) if column["name"] == "issue_order")
@@ -298,6 +298,10 @@ _MARKER_INDEXES = (
     "ix_weather_values_alert_lookup",
 )
 _PROJECTION_INDEXES = (
+    "ix_weather_current_values_marker_current",
+    "ix_weather_current_values_marker_provider_current",
+    "ix_weather_current_values_marker_provider_forecast",
+    "ix_weather_current_values_marker_forecast",
     "ix_weather_current_values_alert_lookup",
     "ix_weather_current_values_location_current",
 )
@@ -445,7 +449,14 @@ def test_migration_leaves_a_pre_built_index_alone(monkeypatch) -> None:
                 )
             )
 
-        names = _MARKER_INDEXES + _PROJECTION_INDEXES
+        names = _MARKER_INDEXES + tuple(
+            name for name in _PROJECTION_INDEXES if name not in {
+                "ix_weather_current_values_marker_current",
+                "ix_weather_current_values_marker_forecast",
+                "ix_weather_current_values_marker_provider_current",
+                "ix_weather_current_values_marker_provider_forecast",
+            }
+        )
 
         def oids(connection) -> dict[str, int]:
             rows = connection.execute(
@@ -884,3 +895,94 @@ def test_migration_rebuilds_an_index_left_invalid_by_a_failed_build(
         assert valid is True
     finally:
         get_settings.cache_clear()
+
+
+def test_marker_kind_indexes_recover_retry_and_downgrade(monkeypatch):
+    """현재/예보 인덱스 재시도는 유효 OID를 보존하고 미완료 인덱스만 복구한다."""
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", TEST_DATABASE_URL)
+    get_settings.cache_clear()
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    try:
+        with repo.engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        config = Config("alembic.ini")
+        command.upgrade(config, "head")
+        names = ["ix_weather_current_values_marker_current",
+                 "ix_weather_current_values_marker_forecast",
+                 "ix_weather_current_values_marker_provider_current",
+                 "ix_weather_current_values_marker_provider_forecast"]
+        with repo.engine.begin() as connection:
+            before = dict(connection.execute(text(
+                "SELECT relname,oid FROM pg_class WHERE relname=ANY(:names)"
+            ), {"names": names}).all())
+            # 전용 테스트 DB에서 중단된 concurrent build의 catalog 상태를 재현한다.
+            connection.execute(text(
+                "UPDATE pg_index SET indisvalid=false WHERE indexrelid=:oid"
+            ), {"oid": before[names[1]]})
+        command.stamp(config, "0033_export_source_inventory")
+        command.upgrade(config, "head")
+        with repo.engine.connect() as connection:
+            after = dict(connection.execute(text(
+                "SELECT relname,oid FROM pg_class WHERE relname=ANY(:names)"
+            ), {"names": names}).all())
+            valid = connection.execute(text(
+                "SELECT bool_and(indisvalid AND indisready) FROM pg_index "
+                "WHERE indexrelid=ANY(:oids)"
+            ), {"oids": list(after.values())}).scalar_one()
+        assert after[names[0]] == before[names[0]]
+        assert after[names[1]] != before[names[1]] and valid
+        command.downgrade(config, "0033_export_source_inventory")
+        with repo.engine.connect() as connection:
+            assert connection.execute(text(
+                "SELECT count(*) FROM pg_class WHERE relname=ANY(:names)"
+            ), {"names": names}).scalar_one() == 0
+        command.upgrade(config, "head")
+    finally:
+        repo.engine.dispose()
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("statement,lock", [(0, 0), (750, 100), (300000, 9000)])
+def test_marker_migration_timeouts_are_bounded_and_restored(statement, lock, monkeypatch):
+    """concurrent DDL용 세션 timeout은 더 엄격한 호출자 설정과 예외 복구를 보존한다."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    module = _revision_module("0034_marker_kind_indexes")
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    try:
+        with repo.engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            original = connection.execute(text(
+                "SELECT current_setting('statement_timeout'), current_setting('lock_timeout')"
+            )).one()
+            try:
+                connection.execute(text("SELECT set_config('statement_timeout',:value,false)"),
+                                   {"value": f"{statement}ms"})
+                connection.execute(text("SELECT set_config('lock_timeout',:value,false)"),
+                                   {"value": f"{lock}ms"})
+                monkeypatch.setattr(module, "op", SimpleNamespace(
+                    get_bind=lambda: connection,
+                    get_context=lambda: SimpleNamespace(autocommit_block=nullcontext),
+                ))
+                with pytest.raises(RuntimeError, match="검증용"), module.bounded_autocommit():
+                    settings = dict(connection.execute(text(
+                        "SELECT name,setting::bigint FROM pg_settings "
+                        "WHERE name IN ('statement_timeout','lock_timeout')"
+                    )).all())
+                    assert settings == {"statement_timeout": min(statement or 180000, 180000),
+                                        "lock_timeout": min(lock or 5000, 5000)}
+                    raise RuntimeError("검증용")
+                settings = dict(connection.execute(text(
+                    "SELECT name,setting::bigint FROM pg_settings "
+                    "WHERE name IN ('statement_timeout','lock_timeout')"
+                )).all())
+                assert settings == {"statement_timeout": statement, "lock_timeout": lock}
+            finally:
+                for name, value in zip(
+                    ("statement_timeout", "lock_timeout"), original, strict=True,
+                ):
+                    connection.execute(text("SELECT set_config(:name,:value,false)"),
+                                       {"name": name, "value": value})
+    finally:
+        repo.engine.dispose()
