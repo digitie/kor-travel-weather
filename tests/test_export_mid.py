@@ -13,21 +13,26 @@ from kortravelweather_dagster.kma_weather import _source_spec
 
 from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_mid import MidScopeDescriptor, prove_mid_source
+from kortravelweather.models import KST
 
 FETCHED = datetime(2026, 10, 23, 9, 15, tzinfo=UTC)
 
 
-def _raw(part):
+def _raw(part, *, first=3):
     result = {"regId": "11B00000" if part == "land" else "11B10101"}
     if part == "land":
-        for day in range(3, 11):
+        for day in range(first, 11):
             for suffix in ("Am", "Pm") if day <= 7 else ("",):
                 result[f"wf{day}{suffix}"] = "구름많음"
                 result[f"rnSt{day}{suffix}"] = 30
     else:
-        for day in range(3, 11):
+        for day in range(first, 11):
             result[f"taMin{day}"] = 5
             result[f"taMax{day}"] = 20
+            if first == 4:
+                # 운영 getMidTa 응답(2026-10-27)은 일별 범위 key도 함께 준다.
+                result[f"taMin{day}Low"], result[f"taMin{day}High"] = 4, 6
+                result[f"taMax{day}Low"], result[f"taMax{day}High"] = 19, 21
     return result
 
 
@@ -38,8 +43,10 @@ def _rehash(record):
     record["source_record_key"] = "sr_" + hashlib.sha256(text.encode()).hexdigest()[:48]
 
 
-def _source(part, *, tm_fc="202610231800"):
-    raw = _raw(part)
+def _source(part, *, tm_fc="202610231800", first=3, mutate=None):
+    raw = _raw(part, first=first)
+    if mutate:
+        mutate(raw)
 
     async def load():
         def handle(incoming):
@@ -257,3 +264,50 @@ def test_descriptor_rejects_noncanonical_scope(source, change):
     descriptor, _ = source
     with pytest.raises(ValueError):
         MidScopeDescriptor.model_validate({**descriptor.model_dump(), **change})
+
+
+@pytest.mark.parametrize("part", ["land", "temperature"])
+def test_current_day4_response_is_a_complete_public_range(part):
+    """운영 중기 응답은 D+4부터 시작한다(2026-10-27 getMidTa: taMin4~taMin10).
+
+    D+3 key가 없는 응답도 공개한 D+4~D+10 전체가 완결이면 승인한다.
+    """
+    descriptor, record = _source(part, first=4)
+    proof = prove_mid_source(descriptor, record)
+    per_location = 22 if part == "land" else 14
+    assert len(proof.values) == per_location * len(descriptor.location_ids)
+    offsets = {v.payload["day_offset"] for v in proof.values}
+    assert offsets == set(range(4, 11))
+    issued = proof.revision.astimezone(KST).date()
+    assert min(v.target_at.astimezone(KST).date() for v in proof.values) == issued + timedelta(4)
+
+
+def _drop(*keys):
+    def mutate(raw):
+        for key in keys:
+            raw.pop(key)
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    "part,first,mutate",
+    [
+        # 공개 범위 중간의 하루가 통째로 빠진 응답
+        ("temperature", 4, _drop("taMin6", "taMax6")),
+        ("land", 4, _drop("wf6Am", "wf6Pm", "rnSt6Am", "rnSt6Pm")),
+        # 한 metric만 빠진 반쪽 응답
+        ("temperature", 4, _drop("taMin4")),
+        ("land", 4, _drop("rnSt5Pm")),
+        # KMA가 공개하지 않는 시작일(D+5)
+        ("temperature", 5, None),
+        ("land", 5, None),
+        # 마지막 날(D+10)이 없는 응답
+        ("temperature", 4, _drop("taMin10", "taMax10")),
+        ("land", 4, _drop("wf10", "rnSt10")),
+    ],
+)
+def test_day4_response_still_requires_every_published_slot(part, first, mutate):
+    descriptor, record = _source(part, first=first, mutate=mutate)
+    with pytest.raises(ExportArtifactError):
+        prove_mid_source(descriptor, record)

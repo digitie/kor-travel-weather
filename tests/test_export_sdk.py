@@ -182,6 +182,58 @@ def test_khoa_unknown_slot_duplicate_and_forecast_without_future_are_not_approve
         normalize_sdk_source(desc, {**source, "fetched_at": AT + timedelta(days=2)})
 
 
+#: 운영 KHOA 해수욕지수 응답(2026-10-27)의 날짜/구간: D0·D+1은 오전/오후, D+2~D+5는 '일'.
+KHOA_PUBLIC_PERIODS = [
+    (0, "오전"), (0, "오후"), (1, "오전"), (1, "오후"),
+    (2, "일"), (3, "일"), (4, "일"), (5, "일"),
+]
+
+
+def _khoa_source(periods):
+    rows = [
+        {"bbchNm": "대천", "lat": 36.31, "lot": 126.513,
+         "predcYmd": (AT + timedelta(days=offset)).date().isoformat(), "predcNoonSeCd": period,
+         "avgArtmp": "17.2", "avgWtem": "18.1", "maxWspd": "4.2", "maxWvhgt": "0.7",
+         "opnStat": "폐장", "totalIndex": "좋음"}
+        for offset, period in periods
+    ]
+    parsed = parse_beach_index_place(
+        Observatory(id="beach", name="대천", latitude=36.31, longitude=126.513), rows
+    )
+    return khoa.beach_index_source_record(parsed, location_id="khoa-beach", fetched_at=AT), parsed
+
+
+def test_khoa_far_range_whole_day_forecasts_are_approved():
+    desc, _, _, adapter = fixture("khoa")
+    source, parsed = _khoa_source(KHOA_PUBLIC_PERIODS)
+    values = normalize_sdk_source(desc, source)
+    assert values == adapter(parsed, location_id=desc.entity_id,
+                             source_record_key=source["source_record_key"], known_at=AT)
+    whole_day = {v.target_at for v in values if v.payload.get("forecast_period") == "일"}
+    expected_days = {(AT + timedelta(days=offset)).date() for offset in (2, 3, 4, 5)}
+    assert {at.date() for at in whole_day} == expected_days
+
+
+@pytest.mark.parametrize(
+    "periods",
+    [
+        # 같은 날짜에 하루 단위와 반나절 단위가 섞임
+        [(0, "오전"), (0, "오후"), (1, "오전"), (1, "일")],
+        # 하루 단위가 반나절 단위 날짜보다 앞섬
+        [(0, "일"), (1, "오전"), (1, "오후")],
+        # 같은 날짜의 하루 단위 중복
+        [(0, "오전"), (0, "오후"), (2, "일"), (2, "일")],
+        # 알 수 없는 구간
+        [(0, "오전"), (0, "오후"), (2, "종일")],
+    ],
+)
+def test_khoa_whole_day_is_only_the_unambiguous_far_range(periods):
+    desc, _, _, _ = fixture("khoa")
+    source, _ = _khoa_source(periods)
+    with pytest.raises(ExportArtifactError):
+        normalize_sdk_source(desc, source)
+
+
 @pytest.mark.parametrize("kind", ["air", "mountain", "dust", "krex", "khoa"])
 def test_actual_sdk_capture_native_success_promotes(
     tmp_path, monkeypatch, kind

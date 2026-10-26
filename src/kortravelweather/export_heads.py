@@ -298,6 +298,32 @@ def _normalize(descriptor, record, locations, *, skipped=None):
         )
 
 
+def _announced_kma_base(dataset_key, meta, rows) -> tuple[str, str]:
+    """rows가 함께 밝힌 발표 base를 revision으로 묶는다. 요청 base와의 대응도 증명한다.
+
+    모든 row는 같은 baseDate/baseTime이어야 한다. 그 값은 SDK가 요청한 base와 같아야 하며,
+    초단기예보만 예외로 KMA가 HH30 요청에 같은 날짜·시각의 HH00을 발표 base로 돌려주는
+    대응을 허용한다(운영 실측 2026-10-27: 요청 0730, 모든 row baseTime 0700).
+    """
+    announced = {(str(r.get("baseDate")), str(r.get("baseTime"))) for r in rows}
+    if len(announced) != 1:
+        raise ExportArtifactError("KMA 원천 rows의 발표 base가 하나가 아닙니다.")
+    ((base_date, base_time),) = announced
+    requested_date, requested_time = str(meta["base_date"]), str(meta["base_time"])
+    if (base_date, base_time) == (requested_date, requested_time):
+        return base_date, base_time
+    if (
+        dataset_key == "kma_ultra_short_forecast"
+        and base_date == requested_date
+        and len(requested_time) == 4
+        and requested_time.isdigit()
+        and requested_time.endswith("30")
+        and base_time == requested_time[:2] + "00"
+    ):
+        return base_date, base_time
+    raise ExportArtifactError("KMA 원천의 발표 base가 metadata와 다릅니다.")
+
+
 def _forecast_coverage(descriptor, rows, revision):
     """public pagination에 더해 최소 예보 시간대/필수 category를 확인한다.
 
@@ -504,13 +530,9 @@ class ExportHeads:
         receipt = PaginationReceipt.model_validate(meta["pagination"], strict=True)
         if not receipt.complete or receipt.received_item_count != len(rows) or not rows:
             raise ExportArtifactError("KMA source 전체 페이지의 nonempty 증거가 필요합니다.")
-        revision = parse_kma_datetime(meta["base_date"], meta["base_time"]).astimezone(UTC)
-        if any(
-            str(r.get("baseDate")) != meta["base_date"]
-            or str(r.get("baseTime")) != meta["base_time"]
-            for r in rows
-        ):
-            raise ExportArtifactError("KMA 원천의 발표 base가 metadata와 다릅니다.")
+        revision = parse_kma_datetime(
+            *_announced_kma_base(record["dataset_key"], meta, rows)
+        ).astimezone(UTC)
         request = meta["request_params"]
         if any(
             str(r.get("nx")) != str(request["nx"]) or str(r.get("ny")) != str(request["ny"])
