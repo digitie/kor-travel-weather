@@ -40,3 +40,15 @@ A의 합성 비교는979개×64KiB=64,159,744B, 파일마다 동일32 raw key를
 응답5,152B는 모든 표본에서 whole bytes가 같고32 counter 각각979.0이다. 전용 listener와 임시 디렉터리는 정리됐다. RSS 감소는 수용하지 않는다. 별도 tracemalloc 1표본씩의 peak는4,235,290→4,235,202B/current는26,892→30,236B여서 메모리0 또는 메모리 개선 주장도 하지 않는다. memo가 merge의 중복 JSON decode까지 제거하는 것은 아니다.
 
 원장 `weather-metrics-key-validation-endpoint-paired-r1.json` SHA256 `c6913c3bcede67296d661d452f5df21dd5072ee2892f18c6e4892ff239f16775`와 재현 스크립트는2026-10-24-operations 감사 디렉터리에 보존한다. 실제 운영 CPU 절감·수집 성능·배포·장시간 안정성은 미측정이며 두 독립 리뷰와 최종 CI를 기다린다.
+
+
+## 최종 CI·병합·배포 정산
+
+위 초기 후보의 환경/회귀 실패와 합성 측정은 당시 원문으로 보존한다. 최종74482는 정확 lock
+CI Python1292·frontend253/type/lint/build와 독립2인 검토를 통과했고, 같은 전체 tree의
+main95020으로 병합됐다. 공식 API/CS/웹3이미지·migration0033 및 공개 UI21 수용,
+기존 CS listener 단일 HTTP200과 원래21RUN/2STOP 복원은
+[배포 원장](../reports/2026-10-27-weather171-deployment-closure.md)에 별도로 정산했다.
+기존 감사도구의 source/scrape 단계 실패는 실제 성공 요청과 구분한다. 새 source와 listener
+실행 확인은 memo-hit 횟수나 운영 CPU/RSS 개선·전체 수집·장시간 안정성의 증명이 아니며,
+합성 ABBA 비교를 그 효과로 환산하지 않는다. Map export/복구 sensor 신규 활성화는 없다.
