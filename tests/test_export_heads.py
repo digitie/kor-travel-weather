@@ -16,7 +16,8 @@ from kortravelweather.repository import WeatherRepository
 
 
 @pytest.mark.parametrize(
-    "style,base_time,hours", [("ultra_short", "2330", 6), ("short", "2300", 72)]
+    # 23시 단기예보는 D+4 0시까지 1시간 간격이다(첫 정시 D+1 0시부터 73개).
+    "style,base_time,hours", [("ultra_short", "2330", 6), ("short", "2300", 73)]
 )
 def test_forecast_coverage_uses_sdk_base_across_kst_midnight(style, base_time, hours):
     from kma.time_utils import parse_kma_datetime
@@ -56,6 +57,68 @@ def test_forecast_coverage_uses_sdk_base_across_kst_midnight(style, base_time, h
     _forecast_coverage(descriptor, rows, base.astimezone(UTC))
     with pytest.raises(ExportArtifactError):
         _forecast_coverage(descriptor, rows[len(categories) :], base.astimezone(UTC))
+
+
+_SHORT_CATEGORIES = ("TMP", "PCP", "REH", "PTY", "POP", "SKY", "VEC", "WSD")
+
+
+def _short_rows(base_date, base_time, hourly, *, tail=8, drop=()):
+    """운영 단기예보 응답 모양: 1시간 간격 ``hourly``개 정시 뒤 3시간 간격 ``tail``개."""
+    from kma.time_utils import parse_kma_datetime
+
+    base = parse_kma_datetime(base_date, base_time)
+    first = base.replace(minute=0) + timedelta(hours=1)
+    times = [first + timedelta(hours=i) for i in range(hourly)]
+    times += [times[-1] + timedelta(hours=3 * (i + 1)) for i in range(tail)]
+    rows = [
+        {"fcstDate": at.strftime("%Y%m%d"), "fcstTime": at.strftime("%H%M"), "category": c}
+        for index, at in enumerate(times)
+        if index not in drop
+        for c in _SHORT_CATEGORIES
+    ]
+    return rows, base.astimezone(UTC)
+
+
+def _short_descriptor():
+    return ScopeDescriptor(
+        dataset_key="kma_short_forecast",
+        forecast_style="short",
+        entity_type="weather_response",
+        entity_id="grid:57:103",
+        nx=57,
+        ny=103,
+        location_ids=("short",),
+        normalizer_revision="kma-v1",
+        winner_policy_revision="kma-base-v1",
+        coverage_contract="kma-grid-forecast-v1",
+    )
+
+
+@pytest.mark.parametrize(
+    "base_date,base_time,hourly",
+    # 운영 실측: 05시 67개, 08시 64개, 20시 76개 정시가 1시간 간격이고 뒤는 3시간 간격 8개.
+    [("20261027", "0500", 67), ("20261026", "0800", 64), ("20261026", "2000", 76)],
+)
+def test_short_forecast_requires_the_hourly_horizon_its_base_publishes(
+    base_date, base_time, hourly
+):
+    from kortravelweather.export_heads import _forecast_coverage
+
+    rows, revision = _short_rows(base_date, base_time, hourly)
+    _forecast_coverage(_short_descriptor(), rows, revision)
+    # 1시간 간격 구간의 마지막 정시(D+3 또는 D+4 0시)가 빠지면 연속 구간이 끊긴다.
+    rows, revision = _short_rows(base_date, base_time, hourly, drop={hourly - 1})
+    with pytest.raises(ExportArtifactError):
+        _forecast_coverage(_short_descriptor(), rows, revision)
+
+
+def test_late_short_base_cannot_pass_with_an_early_base_horizon():
+    """20시 발표가 05시 발표처럼 D+3 0시에서 1시간 간격을 멈추면 승인하지 않는다."""
+    from kortravelweather.export_heads import _forecast_coverage
+
+    rows, revision = _short_rows("20261026", "2000", 52)
+    with pytest.raises(ExportArtifactError):
+        _forecast_coverage(_short_descriptor(), rows, revision)
 
 
 @pytest.fixture(scope="module")

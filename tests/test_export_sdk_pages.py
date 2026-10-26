@@ -57,6 +57,37 @@ def test_krex_partial_parser_success_cannot_pass_as_complete_envelope():
         )
 
 
+def test_unpaged_full_snapshot_is_complete_only_with_matching_count():
+    """data.ex.co.kr restWeatherList는 pageNo/numOfRows 없이 count와 list만 준다.
+
+    운영 실측(2026-10-27): ``{"code": "SUCCESS", "count": 187, "list": [187행]}``.
+    """
+    receipt = SdkPageReceipt()
+    receipt.add_snapshot(
+        SimpleNamespace(total_count=187, page_no=None, num_of_rows=None), raw_count=187
+    )
+    assert receipt.complete
+
+
+@pytest.mark.parametrize(
+    "fields,raw_count",
+    [
+        ({"total_count": 187, "page_no": None, "num_of_rows": None}, 186),
+        ({"total_count": None, "page_no": None, "num_of_rows": None}, 187),
+        ({"total_count": 0, "page_no": None, "num_of_rows": None}, 0),
+        ({"total_count": True, "page_no": None, "num_of_rows": None}, 1),
+        # 페이지 필드가 하나라도 있으면 전체 snapshot으로 보지 않는다.
+        ({"total_count": 187, "page_no": 1, "num_of_rows": None}, 187),
+        ({"total_count": 187, "page_no": None, "num_of_rows": 1000}, 187),
+    ],
+)
+def test_unpaged_snapshot_rejects_partial_or_ambiguous_envelopes(fields, raw_count):
+    receipt = SdkPageReceipt()
+    with pytest.raises(ExportArtifactError):
+        receipt.add_snapshot(SimpleNamespace(**fields), raw_count=raw_count)
+    assert not receipt.complete
+
+
 def test_khoa_same_slot_replayed_on_two_pages_is_not_silently_overwritten():
     assembly = BeachPageAssembly()
     for number in (1, 2):

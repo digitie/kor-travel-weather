@@ -339,7 +339,10 @@ async def _run_airkorea_weather_sync(
                     )
                 for prepared in export_plans.values():
                     if prepared is not None:
-                        export_collector._reject(prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED")
+                        export_collector._reject(
+                            prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED",
+                            reason="not_in_response",
+                        )
             else:
                 for chunk_sources, chunk in chunk_publications(sources, values):
                     published += await asyncio.to_thread(

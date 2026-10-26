@@ -44,6 +44,7 @@ from .export_artifacts import (
 )
 from .export_lifecycle import ExportLifecycle, _current_owners
 from .export_receipts import ExportAttempt, source_scope_key
+from .models import KST
 
 NOWCAST_REQUIRED_CATEGORIES = frozenset({"T1H", "RN1", "UUU", "VVV", "REH", "PTY", "VEC", "WSD"})
 
@@ -324,11 +325,29 @@ def _announced_kma_base(dataset_key, meta, rows) -> tuple[str, str]:
     raise ExportArtifactError("KMA 원천의 발표 base가 metadata와 다릅니다.")
 
 
+#: KMA 단기예보가 1시간 간격으로 공개하는 마지막 정시(발표일 0시 기준 일수). 2024-11-28
+#: 기간 확대 뒤 02~14시 발표는 D+3 0시(모레 24시), 17~23시 발표는 D+4 0시(글피 24시)까지
+#: 1시간 간격이고 그 뒤 하루는 3시간 간격이다(운영 실측: 2026-10-26 08시 64개·20시 76개,
+#: 2026-10-27 05시 67개의 1시간 간격 정시 뒤 3시간 간격 8개).
+_SHORT_HOURLY_DAYS = {False: 3, True: 4}
+_SHORT_LATE_BASE_HOUR = 17
+
+
+def _short_hourly_slots(revision: datetime) -> int:
+    """그 발표 base가 1시간 간격으로 공개하는 정시 수. 첫 예보 정시와 마지막 정시를 포함한다."""
+    base = revision.astimezone(KST)
+    days = _SHORT_HOURLY_DAYS[base.hour >= _SHORT_LATE_BASE_HOUR]
+    end = base.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=days)
+    first = base.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return int((end - first).total_seconds() // 3600) + 1
+
+
 def _forecast_coverage(descriptor, rows, revision):
     """public pagination에 더해 최소 예보 시간대/필수 category를 확인한다.
 
     발표 시각 선택과 grid 계산은 SDK에 맡긴다. 확장 기간의 3시간 간격과
-    정성형 강수/적설을 1시간 숫자로 재해석하지 않는다.
+    정성형 강수/적설을 1시간 숫자로 재해석하지 않는다. 단기예보는 그 발표 base가
+    1시간 간격으로 공개하는 구간 전체가 연속·완결이어야 한다(고정 72시간이 아니다).
     """
     from kma.time_utils import parse_kma_datetime
 
@@ -343,7 +362,7 @@ def _forecast_coverage(descriptor, rows, revision):
         if descriptor.forecast_style == "ultra_short"
         else {"TMP", "PCP", "REH", "PTY", "POP", "SKY", "VEC", "WSD"}
     )
-    minimum = 6 if descriptor.forecast_style == "ultra_short" else 72
+    minimum = 6 if descriptor.forecast_style == "ultra_short" else _short_hourly_slots(revision)
     complete = sorted(at for at, categories in groups.items() if required.issubset(categories))
     # metadata의 SDK 선택 base를 그대로 사용한다. 이미 선택된 회차의 첫 예보
     # 정시를 묶는 검사이며 발표 회차 선택/지연시간 계산을 재구현하지 않는다.

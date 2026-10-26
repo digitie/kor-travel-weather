@@ -268,7 +268,21 @@ def test_semantically_small_complete_response_keeps_existing_success_head(reposi
     assert _counts(repository) == (4, 2, 2)
 
 
-def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=None):
+def _short_forecast_offsets(base):
+    """KMA 단기예보 공개 구간(base 기준 시간 offset).
+
+    02~14시 발표는 D+3 0시, 17~23시 발표는 D+4 0시까지 1시간 간격이고 그 뒤 하루는
+    3시간 간격이다(2024-11-28 기간 확대 뒤 운영 응답 모양).
+    """
+    from datetime import timedelta
+
+    days = 4 if base.hour >= 17 else 3
+    end = base.replace(hour=0, minute=0) + timedelta(days=days)
+    hourly = int((end - base.replace(minute=0)).total_seconds() // 3600)
+    return list(range(1, hourly + 1)) + [hourly + 3 * (i + 1) for i in range(8)]
+
+
+def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=None, slots=None):
     from datetime import timedelta
 
     from kma.time_utils import parse_kma_datetime
@@ -276,7 +290,10 @@ def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=N
     def respond(request):
         q = request.url.params
         base = parse_kma_datetime(q["base_date"], q["base_time"])
-        hours = 72 if short else 6
+        offsets = _short_forecast_offsets(base) if short else list(range(1, 7))
+        offsets = [offset + start_hour - 1 for offset in offsets]
+        if slots is not None:
+            slots.append(len(offsets))
         metrics = {
             "TMP" if short else "T1H": "18.4",
             "PCP" if short else "RN1": "0",
@@ -289,7 +306,7 @@ def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=N
         if short:
             metrics["POP"] = "0"
         rows = []
-        for hour in range(start_hour, start_hour + hours):
+        for hour in offsets:
             at = (base + timedelta(hours=hour)).replace(minute=0)
             for category, value in metrics.items():
                 rows.append(
@@ -352,14 +369,16 @@ def test_actual_forecast_fanout_publishes_only_complete_bounded_chunks(repositor
         return original(**kwargs)
 
     repository.ingest_batch = ingest
+    slots = []
     result = run_weather_sync(
         repository=repository,
-        client=_forecast_client(short=short),
+        client=_forecast_client(short=short, slots=slots),
         targets=targets,
         base_datasets=frozenset({KMA_SHORT_FORECAST if short else KMA_ULTRA_SHORT_FORECAST}),
         export_artifact_root=tmp_path,
     )
-    expected = 50 * (72 * 8 if short else 6 * 7)
+    assert len(slots) == 1
+    expected = 50 * slots[0] * (8 if short else 7)
     assert result["status"] == "success" and result["values_loaded"] == expected
     assert _counts(repository) == (1, 0, 0)
     for _ in range(32):

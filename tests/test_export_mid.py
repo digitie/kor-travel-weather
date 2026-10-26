@@ -43,7 +43,7 @@ def _rehash(record):
     record["source_record_key"] = "sr_" + hashlib.sha256(text.encode()).hexdigest()[:48]
 
 
-def _source(part, *, tm_fc="202610231800", first=3, mutate=None):
+def _source(part, *, tm_fc="202610231800", first=3, mutate=None, fetched=FETCHED):
     raw = _raw(part, first=first)
     if mutate:
         mutate(raw)
@@ -80,7 +80,7 @@ def _source(part, *, tm_fc="202610231800", first=3, mutate=None):
         location_ids=("a", "b"),
         normalizer_revision=f"kma-mid-{part}-v1",
     )
-    record = _source_spec("kma_mid_forecast", descriptor.entity_id, rows, FETCHED)
+    record = _source_spec("kma_mid_forecast", descriptor.entity_id, rows, fetched)
     return descriptor, record
 
 
@@ -266,20 +266,26 @@ def test_descriptor_rejects_noncanonical_scope(source, change):
         MidScopeDescriptor.model_validate({**descriptor.model_dump(), **change})
 
 
-@pytest.mark.parametrize("part", ["land", "temperature"])
-def test_current_day4_response_is_a_complete_public_range(part):
-    """운영 중기 응답은 D+4부터 시작한다(2026-10-27 getMidTa: taMin4~taMin10).
+#: 운영 실측 회차(2026-10-26 18시: taMin5~10, 2026-10-27 06시: taMin4~10). 06시 발표는
+#: D+4, 18시 발표는 D+5부터 공개한다. (tmFc, 실제 조회 시각)
+MORNING = ("202610240600", datetime(2026, 10, 23, 22, tzinfo=UTC))
+EVENING = ("202610231800", FETCHED)
 
-    D+3 key가 없는 응답도 공개한 D+4~D+10 전체가 완결이면 승인한다.
-    """
-    descriptor, record = _source(part, first=4)
+
+@pytest.mark.parametrize("part", ["land", "temperature"])
+@pytest.mark.parametrize("issue,first", [(MORNING, 4), (EVENING, 5)])
+def test_current_response_starts_where_kma_publishes_for_that_issue(part, issue, first):
+    """D+3 key가 없는 현재 응답도 그 회차가 공개한 범위 전체가 완결이면 승인한다."""
+    tm_fc, fetched = issue
+    descriptor, record = _source(part, tm_fc=tm_fc, first=first, fetched=fetched)
     proof = prove_mid_source(descriptor, record)
-    per_location = 22 if part == "land" else 14
+    days = 11 - first
+    per_location = 2 * (days + (8 - first)) if part == "land" else 2 * days
     assert len(proof.values) == per_location * len(descriptor.location_ids)
-    offsets = {v.payload["day_offset"] for v in proof.values}
-    assert offsets == set(range(4, 11))
+    assert {v.payload["day_offset"] for v in proof.values} == set(range(first, 11))
     issued = proof.revision.astimezone(KST).date()
-    assert min(v.target_at.astimezone(KST).date() for v in proof.values) == issued + timedelta(4)
+    first_day = min(v.target_at.astimezone(KST).date() for v in proof.values)
+    assert first_day == issued + timedelta(days=first)
 
 
 def _drop(*keys):
@@ -291,23 +297,26 @@ def _drop(*keys):
 
 
 @pytest.mark.parametrize(
-    "part,first,mutate",
+    "part,issue,first,mutate",
     [
         # 공개 범위 중간의 하루가 통째로 빠진 응답
-        ("temperature", 4, _drop("taMin6", "taMax6")),
-        ("land", 4, _drop("wf6Am", "wf6Pm", "rnSt6Am", "rnSt6Pm")),
+        ("temperature", MORNING, 4, _drop("taMin6", "taMax6")),
+        ("land", MORNING, 4, _drop("wf6Am", "wf6Pm", "rnSt6Am", "rnSt6Pm")),
         # 한 metric만 빠진 반쪽 응답
-        ("temperature", 4, _drop("taMin4")),
-        ("land", 4, _drop("rnSt5Pm")),
-        # KMA가 공개하지 않는 시작일(D+5)
-        ("temperature", 5, None),
-        ("land", 5, None),
+        ("temperature", MORNING, 4, _drop("taMin4")),
+        ("land", EVENING, 5, _drop("rnSt5Pm")),
+        # 그 회차가 공개하지 않는 시작일
+        ("temperature", MORNING, 5, None),
+        ("land", MORNING, 5, None),
+        ("temperature", EVENING, 4, None),
+        ("land", EVENING, 4, None),
         # 마지막 날(D+10)이 없는 응답
-        ("temperature", 4, _drop("taMin10", "taMax10")),
-        ("land", 4, _drop("wf10", "rnSt10")),
+        ("temperature", MORNING, 4, _drop("taMin10", "taMax10")),
+        ("land", EVENING, 5, _drop("wf10", "rnSt10")),
     ],
 )
-def test_day4_response_still_requires_every_published_slot(part, first, mutate):
-    descriptor, record = _source(part, first=first, mutate=mutate)
+def test_current_response_still_requires_every_published_slot(part, issue, first, mutate):
+    tm_fc, fetched = issue
+    descriptor, record = _source(part, tm_fc=tm_fc, first=first, mutate=mutate, fetched=fetched)
     with pytest.raises(ExportArtifactError):
         prove_mid_source(descriptor, record)

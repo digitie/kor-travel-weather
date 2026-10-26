@@ -35,6 +35,25 @@ class SdkPageReceipt:
         self.total, self.page_no, self.page_size = total, number, size
         self.consumed += raw_count
 
+    def add_snapshot(self, page, *, raw_count):
+        """페이지 없이 전체를 한 번에 주는 응답(``count``와 원문 목록만 있음)의 완결.
+
+        data.ex.co.kr restWeatherList는 pageNo/numOfRows 없이 ``count``와 ``list``만
+        돌려준다(운영 실측 2026-10-27: count 187, list 187). 두 페이지 필드가 모두 없고
+        ``count``가 원문 행 수와 같을 때만 완결이다. 한쪽 필드만 있는 응답은 거부한다.
+        """
+        total = page.total_count
+        if (
+            self.failed or self.total is not None
+            or page.page_no is not None or page.num_of_rows is not None
+            or type(total) is not int or not 1 <= total <= MAX_RAW_ROWS
+            or type(raw_count) is not int or raw_count != total
+        ):
+            self.failed = True
+            raise ExportArtifactError("SDK 전체 응답의 개수/파싱 결과가 불완전합니다.")
+        self.total, self.page_no, self.page_size = total, 1, total
+        self.consumed = raw_count
+
     @property
     def complete(self):
         return not self.failed and self.total is not None and self.consumed == self.total

@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from kortravelweather.export_collector import (
     dagster_status_lookup,
+    failure_reason,
     publish_pending_exports,
     refresh_publisher_daily,
 )
@@ -149,9 +150,10 @@ def build_export_publisher_sensor(
             return SkipReason(
                 f"export publisher: {processed}개 후보 확인, 일별 {daily['processed']}세대 확인"
             )
-        except Exception:
+        except Exception as exc:
             # DB URL/provider payload/token이 포함된 exception 원문을 남기지 않는다.
-            context.log.warning("weather_export_publisher_deferred")
+            # 정해진 분류(lock_timeout, statement_timeout, 클래스 이름 등)만 남긴다.
+            context.log.warning(f"weather_export_publisher_deferred reason={failure_reason(exc)}")
             return SkipReason("export publisher 평가를 다음 tick에 재시도합니다.")
         finally:
             if repository is not None:
