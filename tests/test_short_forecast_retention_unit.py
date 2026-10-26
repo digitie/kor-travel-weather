@@ -618,8 +618,10 @@ def test_runner_deferral_after_progress_keeps_remaining_and_position():
 
 def test_dry_run_never_moves_the_resume_position():
     seen = ShortForecastKey(CUTOFF - timedelta(days=2), NOW - timedelta(days=3), "a")
+    # dry-run은 고르기만 하고 지우지 않는다.
+    report = dict(_batch(seen), pointers_deleted=0, facts_deleted=0)
     result = run_short_forecast_retention(
-        SimpleNamespace(purge_expired_short_forecast=lambda **_: _batch(seen)),
+        SimpleNamespace(purge_expired_short_forecast=lambda **_: report),
         cutoff=CUTOFF, dry_run=True,
     )
     assert result["status"] == "dry_run"
