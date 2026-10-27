@@ -1,5 +1,29 @@
 # Weather 남은 작업
 
+## 2026-10-27 — 소유자 결정: export 일시중지·current job 분리·artifact GC 전환
+
+[결정 기록](decisions.md)을 따른다. 소유자 "권장대로"(2026-10-27).
+
+- **상태 — export 목표 일시중지(소유자 2026-10-27).** Map `weather_state_*` schedule(locations 제외)과
+  PinVi weather flag는 꺼 둔 채로 둔다. 다시 켜는 것은 소유자 재개 지시 뒤다. KHOA 해수욕장 한 곳의
+  catalog 좌표 수정도 재개 때까지 미룬다. 아래 W-MAP-05·Map 소비자 수용은 재개 전까지 진행하지 않는다.
+- [ ] **W-EXP-SPLIT-01 / P1 (보류 — export 재개 시)** — openweathermap·weatherapi·open_meteo의
+  `<provider>_weather_job`이 current와 forecast를 한 run에서 받아, 승격이 run 전체 SUCCESS를 기다리는
+  동안 current가 약 1시간 늦게 공개된다. current와 forecast를 **별도 job**(별도 schedule·run group)으로
+  나눈다. "run SUCCESS 뒤에만 승격" 규칙은 그대로 두고 step 단위 승격 판정은 도입하지 않는다. 수용:
+  current 승격 지연이 current job 소요 시간 수준으로 줄고, forecast 실패가 current 승격을 막지 않으며,
+  provider 호출 수·quota가 분리 전과 같거나 적다.
+- [ ] **W-EXP-GC-01 / P1 (목표 2026-11-03)** — PR #176 artifact GC를 `dry_run`으로 약 1주 관찰한 뒤
+  `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`로 바꾼다. 볼 것: `ktw_export_artifact_gc_reclaimable_bytes`
+  추이와 publisher sensor skip 메시지의 `stages=…gc:<초>`. 전환 조건은 배타 guard 안 참조 재확인이
+  2초보다 충분히 짧게 유지되는 것이다. `dry_run`은 guard 안 재확인을 실행하지 않으므로, 관찰 기간에는
+  guard 밖 전체 참조 조회(재확인은 그 digest 부분집합)를 상한 대리값으로 보고 `delete` 첫 tick들에서
+  실제 재확인 시간을 다시 확인한다. 디스크 여유 약 187 GB(2026-10-27)라 1주 대기에 여유가 있다.
+- [ ] **W-OPS-ODROID-01 / P2 (Codex 합의 필요)** — odroid에 현재 weather release 기록이 없어 최신
+  `images.yml` 없이 재생성하면 조용히 옛 이미지로 돌아간다(2026-10-27 weather173/176 배포가 엇갈림).
+  `/srv/ktdm-releases/weather-current` 표지와 runbook 문구를 [제안](reports/2026-10-27-odroid-weather-current-release-pointer.md)했다.
+  합의 전 odroid는 바꾸지 않는다.
+
 ## 2026-10-27 — 실제 마커 지연과 다음 배포 절차
 
 - [ ] **W-MARKER-01 / P1** — #173의 배포/0034·PC375 지도 수용은 통과했으나 실제60×3

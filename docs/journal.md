@@ -6,6 +6,19 @@
 - 현재source 공개UI21은 두 source 리뷰·단독browser슬롯 뒤21/21 PASS18.705초로 수용했다(목록1450/tile20/API2005, 로그아웃·쿠키삭제·로그인복귀/C7없음·7runtime불변). ERR_ABORTED11은 별도다.
 - 다음 자연retention도SUCCESS154.611초·resumed true/facts41000을 확인했지만, 뒤 materialization의 backlog lag는약4.65일/stall1이다. **정리진척과 lag감소·과거6h보존완료는 다르며 후자는 미수용**이다. [현재 source·취소·UI와 한계](reports/2026-10-27-current-dagster-and-export-cancellation.md). 아래는 각 작성 시점의 이력이며 예전 미배포/새publisher재개 표현을 현재desired state로 읽지 않는다.
 
+## 2026-10-27 — 소유자 결정 세 건 기록과 odroid release 표지 제안
+
+- 소유자가 "권장대로"로 세 건을 정했다. [결정](decisions.md)·[백로그](tasks.md)에 남겼다.
+  (1) export 목표 일시중지 — Map `weather_state_*` schedule(locations 제외)·PinVi weather flag는 꺼 둔 채,
+  KHOA 해수욕장 한 곳 catalog 좌표 수정은 보류. (2) 외부 날씨 current 약 1시간 지연은 export 재개 때
+  current/forecast job 분리로 푼다(W-EXP-SPLIT-01). "run SUCCESS 뒤 승격" 규칙은 유지하고 step 단위
+  판정은 하지 않는다. (3) PR #176 artifact GC는 `dry_run`으로 약 1주 관찰 뒤 `delete`(W-EXP-GC-01,
+  목표 2026-11-03). `dry_run`은 guard 안 재확인을 돌리지 않으므로 그 시간은 `delete` 첫 tick에서 다시 본다.
+- odroid에 현재 weather release 기록이 없어 weather173/176 배포가 엇갈린 일을 계기로
+  `/srv/ktdm-releases/weather-current` 표지와 runbook 문구를
+  [제안](reports/2026-10-27-odroid-weather-current-release-pointer.md)했다. **Codex 합의 필요**이며
+  odroid는 바꾸지 않았다. 코드 변경 없음(문서만).
+
 ## 2026-10-27 — 공용 UI dev.9(로그인 hydration 준비 경계) 고정
 
 - Common main `aa232ad`(PR #47, T-217)의 `git archive`에서 격리 Docker(Node 22.22.2·npm 11.19.1) fresh

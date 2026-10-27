@@ -6,6 +6,15 @@
 - 현재source 공개UI21은 두 source 리뷰·단독browser슬롯 뒤21/21 PASS18.705초로 수용했다(목록1450/tile20/API2005, 로그아웃·쿠키삭제·로그인복귀/C7없음·7runtime불변). ERR_ABORTED11은 별도다.
 - 다음 자연retention도SUCCESS154.611초·resumed true/facts41000을 확인했지만, 뒤 materialization의 backlog lag는약4.65일/stall1이다. **정리진척과 lag감소·과거6h보존완료는 다르며 후자는 미수용**이다. [현재 source·취소·UI와 한계](reports/2026-10-27-current-dagster-and-export-cancellation.md). 아래는 각 작성 시점의 이력이며 예전 미배포/새publisher재개 표현을 현재desired state로 읽지 않는다.
 
+## 2026-10-27 — 소유자 결정 기록(export 일시중지·current 분리·GC 전환)
+
+- 현재: export 목표는 소유자 지시로 **일시중지**다. Map `weather_state_*`(locations 제외)·PinVi weather
+  flag는 꺼 둔 채로 두고 KHOA 해수욕장 좌표 수정도 보류한다. [결정](decisions.md).
+- 다음 한 작업: 2026-11-03 무렵 W-EXP-GC-01 — `ktw_export_artifact_gc_reclaimable_bytes`와 publisher
+  `stages=…gc:` 시간을 보고 GC를 `delete`로 바꿀지 정한다. W-EXP-SPLIT-01(current/forecast job 분리)은
+  export 재개 때 한다. odroid `weather-current` 표지 [제안](reports/2026-10-27-odroid-weather-current-release-pointer.md)은
+  Codex 합의를 기다린다. 마커 지연 등 아래 기존 항목은 그대로다.
+
 ## 2026-10-27 — 공용 UI dev.9 채택 PR
 
 - 현재: `@kor-travel/ui` `0.1.0-dev.8` → `0.1.0-dev.9`(Common `aa232ad`, 로그인 hydration 준비 경계) vendoring을
