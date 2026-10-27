@@ -360,6 +360,16 @@ class WeatherSettings(BaseSettings):
         gt=0,
         le=365,
     )
+    #: 10분마다 도는 단기예보 정리 job의 실행당 협력적 작업 예산(초). 60초는 유입(10분당
+    #: 약1.7~2만 행)과 비슷한 처리량이라 backlog가 줄지 않았다. 150초는 그 약2.5배다.
+    #: 문장당5초·lock1초는 그대로이고, 마지막 batch와 run 기동을 더해도 job의
+    #: ``dagster/max_runtime``(300초) 안에 끝나도록 상한을180초로 둔다. 부하에 따라 조정한다.
+    short_forecast_retention_budget_seconds: float = Field(
+        default=150,
+        validation_alias="KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS",
+        gt=0,
+        le=180,
+    )
     metrics_port: int | None = Field(
         default=None,
         validation_alias="KOR_TRAVEL_WEATHER_METRICS_PORT",

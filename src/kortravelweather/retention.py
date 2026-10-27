@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from time import monotonic
-from typing import Any, NamedTuple, Protocol
+from typing import Any, NamedTuple, Protocol, TypeGuard
 from uuid import uuid4
 
 from .models import WeatherValue
@@ -74,8 +74,14 @@ RETENTION_POLICY = (
 #: 위치를 따라가더라도 이 간격마다 한 번은 인덱스 머리부터 다시 훑는다.
 #: 위치 앞에 늦게 들어온 행(복원·늦은 재수집·시계 역행 등)을 영구히 놓치지 않게 한다.
 HEAD_SWEEP_INTERVAL = timedelta(hours=24)
-#: 남은 backlog가 경계보다 이만큼 넘게 뒤처지면 진척이 있어도 실패로 알린다.
+#: 남은 backlog의 지연 상한이 이보다 크면 "뒤처짐"이다.
 BACKLOG_LAG_ALERT = timedelta(hours=24)
+#: 뒤처진 채 지연 상한이 앞 실행보다 줄지 않은 실행이 이만큼 연속되면 실패로 알린다(약30분).
+#: 뒤처졌어도 줄고 있으면(따라잡는 중) 성공이다.
+LAG_STALL_RUNS = 3
+#: 실행당 작업 예산의 상한(초). 마지막 batch(문장당5초×4)·머리 탐색·run 기동을 더해도
+#: job의 ``dagster/max_runtime`` 300초 안에 끝나는 값이다.
+MAX_BUDGET_SECONDS = 180
 
 
 class ShortForecastPartitionRetained(RuntimeError):
@@ -182,27 +188,41 @@ def _aware(value: object) -> datetime | None:
     return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
 
 
+class ResumeDecision(NamedTuple):
+    """이번 실행의 시작 위치. ``after``가 None이면 인덱스 머리부터 시작한다.
+
+    ``fallback``은 주기 머리 훑기 때만 채운다. 저장 위치 자체는 믿을 만하므로 머리 탐색이
+    문장 예산 안에 끝나지 않으면 같은 실행이 그 위치에서 이어 정리한다.
+    """
+
+    after: ShortForecastKey | None
+    head_scan_at: datetime | None
+    discarded: str | None
+    fallback: ShortForecastKey | None = None
+
+
 def resume_position(
     previous: Mapping[str, object], *, cutoff: datetime, database: str | None, now: datetime,
-) -> tuple[ShortForecastKey | None, datetime | None, str | None]:
+) -> ResumeDecision:
     """앞 실행 metadata에서 이어 읽을 위치·마지막 머리 훑기 시각·버린 이유를 고른다.
 
     위치는 같은 정책·같은 DB에서 남긴 것이고, 경계보다 앞서 있지 않으며, 마지막 머리 훑기가
-    ``HEAD_SWEEP_INTERVAL`` 안일 때만 쓴다. 하나라도 어긋나면 머리부터 시작한다.
+    ``HEAD_SWEEP_INTERVAL`` 안일 때만 쓴다. 정책·DB·경계가 어긋나면 위치를 버리고 머리부터
+    시작한다. 주기 훑기만 해당하면 머리부터 시작하되 위치를 ``fallback``으로 남긴다.
     """
     key = ShortForecastKey.from_metadata(previous)
     if key is None:
-        return None, None, None
+        return ResumeDecision(None, None, None)
     if previous.get("resume_policy") != RETENTION_POLICY:
-        return None, None, "policy_changed"
+        return ResumeDecision(None, None, "policy_changed")
     if database is None or previous.get("resume_database") != database:
-        return None, None, "database_changed"
+        return ResumeDecision(None, None, "database_changed")
     if key.valid_at >= cutoff:
-        return None, None, "ahead_of_cutoff"
+        return ResumeDecision(None, None, "ahead_of_cutoff")
     swept = _aware(previous.get("head_scan_at"))
     if swept is None or now.astimezone(UTC) - swept >= HEAD_SWEEP_INTERVAL:
-        return None, None, "periodic_head_sweep"
-    return key, swept, None
+        return ResumeDecision(None, None, "periodic_head_sweep", key)
+    return ResumeDecision(key, swept, None)
 
 
 def run_short_forecast_retention(
@@ -214,22 +234,27 @@ def run_short_forecast_retention(
     database: str | None = None,
     head_scan_at: datetime | None = None,
     now: datetime | None = None,
+    fallback: ShortForecastKey | None = None,
 ) -> dict[str, Any]:
     """각 transaction은 독립 commit하며 실패·예산 소진을 완료로 숨기지 않는다.
 
     ``after``는 앞 실행이 지운 마지막 키다(``resume_position``으로 검사한 것). 각 batch는 직전
     batch의 마지막 키 뒤에서 이어 고르므로 같은 실행 안에서 지운 행의 죽은 인덱스 항목을
     다시 지나지 않는다. 경계보다 앞선 위치는 버리고 머리부터 시작한다.
+    ``fallback``은 주기 머리 훑기의 첫 선택이 문장 timeout으로 진척 없이 끝났을 때 같은
+    실행이 이어 읽을 위치다(훑기는 다음 주기에 다시 시도한다).
     결과의 ``resume_*``·``resume_policy``·``resume_database``·``head_scan_at``은 다음 실행이
     위치를 검사·승계할 metadata다. ``backlog_lag_seconds``는 경계 − 마지막으로 지운 키의
     대상시각이며, 남은 가장 오래된 행은 그 뒤에 있으므로 실제 지연의 **상한**이다.
     """
-    if not 1 <= max_batches <= 100 or not 0 < budget_seconds <= 60:
-        raise ValueError("정리 예산은 최대100 batch/60초입니다.")
+    if not 1 <= max_batches <= 100 or not 0 < budget_seconds <= MAX_BUDGET_SECONDS:
+        raise ValueError(f"정리 예산은 최대100 batch/{MAX_BUDGET_SECONDS}초입니다.")
     started = monotonic()
     discarded = None
     if after is not None and after.valid_at >= cutoff:
         after, discarded = None, "ahead_of_cutoff"
+    if fallback is not None and (after is not None or fallback.valid_at >= cutoff):
+        fallback = None
     position = after
     scanned = head_scan_at if after is not None else (now or datetime.now(UTC))
     result: dict[str, Any] = {
@@ -237,8 +262,9 @@ def run_short_forecast_retention(
         "dry_run": dry_run, "batches": 0, "matched_in_batches": 0,
         "pointers_deleted": 0, "facts_deleted": 0, "remaining": None,
         "status": "budget_exhausted", "resumed": after is not None,
-        "resume_discarded": discarded,
+        "resume_discarded": discarded, "head_sweep_timed_out": False,
         "error_class": None, "backlog_lag_seconds": None,
+        "budget_seconds": budget_seconds,
         "resume_policy": RETENTION_POLICY, "resume_database": database,
         "head_scan_at": scanned.astimezone(UTC).isoformat() if scanned is not None else None,
         **_position_metadata(position),
@@ -275,6 +301,17 @@ def run_short_forecast_retention(
             on_progress({
                 **result, "phase": "DRY_RUN_SNAPSHOT" if dry_run else "BATCH_COMMITTED",
             })
+        if (
+            report["deferred"] and fallback is not None and position is None
+            and not result["facts_deleted"] and report.get("error_class") == "QueryCanceled"
+        ):
+            # 주기 머리 훑기가 VACUUM 전 죽은 항목 때문에 문장 예산을 넘었다. 저장 위치에서
+            # 이어 정리하고, 훑기는 다음 주기에 다시 시도한다(시도 시각은 head_scan_at).
+            position, fallback = fallback, None
+            result.update(_position_metadata(position))
+            result["head_sweep_timed_out"] = True
+            result["resumed"] = True
+            continue
         if report["deferred"]:
             result["status"] = "deferred"
             break
@@ -305,10 +342,31 @@ def made_progress(result: Mapping[str, Any]) -> bool:
     return result.get("status") == "complete_snapshot" or bool(result.get("facts_deleted"))
 
 
-def backlog_alert(result: Mapping[str, Any]) -> bool:
-    """남은 backlog의 지연 상한이 ``BACKLOG_LAG_ALERT``를 넘으면 진척이 있어도 알린다."""
+def _number(value: object) -> TypeGuard[int | float]:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def lag_stall_runs(previous: Mapping[str, object], result: Mapping[str, Any]) -> int:
+    """뒤처진(지연 상한 > 24시간) 채 앞 실행보다 지연 상한이 줄지 않은 연속 실행 수.
+
+    뒤처지지 않았거나 앞 실행의 ``backlog_lag_seconds``보다 줄었으면(따라잡는 중) 0이다.
+    앞 기록이 없으면 줄었다고 볼 근거가 없어 앞 횟수에 1을 더한다.
+    """
     lag = result.get("backlog_lag_seconds")
-    return (
-        bool(result.get("remaining")) and isinstance(lag, int | float)
-        and lag > BACKLOG_LAG_ALERT.total_seconds()
-    )
+    if (
+        not result.get("remaining") or not _number(lag)
+        or lag <= BACKLOG_LAG_ALERT.total_seconds()
+    ):
+        return 0
+    before = previous.get("backlog_lag_seconds")
+    if _number(before) and lag < before:
+        return 0
+    runs = previous.get("lag_stall_runs")
+    prior = runs if isinstance(runs, int) and not isinstance(runs, bool) and runs > 0 else 0
+    return prior + 1
+
+
+def backlog_stalled(result: Mapping[str, Any]) -> bool:
+    """뒤처진 채 ``LAG_STALL_RUNS``회 연속 줄지 않았으면 진척이 있어도 실패로 알린다."""
+    runs = result.get("lag_stall_runs")
+    return isinstance(runs, int) and not isinstance(runs, bool) and runs >= LAG_STALL_RUNS

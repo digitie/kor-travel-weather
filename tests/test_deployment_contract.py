@@ -622,6 +622,7 @@ def test_retention_settings_actually_reach_the_dagster_container(
     for name in (
         "KOR_TRAVEL_WEATHER_RETENTION_DAYS",
         "KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS",
+        "KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS",
     ):
         assert name in names, (
             f"no compose file forwards {name} into the dagster-code-server "

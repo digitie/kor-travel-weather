@@ -10,9 +10,12 @@
   두 번 지났고(머리 탐색 cold 15.3초·34,708 read), 진척이 있어도 완료가 아니면 Failure였다.
 - 수정: 부분 인덱스 순서의 위치 이어 읽기(batch는 앞 마지막 키 뒤, 실행은 앞 materialization의
   `resume_*`), 잠근 행의 tableoid+ctid 삭제, lock_timeout 대기(SKIP LOCKED 제거), 잠금/timeout은 batch
-  연기. 진척0이거나 지연 상한이 24시간을 넘을 때만 Failure. [원인·동작·확인 방법](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
-- 적대 리뷰 반영: 위치는 정책 해시·DB 이름·경계 앞섬·24시간 주기 머리 훑기로 검사한 뒤에만 쓰고,
-  dry-run은 진척이 아니며, 따라잡지 못하는 backlog(지연 상한 24시간 초과)는 위치를 남긴 채 실패로 알린다.
+  연기. [원인·동작·확인 방법](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
+- 적대 리뷰 반영: 위치는 정책 해시·DB 이름·경계 앞섬·24시간 주기 머리 훑기로 검사한 뒤에만 쓰고
+  (훑기가 시간 초과면 같은 실행이 저장 위치에서 이어 정리), dry-run은 진척이 아니다.
+- 소유자 지시(job이 실패를 멈출 것) 반영: Failure는 진척0과 "24시간 넘게 뒤처진 채 지연 상한이 3회 연속
+  줄지 않음"뿐이다. 뒤처져도 줄고 있으면 SUCCESS+warning이다. 실행당 예산을 설정
+  `KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초)로 올려 유입의 약2.5배로 했다.
 - 운영 쓰기·VACUUM·DDL은 하지 않았다. 남은 한계는 pointer FK 검사의 무작위 PK 탐색 비용이다.
 
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산

@@ -39,7 +39,8 @@ from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.retention import (
-    backlog_alert,
+    backlog_stalled,
+    lag_stall_runs,
     made_progress,
     resume_position,
     run_short_forecast_retention,
@@ -1227,18 +1228,20 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
     now = kst_now()
     cutoff = short_forecast_cutoff(now)
     database = getattr(getattr(getattr(repository, "engine", None), "url", None), "database", None)
-    after, head_scan_at, discarded = resume_position(
-        _short_retention_previous_metadata(context), cutoff=cutoff, database=database, now=now,
-    )
+    previous = _short_retention_previous_metadata(context)
+    decision = resume_position(previous, cutoff=cutoff, database=database, now=now)
     try:
         result = run_short_forecast_retention(
             repository, cutoff=cutoff, dry_run=False, on_progress=log_progress,
-            after=after, database=database, head_scan_at=head_scan_at, now=now,
+            budget_seconds=WeatherSettings().short_forecast_retention_budget_seconds,
+            after=decision.after, fallback=decision.fallback, database=database,
+            head_scan_at=decision.head_scan_at, now=now,
         )
     finally:
         repository.engine.dispose()
-    if discarded is not None and result.get("resume_discarded") is None:
-        result["resume_discarded"] = discarded
+    if decision.discarded is not None and result.get("resume_discarded") is None:
+        result["resume_discarded"] = decision.discarded
+    result["lag_stall_runs"] = lag_stall_runs(previous, result)
     context.add_output_metadata(result)
     if not made_progress(result):
         # 진척 0(연기·잠금/timeout·머리 탐색 실패)이면 실패다. raise 뒤 STEP_OUTPUT이
@@ -1247,22 +1250,25 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
             description="단기예보 정리가 이번 실행에서 진척 없이 끝났습니다.",
             metadata=result,
         )
-    if backlog_alert(result):
-        # 지운 행은 있지만 backlog가 24시간 넘게 뒤처졌다. 다음 실행이 이어 읽도록 위치를
-        # materialization으로 먼저 남기고 실패로 알린다(따라잡지 못하는 상태를 성공으로
-        # 숨기지 않음).
+    if backlog_stalled(result):
+        # 지운 행은 있지만 backlog가 24시간 넘게 뒤처진 채 연속으로 줄지 않는다. 다음 실행이
+        # 위치와 연속 횟수를 이어받도록 materialization을 먼저 남기고 실패로 알린다.
         context.log_event(AssetMaterialization(asset_key=context.asset_key, metadata=result))
         raise Failure(
-            description="단기예보 정리 backlog가 경계보다 24시간 넘게 뒤처져 있습니다.",
+            description=(
+                "단기예보 정리 backlog가 24시간 넘게 뒤처진 채 "
+                f"{result['lag_stall_runs']}회 연속 줄지 않았습니다."
+            ),
             metadata=result,
         )
     if result["status"] != "complete_snapshot":
-        # 지운 행이 있으면 성공이다. 남은 backlog는 다음 실행이 위치에서 이어 정리한다.
+        # 지운 행이 있으면 성공이다(뒤처져도 줄고 있으면 따라잡는 중). 남은 backlog는
+        # 다음 실행이 위치에서 이어 정리한다.
         context.log.warning(
             "단기예보 정리 backlog 남음 status=%s facts_deleted=%s backlog_lag_seconds=%s "
-            "error_class=%s",
+            "lag_stall_runs=%s error_class=%s",
             result["status"], result["facts_deleted"], result.get("backlog_lag_seconds"),
-            result.get("error_class"),
+            result["lag_stall_runs"], result.get("error_class"),
         )
     return result
 
