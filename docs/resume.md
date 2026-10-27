@@ -1,3 +1,10 @@
+## 2026-10-28 — 운영 API210·웹5098 공개 기본UI21 수용
+
+- fresh f192 capability와 두 소스 리뷰 뒤 실제21개가20.241초에 통과했다. 목록1450/tile20/API4·오류0·탐색abort6별도, 로그인/로그아웃·쿠키/보호화면과 소유 C7 정리·7runtime 전후동일을 수용했다.
+- 첫125 실패는 driver/21case 미실행으로 보존하며 제품실패로 확정하지 않는다. 옛UI39와현재이미지 동일성은 주장하지 않는다.
+- 공유plane2는여전히unhealthy였고 mounted dagster.yaml 지문 불일치 진단만했다. 기본21PASS는마커성능·추가상호작용/모바일·전체plane건강·retention완료가 아니다. export desired STOPPED와제품/운영설정을 유지한다.
+- 문서base는main d9d0(PR187 포함)이지만 수용은 API210/CS e393/web5098만이다. [실제 수용·원실패·남은범위](reports/2026-10-28-retention-catalog-and-current-source.md#후속-공개-기본-ui21-수용). 아래기록은당시이력으로보존한다.
+
 ## 2026-10-28 — API210 교체 완료·실제 마커 실패 후 요청 예산 후속
 
 - 현재 운영은 R4 API210/image1b3d(actual0,2026-10-27 19:49:40UTC), CS e393/web5098이다.
