@@ -248,10 +248,10 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
   });
 
   it("예보 종류만 선택하면 지난 예보를 현재 값처럼 조회하지 않고 안내한다", async () => {
-    const detail = effectWith("[refreshToken, selectedLocationId, providerFilter, kindFilter]", [
+    const detail = effectWith("[detailOpen, refreshToken, selectedLocationId, providerFilter, kindFilter]", [
       "setValues", "setForecast", "setMessage", "setForecastMessage", "setLastRefreshedAt",
       "setLoading", "setForecastLoading", "selectedLocationId", "getLatest", "getForecast",
-      "forecastWindowStart", "providerFilter", "kindFilter",
+      "forecastWindowStart", "providerFilter", "kindFilter", "detailOpen",
     ], ["CURRENT_KINDS", "includesCurrentKind"]);
     const mount = (kindFilter: string[] | undefined) => {
       const view = {
@@ -260,7 +260,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
         getForecast: vi.fn(() => Promise.resolve({ data: [] })),
       };
       const cleanup = detail(vi.fn(), vi.fn(), view.setMessage, vi.fn(), vi.fn(), view.setLoading, vi.fn(),
-        "a", view.getLatest, view.getForecast, () => "2026-10-27T00:00:00+09:00", undefined, kindFilter);
+        "a", view.getLatest, view.getForecast, () => "2026-10-27T00:00:00+09:00", undefined, kindFilter, true);
       return { ...view, cleanup };
     };
     const forecastOnly = mount(["short", "mid"]);
@@ -274,6 +274,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
       expect(current.getLatest).toHaveBeenCalledTimes(1);
       current.cleanup?.();
     }
-    await flush();
+    // 남은 then/finally가 테스트 밖에서 돌지 않게 microtask를 비운다.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 });
