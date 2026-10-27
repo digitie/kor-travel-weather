@@ -83,6 +83,34 @@ def _raw(record, *, air=False):
     return dict(raw)
 
 
+#: KHOA 해수욕지수의 예보 구간. 가까운 날은 오전/오후로, 먼 날은 하루('일') 단위로
+#: 공개한다(운영 실측 2026-10-27: D0·D+1은 오전/오후, D+2~D+5는 '일').
+_BEACH_HALF_DAY = frozenset({"오전", "오후"})
+_BEACH_WHOLE_DAY = "일"
+
+
+def _check_beach_slots(slots):
+    """해수욕장 예보의 날짜/구간이 중복·혼동 없이 KHOA 공개 단위를 따르는지 확인한다.
+
+    하루 단위('일')는 반나절 값이 있는 마지막 날짜보다 뒤의 날짜에만 허용하고, 그 날짜에는
+    다른 구간이 없어야 한다. 같은 날짜·구간의 중복, 날짜 없는 값, 알 수 없는 구간은 거부한다.
+    """
+    by_day = {}
+    for day, period in slots:
+        if day is None or (period not in _BEACH_HALF_DAY and period != _BEACH_WHOLE_DAY):
+            raise ExportArtifactError("해수욕장 예보 날짜/구간이 중복되거나 불명확합니다.")
+        periods = by_day.setdefault(day, [])
+        if period in periods:
+            raise ExportArtifactError("해수욕장 예보 날짜/구간이 중복되거나 불명확합니다.")
+        periods.append(period)
+    whole = [day for day, periods in by_day.items() if _BEACH_WHOLE_DAY in periods]
+    half = [day for day, periods in by_day.items() if _BEACH_HALF_DAY.intersection(periods)]
+    if any(len(by_day[day]) != 1 for day in whole) or (
+        whole and half and min(whole) <= max(half)
+    ):
+        raise ExportArtifactError("해수욕장 하루 단위 예보가 반나절 예보와 섞였습니다.")
+
+
 def _match_coordinates(latitude, longitude, descriptor):
     if latitude is None or longitude is None or any(
         isinstance(value, bool) or not isfinite(float(value)) or not -bound <= float(value) <= bound
@@ -162,11 +190,9 @@ def _replay(descriptor, record):
                 latitude=descriptor.latitude, longitude=descriptor.longitude,
             ), rows,
         )
-        slots = [(item.predicted_on, item.forecast_period) for item in parsed.forecasts]
-        if len(set(slots)) != len(slots) or any(
-            day is None or period not in {"오전", "오후"} for day, period in slots
-        ):
-            raise ExportArtifactError("해수욕장 예보 날짜/구간이 중복되거나 불명확합니다.")
+        _check_beach_slots(
+            [(item.predicted_on, item.forecast_period) for item in parsed.forecasts]
+        )
         source = khoa.beach_index_source_record(
             parsed, location_id=descriptor.entity_id, fetched_at=fetched
         )

@@ -3152,8 +3152,11 @@ class WeatherRepository:
                     )
                 candidates = (
                     select(
-                        WeatherValueRow.value_id.label("value_id"),
+                        WeatherValueRow.location_id.label("location_id"),
+                        WeatherValueRow.metric_key.label("metric_key"),
                         WeatherValueRow.known_at.label("known_at"),
+                        WeatherValueRow.source_record_key.label("source_record_key"),
+                        WeatherValueRow.value_id.label("value_id"),
                     )
                     .where(*predicates)
                     .order_by(
@@ -3165,33 +3168,16 @@ class WeatherRepository:
                     .lateral()
                     .alias("marker_candidates")
                 )
-                return select(candidates.c.value_id, candidates.c.known_at).select_from(
+                return select(candidates).select_from(
                     requested_locations.join(requested_metrics, true()).join(
                         candidates, true()
                     )
                 )
 
             def fetch_candidates(candidate_query: Any) -> list[Any]:
-                # 선택한 partition key를 보존해 다른 known_at의 같은 UUID를 읽지 않는다.
-                candidate_keys = candidate_query.subquery("marker_fact_keys")
-                return list(
-                    session.execute(
-                        # 비교에서 버릴 후보의 raw JSON과 전체 ORM은 읽지 않는다.
-                        select(
-                            WeatherValueRow.location_id,
-                            WeatherValueRow.metric_key,
-                            WeatherValueRow.known_at,
-                            WeatherValueRow.source_record_key,
-                            WeatherValueRow.value_id,
-                        ).join(
-                            candidate_keys,
-                            and_(
-                                WeatherValueRow.value_id == candidate_keys.c.value_id,
-                                WeatherValueRow.known_at == candidate_keys.c.known_at,
-                            ),
-                        )
-                    ).all()
-                )
+                # 후보의 index scalar만 직접 받는다. 같은 fact의 PK 재조회는
+                # 최종 승자 수화 때만 수행하고 후보 top4/정렬 의미는 유지한다.
+                return list(session.execute(candidate_query).all())
 
             if providers is None:
                 observed_rows = fetch_candidates(candidate_ids(observed_only=True))
@@ -3276,8 +3262,11 @@ class WeatherRepository:
                 )
                 fallback_candidates = (
                     select(
-                        WeatherValueRow.value_id.label("value_id"),
+                        WeatherValueRow.location_id.label("location_id"),
+                        WeatherValueRow.metric_key.label("metric_key"),
                         WeatherValueRow.known_at.label("known_at"),
+                        WeatherValueRow.source_record_key.label("source_record_key"),
+                        WeatherValueRow.value_id.label("value_id"),
                     )
                     .where(
                         WeatherValueRow.location_id
@@ -3297,10 +3286,7 @@ class WeatherRepository:
                     .lateral()
                     .alias("marker_fallback_candidates")
                 )
-                fallback_query = select(
-                    fallback_candidates.c.value_id,
-                    fallback_candidates.c.known_at,
-                ).select_from(
+                fallback_query = select(fallback_candidates).select_from(
                     missing_locations.join(fallback_candidates, true())
                 )
                 for row in fetch_candidates(fallback_query):

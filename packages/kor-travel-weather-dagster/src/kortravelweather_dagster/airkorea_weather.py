@@ -142,21 +142,27 @@ async def _run_airkorea_weather_sync(
                 from kortravelweather.export_sdk_collector import SdkExportCollector, sdk_descriptor
                 from kortravelweather.export_source_cohorts import declare_source_cohort
 
-                declare_source_cohort(
-                    repository, run_id=measurement_run.run_id, provider=AIRKOREA_PROVIDER,
-                    dataset_key=AIRKOREA_MEASUREMENT_DATASET,
-                    descriptors=[sdk_descriptor(
-                        location, provider=AIRKOREA_PROVIDER,
+                def prepare_exports() -> tuple[Any, dict[str, Any]]:
+                    # cohort 선언과 준비는 DB transaction이고 준비는 잠금 경합을 막히는
+                    # sleep으로 재시도한다. event loop를 멈추지 않게 thread에서 돈다.
+                    declare_source_cohort(
+                        repository, run_id=measurement_run.run_id, provider=AIRKOREA_PROVIDER,
                         dataset_key=AIRKOREA_MEASUREMENT_DATASET,
-                    ) for location in active_locations],
-                )
-                export_collector = SdkExportCollector(
-                    repository, run_id=measurement_run.run_id, artifact_root=export_artifact_root,
-                )
-                export_plans = {location.location_id: export_collector.prepare(
-                    location=location, provider=AIRKOREA_PROVIDER,
-                    dataset_key=AIRKOREA_MEASUREMENT_DATASET,
-                ) for location in active_locations}
+                        descriptors=[sdk_descriptor(
+                            location, provider=AIRKOREA_PROVIDER,
+                            dataset_key=AIRKOREA_MEASUREMENT_DATASET,
+                        ) for location in active_locations],
+                    )
+                    collector = SdkExportCollector(
+                        repository, run_id=measurement_run.run_id,
+                        artifact_root=export_artifact_root,
+                    )
+                    return collector, {location.location_id: collector.prepare(
+                        location=location, provider=AIRKOREA_PROVIDER,
+                        dataset_key=AIRKOREA_MEASUREMENT_DATASET,
+                    ) for location in active_locations}
+
+                export_collector, export_plans = await asyncio.to_thread(prepare_exports)
             except Exception:
                 # cohort/prepare 실패는 native 수집을 막지 않는다. 원자적 intent가
                 # reader에서 이전 정상 source로 실패를 숨기지 못하게 한다.
@@ -339,7 +345,10 @@ async def _run_airkorea_weather_sync(
                     )
                 for prepared in export_plans.values():
                     if prepared is not None:
-                        export_collector._reject(prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED")
+                        export_collector._reject(
+                            prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED",
+                            reason="not_in_response",
+                        )
             else:
                 for chunk_sources, chunk in chunk_publications(sources, values):
                     published += await asyncio.to_thread(

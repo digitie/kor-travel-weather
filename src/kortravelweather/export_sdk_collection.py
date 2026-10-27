@@ -22,16 +22,23 @@ class SdkCollectionContext:
     ignored_ids: set = field(default_factory=set)
     complete: bool = True
 
-    def invalidate(self):
+    def invalidate(self, reason="invalidated"):
         """원천 완결 미확인은 capture만 막고 기존 native 이력 수집은 유지한다."""
+        if self.complete:
+            logger.warning("sdk_collection_coverage_unconfirmed reason=%s", reason)
         self.complete = False
-        self.finish()
+        self.finish(reason)
 
-    def finish(self):
-        """반환되지 않은 source 계획을 영구 preparing queue로 남기지 않는다."""
+    def finish(self, reason="not_in_response"):
+        """반환되지 않은 source 계획을 영구 preparing queue로 남기지 않는다.
+
+        ``reason``은 정해진 짧은 분류만 받는다. 거절 사유로 attempt에 함께 남긴다.
+        """
         for prepared in self.plans.values():
             if prepared is not None:
-                self.collector._reject(prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED")
+                self.collector._reject(
+                    prepared.identity, "SOURCE_COVERAGE_UNCONFIRMED", reason=reason
+                )
         self.plans.clear()
 
     def observe_krex_page(self, page):
@@ -40,13 +47,23 @@ class SdkCollectionContext:
         try:
             raw = page.raw["list"]
             if not isinstance(raw, list) or len(raw) != len(page.items):
-                raise ValueError("부분 파싱 원문은 승인하지 않습니다.")
+                self.invalidate("partial_parse")
+                return
             receipt = SdkPageReceipt()
-            receipt.add(page, raw_count=len(raw))
+            if page.page_no is None and page.num_of_rows is None:
+                # restWeatherList는 페이지 없이 count와 전체 list만 준다. 그 전체 개수는
+                # HTTP 전에 고정한 roster와 맞아야 한다. 활성 위치는 모두 있어야 하고,
+                # 운영자가 비활성화한 위치는 응답에 있어도 없어도 된다.
+                receipt.add_snapshot(page, raw_count=len(raw))
+                if not len(self.plans) <= receipt.total <= len(self.plans) + len(self.ignored_ids):
+                    self.invalidate("roster_mismatch")
+                    return
+            else:
+                receipt.add(page, raw_count=len(raw))
             if not receipt.complete:
-                self.invalidate()
+                self.invalidate("page_incomplete")
         except (ValueError, TypeError, KeyError, AttributeError, ExportArtifactError):
-            self.invalidate()
+            self.invalidate("page_receipt")
 
 
 def prepare_sdk_collection(repository, *, run_id, provider, dataset_key, artifact_root):
@@ -85,7 +102,11 @@ def prepare_sdk_collection(repository, *, run_id, provider, dataset_key, artifac
         context.plans = {location.location_id: context.collector.prepare(
             location=location, provider=provider, dataset_key=dataset_key,
         ) for location in locations}
-    except Exception:
-        logger.warning("sdk_collection_prepare_deferred run_id=%s", run_id)
-        context.invalidate()
+    except Exception as exc:
+        from .export_collector import failure_reason
+
+        logger.warning(
+            "sdk_collection_prepare_deferred run_id=%s reason=%s", run_id, failure_reason(exc)
+        )
+        context.invalidate("prepare")
     return context

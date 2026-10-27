@@ -308,15 +308,16 @@ def test_zero_admitted_points_without_positive_empty_proof_are_not_eligible(repo
 
 def test_validation_file_io_has_no_database_connection(repository, tmp_path, monkeypatch):
     lifecycle, _, _, capture = _ready(repository, tmp_path)
-    original = capture.artifacts.read
+    # reconcile은 hash·크기·줄 수만 확인한다(verify). read와 같은 파일 경로(_lines)를 쓴다.
+    original = capture.artifacts._lines
     observed = []
 
-    def read(*args, **kwargs):
+    def lines(*args, **kwargs):
         assert repository.engine.pool.checkedout() == 0
         observed.append(True)
-        yield from original(*args, **kwargs)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(capture.artifacts, "read", read)
+    monkeypatch.setattr(capture.artifacts, "_lines", lines)
     assert lifecycle.reconcile(capture.attempt, capture.artifacts) == "ELIGIBLE"
     assert observed == [True]
 

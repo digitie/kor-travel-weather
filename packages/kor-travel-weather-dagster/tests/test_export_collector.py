@@ -268,7 +268,21 @@ def test_semantically_small_complete_response_keeps_existing_success_head(reposi
     assert _counts(repository) == (4, 2, 2)
 
 
-def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=None):
+def _short_forecast_offsets(base):
+    """KMA 단기예보 공개 구간(base 기준 시간 offset).
+
+    02~14시 발표는 D+3 0시, 17~23시 발표는 D+4 0시까지 1시간 간격이고 그 뒤 하루는
+    3시간 간격이다(2024-11-28 기간 확대 뒤 운영 응답 모양).
+    """
+    from datetime import timedelta
+
+    days = 4 if base.hour >= 17 else 3
+    end = base.replace(hour=0, minute=0) + timedelta(days=days)
+    hourly = int((end - base.replace(minute=0)).total_seconds() // 3600)
+    return list(range(1, hourly + 1)) + [hourly + 3 * (i + 1) for i in range(8)]
+
+
+def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=None, slots=None):
     from datetime import timedelta
 
     from kma.time_utils import parse_kma_datetime
@@ -276,7 +290,10 @@ def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=N
     def respond(request):
         q = request.url.params
         base = parse_kma_datetime(q["base_date"], q["base_time"])
-        hours = 72 if short else 6
+        offsets = _short_forecast_offsets(base) if short else list(range(1, 7))
+        offsets = [offset + start_hour - 1 for offset in offsets]
+        if slots is not None:
+            slots.append(len(offsets))
         metrics = {
             "TMP" if short else "T1H": "18.4",
             "PCP" if short else "RN1": "0",
@@ -289,7 +306,7 @@ def _forecast_client(*, short=False, truncated=False, start_hour=1, empty_grid=N
         if short:
             metrics["POP"] = "0"
         rows = []
-        for hour in range(start_hour, start_hour + hours):
+        for hour in offsets:
             at = (base + timedelta(hours=hour)).replace(minute=0)
             for category, value in metrics.items():
                 rows.append(
@@ -352,14 +369,16 @@ def test_actual_forecast_fanout_publishes_only_complete_bounded_chunks(repositor
         return original(**kwargs)
 
     repository.ingest_batch = ingest
+    slots = []
     result = run_weather_sync(
         repository=repository,
-        client=_forecast_client(short=short),
+        client=_forecast_client(short=short, slots=slots),
         targets=targets,
         base_datasets=frozenset({KMA_SHORT_FORECAST if short else KMA_ULTRA_SHORT_FORECAST}),
         export_artifact_root=tmp_path,
     )
-    expected = 50 * (72 * 8 if short else 6 * 7)
+    assert len(slots) == 1
+    expected = 50 * slots[0] * (8 if short else 7)
     assert result["status"] == "success" and result["values_loaded"] == expected
     assert _counts(repository) == (1, 0, 0)
     for _ in range(32):
@@ -458,3 +477,55 @@ def test_forecast_all_missing_grid_preserves_raw_and_lineage_once(repository, tm
         )
     assert "PUBLISHED" not in publish_pending_exports(repository, tmp_path).results
     assert _counts(repository) == (2, 0, 0)
+
+
+def test_grid_exports_are_prepared_before_any_ingest_holds_the_run_row(
+    repository, tmp_path, monkeypatch
+):
+    """격자 준비(begin/claim/declare)는 같은 run의 ingest가 run 행을 잡기 전에 끝난다.
+
+    파이프라인 안에서 준비하면 다음 격자 준비가 앞 격자 ingest와 겹쳐 run 행 잠금을
+    기다린다(운영 2026-10-26: short·ultra_short의 PREPARE_FAILED 대부분).
+    """
+    from kortravelweather.export_collector import KmaNowcastExportCollector
+
+    events, ingesting = [], []
+    prepare, ingest_batch = KmaNowcastExportCollector.prepare, repository.ingest_batch
+
+    def prepare_recorded(self, **kwargs):
+        events.append(("prepare", bool(ingesting)))
+        return prepare(self, **kwargs)
+
+    def ingest_recorded(**kwargs):
+        ingesting.append(True)
+        events.append(("ingest", True))
+        try:
+            return ingest_batch(**kwargs)
+        finally:
+            ingesting.pop()
+
+    monkeypatch.setattr(KmaNowcastExportCollector, "prepare", prepare_recorded)
+    repository.ingest_batch = ingest_recorded
+    targets = [
+        WeatherTarget(
+            WeatherLocation(
+                location_id=f"grid-{nx}", name=f"격자 {nx}", latitude=37.5, longitude=127,
+                nx=nx, ny=127,
+            )
+        )
+        for nx in (60, 61, 62, 63)
+    ]
+    result = run_weather_sync(
+        repository=repository,
+        client=_client(),
+        targets=targets,
+        base_datasets=frozenset({KMA_ULTRA_SHORT_NOWCAST}),
+        export_artifact_root=tmp_path,
+    )
+    assert result["status"] == "success" and result["values_loaded"] == 32
+    kinds = [kind for kind, _ in events]
+    assert kinds.count("prepare") == 4 and "ingest" in kinds
+    # 모든 격자 준비가 첫 ingest보다 먼저이고, ingest가 진행 중일 때 준비한 적이 없다.
+    assert kinds.index("ingest") == 4
+    assert not any(during for kind, during in events if kind == "prepare")
+    assert _counts(repository) == (4, 0, 0)

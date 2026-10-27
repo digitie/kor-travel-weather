@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
-from .export_collector import KmaNowcastExportCollector
+from .export_collector import KmaNowcastExportCollector, _PrepareRejected, failure_reason
 from .export_external import RetrievalScopeDescriptor
 from .export_receipts import ExportAttempt
 
@@ -20,7 +20,6 @@ class PreparedExternalExport:
 
 class ExternalExportCollector(KmaNowcastExportCollector):
     def prepare(self, *, location, provider, dataset_key):
-        identity = None
         try:
             descriptor = RetrievalScopeDescriptor(
                 provider=provider,
@@ -37,19 +36,18 @@ class ExternalExportCollector(KmaNowcastExportCollector):
                 orchestrator = session.scalar(
                     select(runs.c.orchestrator_run_id).where(runs.c.run_id == self.run_id)
                 )
-            identity = self.repository.begin_export_attempt(
-                run_id=self.run_id,
-                scope_key=descriptor.namespace,
-                planned_sources=[descriptor.source_scope],
-                execution_mode="dagster" if orchestrator else "native",
+            identity = self._begin_declared(
+                descriptor, execution_mode="dagster" if orchestrator else "native"
             )
-            self.heads.lifecycle.claim(identity)
-            self.heads.declare(identity, descriptor)
             return PreparedExternalExport(identity, descriptor)
-        except Exception:
-            logger.warning("external_export_prepare_failed run_id=%s", self.run_id)
-            if identity is not None:
-                self._reject(identity, "PREPARE_FAILED")
+        except _PrepareRejected as rejected:
+            self._reject(rejected.identity, "PREPARE_FAILED", rejected.__cause__)
+            return None
+        except Exception as exc:
+            logger.warning(
+                "external_export_prepare_failed run_id=%s reason=%s",
+                self.run_id, failure_reason(exc),
+            )
             return None
 
     def _bind_source(self, prepared, record):

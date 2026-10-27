@@ -10,6 +10,19 @@
   채우지 않을 수 있다. tokens `0.1.0`과 dev.6~dev.8은 보존한다.
   [vendor 기록](../packages/kor-travel-weather-admin/frontend/vendor/README.md).
 
+## 2026-10-27 — Weather173 운영 교체 완료·마커 지연 후속 진행
+
+- 배포 merge a9f54의 세 이미지/0034를06:35UTC에 반영했다. 원래21 RUNNING/2 STOPPED·공용 daemon·타 서비스 보존,
+  기존 네 인덱스 OID 보존·자연 publisher와 새 정기 current 수집 재개를 확인했다.
+- 이 정산 기준 소스 main1766889의 PR #174/#175는 머지됐으며 이번 운영 a9 이미지에는
+  포함되지 않았다. 아래 기존 진행 상태는 각 작성 시점의 이력이다.
+- 실제 Chromium PC1440/375의 지도 면적·상세 오버레이·실제 가평14.4 값/시각은 통과했다.
+  **마커 latency는 미완**이다. 후속60×3의19.506/29.884/28.324초 중 두 개가25초 상한을 넘었다.
+  초기70초 수용기 실패·명시 ERR_ABORTED6개를 원본 보존하며 빠른 응답 성공으로 대체하지 않는다.
+- [배포·긴 중지 구간·UI 실패와 후속](reports/2026-10-27-weather173-deployment-and-latency.md).
+  다음 한 작업은 저장된 실제60IDs/시각과 query/predicate/index/조인/정렬의 병목을 좁히는 것이다.
+  취소 safepoint·기존 인덱스 baseline rollback·pause 전 장기 run 대기는 별도 운영 P1이다.
+
 ## 2026-10-27 — Common aa232ad 고정과 단기예보 정리 상시 실패 수정(PR #174)
 
 - Common pin을 `e746e4b` → main `aa232ad5f255233184de80eceaab2e9b6ccb00c9`로 바꿨다(pyproject 두 파일·
