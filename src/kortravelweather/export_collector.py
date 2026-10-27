@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -16,11 +17,13 @@ from typing import Any
 
 from kortravelcommon.deadline import call_with_deadline
 from sqlalchemy import literal_column, select, update
+from sqlalchemy.exc import OperationalError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_heads import ExportHeads, ScopeDescriptor
 from .export_receipts import ExportAttempt, ExportCapture
 from .models import WeatherValue
+from .partitions import is_lock_conflict
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +35,29 @@ _SQLSTATE_REASONS = {
     "40001": "serialization",
 }
 
+#: export 단계의 잠금 경합 재시도 정책. 원본 ingest의 ``_retry_lock_race``(20회 × 3초
+#: 대기 + 3초 sleep, 단계당 약 2분)를 쓰지 않는다. KMA는 다음 격자 준비가 앞 격자
+#: ingest와 부딪히므로, 짧게 쉬고(jitter) 다시 시도하되 단계당·run(collector)당 쓸 시간을
+#: 묶는다. 다 쓰면 원래 잠금 오류로 거절(``CODE:lock_timeout``)하고 원본 수집은 계속한다.
+EXPORT_LOCK_PAUSE_SECONDS = (0.2, 1.0)
+EXPORT_LOCK_STEP_SECONDS = 15.0
+EXPORT_LOCK_RUN_SECONDS = 120.0
+
+
+def _sqlstate(exc: BaseException) -> str | None:
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate.isalnum() and len(sqlstate) == 5:
+        return sqlstate
+    return None
+
 
 def failure_reason(exc: BaseException) -> str:
     """원인 분류만 돌려준다. 메시지·SQL·파라미터·DSN·원문 payload는 담지 않는다.
 
     DB 오류는 SQLSTATE로, 승인 증명 실패는 ``proof``로, 그 밖은 예외 클래스 이름으로 나눈다.
     """
-    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
-    if isinstance(sqlstate, str) and sqlstate.isalnum() and len(sqlstate) == 5:
+    sqlstate = _sqlstate(exc)
+    if sqlstate is not None:
         return _SQLSTATE_REASONS.get(sqlstate, f"sqlstate_{sqlstate}")
     if isinstance(exc, ExportArtifactError):
         return "proof"
@@ -73,17 +91,54 @@ class KmaNowcastExportCollector:
         self.run_id = run_id
         self.heads = ExportHeads(repository)
         self.artifacts = ExportArtifactStore(artifact_root)
+        # 이 collector(run)가 잠금 경합 재시도에 쓴 시간. KMA는 격자 준비와 ingest가
+        # 서로 다른 thread에서 돌므로 갱신을 묶는다.
+        self._lock_spent = 0.0
+        self._lock_guard = threading.Lock()
 
     def _retry_lock(self, step):
-        """같은 run의 ingest가 run 행을 잡은 동안의 잠금 경합을 ingest와 같은 방식으로 넘긴다.
+        """export 단계 하나를 잠금 경합(lock_timeout·deadlock)에 한해 짧게 다시 시도한다.
 
         export 단계는 run -> attempt -> scope 순서로 run 행을 ``FOR UPDATE``로 잠근다.
         같은 run의 ingest transaction이 그 행을 잡고 있으면 3초 lock_timeout에 걸린다
         (운영 실측 2026-10-26: 대기 2.7~2.8초 뒤 취소). 각 단계는 실패하면 rollback되는
-        한 transaction이므로 원본 ingest의 ``_retry_lock_race``(유한, 1~2분)로 재시도한다.
+        한 transaction이라 쉬는 동안 아무것도 잡지 않는다. 단계당
+        ``EXPORT_LOCK_STEP_SECONDS``, 이 collector(run) 전체 ``EXPORT_LOCK_RUN_SECONDS``를
+        넘기면 원래 잠금 오류를 올려 호출자가 ``CODE:lock_timeout``으로 거절한다.
+        재시도·포기마다 SQLSTATE만 남긴다.
         """
-        retry = getattr(self.repository, "_retry_lock_race", None)
-        return retry(step) if callable(retry) else step()
+        started = time.monotonic()
+        retries, contended = 0, False
+        try:
+            while True:
+                try:
+                    return step()
+                except OperationalError as exc:
+                    if not is_lock_conflict(exc):
+                        raise
+                    contended = True
+                    waited = time.monotonic() - started
+                    pause = random.uniform(*EXPORT_LOCK_PAUSE_SECONDS)
+                    if (
+                        waited + pause > EXPORT_LOCK_STEP_SECONDS
+                        or self._lock_spent + waited + pause > EXPORT_LOCK_RUN_SECONDS
+                    ):
+                        logger.warning(
+                            "weather_export_lock_exhausted run_id=%s retries=%d sqlstate=%s "
+                            "waited_s=%.1f",
+                            self.run_id, retries, _sqlstate(exc), waited,
+                        )
+                        raise
+                    retries += 1
+                    logger.warning(
+                        "weather_export_lock_retry run_id=%s retry=%d sqlstate=%s waited_s=%.1f",
+                        self.run_id, retries, _sqlstate(exc), waited,
+                    )
+                    time.sleep(pause)
+        finally:
+            if contended:
+                with self._lock_guard:
+                    self._lock_spent += time.monotonic() - started
 
     def _reject(self, identity, code, exc=None, *, reason=None):
         """attempt를 거절한다. 사유가 있으면 ``CODE:reason``으로 함께 남긴다(64자 이내)."""

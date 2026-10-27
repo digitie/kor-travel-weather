@@ -16,6 +16,11 @@ from kortravelweather.export_mid import prove_mid_template
 from kortravelweather.models import WeatherLocation
 
 AT = datetime(2026, 10, 23, 9, 15, tzinfo=UTC)
+#: 운영과 같은 현재 형식: 18시 발표 중기 응답은 D+5~10을 공개한다(2024-11-28 기간 확대 뒤).
+FIRST_DAY = 5
+#: 위치당 fact: land는 D+5~7 오전·오후와 D+8~10 하루씩 9구간 × SKY/POP(18),
+#: 기온은 6일 × TMN/TMX(12).
+PER_LOCATION = 30
 
 
 class Repository:
@@ -72,14 +77,16 @@ def targets(count=3):
 def _raw(part, region):
     result = {"regId": region}
     if part == "land":
-        for day in range(3, 11):
+        for day in range(FIRST_DAY, 11):
             for suffix in ("Am", "Pm") if day <= 7 else ("",):
                 result[f"wf{day}{suffix}"] = "맑음"
                 result[f"rnSt{day}{suffix}"] = 10
     else:
-        for day in range(3, 11):
+        for day in range(FIRST_DAY, 11):
             result[f"taMin{day}"] = 5
             result[f"taMax{day}"] = 20
+            result[f"taMin{day}Low"], result[f"taMin{day}High"] = 4, 6
+            result[f"taMax{day}Low"], result[f"taMax{day}High"] = 19, 21
     return result
 
 
@@ -190,7 +197,7 @@ def test_unique_regions_all_planned_before_http_and_same_sdk_issue(setup):
     assert len([e for e in setup if e[0] == "request"]) == 3
     assert result["requests_fetched"] == 3
     assert result["mid_groups_fetched"] == 2
-    assert result["values_loaded"] == len(repository.values) == 42 * 3
+    assert result["values_loaded"] == len(repository.values) == PER_LOCATION * 3
     assert repository.start_kwargs[0]["export_cohort_required"] is True
     assert repository.start_kwargs[0]["dataset_key"] == "kma_mid_forecast"
     assert repository.run.status == "success"
@@ -202,7 +209,7 @@ def test_cohort_failure_preserves_native_bounded_store(setup, monkeypatch):
 
     monkeypatch.setattr(mid_export, "_declare_cohort", failed)
     repository, result = execute(setup, count=120)
-    assert result["values_loaded"] == 42 * 120
+    assert result["values_loaded"] == PER_LOCATION * 120
     assert not any(e[0] == "prepare" for e in setup)
     assert max(locations for locations, _ in repository.batches) <= 50
     assert max(values for _, values in repository.batches) <= 2500
@@ -211,7 +218,7 @@ def test_cohort_failure_preserves_native_bounded_store(setup, monkeypatch):
 def test_large_shared_region_keeps_one_claim_and_small_batches(setup):
     repository, result = execute(setup, count=120)
     assert len([e for e in setup if e[0] == "prepare"]) == 3
-    assert result["values_loaded"] == 42 * 120
+    assert result["values_loaded"] == PER_LOCATION * 120
     assert max(locations for locations, _ in repository.batches) <= 50
     assert max(values for _, values in repository.batches) <= 2500
 
@@ -232,7 +239,7 @@ def test_duplicate_location_role_rejected_before_first_http(setup):
 def test_one_empty_success_is_reconfirmed_with_same_issue_and_plan(setup):
     repository, result = execute(setup, empty_first=True)
     assert result["requests_fetched"] == 4
-    assert result["values_loaded"] == 126 and repository.run.status == "success"
+    assert result["values_loaded"] == PER_LOCATION * 3 and repository.run.status == "success"
     assert len([e for e in setup if e[0] == "prepare"]) == 3
 
 
@@ -244,7 +251,7 @@ def test_persistent_empty_success_stops_after_one_reconfirmation(setup):
 
 def test_export_descriptor_limit_does_not_block_larger_native_region(setup):
     repository, result = execute(setup, count=1001)
-    assert result["values_loaded"] == 42 * 1001
+    assert result["values_loaded"] == PER_LOCATION * 1001
     assert not any(e[0] in {"cohort", "prepare"} for e in setup)
     assert max(locations for locations, _ in repository.batches) <= 50
     assert max(values for _, values in repository.batches) <= 2500

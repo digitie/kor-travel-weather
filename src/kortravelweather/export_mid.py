@@ -101,7 +101,9 @@ def _revision(value: Any, *, operation: str, fetched: datetime) -> datetime:
 #: KMA 중기 응답의 마지막 예보일과 반나절(오전/오후) 구간의 마지막 날.
 _MID_LAST_DAY = 10
 _MID_HALF_DAY_LAST = 7
-#: 기간 확대(2024-11-28) 이전 응답의 첫 예보일. 이전 응답은 발표 시각과 무관하게 D+3부터다.
+#: 단기예보 예보기간 확대 시각(KMA 공지 "(20241128)단기예보 서비스 개선에 따른 API
+#: 변경사항"). 이 tmFc 전의 중기 응답은 발표 시각과 무관하게 D+3부터다.
+_MID_EXTENSION_TMFC = datetime(2024, 11, 28, 14, tzinfo=KST)
 _MID_LEGACY_FIRST_DAY = 3
 #: normalizer가 읽는 원문 key(camel/snake)만 센다. ``taMax10High`` 같은 범위 key는 제외한다.
 _MID_DAY_KEYS = {
@@ -120,15 +122,16 @@ def _published_mid_days(raw: Mapping[str, Any], part: str) -> set[int]:
     return days
 
 
-def _mid_first_days(revision: datetime) -> tuple[int, int]:
-    """그 발표 회차가 공개할 수 있는 첫 예보일(이전 형식, 현재 형식).
+def _mid_first_day(revision: datetime) -> int:
+    """그 발표 회차(tmFc)의 중기 응답이 공개하는 첫 예보일. 회차마다 하나뿐이다.
 
-    KMA 단기예보 기간 확대 뒤 단기예보가 02~14시 발표는 D+3, 17~23시 발표는 D+4까지
-    덮으므로 중기 응답은 06시 발표가 D+4, 18시 발표가 D+5부터 시작한다
-    (운영 실측: 2026-10-26 18시 taMin5~10, 2026-10-27 06시 taMin4~10).
+    기간 확대(``_MID_EXTENSION_TMFC``) 전에는 D+3부터다. 그 뒤로는 단기예보가 02~14시
+    발표는 D+3, 17~23시 발표는 D+4까지 덮으므로 중기 응답은 06시 발표가 D+4, 18시 발표가
+    D+5부터 시작한다(운영 실측: 2026-10-26 18시 taMin5~10, 2026-10-27 06시 taMin4~10).
     """
-    current = 4 if revision.astimezone(KST).hour < 12 else 5
-    return _MID_LEGACY_FIRST_DAY, current
+    if revision < _MID_EXTENSION_TMFC:
+        return _MID_LEGACY_FIRST_DAY
+    return 4 if revision.astimezone(KST).hour < 12 else 5
 
 
 def _mid_template(part: str, first: int) -> dict[str, set[tuple[int, str | None]]]:
@@ -151,13 +154,10 @@ def _checked_values(descriptor, item, record, revision):
         else mid_temperature_to_weather_values
     )
     # 응답이 공개한 예보일 범위를 원문에서 읽고, 그 범위 전체가 빠짐없이 있어야 한다.
-    # 첫 예보일은 그 발표 회차에 KMA가 공개하는 날만 받고 끝은 항상 D+10이다.
+    # 첫 예보일은 그 발표 회차에 KMA가 공개하는 날 하나뿐이고 끝은 항상 D+10이다.
     published = _published_mid_days(item.raw, descriptor.source_part)
-    first = min(published, default=0)
-    if (
-        first not in _mid_first_days(revision)
-        or published != set(range(first, _MID_LAST_DAY + 1))
-    ):
+    first = _mid_first_day(revision)
+    if published != set(range(first, _MID_LAST_DAY + 1)):
         raise ExportArtifactError("중기 응답의 공개 예보일 범위가 KMA 공개 범위와 다릅니다.")
     expected = _mid_template(descriptor.source_part, first)
     result = []
@@ -317,7 +317,8 @@ def prove_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) 
 
 
 def prove_mid_template(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) -> MidSourceProof:
-    """지역 공유 원문의 값(D+3 시작 26/16개, D+4 시작 22/14개)만 복원한다.
+    """지역 공유 원문의 값(land/temperature: D+4 시작 22/14개, D+5 시작 18/12개,
+    기간 확대 전 D+3 시작 26/16개)만 복원한다.
 
     위치별 전체 목록을 만들지 않는다.
     """

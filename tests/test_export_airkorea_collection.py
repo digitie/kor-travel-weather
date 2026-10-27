@@ -1,5 +1,6 @@
 """실제 AirKorea 수집 경로에서 HTTP 전 계획과 실패 시 승인 보존을 검증한다."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -20,10 +21,26 @@ from kortravelweather.providers.airkorea import AIRKOREA_MEASUREMENT_DATASET, AI
 
 @pytest.mark.parametrize("empty_first", [False, True])
 def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failure(
-    external_repository, tmp_path, empty_first,
+    external_repository, tmp_path, empty_first, monkeypatch,
 ):
     from kortravelweather_dagster.airkorea_weather import run_airkorea_weather_sync
 
+    from kortravelweather.export_sdk_collector import SdkExportCollector
+
+    # 준비는 잠금 경합을 막히는 sleep으로 재시도한다. event loop 밖(thread)에서 불려야 한다.
+    prepared_on_loop = []
+    prepare = SdkExportCollector.prepare
+
+    def prepare_off_loop(self, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            prepared_on_loop.append(False)
+        else:
+            prepared_on_loop.append(True)
+        return prepare(self, **kwargs)
+
+    monkeypatch.setattr(SdkExportCollector, "prepare", prepare_off_loop)
     repo = external_repository
     heads = ExportHeads(repo)
     catalog = heads.metadata.tables["weather_locations"]
@@ -76,6 +93,7 @@ def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failu
         )
         assert result["status"] == "success" and result["values_loaded"] == 4
         assert result["requests_fetched"] == (3 if empty_first else 2)
+        assert prepared_on_loop == [False, False]
         with repo.engine.connect() as c:
             identities = c.execute(select(
                 heads.lifecycle.attempts.c.attempt_id, heads.lifecycle.attempts.c.owner_id,
