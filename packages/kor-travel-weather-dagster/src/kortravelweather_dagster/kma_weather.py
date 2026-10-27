@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AsyncExitStack, aclosing
@@ -135,6 +136,8 @@ GRID_PUBLISH_LOCATIONS = PUBLISH_CHUNK_LOCATIONS
 # 한 위치의 facts가 상한보다 크면 해당 위치를 나누지 않는다.
 GRID_STAGE_VALUES = 2_500
 GRID_PUBLISH_VALUES = 2_500
+# 실패한 run이 ingest하지 못한 export attempt를 닫는 데 쓰는 시간 상한.
+LEFTOVER_REJECT_SECONDS = 10
 
 # HTTP 응답은 순서대로 소비하고 두 격자까지만 선행 요청한다. DB 게시자는 하나다.
 GRID_FETCH_CONCURRENCY = 2
@@ -1267,6 +1270,13 @@ async def _stage_and_publish_weather(
                         published_values += published
                         normalized_values_total += group_count
                         continue
+                    # export capture로 가지 않는 응답(전부 결측 등)의 준비된 attempt는
+                    # 승인될 수 없다. preparing으로 남기지 않고 바로 실패로 닫는다.
+                    unrouted = prepared_exports.pop(record["source_entity_id"], None)
+                    if unrouted is not None:
+                        code = ("NO_NORMALIZED_POINTS" if group_count == 0
+                                else "PUBLISH_LIMIT_EXCEEDED")
+                        await asyncio.to_thread(export_collector._reject, unrouted.identity, code)
                 sources.append({**response.source_record, "run_id": run.run_id})
                 # One immutable response is fanned out to every catalog anchor
                 # sharing its grid/region. Append one fact at a time so the
@@ -1343,10 +1353,32 @@ async def _stage_and_publish_weather(
         )
         # aclosing은 append/DB 실패 시에도 generator의 finally를 즉시 실행한다.
         keep_alive()
-        async with aclosing(_prefetch_grids(calls)) as prefetched:
-            async for group_targets, responses, skipped in prefetched:
-                await append_group(group_targets, responses, skipped)
-                del group_targets, responses, skipped
+        try:
+            async with aclosing(_prefetch_grids(calls)) as prefetched:
+                async for group_targets, responses, skipped in prefetched:
+                    await append_group(group_targets, responses, skipped)
+                    del group_targets, responses, skipped
+        finally:
+            # 소비 실패·취소로 ingest하지 못한 준비 attempt는 다음 claim까지 preparing으로
+            # 남아 publisher가 계속 재시도한다. 남은 것만 실패로 닫는다(best-effort).
+            leftovers = [item for item in prepared_exports.values() if item is not None]
+            prepared_exports.clear()
+            if export_collector is not None and leftovers:
+                collector = export_collector
+
+                def reject_leftovers() -> None:
+                    # DB 장애로 실패가 길어지면 남은 것은 다음 claim/publisher에 맡긴다.
+                    deadline = time.monotonic() + LEFTOVER_REJECT_SECONDS
+                    for index, item in enumerate(leftovers):
+                        if time.monotonic() > deadline:
+                            logger.warning(
+                                "kma_export_leftover_reject_deferred run_id=%s remaining=%d",
+                                run.run_id, len(leftovers) - index,
+                            )
+                            return
+                        collector._reject(item.identity, "NOT_INGESTED")
+
+                await asyncio.to_thread(reject_leftovers)
         if mid_export_mode:
             from .mid_export import collect_mid_exports
 
