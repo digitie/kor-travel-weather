@@ -30,12 +30,13 @@ timeout/lock 실패는 rollback하며 자동 재전송·강제취소를 추가�
 새 ingest는 batch 시작 때 경계를 한 번 계산하여 만료 fact를 새로 저장하지 않고,
 기존 만료 replay도 projection으로 되살리지 않는다. source/raw와 기존 fact 충돌 검증은 유지한다.
 전용 job은10분 주기로 최대100×1000행을 협력적 실행당 예산 안에서 정리한다. 예산은
-`KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 0초과180초 이하)다.
+`KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초; 잘못된 값은 거절하지 않고
+경고와 함께 180초 또는 기본150초로 보정 — 모든 weather asset이 같은 설정을 읽기 때문)다.
 문장당5초/lock1초다. 이어 읽을 위치가 없을 때의 첫 후보 선택만 남은 예산 안 최대45초를 쓴다.
 각 문장·pool/연결 대기 때문에 전체 wall은 예산을 넘을 수 있으며 hard deadline은 아니다.
 잠긴 행은 SKIP LOCKED로 건너뛰지 않고 lock_timeout 안에서 기다리며, timeout이면 그 batch만 연기한다.
 지운 행이 있으면 backlog가 남아도 성공이다. 진척0이거나, 24시간 넘게 뒤처진 채 지연 상한이
-3회 연속 줄지 않을 때만 실패로 남긴다. 자세한 현재 동작은 아래 2026-10-27 절을 따른다
+7회(약70분) 연속 줄지 않을 때만 실패로 남긴다. 자세한 현재 동작은 아래 2026-10-27 절을 따른다
 (2026-10-17 당시에는 SKIP LOCKED·매 batch 남은행 확인·60초 예산·예산 소진 실패였다).
 현재 daemon OFF/배포·초기정리는 root의 별도 검토·운영 영역이다.
 
@@ -203,7 +204,11 @@ JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서�
   `backlog_lag_seconds`를 남긴다. 이 값은 경계 − 마지막으로 지운 키의 대상시각이고 남은 가장 오래된
   행은 그 뒤에 있으므로 실제 지연의 **상한**이다. `lag_stall_runs`는 이 상한이 24시간을 넘는 채 앞
   materialization보다 줄지 않은 연속 실행 수다(줄면, 또는 24시간 이하면 0). Failure는 진척0일 때와
-  `lag_stall_runs`가 3(약30분) 이상일 때만 남긴다. 뒤처졌어도 줄고 있으면(따라잡는 중) SUCCESS다.
+  `lag_stall_runs`가 7(약70분) 이상일 때만 남긴다. 뒤처졌어도 줄고 있으면(따라잡는 중) SUCCESS다.
+  valid_at은 정시 단위라 지연 상한은 같은 정시 안에서 실행마다 600초씩 오르다가 위치가 다음 정시로
+  넘어갈 때 한꺼번에 준다. 처리량이 유입 이상이면 6실행(1시간) 안에 정시를 넘어 횟수가 0으로 돌아가므로
+  7회 연속은 1시간 넘게 정시 하나도 넘지 못한 상태(처리량이 유입의 약0.85배 미만)다.
+  정책·DB 변경·시계 역행으로 위치를 버린 실행은 앞 지연·횟수를 이어 쓰지 않고 새로 센다.
   후자의 Failure도 실패 전에 같은 metadata로 materialization을 먼저 기록해 다음 실행이 위치와 횟수를
   승계한다. dry-run은 진척으로 세지 않는다.
 - 실행당 예산은 설정 `KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초)다.
@@ -220,11 +225,12 @@ JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서�
 2. 첫 run은 위치가 없어 머리를 한 번 지난다(최대45초). SUCCESS·`facts_deleted>0`·`resume_*`·
    `head_scan_at`·`resumed=false`·`budget_seconds=150`을 확인한다. backlog가 남으면 `budget_exhausted`·
    `remaining=true`이고 배포 직후에는 10-20부터 쌓인 backlog 때문에 `backlog_lag_seconds`가 24시간을 넘는다.
-3. 다음 run부터 `resumed=true`이고 `backlog_lag_seconds`가 run마다 줄어야 한다(`lag_stall_runs=0`).
+3. 다음 run부터 `resumed=true`이다. `backlog_lag_seconds`는 같은 정시 안에서 run마다 600초씩 오르고 정시를
+   넘을 때 크게 준다. 시간 단위로 보아 줄면 따라잡는 중이며 `lag_stall_runs`는 0~5 사이를 오간다.
    BATCH_COMMITTED observation의 `elapsed_seconds` 증가 폭이 batch 시간이다. 하루 한 번은
    `resume_discarded=periodic_head_sweep`인 머리 훑기 run이다(`head_sweep_timed_out=true`면 위치에서 이어 정리).
 4. Failure는 두 경우뿐이다. 진척0(`facts_deleted=0`, `error_class`로 잠금/timeout 구분)과, 24시간 넘게
-   뒤처진 채 3회 연속 줄지 않음(`lag_stall_runs>=3`, 처리량 부족 — 예산을 올리거나 부하를 확인).
+   뒤처진 채 7회(약70분) 연속 줄지 않음(`lag_stall_runs>=7`, 처리량 부족 — 예산을 올리거나 부하를 확인).
 
 ### 남은 한계
 

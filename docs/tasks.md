@@ -69,7 +69,7 @@
 - [ ] W-OPS-04 / P2: 별도 승인된 재개 뒤 정기6시간 정리 처리량/deferred·미래 보존/진행 이벤트 수용.
   2026-10-27: 운영 job이 10-20 22:50Z 마지막 성공 뒤 상시 FAILURE(최근7일 FAILURE835)임을 읽기 전용으로 실측했다.
   원인(인덱스 머리 dead 재탐색·진척에도 Failure)과 수정(검사한 위치 이어 읽기·ctid 삭제·예산150초 설정·
-  진척0/뒤처진 채 3회 연속 미감소만 실패)은
+  진척0/뒤처진 채 7회 연속 미감소만 실패)은
   [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)와 [보존정책 2026-10-27 절](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
   남은 수용: 배포 뒤 첫 run SUCCESS·`resumed` 전환·`backlog_lag_seconds` 감소와 처리량/유입 비교.
 - [ ] W-OPS-05 / P2: 같은 workload CPU/RSS·3h/12h 포함24h OOM/swap·실제 memory 정책 수용. PR #118의 고정 격자 입력 RSS 약15% 감소·DB 포함 CPU 동등 및 복구2건은 아래와 같이 부분 수용했으며 전체·장시간 조건은 남는다.

@@ -298,18 +298,20 @@ def test_next_run_resumes_after_the_previous_runs_last_deleted_key(monkeypatch, 
         assert retention.ShortForecastKey.from_metadata(metadata) == second
 
 
-def test_behind_backlog_fails_only_after_three_runs_without_draining(monkeypatch, tmp_path):
-    """뒤처진 채 줄지 않는 run만 3회 연속부터 실패하고, 다시 줄면 횟수가 0으로 돌아간다."""
+def test_behind_backlog_fails_only_after_seven_runs_without_draining(monkeypatch, tmp_path):
+    """뒤처진 채 줄지 않는 run은 7회 연속부터 실패하고, 다시 줄면 횟수가 0으로 돌아간다."""
     cutoff = NOW - timedelta(hours=6)
     behind = cutoff - timedelta(hours=30)
+    stall = retention.LAG_STALL_RUNS
 
-    def same_lag(letter, hours):
-        # 대상시각이 같으면 지연 상한도 같다(위치는 known_at 쪽으로만 나아감).
-        return retention.ShortForecastKey(behind, behind - timedelta(hours=hours), letter * 64)
+    def same_lag(index):
+        # 대상시각이 같으면 지연 상한도 같다(위치는 같은 정시 안에서 known_at 쪽으로만 나아감).
+        return retention.ShortForecastKey(
+            behind, behind - timedelta(hours=48 - index), chr(ord("a") + index) * 64,
+        )
 
     keys = [
-        same_lag("a", 48), same_lag("b", 40), same_lag("c", 30), same_lag("d", 20),
-        _key(behind + timedelta(hours=2), "e"),
+        *(same_lag(index) for index in range(stall + 1)), _key(behind + timedelta(hours=2), "z"),
     ]
     script, calls = [], []
     for key in keys:
@@ -342,9 +344,9 @@ def test_behind_backlog_fails_only_after_three_runs_without_draining(monkeypatch
                 assert "연속 줄지 않았습니다" in description
                 # 실패 run도 진척·위치·횟수를 materialization으로 남긴다.
                 assert recorded["facts_deleted"] == 1000
-    assert outcomes == [True, True, False, False, True]
-    assert stalls == [1, 2, 3, 4, 0]
-    # 실패한 3번째 run의 위치를 4번째 run이 이어받는다.
+    assert outcomes == [True] * (stall - 1) + [False, False, True]
+    assert stalls == [*range(1, stall + 2), 0]
+    # 실패한 run의 위치를 다음 run이 이어받는다.
     assert [call["after"] for call in calls[::2]] == [None, *keys[:-1]]
 
 
@@ -360,7 +362,28 @@ def test_behind_backlog_fails_only_after_three_runs_without_draining(monkeypatch
 def test_lag_stall_counter(previous, lag_hours, remaining, expected):
     result = {"remaining": remaining, "backlog_lag_seconds": lag_hours * 3600.0}
     assert retention.lag_stall_runs(previous, result) == expected
-    assert retention.backlog_stalled({"lag_stall_runs": expected}) is (expected >= 3)
+    assert retention.backlog_stalled({"lag_stall_runs": expected}) is (
+        expected >= retention.LAG_STALL_RUNS
+    )
+
+
+def test_hourly_lag_steps_while_draining_never_reach_the_stall_threshold():
+    """정시 단위 지연 상한은 같은 정시 안에서 600초씩 오르지만, 유입 이상 처리하면
+    1시간 안에 다음 정시로 넘어가 줄어들므로 연속 횟수가 문턱에 닿지 않는다."""
+    previous: dict[str, object] = {}
+    cutoff = NOW - timedelta(hours=6)
+    position = cutoff - timedelta(hours=30)
+    worst = 0
+    for run in range(48):
+        cutoff += timedelta(minutes=10)
+        if run % 6 == 5:  # 처리량 = 유입: 6실행(1시간)마다 정시 하나를 넘는다.
+            position += timedelta(hours=1)
+        result = {"remaining": True, "backlog_lag_seconds": (cutoff - position).total_seconds()}
+        result["lag_stall_runs"] = retention.lag_stall_runs(previous, result)
+        worst = max(worst, result["lag_stall_runs"])
+        assert not retention.backlog_stalled(result)
+        previous = result
+    assert worst == retention.LAG_STALL_RUNS - 2
 
 
 def test_behind_but_draining_run_succeeds_with_warning(monkeypatch):
@@ -396,15 +419,20 @@ def test_retention_budget_setting_reaches_the_runner(monkeypatch, env, expected)
     assert seen["budget_seconds"] == expected
 
 
-@pytest.mark.parametrize("value", ["0", "181", "-1"])
-def test_retention_budget_setting_is_bounded(monkeypatch, value):
-    from pydantic import ValidationError
-
+@pytest.mark.parametrize(("value", "expected", "warned"), [
+    ("90", 90.0, False), ("180", 180.0, False), ("181", 180.0, True), ("1e9", 180.0, True),
+    ("0", 150.0, True), ("-1", 150.0, True), ("abc", 150.0, True), ("nan", 150.0, True),
+])
+def test_retention_budget_setting_is_clamped_not_rejected(monkeypatch, caplog, value, expected,
+                                                          warned):
+    """잘못된 값 하나가 모든 weather asset의 설정 생성(=수집 전체)을 깨지 않는다."""
     from kortravelweather.settings import WeatherSettings
 
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS", value)
-    with pytest.raises(ValidationError):
-        WeatherSettings()
+    with caplog.at_level("WARNING", logger="kortravelweather.settings"):
+        settings = WeatherSettings()
+    assert settings.short_forecast_retention_budget_seconds == expected
+    assert any("BUDGET_SECONDS" in record.getMessage() for record in caplog.records) is warned
 
 
 def test_runner_budget_cap_follows_the_job_runtime_bound():
@@ -514,22 +542,50 @@ def test_position_ahead_of_the_cutoff_is_discarded():
     assert result["head_scan_at"] == NOW.isoformat()
 
 
-def test_behind_and_flat_third_run_fails_and_records_materialization(monkeypatch):
+def test_behind_and_flat_seventh_run_fails_and_records_materialization(monkeypatch):
+    stall = retention.LAG_STALL_RUNS
     result = dict(_result("budget_exhausted", 10000), backlog_lag_seconds=30 * 3600.0)
     monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
     monkeypatch.setattr(
         definitions, "_short_retention_previous_metadata",
-        lambda _: {"backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": 2},
+        lambda _: {"backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": stall - 1},
     )
     context, _, outputs, disposed = _context(lambda **_: None)
     with pytest.raises(Failure) as failure:
         _execute(context)
-    assert "3회 연속" in failure.value.description
+    assert f"{stall}회 연속" in failure.value.description
     assert failure.value.metadata["facts_deleted"].value == 10000
-    assert failure.value.metadata["lag_stall_runs"].value == 3
+    assert failure.value.metadata["lag_stall_runs"].value == stall
     # 실패 전에 위치와 횟수를 materialization으로 남긴다.
     assert [type(event).__name__ for event in context.observations] == ["AssetMaterialization"]
     assert outputs == [result] and disposed == [True]
+
+
+@pytest.mark.parametrize("changes", [
+    {"resume_policy": "5h:other"},
+    {"resume_database": "restored_copy"},
+])
+def test_discarded_history_resets_the_stall_counter(monkeypatch, changes):
+    """정책·DB가 달라 위치를 버리면 앞 지연·연속 횟수도 기준이 아니므로 새로 센다."""
+    stall = retention.LAG_STALL_RUNS
+    cutoff = NOW - timedelta(hours=6)
+    key = _key(cutoff - timedelta(hours=30), "q")
+    previous = {
+        **key.as_metadata(), "resume_policy": retention.RETENTION_POLICY,
+        "resume_database": "weather_test", "head_scan_at": NOW.isoformat(),
+        "backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": stall - 1, **changes,
+    }
+    result = dict(_result("budget_exhausted", 10000), backlog_lag_seconds=30 * 3600.0)
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    monkeypatch.setattr(definitions, "_short_retention_previous_metadata", lambda _: previous)
+    context, _, _, _ = _context(lambda **_: None)
+    context.resources.weather_repository.create_repository().engine.url = SimpleNamespace(
+        database="weather_test",
+    )
+    assert _execute(context) is result
+    assert result["resume_discarded"] in {"policy_changed", "database_changed"}
+    assert result["lag_stall_runs"] == 1
 
 
 def test_only_committed_whitelisted_progress_becomes_an_observation(monkeypatch):

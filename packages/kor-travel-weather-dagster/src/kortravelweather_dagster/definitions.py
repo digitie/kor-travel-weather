@@ -1241,7 +1241,9 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
         repository.engine.dispose()
     if decision.discarded is not None and result.get("resume_discarded") is None:
         result["resume_discarded"] = decision.discarded
-    result["lag_stall_runs"] = lag_stall_runs(previous, result)
+    # 정책·DB·시계가 달라 위치를 버렸으면 앞 지연·연속 횟수도 같은 기준이 아니므로 새로 센다.
+    baseline = {} if result.get("resume_discarded") in _UNTRUSTED_HISTORY else previous
+    result["lag_stall_runs"] = lag_stall_runs(baseline, result)
     context.add_output_metadata(result)
     if not made_progress(result):
         # 진척 0(연기·잠금/timeout·머리 탐색 실패)이면 실패다. raise 뒤 STEP_OUTPUT이
@@ -1271,6 +1273,10 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
             result["lag_stall_runs"], result.get("error_class"),
         )
     return result
+
+
+#: 앞 실행의 지연 기준을 이어 쓰지 않는 위치 폐기 사유(주기 머리 훑기는 같은 기준이라 제외).
+_UNTRUSTED_HISTORY = frozenset({"policy_changed", "database_changed", "ahead_of_cutoff"})
 
 
 def _short_retention_previous_metadata(context: AssetExecutionContext) -> dict[str, object]:
