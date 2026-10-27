@@ -1,3 +1,12 @@
+## 2026-10-27 — TCP 회귀의 준비 실패 정리 보완
+
+- 현재: 정확72 CI1505 PASS/frontend 성공. 독립 리뷰의 TCP 시험 준비 실패 P2를
+  별도72 기반 작업 트리에서 보완해 mock5·정상 TCP 포함6 집중을 통과했다.
+- 다음 한 작업: 원72 전체 WSL/Docker의 실제 종료를 회수하고 제품 app/deps/fixture
+  동일 증명과 새 cleanup HEAD의 집중·CI·증분 리뷰를 합쳐 판단한다. 원전체 환경은
+  고정했고 운영/수집 변경0, 운영25초 목표는 미검증이다.
+  [정산](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 보완
 
 - 현재:962 CI1504 PASS/1 FAIL은 조회 전 projection9,600행의 FK 검사30초 초과였다.

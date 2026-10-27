@@ -1,3 +1,12 @@
+## 2026-10-27 — TCP 회귀의 준비 실패 정리 보완
+
+- 정확72 CI는 Python1505 PASS·frontend 성공이다. 독립 리뷰의 시험 정리 P2는 별도
+  작업 트리에서만 보완했다. 원72 전체 두 실행의 source/DB/의존성은 고정한다.
+- app/socket/bind/thread 시작/DROP 실패 mock5 RED→5 PASS, 정상 TCP+mock6 PASS를
+  확인했다. ExitStack으로 UUID DB·engine·socket·worker 정리를 생성 단계마다 등록하고
+  DROP 실패에도 admin.dispose를 보장한다. 제품 app·의존성·fixture/조회 조건은 동일하다.
+  [실패 원문·범위·합성 검증 경계](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 단위 보완
 
 - 정확962 CI는 Python1504 PASS/1 FAIL이었다. 조회 전9,600행 projection INSERT의

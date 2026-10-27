@@ -3,6 +3,7 @@
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from threading import Event, Lock, Thread
 from uuid import uuid4
 
@@ -17,49 +18,66 @@ from kortravelweather.settings import WeatherSettings
 
 
 def test_queued_tcp_disconnect_never_enters_database(weather_test_database_url):
-    database = "marker_tcp_" + uuid4().hex
-    admin = create_engine(weather_test_database_url, isolation_level="AUTOCOMMIT")
-    with admin.connect() as connection:
-        connection.exec_driver_sql('CREATE DATABASE "' + database + '"')
-    url = make_url(weather_test_database_url).set(database=database)
-    engine = create_engine(url)
-    gate, started = Event(), Event()
-    lock = Lock()
-    counts = {"calls": 0, "active": 0}
+    with ExitStack() as cleanup:
+        database = "marker_tcp_" + uuid4().hex
+        admin = create_engine(weather_test_database_url, isolation_level="AUTOCOMMIT")
+        cleanup.callback(admin.dispose)
 
-    class Repository:
-        def create_schema(self):
-            pass
+        def drop_database():
+            with admin.connect() as connection:
+                connection.exec_driver_sql('DROP DATABASE "' + database + '"')
 
-        def get_locations_by_ids(self, ids, **kwargs):
-            return [WeatherLocation(location_id=key, name=key, latitude=37, longitude=127)
-                    for key in ids]
+        with admin.connect() as connection:
+            connection.exec_driver_sql('CREATE DATABASE "' + database + '"')
+            cleanup.callback(drop_database)
+        url = make_url(weather_test_database_url).set(database=database)
+        engine = create_engine(url)
+        cleanup.callback(engine.dispose)
+        gate, started = Event(), Event()
+        lock = Lock()
+        counts = {"calls": 0, "active": 0}
 
-        def marker_values_many(self, ids, **kwargs):
-            with lock:
-                counts["calls"] += 1
-                counts["active"] += 1
-            try:
-                # 실제 자기 UUID DB에 진입한 앞 두 요청만 gate에서 대기한다.
-                with engine.connect() as connection:
-                    assert connection.execute(text("SELECT 1")).scalar_one() == 1
-                if counts["active"] == 2:
-                    started.set()
-                assert gate.wait(10), "TCP fixture gate 해제 실패"
-                return {key: [] for key in ids}
-            finally:
+        class Repository:
+            def create_schema(self):
+                pass
+
+            def get_locations_by_ids(self, ids, **kwargs):
+                return [WeatherLocation(location_id=key, name=key, latitude=37, longitude=127)
+                        for key in ids]
+
+            def marker_values_many(self, ids, **kwargs):
                 with lock:
-                    counts["active"] -= 1
+                    counts["calls"] += 1
+                    counts["active"] += 1
+                try:
+                    # 실제 자기 UUID DB에 진입한 앞 두 요청만 gate에서 대기한다.
+                    with engine.connect() as connection:
+                        assert connection.execute(text("SELECT 1")).scalar_one() == 1
+                    if counts["active"] == 2:
+                        started.set()
+                    assert gate.wait(10), "TCP fixture gate 해제 실패"
+                    return {key: [] for key in ids}
+                finally:
+                    with lock:
+                        counts["active"] -= 1
 
-    app = create_app(WeatherSettings(env="development", database_url=str(url)), Repository())
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    port = listener.getsockname()[1]
-    server = uvicorn.Server(uvicorn.Config(app, log_level="critical", access_log=False,
-                                         lifespan="off"))
-    worker = Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
-    worker.start()
-    try:
+        app = create_app(WeatherSettings(env="development", database_url=str(url)), Repository())
+        listener = socket.socket()
+        cleanup.callback(listener.close)
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, log_level="critical", access_log=False,
+                                             lifespan="off"))
+        worker = Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+
+        def stop_server():
+            gate.set()
+            server.should_exit = True
+            if worker.ident is not None:
+                worker.join(timeout=10)
+
+        cleanup.callback(stop_server)
+        worker.start()
         deadline = time.monotonic() + 10
         while not server.started:
             assert worker.is_alive() and time.monotonic() < deadline
@@ -92,15 +110,6 @@ def test_queued_tcp_disconnect_never_enters_database(weather_test_database_url):
                 assert counts == {"calls": 2, "active": 0}
             finally:
                 gate.set()
-    finally:
-        gate.set()
-        server.should_exit = True
-        worker.join(timeout=10)
-        listener.close()
-        engine.dispose()
-        with admin.connect() as connection:
-            connection.exec_driver_sql('DROP DATABASE "' + database + '"')
-        admin.dispose()
     assert not worker.is_alive()
     with socket.socket() as probe:
         assert probe.connect_ex(("127.0.0.1", port)) != 0
