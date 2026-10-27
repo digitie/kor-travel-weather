@@ -86,8 +86,9 @@ class WeatherSettings(BaseSettings):
     # 경고와 함께 보정한다(상한 초과는 상한, 0 이하·숫자 아님은 기본값).
     service_export_publisher_budget_seconds: float = SERVICE_EXPORT_PUBLISHER_BUDGET_MAX
     # 참조 없는 artifact 정리. dry_run은 대상 byte만 세고 off는 아무것도 하지 않는다.
-    # 알 수 없는 값은 지우지 않는 dry_run으로 둔다.
-    service_export_artifact_gc: Literal["off", "dry_run", "delete"] = "delete"
+    # 첫 배포는 지우지 않는 dry_run으로 시작해 reclaimable 지표를 본 뒤 delete로 켠다.
+    # 알 수 없는 값도 dry_run으로 둔다.
+    service_export_artifact_gc: Literal["off", "dry_run", "delete"] = "dry_run"
     # 현재 head/승인 inventory/대기 receipt/frozen snapshot 밖의 공개 세대 파일을 지키는 시간.
     service_export_artifact_retention_hours: int = SERVICE_EXPORT_ARTIFACT_RETENTION_DEFAULT
 

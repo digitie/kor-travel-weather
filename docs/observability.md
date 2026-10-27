@@ -80,8 +80,10 @@ rule·알람을 새 이름으로 함께 전환한다.
   참조 없는 export artifact를 정리한 결과(code-server만 의미 있다). 현재 head·승인 inventory·
   공개 전 receipt·승격 pin·유효하거나 최근인 frozen snapshot·일별 집계가 아직 읽지 않은 세대·
   보존 창(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS`, 기본 24) 안의 세대는
-  지우지 않는다. `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=dry_run`이면 지우지 않고
-  reclaimable만 갱신한다. 같은 tick의 결과는 sensor skip 메시지(`gc=…`)에도 남는다
+  지우지 않는다. 기본 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=dry_run`은 지우지 않고
+  reclaimable만 갱신한다. `delete`로 켜면 지운다. reclaimable은 마지막 GC가 찾은 대상 중
+  아직 디스크에 남은 byte다(delete면 지우지 못한 나머지). 같은 tick의 결과는 sensor skip
+  메시지(`gc=…`)에도 남는다
 - `ktw_metrics_errors_total{operation}`
 - `ktw_metrics_server_up`
 - `ktw_metrics_server_bind_failures_total`

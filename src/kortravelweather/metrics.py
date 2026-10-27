@@ -388,8 +388,8 @@ EXPORT_GC_DELETED_BYTES = Counter(
 )
 EXPORT_GC_RECLAIMABLE_BYTES = Gauge(
     "ktw_export_artifact_gc_reclaimable_bytes",
-    "Bytes the last publisher GC pass found unreferenced and past the grace period "
-    "(what dry_run would delete).",
+    "Bytes the last publisher GC pass found unreferenced and past the grace period that "
+    "are still on disk (all of them in dry_run, the undeleted rest in delete mode).",
     multiprocess_mode="livemax",
     registry=_INSTRUMENTATION_REGISTRY,
 )
@@ -714,11 +714,12 @@ def observe_history_purged(values: int, sources: int) -> None:
 
 
 def observe_export_artifact_gc(report: Mapping[str, Any]) -> None:
-    """publisher GC 한 번의 결과. dry_run은 reclaimable만 갱신한다."""
+    """publisher GC 한 번의 결과. reclaimable은 대상 중 아직 디스크에 남은 byte다."""
 
     def update() -> None:
-        EXPORT_GC_RECLAIMABLE_BYTES.set(max(0, int(report.get("eligible_bytes", 0))))
         deleted, size = int(report.get("deleted", 0)), int(report.get("deleted_bytes", 0))
+        remaining = int(report.get("eligible_bytes", 0)) - size
+        EXPORT_GC_RECLAIMABLE_BYTES.set(max(0, remaining))
         if deleted > 0:
             EXPORT_GC_DELETED_FILES.inc(deleted)
         if size > 0:

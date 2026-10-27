@@ -395,3 +395,116 @@ def test_corrupt_artifact_is_still_rejected_inside_the_guard(
     path.write_bytes(bytes(payload))
     assert publish_pending_exports(repo, tmp_path).results == {"NOT_READY": 1}
     assert state(repo, heads, identity)[0]["status"] == "preparing"
+
+
+def test_promotion_burst_yields_the_artifact_guard_to_readers_and_writers(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    """승격은 배타 guard를 잡은 채 여러 transaction을 이어 간다. 연속 승격 사이에 guard를
+    놓고 쉬지 않으면 10ms마다 다시 시도하는 API reader(2초)와 collector 쓰기(5초)가 상한까지
+    들어오지 못한다(검토 H1). 승격 하나가 guard를 잡는 시간을 늘려 연속 승격이 2초를 넘게
+    하고, 그동안 다른 thread의 shared 읽기와 publish()가 모두 성공해야 한다."""
+    from kortravelweather.export_artifacts import (
+        ExportArtifactError,
+        ExportArtifactStore,
+        prepare_export_chunk,
+    )
+
+    repo = publisher_repository
+    count = 15
+    for _ in range(count):
+        candidate(repo, tmp_path, monkeypatch)
+    original_lines = ExportArtifactStore._lines
+
+    def slow_lines(self, *args, **kwargs):
+        time.sleep(0.08)  # 운영 A55의 검증·digest 한 번에 해당하는 시간 동안 guard를 잡는다.
+        return original_lines(self, *args, **kwargs)
+
+    monkeypatch.setattr(ExportArtifactStore, "_lines", slow_lines)
+    store = ExportArtifactStore(tmp_path)
+    chunk = prepare_export_chunk([{"probe": "contention"}], source_collected_at=datetime.now(UTC))
+    stop, failures, done = threading.Event(), [], {"read": 0, "write": 0}
+
+    def contender():
+        while not stop.is_set():
+            try:
+                with store.guard(timeout_seconds=2, shared=True):
+                    done["read"] += 1
+                store.publish(chunk)
+                done["write"] += 1
+            except ExportArtifactError as exc:
+                failures.append(str(exc))
+            time.sleep(0.005)
+
+    thread = threading.Thread(target=contender)
+    started = time.monotonic()
+    thread.start()
+    try:
+        result = publish_fresh_exports(repo, tmp_path, budget_seconds=60)
+    finally:
+        stop.set()
+        thread.join(15)
+    assert time.monotonic() - started > 2.4  # 연속 승격이 reader 상한(2초)보다 길었다.
+    assert result.results == {"PUBLISHED": count}
+    assert failures == []
+    assert done["read"] >= count // 2 and done["write"] >= count // 2
+
+
+@pytest.mark.parametrize("epoch", [None, "abc", 1.5])
+def test_malformed_claimed_epoch_is_a_violation_not_supersession(publisher_repository, epoch):
+    """owner_epochs 값이 정수가 아니면 비교가 NULL이 된다. 그것을 위반으로 세야 소유권이
+    실제로 넘어갔는지 모르는 시도를 SUPERSEDED로 퇴역하거나 현재 소유자로 보지 않는다."""
+    repo = publisher_repository
+    heads = ExportHeads(repo)
+    scope = "e" * 64
+    run = repo.start_sync_run(provider="test-publisher", dataset_key="epoch-shape")
+    old = repo.begin_export_attempt(run_id=run.run_id, scope_key="old",
+                                    planned_sources=[scope], execution_mode="native")
+    heads.lifecycle.claim(old)
+    repo.finish_sync_run(run.run_id, status="success")
+    newer_run = repo.start_sync_run(provider="test-publisher", dataset_key="epoch-newer")
+    newer = repo.begin_export_attempt(run_id=newer_run.run_id, scope_key="newer",
+                                      planned_sources=[scope], execution_mode="native")
+    heads.lifecycle.claim(newer)
+    try:
+        with repo.engine.begin() as connection:
+            connection.execute(heads.lifecycle.attempts.update().where(
+                heads.lifecycle.attempts.c.attempt_id == old.attempt_id,
+            ).values(owner_epochs={scope: epoch}))
+        assert retire_settled_attempts(repo)["SUPERSEDED"] == 0
+        assert _status(repo, old) == ("preparing", None)
+        with repo.engine.connect() as connection:
+            assert connection.scalar(
+                select(heads.lifecycle.attempts.c.attempt_id).where(
+                    heads.lifecycle.attempts.c.attempt_id == old.attempt_id,
+                    export_collector._CURRENT_OWNERSHIP,
+                )
+            ) is None
+    finally:
+        repo.finish_sync_run(newer_run.run_id, status="failed")
+
+
+def test_daily_prune_waits_for_the_hard_tick_deadline(publisher_repository, tmp_path,
+                                                      monkeypatch):
+    from kortravelweather import export_daily_store
+    from kortravelweather.export_collector import refresh_publisher_daily
+
+    calls = []
+    monkeypatch.setattr(export_daily_store, "prune_daily_summaries",
+                        lambda *a, **k: calls.append("prune") or 0)
+    now = time.monotonic()
+    refresh_publisher_daily(publisher_repository, tmp_path, deadline=now + 5,
+                            hard_deadline=now + 1)
+    assert calls == []
+    refresh_publisher_daily(publisher_repository, tmp_path, deadline=time.monotonic() + 5,
+                            hard_deadline=time.monotonic() + 30)
+    assert calls == ["prune"]
+
+
+def test_publisher_transactions_wait_briefly_for_row_locks(publisher_repository):
+    heads = export_collector._publisher_heads(publisher_repository)
+    with heads._transaction() as session:
+        assert session.scalar(text("SHOW lock_timeout")) == (
+            f"{export_collector.PUBLISHER_LOCK_TIMEOUT_MS}ms"
+        )
+        assert session.scalar(text("SHOW statement_timeout")) == "5s"

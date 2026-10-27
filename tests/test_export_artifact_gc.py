@@ -216,7 +216,7 @@ def test_gc_respects_grace_rewrites_and_lock_files(publisher_repository, tmp_pat
             yield
 
     monkeypatch.setattr(ExportArtifactStore, "guard", rewrite_then_guard)
-    report = collect_export_artifacts(repo, tmp_path, deadline=float("inf"))
+    report = collect_export_artifacts(repo, tmp_path, mode="delete", deadline=float("inf"))
     assert not (tmp_path / f"{old}.jsonl").exists()
     assert not (tmp_path / ".candidate-abc123").exists()
     assert (tmp_path / f"{fresh}.jsonl").exists() and (tmp_path / f"{raced}.jsonl").exists()
@@ -264,3 +264,50 @@ def test_gc_rejects_unsafe_arguments(publisher_repository, tmp_path, mode, reten
     with pytest.raises(ValueError):
         collect_export_artifacts(publisher_repository, tmp_path, mode=mode,
                                  deadline=float("inf"), retention=retention, grace=grace)
+
+
+def test_gc_default_is_dry_run_and_never_deletes(publisher_repository, tmp_path):
+    old = "d" * 64
+    (tmp_path / f"{old}.jsonl").write_bytes(b"{}\n")
+    past = (datetime.now(UTC) - 10 * HOUR).timestamp()
+    os.utime(tmp_path / f"{old}.jsonl", (past, past))
+    report = collect_export_artifacts(publisher_repository, tmp_path, deadline=float("inf"))
+    assert report["mode"] == "dry_run" and report["eligible"] == 1 and report["deleted"] == 0
+    assert (tmp_path / f"{old}.jsonl").exists()
+
+
+def test_gc_counts_unlink_errors_and_reports_truncation(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    names = [c * 64 for c in "abc"]
+    past = (datetime.now(UTC) - 10 * HOUR).timestamp()
+    for name in names:
+        (tmp_path / f"{name}.jsonl").write_bytes(b"{}\n")
+        os.utime(tmp_path / f"{name}.jsonl", (past, past))
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if str(path).endswith("a" * 64 + ".jsonl"):
+            raise PermissionError("synthetic")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(export_gc.os, "unlink", unlink)
+    monkeypatch.setattr(export_gc, "MAX_UNLINKS", 2)
+    report = collect_export_artifacts(publisher_repository, tmp_path, mode="delete",
+                                      deadline=float("inf"))
+    # 셋 중 둘만 이번 GC가 맡고(나머지는 다음 주기), 그중 하나는 지우지 못했다.
+    assert report["eligible"] == 3 and report["complete"] is False
+    assert report["errors"] + report["deleted"] == 2 and report["deleted"] <= 1
+    assert sum((tmp_path / f"{name}.jsonl").exists() for name in names) == 3 - report["deleted"]
+
+
+def test_batch_recheck_matches_the_full_live_set(publisher_repository, tmp_path, monkeypatch):
+    repo = publisher_repository
+    keep, drop = _scenario(repo, tmp_path, monkeypatch)
+    now, retention = datetime.now(UTC) + 6 * HOUR, HOUR
+    full = live_artifact_digests(repo, now=now, retention=retention)
+    probe = sorted(keep | drop | {"9" * 64})
+    assert live_artifact_digests(repo, now=now, retention=retention, digests=probe) == (
+        full & set(probe)
+    )
+    assert live_artifact_digests(repo, now=now, retention=retention, digests=[]) == set()

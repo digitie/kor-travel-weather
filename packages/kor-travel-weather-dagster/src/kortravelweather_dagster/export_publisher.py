@@ -26,6 +26,7 @@ from dagster import DefaultSensorStatus, RunsFilter, SensorDefinition, SkipReaso
 from sqlalchemy import text
 
 from kortravelweather.export_collector import (
+    DAILY_PRUNE_WORST_SECONDS,
     PublisherTally,
     TickStatusProbe,
     dagster_status_lookup,
@@ -49,8 +50,13 @@ MAX_TICK_ATTEMPTS = 4096
 CANDIDATE_PAGE = 128
 #: source 예산 중 fresh phase가 먼저 쓸 수 있는 비율. 나머지는 sweep 몫이다.
 FRESH_SHARE = 0.75
+#: tick 전체의 상한(초). sensor 평가 gRPC 상한(운영 60초) 안에 마지막 대기까지 들어간다.
+TICK_DEADLINE_SECONDS = 45
 DAILY_BUDGET_SECONDS = 5
-GC_BUDGET_SECONDS = 3
+GC_SCAN_SECONDS = 1.5
+GC_DELETE_SECONDS = 1.5
+#: GC 한 번의 최악 시간: 목록·삭제 예산 + 참조 조회 두 번(각 statement 3초) + guard 대기.
+GC_WORST_SECONDS = 10
 GC_INTERVAL_SECONDS = 600
 #: 이 프로세스에서 다음 GC를 시작할 monotonic 시각. 재시작하면 첫 tick에 한 번 돈다.
 _GC_NEXT = [0.0]
@@ -137,6 +143,16 @@ class _Tick:
         self.sweep_ok = True
         self.daily: Mapping[str, Any] = {"processed": 0}
         self.gc: Mapping[str, Any] | None = None
+        self.gc_deferred = False
+        self.stages: dict[str, float] = {}
+
+    @contextmanager
+    def stage(self, name: str) -> Iterator[None]:
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self.stages[name] = self.stages.get(name, 0.0) + time.monotonic() - started
 
     def defer(self, stage: str, exc: BaseException) -> None:
         reason = failure_reason(exc)
@@ -166,6 +182,12 @@ class _Tick:
                 else self.gc["eligible_bytes"]
             )
             detail.append(f"gc={self.gc['mode']}:{done}files/{size}B")
+        elif self.gc_deferred:
+            detail.append("gc=deferred")
+        if self.stages:
+            detail.append("stages=" + ",".join(
+                f"{name}:{seconds:.1f}" for name, seconds in self.stages.items()
+            ))
         # 같은 후보를 fresh와 sweep이 둘 다 지나가도 한 번만 센다.
         return (
             f"export publisher: {len(self.tally.seen)}개 후보 확인, "
@@ -174,60 +196,93 @@ class _Tick:
 
 
 def _run_tick(tick: _Tick, repository, root, settings) -> None:
+    """tick 전체를 ``TICK_DEADLINE_SECONDS`` 안에 둔다.
+
+    source 예산은 일별 집계·정리와(GC 차례면) GC의 최악 시간을 tick 상한에서 뺀 만큼만
+    쓴다. 마지막 후보의 초과 대기로 상한이 가까워지면 일별 정리와 GC를 다음 tick으로 미룬다.
+    """
     started = time.monotonic()
-    budget = float(settings.service_export_publisher_budget_seconds)
+    hard = started + TICK_DEADLINE_SECONDS
+    mode = settings.service_export_artifact_gc
+    gc_due = mode != "off" and started >= _GC_NEXT[0]
+    budget = min(
+        float(settings.service_export_publisher_budget_seconds),
+        TICK_DEADLINE_SECONDS - DAILY_BUDGET_SECONDS - DAILY_PRUNE_WORST_SECONDS
+        - (GC_WORST_SECONDS if gc_due else 0),
+    )
     source_deadline = started + budget
     probe = TickStatusProbe(
         dagster_status_lookup(tick.context.instance),
         dagster_status_batch(tick.context.instance),
     )
-    try:
-        tick.retired.update(retire_settled_attempts(repository))
-    except Exception as exc:
-        tick.defer("retire", exc)
+    with tick.stage("retire"):
+        try:
+            tick.retired.update(retire_settled_attempts(repository))
+        except Exception as exc:
+            tick.defer("retire", exc)
     fresh_budget = min(budget * FRESH_SHARE, source_deadline - time.monotonic())
     if fresh_budget > 0:
-        try:
-            tick.fresh = publish_fresh_exports(
-                repository, root, budget_seconds=min(fresh_budget, 60), dagster_status=probe,
-                limit=CANDIDATE_PAGE, max_candidates=MAX_TICK_ATTEMPTS, tally=tick.tally,
-            ).processed
-        except Exception as exc:
-            tick.defer("fresh", exc)
-    while tick.fresh + tick.swept < MAX_TICK_ATTEMPTS and not tick.tally.stopped:
-        remaining = source_deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        try:
-            progress = publish_pending_exports(
-                repository, root, cursor=tick.after,
-                limit=min(CANDIDATE_PAGE, MAX_TICK_ATTEMPTS - tick.fresh - tick.swept),
-                budget_seconds=min(remaining, 60), dagster_status=probe, tally=tick.tally,
+        with tick.stage("fresh"):
+            try:
+                tick.fresh = publish_fresh_exports(
+                    repository, root, budget_seconds=min(fresh_budget, 60),
+                    dagster_status=probe, limit=CANDIDATE_PAGE,
+                    max_candidates=MAX_TICK_ATTEMPTS, tally=tick.tally,
+                ).processed
+            except Exception as exc:
+                tick.defer("fresh", exc)
+    with tick.stage("sweep"):
+        while tick.fresh + tick.swept < MAX_TICK_ATTEMPTS and not tick.tally.stopped:
+            remaining = source_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                progress = publish_pending_exports(
+                    repository, root, cursor=tick.after,
+                    limit=min(CANDIDATE_PAGE, MAX_TICK_ATTEMPTS - tick.fresh - tick.swept),
+                    budget_seconds=min(remaining, 60), dagster_status=probe, tally=tick.tally,
+                )
+            except Exception as exc:
+                tick.sweep_ok = False
+                tick.defer("sweep", exc)
+                break
+            tick.swept += progress.processed
+            tick.after = progress.next_cursor
+            if not progress.has_more or progress.processed == 0:
+                break
+    # source의 마지막 SQL/IO가 늦어져도 tick 상한 전이면 daily 기회를 빼앗지 않는다.
+    remaining = hard - time.monotonic()
+    if remaining > 0:
+        with tick.stage("daily"):
+            tick.daily = refresh_publisher_daily(
+                repository, root, deadline=time.monotonic() + min(DAILY_BUDGET_SECONDS, remaining),
+                hard_deadline=hard,
             )
-        except Exception as exc:
-            tick.sweep_ok = False
-            tick.defer("sweep", exc)
-            break
-        tick.swept += progress.processed
-        tick.after = progress.next_cursor
-        if not progress.has_more or progress.processed == 0:
-            break
-    # source의 마지막 SQL/IO가 늦어져도 daily 기회를 빼앗지 않는다.
-    tick.daily = refresh_publisher_daily(
-        repository, root, deadline=time.monotonic() + DAILY_BUDGET_SECONDS,
+    else:
+        tick.stage_reasons["daily:tick_deadline"] += 1
+    if gc_due:
+        if hard - time.monotonic() >= GC_WORST_SECONDS:
+            _GC_NEXT[0] = time.monotonic() + GC_INTERVAL_SECONDS
+            with tick.stage("gc"):
+                try:
+                    tick.gc = collect_export_artifacts(
+                        repository, root, mode=mode,
+                        retention=timedelta(
+                            hours=settings.service_export_artifact_retention_hours,
+                        ),
+                        deadline=time.monotonic() + GC_SCAN_SECONDS,
+                        delete_budget_seconds=GC_DELETE_SECONDS,
+                    )
+                    observe_export_artifact_gc(tick.gc)
+                except Exception as exc:
+                    tick.defer("gc", exc)
+        else:
+            # 다음 tick에 다시 시도한다(_GC_NEXT를 옮기지 않는다).
+            tick.gc_deferred = True
+    tick.context.log.info(
+        f"weather_export_publisher_tick total={time.monotonic() - started:.1f}s "
+        + " ".join(f"{name}={seconds:.1f}s" for name, seconds in tick.stages.items())
     )
-    mode = settings.service_export_artifact_gc
-    if mode != "off" and time.monotonic() >= _GC_NEXT[0]:
-        _GC_NEXT[0] = time.monotonic() + GC_INTERVAL_SECONDS
-        try:
-            tick.gc = collect_export_artifacts(
-                repository, root, mode=mode,
-                retention=timedelta(hours=settings.service_export_artifact_retention_hours),
-                deadline=time.monotonic() + GC_BUDGET_SECONDS,
-            )
-            observe_export_artifact_gc(tick.gc)
-        except Exception as exc:
-            tick.defer("gc", exc)
 
 
 def build_export_publisher_sensor(
@@ -237,9 +292,10 @@ def build_export_publisher_sensor(
 ) -> SensorDefinition:
     """factory는 새 repository 소유권을 넘긴다. 모든 경로에서 dispose한다.
 
-    source 예산(설정, 기본·상한 30초)과 daily 5초·GC 3초는 협력 예산이다. 마지막 SQL/파일
-    대기까지 포함한 wall-time 보장은 아니며 SQL은 기존 5초/잠금 상한을 유지한다. 합계가
-    sensor 평가 gRPC 상한(운영 60초) 안에 들도록 source 예산은 30초를 넘지 못한다.
+    source 예산(설정, 기본·상한 30초)과 daily 5초·GC 목록/삭제 각 1.5초는 협력 예산이다.
+    tick 전체는 ``TICK_DEADLINE_SECONDS``(45초) 안에 두고, GC 차례인 tick은 source 예산을
+    GC 최악 시간만큼 줄인다. 상한이 가까우면 일별 정리·GC를 다음 tick으로 미룬다. 마지막
+    문장 하나의 대기(statement 5초, 행 잠금 0.5초)까지 더해도 sensor gRPC 60초 안이다.
     """
 
     @sensor(

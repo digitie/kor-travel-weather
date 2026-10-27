@@ -414,6 +414,18 @@ MAX_CONSECUTIVE_CANDIDATE_ERRORS = 3
 _PER_CANDIDATE_SQLSTATES = frozenset({"55P03", "57014", "40P01", "40001"})
 #: 후보 조회 한 번의 행 수 상한. 작은 식별 열만 읽으므로 RAM과 무관하다.
 MAX_CANDIDATE_PAGE = 256
+#: publisher transaction의 행 잠금 대기 상한(ms). 승격은 배타 artifact guard를 잡은 채
+#: transaction을 이어 가므로 원본 ingest의 3초(3×deadlock_timeout)씩 기다리지 않는다.
+#: 넘기면 그 후보만 lock_timeout으로 미뤄지고 다음 tick에 다시 본다.
+PUBLISHER_LOCK_TIMEOUT_MS = 500
+#: 승격 하나가 배타 guard를 놓은 뒤 쉬는 시간. 같은 guard를 10ms마다 다시 시도하는
+#: API reader(2초 상한)와 collector 쓰기(5초 상한)가 연속 승격 사이에 들어오게 한다.
+GUARD_YIELD_SECONDS = 0.03
+#: 일별 요약 정리 한 문장의 최악 시간(statement 상한). tick 상한이 이보다 가까우면 건너뛴다.
+DAILY_PRUNE_WORST_SECONDS = 5.0
+
+#: owner_epochs의 epoch 문자열. 정수가 아니면 NULL이 되어 아래에서 위반으로 센다.
+_EPOCH = "(CASE WHEN e.epoch ~ '^[0-9]{1,18}$' THEN CAST(e.epoch AS bigint) END)"
 
 
 def _ownership_sql(violation: str) -> str:
@@ -421,7 +433,8 @@ def _ownership_sql(violation: str) -> str:
 
     claim한 scope 집합(owner_epochs의 key)이 계획(planned_sources)과 같아야 하고 owner
     행이 빠진 scope도 위반이다. JSON 모양이 다르면 CASE가 먼저 거짓을 돌려 json 함수
-    오류가 문장 전체를 실패시키지 않는다. NULL은 COALESCE로 거짓이 되어 NOT도 안전하다.
+    오류가 문장 전체를 실패시키지 않는다. 비교가 NULL(epoch가 정수가 아님 등)이면 위반으로
+    센다. 전체 NULL은 COALESCE로 거짓이 되어 NOT도 안전하다.
     """
     return (
         "COALESCE(CASE WHEN json_typeof(weather_export_attempts.owner_epochs) = 'object'"
@@ -433,7 +446,7 @@ def _ownership_sql(violation: str) -> str:
         " AND NOT EXISTS (SELECT 1"
         " FROM json_each_text(weather_export_attempts.owner_epochs) AS e(scope, epoch)"
         " LEFT JOIN weather_export_scope_owners AS o ON o.source_scope = e.scope"
-        f" WHERE o.source_scope IS NULL OR {violation})"
+        f" WHERE o.source_scope IS NULL OR COALESCE(({violation}), true))"
         ") ELSE false END, false)"
     )
 
@@ -443,7 +456,7 @@ def _ownership_sql(violation: str) -> str:
 #: 경우만 참이다. 일부 이동·owner 누락·같은 epoch는 현재 scope가 섞인 시도를 실패로
 #: 위장하지 않도록 거짓이다.
 _SUPERSEDED_SQL = _ownership_sql(
-    "o.owner_epoch <= CAST(e.epoch AS bigint)"
+    f"o.owner_epoch <= {_EPOCH}"
     " OR o.active_attempt_id = weather_export_attempts.attempt_id"
 )
 _SUPERSEDED_OWNERSHIP = text(_SUPERSEDED_SQL)
@@ -451,9 +464,15 @@ _SUPERSEDED_OWNERSHIP = text(_SUPERSEDED_SQL)
 _NOT_SUPERSEDED_OWNERSHIP = text("NOT " + _SUPERSEDED_SQL)
 #: 승격할 수 있는 현재 소유자. ``export_lifecycle._current_owners``와 같은 조건이다.
 _CURRENT_OWNERSHIP = text(_ownership_sql(
-    "o.owner_epoch <> CAST(e.epoch AS bigint)"
+    f"o.owner_epoch <> {_EPOCH}"
     " OR o.active_attempt_id <> weather_export_attempts.attempt_id"
 ))
+
+
+def _publisher_heads(repository) -> ExportHeads:
+    heads = ExportHeads(repository)
+    heads.lifecycle.lock_timeout_ms = PUBLISHER_LOCK_TIMEOUT_MS
+    return heads
 
 
 def _pending(attempts):
@@ -662,7 +681,7 @@ def retire_settled_attempts(repository, *, limit: int = RETIRE_BATCH) -> dict[st
         raise ValueError("일괄 퇴역 상한이 올바르지 않습니다.")
     if repository.engine.dialect.name != "postgresql":
         return {}
-    heads = ExportHeads(repository)
+    heads = _publisher_heads(repository)
     attempts = heads.lifecycle.attempts
     retired = {}
     for code, condition in (
@@ -707,6 +726,18 @@ def _lock_free_verdict(row, dagster_status):
     return "READY" if native == "success" else "LOCKED"
 
 
+def _promote_and_yield(heads, identity, artifacts, dagster_status):
+    """승격은 처음부터 끝까지 배타 artifact guard를 잡는다. 놓은 뒤에는 잠깐 쉰다.
+
+    연속 승격이 guard를 곧바로 다시 잡으면, 10ms마다 다시 시도하는 API reader와
+    collector 쓰기가 상한(2초/5초)까지 들어오지 못한다. 성공·실패와 무관하게 쉰다.
+    """
+    try:
+        return heads.promote(identity, artifacts, dagster_status=dagster_status)
+    finally:
+        time.sleep(GUARD_YIELD_SECONDS)
+
+
 def _process_candidate(heads, artifacts, row, dagster_status, *, current_owner=False):
     verdict = _lock_free_verdict(row, dagster_status)
     if verdict == "NOT_READY":
@@ -716,7 +747,7 @@ def _process_candidate(heads, artifacts, row, dagster_status, *, current_owner=F
         # fresh 조회가 현재 소유자·계획 닫힘·native success를 이미 확인했다. 퇴역 확인
         # transaction을 건너뛴다. 그 뒤 소유권이 넘어가면 승격의 소유권 확인이 거절해
         # NOT_READY가 되고, 다음 tick의 일괄 퇴역이 같은 SQL로 정리한다.
-        outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+        outcome = _promote_and_yield(heads, identity, artifacts, dagster_status)
     else:
         outcome, _ = _publisher_terminal(heads, identity, dagster_status)
         if outcome is not None:
@@ -725,7 +756,7 @@ def _process_candidate(heads, artifacts, row, dagster_status, *, current_owner=F
         # 없는 성공/미확정 후보를 승격하거나 성공으로 추측하지 않는다.
         if row.plan_id is None:
             return "NOT_READY"
-        outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+        outcome = _promote_and_yield(heads, identity, artifacts, dagster_status)
     if outcome == "REJECTED":
         _publisher_terminal(heads, identity, dagster_status)
     return outcome
@@ -827,7 +858,7 @@ def publish_pending_exports(
     if not 1 <= limit <= MAX_CANDIDATE_PAGE or not 0 < budget_seconds <= 60:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
     deadline = time.monotonic() + budget_seconds
-    heads, artifacts = ExportHeads(repository), ExportArtifactStore(artifact_root)
+    heads, artifacts = _publisher_heads(repository), ExportArtifactStore(artifact_root)
     attempts = heads.lifecycle.attempts
     runs = heads.metadata.tables["weather_sync_runs"]
     own = tally is None
@@ -882,7 +913,7 @@ def publish_fresh_exports(
     if not 1 <= limit <= MAX_CANDIDATE_PAGE or not 0 < budget_seconds <= 60 or max_candidates < 1:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
     deadline = time.monotonic() + budget_seconds
-    heads, artifacts = ExportHeads(repository), ExportArtifactStore(artifact_root)
+    heads, artifacts = _publisher_heads(repository), ExportArtifactStore(artifact_root)
     attempts = heads.lifecycle.attempts
     runs = heads.metadata.tables["weather_sync_runs"]
     own = tally is None
@@ -934,9 +965,13 @@ def publish_fresh_exports(
 
 
 def refresh_publisher_daily(
-    repository, artifact_root: Path, *, deadline: float,
+    repository, artifact_root: Path, *, deadline: float, hard_deadline: float | None = None,
 ) -> Mapping[str, Any]:
-    """작은 원자적 checkpoint batch를 유한하게 drain하고 마지막에 한 번 정리한다."""
+    """작은 원자적 checkpoint batch를 유한하게 drain하고 마지막에 한 번 정리한다.
+
+    ``hard_deadline``(tick 상한)까지 정리 한 문장의 최악 시간이 남지 않으면 정리는
+    다음 tick으로 미룬다.
+    """
     from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
 
     total, more = 0, True
@@ -951,7 +986,10 @@ def refresh_publisher_daily(
             # race/읽기 실패는 checkpoint를 추측해 넘기지 않는다. 다음 tick에 재개한다.
             if progress["processed"] == 0 or not more:
                 break
-        if time.monotonic() < deadline:
+        now = time.monotonic()
+        if now < deadline and (
+            hard_deadline is None or hard_deadline - now >= DAILY_PRUNE_WORST_SECONDS
+        ):
             prune_daily_summaries(repository)
     except Exception as exc:
         more = True
