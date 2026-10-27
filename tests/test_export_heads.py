@@ -612,7 +612,9 @@ def _bind_ultra_short(repository, row_base):
         coverage_contract="kma-grid-forecast-v1",
     )
     heads = ExportHeads(repository)
-    run = repository.start_sync_run(provider=descriptor.provider, dataset_key=descriptor.dataset_key)
+    run = repository.start_sync_run(
+        provider=descriptor.provider, dataset_key=descriptor.dataset_key
+    )
     try:
         identity = repository.begin_export_attempt(
             run_id=run.run_id,
