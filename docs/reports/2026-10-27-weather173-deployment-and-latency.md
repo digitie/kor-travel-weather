@@ -19,7 +19,8 @@ API·code-server·웹 세 역할과0034 migration을 운영에 반영했다. 기
 
 - 최종 제품 head `4f9878133c34e8151f94bfe3631fe9d87eab50ea`, main merge는 위a9f54다.
 - 정확 head CI run40423939440의 Python1319와 frontend259/type/lint/build가 성공했다.
-  migration 충돌 보호31개, 독립 두 소스 리뷰, WSL 및 WSL+Docker 게이트는 배포 전에 통과했다.
+  migration 충돌 보호31개·WSL 집중 회귀와 독립 두 소스 리뷰를 배포 전에 확인했다.
+  이전 소스의 전체 실행·Docker 기록을 정확 최종 head 전체 통과로 확대하지 않는다.
 - 옛5ba2 전체 WSL1299 실행은 자연 exit0/3892.118초로 회수했고 원본을 중단·덮어쓰지 않았다.
 - 완성 ARM64 세 이미지는01:46:57~02:16:50에 빌드됐다. r2/r3에서 다시 빌드하지 않았다.
 
