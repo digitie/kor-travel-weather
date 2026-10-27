@@ -1,3 +1,20 @@
+## 2026-10-28 — 실제 마커 실패 보존·요청 예산과 특보 부분 인덱스 후속
+
+- Root R4 API210/image1b3d 교체(actual0) 뒤에도 cold60×3의19701/30020/21016ms 중1개가504였다.
+  CS e393/web5098·일정21R2S와 API endpoint의 `service_exports_enabled=True`는 유지했고 모바일/overlay 미실행·로그아웃 쿠키0을 분리해 기록했다.
+- browser 동시2/in-flight 공유/실패수동retry/숨은상세조회제거와 generic 특보 고정 predicate를 보완한다.
+  Backend 집중 WSL56/Docker56 actual0, frontend WSL/Docker265·타입/린트/WSL build actual0이다.
+  source7/lock/vendor 보존과 소유 QA 정리를 확인했으며 원 fixture2실패도 남겼다.
+- 제품이 같은1d2 WSL전체1518 PASS/actual0과 시험 한 파일만 보완한a707 Docker전체1517 PASS/
+  1 SKIP/actual0·독립 wait0을 회수했다. Docker의1 SKIP는 Docker CLI가 없는 배포 계약 검사다.
+- 최초 WSL27실패(실행기 spawn/PYCACHE)와 첫 Docker2실패(06:01 미공개 중기회차 fixture)를 보존했다.
+  전자는 같은27건 PASS, 후자는 SDK 공개 회차 함수로만 보완해06:01/18:01의 기존2파트를 각각
+  2 FAIL→2 PASS, 현재 시각2 PASS로 검산했다. 제품·SDK·timeout·assert 변경0이다.
+- 소유 QA PG/nonceDB/fixture/volume/network를 정상 exit0·잔여0으로 정리했다. PR187 정확 CI·리뷰와
+  배포/liveUI는 별도이며21:33 UTC R6 입력은False/None·새 배포0이다. export/publisher/소비 flags/GC·
+  공용 daemon·CS 변경0이고 운영20초 지연이 해결됐다고 하지 않는다.
+  [변경·검증·현재 운영 구분](reports/2026-10-28-marker-request-budget.md).
+
 ## 2026-10-28 — retention 카탈로그 실측·현재 API 소스 정합
 
 - API는 외부 전환된main210이며 release/파일지문을 확인했다. old source guard의 DB진입 전 실패를 보존했고 current에 결박한 bounded RO1회만 정산한다. 이번 문서의 새 운영 변경은0이다.

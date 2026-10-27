@@ -1523,12 +1523,13 @@ class WeatherRepository:
     @staticmethod
     def _kind_predicate(row, kinds: Sequence[WeatherKind]):
         # 특보는 observed로도 저장된다. 관측/실황/예보와 배타적으로 구분한다.
+        # 요청값이 아닌 고정 특보 정의는 generic plan도 부분 인덱스와 대조할 수 있어야 한다.
         alert = or_(
-            row.metric_key == "ALERT",
-            row.weather_domain.ilike("%alert%"),
-            row.weather_domain.ilike("%warning%"),
-            row.dataset_key.ilike("%alert%"),
-            row.dataset_key.ilike("%warning%"),
+            row.metric_key == literal("ALERT", literal_execute=True),
+            row.weather_domain.ilike(literal("%alert%", literal_execute=True)),
+            row.weather_domain.ilike(literal("%warning%", literal_execute=True)),
+            row.dataset_key.ilike(literal("%alert%", literal_execute=True)),
+            row.dataset_key.ilike(literal("%warning%", literal_execute=True)),
         )
         normal = row.forecast_style.in_(tuple(kind for kind in kinds if kind != "alert"))
         return or_(alert if "alert" in kinds else false(), and_(not_(alert), normal))

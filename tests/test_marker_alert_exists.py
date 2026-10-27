@@ -148,7 +148,7 @@ def test_six_kind_alert_candidates_keep_order_without_batch_rechecks(
             with repo.engine.connect() as connection:
                 cursor = connection.connection.driver_connection.cursor()
                 try:
-                    cursor.execute("PREPARE alert_candidate AS "+prepared)
+                    cursor.execute("PREPARE alert_candidate AS "+prepared, ())
                     execute = pgsql.SQL("EXECUTE alert_candidate ({})").format(
                         pgsql.SQL(",").join(pgsql.Literal(params[name]) for name in names))
                     for mode in ("force_custom_plan", "force_generic_plan"):
