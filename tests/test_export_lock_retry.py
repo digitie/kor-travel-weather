@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
 
+from kortravelweather import export_collector
 from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_collector import KmaNowcastExportCollector, failure_reason
 from kortravelweather.models import WeatherLocation
@@ -76,7 +77,7 @@ def test_prepare_outlasts_the_same_runs_ingest_lock(repository, tmp_path, run_an
 
 
 def test_rejection_records_only_a_sanitized_reason(
-    repository, tmp_path, run_and_location, caplog
+    repository, tmp_path, run_and_location, caplog, monkeypatch
 ):
     run, _ = run_and_location
     collector = KmaNowcastExportCollector(repository, run_id=run.run_id, artifact_root=tmp_path)
@@ -91,7 +92,10 @@ def test_rejection_records_only_a_sanitized_reason(
     error = OperationalError(
         "SELECT secret_table FOR UPDATE", {"password": "secret-value"}, LockNotAvailable()
     )
-    with caplog.at_level(logging.WARNING):
+    # Alembic의 fileConfig(앞선 migration 시험)가 이미 있는 logger를 끈다.
+    # 이 시험은 우리 호출이 남기는 문장만 본다(tests/test_kma_missing_values.py와 같은 방식).
+    monkeypatch.setattr(export_collector.logger, "disabled", False)
+    with caplog.at_level(logging.WARNING, logger=export_collector.logger.name):
         collector._reject(identity, "PREPARE_FAILED", error)
     attempts = collector.heads.lifecycle.attempts
     with repository.engine.connect() as connection:
@@ -101,7 +105,7 @@ def test_rejection_records_only_a_sanitized_reason(
             )
         ).one()
     assert tuple(row) == ("failed", "PREPARE_FAILED:lock_timeout")
-    assert "secret" not in caplog.text and "lock_timeout" in caplog.text
+    assert "lock_timeout" in caplog.text and "secret" not in caplog.text
 
 
 @pytest.mark.parametrize(
