@@ -242,6 +242,16 @@ const WEATHER_KINDS = [
   { value: "observed", label: "관측", icon: <Eye aria-hidden="true" /> },
 ] satisfies { value: WeatherKind; label: string; icon: React.ReactNode }[];
 
+// 현재 값(관측·실황·특보)을 가진 종류. 예보 종류만 고르면 latest의 지난 예보 대체값을
+// '최근 측정값'으로 보이지 않도록 현재 값 조회 자체를 하지 않는다.
+const CURRENT_KINDS: WeatherKind[] = ["alert", "nowcast", "observed"];
+
+function includesCurrentKind(kinds: WeatherKind[] | undefined) {
+  return !kinds || kinds.some((kind) => CURRENT_KINDS.includes(kind));
+}
+
+const DEFAULT_CENTER: [number, number] = [127.8, 36.2];
+
 export function WeatherMap({ locations, catalogLoading = false, catalogError, onRetryCatalog }: WeatherMapProps) {
   const map = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
@@ -321,17 +331,15 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
   }, [locations, query, selectedSources, selectedKinds.length, sourceCatalog, sourceKey, needsSourceCatalog]);
   const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
   const selectedLocationId = selected?.location_id;
-  // Keep the controlled map center referentially stable while the user pans.
-  // VWorldMapView treats a changed center prop as an explicit recenter
-  // request; creating a new array on every viewport update would therefore
-  // undo a user's pan on the next render.  The selected-location effect below
-  // remains the only implicit recenter trigger.
-  const selectedLongitude = selected?.longitude ?? 127.8;
-  const selectedLatitude = selected?.latitude ?? 36.2;
-  const selectedCenter = useMemo<[number, number]>(
-    () => [selectedLongitude, selectedLatitude],
-    [selectedLatitude, selectedLongitude],
-  );
+  // VWorldMapView treats a changed center/zoom prop as an explicit recenter
+  // request.  Give it only the first camera and let the selection effect below
+  // be the single recenter path, so a filter-driven fallback selection or a new
+  // catalog object for the same location never moves the user's camera.
+  const [initialCamera] = useState(() => locations[0]
+    ? { center: [locations[0].longitude, locations[0].latitude] as [number, number], zoom: 7.2 }
+    : { center: DEFAULT_CENTER, zoom: 6 });
+  const automaticSelectionRef = useRef<string | null>(null);
+  const selectedPositionRef = useRef<[number, number] | null>(null);
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
     const inViewport = visibleLocations.filter((location) => isInViewport(location, viewport));
@@ -376,19 +384,34 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
   }
 
   useEffect(() => {
+    // 필터 결과를 불러오는 동안의 빈 목록은 선택·상세를 지우지 않는다.
+    if (catalogLoading || sourceLoading) return;
     if (!visibleLocations.length) {
       if (selectedId) setSelectedId("");
+      setDetailOpen(false);
       return;
     }
     if (!visibleLocations.some((location) => location.location_id === selectedId)) {
+      // 보던 위치가 필터에서 빠지면 대체 위치를 고르되 상세는 닫고 카메라는 그대로 둔다.
+      // 처음 고르는 위치(selectedId 없음)는 명시 선택처럼 카메라를 옮긴다.
+      automaticSelectionRef.current = selectedId ? visibleLocations[0].location_id : null;
       setSelectedId(visibleLocations[0].location_id);
+      setDetailOpen(false);
     }
-  }, [selectedId, visibleLocations]);
+  }, [catalogLoading, selectedId, sourceLoading, visibleLocations]);
 
   useEffect(() => {
-    if (!map.current || !mapReady || !selected) return;
-    map.current.easeTo({ center: [selected.longitude, selected.latitude], duration: 500 });
-  }, [mapReady, selected]);
+    selectedPositionRef.current = selected ? [selected.longitude, selected.latitude] : null;
+  });
+
+  useEffect(() => {
+    // 위치 ID가 바뀔 때만 옮긴다. 같은 위치의 새 catalog 객체에는 반응하지 않는다.
+    const automatic = automaticSelectionRef.current === selectedLocationId;
+    automaticSelectionRef.current = null;
+    const position = selectedPositionRef.current;
+    if (automatic || !map.current || !mapReady || !position) return;
+    map.current.easeTo({ center: position, duration: 500 });
+  }, [mapReady, selectedLocationId]);
 
   function syncViewport(instance: MapLibreMap) {
     const center = instance.getCenter();
@@ -418,23 +441,29 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
     setMessage("");
     setForecastMessage("");
     setLastRefreshedAt(null);
-    setLoading(Boolean(selectedLocationId));
+    const current = includesCurrentKind(kindFilter);
+    setLoading(Boolean(selectedLocationId) && current);
     setForecastLoading(Boolean(selectedLocationId));
     if (!selectedLocationId) return () => controller.abort();
 
-    void getLatest(selectedLocationId, 200, signal, providerFilter, kindFilter)
-      .then((latest) => {
-        if (signal.aborted) return;
-        setValues(latest.data);
-        setLastRefreshedAt(new Date());
-        if (!latest.data.length) setMessage("아직 수집된 최신 값이 없습니다.");
-      })
-      .catch((reason: unknown) => {
-        if (!signal.aborted) setMessage(reason instanceof Error ? reason.message : "날씨를 불러오지 못했습니다.");
-      })
-      .finally(() => {
-        if (!signal.aborted) setLoading(false);
-      });
+    if (!current) {
+      // 예보 종류만 고르면 latest가 지난 예보를 대신 돌려준다. 측정값으로 보이지 않는다.
+      setMessage("선택한 종류에는 현재 값이 없습니다.");
+    } else {
+      void getLatest(selectedLocationId, 200, signal, providerFilter, kindFilter)
+        .then((latest) => {
+          if (signal.aborted) return;
+          setValues(latest.data);
+          setLastRefreshedAt(new Date());
+          if (!latest.data.length) setMessage("아직 수집된 최신 값이 없습니다.");
+        })
+        .catch((reason: unknown) => {
+          if (!signal.aborted) setMessage(reason instanceof Error ? reason.message : "날씨를 불러오지 못했습니다.");
+        })
+        .finally(() => {
+          if (!signal.aborted) setLoading(false);
+        });
+    }
     // 예보가 늦거나 실패해도 먼저 도착한 현재 날씨는 즉시 표시한다.
     void getForecast(selectedLocationId, forecastWindowStart(), undefined, 100, signal, providerFilter, kindFilter)
       .then((next) => {
@@ -540,7 +569,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                 </div>
               </div>
     }>
-              <div className="inspector-freshness weather-current-status"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div>
+              {includesCurrentKind(kindFilter) ? <div className="inspector-freshness weather-current-status"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div> : null}
               {loading ? <div className="loading-block" role="status" aria-live="polite">날씨 조회 중…</div> : null}
                 {message ? <div className="empty" role="status">{message}</div> : null}
                 {selectedSummary?.alerts.length ? (
@@ -615,7 +644,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
           <MapStage view="map" summary={mode === "map" ? mapNotice : null} detail={mode === "map" ? detailPanel : null}>
             <VWorldMapView
               apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
-              center={selectedCenter}
+              center={initialCamera.center}
               className="map-canvas"
               layerType="Base"
               onLoad={(instance) => {
@@ -626,7 +655,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
               onMoveEnd={(instance) => syncViewport(instance)}
               onError={() => setMapError("지도 표시 오류 · 목록 보기")}
               onRecover={() => setMapError("")}
-              zoom={selected ? 7.2 : 6}
+              zoom={initialCamera.zoom}
             >
               <VWorldWeatherClusters
                 markers={markers}
