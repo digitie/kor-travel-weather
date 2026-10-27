@@ -1,5 +1,13 @@
 # Weather 남은 작업
 
+## 2026-10-28 — retention 현재 수용 경계
+
+- [ ] **W-RET-COMPLETE-01 / P1** — 자연7 SUCCESS·8 materialization 21만facts 진척과 별개로 과거6h 물리 정리 완료·미래값 보존을 수용한다. 8 materialization은remaining/budget_exhausted이며 lag는위치상한이다.
+- [ ] **W-RET-COST-01 / P2** — parent+16leaf retention index와 current PK는정상이다. current11index/INCLUDE4·NOT VALID FK17·통계추정만으로 비용원인을단정하지말고 한가지가설을별도검토된측정으로확인한다.
+- [ ] **W-UI-CURRENT-01 / P2** — 외부전환된API210의UI/마커수용은별도확인한다. 과거APIe393/web5098 공개UI21을승계하지않는다.
+
+[실측·소스정합·원실패와한계](reports/2026-10-28-retention-catalog-and-current-source.md)를따른다. 아래W-OPS-04의첫자연SUCCESS는현재부분수용됐지만6h완료/유입비교는미완이다. export publisher는취소desired STOPPED로유지하며재개/GC설정전환은이번범위가아니다. 아래기록은각시점의이력이다.
+
 ## 2026-10-27 — 소유자 결정: export 일시중지·current job 분리·artifact GC 전환
 
 [결정 기록](decisions.md)을 따른다. 소유자 "권장대로"(2026-10-27).
