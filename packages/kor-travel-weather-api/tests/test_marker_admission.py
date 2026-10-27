@@ -4,6 +4,7 @@ import asyncio
 from threading import Event, Lock
 
 import anyio
+import anyio.lowlevel
 import httpx
 import pytest
 from kortravelweather_api.app import create_app
@@ -123,3 +124,156 @@ async def test_marker_failure_releases_admission_for_the_next_batch(weather_test
         repo.fail = False
         assert (await client.get("/v1/weather/markers?location_id=one")).status_code == 200
         assert app.state.marker_limiter.borrowed_tokens == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kinds", [
+    [], ["observed", "nowcast", "ultra_short", "short", "mid", "alert"],
+])
+async def test_real_disconnect_reaches_marker_admission_through_request_middleware(
+    weather_test_database_url, kinds,
+):
+    """monkeypatch 없이 실제 ASGI http.disconnect가 middleware를 지나 499로 끝난다."""
+    repo = Repository()
+    repo.gate.set()
+    app = app_for(repo, weather_test_database_url)
+    messages = []
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    query = "location_id=one" + "".join("&kind=" + kind for kind in kinds)
+    await app({
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": "/v1/weather/markers", "raw_path": b"/v1/weather/markers",
+        "root_path": "", "query_string": query.encode(), "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 50000), "server": ("test", 80),
+    }, receive, send)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    assert start["status"] == 499
+    assert repo.calls == 0
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                base_url="http://test") as client:
+        echoed = await client.get("/health", headers={"x-request-id": "trace-echo"})
+        generated = await client.get("/v1/weather/markers", params={"location_id": "one"})
+    assert echoed.status_code == 200 and echoed.headers["x-request-id"] == "trace-echo"
+    assert int(echoed.headers["x-duration-ms"]) >= 0
+    assert generated.status_code == 200 and generated.headers["x-request-id"]
+    assert repo.calls == 1
+
+
+def marker_scope(key: str) -> dict:
+    query = "location_id=" + key + "".join(
+        "&kind=" + kind for kind in ("observed", "nowcast", "ultra_short", "short", "mid", "alert")
+    )
+    return {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
+        "scheme": "http", "path": "/v1/weather/markers", "raw_path": b"/v1/weather/markers",
+        "root_path": "", "query_string": query.encode(), "headers": [(b"host", b"test")],
+        "client": ("127.0.0.1", 50000), "server": ("test", 80),
+    }
+
+
+async def wait_queued(app):
+    with anyio.fail_after(3):
+        while app.state.marker_limiter.statistics().tasks_waiting != 1:
+            await anyio.lowlevel.checkpoint()
+
+
+@pytest.mark.asyncio
+async def test_actual_six_kind_disconnect_queued_behind_two_batches_skips_db(
+    weather_test_database_url,
+):
+    repo = Repository()
+    app = app_for(repo, weather_test_database_url)
+    messages = []
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    tasks = []
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                    base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get(
+                "/v1/weather/markers", params={"location_id": key},
+            )) for key in ("one", "two")]
+            with anyio.fail_after(3):
+                await repo.started.wait()
+            queued = asyncio.create_task(app(marker_scope("cancelled"), receive, send))
+            tasks.append(queued)
+            await wait_queued(app)
+            assert repo.calls == repo.active == repo.peak == 2
+            repo.gate.set()
+            await asyncio.gather(*tasks)
+        assert next(x for x in messages if x["type"] == "http.response.start")["status"] == 499
+        assert repo.calls == 2
+        assert app.state.marker_limiter.borrowed_tokens == 0
+    finally:
+        repo.gate.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_normal_third_batch_waits_for_two_slots_without_increasing_capacity(
+    weather_test_database_url,
+):
+    repo = Repository()
+    app = app_for(repo, weather_test_database_url)
+    tasks = []
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                    base_url="http://test") as client:
+            tasks = [asyncio.create_task(client.get(
+                "/v1/weather/markers", params={"location_id": key},
+            )) for key in ("one", "two")]
+            with anyio.fail_after(3):
+                await repo.started.wait()
+            tasks.append(asyncio.create_task(client.get(
+                "/v1/weather/markers", params={"location_id": "three"},
+            )))
+            await wait_queued(app)
+            assert repo.calls == repo.peak == 2
+            repo.gate.set()
+            assert all(response.status_code == 200 for response in await asyncio.gather(*tasks))
+        assert repo.calls == 3 and repo.peak == 2
+    finally:
+        repo.gate.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_after_db_entry_does_not_claim_to_cancel_running_thread(
+    weather_test_database_url,
+):
+    """이번 수정은 대기 중 요청의 새 DB 작업만 막는다. 이미 실행 중인 thread는 별도다."""
+    repo = Repository()
+    app = app_for(repo, weather_test_database_url)
+    disconnected = anyio.Event()
+
+    async def receive():
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        pass
+
+    tasks = [asyncio.create_task(app(marker_scope(key), receive, send)) for key in ("one", "two")]
+    try:
+        with anyio.fail_after(3):
+            await repo.started.wait()
+        disconnected.set()
+        await anyio.lowlevel.checkpoint()
+        assert repo.active == 2 and app.state.marker_limiter.borrowed_tokens == 2
+        repo.gate.set()
+        await asyncio.gather(*tasks)
+        assert repo.calls == 2 and repo.active == 0
+    finally:
+        repo.gate.set()
+        await asyncio.gather(*tasks, return_exceptions=True)

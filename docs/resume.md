@@ -1,3 +1,31 @@
+## 2026-10-27 — TCP 회귀의 준비 실패 정리 보완
+
+- 현재: 정확72 CI1505 PASS/frontend 성공. 독립 리뷰의 TCP 시험 준비 실패 P2를
+  별도72 기반 작업 트리에서 보완해 mock5·정상 TCP 포함6 집중을 통과했다.
+- 다음 한 작업: 원72 전체 WSL/Docker의 실제 종료를 회수하고 제품 app/deps/fixture
+  동일 증명과 새 cleanup HEAD의 집중·CI·증분 리뷰를 합쳐 판단한다. 원전체 환경은
+  고정했고 운영/수집 변경0, 운영25초 목표는 미검증이다.
+  [정산](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 보완
+
+- 현재:962 CI1504 PASS/1 FAIL은 조회 전 projection9,600행의 FK 검사30초 초과였다.
+  동일57,600행·FK·assert·제한을 유지하고1지점/960행씩 적재하도록 최소 보완했다.
+  로컬 원본/보완 모두 통과했으므로 CI 원인의 완전 재현·운영 속도 개선은 미입증이다.
+- 다음 한 작업: 새 정확 HEAD의 CI, 전체 WSL/Docker, 독립 두 리뷰 순으로 검증한다.
+  전용 disk-backed2GiB/1CPU·PG100과 별도 두 DB 준비까지 완료, whole 미실행이다.
+  [정산](reports/2026-10-27-marker-disconnect-admission.md). 운영/provider/export 변경0.
+
+## 2026-10-27 — 실제 지도6종류·취소 대기 경로 정정
+
+- 기본 지도는6종류를 명시한다. PR180의무필터 경로와 실제 UI 경로를 혼동한 분석을
+  정정했다. 기존 EXPLAIN·1443/1442검증은 무필터 범위로 보존한다.
+- 실제 ASGI disconnect가 BaseHTTP middleware를 지나200/DB조회로 진행하는 RED를
+  재현했다. 순수 ASGI로바꾼 admission7회귀는 PASS이며, 이미 실행 중인 DB thread
+  취소·운영25초 목표는 미검증이다. repository/index/DTO/병렬도/timeout 변경0이다.
+- 다음은 전체WSL·Docker·정확CI·독립2리뷰 후 새운영 수용을 별도 조율한다.
+  [재현·정정·경계](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 
 - 실제 API/collector는e393(PR176), web은main5098(PR177)이다. e393→5098의Python/Dagster/build/migration 입력은 같아 #174 CommonAA·retention 개선이 이미 운영 중임을 확인했고 중복 build/교체하지 않았다.

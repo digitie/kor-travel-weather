@@ -1,3 +1,31 @@
+## 2026-10-27 — TCP 회귀의 준비 실패 정리 보완
+
+- 정확72 CI는 Python1505 PASS·frontend 성공이다. 독립 리뷰의 시험 정리 P2는 별도
+  작업 트리에서만 보완했다. 원72 전체 두 실행의 source/DB/의존성은 고정한다.
+- app/socket/bind/thread 시작/DROP 실패 mock5 RED→5 PASS, 정상 TCP+mock6 PASS를
+  확인했다. ExitStack으로 UUID DB·engine·socket·worker 정리를 생성 단계마다 등록하고
+  DROP 실패에도 admin.dispose를 보장한다. 제품 app·의존성·fixture/조회 조건은 동일하다.
+  [실패 원문·범위·합성 검증 경계](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 단위 보완
+
+- 정확962 CI는 Python1504 PASS/1 FAIL이었다. 조회 전9,600행 projection INSERT의
+  FK 검사30초 초과 원문을 보존하고, 같은57,600행/FK/assert/조회 예산을 유지한 채
+  적재 statement만960행으로 나눴다. 기존 원본 로컬 진단19.54초/보완19.51초 모두
+  통과했으므로 CI 초과의 로컬 재현이나 전체 속도 개선으로 확대하지 않는다.
+- ASGI/API 집중167 PASS·TCP 취소 RED→GREEN은 보존한다. 별도 disk-backed2GiB/1CPU
+  PG와 두 nonce DB만 준비했으며 whole은 미실행, 운영 변경0이다.
+  [원문·범위·다음 게이트](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — 기본 지도 경로 정정과 대기 중 취소의 DB 진입 방지
+
+- 실제UI는6종류를명시한다. PR180의 `kinds=None` 최적화를 기본지도 경로로 추정한
+  오류를 정정하되 기존계획·실패·전체시험 결과는 원래범위로 보존했다.
+- PR178의순수 ASGI middleware와실제disconnect시험만분리해 main5098에적용했다.
+  입장전/대기중취소는499·새DB작업0, 정상동시2와실행중thread의자연완료를구분한다.
+- 운영추가조회·provider/job·이미지변경0. 소유PG의실제6종류7SELECT/수화와EXPLAIN ONLY,
+  actualASGI RED→GREEN을저장했다. [보고서](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 
 - 실제 API/collector는e393(PR176), web은main5098(PR177)이다. e393→5098의Python/Dagster/build/migration 입력은 같아 #174 CommonAA·retention 개선이 이미 운영 중임을 확인했고 중복 build/교체하지 않았다.

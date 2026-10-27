@@ -115,10 +115,11 @@ def test_sixty_location_kind_batches_preserve_provider_and_alert_results(
             CROSS JOIN unnest(ARRAY['observed','short']) style
             CROSS JOIN unnest(ARRAY['TEMP','T1H','TMP','WEATHER_CODE','SKY','PTY']) metric
         """), {"now": now})
-        # FK를 유지한 같은 57,600행을 적재하되 한 statement의 FK 검사량을 제한한다.
+        # FK를 유지한 같은 57,600행을 적재하되 한 statement를 한 지점(960행)으로 제한한다.
+        # CI의 10지점(9,600행) 적재가 FK 검사 중 30초를 넘었으며 조회 예산은 그대로 둔다.
         # known_at 조건은 source fact의 파티션을 한정하며 이후 조회 측정에는 적용하지 않는다.
         inserted = 0
-        for offset in range(0, len(ids), 10):
+        for location in ids:
             result = connection.execute(text("""
                 INSERT INTO weather_current_values
                 (value_id,location_id,provider,dataset_key,weather_domain,forecast_style,
@@ -126,7 +127,7 @@ def test_sixty_location_kind_batches_preserve_provider_and_alert_results(
                 SELECT value_id,location_id,provider,dataset_key,weather_domain,forecast_style,
                        metric_key,target_at,known_at,source_record_key FROM weather_values
                 WHERE known_at=:now AND location_id=ANY(:locations)
-            """), {"now": now, "locations": ids[offset:offset+10]})
+            """), {"now": now, "locations": [location]})
             inserted += result.rowcount
         assert inserted == 60 * 80 * 2 * 6
         connection.exec_driver_sql("ANALYZE weather_current_values")
