@@ -18,6 +18,23 @@
   `KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초)로 올려 유입의 약2.5배로 했다.
 - 운영 쓰기·VACUUM·DDL은 하지 않았다. 남은 한계는 pointer FK 검사의 무작위 PK 탐색 비용이다.
 
+## 2026-10-27 — 지도 마커 배치 병목과 미확인 표시 보강 중
+
+실제 UI 면적/상세 통과와 별도로 마커 배치504·미확인 구름 오표시를 재현했다.
+0034의 현재/예보·제공처 prefix 부분 인덱스, 다중 제공처 대표 병합, 특보512키 스트리밍,
+미확인 표시·지도 전용 재조회를 보강했다. 집중PG15/계약27·migration보호31·frontend259/type/lint/build·
+Ruff는 통과했고 정확 후속 정확SHA 전체CI/2인 리뷰와 수집 종료 뒤 운영 수용은 진행 중이다.
+[실측·실패안·인덱스 비용·배포/되돌리기 경계](reports/2026-10-27-marker-batch-and-unknown.md).
+
+후속 독립 리뷰에서504 뒤 검색 결과0/종류해제 시 옛 재조회가 남는 경계를 두 회귀로
+재현하고 조회할 위치가 있을 때만 노출하도록 보강했다. 위치 복귀 시 실제 요청도 확인했다.
+
+후속1bda CI의1318통과/1실패는57,600행 fixture FK 적재의30초 한계였다.
+측정 쿼리/timeout/FK는 바꾸지 않고 적재를10지점씩 나누고 총행 수를 검산했다.
+
+첫 후보5ba2의 CI Python1299/frontend257은 통과했다. 리뷰의 인덱스 소유/정의·schema
+충돌 보호를 별도 worktree/DB에서 보강했으며 원본 전체 실행과 운영 수집은 보존했다.
+
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
 
 - PR #171의 최종74482는 정확 lock CI Python1292·frontend253/type/lint/build 및 독립2인

@@ -26,6 +26,8 @@ import {
 } from "@/lib/vworld-style";
 import {
   buildWeatherClusterData,
+  weatherConditionIcon,
+  weatherConditionLabel,
   type WeatherClusterData,
   type WeatherClusterMarker,
   type WeatherCondition,
@@ -360,20 +362,6 @@ export function VWorldWeatherMarker({
   alertCount = 0,
   ...markerProps
 }: VWorldWeatherMarkerProps) {
-  const icon: Record<WeatherCondition, string> = {
-    sunny: "☀️",
-    cloudy: "☁️",
-    rainy: "🌧️",
-    snowy: "❄️",
-    storm: "⚡",
-  };
-  const label: Record<WeatherCondition, string> = {
-    sunny: "맑음",
-    cloudy: "구름",
-    rainy: "비",
-    snowy: "눈",
-    storm: "뇌우",
-  };
   return (
     <VWorldMarker
       {...markerProps}
@@ -391,10 +379,10 @@ export function VWorldWeatherMarker({
         title={markerProps.title}
         type="button"
       >
-        <span aria-hidden="true" className="vworld-weather-marker-icon">{icon[condition]}</span>
+        <span aria-hidden="true" className="vworld-weather-marker-icon">{weatherConditionIcon(condition)}</span>
         <span className="vworld-weather-marker-copy">
           <strong>{temperature === null ? "—" : `${Math.round(temperature)}°`}</strong>
-          <small>{label[condition]}</small>
+          <small>{weatherConditionLabel(condition)}</small>
         </span>
         {alertCount > 0 ? <span aria-label={`특보 ${alertCount}건`} className="weather-marker-badge">{alertCount}</span> : null}
       </button>
@@ -421,26 +409,6 @@ function createWeatherClusterElement(
     onClick();
   });
   return element;
-}
-
-function weatherConditionIcon(condition: WeatherCondition): string {
-  return {
-    sunny: "☀️",
-    cloudy: "☁️",
-    rainy: "🌧️",
-    snowy: "❄️",
-    storm: "⚡",
-  }[condition];
-}
-
-function weatherConditionLabel(condition: WeatherCondition): string {
-  return {
-    sunny: "맑음",
-    cloudy: "구름",
-    rainy: "비",
-    snowy: "눈",
-    storm: "뇌우",
-  }[condition];
 }
 
 function createWeatherClusterPointElement(
