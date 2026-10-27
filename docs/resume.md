@@ -1,7 +1,9 @@
 ## 2026-10-27 — Weather173 운영 교체 완료·마커 지연 후속 진행
 
-- main a9f54의 세 이미지/0034를06:35UTC에 반영했다. 원래21 RUNNING/2 STOPPED·공용 daemon·타 서비스 보존,
+- 배포 merge a9f54의 세 이미지/0034를06:35UTC에 반영했다. 원래21 RUNNING/2 STOPPED·공용 daemon·타 서비스 보존,
   기존 네 인덱스 OID 보존·자연 publisher와 새 정기 current 수집 재개를 확인했다.
+- 이 정산 기준 소스 main은1766889다. PR #174/#175는 머지됐지만 이번 운영 a9 이미지에는
+  포함되지 않았다. 단기예보 정리 수정·export 후속의 배포/운영 수용은 별도로 남는다.
 - 실제 Chromium PC1440/375의 지도 면적·상세 오버레이·실제 가평14.4 값/시각은 통과했다.
   **마커 latency는 미완**이다. 후속60×3의19.506/29.884/28.324초 중 두 개가25초 상한을 넘었다.
   초기70초 수용기 실패·명시 ERR_ABORTED6개를 원본 보존하며 빠른 응답 성공으로 대체하지 않는다.
@@ -9,17 +11,20 @@
   다음 한 작업은 저장된 실제60IDs/시각과 query/predicate/index/조인/정렬의 병목을 좁히는 것이다.
   취소 safepoint·기존 인덱스 baseline rollback·pause 전 장기 run 대기는 별도 운영 P1이다.
 
-## 2026-10-27 — Common aa232ad·단기예보 정리 수정 PR #174
+아래 절은 각 작성 시점의 이력이다. 운영 버전·실제 수용의 정본은 위 최신 정산이며,
+아래의95020/미교체/머지 전 진행 표현을 현재 운영 상태로 해석하지 않는다.
 
-- 현재 상태: [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)는 Python만 다룬다. Common
+## 2026-10-27 — Common aa232ad·단기예보 정리 수정 PR #174 (당시 기록)
+
+- 당시 상태: [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)는 Python만 다룬다. Common
   `aa232ad` 고정과 `weather_short_forecast_retention_job` 상시 실패 수정(검사한 위치 이어 읽기·ctid 삭제·
   실행당 예산 설정 기본150초·진척0 또는 뒤처진 채 7회(약70분) 연속 줄지 않을 때만 Failure)이다. n150 CI-parity 게이트와
   GitHub CI·독립 리뷰 결과는 PR이 정본이다.
-- 다음 한 작업: 머지·배포 뒤 job 첫 run SUCCESS(`resumed=false`→다음 run `true`)와 `backlog_lag_seconds`
+- 당시 다음 한 작업: 머지·배포 뒤 job 첫 run SUCCESS(`resumed=false`→다음 run `true`)와 `backlog_lag_seconds`
   감소를 확인한다([확인 방법](shortterm-retention.md#배포-후-확인)). 이어서 `@kor-travel/ui` dev.9를 별도
   PR로 vendoring한다(로그인 hydration 준비 전 입력·제출 비활성).
 
-## 2026-10-27 — 지도 마커 실제 값 수용 보강 중
+## 2026-10-27 — 지도 마커 실제 값 수용 보강 중 (173 배포 전 이력)
 
 - 현재: 운영95020의 지도 면적·상세 통과와 별도로60ID 지연/504·미확인 구름을 재현했다.
   별도 후보는0034 인덱스4개·제공처 대표 병합·특보512키 스트리밍·실패 재조회를 포함한다.
