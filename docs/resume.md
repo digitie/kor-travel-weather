@@ -1,3 +1,10 @@
+## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
+
+- 실제 API/collector는e393(PR176), web은main5098(PR177)이다. e393→5098의Python/Dagster/build/migration 입력은 같아 #174 CommonAA·retention 개선이 이미 운영 중임을 확인했고 중복 build/교체하지 않았다.
+- API/CS CommonAA19 source와Weather핵심6hash, actualschema0034/정본API12201 health/version200, 자연schedule retention SUCCESS156.153초를 새 RO로 확인했다. 7runtime·daemon·NVMe 원상태를 보존했으며 CPU/RSS 효과는 미측정이다.
+- 사용자 취소에 따라 `weather_export_publisher` sensor1만 STOPPED로 변경·readback했다. 이미 시작된tick111545는 자연SKIPPED로 끝났다. 다른47-native 집합의 나머지 상태/flags/API/data는 변경0이다. 앞으로 이 sensor는 original-RUNNING 복원 예외인 **desired STOPPED**다.
+- 현재source 공개UI21은 두 source 리뷰·browser 슬롯 뒤 실제 검증할 예정이며 아직PASS가 아니다. [현재 source·취소·관측 범위](reports/2026-10-27-current-dagster-and-export-cancellation.md). 아래 문서는 각 작성 시점의 이력이며 예전 미배포/새 publisher 재개 표현을 현재 desired state로 읽지 않는다.
+
 ## 2026-10-27 — 공용 UI dev.9 채택 PR
 
 - 현재: `@kor-travel/ui` `0.1.0-dev.8` → `0.1.0-dev.9`(Common `aa232ad`, 로그인 hydration 준비 경계) vendoring을
