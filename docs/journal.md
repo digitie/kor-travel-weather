@@ -1,3 +1,16 @@
+## 2026-10-27 — 소유자 결정 세 건 기록과 odroid release 표지 제안
+
+- 소유자가 "권장대로"로 세 건을 정했다. [결정](decisions.md)·[백로그](tasks.md)에 남겼다.
+  (1) export 목표 일시중지 — Map `weather_state_*` schedule(locations 제외)·PinVi weather flag는 꺼 둔 채,
+  KHOA 해수욕장 한 곳 catalog 좌표 수정은 보류. (2) 외부 날씨 current 약 1시간 지연은 export 재개 때
+  current/forecast job 분리로 푼다(W-EXP-SPLIT-01). "run SUCCESS 뒤 승격" 규칙은 유지하고 step 단위
+  판정은 하지 않는다. (3) PR #176 artifact GC는 `dry_run`으로 약 1주 관찰 뒤 `delete`(W-EXP-GC-01,
+  목표 2026-11-03). `dry_run`은 guard 안 재확인을 돌리지 않으므로 그 시간은 `delete` 첫 tick에서 다시 본다.
+- odroid에 현재 weather release 기록이 없어 weather173/176 배포가 엇갈린 일을 계기로
+  `/srv/ktdm-releases/weather-current` 표지와 runbook 문구를
+  [제안](reports/2026-10-27-odroid-weather-current-release-pointer.md)했다. **Codex 합의 필요**이며
+  odroid는 바꾸지 않았다. 코드 변경 없음(문서만).
+
 ## 2026-10-27 — 공용 UI dev.9(로그인 hydration 준비 경계) 고정
 
 - Common main `aa232ad`(PR #47, T-217)의 `git archive`에서 격리 Docker(Node 22.22.2·npm 11.19.1) fresh

@@ -1,3 +1,12 @@
+## 2026-10-27 — 소유자 결정 기록(export 일시중지·current 분리·GC 전환)
+
+- 현재: export 목표는 소유자 지시로 **일시중지**다. Map `weather_state_*`(locations 제외)·PinVi weather
+  flag는 꺼 둔 채로 두고 KHOA 해수욕장 좌표 수정도 보류한다. [결정](decisions.md).
+- 다음 한 작업: 2026-11-03 무렵 W-EXP-GC-01 — `ktw_export_artifact_gc_reclaimable_bytes`와 publisher
+  `stages=…gc:` 시간을 보고 GC를 `delete`로 바꿀지 정한다. W-EXP-SPLIT-01(current/forecast job 분리)은
+  export 재개 때 한다. odroid `weather-current` 표지 [제안](reports/2026-10-27-odroid-weather-current-release-pointer.md)은
+  Codex 합의를 기다린다. 마커 지연 등 아래 기존 항목은 그대로다.
+
 ## 2026-10-27 — 공용 UI dev.9 채택 PR
 
 - 현재: `@kor-travel/ui` `0.1.0-dev.8` → `0.1.0-dev.9`(Common `aa232ad`, 로그인 hydration 준비 경계) vendoring을
