@@ -210,6 +210,13 @@ def _matches_etag(header: str, etag: str) -> bool:
     )
 
 
+def _cause(exc: Exception) -> str:
+    # DB 오류는 SQLSTATE 분류(lock_timeout 등), 그 밖은 예외 클래스 이름만 쓴다.
+    from kortravelweather.export_collector import failure_reason
+
+    return failure_reason(exc) if isinstance(exc, SQLAlchemyError) else type(exc).__name__
+
+
 def _log_unavailable(request: Request, resource: str, reason: str) -> None:
     # 원인 분류(예외 클래스·source_selection)만 남긴다. 메시지·SQL·DSN·토큰은 남기지 않는다.
     rid = "".join(c if c.isprintable() else "?" for c in request_id(request)[:64])
@@ -326,12 +333,12 @@ async def _frozen_response(
             limiter=request.app.state.service_export_limiter,
         )
     except ExportCursorInvalid as exc:
-        _log_unavailable(request, resource, type(exc).__name__)
+        _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
     except ExportSnapshotExpired:
         return _unavailable(request, status=410, code="EXPORT_SNAPSHOT_EXPIRED")
     except (ExportArtifactError, OSError, SQLAlchemyError) as exc:
-        _log_unavailable(request, resource, type(exc).__name__)
+        _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request)
     return _rendered(payload, headers)
 
@@ -391,7 +398,7 @@ async def export_status(
             limiter=request.app.state.service_export_limiter,
         )
     except (ExportArtifactError, SQLAlchemyError) as exc:
-        _log_unavailable(request, "status", type(exc).__name__)
+        _log_unavailable(request, "status", _cause(exc))
         return _unavailable(request)
     return _rendered(payload, headers)
 

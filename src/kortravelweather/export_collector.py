@@ -1008,7 +1008,7 @@ def _prune_snapshot_handles(repository) -> None:
     try:
         prune_export_snapshots(repository)
     except Exception as exc:
-        logger.warning("weather_export_snapshot_prune_deferred reason=%s", type(exc).__name__)
+        logger.warning("weather_export_snapshot_prune_deferred reason=%s", failure_reason(exc))
 
 
 def dagster_status_lookup(instance) -> Callable[[str], str | None]:
