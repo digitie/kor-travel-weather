@@ -36,3 +36,22 @@
     유지되면 `delete`로 바꾼다. 디스크 여유는 약 187 GB다.
   - 추적: `docs/tasks.md` 2026-10-27 소유자 결정 절. odroid 현재 release 표지는 별도 제안
     ([Codex 합의 필요](reports/2026-10-27-odroid-weather-current-release-pointer.md))이며 결정이 아니다.
+- [ADR-102] (2026-10-27) W5 `daily-summaries` 전체 목록(location_id 없음)은 한 번도
+  승인되지 않은 위치별 관측 원천(선언된 cohort 대상·알려진 관측 anchor) 때문에 503을
+  내지 않고 stale로 표시한다. 그 위치는 승인된 원천만으로 요약하거나 null/sample_count=0이며
+  `source_providers`로 기여 원천을 구분한다. 단일 위치 최초 조회는 필수 원천 미승인이면
+  503을 유지하고, 선택 원천(청정넷)은 503을 내지 않는다. dataset 전체가 한 번도 승인되지
+  않은 경우와 승인 관측의 reducer 미도달은 기존대로 이전 집합 stale/최초503이다. W5 지표가
+  없는 AirKorea는 W5 필수 원천에서 뺀다(W2 current 범위는 그대로). 이유: 측정값 없는
+  측정소·응답에서 빠지는 지점은 구조적으로 승인되지 않아 전체 W5가 영구503이 됐다.
+  `docs/reports/2026-10-23-daily-source-eligibility.md`의 전체 목록 '최초503' 문장을 대체한다.
+- [ADR-103] (2026-10-27) export snapshot handle 보존: publisher tick이 `expires_at`이
+  6시간 넘게 지난 `weather_export_snapshots`를 tick당 최대20개 지우고 refs는 CASCADE로
+  지운다(설정이 아닌 모듈 상수. current handle 하나의 ref가 수천 행이라 5초 statement
+  상한 안에 끝나도록 작게 둔다). 한 문장이 상한에 걸리면 다음 tick 개수를 절반(최소1)으로,
+  성공하면 두 배(최대20)로 적응한다. 정리는 일별 drain 예산·일별 정리 성공과 무관하게 tick
+  상한 안에서 tick당 한 문장 돈다. 유효 cursor(만료 전)는 지우지 않는다. 첫 페이지가 재사용한
+  handle은 TTL을 연장하므로 계속 요청되는 selection의 최신 handle은 남는다. 대신 6시간 넘게
+  요청이 없던 selection은 이전 성공 집합 fallback(W1 축소 방지 비교 포함)을 잃는다.
+  이유: manifest 변경·TTL마다 수 MiB handle과 scope별 refs가 쌓이는데 지우는 경로가 없었다.
+  설계 메모는 `docs/design/map-service-exports.md` §3.1 정산을 따른다.

@@ -114,7 +114,9 @@ def test_three_hundred_observed_and_forecast_generations_catch_up_without_lost_c
         summaries = connection.execute(select(table.c.summary)).scalars().all()
     assert len(coverage) == len(summaries) == 300
     assert all(row["provider"] == "python-kma-api" for row in coverage)
-    assert all(row["temp_avg"] == 10 and row["precip_sum_mm"] == 1 for row in summaries)
+    # 구간6시간 중 RN1 1시간만 있으므로 합계는 미확정이고 강수 발생만 확정이다.
+    assert all(row["temp_avg"] == 10 and row["precip_sum_mm"] is None
+               and row["precip_occurred"] is True for row in summaries)
 
 
 def test_daily_missing_artifact_stops_without_advancing_checkpoint_and_repairs(
@@ -167,3 +169,116 @@ def test_daily_deadline_stops_before_next_batch(publisher_repository, tmp_path, 
         "processed": 4, "has_more": True,
     }
     assert calls == [{"limit": 4}]
+
+
+def test_publisher_tick_prunes_only_long_expired_snapshot_handles(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    """만료 뒤 6시간이 지난 handle과 refs만 지운다. 유효 cursor와 최근 만료 handle은 남는다."""
+    from kortravelweather.export_locations import FrozenLocationExports
+    from kortravelweather.export_snapshots import export_snapshot_tables, prune_export_snapshots
+
+    repo = publisher_repository
+    _, generations, _ = seed_mixed_approved_metadata(repo, tmp_path, locations=2)
+    reader = FrozenLocationExports(repo, ExportArtifactStore(tmp_path), signing_key="prune-test")
+    live, _ = reader.page("locations", limit=1, cursor=None)
+    assert live["meta"]["has_more"]
+    snapshots, refs = export_snapshot_tables(ExportHeads(repo).metadata)
+    now = datetime.now(UTC)
+
+    def expired_handle(hours):
+        key = str(uuid.uuid4())
+        with repo.engine.begin() as connection:
+            connection.execute(snapshots.insert().values(
+                snapshot_id=key, manifest_digest="0" * 64,
+                manifest={"selection": {"kind": "prune-fixture"}, "scopes": []},
+                source_collected_at=now, data_revision_at=now,
+                created_at=now - timedelta(hours=hours, minutes=15),
+                expires_at=now - timedelta(hours=hours),
+            ))
+            connection.execute(refs.insert(), [
+                {"snapshot_id": key, "ordinal": index, "generation_id": row["generation_id"]}
+                for index, row in enumerate(generations[:2])
+            ])
+        return key
+
+    oldest, older, recent = expired_handle(8), expired_handle(7), expired_handle(1)
+
+    def remaining():
+        with repo.engine.connect() as connection:
+            return (set(connection.scalars(select(snapshots.c.snapshot_id))),
+                    set(connection.scalars(select(refs.c.snapshot_id))))
+
+    # 상한을 지키고 가장 오래 만료된 handle부터 지운다.
+    assert prune_export_snapshots(repo, limit=1) == 1
+    handles, cited = remaining()
+    assert oldest not in handles and oldest not in cited and older in handles
+    monkeypatch.setattr(publisher, "time", SimpleNamespace(monotonic=lambda: 0))
+    publisher.refresh_publisher_daily(repo, tmp_path, deadline=4)
+    handles, cited = remaining()
+    assert older not in handles and older not in cited
+    assert {recent, live["meta"]["snapshot_id"]} <= handles and cited == {recent}
+    # 아직 유효한 cursor는 그대로 다음 페이지를 읽는다.
+    following, _ = reader.page("locations", limit=1, cursor=live["meta"]["next_cursor"])
+    assert following["items"]
+
+
+def test_snapshot_prune_backs_off_after_a_timeout_and_recovers(monkeypatch):
+    """statement 상한에 걸린 개수를 다음 tick에 그대로 반복하지 않고 절반으로 줄인다."""
+    from sqlalchemy.exc import OperationalError
+
+    from kortravelweather import export_snapshots
+
+    limits, budget = [], [5]
+    monkeypatch.setattr(publisher, "_SNAPSHOT_PRUNE_NEXT_LIMIT", [None])
+
+    def prune(repository, *, limit):
+        limits.append(limit)
+        if limit > budget[0]:
+            raise OperationalError("DELETE", {}, Exception("canceling statement due to timeout"))
+        return limit
+
+    monkeypatch.setattr(export_snapshots, "prune_export_snapshots", prune)
+    for _ in range(4):
+        publisher._prune_snapshot_handles(object())
+    assert limits == [20, 10, 5, 10]
+    budget[0] = 100
+    for _ in range(2):
+        publisher._prune_snapshot_handles(object())
+    assert limits[-2:] == [5, 10]
+    # 한 handle도 상한 안에 못 지우면 1에서 멈춘다(0이나 음수로 가지 않는다).
+    budget[0] = 0
+    for _ in range(6):
+        publisher._prune_snapshot_handles(object())
+    assert limits[-1] == 1 and min(limits) == 1
+
+
+def test_snapshot_prune_does_not_depend_on_daily_budget_or_daily_prune(
+    tmp_path, monkeypatch,
+):
+    """일별 backlog로 drain 예산이 끝났거나 일별 정리가 실패해도 tick 상한 안이면 정리한다."""
+    from kortravelweather import export_daily_store, export_snapshots
+
+    pruned = []
+    monkeypatch.setattr(publisher, "_SNAPSHOT_PRUNE_NEXT_LIMIT", [None])
+    monkeypatch.setattr(export_snapshots, "prune_export_snapshots",
+                        lambda repository, *, limit: pruned.append(limit) or 0)
+    monkeypatch.setattr(export_daily_store, "refresh_daily_summaries", lambda *a, **k: {
+        "processed": 4, "has_more": True,
+    })
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("daily prune failed")
+
+    monkeypatch.setattr(export_daily_store, "prune_daily_summaries", broken)
+    monkeypatch.setattr(publisher, "time", SimpleNamespace(monotonic=lambda: 10))
+    # drain 예산(deadline)이 이미 지났다.
+    assert publisher.refresh_publisher_daily(object(), tmp_path, deadline=5, hard_deadline=30)[
+        "has_more"
+    ]
+    # drain 예산은 남았지만 일별 정리가 실패했다.
+    publisher.refresh_publisher_daily(object(), tmp_path, deadline=20, hard_deadline=30)
+    assert pruned == [20, 20]
+    # tick 상한까지 한 문장의 최악 시간이 남지 않으면 미룬다.
+    publisher.refresh_publisher_daily(object(), tmp_path, deadline=5, hard_deadline=12)
+    assert pruned == [20, 20]

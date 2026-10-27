@@ -35,8 +35,9 @@ targets)` 한 줄을 남긴다.
 
 300격자 × hourly 24회는 정상 실행의 operation당 하루 최대 7,200회이고, 단기예보 8회는 최대 2,400회다. 실제 HTTP 페이지·재시도·수동 실행·같은 키를 사용하는 다른 소비자의 호출은 별도다. 키의 실제 허용량이나 hard quota를 이 계산만으로 보장하지 않는다. 기존 메모리 flush·응답 행·normalized 값·target 상한은 유지한다. 운영 `MAX_VALUES_PER_RUN=8,000,000`, `MAX_RESPONSE_ROWS_PER_RUN=1,000,000`을 확인했다.
 
-**한 run의 크기.** 격자·중기·특보는 5,000 fact 또는 25 source에서 buffer를 게시하고
-비운다. location chunk 단위의 짧은 transaction으로 나누며 실행 전체의 normalized
+**한 run의 크기.** 격자·중기는 2,500 fact(`GRID_STAGE_VALUES`), 특보는 5,000 fact
+(`KMA_STAGE_VALUES`) 또는 25 source(`KMA_STAGE_SOURCES`)에서 buffer를 게시하고
+비운다(2026-10-18 PR #118부터 격자·중기 2,500). location chunk 단위의 짧은 transaction으로 나누며 실행 전체의 normalized
 예산은 flush 뒤에도 누적한다. 다음 실측은 전체 staging을 사용하던 2026-10-01의
 역사이며 현행 peak 메모리 보증이 아니다. 당시 운영 catalog(측정소
 1,429곳, 1,074격자, 격자당 최대 7곳) 실측으로 150격자는 측정소 196곳, 300격자는 385곳을
@@ -61,7 +62,7 @@ entity로 추적한다.
 안에서 bounded stage한다. batch 안의 source 인용을 검증한 뒤 게시하고 비운다.
 N번째 grid 실패, quota/4xx, wrong grid, malformed date 때도 이미 commit한 batch는 남는다.
 publish는 **location chunk 단위의 짧은 transaction**이다: 격자·중기 fact는
-`GRID_PUBLISH_LOCATIONS`(50)곳·`GRID_PUBLISH_VALUES`(5,000) fact 이하, 특보 fact는
+`GRID_PUBLISH_LOCATIONS`(50)곳·`GRID_PUBLISH_VALUES`(2,500) fact 이하, 특보 fact는
 `ALERT_PUBLISH_LOCATIONS`(50)곳씩(한 location의 fact는 나누지 않는다). 한 transaction은
 그 chunk의 location lock만 쥔다. 예전에는 run 전체를 한 transaction으로 publish해 그
 동안 run이 닿는 모든 location lock을 쥐었다 — 특보는 2026-10-01에 1,450곳을 한 시간

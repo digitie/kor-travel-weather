@@ -3740,15 +3740,35 @@ class WeatherRepository:
         except (SQLAlchemyError, ValueError):
             logger.warning("export 실제 수집 시각을 저장하지 못했습니다.")
 
+    @staticmethod
+    def _still_known_status_scopes(row: SyncRunRow) -> tuple[SourceKey, ...]:
+        """저장된 실행 계획 중 현재 catalog가 같은 provider로 아직 아는 scope만 남긴다."""
+        parsed: set[SourceKey] = set()
+        stored = row.export_status_scopes
+        for item in stored if isinstance(stored, list) else []:
+            try:
+                if isinstance(item, Mapping):
+                    parsed.add(SourceKey(**item))
+            except (TypeError, ValueError):
+                continue
+        allowed = set(dataset_scopes(row.provider, {key.dataset_key for key in parsed}))
+        return tuple(sorted(parsed & allowed))[:128]
+
     def _project_export_terminal(self, session: Session, row: SyncRunRow) -> None:
         """성공한 native CAS의 소유권 아래에서만 파생 terminal을 기록한다."""
         if not self.export_status_enabled or not row.export_status_scopes:
             return
+        repaired = None
         try:
             scopes = tuple(SourceKey(**item) for item in row.export_status_scopes)
             allowed = set(dataset_scopes(row.provider, {key.dataset_key for key in scopes}))
             if len(scopes) > 128 or len(set(scopes)) != len(scopes) or set(scopes) != allowed:
                 raise ValueError("native 실행의 상태 scope가 올바르지 않습니다.")
+        except (TypeError, ValueError) as exc:
+            # dataset 개명·제거나 SourceKey 모양 변경 뒤 남은 옛 계획은 재시도해도 같다.
+            # 아직 유효한 scope만 기록하고 pending을 풀어 W4가 영구503으로 막히지 않게 한다.
+            scopes, repaired = self._still_known_status_scopes(row), type(exc).__name__
+        try:
             with status_transaction(session.connection()):
                 statuses = ExportSourceStatuses(Base.metadata)
                 for key in scopes:
@@ -3766,7 +3786,14 @@ class WeatherRepository:
                     SyncRunRow.run_id == row.run_id,
                 ).values(export_status_pending=False))
         except (SQLAlchemyError, TypeError, ValueError):
+            # 잠금·기록 실패는 pending을 남겨 다음 조회가 다시 시도한다.
             logger.warning("export terminal 상태를 저장하지 못했습니다.")
+            return
+        if repaired is not None:
+            logger.warning(
+                "weather_export_status_scope_repaired run_id=%s reason=%s kept=%d",
+                row.run_id, repaired, len(scopes),
+            )
 
     def reconcile_export_status(self, providers: set[str], *, limit: int = 1) -> int:
         """native terminal과 원자적으로 남긴 pending 부분 인덱스로 재투영한다.

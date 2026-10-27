@@ -136,7 +136,12 @@ def summarize(location_id, day, slot, state, *, now: datetime):
     representative = min(sky, key=lambda v: (-sky[v], v)) if sky else None
     rain = [hour["precip"] for hour in state.values() if "precip" in hour]
     unknown_rain = any(cell.get("unknown_amount") for cell in rain)
-    end = datetime.fromisoformat(day).replace(hour=SLOTS[slot][1], tzinfo=KST)
+    # 구간 합계와 '강수 없음'은 구간의 모든 시간 RN1이 있을 때만 확정한다. 순환 수집으로
+    # 일부 시간만 있으면 부분 합을 구간 합계로, 몇 시간의 0을 무강수로 내보내지 않는다.
+    start, end_hour = SLOTS[slot]
+    covered = len(rain) == end_hour - start
+    wet = unknown_rain or any(v > 0 for v in values["precip"])
+    end = datetime.fromisoformat(day).replace(hour=end_hour, tzinfo=KST)
     return {
         "location_id": location_id,
         "date": day,
@@ -145,8 +150,8 @@ def summarize(location_id, day, slot, state, *, now: datetime):
         "temp_max": float(max(values["temp"])) if values["temp"] else None,
         "temp_avg": avg("temp"),
         "humidity_avg": avg("humidity"),
-        "precip_sum_mm": float(sum(values["precip"])) if rain and not unknown_rain else None,
-        "precip_occurred": (unknown_rain or any(v > 0 for v in values["precip"])) if rain else None,
+        "precip_sum_mm": float(sum(values["precip"])) if covered and not unknown_rain else None,
+        "precip_occurred": True if wet else (False if covered else None),
         "sky_code": int(representative) if representative is not None else None,
         "wind_speed_avg": avg("wind"),
         "sample_count": len(state),

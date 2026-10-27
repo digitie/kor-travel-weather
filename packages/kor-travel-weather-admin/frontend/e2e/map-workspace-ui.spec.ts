@@ -152,7 +152,8 @@ test.describe("반응형 필터 초점", () => {
   test("출처 팝업의 기준점이 숨겨지면 메뉴를 닫고 보이는 필터 버튼으로 돌아간다", async ({ page }, testInfo) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
     await openWorkspace(page);
-    await page.getByRole("button", { name: "날씨 소스 필터", exact: true }).click();
+    // 접근성 이름은 "날씨 소스 필터: <현재 선택>"이다.
+    await page.getByRole("button", { name: /^날씨 소스 필터/ }).click();
     const menu = page.getByRole("menu", { name: "날씨 소스 선택", exact: true });
     await expect(menu).toBeVisible();
     await page.setViewportSize({ width: 375, height: 812 });
@@ -161,7 +162,7 @@ test.describe("반응형 필터 초점", () => {
     await expect(toggle).toBeFocused();
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-375-source-popup-resize.png`, fullPage: true });
     await toggle.click();
-    await page.getByRole("button", { name: "날씨 소스 필터", exact: true }).click();
+    await page.getByRole("button", { name: /^날씨 소스 필터/ }).click();
     await expect(menu).toBeVisible();
     const search = page.getByRole("searchbox", { name: "위치 검색" });
     await search.click();
@@ -171,7 +172,7 @@ test.describe("반응형 필터 초점", () => {
     await page.getByRole("button", { name: "지도 크게 보기", exact: true }).click();
     const workspace = page.locator('[data-slot="map-workspace"]');
     await toggle.click();
-    const source = page.getByRole("button", { name: "날씨 소스 필터", exact: true });
+    const source = page.getByRole("button", { name: /^날씨 소스 필터/ });
     await source.click();
     await page.keyboard.press("Escape");
     await expect(menu).not.toBeVisible();

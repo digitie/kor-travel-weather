@@ -104,6 +104,13 @@
 - DB row lock 순서와 lock_timeout/statement_timeout을 정한다. 각 외부 terminal 조회에 남은 예산을 넘지 않는 timeout을 사용한다. timeout된 thread가 나중에 쓰지 않도록 fencing을 DB CAS에서 다시 확인한다.
 - bounded page는 keyset cursor와 다음 sweep을 지원해 첫 pending Dagster run 하나가 후속 성공 전체를 굶기지 않도록 한다. unknown은 pending으로 남기되 정체/age/backlog 지표로 드러낸다.
 
+> 현행 코드(2026-10-27 main 정산): keyset sweep·microbatch는 구현됐다. 그러나 후보마다
+> run 행을 `FOR UPDATE`로 잠그므로 수집 중 run의 attempt는 ingest가 잡은 행에서
+> lock_timeout까지 기다리고, 한 후보의 SQL 오류(`ExportArtifactError`·`OSError` 밖)는 sweep
+> 전체와 일별 요약을 다음 tick으로 미룬다. Dagster 상태도 후보마다 다시 조회한다. 이 세 가지와
+> 일괄 퇴역·최신 우선·artifact GC는 #176(2026-10-27 머지)이 고쳤다. **정체·age·backlog 지표는 아직
+> 없다**(tasks.md W-MAP-06).
+
 ## 5. head CAS, 늦은 성공과 실패 A/성공 B
 
 핵심 재현: A가 더 최신 current를 commit한 뒤 실패한다. B는 예전/같은 canonical point를 실제 재관측하고 insert0/currentCAS0이다. B의 terminal/plan이 성공이면 B artifact는 eligible이다. current winner를 다시 읽어 A를 가져오거나 B를 탈락시키지 않는다.
@@ -116,6 +123,11 @@ head candidate의 기반은 직전 **성공 head**이며 검증된 B immutable p
 - scope 재관측/freshness: receipt의 실제 source_observed_at과 그 scope의 승인 순서. 늦게 끝난 낡은 attempt가 freshness/watermark를 뒤로 돌리지 못한다. head가 이미 더 최신이면 no-op/superseded로 기록하며 과거 scope clock을 덮지 않는다.
 
 오래된 attempt의 다른 group 변경을 모두 버려도 안전한지는 completeness 모드별로 결정한다. 더 최신 head의 완전 authoritative replacement에 포함되는 scope라면 superseded 가능하다. 서로 다른 group의 독립 delta라면 오래된 attempt라도 아직 필요한 group을 winner 규약으로 병합해야 한다. 단일 `MAX(known_at)`나 attempt 생성시각 하나로 모든 group을 버리는 최적화는 금지한다.
+
+> 현행 코드(2026-10-27 정산): publisher의 SUPERSEDED는 "head가 이미 더 최신"이 아니라
+> attempt가 claim한 **모든** scope의 owner epoch가 더 새 attempt로 넘어간 경우에 쓴다
+> (`export_collector._publisher_terminal`). 그래서 봉인된 정확 성공 후보도 새 claim이
+> 생기면 공개 전에 퇴역할 수 있다(F4, owner epoch를 writer fencing으로 좁히는 설계는 후속).
 
 retire/tombstone은 해당 source/group의 authoritative complete proof가 있을 때만 만든다. 회전 바깥 grid·다른 provider·다른 style은 삭제하지 않는다. 특보는 payload event identity를 보존하고 metric-level collapse로 합치지 않는다. 만료로 accepted0인 예보는 원천 absent와 다르며 future 시간 projection은 후속 API 단계다.
 

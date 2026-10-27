@@ -172,6 +172,31 @@ def test_pair_requires_aware_issue_and_nonempty_inventory():
         paired_locations(selected)
 
 
+def test_location_with_only_past_mid_targets_is_omitted_and_page_is_stale():
+    """지난 발표만 남은 위치 하나가 전체 중기 style을503으로 막지 않는다."""
+    now = datetime.now(UTC)
+    selected = scopes()
+    handle = reader(selected)
+    for values in handle.artifacts.points.values():
+        for value in values:
+            # a는 실제 현재 기준 미래로, b는 모든 target을 과거로 옮긴다.
+            shift = timedelta(days=-3) if value["location_id"] == "b" else now - NOW
+            value["target_at"] = (datetime.fromisoformat(value["target_at"]) + shift).isoformat()
+    frozen = handle._prepare_manifest(manifest(selected))
+    state = {"g": 0, "p": 0}
+    output, more = handle._page_items(frozen, state, 5000, now)
+    assert [item["location_id"] for item in output] == ["a"] and not more
+    assert state["g"] == 2 and handle._expired_omitted
+    frozen["selection"] = handle.selection
+    row = {"snapshot_id": "00000000-0000-0000-0000-000000000001", "manifest": frozen,
+           "source_collected_at": now, "created_at": now}
+    handle._freeze_forecasts = lambda: row
+    handle._health = lambda *_: False
+    page, _ = handle.page(limit=5000, cursor=None)
+    assert [item["location_id"] for item in page["items"]] == ["a"]
+    assert page["meta"]["source_status"] == "stale" and page["meta"]["has_more"] is False
+
+
 def test_physical_chunk_order_bounds_decode_when_temperature_regions_interleave():
     selected = scopes(tuple(f"p-{i:03}" for i in range(12)))
     temperature = selected.pop()

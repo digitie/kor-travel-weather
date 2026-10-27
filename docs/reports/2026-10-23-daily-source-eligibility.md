@@ -16,13 +16,22 @@ REST는 현재 dataset registry의 실제 승인 위치를 사용한다. 같은 
 예보만 있는 KHOA 위치는 승인 관측이 없는 상태와 구분한다. 관측 원천의 대상이
 아닌 위치는 없는 구간을 null/sample_count=0으로 내보낼 수 있으며, 빌려 쓸 원천
 수집 시각이 없으면 source_collected_at=null/source_status=stale다. 기본 요청의
-필수 현재 dataset이 미준비면 전체를 축소 성공하지 않고 이전 전체 집합의
-stale/최초503을 유지한다. 기존 cursor도 새 원천의 미계산을 건강도에 반영한다.
+필수 현재 dataset이 어느 위치에서도 승인되지 않았거나 승인 관측의 요약이 아직 계산되지
+않았으면 축소 성공하지 않고 이전 전체 집합의 stale/최초503을 유지한다. 기존 cursor도
+새 원천의 미계산을 건강도에 반영한다.
 SDK가 새 station을 발견해 HTTP 전 cohort에는 아직 없더라도 canonical
 measurement_point의 활성 관측 provider/network가 확인되면 최초 관측 coverage를
 요구한다. 미승인/아직 모름은 예보 전용의 무관측0과 구분하며 개별 최초 조회는503이다.
 이 판단은 provider/dataset/location별 실제 승인에 적용한다. 같은 위치의 다른
-제공처 관측이 준비됐더라도 아직 가입하지 못한 원천의 첫 승인을 대신하지 못한다.
+제공처 관측이 준비됐더라도 개별 위치 조회에서는 아직 가입하지 못한 원천의 첫 승인을
+대신하지 못한다.
+
+2026-10-27 변경(결정 ADR-102): 전체 목록(location_id 없음)은 한 번도 승인되지 않은
+anchor(측정값 없는 측정소, SIDO·산악 응답에서 계속 빠지는 지점 등) 때문에 영구503이
+되지 않는다. 이전 집합이 없어도 그 위치는 승인된 원천만으로 요약하거나 null로 두고
+응답 전체를 stale로 표시한다. 단일 위치 최초 조회는 필수 원천 미승인이면503을 유지하고
+선택 원천(청정넷) 미승인은 stale이다. W5 지표가 없는 AirKorea(PM·O3·NO2·SO2·CO·KHAI)는
+W5 필수 원천에서 제외한다(W2 current에는 그대로 포함).
 
 source별 신선도는 current와 같은 정책을 따른다(지역 SDK36시간, HTTP·실황3시간).
 선택 위치의 원천/coverage/작은 summary/checkpoint는 한 REPEATABLE READ에서
