@@ -1,5 +1,18 @@
 # Weather 남은 작업
 
+## 2026-10-27 — 실제 마커 지연과 다음 배포 절차
+
+- [ ] **W-MARKER-01 / P1** — #173의 배포/0034·PC375 지도 수용은 통과했으나 실제60×3
+  본문19.506/29.884/28.324초로25초 상한 미달. 저장된 요청/시각과 SQL predicate/index/조인/정렬로
+  병목 하나를 식별하고 최소 변경을 제안한다. 전체 전국 완료·빠른 응답 수용으로 세지 않는다.
+- [ ] **W-DEP-02 / P1** — 빈 drain 반환·safe_to_restore 변경·정방향 변이 앞의 취소 safepoint를
+  검증하고 배포 전 존재한 marker4 인덱스 baseline을 rollback에서도 보존한다.
+- [ ] **W-DEP-03 / P1** — 장기 예보 자연 종료는 pause/G 전에 기다리고 최종 짧은 재확인 후
+  교체해 실황/특보·publisher 일정 중지 구간을 줄인다. 현재 r3를 소급 변경하지 않는다.
+
+[실제 배포·수용 실패·원장과 한계](reports/2026-10-27-weather173-deployment-and-latency.md)를 따른다.
+새 current1197행은 자연 재개 확인이며 예보 전체 완주·이전 공백 자동 backfill은 아니다.
+
 ## 2026-10-26 — metrics scrape CPU 후속
 
 - [ ] **W-METRICS-01 / P1** — [PR #171](https://github.com/digitie/kor-travel-weather/pull/171)의 per-preflight raw key 제한 메모 구현·새10회귀·합성 비교·최종 CI/독립2인 검토와95020 병합·공식3이미지/0033 배포·기존 listener HTTP200·공개 UI21은 수용했다. **운영 ARM CPU/RSS 개선·실제 memo-hit·장시간 수용은 미완**이므로 이 상위 비용 과제는 완료로 바꾸지 않는다. 원래21RUN/2STOP만 복원했고 Map 연동 신규 활성화0이다. [배포 수용과 한계](reports/2026-10-27-weather171-deployment-closure.md), [합성 측정](design/2026-10-26-metrics-scrape-key-validation.md).
