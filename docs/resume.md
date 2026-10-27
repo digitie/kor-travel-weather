@@ -1,3 +1,14 @@
+## 2026-10-27 — Weather173 운영 교체 완료·마커 지연 후속 진행
+
+- main a9f54의 세 이미지/0034를06:35UTC에 반영했다. 원래21 RUNNING/2 STOPPED·공용 daemon·타 서비스 보존,
+  기존 네 인덱스 OID 보존·자연 publisher와 새 정기 current 수집 재개를 확인했다.
+- 실제 Chromium PC1440/375의 지도 면적·상세 오버레이·실제 가평14.4 값/시각은 통과했다.
+  **마커 latency는 미완**이다. 후속60×3의19.506/29.884/28.324초 중 두 개가25초 상한을 넘었다.
+  초기70초 수용기 실패·명시 ERR_ABORTED6개를 원본 보존하며 빠른 응답 성공으로 대체하지 않는다.
+- [배포·긴 중지 구간·UI 실패와 후속](reports/2026-10-27-weather173-deployment-and-latency.md).
+  다음 한 작업은 저장된 실제60IDs/시각과 query/predicate/index/조인/정렬의 병목을 좁히는 것이다.
+  취소 safepoint·기존 인덱스 baseline rollback·pause 전 장기 run 대기는 별도 운영 P1이다.
+
 ## 2026-10-27 — Common aa232ad·단기예보 정리 수정 PR #174
 
 - 현재 상태: [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)는 Python만 다룬다. Common
