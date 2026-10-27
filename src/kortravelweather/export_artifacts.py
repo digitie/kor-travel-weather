@@ -8,6 +8,7 @@ import os
 import re
 import stat
 import tempfile
+import threading
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -85,6 +86,9 @@ class ExportArtifactStore:
         if not root.is_absolute():
             raise ExportArtifactError("export artifact 경로는 절대 경로여야 합니다.")
         self.root = root.resolve()
+        # 배타 guard 한 번 안에서 이미 hash를 확인한 digest. 관리되는 writer/GC는 같은
+        # 배타 guard를 기다리므로 그 안에서는 내용이 바뀌지 않는다. guard를 나가면 버린다.
+        self._scope = threading.local()
 
     def _path(self, digest: str) -> Path:
         if _DIGEST.fullmatch(digest) is None:
@@ -176,7 +180,16 @@ class ExportArtifactStore:
                 # 기존 reader가 끝나기 전에 후속 reader가 연속 진입하지 못하게 한다.
                 os.close(admission)
                 admission = None
-            yield
+                yield
+            else:
+                owned = getattr(self._scope, "verified", None) is None
+                if owned:
+                    self._scope.verified = set()
+                try:
+                    yield
+                finally:
+                    if owned:
+                        self._scope.verified = None
         finally:
             if acquired:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -216,7 +229,7 @@ class ExportArtifactStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def read(self, digest: str, *, byte_count: int, point_count: int) -> Iterator[dict[str, Any]]:
+    def _lines(self, digest: str, *, byte_count: int, point_count: int) -> list[bytes]:
         if not 0 <= byte_count <= MAX_CHUNK_BYTES or not 0 <= point_count <= MAX_CHUNK_POINTS:
             raise ExportArtifactError("export receipt 상한이 올바르지 않습니다.")
         path = self._path(digest)
@@ -226,12 +239,30 @@ class ExportArtifactStore:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise ExportArtifactError("export artifact는 일반 파일이어야 합니다.")
             payload = stream.read(MAX_CHUNK_BYTES + 1)
-        if len(payload) != byte_count or hashlib.sha256(payload).hexdigest() != digest:
+        verified = getattr(self._scope, "verified", None)
+        if len(payload) != byte_count or (
+            (verified is None or digest not in verified)
+            and hashlib.sha256(payload).hexdigest() != digest
+        ):
             raise ExportArtifactError("export artifact가 없거나 손상됐습니다.")
+        if verified is not None:
+            verified.add(digest)
         lines = payload.splitlines()
         if len(lines) != point_count:
             raise ExportArtifactError("export artifact point 수가 receipt와 다릅니다.")
-        for line in lines:
+        return lines
+
+    def verify(self, digest: str, *, byte_count: int, point_count: int) -> None:
+        """내용 hash·크기·줄 수만 확인한다. JSON은 해석하지 않는다.
+
+        파일 이름이 곧 내용 hash이므로 hash가 맞으면 collector가 쓴 canonical JSON과 같다.
+        point 해석은 승격 단계의 ``read``가 한 번만 한다. 배타 guard 안에서 확인한 digest는
+        같은 guard 안의 다음 ``read``가 hash를 다시 계산하지 않는다.
+        """
+        self._lines(digest, byte_count=byte_count, point_count=point_count)
+
+    def read(self, digest: str, *, byte_count: int, point_count: int) -> Iterator[dict[str, Any]]:
+        for line in self._lines(digest, byte_count=byte_count, point_count=point_count):
             item = json.loads(line)
             if not isinstance(item, dict):
                 raise ExportArtifactError("export artifact point 형식이 다릅니다.")

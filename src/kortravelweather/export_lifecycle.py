@@ -25,6 +25,7 @@ from sqlalchemy import (
     Table,
     func,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert
@@ -220,11 +221,17 @@ class ExportLifecycle:
         self.owners, self.expected, self.closures, self.validated, self.evidence = (
             export_lifecycle_tables(self.metadata)
         )
+        #: 이 객체의 transaction 잠금 대기 상한(ms). None이면 원본 ingest와 같은 상한이다.
+        #: publisher는 배타 artifact guard를 잡은 채 행 잠금을 오래 기다리지 않도록 줄인다.
+        self.lock_timeout_ms: int | None = None
 
     @contextmanager
     def _transaction(self):
         with self.repository._session_factory.begin() as session:
-            self.repository._set_ingest_lock_timeout(session)
+            if self.lock_timeout_ms is None:
+                self.repository._set_ingest_lock_timeout(session)
+            else:
+                session.execute(text(f"SET LOCAL lock_timeout = '{int(self.lock_timeout_ms)}ms'"))
             yield session
 
     def _locked(self, session: Session, identity: ExportAttempt):
@@ -612,12 +619,14 @@ class ExportLifecycle:
         receipts = bounded
         for receipt in receipts:
             try:
-                for _ in artifacts.read(
+                # 파일 이름이 곧 내용 hash다. 여기서는 hash·크기·줄 수만 확인하고 point
+                # 해석은 승격 단계가 한 번만 한다. 승격의 배타 guard 안이면 그 단계는
+                # 이 hash를 다시 계산하지 않는다(ExportArtifactStore.verify).
+                artifacts.verify(
                     receipt["artifact_digest"],
                     byte_count=receipt["byte_count"],
                     point_count=receipt["point_count"],
-                ):
-                    pass
+                )
             except (OSError, ExportArtifactError, ValueError):
                 return "NOT_READY"
         with self._transaction() as session:
