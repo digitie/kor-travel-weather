@@ -12,6 +12,7 @@
 - 위치·복합 키 배열을 bind해 요청 크기와 무관한 SQL 구조를 유지한다. 현재값 우선 정렬의 고정 상수만 literal로 렌더링하고 사용자 입력은 계속 bind한다.
 - 관측값과 예보를 독립적으로 표시하고, 각 부분의 실패를 격리한다. 위치 변경·새로고침·unmount 시 이전 두 fetch를 취소하고 늦은 응답을 무시한다.
 - 마커 DB 작업은 동시에 최대 2개만 실행하고 인증 조회에 별도 worker 용량 2개를 배정한다. 순수 인증·repository 의존성을 async로 바꾸어 기본 worker가 모두 사용 중이어도 인증 전용 경로에 진입할 수 있게 한다. 대기 중 취소된 마커 요청은 DB 작업 전에 중단하고 500개 초과 입력은 대기 없이 거절한다.
+  - 2026-10-27 정정: 당시 요청 문맥 middleware가 `BaseHTTPMiddleware`(`@app.middleware("http")`)여서 하위 앱의 receive가 task group으로 감싸졌고, `Request.is_disconnected()`가 연결 끊김 메시지를 잃어 늘 False였다. 따라서 이 취소 중단은 운영에서 실제로 동작하지 않았다(회귀 시험은 `is_disconnected`를 monkeypatch해 이를 잡지 못했다). 순수 ASGI `RequestContextMiddleware`로 바꾸고, 실제 ASGI `http.disconnect`가 499·DB 조회0으로 끝나는 시험을 추가했다.
 - 조회 한도·정렬·시간 범위·원천 payload와 lineage·공개 DTO를 유지한다. 새 캐시나 인덱스·마이그레이션은 추가하지 않는다.
 
 ## 운영 DB 읽기 전용 측정

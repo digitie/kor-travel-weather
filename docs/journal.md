@@ -1,3 +1,27 @@
+## 2026-10-27 — Codex PR(2026-10-17 이후 머지분) 상세 리뷰 정리 PR
+
+2026-10-17 이후 머지된 Codex PR 63개의 리뷰 결과 53건을 main `a9f54ff`(#173 포함)에서
+다시 확인하고 작업(W01~W15)을 한 PR에 묶었다. #174·#175 머지 뒤 main `1766889`로 rebase했다.
+머지·배포는 소유자 승인 뒤다.
+
+- export 가용성: 미래 시각이 없는 위치는 예보·중기 페이지에서 빼고 stale(W01). W5 전체
+  목록의 최초 미승인 anchor는 503 대신 stale, AirKorea는 W5 필수 원천에서 제외(W02, ADR-102).
+  W5 fallback 날짜 창을 오늘 KST로 이동(W03). KMA 전용 예보 style은 export 경로가 없는 활성
+  provider와 무관(W05, #159 회귀). 재사용 handle TTL 연장(W06), 만료 6시간 뒤 handle 정리(W07,
+  ADR-103).
+- publisher: 후보 단위 오류 격리·수집 중 run의 잠금 없는 판정·tick 단위 Dagster 조회 기억(W08)은
+  작업 중 열린 #176이 같은 내용을 더 넓게 구현하므로 이 PR에서 뺐다. W4 저장 scope가 catalog와
+  맞지 않으면 유효 scope만 기록하고 pending 해제(W09).
+- API: export 응답의 검증·직렬화·gzip을 worker thread로 옮기고 503/422 원인 분류를 로그로
+  남긴다(W10). `BaseHTTPMiddleware`를 순수 ASGI로 바꿔 취소된 marker 요청이 실제로 499로 끝난다(W11).
+- 데이터: 강수 합계·무강수는 구간6시간 RN1이 모두 있을 때만 확정하고 0035가 기존 행을
+  고친다(W04). 0022는 INVALID 인덱스 뒤 재실행 가능(W13). 결측 실황 격자의 준비 attempt를
+  NO_NORMALIZED_POINTS/NOT_INGESTED로 닫는다(W14).
+- UI: 필터 로딩 중 선택·상세·카메라 보존, 예보 종류만 고르면 현재값 조회 생략, 소스 필터
+  접근성 이름에 현재 선택 포함(W12).
+- 검증은 n150 컨테이너 CI-parity와 GitHub CI 결과를 PR 본문에 남긴다. 보류·기각 항목과 이유도
+  PR 본문과 [남은 작업](tasks.md)에 있다. #174·#175가 고친 코드 영역과 겹치지 않는다.
+
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 
 - 실제 API/collector는e393(PR176), web은main5098(PR177)이다. e393→5098의Python/Dagster/build/migration 입력은 같아 #174 CommonAA·retention 개선이 이미 운영 중임을 확인했고 중복 build/교체하지 않았다.

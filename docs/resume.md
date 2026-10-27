@@ -1,3 +1,16 @@
+## 2026-10-27 — Codex PR 리뷰 정리 PR(W01~W15) 승인 대기
+
+- 현재: 2026-10-17 이후 Codex PR 리뷰의 개선 15건을 브랜치 `review/codex-10d-weather` 한 PR로
+  올렸다. 소유자 승인 전 머지·배포하지 않는다. 내용·시험·보류 이유는 PR 본문과
+  [journal](journal.md) 같은 날짜 절이 정본이다.
+- 가장 급한 보류: 운영 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`. 저장소·Manager 기본값의
+  tomorrow_io·weatherbit·weatherstack·accuweather는 export 경로가 없어 `/current`·
+  `/forecasts?style=external`·`/daily-summaries`가 설계상 503이다. env 명시와 '실제 구성된
+  provider' 판정 중 소유자 결정이 필요하다(odroid 미확인).
+- 머지 순서: #174·#175 머지 뒤 main으로 rebase했다. 열린 #176(publisher 처리량, 리뷰 W08 포함)·
+  #177(ui dev.9)과는 journal·resume·tasks와 export_collector.py `refresh_publisher_daily`의 한 줄만
+  겹친다. 먼저 머지된 쪽에 맞춰 rebase한다. 배포 시 0035 데이터 보정이 포함된다(되돌리기 no-op).
+
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 
 - 실제 API/collector는e393(PR176), web은main5098(PR177)이다. e393→5098의Python/Dagster/build/migration 입력은 같아 #174 CommonAA·retention 개선이 이미 운영 중임을 확인했고 중복 build/교체하지 않았다.

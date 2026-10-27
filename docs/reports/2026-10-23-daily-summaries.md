@@ -26,10 +26,15 @@ KMA NOWCAST 실관측과 observed 자료를 포함하고 미래/예보 자료는
 - 강수 합계는 구간이 확인된 KMA 실황 RN1(mm)만 사용한다. 11시 RN1은 [10,11)의
   양이므로 morning에 속한다. 일 누적·기간 불명 PRECIP 및 다른 제공처 강수량을
   임의 합산하지 않는다. 강수 측정이 없으면 합계/발생 여부 모두 null이다.
+- 합계와 `precip_occurred=false`(무강수)는 구간 6시간 모두의 RN1 winner가 있을 때만
+  확정한다(2026-10-27). KMA 격자 순환 수집으로 일부 시간만 있으면 부분 합을 구간 합계로,
+  몇 시간의 0을 무강수로 내보내지 않는다. 양의 RN1이나 `1mm 미만`이 한 시간이라도
+  있으면 발생은 true다. 0035가 이미 저장된 부분 합계·부분 무강수 행을 null로 고쳤다.
 - 기존 정규화가 `1mm 미만`을 숫자0+원문으로 보존한 경우 발생은 true로 유지하고,
   정확한 양을 단정하지 않도록 합계는 null이다. 원본 정규화 계약을 바꾸지 않는다.
-- SKY 관측 code 1/3/4의 최빈값을 쓰고 동률이면 작은 code를 선택한다. 예보 SKY나
-  제공처별 서로 다른 WEATHER_CODE를 임의로 같은 code로 합치지 않는다.
+- `sky_code`는 예약 필드이며 현재 항상 null이다. reducer는 SKY 관측 code 1/3/4의
+  최빈값(동률이면 작은 code)을 쓰도록 되어 있지만 승인된 관측 원천 중 SKY 관측을 내는
+  것이 아직 없다. 예보 SKY나 제공처별 서로 다른 WEATHER_CODE를 같은 code로 합치지 않는다.
 - 관측이 없는 구간은 sample_count=0, source_providers=[], 모든 관측 지표 null이다.
   오늘 아직 끝나지 않은 구간의 partial은 요청 시각으로 계산해 오래된 true가 남지 않는다.
 
@@ -76,9 +81,11 @@ summary checkpoint 이전에 GC하면 안 된다. GC·전체 wall-clock/최대 R
 최초 #148은 KMA 승인 관측 reducer/REST를 구현했고 #152가 bounded 재투영/publisher,
 #163이 실제 다중 제공처 관측 선택·최신 generation coverage·새 SDK station 누락과
 이전 완전 roster fallback을 보강했다. [현재 원천 eligibility](2026-10-23-daily-source-eligibility.md)를
-함께 따른다. 예보 전용 KHOA는 관측으로 편입하지 않는다. 필수 관측 미준비/미계산은
-이전 전체 roster stale, 이전 집합이 없으면503이며 한 제공처의 승인이 다른 제공처의
-누락을 가리지 않는다. source 구현 완료와 운영 비용·GC·초기 투영/Map 수용은 별개다.
+함께 따른다. 예보 전용 KHOA는 관측으로 편입하지 않는다. 승인된 관측의 미계산은
+이전 전체 roster stale, 이전 집합이 없으면503이다. 한 번도 승인되지 않은 관측
+anchor는 2026-10-27부터 전체 목록을 stale로만 낮추고, 단일 위치 최초 조회의 필수 원천
+미승인만503이다(청정넷 같은 선택 원천은 stale). source 구현 완료와 운영 비용·GC·
+초기 투영/Map 수용은 별개다.
 
 ## 검증 범위
 
