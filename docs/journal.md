@@ -1,3 +1,12 @@
+## 2026-10-27 — 기본 지도 경로 정정과 대기 중 취소의 DB 진입 방지
+
+- 실제UI는6종류를명시한다. PR180의 `kinds=None` 최적화를 기본지도 경로로 추정한
+  오류를 정정하되 기존계획·실패·전체시험 결과는 원래범위로 보존했다.
+- PR178의순수 ASGI middleware와실제disconnect시험만분리해 main5098에적용했다.
+  입장전/대기중취소는499·새DB작업0, 정상동시2와실행중thread의자연완료를구분한다.
+- 운영추가조회·provider/job·이미지변경0. 소유PG의실제6종류7SELECT/수화와EXPLAIN ONLY,
+  actualASGI RED→GREEN을저장했다. [보고서](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — 공용 UI dev.9(로그인 hydration 준비 경계) 고정
 
 - Common main `aa232ad`(PR #47, T-217)의 `git archive`에서 격리 Docker(Node 22.22.2·npm 11.19.1) fresh
