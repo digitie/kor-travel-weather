@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
+from collections.abc import Callable
 from datetime import date
 from functools import partial
-from typing import Annotated, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from anyio import to_thread
 from fastapi import APIRouter, Depends, Query, Request
@@ -29,6 +31,8 @@ from kortravelweather.models import kst_now
 
 from ..auth import require_admin
 from ..response import Problem, request_id
+
+logger = logging.getLogger(__name__)
 
 SourceStatus = Literal["ok", "stale", "failed"]
 ExportStyle = Literal["observed", "nowcast", "ultra_short", "short", "mid", "external"]
@@ -132,6 +136,15 @@ class ExportUnavailable(Problem):
     meta: ExportMeta
 
 
+_PAGE_MODELS: dict[str, Any] = {
+    "locations": ExportPage[ExportLocation],
+    "current": ExportPage[ExportCurrentValue],
+    "forecasts": ExportPage[ExportForecastGroup],
+    "daily-summaries": ExportPage[ExportDailySummary],
+    "status": ExportPage[ExportSourceStatus],
+}
+
+
 router = APIRouter(
     prefix="/v1/service/exports",
     tags=["service exports"],
@@ -197,6 +210,51 @@ def _matches_etag(header: str, etag: str) -> bool:
     )
 
 
+def _log_unavailable(request: Request, resource: str, reason: str) -> None:
+    # 원인 분류(예외 클래스·source_selection)만 남긴다. 메시지·SQL·DSN·토큰은 남기지 않는다.
+    rid = "".join(c if c.isprintable() else "?" for c in request_id(request)[:64])
+    logger.warning(
+        "weather_service_export_unavailable resource=%s reason=%s request_id=%s",
+        resource, reason, rid,
+    )
+
+
+def _render_page(
+    read: Callable[[], tuple[dict[str, Any], str]],
+    model: Any,
+    if_none_match: str,
+    accept_encoding: str,
+    *,
+    gzip_minimum: int,
+) -> tuple[bytes | None, dict[str, str]]:
+    """worker thread에서 조회·검증·ETag 비교·직렬화·gzip을 끝낸다.
+
+    최대4MiB 페이지의 검증·직렬화·압축이 event loop(일반 API·관리 proxy·health)를
+    막지 않게 한다. 304이면 payload는 None이다.
+    """
+    page, etag = read()
+    body = model.model_validate(page).model_dump(mode="json")
+    headers = {
+        "etag": etag,
+        "vary": "Accept-Encoding",
+        "cache-control": "private, max-age=0, must-revalidate",
+        "x-source-status": body["meta"]["source_status"],
+    }
+    if _matches_etag(if_none_match, etag):
+        return None, headers
+    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(payload) >= gzip_minimum and _accepts_gzip(accept_encoding):
+        payload = gzip.compress(payload, compresslevel=4, mtime=0)
+        headers["content-encoding"] = "gzip"
+    return payload, headers
+
+
+def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
+    if payload is None:
+        return Response(status_code=304, headers=headers)
+    return Response(payload, media_type="application/json", headers=headers)
+
+
 async def _frozen_response(
     request: Request,
     resource: str,
@@ -221,11 +279,10 @@ async def _frozen_response(
     if resource in {"current", "forecasts", "daily-summaries"}:
         try:
             selection = select_export_sources(
-                settings.enabled_providers,
-                resource="current" if resource == "daily-summaries" else resource,
-                style=style, provider=provider,
+                settings.enabled_providers, resource=resource, style=style, provider=provider,
             )
         except ExportArtifactError:
+            _log_unavailable(request, resource, "source_selection")
             if cursor:
                 return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
             return _unavailable(request)
@@ -252,41 +309,31 @@ async def _frozen_response(
             **({"style": style, "since": since} if resource == "forecasts" else {}),
             **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
         )
-        page, etag = await to_thread.run_sync(
+        payload, headers = await to_thread.run_sync(
             partial(
-                reader.page,
-                *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
-                limit=limit,
-                cursor=cursor,
+                _render_page,
+                partial(
+                    reader.page,
+                    *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
+                    limit=limit,
+                    cursor=cursor,
+                ),
+                _PAGE_MODELS[resource],
+                request.headers.get("if-none-match", ""),
+                request.headers.get("accept-encoding", ""),
+                gzip_minimum=512,
             ),
             limiter=request.app.state.service_export_limiter,
         )
-    except ExportCursorInvalid:
+    except ExportCursorInvalid as exc:
+        _log_unavailable(request, resource, type(exc).__name__)
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
     except ExportSnapshotExpired:
         return _unavailable(request, status=410, code="EXPORT_SNAPSHOT_EXPIRED")
-    except (ExportArtifactError, OSError, SQLAlchemyError):
+    except (ExportArtifactError, OSError, SQLAlchemyError) as exc:
+        _log_unavailable(request, resource, type(exc).__name__)
         return _unavailable(request)
-    model = {
-        "locations": ExportLocation,
-        "current": ExportCurrentValue,
-        "forecasts": ExportForecastGroup,
-        "daily-summaries": ExportDailySummary,
-    }[resource]
-    page = ExportPage[model].model_validate(page).model_dump(mode="json")
-    headers = {
-        "etag": etag,
-        "vary": "Accept-Encoding",
-        "cache-control": "private, max-age=0, must-revalidate",
-        "x-source-status": page["meta"]["source_status"],
-    }
-    if _matches_etag(request.headers.get("if-none-match", ""), etag):
-        return Response(status_code=304, headers=headers)
-    payload = json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode()
-    if len(payload) >= 512 and _accepts_gzip(request.headers.get("accept-encoding", "")):
-        payload = gzip.compress(payload, compresslevel=4, mtime=0)
-        headers["content-encoding"] = "gzip"
-    return Response(payload, media_type="application/json", headers=headers)
+    return _rendered(payload, headers)
 
 
 @router.get("/locations", response_model=ExportPage[ExportLocation])
@@ -309,7 +356,8 @@ async def export_current(
     """활성 관측 제공처의 실제 승인 합집합. 필수 source 최초 미승인은503이다.
 
     해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은
-    보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다.
+    보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다. export 경로가
+    없는 provider가 활성이면 축소 성공 대신503이다.
     """
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
@@ -326,31 +374,26 @@ async def export_status(
     if request.query_params:
         return _unavailable(request, status=422, code="EXPORT_STATUS_QUERY_INVALID")
     try:
-        page, etag = await to_thread.run_sync(
+        payload, headers = await to_thread.run_sync(
             partial(
-                read_status,
-                request.app.state.repository,
-                set(settings.enabled_providers),
-                as_of=kst_now(),
+                _render_page,
+                partial(
+                    read_status,
+                    request.app.state.repository,
+                    set(settings.enabled_providers),
+                    as_of=kst_now(),
+                ),
+                _PAGE_MODELS["status"],
+                request.headers.get("if-none-match", ""),
+                request.headers.get("accept-encoding", ""),
+                gzip_minimum=0,
             ),
             limiter=request.app.state.service_export_limiter,
         )
-    except (ExportArtifactError, SQLAlchemyError):
+    except (ExportArtifactError, SQLAlchemyError) as exc:
+        _log_unavailable(request, "status", type(exc).__name__)
         return _unavailable(request)
-    body = ExportPage[ExportSourceStatus].model_validate(page).model_dump(mode="json")
-    headers = {
-        "etag": etag,
-        "vary": "Accept-Encoding",
-        "cache-control": "private, max-age=0, must-revalidate",
-        "x-source-status": body["meta"]["source_status"],
-    }
-    if _matches_etag(request.headers.get("if-none-match", ""), etag):
-        return Response(status_code=304, headers=headers)
-    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
-    if _accepts_gzip(request.headers.get("accept-encoding", "")):
-        payload = gzip.compress(payload, compresslevel=4, mtime=0)
-        headers["content-encoding"] = "gzip"
-    return Response(payload, media_type="application/json", headers=headers)
+    return _rendered(payload, headers)
 
 
 @router.get("/forecasts", response_model=ExportPage[ExportForecastGroup])
@@ -368,6 +411,9 @@ async def export_forecasts(
     """활성 예보 제공처의 승인 집합. external에는 KHOA 해양 예보를 포함한다.
 
     known_at은 원천 시각이며 since에는 모든 페이지 반영 뒤 meta.next_since를 사용한다.
+    ultra_short·short·mid는 KMA만 공급하므로 다른 활성 provider와 무관하고, external은
+    export 경로가 없는 provider가 활성이면503이다. 최신 승인 예보에 미래 시각이 없는
+    위치는 빼고 stale로 표시한다.
     """
     return await _frozen_response(
         request, "forecasts", limit, cursor, provider=provider, style=style, since=since
@@ -382,7 +428,12 @@ async def export_daily_summaries(
     limit: Limit = 500,
     cursor: Cursor = None,
 ) -> Response:
-    """승인 관측의 사전 요약. 미계산은 이전 완전 집합stale/이전 집합이 없으면503."""
+    """승인 관측의 사전 요약. 미계산은 이전 완전 집합stale/이전 집합이 없으면503.
+
+    전체 목록에서 한 번도 승인되지 않은 관측 anchor는 stale로 표시하고, 단일 위치 최초
+    조회의 필수 원천 미승인만503이다. AirKorea는 요약 지표가 없어 필수 원천이 아니다.
+    강수 합계와 강수 없음(false)은 구간6시간 RN1이 모두 있을 때만 확정한다.
+    """
     return await _frozen_response(
         request, "daily-summaries", limit, cursor, days=days, location_id=location_id
     )

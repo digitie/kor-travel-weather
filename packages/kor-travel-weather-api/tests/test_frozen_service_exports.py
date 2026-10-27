@@ -1008,3 +1008,128 @@ def test_location_snapshot_does_not_read_arbitrary_unused_metadata(repository, t
     assert r.status_code == 200 and statements
     assert all("weather_locations.metadata" not in sql for sql in statements)
     assert "unused_large" not in r.text
+
+
+def test_forecast_location_with_only_past_targets_is_omitted_instead_of_503(
+    repository, tmp_path, monkeypatch
+):
+    """미래 target이 없는 위치 하나는 빠지고 나머지는 stale200으로 끝까지 받는다."""
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    _collect_forecast(repository, tmp_path)
+    original = ExportArtifactStore.read
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+
+    def expired_c(self, *args, **kwargs):
+        for point in original(self, *args, **kwargs):
+            yield {**point, "target_at": past} if point["location_id"] == "c" else point
+
+    monkeypatch.setattr(ExportArtifactStore, "read", expired_c)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/forecasts"
+    whole = client.get(url, params={"style": "ultra_short", "limit": 5000}, headers=HEADERS)
+    assert whole.status_code == 200, whole.text
+    assert {item["location_id"] for item in whole.json()["items"]} == {"a", "b"}
+    assert whole.json()["meta"]["source_status"] == "stale"
+    params, seen = {"style": "ultra_short", "limit": 1}, []
+    while True:
+        page = client.get(url, params=params, headers=HEADERS)
+        assert page.status_code == 200 and page.json()["meta"]["source_status"] == "stale"
+        seen.extend(item["location_id"] for item in page.json()["items"])
+        if not page.json()["meta"]["has_more"]:
+            break
+        params["cursor"] = page.json()["meta"]["next_cursor"]
+    assert sorted(seen) == ["a", "b"]
+
+
+def test_export_page_is_validated_serialized_and_compressed_off_the_event_loop(
+    repository, tmp_path, monkeypatch
+):
+    """4MiB까지의 페이지 직렬화·gzip이 event loop(일반 API·health)를 막지 않는다."""
+    import json as real_json
+    import threading
+    from types import SimpleNamespace
+
+    from kortravelweather_api.routers import service_exports
+
+    _collect(repository, tmp_path)
+    threads = []
+
+    def dumps(*args, **kwargs):
+        threads.append(threading.current_thread().name)
+        return real_json.dumps(*args, **kwargs)
+
+    monkeypatch.setattr(service_exports, "json", SimpleNamespace(dumps=dumps))
+    client = _client(repository, tmp_path)
+    response = client.get("/v1/service/exports/current", headers=HEADERS)
+    assert response.status_code == 200 and response.headers["content-encoding"] == "gzip"
+    assert client.get("/v1/service/exports/current", headers={
+        **HEADERS, "if-none-match": response.headers["etag"],
+    }).status_code == 304
+    assert threads and all(name == "AnyIO worker thread" for name in threads)
+
+
+def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monkeypatch, caplog):
+    """503 원인은 분류만 로그에 남기고 메시지·DSN은 남기지 않는다. 상태 코드는 그대로다."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from kortravelweather.export_snapshots import FrozenCurrentExports
+
+    def fail(self, *args, **kwargs):
+        raise SQLAlchemyError("postgresql://user:secret@db/weather")
+
+    monkeypatch.setattr(FrozenCurrentExports, "page", fail)
+    logger = "kortravelweather_api.routers.service_exports"
+    with caplog.at_level("WARNING", logger=logger):
+        failed = _client(repository, tmp_path).get(
+            "/v1/service/exports/current", headers={**HEADERS, "x-request-id": "trace-503"},
+        )
+        mixed = _client(repository, tmp_path, providers=["python-kma-api", "tomorrow_io"])
+        unsupported = mixed.get("/v1/service/exports/current", headers=HEADERS)
+    assert failed.status_code == unsupported.status_code == 503
+    assert failed.json()["code"] == unsupported.json()["code"] == "EXPORT_NOT_READY"
+    assert "resource=current reason=SQLAlchemyError request_id=trace-503" in caplog.text
+    assert "resource=current reason=source_selection" in caplog.text
+    assert "secret" not in caplog.text and "postgresql" not in caplog.text
+
+
+@pytest.mark.parametrize("resource", ["current", "forecasts"])
+def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypatch, resource):
+    """만료 직전 handle을 재사용한 새 pagination도 다음 페이지에서410이 되지 않는다."""
+    from kortravelweather import export_forecasts, export_snapshots
+    from kortravelweather.export_snapshots import SNAPSHOT_TTL
+
+    if resource == "current":
+        _collect(repository, tmp_path)
+        url, params, module = "/v1/service/exports/current", {"limit": 1}, export_snapshots
+    else:
+        _collect_forecast(repository, tmp_path)
+        url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 1}
+        module = export_forecasts
+    client = _client(repository, tmp_path)
+    first = client.get(url, params=params, headers=HEADERS)
+    assert first.status_code == 200 and first.json()["meta"]["has_more"]
+    snapshot_id = first.json()["meta"]["snapshot_id"]
+    table, _ = export_snapshot_tables(Base.metadata)
+    with repository.engine.begin() as c:
+        c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
+            expires_at=datetime.now(UTC) + timedelta(seconds=5),
+        ))
+    again = client.get(url, params=params, headers=HEADERS)
+    assert again.status_code == 200 and again.json()["meta"]["snapshot_id"] == snapshot_id
+    assert again.headers["etag"] == first.headers["etag"]
+    with repository.engine.connect() as c:
+        expires = c.scalar(select(table.c.expires_at).where(table.c.snapshot_id == snapshot_id))
+    assert expires >= datetime.now(UTC) + SNAPSHOT_TTL - timedelta(seconds=30)
+    later = datetime.now(UTC) + timedelta(seconds=6)
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return later.astimezone(tz or UTC)
+
+    monkeypatch.setattr(module, "datetime", Later)
+    following = client.get(
+        url, params={**params, "cursor": again.json()["meta"]["next_cursor"]}, headers=HEADERS,
+    )
+    assert following.status_code == 200
