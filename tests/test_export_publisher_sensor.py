@@ -76,11 +76,35 @@ def test_tick_budgets_fit_inside_the_sensor_grpc_deadline():
     # 운영 daemon의 DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS는 60초다. source 최대값과 daily·GC
     # 예산을 더하고도 퇴역 두 문장(각 5초 상한)과 마지막 후보의 초과 대기를 위해 20초를
     # 남겨야 tick이 daemon 쪽에서 시간 초과로 끝나지 않는다.
-    maximum = WeatherSettings.model_fields["service_export_publisher_budget_seconds"]
-    upper = next(item.le for item in maximum.metadata if hasattr(item, "le"))
+    from kortravelweather.settings import SERVICE_EXPORT_PUBLISHER_BUDGET_MAX as upper
+
     assert upper + module.DAILY_BUDGET_SECONDS + module.GC_BUDGET_SECONDS <= 40
     # 기본값이 도착량 대비 여유를 갖도록 상한과 같다(운영 env 변경 없이 적용).
-    assert maximum.default == upper == 30
+    assert WeatherSettings().service_export_publisher_budget_seconds == upper == 30
+    assert WeatherSettings(
+        service_export_publisher_budget_seconds=45,
+    ).service_export_publisher_budget_seconds == upper
+
+
+@pytest.mark.parametrize("field,raw,expected", [
+    ("service_export_publisher_budget_seconds", "12.5", 12.5),
+    ("service_export_publisher_budget_seconds", "0", 30),
+    ("service_export_publisher_budget_seconds", "-3", 30),
+    ("service_export_publisher_budget_seconds", "abc", 30),
+    ("service_export_publisher_budget_seconds", "nan", 30),
+    ("service_export_artifact_gc", "DRY_RUN ", "dry_run"),
+    ("service_export_artifact_gc", "off", "off"),
+    ("service_export_artifact_gc", "delte", "dry_run"),
+    ("service_export_artifact_retention_hours", "48", 48),
+    ("service_export_artifact_retention_hours", "2", 6),
+    ("service_export_artifact_retention_hours", "100000", 720),
+    ("service_export_artifact_retention_hours", "x", 24),
+])
+def test_publisher_settings_are_corrected_not_rejected(monkeypatch, field, raw, expected):
+    # 모든 weather asset이 같은 설정 객체를 만든다. 잘못된 env 하나가 수집 전체를
+    # ValidationError로 멈추게 하지 않고, 경고와 함께 안전한 값으로 보정한다.
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_" + field.upper(), raw)
+    assert getattr(WeatherSettings(), field) == expected
 
 
 @pytest.mark.parametrize("status,native,outcome", [

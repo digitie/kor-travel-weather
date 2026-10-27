@@ -51,6 +51,14 @@ METRICS_TOKEN_MIN_LENGTH = 16
 #: 상한은 ``retention.MAX_BUDGET_SECONDS``와 같다.
 SHORT_FORECAST_RETENTION_BUDGET_DEFAULT = 150.0
 SHORT_FORECAST_RETENTION_BUDGET_MAX = 180.0
+#: export publisher sensor의 tick 예산 기본값이자 상한(초). sensor 평가 gRPC 상한
+#: (``DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS``, 운영 60초) 안에 일별 집계·GC와 마지막 후보의
+#: 초과 대기까지 끝나야 한다.
+SERVICE_EXPORT_PUBLISHER_BUDGET_MAX = 30.0
+SERVICE_EXPORT_ARTIFACT_GC_MODES = ("off", "dry_run", "delete")
+#: 공개 세대 artifact 보존 창(시간)의 기본값과 범위.
+SERVICE_EXPORT_ARTIFACT_RETENTION_DEFAULT = 24
+SERVICE_EXPORT_ARTIFACT_RETENTION_RANGE = (6, 24 * 30)
 _logger = logging.getLogger(__name__)
 _WEAK_ADMIN_TOKENS = {
     "admin",
@@ -73,14 +81,64 @@ class WeatherSettings(BaseSettings):
     service_exports_enabled: bool = False
     service_export_artifact_root: Path | None = None
     # publisher sensor 한 tick(60초 간격)의 후보 처리 예산. 운영 도착량(시간당 약
-    # 1,800~2,100건)에 여유를 두도록 기본값을 상한과 같은 30초로 둔다. sensor 평가 gRPC
-    # 상한(DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS, 운영 60초) 안에 일별 집계·GC와 마지막
-    # 후보의 초과 대기까지 끝나야 하므로 30초를 넘길 수 없다. 낮추는 조정만 한다.
-    service_export_publisher_budget_seconds: float = Field(default=30, gt=0, le=30)
+    # 1,800~2,100건)에 여유를 두도록 기본값을 상한과 같은 30초로 둔다. 낮추는 조정만 한다.
+    # 모든 weather asset이 이 설정 객체를 만들므로 아래 세 값은 잘못돼도 거절하지 않고
+    # 경고와 함께 보정한다(상한 초과는 상한, 0 이하·숫자 아님은 기본값).
+    service_export_publisher_budget_seconds: float = SERVICE_EXPORT_PUBLISHER_BUDGET_MAX
     # 참조 없는 artifact 정리. dry_run은 대상 byte만 세고 off는 아무것도 하지 않는다.
+    # 알 수 없는 값은 지우지 않는 dry_run으로 둔다.
     service_export_artifact_gc: Literal["off", "dry_run", "delete"] = "delete"
     # 현재 head/승인 inventory/대기 receipt/frozen snapshot 밖의 공개 세대 파일을 지키는 시간.
-    service_export_artifact_retention_hours: int = Field(default=24, ge=6, le=24 * 30)
+    service_export_artifact_retention_hours: int = SERVICE_EXPORT_ARTIFACT_RETENTION_DEFAULT
+
+    @field_validator("service_export_publisher_budget_seconds", mode="before")
+    @classmethod
+    def _bounded_publisher_budget(cls, value: object) -> float:
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            number = math.nan
+        if math.isnan(number) or number <= 0 or number > SERVICE_EXPORT_PUBLISHER_BUDGET_MAX:
+            _logger.warning(
+                "KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PUBLISHER_BUDGET_SECONDS가 0 초과 %s 이하가 "
+                "아니어서 %s초를 씁니다.",
+                SERVICE_EXPORT_PUBLISHER_BUDGET_MAX, SERVICE_EXPORT_PUBLISHER_BUDGET_MAX,
+            )
+            return SERVICE_EXPORT_PUBLISHER_BUDGET_MAX
+        return number
+
+    @field_validator("service_export_artifact_gc", mode="before")
+    @classmethod
+    def _known_artifact_gc_mode(cls, value: object) -> str:
+        mode = str(value).strip().lower() if value is not None else ""
+        if mode in SERVICE_EXPORT_ARTIFACT_GC_MODES:
+            return mode
+        _logger.warning(
+            "KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC를 알 수 없어 지우지 않는 "
+            "dry_run으로 둡니다."
+        )
+        return "dry_run"
+
+    @field_validator("service_export_artifact_retention_hours", mode="before")
+    @classmethod
+    def _bounded_artifact_retention(cls, value: object) -> int:
+        low, high = SERVICE_EXPORT_ARTIFACT_RETENTION_RANGE
+        try:
+            number = int(float(value))  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            number = SERVICE_EXPORT_ARTIFACT_RETENTION_DEFAULT
+            _logger.warning(
+                "KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS가 숫자가 아니어서 "
+                "기본 %s시간을 씁니다.", number,
+            )
+        if not low <= number <= high:
+            bounded = min(max(number, low), high)
+            _logger.warning(
+                "KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS가 %s~%s 밖이어서 "
+                "%s시간으로 고정합니다.", low, high, bounded,
+            )
+            number = bounded
+        return number
 
     # 위치별 마지막 확인일 + 달력 6개월. 수동 실행은 기한 전에도 허용한다.
     address_refresh_auto_enabled: bool = True
