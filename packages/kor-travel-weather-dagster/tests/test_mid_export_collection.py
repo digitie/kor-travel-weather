@@ -16,11 +16,22 @@ from kortravelweather.export_mid import prove_mid_template
 from kortravelweather.models import WeatherLocation
 
 AT = datetime(2026, 10, 23, 9, 15, tzinfo=UTC)
-#: 운영과 같은 현재 형식: 18시 발표 중기 응답은 D+5~10을 공개한다(2024-11-28 기간 확대 뒤).
-FIRST_DAY = 5
-#: 위치당 fact: land는 D+5~7 오전·오후와 D+8~10 하루씩 9구간 × SKY/POP(18),
-#: 기온은 6일 × TMN/TMX(12).
-PER_LOCATION = 30
+TM_FC = "202610231800"
+
+
+def _first_day(tm_fc):
+    """운영과 같은 현재 형식(2024-11-28 기간 확대 뒤)의 첫 예보일: 06시 D+4, 18시 D+5."""
+    return 4 if tm_fc[8:10] < "12" else 5
+
+
+def _per_location(tm_fc):
+    """위치당 fact: land는 D+first~7 오전·오후와 D+8~10 하루씩 × SKY/POP, 기온은 일수 × 2."""
+    first = _first_day(tm_fc)
+    return 2 * (2 * (8 - first) + 3) + 2 * (11 - first)
+
+
+#: 18시 발표(D+5 시작): land 18 + 기온 12.
+PER_LOCATION = _per_location(TM_FC)
 
 
 class Repository:
@@ -74,15 +85,16 @@ def targets(count=3):
     ]
 
 
-def _raw(part, region):
+def _raw(part, region, tm_fc=TM_FC):
+    first = _first_day(tm_fc)
     result = {"regId": region}
     if part == "land":
-        for day in range(FIRST_DAY, 11):
+        for day in range(first, 11):
             for suffix in ("Am", "Pm") if day <= 7 else ("",):
                 result[f"wf{day}{suffix}"] = "맑음"
                 result[f"rnSt{day}{suffix}"] = 10
     else:
-        for day in range(FIRST_DAY, 11):
+        for day in range(first, 11):
             result[f"taMin{day}"] = 5
             result[f"taMax{day}"] = 20
             result[f"taMin{day}Low"], result[f"taMin{day}High"] = 4, 6
@@ -137,7 +149,7 @@ def execute(
     repository = Repository()
 
     def handler(request):
-        assert request.url.params["tmFc"] == "202610231800"
+        assert request.url.params["tmFc"] == TM_FC
         part = "land" if request.url.path.endswith("getMidLandFcst") else "temperature"
         region = request.url.params["regId"]
         events.append(("request", part, region))
