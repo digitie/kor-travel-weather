@@ -237,7 +237,7 @@ def build_export_publisher_sensor(
 ) -> SensorDefinition:
     """factory는 새 repository 소유권을 넘긴다. 모든 경로에서 dispose한다.
 
-    source 예산(설정, 기본 24초)과 daily 5초·GC 3초는 협력 예산이다. 마지막 SQL/파일
+    source 예산(설정, 기본·상한 30초)과 daily 5초·GC 3초는 협력 예산이다. 마지막 SQL/파일
     대기까지 포함한 wall-time 보장은 아니며 SQL은 기존 5초/잠금 상한을 유지한다. 합계가
     sensor 평가 gRPC 상한(운영 60초) 안에 들도록 source 예산은 30초를 넘지 못한다.
     """

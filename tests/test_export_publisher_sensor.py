@@ -79,6 +79,8 @@ def test_tick_budgets_fit_inside_the_sensor_grpc_deadline():
     maximum = WeatherSettings.model_fields["service_export_publisher_budget_seconds"]
     upper = next(item.le for item in maximum.metadata if hasattr(item, "le"))
     assert upper + module.DAILY_BUDGET_SECONDS + module.GC_BUDGET_SECONDS <= 40
+    # 기본값이 도착량 대비 여유를 갖도록 상한과 같다(운영 env 변경 없이 적용).
+    assert maximum.default == upper == 30
 
 
 @pytest.mark.parametrize("status,native,outcome", [

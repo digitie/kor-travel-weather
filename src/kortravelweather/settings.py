@@ -72,10 +72,11 @@ class WeatherSettings(BaseSettings):
     # 성공 projection/비용 gate 수용 전에는 운영에서 켜지 않는다.
     service_exports_enabled: bool = False
     service_export_artifact_root: Path | None = None
-    # publisher sensor 한 tick(60초 간격)의 후보 처리 예산. sensor 평가 gRPC 상한
-    # (DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS, 운영 60초) 안에 퇴역·일별 집계·GC와 마지막
-    # 후보의 초과 대기까지 끝나도록 상한을 30초로 둔다.
-    service_export_publisher_budget_seconds: float = Field(default=24, gt=0, le=30)
+    # publisher sensor 한 tick(60초 간격)의 후보 처리 예산. 운영 도착량(시간당 약
+    # 1,800~2,100건)에 여유를 두도록 기본값을 상한과 같은 30초로 둔다. sensor 평가 gRPC
+    # 상한(DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS, 운영 60초) 안에 일별 집계·GC와 마지막
+    # 후보의 초과 대기까지 끝나야 하므로 30초를 넘길 수 없다. 낮추는 조정만 한다.
+    service_export_publisher_budget_seconds: float = Field(default=30, gt=0, le=30)
     # 참조 없는 artifact 정리. dry_run은 대상 byte만 세고 off는 아무것도 하지 않는다.
     service_export_artifact_gc: Literal["off", "dry_run", "delete"] = "delete"
     # 현재 head/승인 inventory/대기 receipt/frozen snapshot 밖의 공개 세대 파일을 지키는 시간.
