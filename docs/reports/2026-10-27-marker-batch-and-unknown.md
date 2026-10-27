@@ -100,6 +100,13 @@ WSL2의 전용 PostgreSQL 16에서 다음을 확인했다. 운영 DB에는 DDL·
 - 첫 후보 `5ba2fd1`은 CI Python 1299개·frontend 257개 및 lint/type/build를 통과했다.
   그 소스의 로컬 전체 실행은 원래 worktree를 불변 보존한 채 자연 완료를 기다린다.
   아래 migration 보호 보강은 별도 worktree/DB에서 검증하며 새 정확 SHA의 CI·두 리뷰를 받는다.
+- migration 보호를 포함한d421 CI도 통과했다. 후속 UI만 바뀐1bda CI는1318통과/1실패였다.
+  실패 지점은 조회 측정 전57,600행 projection fixture INSERT의 FK 검사로, fixture전용30초
+  한계에 걸렸다. timeout/FK/행 수는 유지하고 known_at source 파티션 조건과10지점씩6개
+  INSERT·총57,600행 검산으로 한 statement의 적재 작업량을 제한했다. 조회 측정5초 예산과
+  custom/generic 비교는 그대로다. 이전 충돌 회귀 DB를 재사용한 첫 후속은 의도된 wrong-index
+  잔여 때문에 대표 scan2개가 실패했다. 새 전용 DB에서는3개 집중 검증이31.165초에 통과했고
+  60지점 계획은0.884~5.088ms/read·temp0, 장기 특보는0.221초였다.
 
 인덱스 비용은 별도의 전용 DB 두 개에 동일한 합성 projection 10만 행을 넣어 측정했다.
 4개 concurrent build는 각각 0.147~0.197초, 추가 인덱스 합계 약 23.35MB였다.
@@ -151,6 +158,10 @@ Claude Code가 시작한 batch의 정확한 귀속은 확인되지 않았으며,
 OpenMeteo forecast는65,856값·23:37:49Z heartbeat로 진행 중이며, 정기 AirKorea도 시작했다.
 대기 중이던 실황은23:34:02Z에3,490값으로 성공해 queued는0이지만 실제 worker4015/5112가
 남아 있었다. 이 관측도 전체 수집 종료나 배포 완료로 해석하지 않는다.
+
+2026-10-27 00:01:00Z에는 OpenMeteo forecast가135,744값·00:00:45Z heartbeat로
+계속 진행 중이었다. 정기 AirKorea는4,156값으로23:50:52Z에 성공했고 새 초단기예보는
+queued였다. 실제CS worker4015가 남아 있으므로 이미지 교체 조건은 여전히 충족하지 않았다.
 
 당시 instigator는 21 RUNNING/2 STOPPED였다. publisher는 RUNNING이고 retention/native
 recovery는 STOPPED였다. 초기 조사 22/1과 다른 외부 변경이므로 옛 원장으로 복원하지 않는다.
