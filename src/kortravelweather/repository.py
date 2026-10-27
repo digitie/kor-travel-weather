@@ -137,9 +137,14 @@ from .partitions import (
     write_deferral_mark,
 )
 from .retention import (
+    MAX_BATCH_SIZE,
+    SHORT_FORECAST_CANDIDATES_AFTER_SQL,
     SHORT_FORECAST_CANDIDATES_SQL,
-    SHORT_FORECAST_EXISTS_SQL,
+    SHORT_FORECAST_DELETE_SQL,
+    SHORT_FORECAST_EXISTS_AFTER_SQL,
     SHORT_FORECAST_PREDICATE,
+    STATEMENT_TIMEOUT_MS,
+    ShortForecastKey,
     ShortForecastPartitionRetained,
     expired_short_forecast,
     retained_short_forecast,
@@ -1011,6 +1016,10 @@ WHERE (
 """
 
 PURGE_GUC = "kortravelweather.purge"
+
+#: 단기예보 정리 batch를 실패 대신 연기하는 SQLSTATE: 문장 timeout/취소(57014),
+#: 잠금 timeout(55P03), deadlock(40P01). 그 batch만 rollback되고 앞 commit은 유효하다.
+_SHORT_RETENTION_DEFERRABLE = frozenset({"57014", "55P03", "40P01"})
 
 #: Delete a source record once nothing still cites it. Both ``NOT EXISTS``
 #: subqueries key on ``source_record_key``, served by
@@ -4099,8 +4108,26 @@ class WeatherRepository:
 
     def purge_expired_short_forecast(
         self, *, cutoff: datetime, batch_size: int = 1000, dry_run: bool = True,
+        after: ShortForecastKey | None = None,
+        statement_timeout_ms: int = STATEMENT_TIMEOUT_MS,
     ) -> dict[str, Any]:
-        """KMA 단기예보의 지난 valid_at만 복합키 단위로 유한 정리한다."""
+        """KMA 단기예보의 지난 valid_at만 복합키 단위로 유한 정리한다.
+
+        후보는 부분 인덱스 순서로 고르고, ``after``가 있으면 그 키 뒤에서 index scan을
+        시작한다. 지운 행의 인덱스 항목은 VACUUM 전까지 머리에 죽은 채 남는다.
+        2026-10-26 운영(odroid)에서 매 batch가 머리부터 후보 선택과 남은행 확인을
+        두 번 다시 읽어 약236만 죽은 항목을 지나느라 batch당5~8초가 걸렸고,
+        결국 첫 선택이5초 문장 예산을 넘었다. 이어 읽기는 그 항목을 다시 지나지 않는다.
+
+        ``statement_timeout_ms``는 후보 선택에만 쓴다. 위치가 없을 때 머리 탐색 한 번에
+        더 긴 상한을 줄 수 있게 하며, 삭제와 남은행 확인은 늘 정상 예산을 쓴다.
+        행 잠금은 SKIP LOCKED가 아니라 ``lock_timeout`` 안에서 기다린다. 이 batch가 건너뛴
+        잠긴 행이 위치 앞에 남지 않는다. 다만 위치 앞에 나중에 만료 행이 들어올 수는 있어
+        (복원·늦은 commit·시계 역행 등) 호출자가 위치를 검사하고 주기적으로 머리부터 훑는다
+        (``retention.resume_position``). 잠금/문장 timeout은 이 batch만 rollback하고
+        ``deferred``로 돌려 이미 commit한 앞 batch의 진척을 보존한다.
+        다른 SQL 오류는 그대로 전파한다.
+        """
         latest_cutoff = short_forecast_cutoff(kst_now())
         if cutoff.tzinfo is None or cutoff.utcoffset() is None:
             raise ValueError("cutoff는 timezone-aware여야 합니다.")
@@ -4109,61 +4136,102 @@ class WeatherRepository:
             raise ValueError("cutoff는 현재시각에서6시간을 뺀 값보다 늦을 수 없습니다.")
         if (
             isinstance(batch_size, bool) or not isinstance(batch_size, int)
-            or not 1 <= batch_size <= 1000
+            or not 1 <= batch_size <= MAX_BATCH_SIZE
         ):
             raise ValueError("batch_size는1~1000 정수여야 합니다.")
+        if (
+            isinstance(statement_timeout_ms, bool) or not isinstance(statement_timeout_ms, int)
+            or not STATEMENT_TIMEOUT_MS <= statement_timeout_ms <= 60000
+        ):
+            raise ValueError("statement_timeout_ms는5000~60000 정수여야 합니다.")
+        if after is not None and (
+            after.valid_at.tzinfo is None or after.known_at.tzinfo is None
+            or not isinstance(after.value_id, str)
+        ):
+            raise ValueError("이어 읽을 위치는 timezone-aware 키여야 합니다.")
         started = time.monotonic()
         report: dict[str, Any] = {
             "cutoff": cutoff.isoformat(), "matched_in_batch": 0,
             "pointers_deleted": 0, "facts_deleted": 0,
-            "remaining": None, "deferred": False,
+            "remaining": None, "deferred": False, "last_key": None, "error_class": None,
         }
-        with self._session_factory.begin() as session:
-            if dry_run:
-                session.execute(text("SET TRANSACTION READ ONLY"))
-            session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
-            session.execute(text("SET LOCAL lock_timeout = '1000ms'"))
-            if not dry_run and not session.scalar(text(
-                "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
-            )):
-                report["deferred"] = True
-                report["elapsed_seconds"] = time.monotonic() - started
-                return report
-            statement = SHORT_FORECAST_CANDIDATES_SQL
-            if not dry_run:
-                statement += " FOR UPDATE SKIP LOCKED"
-            keys = [tuple(row) for row in session.execute(
-                text(statement), {"cutoff": cutoff, "batch_size": batch_size},
-            ).all()]
-            report["matched_in_batch"] = len(keys)
-            if keys and not dry_run:
-                relation = values(
-                    column("value_id", String(64)),
-                    column("known_at", AwareDateTime()),
-                    name="expired_short_keys",
-                ).data(keys)
-                pair = [
-                    WeatherCurrentValueRow.value_id == relation.c.value_id,
-                    WeatherCurrentValueRow.known_at == relation.c.known_at,
-                ]
-                report["pointers_deleted"] = int(session.execute(
-                    delete(WeatherCurrentValueRow).where(*pair)
-                ).rowcount or 0)
-                session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
-                report["facts_deleted"] = int(session.execute(
-                    delete(WeatherValueRow).where(
-                        WeatherValueRow.value_id == relation.c.value_id,
-                        WeatherValueRow.known_at == relation.c.known_at,
-                        WeatherValueRow.known_at >= min(key[1] for key in keys),
-                        WeatherValueRow.known_at <= max(key[1] for key in keys),
+        try:
+            with self._session_factory.begin() as session:
+                if dry_run:
+                    session.execute(text("SET TRANSACTION READ ONLY"))
+                session.execute(text(f"SET LOCAL statement_timeout = '{statement_timeout_ms}ms'"))
+                session.execute(text("SET LOCAL lock_timeout = '1000ms'"))
+                if not dry_run and not session.scalar(text(
+                    "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
+                )):
+                    report["deferred"] = True
+                    report["elapsed_seconds"] = time.monotonic() - started
+                    return report
+                statement = SHORT_FORECAST_CANDIDATES_SQL
+                params: dict[str, Any] = {"cutoff": cutoff, "batch_size": batch_size}
+                if after is not None:
+                    statement = SHORT_FORECAST_CANDIDATES_AFTER_SQL
+                    params.update(after.params())
+                if not dry_run:
+                    statement += " FOR UPDATE"
+                rows = session.execute(text(statement), params).all()
+                if statement_timeout_ms != STATEMENT_TIMEOUT_MS:
+                    session.execute(
+                        text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
                     )
-                ).rowcount or 0)
-                if report["facts_deleted"] != len(keys):
-                    raise RuntimeError("선택한 단기예보 fact 삭제 수가 일치하지 않습니다.")
-            # SKIP LOCKED로 못 고른 행도 읽으므로 빈 batch를 전체 완료로 오인하지 않는다.
-            report["remaining"] = bool(session.scalar(
-                text(SHORT_FORECAST_EXISTS_SQL), {"cutoff": cutoff},
-            ))
+                keys = [(row[0], row[1]) for row in rows]
+                report["matched_in_batch"] = len(keys)
+                if keys and not dry_run:
+                    relation = values(
+                        column("value_id", String(64)),
+                        column("known_at", AwareDateTime()),
+                        name="expired_short_keys",
+                    ).data(keys)
+                    pair = [
+                        WeatherCurrentValueRow.value_id == relation.c.value_id,
+                        WeatherCurrentValueRow.known_at == relation.c.known_at,
+                    ]
+                    report["pointers_deleted"] = int(session.execute(
+                        delete(WeatherCurrentValueRow).where(*pair)
+                    ).rowcount or 0)
+                    session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+                    by_partition: dict[int, list[Any]] = {}
+                    for row in rows:
+                        by_partition.setdefault(int(row[3]), []).append(row)
+                    deleted: list[tuple[Any, ...]] = []
+                    for oid, group in by_partition.items():
+                        deleted.extend(tuple(item) for item in session.execute(
+                            text(SHORT_FORECAST_DELETE_SQL),
+                            {
+                                "relation": oid,
+                                "tids": "{" + ",".join(f'"{row[4]}"' for row in group) + "}",
+                                "low": min(row[1] for row in group),
+                                "high": max(row[1] for row in group),
+                            },
+                        ).all())
+                    report["facts_deleted"] = len(deleted)
+                    if sorted(deleted) != sorted(keys):
+                        raise RuntimeError("선택한 단기예보 fact 삭제 수가 일치하지 않습니다.")
+                last_key = ShortForecastKey(rows[-1][2], rows[-1][1], rows[-1][0]) if rows else None
+                report["last_key"] = last_key
+                if last_key is None or len(rows) < batch_size:
+                    # 잠금을 건너뛰지 않으므로 덜 찬 batch는 위치 뒤의 만료 행을 모두 고른 것이다.
+                    report["remaining"] = False
+                else:
+                    report["remaining"] = bool(session.scalar(
+                        text(SHORT_FORECAST_EXISTS_AFTER_SQL),
+                        {"cutoff": cutoff, **last_key.params()},
+                    ))
+        except OperationalError as exc:
+            sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+            if sqlstate not in _SHORT_RETENTION_DEFERRABLE:
+                raise
+            # 이 batch는 rollback됐다. 앞 batch의 commit과 위치는 그대로 유효하다.
+            report.update(
+                matched_in_batch=0, pointers_deleted=0, facts_deleted=0,
+                remaining=None, deferred=True, last_key=None,
+                error_class=type(exc.orig).__name__,
+            )
         report["elapsed_seconds"] = time.monotonic() - started
         return report
 

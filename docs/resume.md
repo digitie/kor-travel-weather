@@ -5,6 +5,16 @@
 - 다음 한 작업: 머지·배포 뒤 공개 UI 로그인(SSR 직후 비활성 → hydration 뒤 활성, 정상 로그인/오류/재시도)과
   브라우저 저장 계정 자동완성 동작을 확인한다.
 
+## 2026-10-27 — Common aa232ad·단기예보 정리 수정 PR #174
+
+- 현재 상태: [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)는 Python만 다룬다. Common
+  `aa232ad` 고정과 `weather_short_forecast_retention_job` 상시 실패 수정(검사한 위치 이어 읽기·ctid 삭제·
+  실행당 예산 설정 기본150초·진척0 또는 뒤처진 채 7회(약70분) 연속 줄지 않을 때만 Failure)이다. n150 CI-parity 게이트와
+  GitHub CI·독립 리뷰 결과는 PR이 정본이다.
+- 다음 한 작업: 머지·배포 뒤 job 첫 run SUCCESS(`resumed=false`→다음 run `true`)와 `backlog_lag_seconds`
+  감소를 확인한다([확인 방법](shortterm-retention.md#배포-후-확인)). 이어서 `@kor-travel/ui` dev.9를 별도
+  PR로 vendoring한다(로그인 hydration 준비 전 입력·제출 비활성).
+
 ## 2026-10-27 — 지도 마커 실제 값 수용 보강 중
 
 - 현재: 운영95020의 지도 면적·상세 통과와 별도로60ID 지연/504·미확인 구름을 재현했다.
