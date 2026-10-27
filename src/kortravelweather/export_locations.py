@@ -38,15 +38,17 @@ class FrozenLocationExports(FrozenCurrentExports):
 
     def _renew(self, connection, frozen):
         now = datetime.now(UTC)
-        if frozen["expires_at"] <= now:
-            frozen.pop("issue_order", None)
-            frozen = {
-                **frozen,
-                "snapshot_id": str(uuid4()),
-                "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
-            }
-            connection.execute(self.snapshots.insert().values(**frozen))
+        if frozen["expires_at"] > now:
+            # 재사용 handle은 page가 freeze transaction 밖에서 TTL을 연장한다.
+            return {**frozen, "_reused": True}
+        frozen.pop("issue_order", None)
+        frozen = {
+            **frozen,
+            "snapshot_id": str(uuid4()),
+            "created_at": now,
+            "expires_at": now + SNAPSHOT_TTL,
+        }
+        connection.execute(self.snapshots.insert().values(**frozen))
         return frozen
 
     def _freeze_locations(self):
@@ -150,7 +152,7 @@ class FrozenLocationExports(FrozenCurrentExports):
                 .one_or_none()
             )
             if existing is not None:
-                return dict(existing)
+                return {**existing, "_reused": True}
             frozen = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
@@ -188,7 +190,7 @@ class FrozenLocationExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("reference cursor가 만료됐습니다.")
             frozen = dict(row)
         else:
-            frozen = self._freeze_locations()
+            frozen = self._renew_reused(self._freeze_locations())
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],

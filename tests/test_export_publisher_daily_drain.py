@@ -114,7 +114,9 @@ def test_three_hundred_observed_and_forecast_generations_catch_up_without_lost_c
         summaries = connection.execute(select(table.c.summary)).scalars().all()
     assert len(coverage) == len(summaries) == 300
     assert all(row["provider"] == "python-kma-api" for row in coverage)
-    assert all(row["temp_avg"] == 10 and row["precip_sum_mm"] == 1 for row in summaries)
+    # 구간6시간 중 RN1 1시간만 있으므로 합계는 미확정이고 강수 발생만 확정이다.
+    assert all(row["temp_avg"] == 10 and row["precip_sum_mm"] is None
+               and row["precip_occurred"] is True for row in summaries)
 
 
 def test_daily_missing_artifact_stops_without_advancing_checkpoint_and_repairs(
@@ -167,3 +169,55 @@ def test_daily_deadline_stops_before_next_batch(publisher_repository, tmp_path, 
         "processed": 4, "has_more": True,
     }
     assert calls == [{"limit": 4}]
+
+
+def test_publisher_tick_prunes_only_long_expired_snapshot_handles(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    """만료 뒤 6시간이 지난 handle과 refs만 지운다. 유효 cursor와 최근 만료 handle은 남는다."""
+    from kortravelweather.export_locations import FrozenLocationExports
+    from kortravelweather.export_snapshots import export_snapshot_tables, prune_export_snapshots
+
+    repo = publisher_repository
+    _, generations, _ = seed_mixed_approved_metadata(repo, tmp_path, locations=2)
+    reader = FrozenLocationExports(repo, ExportArtifactStore(tmp_path), signing_key="prune-test")
+    live, _ = reader.page("locations", limit=1, cursor=None)
+    assert live["meta"]["has_more"]
+    snapshots, refs = export_snapshot_tables(ExportHeads(repo).metadata)
+    now = datetime.now(UTC)
+
+    def expired_handle(hours):
+        key = str(uuid.uuid4())
+        with repo.engine.begin() as connection:
+            connection.execute(snapshots.insert().values(
+                snapshot_id=key, manifest_digest="0" * 64,
+                manifest={"selection": {"kind": "prune-fixture"}, "scopes": []},
+                source_collected_at=now, data_revision_at=now,
+                created_at=now - timedelta(hours=hours, minutes=15),
+                expires_at=now - timedelta(hours=hours),
+            ))
+            connection.execute(refs.insert(), [
+                {"snapshot_id": key, "ordinal": index, "generation_id": row["generation_id"]}
+                for index, row in enumerate(generations[:2])
+            ])
+        return key
+
+    oldest, older, recent = expired_handle(8), expired_handle(7), expired_handle(1)
+
+    def remaining():
+        with repo.engine.connect() as connection:
+            return (set(connection.scalars(select(snapshots.c.snapshot_id))),
+                    set(connection.scalars(select(refs.c.snapshot_id))))
+
+    # 상한을 지키고 가장 오래 만료된 handle부터 지운다.
+    assert prune_export_snapshots(repo, limit=1) == 1
+    handles, cited = remaining()
+    assert oldest not in handles and oldest not in cited and older in handles
+    monkeypatch.setattr(publisher, "time", SimpleNamespace(monotonic=lambda: 0))
+    publisher.refresh_publisher_daily(repo, tmp_path, deadline=4)
+    handles, cited = remaining()
+    assert older not in handles and older not in cited
+    assert {recent, live["meta"]["snapshot_id"]} <= handles and cited == {recent}
+    # 아직 유효한 cursor는 그대로 다음 페이지를 읽는다.
+    following, _ = reader.page("locations", limit=1, cursor=live["meta"]["next_cursor"])
+    assert following["items"]

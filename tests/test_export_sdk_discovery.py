@@ -116,9 +116,17 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
         "days": 1, "location_id": restarea_location(records[1]).location_id,
     }, headers=daily_headers)
     assert cross_provider.status_code == 503
+    # 전체 목록은 새 원천의 최초 미승인을503 대신 stale로 낮춘다. 기존 위치의 요약은 그대로이고
+    # 새 위치는 승인된 원천(HTTP)만으로 요약된다. 개별 위치 조회는 위와 같이503이다.
     retained = client.get(daily_path, params={"days": 1}, headers=daily_headers)
     assert retained.status_code == 200 and retained.json()["meta"]["source_status"] == "stale"
-    assert retained.json()["items"] == daily_prior.json()["items"]
+    new_key = restarea_location(records[1]).location_id
+    assert [item for item in retained.json()["items"]
+            if item["location_id"] != new_key] == daily_prior.json()["items"]
+    added = [item for item in retained.json()["items"] if item["location_id"] == new_key]
+    assert len(added) == 3 and all(
+        KREX_PROVIDER not in item["source_providers"] for item in added
+    )
     assert collect(records) == ["PUBLISHED", "PUBLISHED"]
     recovered, _ = reader.page("current", limit=5000, cursor=None)
     assert recovered["meta"]["source_status"] == "ok" and len(recovered["items"]) == 4

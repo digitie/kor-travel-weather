@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -26,8 +27,12 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    delete,
+    func,
     select,
+    update,
 )
+from sqlalchemy.exc import SQLAlchemyError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_capacity import (
@@ -45,6 +50,13 @@ MAX_PAGE_BYTES = 4 * 1024 * 1024
 PAGE_META_RESERVE = 8192
 SNAPSHOT_TTL = timedelta(minutes=15)
 SOURCE_MAX_AGE = timedelta(hours=3)
+# 만료 뒤 이만큼 지난 handle만 publisher tick이 지운다. 유효 cursor(만료 전)는 대상이 아니다.
+SNAPSHOT_PRUNE_RETAIN = timedelta(hours=6)
+# current handle 하나에 scope ref가 수천 행이라 CASCADE까지 5초 statement 상한 안에 끝나도록
+# 작게 둔다. tick이 handle 발급 속도(selection당 15분마다 1개 안팎)보다 충분히 많이 지운다.
+SNAPSHOT_PRUNE_LIMIT = 20
+
+logger = logging.getLogger(__name__)
 
 
 class ExportSnapshotUnavailable(ExportArtifactError):
@@ -95,6 +107,32 @@ def export_snapshot_tables(metadata: MetaData):
         ),
     )
     return snapshots, refs
+
+
+def prune_export_snapshots(
+    repository, *, retain: timedelta = SNAPSHOT_PRUNE_RETAIN, limit: int = SNAPSHOT_PRUNE_LIMIT,
+) -> int:
+    """만료 뒤 retain이 지난 snapshot handle만 작게 지운다.
+
+    expires_at 인덱스로만 고르고 manifest는 읽지 않는다. refs는 ON DELETE CASCADE로
+    함께 지워진다. 요청이 계속되는 selection은 재사용 연장·새 발급으로 최신 handle이
+    살아 있으므로, fallback handle은 retain 안에 요청된 selection에만 보장된다.
+    """
+    if not 1 <= limit <= 1000 or retain < timedelta(0):
+        raise ValueError("snapshot 정리 상한이 올바르지 않습니다.")
+    heads = ExportHeads(repository)
+    snapshots, _ = export_snapshot_tables(heads.metadata)
+    victims = (
+        select(snapshots.c.snapshot_id)
+        .where(snapshots.c.expires_at < datetime.now(UTC) - retain)
+        .order_by(snapshots.c.expires_at)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    with heads._transaction() as session:
+        return session.execute(
+            delete(snapshots).where(snapshots.c.snapshot_id.in_(victims))
+        ).rowcount
 
 
 class FrozenCurrentExports:
@@ -393,7 +431,7 @@ class FrozenCurrentExports:
                 .one_or_none()
             )
             if existing is not None:
-                return dict(existing)
+                return {**existing, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
@@ -439,7 +477,9 @@ class FrozenCurrentExports:
                 raise ExportSnapshotUnavailable("이전 승인 집합이 없습니다.")
             frozen = dict(row)
             now = datetime.now(UTC)
-            if frozen["expires_at"] <= now:
+            if frozen["expires_at"] > now:
+                frozen["_reused"] = True
+            else:
                 frozen.pop("issue_order", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
@@ -463,6 +503,37 @@ class FrozenCurrentExports:
         # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
         with self.artifacts.guard(timeout_seconds=2, shared=True):
             return self._page_guarded(resource, limit=limit, cursor=cursor)
+
+    def _renew_reused(self, frozen):
+        """첫 페이지가 재사용한 기존 handle의 TTL을 연장한다(best-effort).
+
+        만료 직전 handle로 새 pagination을 시작하면 다음 페이지가410이 되고, 처음부터
+        다시 받아도 같은 handle을 재사용한다. 내용과 snapshot_id는 그대로라 ETag도 같다.
+        REPEATABLE READ freeze가 끝난 뒤 짧은 READ COMMITTED transaction에서 갱신해
+        동시 reader끼리 직렬화 충돌(40001)을 만들지 않는다. 실패하면 원래 row를 쓴다.
+        """
+        if not frozen.pop("_reused", False):
+            return frozen
+        now = datetime.now(UTC)
+        table = self.snapshots
+        try:
+            with self.repository.engine.connect() as connection, connection.begin():
+                connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
+                connection.exec_driver_sql("SET LOCAL lock_timeout = '1s'")
+                renewed = connection.execute(
+                    update(table)
+                    .where(table.c.snapshot_id == frozen["snapshot_id"], table.c.expires_at > now)
+                    .values(expires_at=func.greatest(table.c.expires_at, now + SNAPSHOT_TTL))
+                    .returning(table.c.expires_at)
+                ).scalar_one_or_none()
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "weather_export_snapshot_renew_deferred reason=%s", type(exc).__name__
+            )
+            return frozen
+        if renewed is not None:
+            frozen["expires_at"] = renewed
+        return frozen
 
     def _capacity_fallback(self, frozen):
         # 과거 healthy handle을 바꾸지 않고, fallback cursor에도 거절 상태를 보존한다.
@@ -516,6 +587,7 @@ class FrozenCurrentExports:
                 frozen = self._capacity_fallback(self._previous_success())
             except ExportSnapshotUnavailable:
                 frozen = self._previous_success()
+            frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],

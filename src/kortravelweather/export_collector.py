@@ -991,10 +991,24 @@ def refresh_publisher_daily(
             hard_deadline is None or hard_deadline - now >= DAILY_PRUNE_WORST_SECONDS
         ):
             prune_daily_summaries(repository)
+            # snapshot handle 정리는 일별 정리 뒤 남은 tick 상한 안에서만 한다(문장 상한 동일).
+            now = time.monotonic()
+            if hard_deadline is None or hard_deadline - now >= DAILY_PRUNE_WORST_SECONDS:
+                _prune_snapshot_handles(repository)
     except Exception as exc:
         more = True
         logger.warning("weather_daily_summary_refresh_deferred reason=%s", failure_reason(exc))
     return {"processed": total, "has_more": more}
+
+
+def _prune_snapshot_handles(repository) -> None:
+    """만료 뒤 오래된 snapshot handle을 작게 지운다. 실패는 일별 요약과 분리해 미룬다."""
+    from .export_snapshots import prune_export_snapshots
+
+    try:
+        prune_export_snapshots(repository)
+    except Exception as exc:
+        logger.warning("weather_export_snapshot_prune_deferred reason=%s", type(exc).__name__)
 
 
 def dagster_status_lookup(instance) -> Callable[[str], str | None]:

@@ -45,6 +45,8 @@ class FrozenForecastExports(FrozenCurrentExports):
             since = since.astimezone(UTC)
         self.style, self.since = style, since
         self.dataset = self.STYLE_DATASETS[style]
+        # 이번 요청 페이지에서 미래 예보가 없어 뺀 위치가 있으면 stale로 알린다.
+        self._expired_omitted = False
         self.selection = {
             "kind": "forecasts",
             "style": style,
@@ -246,7 +248,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 .one_or_none()
             )
             if previous is not None:
-                return dict(previous)
+                return {**previous, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
@@ -292,7 +294,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if row is None:
                 raise ExportSnapshotUnavailable("이전 승인 예보가 없습니다.")
             frozen, now = dict(row), datetime.now(UTC)
-            if frozen["expires_at"] <= now:
+            if frozen["expires_at"] > now:
+                frozen["_reused"] = True
+            else:
                 frozen.pop("issue_order", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
@@ -339,6 +343,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 frozen = self._capacity_fallback(self._previous_forecasts())
             except ExportSnapshotUnavailable:
                 frozen = self._previous_forecasts()
+            frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],
@@ -350,8 +355,13 @@ class FrozenForecastExports(FrozenCurrentExports):
         manifest, now = frozen["manifest"], datetime.now(UTC)
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
+        self._expired_omitted = False
         output, more = self._page_items(manifest, state, limit, now)
-        stale = bool(manifest.get("capacity_limited")) or self._health(manifest, frozen, now)
+        stale = (
+            self._expired_omitted
+            or bool(manifest.get("capacity_limited"))
+            or self._health(manifest, frozen, now)
+        )
         status = "stale" if stale else "ok"
         page = {
             "items": output,
@@ -421,7 +431,11 @@ class FrozenForecastExports(FrozenCurrentExports):
                 points = cached[key]
                 future = [p for p in points if datetime.fromisoformat(p["target_at"]) > now]
                 if not future:
-                    raise ExportSnapshotUnavailable("현재 이후의 승인 예보가 없습니다.")
+                    # 이 위치의 최신 승인 예보가 모두 지났다. 페이지를 실패시키면 재시도가
+                    # 매번 같은 위치에서 멈추므로 이 위치만 빼고 응답을 stale로 표시한다.
+                    self._expired_omitted = True
+                    state["p"] += 1
+                    continue
                 targets = sorted({p["target_at"] for p in future})
                 metrics = {
                     metric: {

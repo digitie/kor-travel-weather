@@ -180,14 +180,21 @@ class DailySummaryExports(FrozenCurrentExports):
         ).distinct().limit(MAX_SELECTED_ROWS + 1)))
         if len(declared) > MAX_SELECTED_ROWS:
             raise ExportSnapshotUnavailable("사전 관측 source metadata 상한을 넘었습니다.")
-        if (declared | known_observed) - approved_sources:
+        missing = (declared | known_observed) - approved_sources
+        optional = set(self.optional_sources)
+        if self.location_id is not None and any(
+            (provider, dataset) not in optional for provider, dataset, _ in missing
+        ):
+            # 개별 위치의 필수 원천 최초 승인 전에는 다른 원천 요약을 대신 내보내지 않는다.
             raise ExportSnapshotUnavailable("선택 관측 source의 최초 승인이 없습니다.")
+        # 전체 목록은 한 번도 승인되지 않은 anchor(측정 없는 측정소·응답에서 빠진 지점) 때문에
+        # 영구503이 되지 않도록 stale로 낮춘다. 그 위치는 승인된 원천만 요약한다.
         if expected.keys() - coverage.keys():
             # 승인 관측이 있으나 요약이 한번도 계산되지 않은 경우를 무관측0으로 꾸미지 않는다.
             raise ExportSnapshotUnavailable("승인 관측의 사전 계산이 아직 준비되지 않았습니다.")
         selected = [coverage[key] for key in sorted(expected)]
         now = datetime.now(UTC)
-        unconfirmed = selection.unconfirmed or any(
+        unconfirmed = selection.unconfirmed or bool(missing) or any(
             coverage[key]["generation_id"] != scope.generation_id
             or now - coverage[key]["source_collected_at"]
             > source_max_age(scope.descriptor.dataset_key)
@@ -208,17 +215,28 @@ class DailySummaryExports(FrozenCurrentExports):
 
     def _previous_daily(self):
         now = datetime.now(UTC)
+        today = now.astimezone(KST).date()
+        # roster·coverage digest는 이전 완전 집합을 유지하고 날짜 창만 오늘 KST로 옮긴다.
+        # 값은 페이지마다 다시 읽으므로 fallback이 길어져도 오늘 구간이 빠지지 않는다.
+        window = {
+            "first_date": (today - timedelta(days=self.days - 1)).isoformat(),
+            "last_date": today.isoformat(),
+        }
         with self.heads._transaction() as connection:
             previous = connection.execute(select(self.snapshots).where(
                 self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
             ).order_by(self.snapshots.c.issue_order.desc()).limit(1)).mappings().one_or_none()
             if previous is None:
                 return None
-            if previous["expires_at"] > now and previous["manifest"].get("fallback_unconfirmed"):
-                return dict(previous)
+            if (
+                previous["expires_at"] > now
+                and previous["manifest"].get("fallback_unconfirmed")
+                and previous["manifest"].get("last_date") == window["last_date"]
+            ):
+                return {**previous, "_reused": True}
             row = dict(previous)
             row.pop("issue_order", None)
-            row["manifest"] = {**row["manifest"], "fallback_unconfirmed": True}
+            row["manifest"] = {**row["manifest"], **window, "fallback_unconfirmed": True}
             row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
                        created_at=now, expires_at=now + SNAPSHOT_TTL)
             connection.execute(self.snapshots.insert().values(**row))
@@ -274,7 +292,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 existing is not None and existing["manifest_digest"] == digest
                 and existing["expires_at"] > now
             ):
-                return dict(existing)
+                return {**existing, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
@@ -315,7 +333,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("요약 cursor가 만료됐습니다.")
             frozen = dict(row)
         else:
-            frozen = self._freeze_daily()
+            frozen = self._renew_reused(self._freeze_daily())
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],

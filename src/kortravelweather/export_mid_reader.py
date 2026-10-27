@@ -177,7 +177,10 @@ class FrozenMidForecastExports(FrozenForecastExports):
             )]
             future = [point for point in points if _at(point["target_at"]) > now]
             if not future:
-                raise ExportSnapshotUnavailable("현재 이후의 완전 중기 예보가 없습니다.")
+                # 지난 발표만 남은 위치 하나가 style 전체를 막지 않게 빼고 stale로 알린다.
+                self._expired_omitted = True
+                state["g"] += 1
+                continue
             targets = sorted({_at(point["target_at"]) for point in future})
             metrics = defaultdict(dict)
             for point in future:
