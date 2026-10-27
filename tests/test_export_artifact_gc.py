@@ -284,10 +284,12 @@ def test_gc_counts_unlink_errors_and_reports_truncation(
     for name in names:
         (tmp_path / f"{name}.jsonl").write_bytes(b"{}\n")
         os.utime(tmp_path / f"{name}.jsonl", (past, past))
-    real_unlink = os.unlink
+    real_unlink, calls = os.unlink, []
 
     def unlink(path, *args, **kwargs):
-        if str(path).endswith("a" * 64 + ".jsonl"):
+        # scandir 순서와 무관하게 이번 GC가 처음 지우려는 파일 하나만 실패시킨다.
+        calls.append(path)
+        if len(calls) == 1:
             raise PermissionError("synthetic")
         return real_unlink(path, *args, **kwargs)
 
@@ -297,8 +299,8 @@ def test_gc_counts_unlink_errors_and_reports_truncation(
                                       deadline=float("inf"))
     # 셋 중 둘만 이번 GC가 맡고(나머지는 다음 주기), 그중 하나는 지우지 못했다.
     assert report["eligible"] == 3 and report["complete"] is False
-    assert report["errors"] + report["deleted"] == 2 and report["deleted"] <= 1
-    assert sum((tmp_path / f"{name}.jsonl").exists() for name in names) == 3 - report["deleted"]
+    assert report["errors"] == 1 and report["deleted"] == 1 and len(calls) == 2
+    assert sum((tmp_path / f"{name}.jsonl").exists() for name in names) == 2
 
 
 def test_batch_recheck_matches_the_full_live_set(publisher_repository, tmp_path, monkeypatch):
