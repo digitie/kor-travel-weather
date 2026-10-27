@@ -489,8 +489,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
 
   it("필터 결과를 불러오는 동안 보던 위치를 이전 목록에서 유지해 카메라가 되돌아가지 않는다", () => {
     const resolve = new Function(ts.transpileModule(
-      declaration("resolveSelection") + "
-return resolveSelection;",
+      declaration("resolveSelection") + "\nreturn resolveSelection;",
       { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
     ).outputText)() as (
       visible: { location_id: string }[], selectedId: string, filterLoading: boolean, held: { location_id: string }[][],
