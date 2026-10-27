@@ -33,10 +33,26 @@ type WeatherMapProps = {
   onRetryCatalog?: () => void;
 };
 
+function metricDisplayUnit(unit: string | null) {
+  return unit === "deg_c" || unit === "°C" || unit === "℃" ? "℃" : unit ?? "";
+}
+
+function metricDisplayValue(value: WeatherValue) {
+  const number = value.value_number;
+  if (number == null) return value.value_text ?? "—";
+  if (Number.isFinite(number) && ["deg_c", "°C", "℃", "m/s"].includes(value.unit ?? "")) {
+    const compact = number.toLocaleString("ko-KR", { maximumFractionDigits: 1, useGrouping: false });
+    // 작은 비영 값을 0으로 바꾸지 않고, 강수량 등 다른 단위는 원래 정밀도를 유지한다.
+    return Number(compact) === 0 && number !== 0 ? String(number) : compact;
+  }
+  return String(number);
+}
+
 function valueFor(values: WeatherValue[], ...keys: string[]) {
   const found = values.find((value) => keys.includes(value.metric_key));
   if (!found) return "—";
-  return `${found.value_number ?? found.value_text ?? "—"}${found.unit ? ` ${found.unit}` : ""}`;
+  const unit = metricDisplayUnit(found.unit);
+  return `${metricDisplayValue(found)}${unit ? ` ${unit}` : ""}`;
 }
 
 function forecastGroups(values: WeatherValue[]) {
@@ -543,7 +559,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                   <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button>
                   <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button>
                 </div>
-                <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{value.value_number ?? value.value_text ?? "—"} <small>{value.unit ?? ""}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
+                <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{metricDisplayValue(value)} <small>{metricDisplayUnit(value.unit)}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
                 </> : null}
                 {selectedSummary?.measurement_point ? (
                   <div className="measurement-point">
@@ -564,7 +580,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                           <div className="forecast-values">
                             {items.slice(0, 4).map((value) => (
                               <span key={value.value_id}>
-                                <b>{value.metric_name ?? value.metric_key}</b> {value.value_number ?? value.value_text ?? "—"}{value.unit ? ` ${value.unit}` : ""}
+                                <b>{value.metric_name ?? value.metric_key}</b> {metricDisplayValue(value)}{metricDisplayUnit(value.unit) ? ` ${metricDisplayUnit(value.unit)}` : ""}
                               </span>
                             ))}
                           </div>
