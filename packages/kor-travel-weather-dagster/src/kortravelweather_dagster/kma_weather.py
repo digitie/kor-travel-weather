@@ -1172,16 +1172,6 @@ async def _stage_and_publish_weather(
             if remaining_values < len(group_targets):
                 raise ValueError("normalized fact 예산이 target fan-out을 수용하지 못합니다.")
             skipped: Counter[str] = Counter()
-            if export_collector is not None and len(group_targets) <= GRID_PUBLISH_LOCATIONS:
-                location = group_targets[0].location
-                prepared_exports[source_entity_id] = await asyncio.to_thread(
-                    export_collector.prepare,
-                    entity_id=source_entity_id,
-                    nx=location.nx,
-                    ny=location.ny,
-                    location_ids=[target.location.location_id for target in group_targets],
-                    dataset_key=next(iter(base_datasets)),
-                )
             responses = await stage_grid(
                 client=client,
                 target=group_targets[0],
@@ -1307,6 +1297,31 @@ async def _stage_and_publish_weather(
                         await flush_grid_batch()
             keep_alive()
 
+        if export_collector is not None:
+            # 모든 격자의 export를 HTTP·ingest 파이프라인 전에 준비한다(중기·SDK·AirKorea와
+            # 같은 방식). 준비(begin/claim/declare)는 run 행을 FOR UPDATE로 잡는다. 파이프라인
+            # 안에서 준비하면 다음 격자 준비가 앞 격자 ingest(행을 잡은 채 정규화·검증)와 늘
+            # 겹쳐 잠금 예산을 다 쓰고 격자를 거절한다(운영 2026-10-26: short 142건,
+            # ultra_short 39건 PREPARE_FAILED). 재시도 정책은 남은 경합의 안전망이다.
+            dataset_key = next(iter(base_datasets))
+            collector = export_collector
+
+            def prepare_grids() -> dict[str, Any]:
+                prepared: dict[str, Any] = {}
+                for (nx, ny), group in grid_groups.items():
+                    if len(group) > GRID_PUBLISH_LOCATIONS:
+                        continue
+                    location = group[0].location
+                    prepared[f"grid:{nx}:{ny}"] = collector.prepare(
+                        entity_id=f"grid:{nx}:{ny}",
+                        nx=location.nx,
+                        ny=location.ny,
+                        location_ids=[target.location.location_id for target in group],
+                        dataset_key=dataset_key,
+                    )
+                return prepared
+
+            prepared_exports.update(await asyncio.to_thread(prepare_grids))
         calls = []
         if include_base:
             calls.extend(

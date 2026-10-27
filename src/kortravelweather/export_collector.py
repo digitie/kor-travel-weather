@@ -119,14 +119,14 @@ class KmaNowcastExportCollector:
                     contended = True
                     waited = time.monotonic() - started
                     pause = random.uniform(*EXPORT_LOCK_PAUSE_SECONDS)
-                    if (
-                        waited + pause > EXPORT_LOCK_STEP_SECONDS
-                        or self._lock_spent + waited + pause > EXPORT_LOCK_RUN_SECONDS
-                    ):
+                    run_spent = self._lock_spent + waited
+                    over_run = run_spent + pause > EXPORT_LOCK_RUN_SECONDS
+                    if over_run or waited + pause > EXPORT_LOCK_STEP_SECONDS:
                         logger.warning(
-                            "weather_export_lock_exhausted run_id=%s retries=%d sqlstate=%s "
-                            "waited_s=%.1f",
-                            self.run_id, retries, _sqlstate(exc), waited,
+                            "weather_export_lock_exhausted run_id=%s limit=%s retries=%d "
+                            "sqlstate=%s waited_s=%.1f run_spent_s=%.1f run_budget_s=%.0f",
+                            self.run_id, "run_budget" if over_run else "step_cap", retries,
+                            _sqlstate(exc), waited, run_spent, EXPORT_LOCK_RUN_SECONDS,
                         )
                         raise
                     retries += 1

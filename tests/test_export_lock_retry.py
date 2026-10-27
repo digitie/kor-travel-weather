@@ -185,10 +185,18 @@ def test_a_contended_export_step_gives_up_within_its_own_short_bound(clocked, ca
     ]
     assert len(retries) == len(attempts) - 1
     assert all("sqlstate=55P03" in message for message in retries)
-    assert "weather_export_lock_exhausted" in caplog.text
+    assert "weather_export_lock_exhausted" in caplog.text and "limit=step_cap" in caplog.text
 
 
-def test_contended_steps_stop_retrying_once_the_run_budget_is_spent(clocked):
+def _exhausted(caplog):
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("weather_export_lock_exhausted ")
+    ]
+
+
+def test_contended_steps_stop_retrying_once_the_run_budget_is_spent(clocked, caplog):
     collector, clock, attempts, contended = clocked
     per_step = []
     for _ in range(60):
@@ -202,6 +210,12 @@ def test_contended_steps_stop_retrying_once_the_run_budget_is_spent(clocked):
     # run당 예산을 다 쓴 뒤의 경합 단계는 다시 시도하지 않고 곧바로 거절된다.
     assert per_step[0] > 1 and per_step[-1] == 1
     assert clock.now <= export_collector.EXPORT_LOCK_RUN_SECONDS + 2 * 3.0
+    # 포기 로그는 어느 한도였는지와 run이 쓴 시간을 남긴다.
+    exhausted = _exhausted(caplog)
+    assert len(exhausted) == len(per_step)
+    assert "limit=step_cap" in exhausted[0]
+    assert "limit=run_budget" in exhausted[-1] and "run_budget_s=120" in exhausted[-1]
+    assert "run_spent_s=" in exhausted[-1]
     # 예산을 다 써도 경합하지 않는 단계는 그대로 진행한다.
     assert collector._retry_lock(lambda: "sealed") == "sealed"
 
