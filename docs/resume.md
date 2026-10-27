@@ -7,9 +7,9 @@
   tomorrow_io·weatherbit·weatherstack·accuweather는 export 경로가 없어 `/current`·
   `/forecasts?style=external`·`/daily-summaries`가 설계상 503이다. env 명시와 '실제 구성된
   provider' 판정 중 소유자 결정이 필요하다(odroid 미확인).
-- 머지 순서: #174·#175 머지 뒤 main으로 rebase했다. 열린 #176(publisher 처리량, 리뷰 W08 포함)·
-  #177(ui dev.9)과는 journal·resume·tasks와 export_collector.py `refresh_publisher_daily`의 한 줄만
-  겹친다. 먼저 머지된 쪽에 맞춰 rebase한다. 배포 시 0035 데이터 보정이 포함된다(되돌리기 no-op).
+- 머지 순서: #174·#175·#176(publisher 처리량, 리뷰 W08 포함) 머지 뒤 main으로 rebase했다.
+  #176의 `refresh_publisher_daily`에서 snapshot handle 정리는 일별 정리 뒤 남은 tick 상한 안에서만
+  돈다. 열린 #177(ui dev.9)과는 journal·resume·tasks만 겹친다. 배포 시 0035 데이터 보정이 포함된다(되돌리기 no-op).
 
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 

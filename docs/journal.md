@@ -1,7 +1,7 @@
 ## 2026-10-27 — Codex PR(2026-10-17 이후 머지분) 상세 리뷰 정리 PR
 
 2026-10-17 이후 머지된 Codex PR 63개의 리뷰 결과 53건을 main `a9f54ff`(#173 포함)에서
-다시 확인하고 작업(W01~W15)을 한 PR에 묶었다. #174·#175 머지 뒤 main `1766889`로 rebase했다.
+다시 확인하고 작업(W01~W15)을 한 PR에 묶었다. #174·#175·#176 머지 뒤 main `e39362a`로 rebase했다.
 머지·배포는 소유자 승인 뒤다.
 
 - export 가용성: 미래 시각이 없는 위치는 예보·중기 페이지에서 빼고 stale(W01). W5 전체
@@ -10,7 +10,7 @@
   provider와 무관(W05, #159 회귀). 재사용 handle TTL 연장(W06), 만료 6시간 뒤 handle 정리(W07,
   ADR-103).
 - publisher: 후보 단위 오류 격리·수집 중 run의 잠금 없는 판정·tick 단위 Dagster 조회 기억(W08)은
-  작업 중 열린 #176이 같은 내용을 더 넓게 구현하므로 이 PR에서 뺐다. W4 저장 scope가 catalog와
+  작업 중 머지된 #176이 같은 내용을 더 넓게 구현해 이 PR에서 뺐다(#176 위로 rebase). W4 저장 scope가 catalog와
   맞지 않으면 유효 scope만 기록하고 pending 해제(W09).
 - API: export 응답의 검증·직렬화·gzip을 worker thread로 옮기고 503/422 원인 분류를 로그로
   남긴다(W10). `BaseHTTPMiddleware`를 순수 ASGI로 바꿔 취소된 marker 요청이 실제로 499로 끝난다(W11).

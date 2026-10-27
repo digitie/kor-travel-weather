@@ -8,17 +8,24 @@ import { forecastWindowStart, getForecast, getLatest } from "../lib/api";
 const source = readFileSync(new URL("./weather-map.tsx", import.meta.url), "utf8");
 const tree = ts.createSourceFile("weather-map.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 let callback: ts.Expression | undefined;
+// effect가 쓰는 모듈 수준 helper(현재 값 종류 판정)를 원본 그대로 함께 실행한다.
+const helpers: string[] = [];
 function visit(node: ts.Node) {
+  if ((ts.isVariableStatement(node) && node.declarationList.declarations.some(
+    (declaration) => declaration.name.getText(tree) === "CURRENT_KINDS",
+  )) || (ts.isFunctionDeclaration(node) && node.name?.getText(tree) === "includesCurrentKind")) {
+    helpers.push(node.getText(tree));
+  }
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect"
     && node.arguments[1]?.getText(tree) === "[refreshToken, selectedLocationId, providerFilter, kindFilter]") callback = node.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(tree);
-if (!callback) throw new Error("상세 effect를 찾지 못했습니다.");
+if (!callback || helpers.length !== 2) throw new Error("상세 effect를 찾지 못했습니다.");
 const setters = ["setValues", "setForecast", "setMessage", "setForecastMessage",
   "setLastRefreshedAt", "setLoading", "setForecastLoading"];
 const effect = new Function("selectedLocationId", "providerFilter", ...setters, "getLatest", "getForecast", "forecastWindowStart", "kindFilter",
-  ts.transpileModule("return (" + callback.getText(tree) + ")();", {
+  ts.transpileModule(helpers.join("\n") + "\nreturn (" + callback.getText(tree) + ")();", {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText,
 ) as (...args: unknown[]) => () => void;

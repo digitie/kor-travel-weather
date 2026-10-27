@@ -8,7 +8,7 @@
   tomorrow_io·weatherbit·weatherstack·accuweather는 export 경로가 없어 `/current`·external·W5가 설계상
   503이다. Manager env 명시 또는 W1~W5·W4에 '실제 구성된 provider' 판정 도입(설계 변경) 중 결정.
 - [ ] **W-MAP-06 / P1** — publisher 처리량·후보 단위 격리·잠금 없는 판정·tick 단위 Dagster 조회
-  기억(리뷰 W08)은 열린 PR #176이 다룬다. 머지 뒤 운영 처리량과 pending 수·oldest age·결과별 gauge를
+  기억(리뷰 W08)은 #176(머지됨)이 고쳤다. 배포 뒤 운영 처리량과 pending 수·oldest age·결과별 gauge를
   실측한다.
 - [ ] **W-MAP-07 / P1** — owner epoch fencing(F4): 봉인된 정확 성공 후보가 새 claim만으로 퇴역하는
   문제. export_heads.py(#175 수정 중)와 함께 설계한다. bind 잠금 범위(F9)·planless/unclosed 성공 run

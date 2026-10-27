@@ -108,7 +108,7 @@
 > run 행을 `FOR UPDATE`로 잠그므로 수집 중 run의 attempt는 ingest가 잡은 행에서
 > lock_timeout까지 기다리고, 한 후보의 SQL 오류(`ExportArtifactError`·`OSError` 밖)는 sweep
 > 전체와 일별 요약을 다음 tick으로 미룬다. Dagster 상태도 후보마다 다시 조회한다. 이 세 가지와
-> 일괄 퇴역·최신 우선·artifact GC는 열린 PR #176이 다룬다. **정체·age·backlog 지표는 아직
+> 일괄 퇴역·최신 우선·artifact GC는 #176(2026-10-27 머지)이 고쳤다. **정체·age·backlog 지표는 아직
 > 없다**(tasks.md W-MAP-06).
 
 ## 5. head CAS, 늦은 성공과 실패 A/성공 B

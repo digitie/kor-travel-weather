@@ -1031,15 +1031,18 @@ def test_forecast_location_with_only_past_targets_is_omitted_instead_of_503(
     assert whole.status_code == 200, whole.text
     assert {item["location_id"] for item in whole.json()["items"]} == {"a", "b"}
     assert whole.json()["meta"]["source_status"] == "stale"
-    params, seen = {"style": "ultra_short", "limit": 1}, []
+    # stale은 그 위치를 건너뛴 페이지의 표시다. 다른 페이지는 원래 상태를 유지한다.
+    params, seen, statuses = {"style": "ultra_short", "limit": 1}, [], []
     while True:
         page = client.get(url, params=params, headers=HEADERS)
-        assert page.status_code == 200 and page.json()["meta"]["source_status"] == "stale"
+        assert page.status_code == 200, page.text
+        statuses.append(page.json()["meta"]["source_status"])
         seen.extend(item["location_id"] for item in page.json()["items"])
         if not page.json()["meta"]["has_more"]:
             break
         params["cursor"] = page.json()["meta"]["next_cursor"]
     assert sorted(seen) == ["a", "b"]
+    assert "stale" in statuses
 
 
 def test_export_page_is_validated_serialized_and_compressed_off_the_event_loop(
@@ -1078,7 +1081,11 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     def fail(self, *args, **kwargs):
         raise SQLAlchemyError("postgresql://user:secret@db/weather")
 
+    from kortravelweather_api.routers import service_exports
+
     monkeypatch.setattr(FrozenCurrentExports, "page", fail)
+    # 같은 세션의 alembic fileConfig가 이미 있던 logger를 끄므로 이 시험에서만 다시 켠다.
+    monkeypatch.setattr(service_exports.logger, "disabled", False)
     logger = "kortravelweather_api.routers.service_exports"
     with caplog.at_level("WARNING", logger=logger):
         failed = _client(repository, tmp_path).get(
