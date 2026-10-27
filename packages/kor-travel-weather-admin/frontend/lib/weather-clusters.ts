@@ -1,6 +1,6 @@
 import type { Feature, FeatureCollection, Point } from "geojson";
 
-export type WeatherCondition = "sunny" | "cloudy" | "rainy" | "snowy" | "storm";
+export type WeatherCondition = "sunny" | "cloudy" | "rainy" | "snowy" | "storm" | "unknown";
 
 export type WeatherClusterMarker = {
   id: string;
@@ -61,4 +61,13 @@ export function buildWeatherClusterData(
     });
   }
   return { type: "FeatureCollection", features };
+}
+
+/** 값이 없는 지점을 실제 기상 상태로 표시하지 않는다. 두 마커 렌더 경로가 공유한다. */
+export function weatherConditionIcon(condition: WeatherCondition): string {
+  return { sunny: "☀️", cloudy: "☁️", rainy: "🌧️", snowy: "❄️", storm: "⚡", unknown: "?" }[condition];
+}
+
+export function weatherConditionLabel(condition: WeatherCondition): string {
+  return { sunny: "맑음", cloudy: "구름", rainy: "비", snowy: "눈", storm: "뇌우", unknown: "정보 없음" }[condition];
 }

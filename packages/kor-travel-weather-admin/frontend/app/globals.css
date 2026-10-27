@@ -2594,3 +2594,6 @@ tbody tr:hover {
   .weather-shell[data-layout="map"] .page-header-compact { padding: 0 var(--space-2xs); }
   .weather-shell[data-layout="map"] .weather-workbench { margin: var(--space-3xs) var(--space-2xs) max(var(--space-2xs), env(safe-area-inset-bottom)); }
 }
+
+/* 자료 부재·요청 실패는 실제 구름 상태와 구별한다. */
+.vworld-weather-marker.weather-marker-unknown { --weather-marker-color: var(--muted); }
