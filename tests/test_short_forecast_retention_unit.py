@@ -1,5 +1,6 @@
 """실DB 없이 보존 경계·정확pair SQL·유한 정리 프로토콜을 검증한다."""
 
+import itertools
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -7,13 +8,16 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import OperationalError
 
 from kortravelweather import repository as module
 from kortravelweather.models import KST, WeatherValue
 from kortravelweather.repository import WeatherRepository, _ResolvedFact
 from kortravelweather.retention import (
     SHORT_FORECAST_CANDIDATES_SQL,
+    ShortForecastKey,
     expired_short_forecast,
+    made_progress,
     run_short_forecast_retention,
     short_forecast_cutoff,
 )
@@ -80,10 +84,23 @@ def test_new_expired_and_replay_do_not_republish_and_collision_stays_strict():
         repo._insert_value_session(session, changed, existing, short_cutoff=CUTOFF)
 
 
+_TIDS = itertools.count(1)
+
+
+def row(value_id, known_at, valid_at, relation=16384):
+    """실제 후보 SQL의 열 순서: value_id, known_at, valid_at, tableoid, ctid::text."""
+    return (value_id, known_at, valid_at, relation, f"(0,{next(_TIDS)})")
+
+
 class Session:
-    def __init__(self, *, keys=None, remaining=False, lock=True, facts=1):
-        self.keys = [("id", NOW)] if keys is None else keys
-        self.remaining, self.lock, self.facts = remaining, lock, facts
+    """후보 선택·pair 포인터 삭제·ctid fact 삭제(RETURNING)를 흉내낸다."""
+
+    def __init__(self, *, keys=None, remaining=False, lock=True, facts=None, select_error=None):
+        self.keys = [row("id", NOW, CUTOFF - timedelta(hours=1))] if keys is None else keys
+        self.remaining, self.lock = remaining, lock
+        # facts: ctid 삭제가 실제로 돌려줄 최대 행 수(불일치 시험용). None이면 전부.
+        self.facts = facts
+        self.select_error = select_error
         self.statements = []
         self.committed = self.rolled_back = False
 
@@ -91,9 +108,20 @@ class Session:
         sql = str(statement.compile(dialect=postgresql.dialect()))
         self.statements.append((sql, params, statement))
         if sql.startswith("SELECT value_id"):
+            if self.select_error is not None:
+                raise self.select_error
             return SimpleNamespace(all=lambda: self.keys)
-        count = self.facts if sql.startswith("DELETE FROM weather_values ") else 1
-        return SimpleNamespace(rowcount=count)
+        if sql.startswith("DELETE FROM weather_values "):
+            tids = params["tids"].strip("{}").replace('"', "").split("),(")
+            tids = {"(" + item.strip("()") + ")" for item in tids}
+            hits = [
+                (key[0], key[1]) for key in self.keys
+                if key[3] == params["relation"] and key[4] in tids
+            ]
+            if self.facts is not None:
+                hits = hits[: self.facts]
+            return SimpleNamespace(all=lambda: hits, rowcount=len(hits))
+        return SimpleNamespace(rowcount=1)
 
     def scalar(self, statement, params=None):
         sql = str(statement)
@@ -123,23 +151,37 @@ def repo_with(monkeypatch, session):
 
 
 def test_exact_pair_deletes_pointers_before_facts_and_keeps_source(monkeypatch):
-    session = Session(keys=[("same", NOW), ("same", NOW + timedelta(seconds=1))], facts=2)
+    expired = CUTOFF - timedelta(hours=1)
+    session = Session(keys=[
+        row("same", NOW, expired), row("same", NOW + timedelta(seconds=1), expired, relation=7),
+    ])
     report = repo_with(monkeypatch, session).purge_expired_short_forecast(
         cutoff=CUTOFF, dry_run=False,
     )
+    statements = [item for item in session.statements if item[0].startswith("DELETE")]
     sql = [item[0] for item in session.statements]
-    deletes = [item for item in sql if item.startswith("DELETE")]
-    assert deletes[0].startswith("DELETE FROM weather_current_values ")
-    assert deletes[1].startswith("DELETE FROM weather_values ")
-    for statement in deletes:
-        assert "known_at = expired_short_keys.known_at" in statement
-        assert "value_id = expired_short_keys.value_id" in statement
-    assert "known_at >=" in deletes[1] and "known_at <=" in deletes[1]
+    assert statements[0][0].startswith("DELETE FROM weather_current_values ")
+    assert "known_at = expired_short_keys.known_at" in statements[0][0]
+    assert "value_id = expired_short_keys.value_id" in statements[0][0]
+    # fact는 잠근 행의 물리 위치로 partition마다 지우며, PK를 다시 찾지 않는다.
+    fact_deletes = statements[1:]
+    assert [params["relation"] for _, params, _ in fact_deletes] == [16384, 7]
+    for _, params, clause in fact_deletes:
+        statement = str(clause)
+        assert statement.startswith("DELETE FROM weather_values WHERE tableoid")
+        assert "ctid = ANY(CAST(:tids AS tid[]))" in statement
+        assert "known_at >= :low AND known_at <= :high" in statement
+        assert "RETURNING value_id, known_at" in statement
+        assert params["low"] == params["high"]
     assert all("weather_source_records" not in statement for statement in sql)
     assert "valid_at < :cutoff" in SHORT_FORECAST_CANDIDATES_SQL
     assert "known_at < :cutoff" not in SHORT_FORECAST_CANDIDATES_SQL
-    assert "FOR UPDATE SKIP LOCKED" in sql[3]
+    # 잠긴 행을 건너뛰지 않고 lock_timeout 안에서 기다린다(위치 뒤에 건너뛴 행이 남지 않음).
+    assert sql[3].endswith("FOR UPDATE") and "SKIP LOCKED" not in sql[3]
     assert report["facts_deleted"] == 2 and report["remaining"] is False
+    # 덜 찬 batch는 남은행 확인 문장을 따로 실행하지 않는다.
+    assert not any(statement.startswith("SELECT EXISTS") for statement in sql)
+    assert report["last_key"] == ShortForecastKey(expired, NOW + timedelta(seconds=1), "same")
     assert session.committed
 
 
@@ -162,12 +204,78 @@ def test_selected_count_mismatch_rolls_back_pointer_deletion(monkeypatch):
     assert session.rolled_back and not session.committed
 
 
-def test_locked_candidate_is_not_false_complete(monkeypatch):
-    session = Session(keys=[], remaining=True)
+def _sql_error(sqlstate):
+    """psycopg 예외처럼 ``sqlstate``를 가진 원인으로 SQLAlchemy OperationalError를 만든다."""
+    name = {"57014": "QueryCanceled", "55P03": "LockNotAvailable"}.get(sqlstate, "UndefinedTable")
+    cause = type(name, (Exception,), {"sqlstate": sqlstate})("fixture")
+    return OperationalError("SELECT value_id ...", {}, cause)
+
+
+@pytest.mark.parametrize(("sqlstate", "error_class"), [
+    ("55P03", "LockNotAvailable"), ("57014", "QueryCanceled"),
+])
+def test_locked_or_slow_selection_defers_batch_not_false_complete(
+    monkeypatch, sqlstate, error_class,
+):
+    session = Session(select_error=_sql_error(sqlstate), remaining=False)
     report = repo_with(monkeypatch, session).purge_expired_short_forecast(
         cutoff=CUTOFF, dry_run=False,
     )
-    assert report["remaining"] is True and report["facts_deleted"] == 0
+    assert session.rolled_back and not session.committed
+    assert report["deferred"] is True and report["remaining"] is None
+    assert report["facts_deleted"] == report["matched_in_batch"] == 0
+    assert report["last_key"] is None and report["error_class"] == error_class
+
+
+def test_other_sql_errors_still_fail_the_batch(monkeypatch):
+    session = Session(select_error=_sql_error("42P01"))
+    with pytest.raises(OperationalError):
+        repo_with(monkeypatch, session).purge_expired_short_forecast(
+            cutoff=CUTOFF, dry_run=False,
+        )
+    assert session.rolled_back
+
+
+def test_full_batch_checks_only_after_its_last_key(monkeypatch):
+    expired = CUTOFF - timedelta(hours=2)
+    keys = [row(f"id-{n}", NOW, expired) for n in range(3)]
+    session = Session(keys=keys, remaining=True)
+    after = ShortForecastKey(expired - timedelta(hours=1), NOW, "earlier")
+    report = repo_with(monkeypatch, session).purge_expired_short_forecast(
+        cutoff=CUTOFF, batch_size=3, dry_run=False, after=after,
+    )
+    _, select_params, select_clause = session.statements[3]
+    assert "(valid_at, known_at, value_id) > (:after_valid_at" in str(select_clause)
+    assert select_params["after_value_id"] == "earlier"
+    exists_sql, exists_params, _ = session.statements[-1]
+    assert exists_sql.startswith("SELECT EXISTS")
+    assert "(valid_at, known_at, value_id) >" in exists_sql
+    assert exists_params["after_value_id"] == "id-2" and exists_params["cutoff"] == CUTOFF
+    assert report["remaining"] is True
+    assert report["last_key"] == ShortForecastKey(expired, NOW, "id-2")
+
+
+def test_head_selection_gets_its_own_budget_then_normal_statements(monkeypatch):
+    session = Session(facts=1)
+    repo_with(monkeypatch, session).purge_expired_short_forecast(
+        cutoff=CUTOFF, dry_run=False, statement_timeout_ms=45000,
+    )
+    sql = [item[0] for item in session.statements]
+    assert sql[0] == "SET LOCAL statement_timeout = '45000ms'"
+    assert sql[3].startswith("SELECT value_id")
+    # 머리 탐색 상한은 후보 선택에만 쓰고, 삭제 전에 정상 문장 예산으로 되돌린다.
+    assert sql[4] == "SET LOCAL statement_timeout = '5000ms'"
+    assert sql[5].startswith("DELETE FROM weather_current_values ")
+
+
+@pytest.mark.parametrize("timeout", [4999, 60001, True, "5000"])
+def test_statement_budget_refused_before_connection(monkeypatch, timeout):
+    session = Session()
+    with pytest.raises(ValueError):
+        repo_with(monkeypatch, session).purge_expired_short_forecast(
+            cutoff=CUTOFF, statement_timeout_ms=timeout,
+        )
+    assert session.statements == []
 
 
 def test_busy_purge_is_deferred_without_delete(monkeypatch):
@@ -245,7 +353,11 @@ def test_cli_defaults_dryrun_and_has_safe_progress(monkeypatch, capsys):
     monkeypatch.setattr(cli, "get_settings", lambda: object())
     monkeypatch.setattr(cli, "repository_from_settings", lambda _: repository)
     assert cli.main(["purge-short-forecast"]) == 0
-    assert calls == [{"cutoff": CUTOFF, "batch_size": 1000, "dry_run": True}]
+    # 위치가 없으므로 첫(유일한) 선택은 머리 탐색 상한을 받는다.
+    assert calls == [{
+        "cutoff": CUTOFF, "batch_size": 1000, "dry_run": True,
+        "after": None, "statement_timeout_ms": 45000,
+    }]
     assert disposed == [True]
     output = capsys.readouterr().out
     assert "BATCH_INTENT" in output and "dry_run" in output
@@ -436,6 +548,102 @@ def test_partition_lookup_caps_then_restores_exact_previous_budget(previous, mil
                for sql, _, _ in connection.statements)
     sql, params, _ = connection.statements[-1]
     assert "set_config" in sql and params == {"previous": previous}
+
+
+def _batch(last_key, *, remaining=True, matched=1000, deferred=False, error_class=None):
+    return dict(
+        matched_in_batch=matched, pointers_deleted=matched, facts_deleted=matched,
+        remaining=remaining, deferred=deferred, last_key=last_key, error_class=error_class,
+        elapsed_seconds=0.1,
+    )
+
+
+def test_runner_continues_each_batch_after_the_previous_last_key():
+    first = ShortForecastKey(CUTOFF - timedelta(days=2), NOW - timedelta(days=3), "a")
+    second = ShortForecastKey(CUTOFF - timedelta(days=1), NOW - timedelta(days=2), "b")
+    reports = [_batch(first), _batch(second, remaining=False, matched=10)]
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return reports.pop(0)
+
+    result = run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=purge), cutoff=CUTOFF, dry_run=False,
+    )
+    # 첫 선택만 머리 탐색 상한, 이후는 앞 batch의 마지막 키 뒤에서 정상 예산으로 고른다.
+    assert [call["after"] for call in calls] == [None, first]
+    assert [call["statement_timeout_ms"] for call in calls] == [45000, 5000]
+    assert result["status"] == "complete_snapshot" and result["facts_deleted"] == 1010
+    assert result["resumed"] is False and result["backlog_lag_seconds"] == 0.0
+    assert ShortForecastKey.from_metadata(result) == second
+
+
+def test_runner_resumes_from_a_prior_run_without_head_scan():
+    prior = ShortForecastKey(CUTOFF - timedelta(days=3), NOW - timedelta(days=4), "prior")
+    last = ShortForecastKey(CUTOFF - timedelta(hours=30), NOW - timedelta(days=2), "z")
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return _batch(last)
+
+    result = run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=purge), cutoff=CUTOFF, dry_run=False,
+        max_batches=2, after=prior,
+    )
+    assert calls[0]["after"] == prior and calls[0]["statement_timeout_ms"] == 5000
+    assert calls[1]["after"] == last
+    # 예산 소진이어도 지운 행이 있으면 진척이다. 지연은 위치의 대상시각 기준 하한이다.
+    assert result["status"] == "budget_exhausted" and result["remaining"] is True
+    assert result["resumed"] is True and made_progress(result)
+    assert result["backlog_lag_seconds"] == timedelta(hours=30).total_seconds()
+    assert result["resume_value_id"] == "z"
+
+
+def test_runner_deferral_after_progress_keeps_remaining_and_position():
+    first = ShortForecastKey(CUTOFF - timedelta(days=2), NOW - timedelta(days=3), "a")
+    reports = [
+        _batch(first),
+        _batch(None, remaining=None, matched=0, deferred=True, error_class="QueryCanceled"),
+    ]
+    result = run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=lambda **_: reports.pop(0)),
+        cutoff=CUTOFF, dry_run=False,
+    )
+    assert result["status"] == "deferred" and result["error_class"] == "QueryCanceled"
+    assert result["remaining"] is True and result["facts_deleted"] == 1000
+    assert ShortForecastKey.from_metadata(result) == first and made_progress(result)
+
+
+def test_dry_run_never_moves_the_resume_position():
+    seen = ShortForecastKey(CUTOFF - timedelta(days=2), NOW - timedelta(days=3), "a")
+    # dry-run은 고르기만 하고 지우지 않는다.
+    report = dict(_batch(seen), pointers_deleted=0, facts_deleted=0)
+    result = run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=lambda **_: report),
+        cutoff=CUTOFF, dry_run=True,
+    )
+    assert result["status"] == "dry_run"
+    assert ShortForecastKey.from_metadata(result) is None and not made_progress(result)
+
+
+@pytest.mark.parametrize("values", [
+    {}, {"resume_valid_at": "x", "resume_known_at": "y", "resume_value_id": "z"},
+    {"resume_valid_at": "2026-10-16T00:00:00", "resume_known_at": "2026-10-16T00:00:00+00:00",
+     "resume_value_id": "naive"},
+    {"resume_valid_at": None, "resume_known_at": None, "resume_value_id": None},
+    {"resume_valid_at": "2026-10-16T00:00:00+00:00",
+     "resume_known_at": "2026-10-16T00:00:00+00:00", "resume_value_id": "v" * 65},
+])
+def test_malformed_resume_metadata_restarts_from_head(values):
+    assert ShortForecastKey.from_metadata(values) is None
+
+
+def test_resume_metadata_round_trips_in_utc():
+    key = ShortForecastKey(NOW.astimezone(KST), (NOW - timedelta(days=1)).astimezone(KST), "id")
+    restored = ShortForecastKey.from_metadata(key.as_metadata())
+    assert restored == key and restored.valid_at.tzinfo == UTC
 
 
 @pytest.mark.parametrize(("remaining", "dry_run", "expected"), [

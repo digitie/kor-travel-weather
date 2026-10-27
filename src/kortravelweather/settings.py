@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any
@@ -45,6 +47,11 @@ PROVIDER_KEY_ALIASES = {
 
 ADMIN_TOKEN_MIN_LENGTH = 16
 METRICS_TOKEN_MIN_LENGTH = 16
+#: 단기예보 정리 job의 실행당 예산 기본값과 상한(초).
+#: 상한은 ``retention.MAX_BUDGET_SECONDS``와 같다.
+SHORT_FORECAST_RETENTION_BUDGET_DEFAULT = 150.0
+SHORT_FORECAST_RETENTION_BUDGET_MAX = 180.0
+_logger = logging.getLogger(__name__)
 _WEAK_ADMIN_TOKENS = {
     "admin",
     "change-me",
@@ -360,6 +367,37 @@ class WeatherSettings(BaseSettings):
         gt=0,
         le=365,
     )
+    #: 10분마다 도는 단기예보 정리 job의 실행당 협력적 작업 예산(초). 60초는 유입(10분당
+    #: 약1.7~2만 행)과 비슷한 처리량이라 backlog가 줄지 않았다. 150초는 그 약2.5배다.
+    #: 문장당5초·lock1초는 그대로이고, 마지막 batch와 run 기동을 더해도 job의
+    #: ``dagster/max_runtime``(300초) 안에 끝나도록 상한을180초로 둔다. 부하에 따라 조정한다.
+    #: 모든 weather asset이 이 설정 객체를 만들므로 잘못된 값은 거절하지 않고 경고와 함께
+    #: 보정한다(180초 초과는180, 0 이하·숫자 아님은 기본150).
+    short_forecast_retention_budget_seconds: float = Field(
+        default=SHORT_FORECAST_RETENTION_BUDGET_DEFAULT,
+        validation_alias="KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS",
+    )
+
+    @field_validator("short_forecast_retention_budget_seconds", mode="before")
+    @classmethod
+    def _bounded_short_forecast_retention_budget(cls, value: object) -> float:
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            number = math.nan
+        if math.isnan(number) or number <= 0:
+            _logger.warning(
+                "KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS가 유효하지 않아 "
+                "기본 %s초를 씁니다.", SHORT_FORECAST_RETENTION_BUDGET_DEFAULT,
+            )
+            return SHORT_FORECAST_RETENTION_BUDGET_DEFAULT
+        if number > SHORT_FORECAST_RETENTION_BUDGET_MAX:
+            _logger.warning(
+                "KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS가 상한을 넘어 "
+                "%s초로 고정합니다.", SHORT_FORECAST_RETENTION_BUDGET_MAX,
+            )
+            return SHORT_FORECAST_RETENTION_BUDGET_MAX
+        return number
     metrics_port: int | None = Field(
         default=None,
         validation_alias="KOR_TRAVEL_WEATHER_METRICS_PORT",

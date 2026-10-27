@@ -1,6 +1,6 @@
 """DB 없이 실제 asset과 Failure의 정리 진행 metadata를 검증한다."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +14,7 @@ NOW = datetime(2026, 10, 17, 12, tzinfo=UTC)
 
 
 def _context(purge):
-    logs, outputs, disposed, observations = [], [], [], []
+    logs, outputs, disposed, observations, warnings = [], [], [], [], []
     repo = SimpleNamespace(
         purge_expired_short_forecast=purge,
         engine=SimpleNamespace(dispose=lambda: disposed.append(True)),
@@ -26,8 +26,12 @@ def _context(purge):
         asset_key=AssetKey("weather_short_forecast_retention"),
         log_event=observations.append,
         observations=observations,
+        warnings=warnings,
         add_output_metadata=outputs.append,
-        log=SimpleNamespace(info=lambda message, *args: logs.append(message % args)),
+        log=SimpleNamespace(
+            info=lambda message, *args: logs.append(message % args),
+            warning=lambda message, *args: warnings.append(message % args),
+        ),
     )
     return context, logs, outputs, disposed
 
@@ -44,23 +48,41 @@ def _execute(context):
     return definitions.weather_short_forecast_retention.op.compute_fn.decorated_fn(context)
 
 
-@pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
-def test_incomplete_failure_itself_carries_result_metadata(monkeypatch, status):
-    result = dict(
+def _result(status, facts_deleted):
+    return dict(
         operation_id="fixture-operation", cutoff=NOW.isoformat(), dry_run=False,
-        batches=1, matched_in_batches=1, pointers_deleted=1, facts_deleted=1,
-        remaining=True, status=status, elapsed_seconds=1.0,
+        batches=1, matched_in_batches=facts_deleted, pointers_deleted=facts_deleted,
+        facts_deleted=facts_deleted, remaining=True, status=status, elapsed_seconds=1.0,
         last_batch_elapsed_seconds=0.1, remaining_budget_seconds=59.0,
+        error_class=None, backlog_lag_seconds=3600.0,
     )
+
+
+@pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
+def test_zero_progress_failure_itself_carries_result_metadata(monkeypatch, status):
+    result = _result(status, 0)
     monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
     context, _, outputs, disposed = _context(lambda **_: None)
     with pytest.raises(Failure) as failure:
         _execute(context)
+    assert "진척 없이" in failure.value.description
     assert failure.value.metadata["status"].value == status
-    assert failure.value.metadata["facts_deleted"].value == 1
+    assert failure.value.metadata["facts_deleted"].value == 0
     assert failure.value.metadata["remaining"].value is True
     assert failure.value.metadata["operation_id"].value == "fixture-operation"
     assert outputs == [result] and disposed == [True]
+
+
+@pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
+def test_partial_progress_with_backlog_is_success_not_failure(monkeypatch, status):
+    """운영 2026-10-20~26: 매 실행 약1만 행을 지우고도 Failure였다. 진척은 성공이다."""
+    result = _result(status, 10000)
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    context, _, outputs, disposed = _context(lambda **_: None)
+    assert _execute(context) is result
+    assert outputs == [result] and disposed == [True]
+    assert len(context.warnings) == 1 and "backlog" in context.warnings[0]
+    assert "facts_deleted=10000" in context.warnings[0]
 
 
 def test_sql_exception_keeps_prior_committed_progress_without_success(monkeypatch):
@@ -211,6 +233,359 @@ def test_committed_observation_survives_sql_failure_and_instance_reopen(
         assert failure.event_specific_data.user_failure_data is None
         assert failure.event_specific_data.error.cause.cls_name == "OperationalError"
         assert not any(event.event_type_value == "STEP_OUTPUT" for event in events)
+
+
+def _key(valid_at, letter):
+    return retention.ShortForecastKey(valid_at, valid_at - timedelta(days=2), letter * 64)
+
+
+def _sdk_job(purge, job_name):
+    repo = SimpleNamespace(
+        purge_expired_short_forecast=purge,
+        engine=SimpleNamespace(dispose=lambda: None, url=SimpleNamespace(database="weather_test")),
+    )
+    selected = Definitions(
+        assets=[definitions.weather_short_forecast_retention],
+        jobs=[define_asset_job(job_name)],
+        resources={"weather_repository": SimpleNamespace(create_repository=lambda: repo)},
+    )
+    return selected.resolve_job_def(job_name)
+
+
+def _latest_metadata(instance):
+    event = instance.get_latest_materialization_event(AssetKey("weather_short_forecast_retention"))
+    return {key: value.value for key, value in event.asset_materialization.metadata.items()}
+
+
+def test_next_run_resumes_after_the_previous_runs_last_deleted_key(monkeypatch, tmp_path):
+    """실제 SDK 저장소: 부분 진척 run은 SUCCESS이고, 다음 run은 그 위치에서 이어 고른다."""
+    cutoff = NOW - timedelta(hours=6)
+    first, second = _key(cutoff - timedelta(hours=4), "a"), _key(cutoff - timedelta(hours=3), "b")
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return dict(_report(remaining=True, matched=1000), last_key=first)
+        if len(calls) == 2:
+            # 같은 run의 다음 batch가 잠금 timeout으로 연기됐다. 앞 commit은 진척이다.
+            return dict(_report(remaining=None, matched=0, deferred=True),
+                        last_key=None, error_class="LockNotAvailable")
+        return dict(_report(remaining=False, matched=5), last_key=second)
+
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    job = _sdk_job(purge, "short_retention_resume_test")
+    with DagsterInstance.local_temp(
+        str(tmp_path), overrides={"telemetry": {"enabled": False}},
+    ) as instance:
+        first_run = job.execute_in_process(instance=instance, raise_on_error=False)
+        assert first_run.success
+        assert [call["after"] for call in calls] == [None, first]
+        assert calls[0]["statement_timeout_ms"] == retention.HEAD_STATEMENT_TIMEOUT_MS
+        recorded = _latest_metadata(instance)
+        assert recorded["resume_policy"] == retention.RETENTION_POLICY
+        assert recorded["resume_database"] == "weather_test"
+        assert recorded["head_scan_at"] == NOW.isoformat()
+        second_run = job.execute_in_process(instance=instance, raise_on_error=False)
+        assert second_run.success
+        # 두 번째 run의 첫 선택은 머리가 아니라 앞 run이 지운 마지막 키 뒤에서 시작한다.
+        assert calls[2]["after"] == first
+        assert calls[2]["statement_timeout_ms"] == retention.STATEMENT_TIMEOUT_MS
+        metadata = _latest_metadata(instance)
+        assert metadata["status"] == "complete_snapshot" and metadata["resumed"] is True
+        # 이어 읽은 run은 마지막 머리 훑기 시각을 그대로 승계한다.
+        assert metadata["head_scan_at"] == NOW.isoformat()
+        assert retention.ShortForecastKey.from_metadata(metadata) == second
+
+
+def test_behind_backlog_fails_only_after_seven_runs_without_draining(monkeypatch, tmp_path):
+    """뒤처진 채 줄지 않는 run은 7회 연속부터 실패하고, 다시 줄면 횟수가 0으로 돌아간다."""
+    cutoff = NOW - timedelta(hours=6)
+    behind = cutoff - timedelta(hours=30)
+    stall = retention.LAG_STALL_RUNS
+
+    def same_lag(index):
+        # 대상시각이 같으면 지연 상한도 같다(위치는 같은 정시 안에서 known_at 쪽으로만 나아감).
+        return retention.ShortForecastKey(
+            behind, behind - timedelta(hours=48 - index), chr(ord("a") + index) * 64,
+        )
+
+    keys = [
+        *(same_lag(index) for index in range(stall + 1)), _key(behind + timedelta(hours=2), "z"),
+    ]
+    script, calls = [], []
+    for key in keys:
+        script.append(dict(_report(remaining=True, matched=1000), last_key=key))
+        # 같은 run의 다음 batch는 잠금 timeout으로 연기돼 run이 끝난다.
+        script.append(dict(_report(remaining=None, matched=0, deferred=True),
+                           last_key=None, error_class="LockNotAvailable"))
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return script.pop(0)
+
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    job = _sdk_job(purge, "short_retention_stall_test")
+    outcomes, stalls = [], []
+    with DagsterInstance.local_temp(
+        str(tmp_path), overrides={"telemetry": {"enabled": False}},
+    ) as instance:
+        for _ in keys:
+            run = job.execute_in_process(instance=instance, raise_on_error=False)
+            outcomes.append(run.success)
+            recorded = _latest_metadata(instance)
+            stalls.append(recorded["lag_stall_runs"])
+            if not run.success:
+                failure = next(
+                    event for event in run.all_events
+                    if event.event_type_value == "STEP_FAILURE"
+                )
+                description = failure.event_specific_data.user_failure_data.description
+                assert "연속 줄지 않았습니다" in description
+                # 실패 run도 진척·위치·횟수를 materialization으로 남긴다.
+                assert recorded["facts_deleted"] == 1000
+    assert outcomes == [True] * (stall - 1) + [False, False, True]
+    assert stalls == [*range(1, stall + 2), 0]
+    # 실패한 run의 위치를 다음 run이 이어받는다.
+    assert [call["after"] for call in calls[::2]] == [None, *keys[:-1]]
+
+
+@pytest.mark.parametrize(("previous", "lag_hours", "remaining", "expected"), [
+    ({}, 30, True, 1),
+    ({"backlog_lag_seconds": 31 * 3600.0, "lag_stall_runs": 2}, 30, True, 0),
+    ({"backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": 2}, 30, True, 3),
+    ({"backlog_lag_seconds": 29 * 3600.0, "lag_stall_runs": 5}, 30, True, 6),
+    ({"backlog_lag_seconds": 40 * 3600.0, "lag_stall_runs": 9}, 23, True, 0),
+    ({"backlog_lag_seconds": 40 * 3600.0, "lag_stall_runs": 9}, 0, False, 0),
+    ({"backlog_lag_seconds": "x", "lag_stall_runs": True}, 30, True, 1),
+])
+def test_lag_stall_counter(previous, lag_hours, remaining, expected):
+    result = {"remaining": remaining, "backlog_lag_seconds": lag_hours * 3600.0}
+    assert retention.lag_stall_runs(previous, result) == expected
+    assert retention.backlog_stalled({"lag_stall_runs": expected}) is (
+        expected >= retention.LAG_STALL_RUNS
+    )
+
+
+def test_hourly_lag_steps_while_draining_never_reach_the_stall_threshold():
+    """정시 단위 지연 상한은 같은 정시 안에서 600초씩 오르지만, 유입 이상 처리하면
+    1시간 안에 다음 정시로 넘어가 줄어들므로 연속 횟수가 문턱에 닿지 않는다."""
+    previous: dict[str, object] = {}
+    cutoff = NOW - timedelta(hours=6)
+    position = cutoff - timedelta(hours=30)
+    worst = 0
+    for run in range(48):
+        cutoff += timedelta(minutes=10)
+        if run % 6 == 5:  # 처리량 = 유입: 6실행(1시간)마다 정시 하나를 넘는다.
+            position += timedelta(hours=1)
+        result = {"remaining": True, "backlog_lag_seconds": (cutoff - position).total_seconds()}
+        result["lag_stall_runs"] = retention.lag_stall_runs(previous, result)
+        worst = max(worst, result["lag_stall_runs"])
+        assert not retention.backlog_stalled(result)
+        previous = result
+    assert worst == retention.LAG_STALL_RUNS - 2
+
+
+def test_behind_but_draining_run_succeeds_with_warning(monkeypatch):
+    result = dict(_result("budget_exhausted", 50000), backlog_lag_seconds=30 * 3600.0)
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    monkeypatch.setattr(
+        definitions, "_short_retention_previous_metadata",
+        lambda _: {"backlog_lag_seconds": 31 * 3600.0, "lag_stall_runs": 2},
+    )
+    context, _, outputs, disposed = _context(lambda **_: None)
+    assert _execute(context) is result
+    assert result["lag_stall_runs"] == 0 and outputs == [result] and disposed == [True]
+    assert len(context.warnings) == 1 and "lag_stall_runs=0" in context.warnings[0]
+    assert context.observations == []
+
+
+@pytest.mark.parametrize(("env", "expected"), [(None, 150.0), ("120", 120.0), ("180", 180.0)])
+def test_retention_budget_setting_reaches_the_runner(monkeypatch, env, expected):
+    name = "KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS"
+    if env is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, env)
+    seen = {}
+
+    def run(*args, **kwargs):
+        seen.update(kwargs)
+        return _result("complete_snapshot", 0)
+
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", run)
+    context, _, _, _ = _context(lambda **_: None)
+    _execute(context)
+    assert seen["budget_seconds"] == expected
+
+
+@pytest.mark.parametrize(("value", "expected", "warned"), [
+    ("90", 90.0, False), ("180", 180.0, False), ("181", 180.0, True), ("1e9", 180.0, True),
+    ("0", 150.0, True), ("-1", 150.0, True), ("abc", 150.0, True), ("nan", 150.0, True),
+])
+def test_retention_budget_setting_is_clamped_not_rejected(monkeypatch, caplog, value, expected,
+                                                          warned):
+    """잘못된 값 하나가 모든 weather asset의 설정 생성(=수집 전체)을 깨지 않는다."""
+    from kortravelweather.settings import WeatherSettings
+
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS", value)
+    with caplog.at_level("WARNING", logger="kortravelweather.settings"):
+        settings = WeatherSettings()
+    assert settings.short_forecast_retention_budget_seconds == expected
+    assert any("BUDGET_SECONDS" in record.getMessage() for record in caplog.records) is warned
+
+
+def test_runner_budget_cap_follows_the_job_runtime_bound():
+    def purge(**_):
+        return dict(_report(remaining=False, matched=1), last_key=None)
+
+    repository = SimpleNamespace(purge_expired_short_forecast=purge)
+    cutoff = NOW - timedelta(hours=6)
+    result = retention.run_short_forecast_retention(
+        repository, cutoff=cutoff, dry_run=False, budget_seconds=180,
+    )
+    assert result["budget_seconds"] == 180 and result["status"] == "complete_snapshot"
+    with pytest.raises(ValueError):
+        retention.run_short_forecast_retention(
+            repository, cutoff=cutoff, dry_run=False, budget_seconds=181,
+        )
+
+
+def test_head_sweep_timeout_continues_from_the_stored_position():
+    """주기 머리 훑기가 문장 예산을 넘어도 같은 run이 저장 위치에서 이어 정리한다."""
+    cutoff = NOW - timedelta(hours=6)
+    stored, later = _key(cutoff - timedelta(hours=3), "g"), _key(cutoff - timedelta(hours=2), "h")
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return dict(_report(remaining=None, matched=0, deferred=True),
+                        last_key=None, error_class="QueryCanceled")
+        return dict(_report(remaining=False, matched=5), last_key=later)
+
+    result = retention.run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=purge), cutoff=cutoff, dry_run=False,
+        fallback=stored, now=NOW,
+    )
+    assert calls[0]["after"] is None
+    assert calls[0]["statement_timeout_ms"] == retention.HEAD_STATEMENT_TIMEOUT_MS
+    assert calls[1]["after"] == stored
+    assert calls[1]["statement_timeout_ms"] == retention.STATEMENT_TIMEOUT_MS
+    assert result["head_sweep_timed_out"] is True and result["resumed"] is True
+    assert result["status"] == "complete_snapshot" and retention.made_progress(result)
+    # 훑기 시도 시각을 남겨 다음 시도는 다음 주기에 한다.
+    assert result["head_scan_at"] == NOW.isoformat()
+    assert retention.ShortForecastKey.from_metadata(result) == later
+
+
+def test_head_sweep_does_not_fall_back_on_purge_lock_contention():
+    cutoff = NOW - timedelta(hours=6)
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return dict(_report(remaining=None, matched=0, deferred=True), last_key=None)
+
+    result = retention.run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=purge), cutoff=cutoff, dry_run=False,
+        fallback=_key(cutoff - timedelta(hours=3), "i"), now=NOW,
+    )
+    assert len(calls) == 1 and result["status"] == "deferred"
+    assert result["head_sweep_timed_out"] is False and not retention.made_progress(result)
+
+
+@pytest.mark.parametrize(("changes", "reason", "fallback"), [
+    ({"resume_policy": "5h:other"}, "policy_changed", False),
+    ({"resume_database": "restored_copy"}, "database_changed", False),
+    ({"head_scan_at": (NOW - timedelta(hours=24)).isoformat()}, "periodic_head_sweep", True),
+    ({"head_scan_at": None}, "periodic_head_sweep", True),
+])
+def test_untrusted_previous_position_restarts_from_the_head(changes, reason, fallback):
+    cutoff = NOW - timedelta(hours=6)
+    key = _key(cutoff - timedelta(hours=1), "e")
+    previous = {
+        **key.as_metadata(), "resume_policy": retention.RETENTION_POLICY,
+        "resume_database": "weather_test", "head_scan_at": (NOW - timedelta(hours=1)).isoformat(),
+    }
+    trusted = retention.resume_position(previous, cutoff=cutoff, database="weather_test", now=NOW)
+    assert trusted == retention.ResumeDecision(key, NOW - timedelta(hours=1), None)
+    # 주기 훑기만 해당하면 위치는 믿을 만하므로 머리 탐색 실패 때의 fallback으로 남긴다.
+    assert retention.resume_position(
+        {**previous, **changes}, cutoff=cutoff, database="weather_test", now=NOW,
+    ) == retention.ResumeDecision(None, None, reason, key if fallback else None)
+
+
+def test_position_ahead_of_the_cutoff_is_discarded():
+    """시계 역행 등으로 경계보다 앞선 위치는 버리고 머리부터 시작한다(그 앞 행을 놓치지 않음)."""
+    cutoff = NOW - timedelta(hours=6)
+    ahead = _key(cutoff + timedelta(minutes=1), "f")
+    previous = {
+        **ahead.as_metadata(), "resume_policy": retention.RETENTION_POLICY,
+        "resume_database": "weather_test", "head_scan_at": NOW.isoformat(),
+    }
+    assert retention.resume_position(
+        previous, cutoff=cutoff, database="weather_test", now=NOW,
+    ) == retention.ResumeDecision(None, None, "ahead_of_cutoff")
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return dict(_report(remaining=False, matched=1), last_key=None)
+
+    result = retention.run_short_forecast_retention(
+        SimpleNamespace(purge_expired_short_forecast=purge), cutoff=cutoff, dry_run=False,
+        after=ahead, now=NOW,
+    )
+    assert calls[0]["after"] is None and calls[0]["statement_timeout_ms"] == 45000
+    assert result["resume_discarded"] == "ahead_of_cutoff" and result["resumed"] is False
+    assert result["head_scan_at"] == NOW.isoformat()
+
+
+def test_behind_and_flat_seventh_run_fails_and_records_materialization(monkeypatch):
+    stall = retention.LAG_STALL_RUNS
+    result = dict(_result("budget_exhausted", 10000), backlog_lag_seconds=30 * 3600.0)
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    monkeypatch.setattr(
+        definitions, "_short_retention_previous_metadata",
+        lambda _: {"backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": stall - 1},
+    )
+    context, _, outputs, disposed = _context(lambda **_: None)
+    with pytest.raises(Failure) as failure:
+        _execute(context)
+    assert f"{stall}회 연속" in failure.value.description
+    assert failure.value.metadata["facts_deleted"].value == 10000
+    assert failure.value.metadata["lag_stall_runs"].value == stall
+    # 실패 전에 위치와 횟수를 materialization으로 남긴다.
+    assert [type(event).__name__ for event in context.observations] == ["AssetMaterialization"]
+    assert outputs == [result] and disposed == [True]
+
+
+@pytest.mark.parametrize("changes", [
+    {"resume_policy": "5h:other"},
+    {"resume_database": "restored_copy"},
+])
+def test_discarded_history_resets_the_stall_counter(monkeypatch, changes):
+    """정책·DB가 달라 위치를 버리면 앞 지연·연속 횟수도 기준이 아니므로 새로 센다."""
+    stall = retention.LAG_STALL_RUNS
+    cutoff = NOW - timedelta(hours=6)
+    key = _key(cutoff - timedelta(hours=30), "q")
+    previous = {
+        **key.as_metadata(), "resume_policy": retention.RETENTION_POLICY,
+        "resume_database": "weather_test", "head_scan_at": NOW.isoformat(),
+        "backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": stall - 1, **changes,
+    }
+    result = dict(_result("budget_exhausted", 10000), backlog_lag_seconds=30 * 3600.0)
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    monkeypatch.setattr(definitions, "_short_retention_previous_metadata", lambda _: previous)
+    context, _, _, _ = _context(lambda **_: None)
+    context.resources.weather_repository.create_repository().engine.url = SimpleNamespace(
+        database="weather_test",
+    )
+    assert _execute(context) is result
+    assert result["resume_discarded"] in {"policy_changed", "database_changed"}
+    assert result["lag_stall_runs"] == 1
 
 
 def test_only_committed_whitelisted_progress_becomes_an_observation(monkeypatch):
