@@ -4,7 +4,7 @@
 - API/CS CommonAA19 source와Weather핵심6hash, actualschema0034/정본API12201 health/version200, 자연schedule retention SUCCESS156.153초를 새 RO로 확인했다. 7runtime·daemon·NVMe 원상태를 보존했으며 CPU/RSS 효과는 미측정이다.
 - 사용자 취소에 따라 `weather_export_publisher` sensor1만 STOPPED로 변경·readback했다. 이미 시작된tick111545는 자연SKIPPED로 끝났다. 다른47-native 집합의 나머지 상태/flags/API/data는 변경0이다. 앞으로 이 sensor는 original-RUNNING 복원 예외인 **desired STOPPED**다.
 - 현재source 공개UI21은 두 source 리뷰·단독browser슬롯 뒤21/21 PASS18.705초로 수용했다(목록1450/tile20/API2005, 로그아웃·쿠키삭제·로그인복귀/C7없음·7runtime불변). ERR_ABORTED11은 별도다.
-- 다음 자연retention도SUCCESS154.611초·resumed true/facts41000을 확인했지만, 뒤 materialization의 backlog lag는약4.65일/stall1이다. **정리진척과 lag감소·과거6h보존완료는 다르며 후자는 미수용**이다. [현재 source·취소·UI와 한계](reports/2026-10-27-current-dagster-and-export-cancellation.md). 아래는 각 작성 시점의 이력이며 예전 미배포/새publisher재개 표현을 현재desired state로 읽지 않는다.
+- 다음 자연retention도SUCCESS154.611초·resumed true/facts41000을 확인했다. 뒤 materialization의 약4.65일/stall1은 **삭제 위치 기반 lag 상한 지표이며 실제 oldest age가 아니다**. 정시 valid_at bucket 안에서는 진척 중에도 상한이 오를 수 있어 두 표본으로 정체를 확정하지 않는다. 남은행이 있어 과거6h 물리 정리 완료는 미수용이다. [현재 source·취소·UI와 한계](reports/2026-10-27-current-dagster-and-export-cancellation.md). 아래는 각 작성 시점의 이력이며 예전 미배포/새publisher재개 표현을 현재desired state로 읽지 않는다.
 
 ## 2026-10-27 — 소유자 결정 세 건 기록과 odroid release 표지 제안
 
