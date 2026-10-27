@@ -1,9 +1,19 @@
-# 기본 지도 마커의 후보 fact 재JOIN 제거
+# 무필터 API 마커의 후보 fact 재JOIN 제거
+
+## 2026-10-27 후속 정정
+
+아래 "기본 지도" 경로 판단은 당시 분석 오류다. 실제 web5098은 `kindFilter`가
+없어도 여섯 종류를 명시하며 API는 이를 `None`으로 바꾸지 않는다. PR180은
+`kinds=None` API 경로를 개선했으며 기본 지도6종류 경로를 검증한 것이 아니다.
+아래 EXPLAIN·scalar 비교와 이후 정확593의 WSL1443·Docker1442/skip1 결과는
+무필터 경로 검증으로 보존하며 실제 UI 성능으로 확대하지 않는다.
+[실제 경로·취소 재현과 최소 수정](2026-10-27-marker-disconnect-admission.md)을 따른다.
 
 ## 확인한 병목 후보
 
-운영a9f54의 기본 지도는 여섯 종류를 모두 선택하면 `kindFilter=undefined`를 전달한다.
-따라서 `marker_values_many(kinds=None, providers=None)` 경로를 사용한다.0034의
+당시에는 "기본 지도는 `kindFilter=undefined`이므로
+`marker_values_many(kinds=None, providers=None)` 경로를 사용한다"고 판단했다.
+이 인과는 위와 같이 정정한다. 아래 분석 대상은 무필터 API 경로다.0034의
 `weather_current_values` 부분 인덱스 검증을 이 fact 경로의 개선 증거로 확대하지 않는다.
 현재 main176688의 관련 세 메서드는 운영a9와 동일하며 그 사이 repository 변경은
 `purge_expired_short_forecast`에만 있다.174/175의 정리·export 변경을 보존한 main에서 작업했다.

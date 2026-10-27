@@ -1,3 +1,47 @@
+## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
+
+- 정확1bafa CI756 1510/3FAIL·757 1511/2FAIL 원문을 보존했다. 기존 SQL recorder 대역과23시 변조 no-op를
+  실제2RED→2GREEN으로 보완했다. export 제품/설정은 변경하지 않는다.
+- 통계가 있는 ownPG에서 EXISTS가 모든 fact 파티션의 hash로 바뀌는 RED를 재현했다. OFFSET0 계획 경계로
+  상관 복합키 조회를 유지하며 통계 유무/제공처/custom·generic 계획을 검산한다. 관련 집중119PASS194.13초다.
+  최종 정확source의 Docker/CI/독립리뷰와 운영25초 수용은 별도다. [정산](reports/2026-10-28-marker-alert-validity-query.md).
+
+## 2026-10-28 — 실제 지도 특보 유효기간의 반복 조회 제거 후보
+
+- 원6312 후보 의미를 유지하며 EXISTS로 별도512키 검산을 제거했다. 무필터 최적화를 기본 지도 경로로
+  추정한 이전 분석 오류는 명시 정정하고 원 실패/증거를 보존한다.
+- 요청 밖80행 추가로2480회 검산된 초안 반례를 재현하고 위치 ANY 조건으로2400회로 제한했다.
+  원 후보의14 SELECT/검산8, 새후보6/검산0 및 파티션 pruning은 소유 PG의 합성 증거다.
+- 최종 집중/CI/독립 리뷰와 운영 수용은 구분한다. [정산·미검증](reports/2026-10-28-marker-alert-validity-query.md).
+
+## 2026-10-27 — TCP 회귀의 준비 실패 정리 보완
+
+- 정확72 CI는 Python1505 PASS·frontend 성공이다. 독립 리뷰의 시험 정리 P2는 별도
+  작업 트리에서만 보완했다. 원72 전체 두 실행의 source/DB/의존성은 고정한다.
+- app/socket/bind/thread 시작/DROP 실패 mock5 RED→5 PASS, 정상 TCP+mock6 PASS를
+  확인했다. ExitStack으로 UUID DB·engine·socket·worker 정리를 생성 단계마다 등록하고
+  DROP 실패에도 admin.dispose를 보장한다. 제품 app·의존성·fixture/조회 조건은 동일하다.
+  [실패 원문·범위·합성 검증 경계](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 단위 보완
+
+- 정확962 CI는 Python1504 PASS/1 FAIL이었다. 조회 전9,600행 projection INSERT의
+  FK 검사30초 초과 원문을 보존하고, 같은57,600행/FK/assert/조회 예산을 유지한 채
+  적재 statement만960행으로 나눴다. 기존 원본 로컬 진단19.54초/보완19.51초 모두
+  통과했으므로 CI 초과의 로컬 재현이나 전체 속도 개선으로 확대하지 않는다.
+- ASGI/API 집중167 PASS·TCP 취소 RED→GREEN은 보존한다. 별도 disk-backed2GiB/1CPU
+  PG와 두 nonce DB만 준비했으며 whole은 미실행, 운영 변경0이다.
+  [원문·범위·다음 게이트](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — 기본 지도 경로 정정과 대기 중 취소의 DB 진입 방지
+
+- 실제UI는6종류를명시한다. PR180의 `kinds=None` 최적화를 기본지도 경로로 추정한
+  오류를 정정하되 기존계획·실패·전체시험 결과는 원래범위로 보존했다.
+- PR178의순수 ASGI middleware와실제disconnect시험만분리해 main5098에적용했다.
+  입장전/대기중취소는499·새DB작업0, 정상동시2와실행중thread의자연완료를구분한다.
+- 운영추가조회·provider/job·이미지변경0. 소유PG의실제6종류7SELECT/수화와EXPLAIN ONLY,
+  actualASGI RED→GREEN을저장했다. [보고서](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — Codex PR(2026-10-17 이후 머지분) 상세 리뷰 정리 PR
 
 2026-10-17 이후 머지된 Codex PR 63개의 리뷰 결과 53건을 main `a9f54ff`(#173 포함)에서
@@ -14,7 +58,10 @@
   맞지 않으면 유효 scope만 기록하고 pending 해제(W09).
 - API: export 응답의 검증·직렬화·gzip을 worker thread로 옮기고 503/422 원인 분류를 로그로
   남긴다(W10). marker 취소의 `BaseHTTPMiddleware` 문제(W11)는 같은 수정을 실제 TCP 시험과 함께 담은
-  열린 PR #184로 넘기고 이 PR에서 뺐다(같은 middleware 중복·충돌 방지).
+  #184로 넘기고 이 PR에서 뺐다(같은 middleware 중복·충돌 방지). 2026-10-28 소유자 지시(옵션 c)로 두 구현을
+  비교했다: middleware는 같은 blob(`a7f6c51`)이고 #184 시험이 이 PR 시험의 상위집합(실제 Uvicorn/TCP,
+  두 배치 뒤 대기 중 취소, 6종류)이라 #184(머지 `9521d16`)를 남긴다. #184 머지 뒤 main을 merge해
+  journal·resume 충돌만 풀었다.
 - 데이터: 강수 합계·무강수는 구간6시간 RN1이 모두 있을 때만 확정하고 0035가 기존 행을
   고친다(W04). 0022는 INVALID 인덱스 뒤 재실행 가능(W13). 결측 실황 격자의 준비 attempt를
   NO_NORMALIZED_POINTS/NOT_INGESTED로 닫는다(W14).

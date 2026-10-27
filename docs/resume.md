@@ -1,3 +1,46 @@
+## 2026-10-28 — 특보 계획 통계 차이 보강
+
+- 1bafa의 첫 CI 실패를 보존하고,23시 변조와 SQL fake는 시험만 보완했다. 통계가 있는 EXISTS 전역 hash는
+  ownPG에서 재현하고 OFFSET0으로 상관 계획을 보존한다. 관측/예보/특보 의미와 예산·DTO·writer는 그대로다.
+- 관련 WSL119PASS 뒤 최종source Docker/CI/독립 두 리뷰를 진행한다. 새whole·운영요청/배포0이며
+  이전actual504/쿠키미계측/25초목표미수용은 남는다. [증거·근거](reports/2026-10-28-marker-alert-validity-query.md).
+
+## 2026-10-28 — 지도 특보 반복 검산 최소화 후보
+
+- 실제6종류 경로의 특보 유효기간 검산을 후보 EXISTS로 합치고 같은 요청 위치 ANY로 범위를 고정했다.
+  후보/정렬/top26/reducer·512 cursor·복합 fact 키를 유지한다. 운영 변경0/25초 목표 미검증이다.
+- 원6312 RED의 SELECT14/옛 검산8과 요청 밖80행 검산 반례를 보존했다.
+  다음은 최종 집중·정확 CI·독립 두 리뷰다. [범위와 증거](reports/2026-10-28-marker-alert-validity-query.md).
+  아래 PR184 whole 미실행 표현은 당시 이력이며 원72 두 전체는 actual0으로 종료했다.
+
+## 2026-10-27 — TCP 회귀의 준비 실패 정리 보완
+
+- 현재: 정확72 CI1505 PASS/frontend 성공. 독립 리뷰의 TCP 시험 준비 실패 P2를
+  별도72 기반 작업 트리에서 보완해 mock5·정상 TCP 포함6 집중을 통과했다.
+- 다음 한 작업: 원72 전체 WSL/Docker의 실제 종료를 회수하고 제품 app/deps/fixture
+  동일 증명과 새 cleanup HEAD의 집중·CI·증분 리뷰를 합쳐 판단한다. 원전체 환경은
+  고정했고 운영/수집 변경0, 운영25초 목표는 미검증이다.
+  [정산](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 보완
+
+- 현재:962 CI1504 PASS/1 FAIL은 조회 전 projection9,600행의 FK 검사30초 초과였다.
+  동일57,600행·FK·assert·제한을 유지하고1지점/960행씩 적재하도록 최소 보완했다.
+  로컬 원본/보완 모두 통과했으므로 CI 원인의 완전 재현·운영 속도 개선은 미입증이다.
+- 다음 한 작업: 새 정확 HEAD의 CI, 전체 WSL/Docker, 독립 두 리뷰 순으로 검증한다.
+  전용 disk-backed2GiB/1CPU·PG100과 별도 두 DB 준비까지 완료, whole 미실행이다.
+  [정산](reports/2026-10-27-marker-disconnect-admission.md). 운영/provider/export 변경0.
+
+## 2026-10-27 — 실제 지도6종류·취소 대기 경로 정정
+
+- 기본 지도는6종류를 명시한다. PR180의무필터 경로와 실제 UI 경로를 혼동한 분석을
+  정정했다. 기존 EXPLAIN·1443/1442검증은 무필터 범위로 보존한다.
+- 실제 ASGI disconnect가 BaseHTTP middleware를 지나200/DB조회로 진행하는 RED를
+  재현했다. 순수 ASGI로바꾼 admission7회귀는 PASS이며, 이미 실행 중인 DB thread
+  취소·운영25초 목표는 미검증이다. repository/index/DTO/병렬도/timeout 변경0이다.
+- 다음은 전체WSL·Docker·정확CI·독립2리뷰 후 새운영 수용을 별도 조율한다.
+  [재현·정정·경계](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — Codex PR 리뷰 정리 PR(W01~W15) 승인 대기
 
 - 현재: 2026-10-17 이후 Codex PR 리뷰의 개선 15건을 브랜치 `review/codex-10d-weather` 한 PR로
@@ -12,7 +55,7 @@
   rebase했다. #176의 `refresh_publisher_daily`에서 snapshot handle 정리는 일별 정리 뒤 남은 tick
   상한 안에서만 돈다. 배포 시 0035 데이터 보정이 포함된다(하루씩 commit, 되돌리기 no-op;
   publisher sensor 정지 중 migrate 또는 이미지 교체 뒤 migrate). W11(marker 취소 middleware)은
-  열린 PR #184로 넘겼다. W02로 W5 fallback 기준 snapshot이 배포 때 초기화된다.
+  #184(머지 `9521d16`)로 넘겼다. W02로 W5 fallback 기준 snapshot이 배포 때 초기화된다.
 
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 

@@ -115,10 +115,11 @@ def test_sixty_location_kind_batches_preserve_provider_and_alert_results(
             CROSS JOIN unnest(ARRAY['observed','short']) style
             CROSS JOIN unnest(ARRAY['TEMP','T1H','TMP','WEATHER_CODE','SKY','PTY']) metric
         """), {"now": now})
-        # FK를 유지한 같은 57,600행을 적재하되 한 statement의 FK 검사량을 제한한다.
+        # FK를 유지한 같은 57,600행을 적재하되 한 statement를 한 지점(960행)으로 제한한다.
+        # CI의 10지점(9,600행) 적재가 FK 검사 중 30초를 넘었으며 조회 예산은 그대로 둔다.
         # known_at 조건은 source fact의 파티션을 한정하며 이후 조회 측정에는 적용하지 않는다.
         inserted = 0
-        for offset in range(0, len(ids), 10):
+        for location in ids:
             result = connection.execute(text("""
                 INSERT INTO weather_current_values
                 (value_id,location_id,provider,dataset_key,weather_domain,forecast_style,
@@ -126,7 +127,7 @@ def test_sixty_location_kind_batches_preserve_provider_and_alert_results(
                 SELECT value_id,location_id,provider,dataset_key,weather_domain,forecast_style,
                        metric_key,target_at,known_at,source_record_key FROM weather_values
                 WHERE known_at=:now AND location_id=ANY(:locations)
-            """), {"now": now, "locations": ids[offset:offset+10]})
+            """), {"now": now, "locations": [location]})
             inserted += result.rowcount
         assert inserted == 60 * 80 * 2 * 6
         connection.exec_driver_sql("ANALYZE weather_current_values")
@@ -262,7 +263,7 @@ def test_sixty_location_kind_batches_preserve_provider_and_alert_results(
 def test_marker_maximum_location_alert_keys_are_chunked_before_global_limit(
     weather_test_database_url,
 ):
-    """API 최대 500지점에서도 키는 512행 배열로 제한하고 전체 최종 winner를 유지한다."""
+    """API 최대 500지점에서도 pointer 스트림은 512행이며 최종 winner를 유지한다."""
     from sqlalchemy import event
 
     repo = WeatherRepository(weather_test_database_url)
@@ -283,10 +284,13 @@ def test_marker_maximum_location_alert_keys_are_chunked_before_global_limit(
         for location in ids for days, label in [(9, "먼 특보"), (8, "가까운 특보")]
     ])
     batches = []
+    stream_limits = []
 
     def record(connection, cursor, statement, parameters, context, executemany):
         if isinstance(parameters, dict) and "alert_value_ids" in parameters:
             batches.append((len(parameters["alert_value_ids"]), len(parameters)))
+        if context.execution_options.get("yield_per"):
+            stream_limits.append(context.execution_options["yield_per"])
 
     event.listen(repo.engine, "before_cursor_execute", record)
     try:
@@ -294,8 +298,8 @@ def test_marker_maximum_location_alert_keys_are_chunked_before_global_limit(
         assert len(result) == 500
         assert all(len(rows) == 1 and rows[0].value_text == "가까운 특보"
                    for rows in result.values())
-        assert len(batches) == 2 and sum(size for size, _ in batches) == 1000
-        assert all(size <= 512 and binds < 10 for size, binds in batches)
+        assert batches == []
+        assert stream_limits == [512]
     finally:
         event.remove(repo.engine, "before_cursor_execute", record)
         repo.engine.dispose()
