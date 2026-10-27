@@ -244,9 +244,10 @@ def test_fresh_phase_only_picks_untried_current_owners_of_successful_runs(
         seen = []
         original = export_collector._process_candidate
 
-        def spy(heads_, artifacts, row, dagster_status):
+        def spy(heads_, artifacts, row, dagster_status, **kwargs):
             seen.append(row.attempt_id)
-            return original(heads_, artifacts, row, dagster_status)
+            assert kwargs == {"current_owner": True}
+            return original(heads_, artifacts, row, dagster_status, **kwargs)
 
         monkeypatch.setattr(export_collector, "_process_candidate", spy)
         publish_fresh_exports(repo, tmp_path, budget_seconds=30)
@@ -254,6 +255,37 @@ def test_fresh_phase_only_picks_untried_current_owners_of_successful_runs(
     finally:
         repo.finish_sync_run(run.run_id, status="failed")
     assert superseded and running
+
+
+def test_fresh_shortcut_rechecks_ownership_inside_promotion(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    """fresh는 퇴역 확인 transaction을 건너뛴다. 조회 뒤 소유권이 넘어가면 승격 안의
+    소유권 확인이 거절하고(NOT_READY), 다음 일괄 퇴역이 SUPERSEDED로 정리한다."""
+    from test_export_heads import _descriptor
+
+    repo = publisher_repository
+    descriptor = _descriptor(repo)
+    heads, raced, *_ = candidate(repo, tmp_path, monkeypatch, descriptor=descriptor)
+    original = ExportHeads.promote
+
+    def promote(self, identity, artifacts, **kwargs):
+        run = repo.start_sync_run(provider="python-kma-api",
+                                  dataset_key="kma_ultra_short_nowcast")
+        newer = repo.begin_export_attempt(
+            run_id=run.run_id, scope_key="newer", planned_sources=[descriptor.source_scope],
+            execution_mode="native",
+        )
+        heads.lifecycle.claim(newer)
+        repo.finish_sync_run(run.run_id, status="failed")
+        return original(self, identity, artifacts, **kwargs)
+
+    monkeypatch.setattr(ExportHeads, "promote", promote)
+    assert publish_fresh_exports(repo, tmp_path, budget_seconds=30).results == {"NOT_READY": 1}
+    monkeypatch.setattr(ExportHeads, "promote", original)
+    assert state(repo, heads, raced)[0]["published_at"] is None
+    assert retire_settled_attempts(repo)["SUPERSEDED"] == 1
+    assert _status(repo, raced) == ("failed", "SUPERSEDED")
 
 
 def test_unexpected_error_in_one_candidate_is_isolated(

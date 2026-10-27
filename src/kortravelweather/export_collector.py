@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kortravelcommon.deadline import call_with_deadline
-from sqlalchemy import and_, literal_column, not_, select, text, tuple_, update
+from sqlalchemy import and_, literal_column, select, text, tuple_, update
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
@@ -416,14 +416,14 @@ _PER_CANDIDATE_SQLSTATES = frozenset({"55P03", "57014", "40P01", "40001"})
 MAX_CANDIDATE_PAGE = 256
 
 
-def _ownership_sql(violation: str):
+def _ownership_sql(violation: str) -> str:
     """claim한 모든 scope에 대한 owner 조건. ``violation``인 scope가 하나도 없어야 참이다.
 
     claim한 scope 집합(owner_epochs의 key)이 계획(planned_sources)과 같아야 하고 owner
     행이 빠진 scope도 위반이다. JSON 모양이 다르면 CASE가 먼저 거짓을 돌려 json 함수
-    오류가 문장 전체를 실패시키지 않는다. NULL은 COALESCE로 거짓이 된다.
+    오류가 문장 전체를 실패시키지 않는다. NULL은 COALESCE로 거짓이 되어 NOT도 안전하다.
     """
-    return text(
+    return (
         "COALESCE(CASE WHEN json_typeof(weather_export_attempts.owner_epochs) = 'object'"
         " AND json_typeof(weather_export_attempts.planned_sources) = 'array' THEN ("
         "(SELECT array_agg(k ORDER BY k)"
@@ -442,15 +442,18 @@ def _ownership_sql(violation: str):
 #: SUPERSEDED 판정. 모든 claim scope가 실제 더 큰 epoch와 다른 active attempt로 넘어간
 #: 경우만 참이다. 일부 이동·owner 누락·같은 epoch는 현재 scope가 섞인 시도를 실패로
 #: 위장하지 않도록 거짓이다.
-_SUPERSEDED_OWNERSHIP = _ownership_sql(
+_SUPERSEDED_SQL = _ownership_sql(
     "o.owner_epoch <= CAST(e.epoch AS bigint)"
     " OR o.active_attempt_id = weather_export_attempts.attempt_id"
 )
+_SUPERSEDED_OWNERSHIP = text(_SUPERSEDED_SQL)
+# text 조건은 SQLAlchemy의 not_()로 뒤집을 수 없다. 같은 SQL을 NOT으로 감싼다.
+_NOT_SUPERSEDED_OWNERSHIP = text("NOT " + _SUPERSEDED_SQL)
 #: 승격할 수 있는 현재 소유자. ``export_lifecycle._current_owners``와 같은 조건이다.
-_CURRENT_OWNERSHIP = _ownership_sql(
+_CURRENT_OWNERSHIP = text(_ownership_sql(
     "o.owner_epoch <> CAST(e.epoch AS bigint)"
     " OR o.active_attempt_id <> weather_export_attempts.attempt_id"
-)
+))
 
 
 def _pending(attempts):
@@ -665,7 +668,7 @@ def retire_settled_attempts(repository, *, limit: int = RETIRE_BATCH) -> dict[st
     for code, condition in (
         ("SUPERSEDED", _SUPERSEDED_OWNERSHIP),
         # 단건 경로처럼 SUPERSEDED 판정이 먼저다. 둘 다 해당하면 SUPERSEDED로 남는다.
-        ("CONFIRMED_TERMINAL", and_(_native_failed(heads), not_(_SUPERSEDED_OWNERSHIP))),
+        ("CONFIRMED_TERMINAL", and_(_native_failed(heads), _NOT_SUPERSEDED_OWNERSHIP)),
     ):
         with heads._transaction() as session:
             ids = list(session.scalars(
@@ -681,39 +684,50 @@ def retire_settled_attempts(repository, *, limit: int = RETIRE_BATCH) -> dict[st
     return retired
 
 
-def _lock_free_outcome(row, dagster_status):
-    """행 잠금 없이 확정할 수 있는 NOT_READY다. None이면 기존 잠금 경로로 간다.
+def _lock_free_verdict(row, dagster_status):
+    """행 잠금 없이 정하는 1차 판정: ``NOT_READY``·``READY``·``LOCKED``.
 
     수집 중인 run의 행은 같은 run의 ingest가 잡고 있어 3초 lock_timeout에 걸린다.
     orchestrator가 아직 끝나지 않은 run(한 job이 여러 dataset을 이어 도는 경우)도
-    `_publisher_terminal`은 NOT_READY로 끝난다. 둘 다 잠그지 않고 넘긴다.
+    `_publisher_terminal`은 NOT_READY로 끝난다. 둘 다 잠그지 않고 ``NOT_READY``다.
+    native success이고 orchestrator가 정확히 SUCCESS(또는 native 실행)면 ``READY``,
+    확정 실패 후보나 run을 알 수 없는 후보는 기존 잠금 경로(``LOCKED``)로 간다.
     """
     native = row.run_status
     if native in _FAILED_NATIVE:
-        return None
+        return "LOCKED"
     if row.execution_mode == "dagster":
         status = _probe(dagster_status, row.orchestrator_run_id)
         if status in {"FAILURE", "CANCELED"}:
-            return None
-        return "NOT_READY" if status != "SUCCESS" or native == "running" else None
-    return "NOT_READY" if native == "running" else None
+            return "LOCKED"
+        if status != "SUCCESS":
+            return "NOT_READY"
+    if native == "running":
+        return "NOT_READY"
+    return "READY" if native == "success" else "LOCKED"
 
 
-def _process_candidate(heads, artifacts, row, dagster_status):
-    early = _lock_free_outcome(row, dagster_status)
-    if early is not None:
-        return early
+def _process_candidate(heads, artifacts, row, dagster_status, *, current_owner=False):
+    verdict = _lock_free_verdict(row, dagster_status)
+    if verdict == "NOT_READY":
+        return "NOT_READY"
     identity = ExportAttempt(row.attempt_id, row.owner_id)
-    outcome, _ = _publisher_terminal(heads, identity, dagster_status)
-    if outcome is None:
+    if verdict == "READY" and current_owner and row.plan_id is not None:
+        # fresh 조회가 현재 소유자·계획 닫힘·native success를 이미 확인했다. 퇴역 확인
+        # transaction을 건너뛴다. 그 뒤 소유권이 넘어가면 승격의 소유권 확인이 거절해
+        # NOT_READY가 되고, 다음 tick의 일괄 퇴역이 같은 SQL로 정리한다.
+        outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+    else:
+        outcome, _ = _publisher_terminal(heads, identity, dagster_status)
+        if outcome is not None:
+            return outcome
         # begin/claim 후 declare 이전의 crash도 terminal 복구한다. plan이
         # 없는 성공/미확정 후보를 승격하거나 성공으로 추측하지 않는다.
-        outcome = (
-            heads.promote(identity, artifacts, dagster_status=dagster_status)
-            if row.plan_id is not None else "NOT_READY"
-        )
-        if outcome == "REJECTED":
-            _publisher_terminal(heads, identity, dagster_status)
+        if row.plan_id is None:
+            return "NOT_READY"
+        outcome = heads.promote(identity, artifacts, dagster_status=dagster_status)
+    if outcome == "REJECTED":
+        _publisher_terminal(heads, identity, dagster_status)
     return outcome
 
 
@@ -738,7 +752,7 @@ class PublisherTally:
         self.stopped = False
 
 
-def _drain(heads, artifacts, rows, *, deadline, dagster_status, tally):
+def _drain(heads, artifacts, rows, *, deadline, dagster_status, tally, current_owner=False):
     """후보를 차례로 처리한다. 한 후보의 잠금 시간 초과·예상 밖 오류는 그 후보만 미룬다.
 
     반환값은 (처리한 수, 마지막으로 처리한 후보)다. 미룬 후보와 이미 본 후보도 처리 수에
@@ -753,7 +767,9 @@ def _drain(heads, artifacts, rows, *, deadline, dagster_status, tally):
             continue
         tally.seen.add(row.attempt_id)
         try:
-            outcome = _process_candidate(heads, artifacts, row, dagster_status)
+            outcome = _process_candidate(
+                heads, artifacts, row, dagster_status, current_owner=current_owner,
+            )
         except (ExportArtifactError, OSError):
             # 손상/누락 파일은 이전 head를 그대로 남긴다. 후속 sweep/재수집으로 복구한다.
             outcome = "NOT_READY"
@@ -904,7 +920,7 @@ def publish_fresh_exports(
         _prefetch(dagster_status, rows)
         processed, last = _drain(
             heads, artifacts, rows, deadline=deadline,
-            dagster_status=dagster_status, tally=tally,
+            dagster_status=dagster_status, tally=tally, current_owner=True,
         )
         total += processed
         if last is not None:
