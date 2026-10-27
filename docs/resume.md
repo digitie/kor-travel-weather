@@ -1,3 +1,17 @@
+## 2026-10-28 — API210 교체 완료·실제 마커 실패 후 요청 예산 후속
+
+- 현재 운영은 R4 API210/image1b3d(actual0,2026-10-27 19:49:40UTC), CS e393/web5098이다.
+  새 cold60×3은19701ms200/30020ms504/21016ms200으로 **FAIL**이며 모바일/overlay는 미실행,
+  로그아웃 뒤 쿠키 잔여0이다. 아래 API e393/미배포 표현은 당시 이력으로 보존한다.
+- 후속7파일은 browser 동시2·같은범위 in-flight 공유·실패수동retry·상세열림시조회와 특보 고정
+  predicate literal 보완이다. Backend 집중56/56, frontend265/265·WSL build actual0이지만
+  이번 통합 Python전체1/2차·CI·최종리뷰·운영 성능/UI 수용은 아직 남는다.
+- export 목표중지/publisher STOP/Map·PinVi flags OFF를 유지한다. 새 Dagster 이미지 승인은 있으나
+  e393→5098의 Dagster 제품 입력이 같고 기존 개선이 운영 중이므로 중복 CS 교체는 하지 않는다.
+- 다음 한 작업: 정확 통합 HEAD의 전체 WSL→Docker를 회수하고 기존 운영 실패를 보존한 채
+  API+web 후보의 별도 배포·실제25초/모바일/overlay 수용을 진행한다. Transport 작업의 G/R과 직렬 조율한다.
+  [범위·증거·한계](reports/2026-10-28-marker-request-budget.md).
+
 ## 2026-10-28 — 특보 계획 통계 차이 보강
 
 - 1bafa의 첫 CI 실패를 보존하고,23시 변조와 SQL fake는 시험만 보완했다. 통계가 있는 EXISTS 전역 hash는

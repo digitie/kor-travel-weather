@@ -20,3 +20,14 @@ Weather99의 복합 fact 키 JOIN과 후보 한도 4를 보존한다. 내부 고
 root가 같은 실제 대표60·동일시각으로 새 고정 조건 쿼리3개에 custom/generic EXPLAIN을 각각 수행해6개 모두 성공했다. observed는 cost4268.97/1630.45와 IndexOnlyScan10개, fallback은3003.12/1901.63과 IndexOnlyScan10개를 두 모드 모두 유지했다. alerts는5512.68/5980.63과 IndexScan19/SeqScan1을 두 모드 모두 유지했다. 각 prepared query의 custom/generic 계수는1/1이었다. 기존 generic cost56682/56669/29756에서 발생하던 부분 인덱스 소실이 이 강제 계획 비교에서는 재현되지 않았다.
 
 이 값은 EXPLAIN 추정 비용이며 실행 latency가 아니다. ANALYZE·실제 API pool의 generic 선택·배포 이후504 해결·CPU/RSS 개선은 이 결과로 증명하지 않는다. root 후속 원문 weather100-literal-custom-generic-plans-root-r1-20261016.private.json(SHA de17130dab60aaea2341082bbeffd919765bf2d1a44c22e3f499d58e6bb36c45)과 작성자 로컬 결과를 구분해 기록했다.
+
+
+## 2026-10-28 — 실제 명시6종류의 특보 경계 후속
+
+위 Weather99/무필터 계획은 당시 범위의 증거다. 실제 기본지도는6종류를 명시하며 현재/예보/
+특보 projection 세 그룹을 읽는다. 새 후속은 `_kind_predicate`의 고정 특보5항목만 literal로
+보존해 alert 부분 인덱스를 generic에서도 증명할 수 있게 한다. 요청값은 bind로 유지한다.
+PG18 custom/generic rawplan4개는 alert_lookup와 정확한 fact 복합 키·partition pruning을
+확인했지만, 새 API210 실제 cold60×3은19701ms200/30020ms504/21016ms200으로 실패했다.
+운영 연결의 generic 선택·지연 기여는 미확정이고 전체 pointer/fact ORM·JSON 수화/입장대기는
+별도다. browser 요청 예산 후속과 검증 게이트는 [새 정산](reports/2026-10-28-marker-request-budget.md)을 따른다.

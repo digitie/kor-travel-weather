@@ -1,3 +1,14 @@
+## 2026-10-28 — 실제 마커 실패 보존·요청 예산과 특보 부분 인덱스 후속
+
+- Root R4 API210/image1b3d 교체(actual0) 뒤에도 cold60×3의19701/30020/21016ms 중1개가504였다.
+  CS e393/web5098·일정21R2S는 유지했고 모바일/overlay 미실행·로그아웃 쿠키0을 분리해 기록했다.
+- browser 동시2/in-flight 공유/실패수동retry/숨은상세조회제거와 generic 특보 고정 predicate를 보완한다.
+  Backend 집중 WSL56/Docker56 actual0, frontend WSL/Docker265·타입/린트/WSL build actual0이다.
+  source7/lock/vendor 보존과 소유 QA 정리를 확인했으며 원 fixture2실패도 남겼다.
+- 정확 통합 HEAD의 Python전체1/2차·CI·최종리뷰·배포/liveUI는 아직 남는다. export/publisher/flags/GC·
+  공용 daemon·CS 변경0이며 운영20초 지연이 해결됐다고 하지 않는다.
+  [변경·검증·현재 운영 구분](reports/2026-10-28-marker-request-budget.md).
+
 ## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
 
 - 정확1bafa CI756 1510/3FAIL·757 1511/2FAIL 원문을 보존했다. 기존 SQL recorder 대역과23시 변조 no-op를
