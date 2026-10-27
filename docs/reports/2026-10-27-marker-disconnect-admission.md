@@ -110,6 +110,6 @@ assert는 모두 유지한다. 시험을 skip하거나 데이터를 줄이지 �
 
 전체 WSL/Docker는 아직 시작하지 않았다. 별도 전체시험 PG16.14는 전용 named volume의
 ext2/ext3 데이터 디렉터리(tmpfs 없음),2GiB·1CPU·max_connections100으로 준비했다.
-같은 소유 명시 대역10.254.248.0/28의 route 충돌을 확인하고 nonce가 다른 WSL/Docker
+같은 소유 명시 대역10.254.248.0/28의 route 충돌을 확인하고 nonce를 포함한 용도별 WSL/Docker
 DB 두 개를 만들었다. 기존512MiB PG는 resize하지 않았으며 새 PG의 OOM 기록은 없다.
 정확 새 HEAD의 CI와 전체 두 단계·독립 두 리뷰 및 운영25초 수용은 별도 미완 게이트다.
