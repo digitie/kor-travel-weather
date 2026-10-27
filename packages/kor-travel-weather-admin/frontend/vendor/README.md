@@ -28,3 +28,14 @@ Common 제품 source `a74ac808752fd6d6062e529909fd0dd656724f08`의 `git archive`
 `MapWorkspace`·`MapFilterPanel`·`MapStage`와 `MapDetailOverlay`의 header/body·접기를 소비하며,
 공용 canvas/overlay 순서·양방향 필터 초점·boolean 빈 슬롯 보강을 포함한다.
 API·기상 종류·선택·인증은 Weather가 소유한다. dev.6/dev.7은 이력으로 보존한다.
+
+## 로그인 hydration 준비 경계 dev.9 (2026-10-27)
+
+Common main `aa232ad5f255233184de80eceaab2e9b6ccb00c9`(PR #47, T-217)의 `git archive`를 격리 Docker
+(Node 22.22.2·npm 11.19.1)에서 fresh `npm ci`·build·check·UI79 시험 뒤 `npm pack -w packages/ui`로 만든
+`kor-travel-ui-0.1.0-dev.9.tgz`를 고정한다. SHA256은
+`b738d8824e36eb6e58d8cc6b78af7dc31233b6763248d634286044def795b403`(27파일)이며 Common T-217 기록·Transport 채택
+산출물과 byte 단위로 같다. tokens는 `0.1.0` 그대로다(같은 source의 새 pack은 내용이 같고 파일 mode만 달라 교체하지 않는다).
+`LoginForm`은 SSR·최초 hydration 동안 아이디·비밀번호·제출을 native disabled로 두고 client handler가 준비된 뒤 연다.
+준비 전 제출은 callback 없이 막는다. 공개 props·슬롯·인증 정책은 같아 Weather `components/auth/LoginForm.tsx`는
+바뀌지 않는다. Playwright `fill()`/`click()`은 활성화를 기다리므로 기존 로그인 e2e도 그대로다. dev.6~dev.8은 이력으로 보존한다.

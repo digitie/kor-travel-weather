@@ -1,3 +1,13 @@
+## 2026-10-27 — 공용 UI dev.9(로그인 hydration 준비 경계) 고정
+
+- Common main `aa232ad`(PR #47, T-217)의 `git archive`에서 격리 Docker(Node 22.22.2·npm 11.19.1) fresh
+  `npm ci`·build·check·UI79 뒤 `npm pack -w packages/ui`로 재생성했다. SHA256 `b738d882…b403`(27파일)으로
+  Common 기록·Transport 채택 산출물과 byte 단위로 같다. package.json·lock(version·resolved·integrity)만 바꿨다.
+- 공용 `LoginForm`은 SSR·최초 hydration 동안 입력·제출을 native disabled로 두고 handler 준비 뒤 연다.
+  Weather 래퍼는 공개 props만 쓰므로 앱 코드 변경은 없다. Vitest에 로그인 폼 시험·snapshot은 없고
+  Playwright 로그인은 `fill()`/`click()`이 활성화를 기다려 그대로다. tokens `0.1.0`과 dev.6~dev.8은 보존한다.
+  [vendor 기록](../packages/kor-travel-weather-admin/frontend/vendor/README.md).
+
 ## 2026-10-27 — 지도 마커 배치 병목과 미확인 표시 보강 중
 
 실제 UI 면적/상세 통과와 별도로 마커 배치504·미확인 구름 오표시를 재현했다.
