@@ -1,11 +1,12 @@
 """지역별 중기 source가 일반 head/capture와 inventory에 정확히 연결된다."""
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
+from kma.time_utils import latest_mid_fcst_time
 from sqlalchemy import select
 from test_export_external import external_repository as external_repository
 from test_export_mid import _source
@@ -28,13 +29,7 @@ def test_mid_native_capture_publishes_issued_revision_and_role_inventory(
     # 실제 시각의 lifecycle에 연결하므로 발표도 현재 유효한 fixture로 만든다.
     # 고정 2026-10-23 발표와 now()를 섞으면 18시간 뒤부터 이 테스트가 실패한다.
     now = datetime.now(ZoneInfo("Asia/Seoul"))
-    issued = now.replace(
-        hour=18 if now.hour >= 18 or now.hour < 6 else 6,
-        minute=0, second=0, microsecond=0,
-    )
-    if issued > now:
-        issued -= timedelta(days=1)
-    prototype, source = _source(part, tm_fc=issued.strftime("%Y%m%d%H%M"))
+    prototype, source = _source(part, tm_fc=latest_mid_fcst_time(now))
     keys = tuple(sorted("mid-head-" + uuid.uuid4().hex for _ in range(2)))
     descriptor = prototype.model_copy(update={"location_ids": keys})
     for key in keys:
