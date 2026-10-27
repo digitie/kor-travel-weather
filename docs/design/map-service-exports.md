@@ -273,8 +273,8 @@ checkpoint 구간 전체 artifact를 복제할 필요는 없지만 삭제 tombst
 > 구현 정산(2026-10-27, 결정 ADR-103): 현재 handle TTL은 15분이다. 첫 페이지가 같은
 > manifest의 기존 handle을 재사용하면 READ COMMITTED 짧은 UPDATE로 만료를 15분 뒤로
 > 연장한다(snapshot_id·내용·ETag 불변, 실패 시 원래 handle 사용). publisher tick은 만료 뒤
-> 6시간이 지난 handle을 `expires_at` 인덱스로 tick당 최대20개 지우고 refs는 CASCADE로
-> 함께 지운다. 만료 전 cursor와 계속 요청되는 selection의 최신 handle은 지우지 않으므로,
+> 6시간이 지난 handle을 `expires_at` 인덱스로 tick당 한 문장, 최대20개 지우고 refs는 CASCADE로
+> 함께 지운다(상한 초과 시 다음 tick 개수 절반, 성공 시 두 배로 적응; 일별 drain과 분리). 만료 전 cursor와 계속 요청되는 selection의 최신 handle은 지우지 않으므로,
 > 이전 성공 집합 fallback은 6시간 안에 요청된 selection에만 보장된다(W1 축소 방지 비교도
 > 같은 범위). delta checkpoint/change log 보존은 여전히 미구현이다.
 

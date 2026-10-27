@@ -48,7 +48,9 @@
 - [ADR-103] (2026-10-27) export snapshot handle 보존: publisher tick이 `expires_at`이
   6시간 넘게 지난 `weather_export_snapshots`를 tick당 최대20개 지우고 refs는 CASCADE로
   지운다(설정이 아닌 모듈 상수. current handle 하나의 ref가 수천 행이라 5초 statement
-  상한 안에 끝나도록 작게 둔다). 유효 cursor(만료 전)는 지우지 않는다. 첫 페이지가 재사용한
+  상한 안에 끝나도록 작게 둔다). 한 문장이 상한에 걸리면 다음 tick 개수를 절반(최소1)으로,
+  성공하면 두 배(최대20)로 적응한다. 정리는 일별 drain 예산·일별 정리 성공과 무관하게 tick
+  상한 안에서 tick당 한 문장 돈다. 유효 cursor(만료 전)는 지우지 않는다. 첫 페이지가 재사용한
   handle은 TTL을 연장하므로 계속 요청되는 selection의 최신 handle은 남는다. 대신 6시간 넘게
   요청이 없던 selection은 이전 성공 집합 fallback(W1 축소 방지 비교 포함)을 잃는다.
   이유: manifest 변경·TTL마다 수 MiB handle과 scope별 refs가 쌓이는데 지우는 경로가 없었다.

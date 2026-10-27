@@ -251,6 +251,23 @@ function includesCurrentKind(kinds: WeatherKind[] | undefined) {
 }
 
 const DEFAULT_CENTER: [number, number] = [127.8, 36.2];
+const SELECTED_ZOOM = 7.2;
+
+// 필터 결과를 불러오는 동안(목록이 잠시 빈 동안)은 보던 위치를 이전 목록에서 그대로 쓴다.
+// 그래야 선택 ID가 id → 없음 → id로 흔들려 카메라가 되돌아가거나 상세를 다시 부르지 않는다.
+function resolveSelection<T extends { location_id: string }>(
+  visible: T[], selectedId: string, filterLoading: boolean, held: T[][],
+): T | undefined {
+  const match = visible.find((location) => location.location_id === selectedId);
+  if (match) return match;
+  if (filterLoading && selectedId) {
+    for (const catalog of held) {
+      const kept = catalog.find((location) => location.location_id === selectedId);
+      if (kept) return kept;
+    }
+  }
+  return visible[0];
+}
 
 export function WeatherMap({ locations, catalogLoading = false, catalogError, onRetryCatalog }: WeatherMapProps) {
   const map = useRef<MapLibreMap | null>(null);
@@ -329,15 +346,19 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
       `${location.name} ${location.location_id} ${location.region_code ?? ""}`.toLocaleLowerCase().includes(normalized),
     ) : catalog;
   }, [locations, query, selectedSources, selectedKinds.length, sourceCatalog, sourceKey, needsSourceCatalog]);
-  const selected = visibleLocations.find((location) => location.location_id === selectedId) ?? visibleLocations[0];
+  const selected = resolveSelection(
+    visibleLocations, selectedId, catalogLoading || sourceLoading, [sourceCatalog?.locations ?? [], locations],
+  );
   const selectedLocationId = selected?.location_id;
   // VWorldMapView treats a changed center/zoom prop as an explicit recenter
   // request.  Give it only the first camera and let the selection effect below
   // be the single recenter path, so a filter-driven fallback selection or a new
   // catalog object for the same location never moves the user's camera.
   const [initialCamera] = useState(() => locations[0]
-    ? { center: [locations[0].longitude, locations[0].latitude] as [number, number], zoom: 7.2 }
+    ? { center: [locations[0].longitude, locations[0].latitude] as [number, number], zoom: SELECTED_ZOOM }
     : { center: DEFAULT_CENTER, zoom: 6 });
+  // 카탈로그 도착 전의 기본 카메라였으면 첫 선택 이동에서 확대도 함께 한다(이전 zoom prop 동작).
+  const zoomOnFirstMoveRef = useRef(initialCamera.zoom < SELECTED_ZOOM);
   const automaticSelectionRef = useRef<string | null>(null);
   const selectedPositionRef = useRef<[number, number] | null>(null);
   const mapLocations = useMemo(() => {
@@ -410,7 +431,9 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
     automaticSelectionRef.current = null;
     const position = selectedPositionRef.current;
     if (automatic || !map.current || !mapReady || !position) return;
-    map.current.easeTo({ center: position, duration: 500 });
+    const zoom = zoomOnFirstMoveRef.current ? { zoom: SELECTED_ZOOM } : {};
+    zoomOnFirstMoveRef.current = false;
+    map.current.easeTo({ center: position, duration: 500, ...zoom });
   }, [mapReady, selectedLocationId]);
 
   function syncViewport(instance: MapLibreMap) {

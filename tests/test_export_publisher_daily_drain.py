@@ -221,3 +221,64 @@ def test_publisher_tick_prunes_only_long_expired_snapshot_handles(
     # 아직 유효한 cursor는 그대로 다음 페이지를 읽는다.
     following, _ = reader.page("locations", limit=1, cursor=live["meta"]["next_cursor"])
     assert following["items"]
+
+
+def test_snapshot_prune_backs_off_after_a_timeout_and_recovers(monkeypatch):
+    """statement 상한에 걸린 개수를 다음 tick에 그대로 반복하지 않고 절반으로 줄인다."""
+    from sqlalchemy.exc import OperationalError
+
+    from kortravelweather import export_snapshots
+
+    limits, budget = [], [5]
+    monkeypatch.setattr(publisher, "_SNAPSHOT_PRUNE_NEXT_LIMIT", [None])
+
+    def prune(repository, *, limit):
+        limits.append(limit)
+        if limit > budget[0]:
+            raise OperationalError("DELETE", {}, Exception("canceling statement due to timeout"))
+        return limit
+
+    monkeypatch.setattr(export_snapshots, "prune_export_snapshots", prune)
+    for _ in range(4):
+        publisher._prune_snapshot_handles(object())
+    assert limits == [20, 10, 5, 10]
+    budget[0] = 100
+    for _ in range(2):
+        publisher._prune_snapshot_handles(object())
+    assert limits[-2:] == [5, 10]
+    # 한 handle도 상한 안에 못 지우면 1에서 멈춘다(0이나 음수로 가지 않는다).
+    budget[0] = 0
+    for _ in range(6):
+        publisher._prune_snapshot_handles(object())
+    assert limits[-1] == 1 and min(limits) == 1
+
+
+def test_snapshot_prune_does_not_depend_on_daily_budget_or_daily_prune(
+    tmp_path, monkeypatch,
+):
+    """일별 backlog로 drain 예산이 끝났거나 일별 정리가 실패해도 tick 상한 안이면 정리한다."""
+    from kortravelweather import export_daily_store, export_snapshots
+
+    pruned = []
+    monkeypatch.setattr(publisher, "_SNAPSHOT_PRUNE_NEXT_LIMIT", [None])
+    monkeypatch.setattr(export_snapshots, "prune_export_snapshots",
+                        lambda repository, *, limit: pruned.append(limit) or 0)
+    monkeypatch.setattr(export_daily_store, "refresh_daily_summaries", lambda *a, **k: {
+        "processed": 4, "has_more": True,
+    })
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("daily prune failed")
+
+    monkeypatch.setattr(export_daily_store, "prune_daily_summaries", broken)
+    monkeypatch.setattr(publisher, "time", SimpleNamespace(monotonic=lambda: 10))
+    # drain 예산(deadline)이 이미 지났다.
+    assert publisher.refresh_publisher_daily(object(), tmp_path, deadline=5, hard_deadline=30)[
+        "has_more"
+    ]
+    # drain 예산은 남았지만 일별 정리가 실패했다.
+    publisher.refresh_publisher_daily(object(), tmp_path, deadline=20, hard_deadline=30)
+    assert pruned == [20, 20]
+    # tick 상한까지 한 문장의 최악 시간이 남지 않으면 미룬다.
+    publisher.refresh_publisher_daily(object(), tmp_path, deadline=5, hard_deadline=12)
+    assert pruned == [20, 20]

@@ -123,38 +123,3 @@ async def test_marker_failure_releases_admission_for_the_next_batch(weather_test
         repo.fail = False
         assert (await client.get("/v1/weather/markers?location_id=one")).status_code == 200
         assert app.state.marker_limiter.borrowed_tokens == 0
-
-
-@pytest.mark.asyncio
-async def test_real_disconnect_reaches_marker_admission_through_request_middleware(
-    weather_test_database_url,
-):
-    """monkeypatch 없이 실제 ASGI http.disconnect가 middleware를 지나 499로 끝난다."""
-    repo = Repository()
-    repo.gate.set()
-    app = app_for(repo, weather_test_database_url)
-    messages = []
-
-    async def receive():
-        return {"type": "http.disconnect"}
-
-    async def send(message):
-        messages.append(message)
-
-    await app({
-        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
-        "scheme": "http", "path": "/v1/weather/markers", "raw_path": b"/v1/weather/markers",
-        "root_path": "", "query_string": b"location_id=one", "headers": [(b"host", b"test")],
-        "client": ("127.0.0.1", 50000), "server": ("test", 80),
-    }, receive, send)
-    start = next(message for message in messages if message["type"] == "http.response.start")
-    assert start["status"] == 499
-    assert repo.calls == 0
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                base_url="http://test") as client:
-        echoed = await client.get("/health", headers={"x-request-id": "trace-echo"})
-        generated = await client.get("/v1/weather/markers", params={"location_id": "one"})
-    assert echoed.status_code == 200 and echoed.headers["x-request-id"] == "trace-echo"
-    assert int(echoed.headers["x-duration-ms"]) >= 0
-    assert generated.status_code == 200 and generated.headers["x-request-id"]
-    assert repo.calls == 1

@@ -13,12 +13,18 @@
   작업 중 머지된 #176이 같은 내용을 더 넓게 구현해 이 PR에서 뺐다(#176 위로 rebase). W4 저장 scope가 catalog와
   맞지 않으면 유효 scope만 기록하고 pending 해제(W09).
 - API: export 응답의 검증·직렬화·gzip을 worker thread로 옮기고 503/422 원인 분류를 로그로
-  남긴다(W10). `BaseHTTPMiddleware`를 순수 ASGI로 바꿔 취소된 marker 요청이 실제로 499로 끝난다(W11).
+  남긴다(W10). marker 취소의 `BaseHTTPMiddleware` 문제(W11)는 같은 수정을 실제 TCP 시험과 함께 담은
+  열린 PR #184로 넘기고 이 PR에서 뺐다(같은 middleware 중복·충돌 방지).
 - 데이터: 강수 합계·무강수는 구간6시간 RN1이 모두 있을 때만 확정하고 0035가 기존 행을
   고친다(W04). 0022는 INVALID 인덱스 뒤 재실행 가능(W13). 결측 실황 격자의 준비 attempt를
   NO_NORMALIZED_POINTS/NOT_INGESTED로 닫는다(W14).
-- UI: 필터 로딩 중 선택·상세·카메라 보존, 예보 종류만 고르면 현재값 조회 생략, 소스 필터
-  접근성 이름에 현재 선택 포함(W12).
+- UI: 필터 로딩 중 선택·상세·카메라 보존(로딩 중에는 이전 목록의 같은 위치를 선택으로 유지해
+  선택 ID가 흔들리지 않는다), 기본 카메라로 시작하면 첫 선택 이동에서 확대, 예보 종류만 고르면
+  현재값 조회 생략, 소스 필터 접근성 이름에 현재 선택 포함(W12).
+- 배포 메모: 0035는 하루씩 commit한다. 옛 publisher가 보정 뒤 닫힌 구간을 부분 합으로 다시 쓰지
+  않도록 publisher sensor를 멈춘 채 migrate→교체하거나 교체 뒤 migrate한다. W02로 W5 selection
+  digest가 바뀌어 배포 전 snapshot은 W5 fallback으로 쓰이지 않는다(배포 직후 reducer가 늦으면
+  첫 성공 전까지 503 가능).
 - 검증은 n150 컨테이너 CI-parity와 GitHub CI 결과를 PR 본문에 남긴다. 보류·기각 항목과 이유도
   PR 본문과 [남은 작업](tasks.md)에 있다. #174·#175가 고친 코드 영역과 겹치지 않는다.
 

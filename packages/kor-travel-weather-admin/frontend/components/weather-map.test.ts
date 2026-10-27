@@ -399,6 +399,13 @@ describe("마커 조회 실패와 미확인 값", () => {
   });
 });
 
+function declaration(name: string) {
+  const node = tree.statements.find((statement) => (ts.isFunctionDeclaration(statement) && statement.name?.text === name)
+    || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((item) => item.name.getText(tree) === name)));
+  if (!node) throw new Error(`${name} 선언을 찾지 못했습니다.`);
+  return node.getText(tree);
+}
+
 // 의존성 배열 문자열로 실제 effect를 찾아 이름 붙은 인자로 실행한다.
 function effectWith(deps: string, names: string[], prelude: string[] = []) {
   let found: ts.ArrowFunction | undefined;
@@ -409,12 +416,7 @@ function effectWith(deps: string, names: string[], prelude: string[] = []) {
   }
   find(tree);
   if (!found) throw new Error(`${deps} effect를 찾지 못했습니다.`);
-  const helpers = prelude.map((name) => {
-    const node = tree.statements.find((statement) => (ts.isFunctionDeclaration(statement) && statement.name?.text === name)
-      || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((item) => item.name.getText(tree) === name)));
-    if (!node) throw new Error(`${name} 선언을 찾지 못했습니다.`);
-    return node.getText(tree);
-  });
+  const helpers = prelude.map(declaration);
   return new Function(...names, ts.transpileModule(
     helpers.join("\n") + "\nreturn (" + found.getText(tree) + ")();",
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -457,10 +459,12 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
   it("같은 위치의 새 객체와 자동 대체 선택은 카메라를 옮기지 않고 명시 선택만 옮긴다", () => {
     const camera = effectWith("[mapReady, selectedLocationId]", [
       "automaticSelectionRef", "selectedLocationId", "selectedPositionRef", "map", "mapReady",
-    ]);
+      "zoomOnFirstMoveRef",
+    ], ["SELECTED_ZOOM"]);
     const easeTo = vi.fn();
     const map = { current: { easeTo } };
     const automaticSelectionRef = { current: null as string | null };
+    const zoomOnFirstMoveRef = { current: false };
     const selectedPositionRef = { current: null as [number, number] | null };
     let previous: unknown[] | undefined;
     // React처럼 의존성이 같으면 effect를 다시 실행하지 않는다. 위치 ref는 매 commit 갱신한다.
@@ -469,7 +473,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
       const deps = [true, id];
       if (previous && deps.every((dep, index) => Object.is(dep, previous![index]))) return;
       previous = deps;
-      camera(automaticSelectionRef, id, selectedPositionRef, map, true);
+      camera(automaticSelectionRef, id, selectedPositionRef, map, true, zoomOnFirstMoveRef);
     };
     commit("a", [127, 37]);
     expect(easeTo).toHaveBeenCalledTimes(1);
@@ -481,6 +485,62 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
     expect(automaticSelectionRef.current).toBeNull();
     commit("c", [129, 35]);
     expect(easeTo).toHaveBeenLastCalledWith({ center: [129, 35], duration: 500 });
+  });
+
+  it("필터 결과를 불러오는 동안 보던 위치를 이전 목록에서 유지해 카메라가 되돌아가지 않는다", () => {
+    const resolve = new Function(ts.transpileModule(
+      declaration("resolveSelection") + "
+return resolveSelection;",
+      { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+    ).outputText)() as (
+      visible: { location_id: string }[], selectedId: string, filterLoading: boolean, held: { location_id: string }[][],
+    ) => { location_id: string } | undefined;
+    const a = { location_id: "a" };
+    const b = { location_id: "b" };
+    // 로딩 중 빈 목록: 이전 source 목록(또는 기본 catalog)의 같은 위치를 유지한다.
+    expect(resolve([], "a", true, [[b, a], []])).toBe(a);
+    expect(resolve([], "a", true, [[], [a]])).toBe(a);
+    // 로딩이 아니면 기존처럼 보이는 첫 위치로 대체하고, 빈 목록이면 선택이 없다.
+    expect(resolve([b], "a", false, [[a]])).toBe(b);
+    expect(resolve([], "a", false, [[a]])).toBeUndefined();
+    expect(resolve([b, a], "a", true, [])).toBe(a);
+
+    // 실제 effect를 id → (로딩) → 같은 id 순서로 replay해 easeTo가 다시 불리지 않는지 본다.
+    const camera = effectWith("[mapReady, selectedLocationId]", [
+      "automaticSelectionRef", "selectedLocationId", "selectedPositionRef", "map", "mapReady",
+      "zoomOnFirstMoveRef",
+    ], ["SELECTED_ZOOM"]);
+    const easeTo = vi.fn();
+    const refs = { automatic: { current: null }, position: { current: null as [number, number] | null }, zoom: { current: false } };
+    let previous: string | undefined;
+    const commit = (visible: { location_id: string }[], loading: boolean, held: { location_id: string }[][]) => {
+      const selected = resolve(visible, "a", loading, held);
+      refs.position.current = selected ? [127, 37] : null;
+      if (selected?.location_id === previous) return;
+      previous = selected?.location_id;
+      camera(refs.automatic, previous, refs.position, { current: { easeTo } }, true, refs.zoom);
+    };
+    commit([a, b], false, []);
+    expect(easeTo).toHaveBeenCalledTimes(1);
+    commit([], true, [[a, b], []]);
+    commit([{ location_id: "a" }], false, []);
+    expect(easeTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("기본 카메라로 시작했으면 첫 선택 이동에서만 확대한다", () => {
+    const camera = effectWith("[mapReady, selectedLocationId]", [
+      "automaticSelectionRef", "selectedLocationId", "selectedPositionRef", "map", "mapReady",
+      "zoomOnFirstMoveRef",
+    ], ["SELECTED_ZOOM"]);
+    const easeTo = vi.fn();
+    const zoomOnFirstMoveRef = { current: true };
+    const move = (id: string, position: [number, number]) => camera(
+      { current: null }, id, { current: position }, { current: { easeTo } }, true, zoomOnFirstMoveRef,
+    );
+    move("a", [127, 37]);
+    expect(easeTo).toHaveBeenLastCalledWith({ center: [127, 37], duration: 500, zoom: 7.2 });
+    move("b", [128, 36]);
+    expect(easeTo).toHaveBeenLastCalledWith({ center: [128, 36], duration: 500 });
   });
 
   it("지도 center/zoom prop은 첫 카메라로 고정해 선택 effect만 카메라를 옮긴다", () => {

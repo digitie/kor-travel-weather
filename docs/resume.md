@@ -10,7 +10,9 @@
   provider' 판정 중 소유자 결정이 필요하다(odroid 미확인).
 - 머지 순서: #174·#175·#176(publisher 처리량, 리뷰 W08 포함)·#177(ui dev.9) 머지 뒤 main으로
   rebase했다. #176의 `refresh_publisher_daily`에서 snapshot handle 정리는 일별 정리 뒤 남은 tick
-  상한 안에서만 돈다. 배포 시 0035 데이터 보정이 포함된다(되돌리기 no-op).
+  상한 안에서만 돈다. 배포 시 0035 데이터 보정이 포함된다(하루씩 commit, 되돌리기 no-op;
+  publisher sensor 정지 중 migrate 또는 이미지 교체 뒤 migrate). W11(marker 취소 middleware)은
+  열린 PR #184로 넘겼다. W02로 W5 fallback 기준 snapshot이 배포 때 초기화된다.
 
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 

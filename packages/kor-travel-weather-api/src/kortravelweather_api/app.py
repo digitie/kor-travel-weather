@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hmac
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from time import perf_counter
 from uuid import uuid4
 
@@ -15,8 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
-from starlette.datastructures import Headers, MutableHeaders
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from kortravelweather.metrics import (
     change_http_in_flight,
@@ -56,52 +54,6 @@ def _safe_errors(raw_errors: object) -> list[dict[str, object]]:
             }
         )
     return safe
-
-
-class RequestContextMiddleware:
-    """요청 ID·처리 시간 header와 HTTP metric을 남기는 순수 ASGI middleware.
-
-    ``receive``를 감싸지 않는다. ``BaseHTTPMiddleware``는 하위 앱의 receive를 task group으로
-    감싸 ``Request.is_disconnected()``가 연결 끊김 메시지를 잃고 늘 False를 반환했다.
-    그러면 지도 이동으로 취소된 marker 배치도 limiter 뒤에서 DB 조회를 시작한다.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        request_id = Headers(scope=scope).get("x-request-id") or str(uuid4())
-        scope.setdefault("state", {})["request_id"] = request_id
-        started = perf_counter()
-        method = scope["method"]
-        status_code = 500
-        change_http_in_flight(method, 1)
-
-        async def send_with_context(message: Message) -> None:
-            nonlocal status_code
-            if message["type"] == "http.response.start":
-                status_code = message["status"]
-                headers = MutableHeaders(scope=message)
-                headers["x-request-id"] = request_id
-                headers["x-duration-ms"] = str(max(0, int((perf_counter() - started) * 1000)))
-            await send(message)
-
-        try:
-            await self.app(scope, receive, send_with_context)
-        finally:
-            # Do not count scrapes themselves: Prometheus polling must not
-            # make request volume grow when it observes the request metric.
-            if scope.get("path") != "/metrics":
-                observe_http_request(
-                    method=method,
-                    route=getattr(scope.get("route"), "path", None),
-                    status_code=status_code,
-                    duration_seconds=perf_counter() - started,
-                )
-            change_http_in_flight(method, -1)
 
 
 def _problem(
@@ -161,8 +113,31 @@ def create_app(
             allow_headers=["*"],
         )
 
-    # CORS 다음에 등록해 기존과 같이 가장 바깥(ServerErrorMiddleware 안쪽)에 둔다.
-    api.add_middleware(RequestContextMiddleware)
+    @api.middleware("http")
+    async def request_context(request: Request, call_next: Callable[..., object]):
+        request.state.request_id = request.headers.get("x-request-id") or str(uuid4())
+        started = perf_counter()
+        method = request.method
+        change_http_in_flight(method, 1)
+        response = None
+        try:
+            response = await call_next(request)
+            response.headers["x-request-id"] = request.state.request_id
+            response.headers["x-duration-ms"] = str(
+                max(0, int((perf_counter() - started) * 1000))
+            )
+            return response
+        finally:
+            # Do not count scrapes themselves: Prometheus polling must not
+            # make request volume grow when it observes the request metric.
+            if request.url.path != "/metrics":
+                observe_http_request(
+                    method=method,
+                    route=getattr(request.scope.get("route"), "path", None),
+                    status_code=response.status_code if response is not None else 500,
+                    duration_seconds=perf_counter() - started,
+                )
+            change_http_in_flight(method, -1)
 
     @api.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> JSONResponse:

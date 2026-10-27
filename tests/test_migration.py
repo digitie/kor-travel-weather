@@ -1049,6 +1049,64 @@ def test_daily_precip_coverage_migration_nulls_only_partial_totals(monkeypatch):
         get_settings.cache_clear()
 
 
+def test_daily_precip_coverage_migration_commits_each_day(monkeypatch):
+    """0035는 하루씩 commit한다. 다른 transaction이 한 날의 행을 쥐고 있어도 앞선 날의 보정과
+    잠금은 migration 끝까지 남지 않고, 다시 실행하면 남은 날만 고친다."""
+    import json
+
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", TEST_DATABASE_URL)
+    get_settings.cache_clear()
+    repo = WeatherRepository(TEST_DATABASE_URL)
+    try:
+        with repo.engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        config = Config("alembic.ini")
+        command.upgrade(config, "0034_marker_kind_indexes")
+        cell = {"value": "0", "provider": "python-kma-api", "rank": [0]}
+        hourly = json.dumps({str(hour): {"precip": cell} for hour in (5, 6)})
+        with repo.engine.begin() as connection:
+            for day in ("2026-10-25", "2026-10-26"):
+                connection.execute(text(
+                    "INSERT INTO weather_daily_summaries "
+                    "(location_id, date, slot, summary, hourly_winners, updated_at) VALUES "
+                    "('partial', CAST(:day AS date), 'morning', CAST(:summary AS json), "
+                    "CAST(:hourly AS json), now())"
+                ), {"day": day, "hourly": hourly, "summary": json.dumps({
+                    "precip_sum_mm": 0.0, "precip_occurred": False,
+                })})
+
+        def totals():
+            with repo.engine.connect() as connection:
+                return dict(connection.execute(text(
+                    "SELECT date::text, summary->>'precip_sum_mm' "
+                    "FROM weather_daily_summaries ORDER BY date"
+                )).all())
+
+        # publisher가 둘째 날 행을 쥐고 있다. 첫째 날은 이미 commit되어 남는다.
+        holder = repo.engine.connect()
+        try:
+            holder.begin()
+            holder.execute(text(
+                "SELECT 1 FROM weather_daily_summaries WHERE date = '2026-10-26' FOR UPDATE"
+            ))
+            with pytest.raises(Exception, match="lock timeout"):
+                command.upgrade(config, "head")
+            assert totals() == {"2026-10-25": None, "2026-10-26": "0.0"}
+        finally:
+            holder.rollback()
+            holder.close()
+        command.upgrade(config, "head")
+        assert totals() == {"2026-10-25": None, "2026-10-26": None}
+        with repo.engine.connect() as connection:
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
+                "0035_daily_precip_coverage"
+            )
+    finally:
+        repo.engine.dispose()
+        get_settings.cache_clear()
+
+
 def test_provider_marker_migration_recovers_an_invalid_concurrent_build(monkeypatch):
     """0022 동시 빌드 실패로 남은 INVALID 인덱스가 재실행을 영구히 막지 않는다."""
     monkeypatch.setenv("KOR_TRAVEL_WEATHER_DATABASE_URL", TEST_DATABASE_URL)

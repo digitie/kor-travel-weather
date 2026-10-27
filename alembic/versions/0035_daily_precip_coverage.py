@@ -5,7 +5,15 @@
 계산되므로 남아 있는 행(최대 31일)을 한 번 고친다. 시간별 winner(hourly_winners)와
 ``precip_occurred=true``(실제 강수·'1mm 미만' 증거)는 그대로 둔다.
 
-날짜 인덱스로 하루씩 나눠 각 UPDATE를 짧게 유지하고 statement/lock 대기를 묶는다.
+날짜 인덱스로 하루씩 나눠 autocommit으로 **하루마다 commit**한다. 그래야 고친 행의 잠금을
+migration 끝까지 쥐지 않고, 동시에 도는 publisher의 일별 upsert를 오래 막지 않는다. 각 UPDATE의
+statement/lock 대기는 묶는다. 중간에 실패해도 이미 고친 날은 남고, 같은 조건만 고치므로 다시
+실행하면 남은 날만 고친다.
+
+배포 순서: 이 보정은 schema를 바꾸지 않으므로 옛 publisher가 migration 뒤에 닫힌 구간을 부분
+합으로 다시 쓰지 않게 하려면 publisher sensor를 멈춘 채 migrate→이미지 교체를 하거나, 새 이미지로
+바꾼 뒤 migrate한다.
+
 되돌리기는 하지 않는다. 부분 합을 되살리면 다시 틀린 값이 된다.
 """
 
@@ -46,29 +54,31 @@ WHERE s.date = :day
 
 
 @contextmanager
-def bounded():
-    connection = op.get_bind()
+def bounded(connection):
+    """세션 단위로 statement/lock 대기를 묶고 끝나면 원래 값으로 되돌린다(autocommit 안)."""
     previous = dict(connection.execute(sa.text(
         "SELECT name, setting::bigint FROM pg_settings "
         "WHERE name IN ('statement_timeout', 'lock_timeout')"
     )).all())
-    for name, maximum in (("statement_timeout", 60000), ("lock_timeout", 5000)):
-        limit = min(previous[name] or maximum, maximum)
-        connection.execute(sa.text("SELECT set_config(:name, :value, true)"),
-                           {"name": name, "value": f"{limit}ms"})
-    yield connection
-    # 실패 시 Alembic transaction rollback이 LOCAL 설정과 보정을 함께 되돌린다.
-    for name, value in previous.items():
-        connection.execute(sa.text("SELECT set_config(:name, :value, true)"),
-                           {"name": name, "value": f"{value}ms"})
+    try:
+        for name, maximum in (("statement_timeout", 60000), ("lock_timeout", 5000)):
+            limit = min(previous[name] or maximum, maximum)
+            connection.execute(sa.text("SELECT set_config(:name, :value, false)"),
+                               {"name": name, "value": f"{limit}ms"})
+        yield connection
+    finally:
+        for name, value in previous.items():
+            connection.execute(sa.text("SELECT set_config(:name, :value, false)"),
+                               {"name": name, "value": f"{value}ms"})
 
 
 def upgrade():
-    with bounded() as connection:
+    with op.get_context().autocommit_block(), bounded(op.get_bind()) as connection:
         days = connection.execute(sa.text(
             "SELECT DISTINCT date FROM weather_daily_summaries ORDER BY date"
         )).scalars().all()
         for day in days:
+            # autocommit이라 각 UPDATE가 자기 transaction이다(하루 단위 commit).
             connection.execute(
                 sa.text(PARTIAL_PRECIP_FIX), {"day": day, "slot_hours": SLOT_HOURS},
             )
