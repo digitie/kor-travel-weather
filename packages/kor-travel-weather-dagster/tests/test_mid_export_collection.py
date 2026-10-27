@@ -16,6 +16,22 @@ from kortravelweather.export_mid import prove_mid_template
 from kortravelweather.models import WeatherLocation
 
 AT = datetime(2026, 10, 23, 9, 15, tzinfo=UTC)
+TM_FC = "202610231800"
+
+
+def _first_day(tm_fc):
+    """운영과 같은 현재 형식(2024-11-28 기간 확대 뒤)의 첫 예보일: 06시 D+4, 18시 D+5."""
+    return 4 if tm_fc[8:10] < "12" else 5
+
+
+def _per_location(tm_fc):
+    """위치당 fact: land는 D+first~7 오전·오후와 D+8~10 하루씩 × SKY/POP, 기온은 일수 × 2."""
+    first = _first_day(tm_fc)
+    return 2 * (2 * (8 - first) + 3) + 2 * (11 - first)
+
+
+#: 18시 발표(D+5 시작): land 18 + 기온 12.
+PER_LOCATION = _per_location(TM_FC)
 
 
 class Repository:
@@ -69,17 +85,20 @@ def targets(count=3):
     ]
 
 
-def _raw(part, region):
+def _raw(part, region, tm_fc=TM_FC):
+    first = _first_day(tm_fc)
     result = {"regId": region}
     if part == "land":
-        for day in range(3, 11):
+        for day in range(first, 11):
             for suffix in ("Am", "Pm") if day <= 7 else ("",):
                 result[f"wf{day}{suffix}"] = "맑음"
                 result[f"rnSt{day}{suffix}"] = 10
     else:
-        for day in range(3, 11):
+        for day in range(first, 11):
             result[f"taMin{day}"] = 5
             result[f"taMax{day}"] = 20
+            result[f"taMin{day}Low"], result[f"taMin{day}High"] = 4, 6
+            result[f"taMax{day}Low"], result[f"taMax{day}High"] = 19, 21
     return result
 
 
@@ -130,7 +149,7 @@ def execute(
     repository = Repository()
 
     def handler(request):
-        assert request.url.params["tmFc"] == "202610231800"
+        assert request.url.params["tmFc"] == TM_FC
         part = "land" if request.url.path.endswith("getMidLandFcst") else "temperature"
         region = request.url.params["regId"]
         events.append(("request", part, region))
@@ -190,7 +209,7 @@ def test_unique_regions_all_planned_before_http_and_same_sdk_issue(setup):
     assert len([e for e in setup if e[0] == "request"]) == 3
     assert result["requests_fetched"] == 3
     assert result["mid_groups_fetched"] == 2
-    assert result["values_loaded"] == len(repository.values) == 42 * 3
+    assert result["values_loaded"] == len(repository.values) == PER_LOCATION * 3
     assert repository.start_kwargs[0]["export_cohort_required"] is True
     assert repository.start_kwargs[0]["dataset_key"] == "kma_mid_forecast"
     assert repository.run.status == "success"
@@ -202,7 +221,7 @@ def test_cohort_failure_preserves_native_bounded_store(setup, monkeypatch):
 
     monkeypatch.setattr(mid_export, "_declare_cohort", failed)
     repository, result = execute(setup, count=120)
-    assert result["values_loaded"] == 42 * 120
+    assert result["values_loaded"] == PER_LOCATION * 120
     assert not any(e[0] == "prepare" for e in setup)
     assert max(locations for locations, _ in repository.batches) <= 50
     assert max(values for _, values in repository.batches) <= 2500
@@ -211,7 +230,7 @@ def test_cohort_failure_preserves_native_bounded_store(setup, monkeypatch):
 def test_large_shared_region_keeps_one_claim_and_small_batches(setup):
     repository, result = execute(setup, count=120)
     assert len([e for e in setup if e[0] == "prepare"]) == 3
-    assert result["values_loaded"] == 42 * 120
+    assert result["values_loaded"] == PER_LOCATION * 120
     assert max(locations for locations, _ in repository.batches) <= 50
     assert max(values for _, values in repository.batches) <= 2500
 
@@ -232,7 +251,7 @@ def test_duplicate_location_role_rejected_before_first_http(setup):
 def test_one_empty_success_is_reconfirmed_with_same_issue_and_plan(setup):
     repository, result = execute(setup, empty_first=True)
     assert result["requests_fetched"] == 4
-    assert result["values_loaded"] == 126 and repository.run.status == "success"
+    assert result["values_loaded"] == PER_LOCATION * 3 and repository.run.status == "success"
     assert len([e for e in setup if e[0] == "prepare"]) == 3
 
 
@@ -244,7 +263,7 @@ def test_persistent_empty_success_stops_after_one_reconfirmation(setup):
 
 def test_export_descriptor_limit_does_not_block_larger_native_region(setup):
     repository, result = execute(setup, count=1001)
-    assert result["values_loaded"] == 42 * 1001
+    assert result["values_loaded"] == PER_LOCATION * 1001
     assert not any(e[0] in {"cohort", "prepare"} for e in setup)
     assert max(locations for locations, _ in repository.batches) <= 50
     assert max(values for _, values in repository.batches) <= 2500

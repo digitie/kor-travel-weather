@@ -192,7 +192,7 @@ def publish_regional_records(
                         ):
                             # 처음 발견한 station은 먼저 canonical catalog에 남긴다.
                             # 다음 수집의 사전 roster로 승인하기 전에는 과거 전체 집합을 유지한다.
-                            source_export.invalidate()
+                            source_export.invalidate("unknown_station")
                             latest_sources.clear()
                             break
                         observed = getattr(record[0] if isinstance(record, tuple) else record,
@@ -203,7 +203,7 @@ def publish_regional_records(
             except Exception:
                 # 선행 export 검사 때문에 원래 native chunk의 commit 시점을 앞당겨
                 # 실패시키지 않는다. 본래 순회에서 같은 원천에 도달할 때 실패한다.
-                source_export.invalidate()
+                source_export.invalidate("precheck_error")
                 latest_sources.clear()
 
         def flush() -> None:
@@ -359,7 +359,7 @@ def run_khoa_beach_index_sync(
             **({"export_assembly": assembly} if assembly is not None else {}),
         )
     if assembly is not None and not assembly.receipt.complete:
-        _source_export.invalidate()
+        _source_export.invalidate("page_incomplete")
     return publish_regional_records(
         repository=repository,
         provider=KHOA_PROVIDER,

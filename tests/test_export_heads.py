@@ -16,7 +16,8 @@ from kortravelweather.repository import WeatherRepository
 
 
 @pytest.mark.parametrize(
-    "style,base_time,hours", [("ultra_short", "2330", 6), ("short", "2300", 72)]
+    # 23시 단기예보는 D+4 0시까지 1시간 간격이다(첫 정시 D+1 0시부터 73개).
+    "style,base_time,hours", [("ultra_short", "2330", 6), ("short", "2300", 73)]
 )
 def test_forecast_coverage_uses_sdk_base_across_kst_midnight(style, base_time, hours):
     from kma.time_utils import parse_kma_datetime
@@ -56,6 +57,68 @@ def test_forecast_coverage_uses_sdk_base_across_kst_midnight(style, base_time, h
     _forecast_coverage(descriptor, rows, base.astimezone(UTC))
     with pytest.raises(ExportArtifactError):
         _forecast_coverage(descriptor, rows[len(categories) :], base.astimezone(UTC))
+
+
+_SHORT_CATEGORIES = ("TMP", "PCP", "REH", "PTY", "POP", "SKY", "VEC", "WSD")
+
+
+def _short_rows(base_date, base_time, hourly, *, tail=8, drop=()):
+    """운영 단기예보 응답 모양: 1시간 간격 ``hourly``개 정시 뒤 3시간 간격 ``tail``개."""
+    from kma.time_utils import parse_kma_datetime
+
+    base = parse_kma_datetime(base_date, base_time)
+    first = base.replace(minute=0) + timedelta(hours=1)
+    times = [first + timedelta(hours=i) for i in range(hourly)]
+    times += [times[-1] + timedelta(hours=3 * (i + 1)) for i in range(tail)]
+    rows = [
+        {"fcstDate": at.strftime("%Y%m%d"), "fcstTime": at.strftime("%H%M"), "category": c}
+        for index, at in enumerate(times)
+        if index not in drop
+        for c in _SHORT_CATEGORIES
+    ]
+    return rows, base.astimezone(UTC)
+
+
+def _short_descriptor():
+    return ScopeDescriptor(
+        dataset_key="kma_short_forecast",
+        forecast_style="short",
+        entity_type="weather_response",
+        entity_id="grid:57:103",
+        nx=57,
+        ny=103,
+        location_ids=("short",),
+        normalizer_revision="kma-v1",
+        winner_policy_revision="kma-base-v1",
+        coverage_contract="kma-grid-forecast-v1",
+    )
+
+
+@pytest.mark.parametrize(
+    "base_date,base_time,hourly",
+    # 운영 실측: 05시 67개, 08시 64개, 20시 76개 정시가 1시간 간격이고 뒤는 3시간 간격 8개.
+    [("20261027", "0500", 67), ("20261026", "0800", 64), ("20261026", "2000", 76)],
+)
+def test_short_forecast_requires_the_hourly_horizon_its_base_publishes(
+    base_date, base_time, hourly
+):
+    from kortravelweather.export_heads import _forecast_coverage
+
+    rows, revision = _short_rows(base_date, base_time, hourly)
+    _forecast_coverage(_short_descriptor(), rows, revision)
+    # 1시간 간격 구간의 마지막 정시(D+3 또는 D+4 0시)가 빠지면 연속 구간이 끊긴다.
+    rows, revision = _short_rows(base_date, base_time, hourly, drop={hourly - 1})
+    with pytest.raises(ExportArtifactError):
+        _forecast_coverage(_short_descriptor(), rows, revision)
+
+
+def test_late_short_base_cannot_pass_with_an_early_base_horizon():
+    """20시 발표가 05시 발표처럼 D+3 0시에서 1시간 간격을 멈추면 승인하지 않는다."""
+    from kortravelweather.export_heads import _forecast_coverage
+
+    rows, revision = _short_rows("20261026", "2000", 52)
+    with pytest.raises(ExportArtifactError):
+        _forecast_coverage(_short_descriptor(), rows, revision)
 
 
 @pytest.fixture(scope="module")
@@ -515,6 +578,131 @@ def test_bind_rejects_future_fetch_clock_before_recording_freshness(repository, 
     with pytest.raises(ExportArtifactError, match="선언 이전"):
         _candidate(repository, tmp_path, descriptor, record_mutator=mutate)
     assert _head(ExportHeads(repository), descriptor) is None
+
+
+_ULTRA_SHORT_VALUES = {
+    "LGT": "0", "POP": "0", "PTY": "0", "REH": "60", "RN1": "강수없음", "SKY": "1",
+    "T1H": "12", "UUU": "0.5", "VEC": "200", "VVV": "-0.3", "WSD": "1.1",
+}
+
+
+def _bind_ultra_short(repository, row_base):
+    """운영 초단기예보 응답 모양(6개 정시 × 11개 category)을 실제 bind 경로로 연결한다.
+
+    ``row_base``는 SDK가 요청한 HH30 base를 받아 각 row의 (baseDate, baseTime)을 돌려준다.
+    """
+    from zoneinfo import ZoneInfo
+
+    key = "ultra-" + uuid.uuid4().hex
+    repository.create_location(
+        WeatherLocation(
+            location_id=key, name="초단기", latitude=37.5, longitude=127, nx=60, ny=127
+        )
+    )
+    descriptor = ScopeDescriptor(
+        dataset_key="kma_ultra_short_forecast",
+        forecast_style="ultra_short",
+        entity_type="weather_response",
+        entity_id="grid-test:" + key,
+        nx=60,
+        ny=127,
+        location_ids=(key,),
+        normalizer_revision="kma-v1",
+        winner_policy_revision="kma-base-v1",
+        coverage_contract="kma-grid-forecast-v1",
+    )
+    heads = ExportHeads(repository)
+    run = repository.start_sync_run(
+        provider=descriptor.provider, dataset_key=descriptor.dataset_key
+    )
+    try:
+        identity = repository.begin_export_attempt(
+            run_id=run.run_id,
+            scope_key="test",
+            planned_sources=[descriptor.source_scope],
+            execution_mode="native",
+        )
+        heads.lifecycle.claim(identity)
+        heads.declare(identity, descriptor)
+        now = datetime.now(UTC).astimezone(ZoneInfo("Asia/Seoul"))
+        requested = (now - timedelta(hours=1)).replace(minute=30, second=0, microsecond=0)
+        rows = []
+        for index, hour in enumerate(range(1, 7)):
+            at = requested.replace(minute=0) + timedelta(hours=hour)
+            for category, value in _ULTRA_SHORT_VALUES.items():
+                base_date, base_time = row_base(requested, index)
+                rows.append({
+                    "baseDate": base_date, "baseTime": base_time, "category": category,
+                    "fcstDate": at.strftime("%Y%m%d"), "fcstTime": at.strftime("%H%M"),
+                    "fcstValue": value, "nx": 60, "ny": 127,
+                })
+        record = dict(
+            source_record_key="ultra-" + uuid.uuid4().hex,
+            provider=descriptor.provider,
+            dataset_key=descriptor.dataset_key,
+            source_entity_type=descriptor.entity_type,
+            source_entity_id=descriptor.entity_id,
+            run_id=run.run_id,
+            fetched_at=datetime.now(UTC),
+            payload={
+                "rows": rows,
+                "response_metadata": {
+                    "base_date": requested.strftime("%Y%m%d"),
+                    "base_time": requested.strftime("%H%M"),
+                    "request_params": {"nx": 60, "ny": 127},
+                    "pagination": {
+                        "expected_total_count": len(rows),
+                        "received_item_count": len(rows),
+                        "page_count": 1,
+                        "complete": True,
+                    },
+                },
+            },
+        )
+        heads.bind_kma_response(identity, record)
+        with repository.engine.connect() as connection:
+            return requested, connection.scalar(
+                select(heads.plans.c.data_revision_at).where(
+                    heads.plans.c.attempt_id == identity.attempt_id
+                )
+            )
+    finally:
+        repository.finish_sync_run(run.run_id, status="failed")
+
+
+def test_ultra_short_binds_the_hh00_base_kma_announces_for_an_hh30_request(repository):
+    """운영 실측(2026-10-27): 요청 base_time 0730에 모든 row가 baseTime 0700을 돌려준다."""
+    requested, revision = _bind_ultra_short(
+        repository,
+        lambda requested, _: (requested.strftime("%Y%m%d"), requested.strftime("%H00")),
+    )
+    assert revision == requested.replace(minute=0).astimezone(UTC)
+
+
+def test_ultra_short_same_base_as_request_still_binds(repository):
+    requested, revision = _bind_ultra_short(
+        repository,
+        lambda requested, _: (requested.strftime("%Y%m%d"), requested.strftime("%H%M")),
+    )
+    assert revision == requested.astimezone(UTC)
+
+
+def _previous_hour(requested, _):
+    return requested.strftime("%Y%m%d"), (requested - timedelta(hours=1)).strftime("%H00")
+
+
+def _mixed(requested, index):
+    return requested.strftime("%Y%m%d"), requested.strftime("%H00" if index % 2 else "%H%M")
+
+
+def _other_date(requested, _):
+    return (requested - timedelta(days=1)).strftime("%Y%m%d"), requested.strftime("%H00")
+
+
+@pytest.mark.parametrize("row_base", [_previous_hour, _mixed, _other_date])
+def test_ultra_short_rejects_other_or_mixed_announced_bases(repository, row_base):
+    with pytest.raises(ExportArtifactError, match="발표 base"):
+        _bind_ultra_short(repository, row_base)
 
 
 def test_promotion_rejects_receipt_clock_different_from_bound_source(repository, tmp_path):

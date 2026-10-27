@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -20,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .export_artifacts import ExportArtifactError
 from .export_receipts import source_scope_key
-from .models import WeatherValue
+from .models import KST, WeatherValue
 from .providers.kma import (
     mid_land_forecast_to_weather_values,
     mid_temperature_to_weather_values,
@@ -97,13 +98,68 @@ def _revision(value: Any, *, operation: str, fetched: datetime) -> datetime:
     return issued.astimezone(UTC)
 
 
+#: KMA 중기 응답의 마지막 예보일과 반나절(오전/오후) 구간의 마지막 날.
+_MID_LAST_DAY = 10
+_MID_HALF_DAY_LAST = 7
+#: 단기예보 예보기간 확대 시각(KMA 공지 "(20241128)단기예보 서비스 개선에 따른 API
+#: 변경사항"). 이 tmFc 전의 중기 응답은 발표 시각과 무관하게 D+3부터다.
+_MID_EXTENSION_TMFC = datetime(2024, 11, 28, 14, tzinfo=KST)
+_MID_LEGACY_FIRST_DAY = 3
+#: normalizer가 읽는 원문 key(camel/snake)만 센다. ``taMax10High`` 같은 범위 key는 제외한다.
+_MID_DAY_KEYS = {
+    "land": re.compile(r"^(?:wf|rnSt)(\d+)(?:Am|Pm)?$|^(?:wf|rn_st)_(\d+)(?:_am|_pm)?$"),
+    "temperature": re.compile(r"^ta(?:Min|Max)(\d+)$|^ta_(?:min|max)_(\d+)$"),
+}
+
+
+def _published_mid_days(raw: Mapping[str, Any], part: str) -> set[int]:
+    """원문이 실제로 공개한 예보일을 key에서 읽는다. 값의 완결은 정규화 결과로 따로 본다."""
+    days: set[int] = set()
+    for key in raw:
+        match = _MID_DAY_KEYS[part].match(str(key))
+        if match:
+            days.add(int(match.group(1) or match.group(2)))
+    return days
+
+
+def _mid_first_day(revision: datetime) -> int:
+    """그 발표 회차(tmFc)의 중기 응답이 공개하는 첫 예보일. 회차마다 하나뿐이다.
+
+    기간 확대(``_MID_EXTENSION_TMFC``) 전에는 D+3부터다. 그 뒤로는 단기예보가 02~14시
+    발표는 D+3, 17~23시 발표는 D+4까지 덮으므로 중기 응답은 06시 발표가 D+4, 18시 발표가
+    D+5부터 시작한다(운영 실측: 2026-10-26 18시 taMin5~10, 2026-10-27 06시 taMin4~10).
+    """
+    if revision < _MID_EXTENSION_TMFC:
+        return _MID_LEGACY_FIRST_DAY
+    return 4 if revision.astimezone(KST).hour < 12 else 5
+
+
+def _mid_template(part: str, first: int) -> dict[str, set[tuple[int, str | None]]]:
+    """공개 첫 예보일에서 metric별로 반드시 있어야 하는 (예보일, 구간) 전체 집합."""
+    if part == "land":
+        slots = {
+            (day, period)
+            for day in range(first, _MID_HALF_DAY_LAST + 1)
+            for period in ("am", "pm")
+        } | {(day, None) for day in range(_MID_HALF_DAY_LAST + 1, _MID_LAST_DAY + 1)}
+        return {"SKY": slots, "POP": slots}
+    days = {(day, None) for day in range(first, _MID_LAST_DAY + 1)}
+    return {"TMN": days, "TMX": days}
+
+
 def _checked_values(descriptor, item, record, revision):
     normalizer = (
         mid_land_forecast_to_weather_values
         if descriptor.source_part == "land"
         else mid_temperature_to_weather_values
     )
-    expected = {"SKY": 13, "POP": 13} if descriptor.source_part == "land" else {"TMN": 8, "TMX": 8}
+    # 응답이 공개한 예보일 범위를 원문에서 읽고, 그 범위 전체가 빠짐없이 있어야 한다.
+    # 첫 예보일은 그 발표 회차에 KMA가 공개하는 날 하나뿐이고 끝은 항상 D+10이다.
+    published = _published_mid_days(item.raw, descriptor.source_part)
+    first = _mid_first_day(revision)
+    if published != set(range(first, _MID_LAST_DAY + 1)):
+        raise ExportArtifactError("중기 응답의 공개 예보일 범위가 KMA 공개 범위와 다릅니다.")
+    expected = _mid_template(descriptor.source_part, first)
     result = []
     for location in descriptor.location_ids:
         values = normalizer(
@@ -114,6 +170,7 @@ def _checked_values(descriptor, item, record, revision):
         )
         identities = set()
         metrics = {key: [] for key in expected}
+        slots = {key: set() for key in expected}
         for value in values:
             identity = (value.metric_key, value.target_at)
             if (
@@ -125,6 +182,9 @@ def _checked_values(descriptor, item, record, revision):
                 raise ExportArtifactError("중기 정규화의 시각·metric·identity가 다릅니다.")
             identities.add(identity)
             metrics[value.metric_key].append(value)
+            slots[value.metric_key].add(
+                (value.payload.get("day_offset"), value.payload.get("period"))
+            )
             if value.metric_key == "SKY":
                 # 기존 normalizer는 원문을 str로 변환한다. 그 전에 선택한 원문 필드가
                 # 실제 문자열이었는지는 normalizer가 보존한 payload로 따로 증명한다.
@@ -141,7 +201,10 @@ def _checked_values(descriptor, item, record, revision):
                 low, high = (0, 100) if value.metric_key == "POP" else (-90, 65)
                 if number is None or not number.is_finite() or not low <= number <= high:
                     raise ExportArtifactError("중기 기온·강수확률의 정상 숫자 증거가 없습니다.")
-        if any(len(metrics[key]) != count for key, count in expected.items()):
+        if any(
+            len(metrics[key]) != len(template) or slots[key] != template
+            for key, template in expected.items()
+        ):
             raise ExportArtifactError("중기 지역 응답의 필수 전체 구간이 빠졌습니다.")
         if descriptor.source_part == "temperature":
             minima = {v.target_at: v.value_number for v in metrics["TMN"]}
@@ -254,7 +317,11 @@ def prove_mid_source(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) 
 
 
 def prove_mid_template(descriptor: MidScopeDescriptor, record: Mapping[str, Any]) -> MidSourceProof:
-    """지역 공유 원문의 26/16개 값만 복원한다. 위치별 전체 목록을 만들지 않는다."""
+    """지역 공유 원문의 값(land/temperature: D+4 시작 22/14개, D+5 시작 18/12개,
+    기간 확대 전 D+3 시작 26/16개)만 복원한다.
+
+    위치별 전체 목록을 만들지 않는다.
+    """
     return _prove_mid_source(
         descriptor.model_copy(update={"location_ids": descriptor.location_ids[:1]}), record
     )

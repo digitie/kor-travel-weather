@@ -13,21 +13,35 @@ from kortravelweather_dagster.kma_weather import _source_spec
 
 from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_mid import MidScopeDescriptor, prove_mid_source
+from kortravelweather.models import KST
 
 FETCHED = datetime(2026, 10, 23, 9, 15, tzinfo=UTC)
+#: 기본 fixture는 운영과 같은 현재 형식이다: 2026-10-23 18시 발표는 D+5부터 공개한다.
+FIRST = 5
 
 
-def _raw(part):
+def _first_day(tm_fc):
+    """KMA가 그 회차에 공개하는 첫 예보일. 기간 확대(tmFc 2024-11-28 14시) 전은 D+3이다."""
+    if tm_fc < "202411281400":
+        return 3
+    return 4 if tm_fc[8:10] < "12" else 5
+
+
+def _raw(part, *, first):
     result = {"regId": "11B00000" if part == "land" else "11B10101"}
     if part == "land":
-        for day in range(3, 11):
+        for day in range(first, 11):
             for suffix in ("Am", "Pm") if day <= 7 else ("",):
                 result[f"wf{day}{suffix}"] = "구름많음"
                 result[f"rnSt{day}{suffix}"] = 30
     else:
-        for day in range(3, 11):
+        for day in range(first, 11):
             result[f"taMin{day}"] = 5
             result[f"taMax{day}"] = 20
+            if first != 3:
+                # 운영 getMidTa 응답(2026-10-27)은 일별 범위 key도 함께 준다.
+                result[f"taMin{day}Low"], result[f"taMin{day}High"] = 4, 6
+                result[f"taMax{day}Low"], result[f"taMax{day}High"] = 19, 21
     return result
 
 
@@ -38,8 +52,10 @@ def _rehash(record):
     record["source_record_key"] = "sr_" + hashlib.sha256(text.encode()).hexdigest()[:48]
 
 
-def _source(part, *, tm_fc="202610231800"):
-    raw = _raw(part)
+def _source(part, *, tm_fc="202610231800", first=None, mutate=None, fetched=FETCHED):
+    raw = _raw(part, first=_first_day(tm_fc) if first is None else first)
+    if mutate:
+        mutate(raw)
 
     async def load():
         def handle(incoming):
@@ -73,7 +89,7 @@ def _source(part, *, tm_fc="202610231800"):
         location_ids=("a", "b"),
         normalizer_revision=f"kma-mid-{part}-v1",
     )
-    record = _source_spec("kma_mid_forecast", descriptor.entity_id, rows, FETCHED)
+    record = _source_spec("kma_mid_forecast", descriptor.entity_id, rows, fetched)
     return descriptor, record
 
 
@@ -89,14 +105,16 @@ def test_public_sdk_raw_replay_and_stable_namespace(source):
     proof = prove_mid_source(descriptor, record)
     assert proof.revision == datetime(2026, 10, 23, 9, tzinfo=UTC)
     assert proof.source_collected_at == FETCHED
-    assert len(proof.values) == (52 if descriptor.source_part == "land" else 32)
+    # D+5 시작: land는 D+5~7 오전·오후와 D+8~10 하루씩 9구간 × SKY/POP, 기온은 6일 × TMN/TMX.
+    assert len(proof.values) == (36 if descriptor.source_part == "land" else 24)
     assert {v.location_id for v in proof.values} == {"a", "b"}
     assert all(v.source_record_key == record["source_record_key"] for v in proof.values)
     old_namespace = descriptor.namespace
-    later = copy.deepcopy(record)
-    later["payload"]["response_metadata"]["request_params"]["tmFc"] = "202610240600"
-    later["fetched_at"] += timedelta(hours=12)
-    _rehash(later)
+    # 다음 회차(06시 발표, D+4 시작)는 같은 scope의 더 새 revision이다.
+    later_descriptor, later = _source(
+        descriptor.source_part, tm_fc="202610240600", fetched=FETCHED + timedelta(hours=12)
+    )
+    assert later_descriptor == descriptor
     assert prove_mid_source(descriptor, later).revision > proof.revision
     assert descriptor.namespace == old_namespace
 
@@ -124,7 +142,7 @@ def test_fail_closed_with_correctly_rehashed_mutations(source, kind):
     payload = record["payload"]
     row = payload["rows"][0]
     metadata = payload["response_metadata"]
-    field = "rnSt3Am" if descriptor.source_part == "land" else "taMin3"
+    field = f"rnSt{FIRST}Am" if descriptor.source_part == "land" else f"taMin{FIRST}"
     if kind == "empty":
         payload["rows"] = []
     elif kind == "duplicate":
@@ -157,7 +175,7 @@ def test_fail_closed_with_correctly_rehashed_mutations(source, kind):
 @pytest.mark.parametrize("value", [True, "Infinity", "-Infinity", -999, 101])
 def test_precip_probability_rejects_nonfinite_sentinel_and_out_of_range(value):
     descriptor, record = _source("land")
-    record["payload"]["rows"][0]["rnSt3Am"] = value
+    record["payload"]["rows"][0][f"rnSt{FIRST}Am"] = value
     _rehash(record)
     with pytest.raises(ExportArtifactError):
         prove_mid_source(descriptor, record)
@@ -165,7 +183,7 @@ def test_precip_probability_rejects_nonfinite_sentinel_and_out_of_range(value):
 
 def test_temperature_minimum_cannot_exceed_maximum():
     descriptor, record = _source("temperature")
-    record["payload"]["rows"][0]["taMin3"] = 30
+    record["payload"]["rows"][0][f"taMin{FIRST}"] = 30
     _rehash(record)
     with pytest.raises(ExportArtifactError):
         prove_mid_source(descriptor, record)
@@ -197,10 +215,10 @@ def test_sky_requires_real_nonblank_source_string(value, snake):
     descriptor, record = _source("land")
     raw = record["payload"]["rows"][0]
     if snake:
-        raw.pop("wf3Am")
-        raw["wf_3_am"] = value
+        raw.pop(f"wf{FIRST}Am")
+        raw[f"wf_{FIRST}_am"] = value
     else:
-        raw["wf3Am"] = value
+        raw[f"wf{FIRST}Am"] = value
     _rehash(record)
     with pytest.raises(ExportArtifactError):
         prove_mid_source(descriptor, record)
@@ -257,3 +275,94 @@ def test_descriptor_rejects_noncanonical_scope(source, change):
     descriptor, _ = source
     with pytest.raises(ValueError):
         MidScopeDescriptor.model_validate({**descriptor.model_dump(), **change})
+
+
+#: 운영 실측 회차(2026-10-26 18시: taMin5~10, 2026-10-27 06시: taMin4~10). 06시 발표는
+#: D+4, 18시 발표는 D+5부터 공개한다. (tmFc, 실제 조회 시각)
+MORNING = ("202610240600", datetime(2026, 10, 23, 22, tzinfo=UTC))
+EVENING = ("202610231800", FETCHED)
+
+
+@pytest.mark.parametrize("part", ["land", "temperature"])
+@pytest.mark.parametrize("issue,first", [(MORNING, 4), (EVENING, 5)])
+def test_current_response_starts_where_kma_publishes_for_that_issue(part, issue, first):
+    """D+3 key가 없는 현재 응답도 그 회차가 공개한 범위 전체가 완결이면 승인한다."""
+    tm_fc, fetched = issue
+    descriptor, record = _source(part, tm_fc=tm_fc, first=first, fetched=fetched)
+    proof = prove_mid_source(descriptor, record)
+    days = 11 - first
+    per_location = 2 * (days + (8 - first)) if part == "land" else 2 * days
+    assert len(proof.values) == per_location * len(descriptor.location_ids)
+    assert {v.payload["day_offset"] for v in proof.values} == set(range(first, 11))
+    issued = proof.revision.astimezone(KST).date()
+    first_day = min(v.target_at.astimezone(KST).date() for v in proof.values)
+    assert first_day == issued + timedelta(days=first)
+
+
+def _drop(*keys):
+    def mutate(raw):
+        for key in keys:
+            raw.pop(key)
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    "part,issue,first,mutate",
+    [
+        # 공개 범위 중간의 하루가 통째로 빠진 응답
+        ("temperature", MORNING, 4, _drop("taMin6", "taMax6")),
+        ("land", MORNING, 4, _drop("wf6Am", "wf6Pm", "rnSt6Am", "rnSt6Pm")),
+        # 한 metric만 빠진 반쪽 응답
+        ("temperature", MORNING, 4, _drop("taMin4")),
+        ("land", EVENING, 5, _drop("rnSt5Pm")),
+        # 그 회차가 공개하지 않는 시작일
+        ("temperature", MORNING, 5, None),
+        ("land", MORNING, 5, None),
+        ("temperature", EVENING, 4, None),
+        ("land", EVENING, 4, None),
+        # 기간 확대 뒤 회차인데 이전 형식(D+3 시작)인 응답
+        ("temperature", MORNING, 3, None),
+        ("land", MORNING, 3, None),
+        ("temperature", EVENING, 3, None),
+        ("land", EVENING, 3, None),
+        # 마지막 날(D+10)이 없는 응답
+        ("temperature", MORNING, 4, _drop("taMin10", "taMax10")),
+        ("land", EVENING, 5, _drop("wf10", "rnSt10")),
+    ],
+)
+def test_current_response_still_requires_every_published_slot(part, issue, first, mutate):
+    tm_fc, fetched = issue
+    descriptor, record = _source(part, tm_fc=tm_fc, first=first, mutate=mutate, fetched=fetched)
+    with pytest.raises(ExportArtifactError):
+        prove_mid_source(descriptor, record)
+
+
+#: 기간 확대 경계(tmFc 2024-11-28 14시 KST) 앞뒤 회차. (tmFc, 실제 조회 시각)
+LEGACY_EVENING = ("202411271800", datetime(2024, 11, 27, 9, 15, tzinfo=UTC))
+LEGACY_MORNING = ("202411280600", datetime(2024, 11, 27, 21, 15, tzinfo=UTC))
+EXTENDED_EVENING = ("202411281800", datetime(2024, 11, 28, 9, 15, tzinfo=UTC))
+
+
+@pytest.mark.parametrize("part", ["land", "temperature"])
+@pytest.mark.parametrize(
+    "issue,first,accepted",
+    [
+        (LEGACY_EVENING, 3, True),
+        (LEGACY_MORNING, 3, True),
+        (LEGACY_EVENING, 5, False),
+        (LEGACY_MORNING, 4, False),
+        (EXTENDED_EVENING, 5, True),
+        (EXTENDED_EVENING, 3, False),
+    ],
+)
+def test_d3_start_is_accepted_only_before_the_kma_extension(part, issue, first, accepted):
+    """D+3 시작은 기간 확대 전 회차의 형식일 뿐이다. 회차마다 첫 예보일은 하나다."""
+    tm_fc, fetched = issue
+    descriptor, record = _source(part, tm_fc=tm_fc, first=first, fetched=fetched)
+    if not accepted:
+        with pytest.raises(ExportArtifactError):
+            prove_mid_source(descriptor, record)
+        return
+    proof = prove_mid_source(descriptor, record)
+    assert {v.payload["day_offset"] for v in proof.values} == set(range(first, 11))

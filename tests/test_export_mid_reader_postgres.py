@@ -11,7 +11,7 @@ from kma.time_utils import latest_mid_fcst_time
 from kortravelweather_dagster.kma_weather import _source_spec
 from sqlalchemy import event, select, update
 from test_export_external import external_repository as external_repository
-from test_export_mid import _raw
+from test_export_mid import _first_day, _raw
 
 from kortravelweather.export_mid import MidScopeDescriptor, normalize_mid_source
 from kortravelweather.export_mid_collector import MidExportCollector
@@ -56,7 +56,8 @@ def _collect(repo, root, *, publish=("land", "temperature"), seed=True):
     tm_fc = latest_mid_fcst_time(datetime.now(UTC))
 
     async def response(part):
-        raw = _raw(part)
+        # 현재 회차가 공개하는 형식(06시 D+4, 18시 D+5 시작)으로 응답한다.
+        raw = _raw(part, first=_first_day(tm_fc))
 
         def handle(incoming):
             assert incoming.url.params["tmFc"] == tm_fc

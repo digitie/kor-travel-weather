@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -16,13 +17,64 @@ from typing import Any
 
 from kortravelcommon.deadline import call_with_deadline
 from sqlalchemy import literal_column, select, update
+from sqlalchemy.exc import OperationalError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_heads import ExportHeads, ScopeDescriptor
 from .export_receipts import ExportAttempt, ExportCapture
 from .models import WeatherValue
+from .partitions import is_lock_conflict
 
 logger = logging.getLogger(__name__)
+
+#: 거절 사유로 남기는 PostgreSQL SQLSTATE 분류. 그 밖의 DB 오류는 SQLSTATE만 남긴다.
+_SQLSTATE_REASONS = {
+    "55P03": "lock_timeout",
+    "57014": "statement_timeout",
+    "40P01": "deadlock",
+    "40001": "serialization",
+}
+
+#: export 단계의 잠금 경합 재시도 정책. 원본 ingest의 ``_retry_lock_race``(20회 × 3초
+#: 대기 + 3초 sleep, 단계당 약 2분)를 쓰지 않는다. KMA는 다음 격자 준비가 앞 격자
+#: ingest와 부딪히므로, 짧게 쉬고(jitter) 다시 시도하되 단계당·run(collector)당 쓸 시간을
+#: 묶는다. 다 쓰면 원래 잠금 오류로 거절(``CODE:lock_timeout``)하고 원본 수집은 계속한다.
+EXPORT_LOCK_PAUSE_SECONDS = (0.2, 1.0)
+EXPORT_LOCK_STEP_SECONDS = 15.0
+EXPORT_LOCK_RUN_SECONDS = 120.0
+
+
+def _sqlstate(exc: BaseException) -> str | None:
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    if isinstance(sqlstate, str) and sqlstate.isalnum() and len(sqlstate) == 5:
+        return sqlstate
+    return None
+
+
+def failure_reason(exc: BaseException) -> str:
+    """원인 분류만 돌려준다. 메시지·SQL·파라미터·DSN·원문 payload는 담지 않는다.
+
+    DB 오류는 SQLSTATE로, 승인 증명 실패는 ``proof``로, 그 밖은 예외 클래스 이름으로 나눈다.
+    """
+    sqlstate = _sqlstate(exc)
+    if sqlstate is not None:
+        return _SQLSTATE_REASONS.get(sqlstate, f"sqlstate_{sqlstate}")
+    if isinstance(exc, ExportArtifactError):
+        return "proof"
+    return type(exc).__name__[:40]
+
+
+def _proof_detail(exc: BaseException) -> str:
+    # 승인 증명 메시지는 코드에 고정된 문장이다. 다른 예외 메시지는 비밀을 담을 수 있다.
+    return str(exc)[:160] if isinstance(exc, ExportArtifactError) else "-"
+
+
+class _PrepareRejected(Exception):
+    """attempt를 만든 뒤 예약·선언에 실패했다. 원인은 ``__cause__``에 있다."""
+
+    def __init__(self, identity: ExportAttempt):
+        super().__init__("export attempt 준비가 완료되지 않았습니다.")
+        self.identity = identity
 
 
 @dataclass(frozen=True)
@@ -39,8 +91,64 @@ class KmaNowcastExportCollector:
         self.run_id = run_id
         self.heads = ExportHeads(repository)
         self.artifacts = ExportArtifactStore(artifact_root)
+        # 이 collector(run)가 잠금 경합 재시도에 쓴 시간. KMA는 격자 준비와 ingest가
+        # 서로 다른 thread에서 돌므로 갱신을 묶는다.
+        self._lock_spent = 0.0
+        self._lock_guard = threading.Lock()
 
-    def _reject(self, identity, code):
+    def _retry_lock(self, step):
+        """export 단계 하나를 잠금 경합(lock_timeout·deadlock)에 한해 짧게 다시 시도한다.
+
+        export 단계는 run -> attempt -> scope 순서로 run 행을 ``FOR UPDATE``로 잠근다.
+        같은 run의 ingest transaction이 그 행을 잡고 있으면 3초 lock_timeout에 걸린다
+        (운영 실측 2026-10-26: 대기 2.7~2.8초 뒤 취소). 각 단계는 실패하면 rollback되는
+        한 transaction이라 쉬는 동안 아무것도 잡지 않는다. 단계당
+        ``EXPORT_LOCK_STEP_SECONDS``, 이 collector(run) 전체 ``EXPORT_LOCK_RUN_SECONDS``를
+        넘기면 원래 잠금 오류를 올려 호출자가 ``CODE:lock_timeout``으로 거절한다.
+        재시도·포기마다 SQLSTATE만 남긴다.
+        """
+        started = time.monotonic()
+        retries, contended = 0, False
+        try:
+            while True:
+                try:
+                    return step()
+                except OperationalError as exc:
+                    if not is_lock_conflict(exc):
+                        raise
+                    contended = True
+                    waited = time.monotonic() - started
+                    pause = random.uniform(*EXPORT_LOCK_PAUSE_SECONDS)
+                    run_spent = self._lock_spent + waited
+                    over_run = run_spent + pause > EXPORT_LOCK_RUN_SECONDS
+                    if over_run or waited + pause > EXPORT_LOCK_STEP_SECONDS:
+                        logger.warning(
+                            "weather_export_lock_exhausted run_id=%s limit=%s retries=%d "
+                            "sqlstate=%s waited_s=%.1f run_spent_s=%.1f run_budget_s=%.0f",
+                            self.run_id, "run_budget" if over_run else "step_cap", retries,
+                            _sqlstate(exc), waited, run_spent, EXPORT_LOCK_RUN_SECONDS,
+                        )
+                        raise
+                    retries += 1
+                    logger.warning(
+                        "weather_export_lock_retry run_id=%s retry=%d sqlstate=%s waited_s=%.1f",
+                        self.run_id, retries, _sqlstate(exc), waited,
+                    )
+                    time.sleep(pause)
+        finally:
+            if contended:
+                with self._lock_guard:
+                    self._lock_spent += time.monotonic() - started
+
+    def _reject(self, identity, code, exc=None, *, reason=None):
+        """attempt를 거절한다. 사유가 있으면 ``CODE:reason``으로 함께 남긴다(64자 이내)."""
+        reason = reason or (failure_reason(exc) if exc is not None else None)
+        error_code = f"{code}:{reason}"[:64] if reason else code
+        logger.warning(
+            "weather_export_rejected attempt_id=%s code=%s reason=%s detail=%s",
+            identity.attempt_id, code, reason or "-",
+            _proof_detail(exc) if exc is not None else "-",
+        )
         try:
             attempts = self.heads.lifecycle.attempts
             with self.heads._transaction() as session:
@@ -51,11 +159,12 @@ class KmaNowcastExportCollector:
                         attempts.c.owner_id == identity.owner_id,
                         attempts.c.status == "preparing",
                     )
-                    .values(status="failed", error_code=code)
+                    .values(status="failed", error_code=error_code)
                 )
-        except Exception:
+        except Exception as record_exc:
             logger.warning(
-                "weather_export_failure_record_deferred attempt_id=%s", identity.attempt_id
+                "weather_export_failure_record_deferred attempt_id=%s reason=%s",
+                identity.attempt_id, failure_reason(record_exc),
             )
 
     def prepare(
@@ -68,7 +177,6 @@ class KmaNowcastExportCollector:
         dataset_key: str = "kma_ultra_short_nowcast",
     ):
         """HTTP 요청 전 선택/grid/policy를 고정한다. 실패 시 원본 경로만 계속한다."""
-        identity = None
         try:
             descriptor = ScopeDescriptor(
                 dataset_key=dataset_key,
@@ -95,21 +203,45 @@ class KmaNowcastExportCollector:
                 orchestrator_id = session.execute(
                     select(runs.c.orchestrator_run_id).where(runs.c.run_id == self.run_id)
                 ).scalar_one()
-            identity = self.repository.begin_export_attempt(
+            identity = self._begin_declared(
+                descriptor, execution_mode="dagster" if orchestrator_id else "native"
+            )
+            return PreparedGridExport(identity, descriptor)
+        except _PrepareRejected as rejected:
+            self._reject(rejected.identity, "PREPARE_FAILED", rejected.__cause__)
+            return None
+        except Exception as exc:
+            # DSN/원문 provider payload나 경로를 로그에 포함하지 않는다. attempt 생성 전 실패다.
+            logger.warning(
+                "weather_export_prepare_failed run_id=%s reason=%s",
+                self.run_id, failure_reason(exc),
+            )
+            return None
+
+    def _begin_declared(self, descriptor, *, execution_mode):
+        """attempt를 만들고 scope를 예약·선언한다. 각 단계는 잠금 경합을 재시도한다.
+
+        attempt를 만든 뒤의 실패는 ``_PrepareRejected``로 감싸 호출자가 그 attempt를
+        사유와 함께 거절하게 한다.
+        """
+        identity = self._retry_lock(
+            lambda: self.repository.begin_export_attempt(
                 run_id=self.run_id,
                 scope_key=descriptor.namespace,
                 planned_sources=[descriptor.source_scope],
-                execution_mode="dagster" if orchestrator_id else "native",
+                execution_mode=execution_mode,
             )
-            self.heads.lifecycle.claim(identity)
-            self.heads.declare(identity, descriptor)
-            return PreparedGridExport(identity, descriptor)
-        except Exception:
-            # DSN/원문 provider payload나 경로를 로그에 포함하지 않는다.
-            logger.warning("weather_export_prepare_failed run_id=%s", self.run_id)
-            if identity is not None:
-                self._reject(identity, "PREPARE_FAILED")
-            return None
+        )
+        try:
+            self._retry_lock(lambda: self.heads.lifecycle.claim(identity))
+            self._retry_lock(lambda: self.heads.declare(identity, descriptor))
+        except Exception as exc:
+            logger.warning(
+                "weather_export_prepare_failed run_id=%s reason=%s",
+                self.run_id, failure_reason(exc),
+            )
+            raise _PrepareRejected(identity) from exc
+        return identity
 
     def ingest(
         self,
@@ -121,9 +253,11 @@ class KmaNowcastExportCollector:
         capture = None
         if prepared is not None:
             try:
-                self._bind_source(prepared, record)
-                self.heads.lifecycle.expect_chunk(
-                    prepared.identity, "grid", records=[record], values=values
+                self._retry_lock(lambda: self._bind_source(prepared, record))
+                self._retry_lock(
+                    lambda: self.heads.lifecycle.expect_chunk(
+                        prepared.identity, "grid", records=[record], values=values
+                    )
                 )
                 capture = ExportCapture(
                     prepared.identity,
@@ -131,11 +265,12 @@ class KmaNowcastExportCollector:
                     {record["source_record_key"]: record["fetched_at"]},
                     self.artifacts,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "weather_export_bind_failed attempt_id=%s", prepared.identity.attempt_id
+                    "weather_export_bind_failed attempt_id=%s reason=%s",
+                    prepared.identity.attempt_id, failure_reason(exc),
                 )
-                self._reject(prepared.identity, "SOURCE_PROOF_FAILED")
+                self._reject(prepared.identity, "SOURCE_PROOF_FAILED", exc)
         # 원본 DB 오류는 정상적으로 호출자에게 전파한다. 실패 후 중복 ingest하지 않는다.
         loaded = self.repository.ingest_batch(
             source_records=[record],
@@ -144,15 +279,18 @@ class KmaNowcastExportCollector:
         )
         if capture is not None:
             try:
-                self.heads.lifecycle.close_source(
-                    prepared.identity, prepared.descriptor.source_scope, ["grid"]
+                self._retry_lock(
+                    lambda: self.heads.lifecycle.close_source(
+                        prepared.identity, prepared.descriptor.source_scope, ["grid"]
+                    )
                 )
-                self.heads.lifecycle.close_plan(prepared.identity)
-            except Exception:
+                self._retry_lock(lambda: self.heads.lifecycle.close_plan(prepared.identity))
+            except Exception as exc:
                 logger.warning(
-                    "weather_export_seal_failed attempt_id=%s", prepared.identity.attempt_id
+                    "weather_export_seal_failed attempt_id=%s reason=%s",
+                    prepared.identity.attempt_id, failure_reason(exc),
                 )
-                self._reject(prepared.identity, "PLAN_SEAL_FAILED")
+                self._reject(prepared.identity, "PLAN_SEAL_FAILED", exc)
         return loaded
 
     def _bind_source(self, prepared, record):
@@ -186,13 +324,13 @@ class KmaNowcastExportCollector:
         bound = False
         if prepared:
             try:
-                self._bind_source(prepared, record)
+                self._retry_lock(lambda: self._bind_source(prepared, record))
                 bound = True
-            except Exception:
-                self._reject(prepared.identity, "SOURCE_PROOF_FAILED")
+            except Exception as exc:
+                self._reject(prepared.identity, "SOURCE_PROOF_FAILED", exc)
                 logger.warning(
-                    "weather_forecast_export_bind_failed attempt_id=%s",
-                    prepared.identity.attempt_id,
+                    "weather_forecast_export_bind_failed attempt_id=%s reason=%s",
+                    prepared.identity.attempt_id, failure_reason(exc),
                 )
         loaded, batch, locations, keys = 0, [], 0, []
 
@@ -205,8 +343,11 @@ class KmaNowcastExportCollector:
             key = f"grid-{len(keys):04d}"
             if bound:
                 try:
-                    self.heads.lifecycle.expect_chunk(
-                        prepared.identity, key, records=[record], values=batch
+                    chunk = batch
+                    self._retry_lock(
+                        lambda: self.heads.lifecycle.expect_chunk(
+                            prepared.identity, key, records=[record], values=chunk
+                        )
                     )
                     capture = ExportCapture(
                         prepared.identity,
@@ -214,9 +355,9 @@ class KmaNowcastExportCollector:
                         {record["source_record_key"]: record["fetched_at"]},
                         self.artifacts,
                     )
-                except Exception:
+                except Exception as exc:
                     bound = False
-                    self._reject(prepared.identity, "CHUNK_PLAN_FAILED")
+                    self._reject(prepared.identity, "CHUNK_PLAN_FAILED", exc)
             loaded += self.repository.ingest_batch(
                 source_records=[record],
                 values=batch,
@@ -235,12 +376,14 @@ class KmaNowcastExportCollector:
         flush()
         if bound:
             try:
-                self.heads.lifecycle.close_source(
-                    prepared.identity, prepared.descriptor.source_scope, keys
+                self._retry_lock(
+                    lambda: self.heads.lifecycle.close_source(
+                        prepared.identity, prepared.descriptor.source_scope, keys
+                    )
                 )
-                self.heads.lifecycle.close_plan(prepared.identity)
-            except Exception:
-                self._reject(prepared.identity, "PLAN_SEAL_FAILED")
+                self._retry_lock(lambda: self.heads.lifecycle.close_plan(prepared.identity))
+            except Exception as exc:
+                self._reject(prepared.identity, "PLAN_SEAL_FAILED", exc)
         return loaded
 
 

@@ -9,7 +9,7 @@ from kma import DataGoKrClient, KmaRequestError
 from kortravelweather_dagster.kma_weather import run_weather_sync
 from sqlalchemy import func, select
 from test_export_external import external_repository as external_repository
-from test_mid_export_collection import NoGridClient, _raw, targets
+from test_mid_export_collection import NoGridClient, _per_location, _raw, targets
 
 from kortravelweather.export_collector import publish_pending_exports
 from kortravelweather.export_external_cohorts import external_cohort_table
@@ -73,7 +73,8 @@ def test_actual_mid_native_capture_promotes_once_and_later_failure_preserves_hea
                 "response": {
                     "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
                     "body": {
-                        "items": {"item": [_raw(part, region)]},
+                        # 실제 시각의 회차(06시 D+4, 18시 D+5 시작) 형식으로 응답한다.
+                        "items": {"item": [_raw(part, region, request.url.params["tmFc"])]},
                         "totalCount": 1,
                         "pageNo": 1,
                         "numOfRows": 10,
@@ -100,8 +101,9 @@ def test_actual_mid_native_capture_promotes_once_and_later_failure_preserves_hea
 
     result = collect()
     assert result["status"] == "success"
-    assert result["requests_fetched"] == 3 and result["values_loaded"] == 126
     assert len({issue for _, _, issue in seen}) == 1
+    assert result["requests_fetched"] == 3
+    assert result["values_loaded"] == 3 * _per_location(seen[0][2])
     outcome = publish_pending_exports(repo, tmp_path, limit=10)
     assert outcome.results.get("PUBLISHED") == 3
     inventory = export_inventory_table(heads.metadata)

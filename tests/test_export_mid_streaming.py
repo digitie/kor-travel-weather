@@ -26,7 +26,8 @@ def test_streaming_matches_existing_normalizer_for_small_scope(part):
     ]
 
 
-@pytest.mark.parametrize("part,per_location", [("land", 26), ("temperature", 16)])
+# 기본 fixture는 현재 형식(18시 발표, D+5 시작)이다: land 9구간 × SKY/POP, 기온 6일 × TMN/TMX.
+@pytest.mark.parametrize("part,per_location", [("land", 18), ("temperature", 12)])
 def test_thousand_locations_share_one_template_with_bounded_peak_memory(part, per_location):
     small, record = _source(part)
     descriptor = MidScopeDescriptor.model_validate(
