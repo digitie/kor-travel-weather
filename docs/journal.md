@@ -1,3 +1,10 @@
+## 2026-10-28 — retention 카탈로그 실측·현재 API 소스 정합
+
+- API는 외부 전환된main210이며 release/파일지문을 확인했다. old source guard의 DB진입 전 실패를 보존했고 current에 결박한 bounded RO1회만 정산한다. 이번 문서의 새 운영 변경은0이다.
+- retention parent+16leaf coverage·valid/ready/live와 current value_id PK를 확인했다. 누락index 가설 근거는 없고 current11index/INCLUDE4가 현재 관측이다. NOT VALID FK17과 통계live899만/dead120만을 orphan·병목·정확행수로 단정하지 않는다.
+- 자연7 SUCCESS/1 STARTED·8 materialization 21만facts 진척도 모두remaining/budget_exhausted다. 과거6h 정리는 미완이고 위치지연상한·통계reset 경위 미상·CPU/IO 미측정 한계를 유지한다.
+- export publisher desired STOPPED를 유지한다. 과거APIe393/web5098 UI21은 당시수용이며 현재210 UI재검증이 아니다. [관측·원실패·남은수용](reports/2026-10-28-retention-catalog-and-current-source.md). 아래 기록은 각 작성시점 이력이다.
+
 ## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
 
 - 정확1bafa CI756 1510/3FAIL·757 1511/2FAIL 원문을 보존했다. 기존 SQL recorder 대역과23시 변조 no-op를
