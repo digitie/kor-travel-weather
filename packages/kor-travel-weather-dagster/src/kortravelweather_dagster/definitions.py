@@ -9,6 +9,7 @@ from functools import cache
 
 from dagster import (
     AssetExecutionContext,
+    AssetMaterialization,
     AssetObservation,
     DefaultScheduleStatus,
     Definitions,
@@ -38,8 +39,9 @@ from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.retention import (
-    ShortForecastKey,
+    backlog_alert,
     made_progress,
+    resume_position,
     run_short_forecast_retention,
     short_forecast_cutoff,
 )
@@ -1222,19 +1224,36 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
                 progress["pointers_deleted"], progress["remaining"], progress["elapsed_seconds"],
             )
 
+    now = kst_now()
+    cutoff = short_forecast_cutoff(now)
+    database = getattr(getattr(getattr(repository, "engine", None), "url", None), "database", None)
+    after, head_scan_at, discarded = resume_position(
+        _short_retention_previous_metadata(context), cutoff=cutoff, database=database, now=now,
+    )
     try:
         result = run_short_forecast_retention(
-            repository, cutoff=short_forecast_cutoff(kst_now()), dry_run=False,
-            on_progress=log_progress, after=_short_retention_resume_key(context),
+            repository, cutoff=cutoff, dry_run=False, on_progress=log_progress,
+            after=after, database=database, head_scan_at=head_scan_at, now=now,
         )
     finally:
         repository.engine.dispose()
+    if discarded is not None and result.get("resume_discarded") is None:
+        result["resume_discarded"] = discarded
     context.add_output_metadata(result)
     if not made_progress(result):
-        # 진척 0(연기·잠금/timeout·머리 탐색 실패)만 실패다. raise 뒤 STEP_OUTPUT이
+        # 진척 0(연기·잠금/timeout·머리 탐색 실패)이면 실패다. raise 뒤 STEP_OUTPUT이
         # 없어도 Failure 이벤트 자체에 결과 metadata를 남긴다.
         raise Failure(
             description="단기예보 정리가 이번 실행에서 진척 없이 끝났습니다.",
+            metadata=result,
+        )
+    if backlog_alert(result):
+        # 지운 행은 있지만 backlog가 24시간 넘게 뒤처졌다. 다음 실행이 이어 읽도록 위치를
+        # materialization으로 먼저 남기고 실패로 알린다(따라잡지 못하는 상태를 성공으로
+        # 숨기지 않음).
+        context.log_event(AssetMaterialization(asset_key=context.asset_key, metadata=result))
+        raise Failure(
+            description="단기예보 정리 backlog가 경계보다 24시간 넘게 뒤처져 있습니다.",
             metadata=result,
         )
     if result["status"] != "complete_snapshot":
@@ -1248,23 +1267,21 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
     return result
 
 
-def _short_retention_resume_key(context: AssetExecutionContext) -> ShortForecastKey | None:
-    """앞 성공 실행이 materialization metadata에 남긴 정리 위치.
+def _short_retention_previous_metadata(context: AssetExecutionContext) -> dict[str, object]:
+    """앞 실행이 materialization metadata에 남긴 위치·정책·DB·머리 훑기 기록.
 
-    위치 이하의 만료 행은 이미 지웠고 수집은 경계보다 오래된 행을 새로 저장하지 않으므로
-    이어 읽어도 빠뜨리지 않는다. 기록이 없거나 모양이 다르면 None이고, 그때만 첫 선택이
-    인덱스 머리의 죽은 항목을 지난다.
+    기록은 ``resume_position``이 검사한다. 없으면 빈 dict이고 첫 선택이 인덱스 머리부터 시작한다.
     """
     instance = getattr(context, "instance", None)
     if instance is None:
-        return None
+        return {}
     event = instance.get_latest_materialization_event(context.asset_key)
     materialization = event.asset_materialization if event is not None else None
     if materialization is None:
-        return None
-    return ShortForecastKey.from_metadata({
+        return {}
+    return {
         key: getattr(value, "value", value) for key, value in materialization.metadata.items()
-    })
+    }
 
 
 #: 모든 작업이 같은 asset graph를 사용하도록 자산을 한 번만 선언한다.

@@ -1,7 +1,8 @@
 # 단기예보 정리의 무진행 연기와 실패 관측
 
-> 2026-10-27부터 Failure는 **진척 0인 실행**에만 남긴다. 지운 행이 있으면 backlog가 남아도 SUCCESS이며
-> 다음 실행은 materialization metadata의 위치에서 이어 정리한다. SKIP LOCKED는 lock_timeout 대기로 바뀌었다.
+> 2026-10-27부터 Failure는 **진척 0인 실행**과 **남은 backlog의 지연 상한이 24시간을 넘는 실행**에만 남긴다.
+> 지운 행이 있고 지연이 24시간 안이면 backlog가 남아도 SUCCESS이며, 다음 실행은 검사한 materialization
+> metadata 위치에서 이어 정리한다. SKIP LOCKED는 lock_timeout 대기로 바뀌었다.
 > 현재 정본은 [보존정책의 2026-10-27 절](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기)이며 아래는 당시 기록이다.
 > BATCH_COMMITTED 관측 이벤트의 8개 필드와 기록 시점은 그대로다.
 

@@ -4018,10 +4018,12 @@ class WeatherRepository:
 
         ``statement_timeout_ms``는 후보 선택에만 쓴다. 위치가 없을 때 머리 탐색 한 번에
         더 긴 상한을 줄 수 있게 하며, 삭제와 남은행 확인은 늘 정상 예산을 쓴다.
-        행 잠금은 SKIP LOCKED가 아니라 ``lock_timeout`` 안에서 기다린다. 건너뛴 행이
-        위치 뒤에 남지 않아 "위치 이하는 모두 지웠다"는 불변식이 유지된다. 잠금/문장
-        timeout은 이 batch만 rollback하고 ``deferred``로 돌려 이미 commit한 앞 batch의
-        진척을 보존한다. 다른 SQL 오류는 그대로 전파한다.
+        행 잠금은 SKIP LOCKED가 아니라 ``lock_timeout`` 안에서 기다린다. 이 batch가 건너뛴
+        잠긴 행이 위치 앞에 남지 않는다. 다만 위치 앞에 나중에 만료 행이 들어올 수는 있어
+        (복원·늦은 commit·시계 역행 등) 호출자가 위치를 검사하고 주기적으로 머리부터 훑는다
+        (``retention.resume_position``). 잠금/문장 timeout은 이 batch만 rollback하고
+        ``deferred``로 돌려 이미 commit한 앞 batch의 진척을 보존한다.
+        다른 SQL 오류는 그대로 전파한다.
         """
         latest_cutoff = short_forecast_cutoff(kst_now())
         if cutoff.tzinfo is None or cutoff.utcoffset() is None:
