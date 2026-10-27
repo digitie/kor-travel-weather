@@ -1,3 +1,10 @@
+## 2026-10-28 — 특보 계획 통계 차이 보강
+
+- 1bafa의 첫 CI 실패를 보존하고,23시 변조와 SQL fake는 시험만 보완했다. 통계가 있는 EXISTS 전역 hash는
+  ownPG에서 재현하고 OFFSET0으로 상관 계획을 보존한다. 관측/예보/특보 의미와 예산·DTO·writer는 그대로다.
+- 관련 WSL119PASS 뒤 최종source Docker/CI/독립 두 리뷰를 진행한다. 새whole·운영요청/배포0이며
+  이전actual504/쿠키미계측/25초목표미수용은 남는다. [증거·근거](reports/2026-10-28-marker-alert-validity-query.md).
+
 ## 2026-10-28 — 지도 특보 반복 검산 최소화 후보
 
 - 실제6종류 경로의 특보 유효기간 검산을 후보 EXISTS로 합치고 같은 요청 위치 ANY로 범위를 고정했다.

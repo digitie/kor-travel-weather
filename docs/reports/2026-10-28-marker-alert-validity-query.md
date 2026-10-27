@@ -1,5 +1,34 @@
 # 지도 특보의 반복 유효기간 조회 최소화
 
+## 첫 CI 실패와 계획 경계 보강
+
+정확1bafa의 CI756은1510 PASS/3 FAIL734.17초, CI757은1511 PASS/2 FAIL828.52초였다.
+양쪽 원문은 로컬 증거 루트의 `ci756-failed-python-original.log`와
+`ci757-failed-python-original.log`에 보존했다. CI 전체를 통과했다고 처리하지 않는다.
+
+두 공통 실패는 기존 시험의 대역과 입력 문제였다. core-domain recorder는 옛 별도 검산
+SQL을 기다리며 pointer의 location/source/style/metric을 생략했다. 새 후보 EXISTS와
+최종 winner 수화 SQL의 복합키·범위·재검산 부재를 검증하도록 갱신했다. export의
+`baseTime="2300"` 변조는 원래 발표도23시면 입력이 그대로였다. 반드시 다른 유효 HHMM을
+쓰게 했다. 운영 export 기능·목표·설정은 바꾸지 않는다. 같은 시간대 로컬 원본2 FAIL→
+보완2 PASS2.47초를 회수했다. 당시 제품 repository/app blob은 동일했다.
+
+CI756의 추가 실패는 사실관계를 따로 구분했다. 통계가 있는 합성 DB에서 실제
+`hashed SubPlan`이 fact 모든 파티션을 읽어 hash를 만들었다. 로컬8파티션 loops8 RED도
+재현했다. 요청 위치 ANY만으로 이 변환을 막지는 못하므로 assert를 완화하지 않았다.
+상관 EXISTS 안에 결과를 바꾸지 않는 `OFFSET 0`을 추가해 이 변환을 막는다.
+통계 유무·제공처4가지·실제 PREPARE의 custom/generic 계획에서 요청한 오래된 pointer만
+복합 PK와 해당 known_at 파티션을 읽는지 검증한다. 실행0인 빈 파티션의 Seq Scan 표현을
+실제 읽기로 오인하지 않도록 Index Cond 검사는 실행한 scan에 적용한다.
+
+[PostgreSQL16 소스](https://raw.githubusercontent.com/postgres/postgres/REL_16_STABLE/src/backend/optimizer/plan/subselect.c)의
+`simplify_EXISTS_query`는 OFFSET을 가진 질의의 단순화를 거절한다. 그 단순화는
+EXISTS의 hash 가능한 ANY 변환에 선행한다. 이 경계를 사용하되 다른 PostgreSQL 버전과
+통계에서도 같은 속도가 보장된다고 주장하지 않는다.
+[PostgreSQL16 파티션 문서](https://www.postgresql.org/docs/16/ddl-partitioning.html#DDL-PARTITION-PRUNING)에 따라
+실행 시 파티션 제거는 실제 loops와 실행하지 않은 파티션으로 검산한다. 계획 cost를
+실제 시간으로 환산하지 않는다. 운영 DB의 새 SQL/ANALYZE는0이다.
+
 ## 문제와 실제 경로
 
 기본 지도는 종류 여섯 개를 명시한다. 따라서 저장소의 `kinds=None` 후보 최적화였던

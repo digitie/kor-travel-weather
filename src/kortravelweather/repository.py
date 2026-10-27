@@ -2866,11 +2866,13 @@ class WeatherRepository:
             # 최근 행은 명시 만료·해제도 기존처럼 후보에 남겨 최종 reducer가 처리한다.
             # 후보를 512행씩 읽는 동안 별도 fact 검산을 반복하지 않는다.
             cutoff = alert_active_at - ALERT_MAX_AGE
+            # PG16이 유효 fact 전체를 hash하는 ANY로 바꾸지 않도록 상관 계획을 유지한다.
+            # OFFSET 0은 결과를 줄이지 않으며 복합 키의 실행 시 파티션 제거를 보존한다.
             active_fact = select(1).where(
                 WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
                 WeatherValueRow.known_at == WeatherCurrentValueRow.known_at,
                 WeatherValueRow.valid_until > alert_active_at,
-            ).correlate(WeatherCurrentValueRow).exists()
+            ).correlate(WeatherCurrentValueRow).offset(0).exists()
             # Hash Join보다 fact 검산이 먼저 계획되어도 요청 밖 위치를 읽지 않는다.
             pointer_rows = session.execute(candidate.where(
                 WeatherCurrentValueRow.location_id == func.any(bindparam(

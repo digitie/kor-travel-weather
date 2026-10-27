@@ -459,7 +459,9 @@ def test_invalid_source_proof_cannot_bind_or_publish(repository, tmp_path, mutat
         elif mutation == "grid":
             row["nx"] = 61
         elif mutation == "base":
-            row["baseTime"] = "2300"
+            # 현재 발표가 이미23시여도 실제 불일치를 만드는 유효 HHMM을 쓴다.
+            row["baseTime"] = "2300" if row["baseTime"] != "2300" else "0000"
+            assert row["baseTime"] != payload["response_metadata"]["base_time"]
         elif mutation == "duplicate":
             payload["rows"].append(dict(row))
             payload["response_metadata"]["pagination"].update(

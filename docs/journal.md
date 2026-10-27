@@ -1,3 +1,11 @@
+## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
+
+- 정확1bafa CI756 1510/3FAIL·757 1511/2FAIL 원문을 보존했다. 기존 SQL recorder 대역과23시 변조 no-op를
+  실제2RED→2GREEN으로 보완했다. export 제품/설정은 변경하지 않는다.
+- 통계가 있는 ownPG에서 EXISTS가 모든 fact 파티션의 hash로 바뀌는 RED를 재현했다. OFFSET0 계획 경계로
+  상관 복합키 조회를 유지하며 통계 유무/제공처/custom·generic 계획을 검산한다. 관련 집중119PASS194.13초다.
+  최종 정확source의 Docker/CI/독립리뷰와 운영25초 수용은 별도다. [정산](reports/2026-10-28-marker-alert-validity-query.md).
+
 ## 2026-10-28 — 실제 지도 특보 유효기간의 반복 조회 제거 후보
 
 - 원6312 후보 의미를 유지하며 EXISTS로 별도512키 검산을 제거했다. 무필터 최적화를 기본 지도 경로로

@@ -1,6 +1,7 @@
 """특보의 기존 후보 의미와 반복 fact 검산 제거를 실제 PostgreSQL로 검증한다."""
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import event, text
 
 from kortravelweather.alerts import ALERT_MAX_AGE, active_alert_values
@@ -8,11 +9,15 @@ from kortravelweather.models import WeatherLocation, WeatherValue
 from kortravelweather.repository import WeatherRepository
 
 
+@pytest.mark.parametrize("analyzed", [False, True])
 def test_six_kind_alert_candidates_keep_order_without_batch_rechecks(
-    weather_test_database_url, tmp_path,
+    weather_test_database_url, tmp_path, analyzed,
 ):
     """60지점·80특보·6종류·80예산과 제공처 필터에서 같은 후보를 반환한다."""
     import json
+    import re
+
+    from psycopg import sql as pgsql
 
     repo = WeatherRepository(weather_test_database_url)
     repo.create_schema()
@@ -71,8 +76,12 @@ def test_six_kind_alert_candidates_keep_order_without_batch_rechecks(
         known_at=now, valid_until=now+timedelta(days=1),
         source_record_key="alert-selected-z",
     ) for slot in range(80)])
-    with repo.engine.connect() as connection:
+    with repo.engine.begin() as connection:
         projected = set(connection.scalars(text("SELECT value_id FROM weather_current_values")))
+        # 통계가 있을 때 EXISTS가 전체 fact hash로 바뀌는 계획도 빠뜨리지 않는다.
+        if analyzed:
+            connection.exec_driver_sql("ANALYZE weather_current_values")
+            connection.exec_driver_sql("ANALYZE weather_values")
     # 이전 512행 루프와 같은 판정·정렬을 순수 reference로 남긴다. 최근 명시 만료도
     # 먼저 26개 후보에 포함되고 최종 reducer가 제거하는 기존 순서를 유지한다.
     def expected(location, providers):
@@ -121,26 +130,46 @@ def test_six_kind_alert_candidates_keep_order_without_batch_rechecks(
             # 소유한 합성 DB의 실행 계획만 저장한다. 운영 조회·통계 갱신은 없다.
             pointer_sql, params = next((s, p) for s, p in reversed(statements)
                                       if "weather_current_values" in s)
-            with repo.engine.connect() as connection:
-                plan = connection.exec_driver_sql(
-                    "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + pointer_sql, params,
-                ).scalar_one()
-            (tmp_path/f"plan-{providers}.json").write_text(json.dumps(plan, default=str))
             def fact_scans(node):
                 if node.get("Relation Name", "").startswith("weather_values_"):
                     yield node
                 for child in node.get("Plans", []):
                     yield from fact_scans(child)
 
-            scans = list(fact_scans(plan[0]["Plan"]))
-            if providers is None or providers == ["selected"]:
-                # 2,400개 오래된 pointer마다 정확한 날짜 파티션 하나만 조회한다.
-                assert sum(s["Actual Loops"] for s in scans) == 60 * 40
-                assert all("value_id" in s["Index Cond"] and "known_at" in s["Index Cond"]
-                           for s in scans)
-                assert any(s["Actual Loops"] == 0 for s in scans)
-            else:
-                assert sum(s["Actual Loops"] for s in scans) == 0
+            names = []
+            def positional(match, names=names):
+                name = match.group(1)
+                if name not in names:
+                    names.append(name)
+                return "$"+str(names.index(name)+1)
+
+            prepared = re.sub(r"%\(([A-Za-z0-9_]+)\)s", positional, pointer_sql)
+            assert set(names) == set(params) and "%(" not in prepared
+            with repo.engine.connect() as connection:
+                cursor = connection.connection.driver_connection.cursor()
+                try:
+                    cursor.execute("PREPARE alert_candidate AS "+prepared)
+                    execute = pgsql.SQL("EXECUTE alert_candidate ({})").format(
+                        pgsql.SQL(",").join(pgsql.Literal(params[name]) for name in names))
+                    for mode in ("force_custom_plan", "force_generic_plan"):
+                        cursor.execute("SET LOCAL plan_cache_mode="+mode)
+                        cursor.execute(pgsql.SQL("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ")
+                                       + execute)
+                        plan = cursor.fetchone()[0]
+                        (tmp_path/f"plan-{providers}-{mode}.json").write_text(
+                            json.dumps(plan, default=str))
+                        scans = list(fact_scans(plan[0]["Plan"]))
+                        if providers is None or providers == ["selected"]:
+                            assert sum(s["Actual Loops"] for s in scans) == 60 * 40
+                            assert all("value_id" in s.get("Index Cond", "")
+                                       and "known_at" in s.get("Index Cond", "")
+                                       for s in scans if s["Actual Loops"] > 0)
+                            assert any(s["Actual Loops"] == 0 for s in scans)
+                        else:
+                            assert sum(s["Actual Loops"] for s in scans) == 0
+                    cursor.execute("DEALLOCATE alert_candidate")
+                finally:
+                    cursor.close()
     finally:
         event.remove(repo.engine, "before_cursor_execute", record)
         repo.engine.dispose()
