@@ -11,7 +11,7 @@
 | web | `5098d2d80486df7e23753296e66b38ba8045660f`(PR177 merge) | running, healthcheck 없음, restart0 |
 | Manager 설치 | `aeb2d34ce276e5e219761a62cd4b1c8f39cad72a` | 원 설치 보존 |
 
-현재 main5098과 실제 API/collector e393의 차이는 문서2개와 로그인 UI 시험·package/lock·vendor dev.9뿐이다. Python core·Dagster·pyproject·uv.lock·Python Dockerfile·migration 입력은 같다. 따라서 #174의 CommonAA와 단기예보 정리 개선은 이미 운영 이미지에 포함됐으며 재빌드·교체하지 않았다. 웹도 최신5098이어서 교체할 것이 없다. 원본 checkout의 미추적 Prometheus .db4개는 손대지 않고 별도 worktree에서 문서만 작성한다.
+관측한 제품 main5098과 실제 API/collector e393의 차이는 문서2개와 로그인 UI 시험·package/lock·vendor dev.9뿐이다. Python core·Dagster·pyproject·uv.lock·Python Dockerfile·migration 입력은 같다. 따라서 #174의 CommonAA와 단기예보 정리 개선은 이미 운영 이미지에 포함됐으며 재빌드·교체하지 않았다. 웹도 최신5098이어서 교체할 것이 없다. 이후 doc-only PR183의 main2f49를 정상 merge로 흡수했고 journal/resume의 양쪽 새 절과 기존 본문을 모두 보존했다. 이 문서 진전은 제품 image 변경이 아니다. 원본 checkout의 미추적 Prometheus .db4개는 손대지 않고 별도 worktree에서 문서만 작성한다.
 
 ## 실제 Common·schema·정본 bind
 
