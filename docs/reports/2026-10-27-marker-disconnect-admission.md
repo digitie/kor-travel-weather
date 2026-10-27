@@ -77,7 +77,7 @@ WSL의 실제 ASGI RED2건과 대기 뒤 취소 RED1건을 원본으로 보존�
 ERROR였고, 모두 자기 PG의 max_connections30 거절이었다. 같은 시점 TCP 첫 실행도
 수집 단계의 연결 거절로 테스트 전 실패했다. 왜 연결이30개에 도달했는지 엔진별
 생명주기를 실측하지 않아 제품 누수로 단정하지 않는다. 기존 PG·로그를 보존하고
-새 전용 PG에 기본100/512MiB·0.5CPU(1CPU 이하)를 명시해 순차 집중을 진행한다.
+새 전용 PG에 기본100/512MiB·0.5CPU(1CPU 이하)를 명시한 순차 집중은167 PASS였다.
 운영 PG·제품 pool/상한 변경은 없다. Ruff·diff 검사 뒤 전체 WSL·Docker·CI·독립 두 리뷰는
 별도 게이트이며 완료 전 결과를 확대하지 않는다.
 
@@ -86,3 +86,30 @@ ERROR였고, 모두 자기 PG의 max_connections30 거절이었다. 같은 시�
 `/var/tmp/weather-kinds-actual-plan-ro-20261027-5ff6b26d.json`에 보존한다. 운영 새 SQL,
 ANALYZE, marker GET, provider 호출, 수집/job, 이미지 빌드·교체는0이다. 소유 로컬 PG와
 검증 자원만 사용하며 다른 collector·daemon·instigator·빌더·PG를 변경하지 않는다.
+
+## CI 첫 실패와 fixture 적재 보완
+
+정확962245d의 CI40505525047은 frontend 성공, Python1504 PASS/1 FAIL이었다.
+실패는 `test_sixty_location_kind_batches_preserve_provider_and_alert_results`가
+57,600행 fixture를 적재하면서 지점40~49의 projection9,600행 INSERT에 대한
+`weather_values` FK 내부 `SELECT ... FOR KEY SHARE`가30초 statement timeout을
+넘은 것이다. 해당 시험의 API/repository 조회 검증에는 아직 도달하지 않았다.
+middleware가 원인이라는 증거는 없으며 원래 CI 원문과962 소스는 보존한다.
+
+같은 원본 시험은 자기 PG100/512MiB에서19.31초에 통과해 CI timeout 자체는 로컬에
+재현되지 않았다. 별도 원본 진단 실행도19.54초에 통과했다. projection 적재6회는
+각9,600행/1.70~2.10초였고, 실행 중99개 활동 표본에 blocker는0이었다. 이는 그
+로컬 실행의 관측이며 CI의 잠금 유무나30초 초과 원인을 확정한 결과는 아니다.
+
+보완은 fixture의 projection 적재 단위만10지점에서1지점/960행으로 나눈다.
+동일한60지점·각80slot·두 style·여섯 metric의57,600행과 FK, 같은 transaction,
+JIT 설정과30초 적재 제한, 이후5초 조회 예산·계획/대표값·제공처·장기/종료 특보
+assert는 모두 유지한다. 시험을 skip하거나 데이터를 줄이지 않는다. 같은 소유 PG의
+보완 진단은19.51초에 통과했고60회 적재는각960행/0.12~0.29초였다.
+총 시험 속도 개선이 아니라 개별 적재 statement의 FK 작업량 제한이다.
+
+전체 WSL/Docker는 아직 시작하지 않았다. 별도 전체시험 PG16.14는 전용 named volume의
+ext2/ext3 데이터 디렉터리(tmpfs 없음),2GiB·1CPU·max_connections100으로 준비했다.
+같은 소유 명시 대역10.254.248.0/28의 route 충돌을 확인하고 nonce가 다른 WSL/Docker
+DB 두 개를 만들었다. 기존512MiB PG는 resize하지 않았으며 새 PG의 OOM 기록은 없다.
+정확 새 HEAD의 CI와 전체 두 단계·독립 두 리뷰 및 운영25초 수용은 별도 미완 게이트다.

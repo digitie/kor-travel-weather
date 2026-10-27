@@ -1,3 +1,13 @@
+## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 단위 보완
+
+- 정확962 CI는 Python1504 PASS/1 FAIL이었다. 조회 전9,600행 projection INSERT의
+  FK 검사30초 초과 원문을 보존하고, 같은57,600행/FK/assert/조회 예산을 유지한 채
+  적재 statement만960행으로 나눴다. 기존 원본 로컬 진단19.54초/보완19.51초 모두
+  통과했으므로 CI 초과의 로컬 재현이나 전체 속도 개선으로 확대하지 않는다.
+- ASGI/API 집중167 PASS·TCP 취소 RED→GREEN은 보존한다. 별도 disk-backed2GiB/1CPU
+  PG와 두 nonce DB만 준비했으며 whole은 미실행, 운영 변경0이다.
+  [원문·범위·다음 게이트](reports/2026-10-27-marker-disconnect-admission.md).
+
 ## 2026-10-27 — 기본 지도 경로 정정과 대기 중 취소의 DB 진입 방지
 
 - 실제UI는6종류를명시한다. PR180의 `kinds=None` 최적화를 기본지도 경로로 추정한

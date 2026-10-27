@@ -1,3 +1,12 @@
+## 2026-10-27 — 지도 취소 PR의 CI fixture 적재 보완
+
+- 현재:962 CI1504 PASS/1 FAIL은 조회 전 projection9,600행의 FK 검사30초 초과였다.
+  동일57,600행·FK·assert·제한을 유지하고1지점/960행씩 적재하도록 최소 보완했다.
+  로컬 원본/보완 모두 통과했으므로 CI 원인의 완전 재현·운영 속도 개선은 미입증이다.
+- 다음 한 작업: 새 정확 HEAD의 CI, 전체 WSL/Docker, 독립 두 리뷰 순으로 검증한다.
+  전용 disk-backed2GiB/1CPU·PG100과 별도 두 DB 준비까지 완료, whole 미실행이다.
+  [정산](reports/2026-10-27-marker-disconnect-admission.md). 운영/provider/export 변경0.
+
 ## 2026-10-27 — 실제 지도6종류·취소 대기 경로 정정
 
 - 기본 지도는6종류를 명시한다. PR180의무필터 경로와 실제 UI 경로를 혼동한 분석을
