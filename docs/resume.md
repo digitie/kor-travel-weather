@@ -5,11 +5,16 @@
   로그아웃 뒤 쿠키 잔여0이다. 아래 API e393/미배포 표현은 당시 이력으로 보존한다.
 - 후속7파일은 browser 동시2·같은범위 in-flight 공유·실패수동retry·상세열림시조회와 특보 고정
   predicate literal 보완이다. Backend 집중56/56, frontend265/265·WSL build actual0이지만
-  이번 통합 Python전체1/2차·CI·최종리뷰·운영 성능/UI 수용은 아직 남는다.
+  제품이 같은1d2 WSL전체1518 PASS와 시험 한 파일만 보완한a707 Docker전체1517 PASS/1 SKIP를 확인했다.
+  PR187의 정확 CI·리뷰 정본과 최종 배포·운영 성능/UI 수용은 따로 판단한다.
 - export 목표중지/publisher STOP/Map·PinVi flags OFF를 유지한다. 새 Dagster 이미지 승인은 있으나
   e393→5098의 Dagster 제품 입력이 같고 기존 개선이 운영 중이므로 중복 CS 교체는 하지 않는다.
-- 다음 한 작업: 정확 통합 HEAD의 전체 WSL→Docker를 회수하고 기존 운영 실패를 보존한 채
-  API+web 후보의 별도 배포·실제25초/모바일/overlay 수용을 진행한다. Transport 작업의 G/R과 직렬 조율한다.
+- 전체 QA 원본27실패는 실행기의 spawn 진입/PYCACHE 환경 문제였고 같은27건 재검증을 통과했다.
+  첫 Docker1515 PASS/2 FAIL/1 SKIP는06:01 KST의 미공개 중기회차 fixture 오류였으며 SDK 공개지연을
+  반영한 시험만 보완했다. 원문은 보존하고 제품644파일 동일성·고정06:01/18:01 회귀를 구분한다.
+- 다음 한 작업: PR187 코드 머지 대상을 고정한 뒤 API+web 후보의 별도 배포·실제25초/모바일/overlay를
+  수용한다.21:33 UTC 정산 시점 R6는 준비 상태이고 실제 입력은False/None·새 배포0이다.
+  소유 QA의 모든 실행·DB가 끝났고 PG는 정상 exit0으로 종료·삭제했다. Transport G/R과 직렬 조율한다.
   [범위·증거·한계](reports/2026-10-28-marker-request-budget.md).
 
 ## 2026-10-28 — 특보 계획 통계 차이 보강

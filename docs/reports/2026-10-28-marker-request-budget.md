@@ -41,7 +41,8 @@ pointer의 유효성 검산, 복합 키 fact 전체 ORM·JSON 수화와 입장 �
 | Frontend WSL 타입·린트·전체 시험 | actual0,21파일265 PASS, 기존 린트 경고1 |
 | Frontend Docker 타입·린트·전체 시험 | Node22.23.1-alpine/npm12.0.1, actual0·wait0,21파일265 PASS |
 | Frontend WSL 생산 빌드 | Node22.22.2/npm11.19.1, actual0 |
-| 정확 통합 HEAD의 Python 전체1/2차 | 준비 중, 아직 미실행 |
+| Python 전체 WSL | 1d2 source,1518 PASS/actual0,792.23초 |
+| Python 전체 Docker | test-only a707 source,1517 PASS/1 SKIP/actual0·독립 wait0,751.78초 |
 | CI·최종 source 리뷰·배포 뒤 실제 UI | 별도 게이트, 운영 효과 미검증 |
 
 PG18의 custom/generic 실제 계획4개 모두 alert 부분 인덱스를 썼고 old 미래만료 fact60개를
@@ -60,3 +61,30 @@ Frontend 증거는 `/var/tmp/weather-marker-budget-frontend-20261028-r2`와
 `C:/Users/digit/.codex/tmp/weather-frontend-second-20261028-d11d5b2ea5/actual-results.json`이다.
 Docker는 배포 Dockerfile의 Node/npm과 같은 값으로 별도 복사본·고정 lock/vendor에 설치했고,
 검사 container는 network none이다. 생산 키·build arg·운영/API/provider 호출은 사용하지 않았다.
+
+
+## 전체 QA 원본과 시험 입력 보완
+
+- 원1d2 WSL전체는1491 PASS/27 FAIL이었다. QA 실행기의 main guard 누락으로 spawn이 pytest 인자를
+  출력 경로로 다시 읽었고, PYTHONPYCACHEPREFIX가 명시 bytecode 목적지 계약과 충돌했다. 제품·시험
+  조건을 바꾸지 않고 실행기만 보완한 동일27건은27 PASS였고 이후1d2 전체1518 PASS를 회수했다.
+- 첫 Docker전체1d2는1515 PASS/2 FAIL/1 SKIP였다. 기존 중기 fixture가06:01 KST에 아직 공개되지 않은
+  06시 회차를 선택했다. SDK 공개지연10분을 준수하도록 `latest_mid_fcst_time(now)`만 사용했다.
+  추가 SDK 단위시험을 만들지 않고 기존 land/temperature 두 항목을06:01·18:01 고정 시각에서 각각
+  원본2 FAIL→보완2 PASS, 현재 시각2 PASS로 검산했다. normalize·head·inventory assert는 그대로다.
+- 최종a707645개 Git blob/mode를 검산했고1d2 대비 시험 한 파일 외644개가 같다. WSL전체는1d2,
+  Docker전체는a707의 증거로 구분한다. Docker1 SKIP는 컨테이너에 Docker CLI가 없는 기존 배포 계약
+  검사이며1518건 전부를 통과했다고 표현하지 않는다. 새 WSL전체를 다시 실행한 것으로도 기록하지 않는다.
+- 모든 foreground CLI·독립 waiter·시험 fixture가 끝났고 clients0·nonceDB0을 확인했다. 소유 disk PG18은
+  exit0으로 정상 종료하고 컨테이너·볼륨·네트워크를 삭제했다. 전체 실행 중 ownPG 체크포인트 대기를
+  별도 보존했으며 이를 운영 지도 지연 원인으로 귀인하지 않는다. 다른 서비스/프로세스 변경0이다.
+
+최종 원장 `C:/Users/digit/.codex/tmp/weather-budget-final-a707-20261028-r1/final-qa-manifest.json`
+(SHA256 `2fe739ae92e7558e21315773b6a716df861ae4cbf654dc1921644aa856dab603`)이
+전체 로그·JUnit·실제 종료·cleanup과 이전 실패·고정시각 반례 및 frontend/backend 집중 증거를 연결한다.
+고정시각 원장은 `C:/Users/digit/.codex/tmp/weather-mid-clock-fixture-20261028-r1/repair-final-manifest.json`
+(SHA256 `42fc85391cd6e43071f5538ee1e678e966594c63e7cbb6e283eec3e52efee3a6`)이다.
+
+21:33 UTC 정산 시점 새 R6 도구는 준비 상태이고 실제 실행 입력은False/None·배포0이다. PR187의
+정확 CI·적대적 리뷰·코드 머지와 최종 운영 입력 동결은 Root가 별도로 판단한다. 현 운영 API210/
+CS e393/web5098과 이전504 실패를 새 코드의 배포 완료나 속도 수용으로 바꾸지 않는다.

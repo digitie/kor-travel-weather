@@ -28,6 +28,15 @@ root가 같은 실제 대표60·동일시각으로 새 고정 조건 쿼리3개�
 특보 projection 세 그룹을 읽는다. 새 후속은 `_kind_predicate`의 고정 특보5항목만 literal로
 보존해 alert 부분 인덱스를 generic에서도 증명할 수 있게 한다. 요청값은 bind로 유지한다.
 PG18 custom/generic rawplan4개는 alert_lookup와 정확한 fact 복합 키·partition pruning을
-확인했지만, 새 API210 실제 cold60×3은19701ms200/30020ms504/21016ms200으로 실패했다.
+확인했지만, 이 후속을 포함하기 전 운영 API210의 cold60×3은19701ms200/30020ms504/21016ms200으로 실패했다.
 운영 연결의 generic 선택·지연 기여는 미확정이고 전체 pointer/fact ORM·JSON 수화/입장대기는
 별도다. browser 요청 예산 후속과 검증 게이트는 [새 정산](reports/2026-10-28-marker-request-budget.md)을 따른다.
+
+
+### 전체 QA 정산과 운영 미검증
+
+1d2 제품의 WSL전체1518 PASS와 test-only a707의 Docker전체1517 PASS/1 SKIP를 회수했다.
+두 소스의644파일은 바이트·mode가 같고, 차이는 중기예보 시험의 SDK 공개지연 계산 한 파일이다.
+원 WSL27 QA실패·Docker2 시각 fixture실패와 보완 증거를 삭제하지 않았다. 소유 PG는 정상
+exit0으로 종료했고 자원을 정리했다. 이는 운영 generic 선택·20초 지연 기여·25초 목표를 입증하지 않는다.
+R6는21:33 UTC 정산 당시 준비 상태(입력False/None)이며 새 API+web 교체·실제 UI는 별도다.

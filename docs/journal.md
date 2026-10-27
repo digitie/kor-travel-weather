@@ -5,8 +5,14 @@
 - browser 동시2/in-flight 공유/실패수동retry/숨은상세조회제거와 generic 특보 고정 predicate를 보완한다.
   Backend 집중 WSL56/Docker56 actual0, frontend WSL/Docker265·타입/린트/WSL build actual0이다.
   source7/lock/vendor 보존과 소유 QA 정리를 확인했으며 원 fixture2실패도 남겼다.
-- 정확 통합 HEAD의 Python전체1/2차·CI·최종리뷰·배포/liveUI는 아직 남는다. export/publisher/flags/GC·
-  공용 daemon·CS 변경0이며 운영20초 지연이 해결됐다고 하지 않는다.
+- 제품이 같은1d2 WSL전체1518 PASS/actual0과 시험 한 파일만 보완한a707 Docker전체1517 PASS/
+  1 SKIP/actual0·독립 wait0을 회수했다. Docker의1 SKIP는 Docker CLI가 없는 배포 계약 검사다.
+- 최초 WSL27실패(실행기 spawn/PYCACHE)와 첫 Docker2실패(06:01 미공개 중기회차 fixture)를 보존했다.
+  전자는 같은27건 PASS, 후자는 SDK 공개 회차 함수로만 보완해06:01/18:01의 기존2파트를 각각
+  2 FAIL→2 PASS, 현재 시각2 PASS로 검산했다. 제품·SDK·timeout·assert 변경0이다.
+- 소유 QA PG/nonceDB/fixture/volume/network를 정상 exit0·잔여0으로 정리했다. PR187 정확 CI·리뷰와
+  배포/liveUI는 별도이며21:33 UTC R6 입력은False/None·새 배포0이다. export/publisher/flags/GC·
+  공용 daemon·CS 변경0이고 운영20초 지연이 해결됐다고 하지 않는다.
   [변경·검증·현재 운영 구분](reports/2026-10-28-marker-request-budget.md).
 
 ## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
