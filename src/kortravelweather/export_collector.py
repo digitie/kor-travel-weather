@@ -9,15 +9,16 @@ import logging
 import random
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from kortravelcommon.deadline import call_with_deadline
-from sqlalchemy import literal_column, select, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import and_, literal_column, not_, select, text, tuple_, update
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 from .export_heads import ExportHeads, ScopeDescriptor
@@ -393,14 +394,204 @@ class ExportPublisherProgress:
     results: Mapping[str, int]
     next_cursor: str | None
     has_more: bool
+    #: 그 후보만 미룬 오류의 분류별 개수(``failure_reason``). 원문 메시지는 담지 않는다.
+    reasons: Mapping[str, int] = field(default_factory=dict)
 
 
 _PUBLISHER_PROBE_SLOTS = threading.BoundedSemaphore(1)
+_PREFETCH_SLOTS = threading.BoundedSemaphore(1)
 _FAILED_NATIVE = frozenset({
     "failed", "partial", "partial_success", "canceled", "cancelled", "skipped", "abandoned",
 })
 DAILY_GENERATION_BATCH = 4
 MAX_DAILY_GENERATIONS = 256
+#: 일괄 퇴역 한 문장이 잠그는 attempt 상한. 잠긴 행은 기다리지 않고(SKIP LOCKED) 다음
+#: tick에 다시 본다. 문장은 head transaction의 5초 statement 상한 안에서 끝난다.
+RETIRE_BATCH = 500
+#: 후보와 무관한 DB 장애(연결 끊김 등)가 연속 이만큼이면 이번 tick의 후보 처리를 멈춘다.
+MAX_CONSECUTIVE_CANDIDATE_ERRORS = 3
+#: 그 후보의 행·문장에만 걸린 일시 오류. 다음 후보는 영향을 받지 않는다.
+_PER_CANDIDATE_SQLSTATES = frozenset({"55P03", "57014", "40P01", "40001"})
+#: 후보 조회 한 번의 행 수 상한. 작은 식별 열만 읽으므로 RAM과 무관하다.
+MAX_CANDIDATE_PAGE = 256
+
+
+def _ownership_sql(violation: str):
+    """claim한 모든 scope에 대한 owner 조건. ``violation``인 scope가 하나도 없어야 참이다.
+
+    claim한 scope 집합(owner_epochs의 key)이 계획(planned_sources)과 같아야 하고 owner
+    행이 빠진 scope도 위반이다. JSON 모양이 다르면 CASE가 먼저 거짓을 돌려 json 함수
+    오류가 문장 전체를 실패시키지 않는다. NULL은 COALESCE로 거짓이 된다.
+    """
+    return text(
+        "COALESCE(CASE WHEN json_typeof(weather_export_attempts.owner_epochs) = 'object'"
+        " AND json_typeof(weather_export_attempts.planned_sources) = 'array' THEN ("
+        "(SELECT array_agg(k ORDER BY k)"
+        " FROM json_object_keys(weather_export_attempts.owner_epochs) AS k)"
+        " = (SELECT array_agg(DISTINCT s ORDER BY s)"
+        " FROM json_array_elements_text(weather_export_attempts.planned_sources) AS s)"
+        " AND NOT EXISTS (SELECT 1"
+        " FROM json_each_text(weather_export_attempts.owner_epochs) AS e(scope, epoch)"
+        " LEFT JOIN weather_export_scope_owners AS o ON o.source_scope = e.scope"
+        f" WHERE o.source_scope IS NULL OR {violation})"
+        ") ELSE false END, false)"
+    )
+
+
+#: 단건(`_publisher_terminal`)과 일괄 퇴역(`retire_settled_attempts`)이 같이 쓰는
+#: SUPERSEDED 판정. 모든 claim scope가 실제 더 큰 epoch와 다른 active attempt로 넘어간
+#: 경우만 참이다. 일부 이동·owner 누락·같은 epoch는 현재 scope가 섞인 시도를 실패로
+#: 위장하지 않도록 거짓이다.
+_SUPERSEDED_OWNERSHIP = _ownership_sql(
+    "o.owner_epoch <= CAST(e.epoch AS bigint)"
+    " OR o.active_attempt_id = weather_export_attempts.attempt_id"
+)
+#: 승격할 수 있는 현재 소유자. ``export_lifecycle._current_owners``와 같은 조건이다.
+_CURRENT_OWNERSHIP = _ownership_sql(
+    "o.owner_epoch <> CAST(e.epoch AS bigint)"
+    " OR o.active_attempt_id <> weather_export_attempts.attempt_id"
+)
+
+
+def _pending(attempts):
+    """partial index ``ix_weather_export_attempts_pending``의 predicate 그대로다.
+
+    고정 상태를 literal로 남겨 generic plan에서도 partial index의 predicate를 증명한다.
+    사용자 입력은 여기로 들어오지 않는다.
+    """
+    return (
+        attempts.c.status.in_([literal_column("'preparing'"), literal_column("'sealed'")]),
+        attempts.c.published_at.is_(None),
+    )
+
+
+def _no_generation(heads):
+    return ~select(heads.generations.c.generation_id).where(
+        heads.generations.c.attempt_id == heads.lifecycle.attempts.c.attempt_id
+    ).exists()
+
+
+def _native_failed(heads):
+    runs = heads.metadata.tables["weather_sync_runs"]
+    return select(runs.c.run_id).where(
+        runs.c.run_id == heads.lifecycle.attempts.c.run_id,
+        runs.c.status.in_(sorted(_FAILED_NATIVE)),
+    ).exists()
+
+
+def _retire(session, heads, attempt_ids, code, *, owner_id=None):
+    """확정 퇴역 기록. 단건·일괄 경로가 같은 열(status/error_code)과 pin 정리를 쓴다."""
+    attempts = heads.lifecycle.attempts
+    statement = update(attempts).where(
+        attempts.c.attempt_id.in_(attempt_ids),
+        attempts.c.status.in_(["preparing", "sealed"]),
+    )
+    if owner_id is not None:
+        statement = statement.where(attempts.c.owner_id == owner_id)
+    session.execute(statement.values(status="failed", error_code=code))
+    session.execute(heads.pins.delete().where(heads.pins.c.attempt_id.in_(attempt_ids)))
+
+
+def _is_superseded(session, heads, attempt_id) -> bool:
+    attempts = heads.lifecycle.attempts
+    return session.scalar(
+        select(literal_column("1")).where(
+            attempts.c.attempt_id == attempt_id, _SUPERSEDED_OWNERSHIP, _no_generation(heads),
+        )
+    ) is not None
+
+
+class TickStatusProbe:
+    """한 tick 동안만 orchestrator run 상태를 run 단위로 기억한다.
+
+    tick마다 새로 만들고 다음 tick으로 넘기지 않는다. 같은 run의 attempt 수백 개가 상태를
+    한 번만 묻고, ``prefetch``는 한 묶음의 run을 조회 한 번으로 채운다. 묶음 조회가
+    실패하면 기억하지 않고 후보별 조회로 넘어간다. 후보별 조회의 실패·시간 초과는 그
+    tick의 나머지 동안 "모름"(None, 승격하지 않음)으로 기억해 같은 run을 다시 기다리지
+    않는다. 다음 tick은 새 probe로 다시 묻는다.
+    """
+
+    def __init__(self, lookup, batch=None):
+        self._lookup, self._batch = lookup, batch
+        self._seen: dict[str, str | None] = {}
+        self._lock = threading.Lock()
+        self.calls = 0
+
+    def cached(self, run_id: str) -> tuple[bool, str | None]:
+        with self._lock:
+            return run_id in self._seen, self._seen.get(run_id)
+
+    def remember_unknown(self, run_id: str) -> None:
+        with self._lock:
+            self._seen.setdefault(run_id, None)
+
+    def __call__(self, run_id: str) -> str | None:
+        hit, status = self.cached(run_id)
+        if hit:
+            return status
+        try:
+            status = self._lookup(run_id)
+        except Exception:
+            self.remember_unknown(run_id)
+            raise
+        finally:
+            with self._lock:
+                self.calls += 1
+        with self._lock:
+            return self._seen.setdefault(run_id, status)
+
+    def prefetch(self, run_ids) -> None:
+        if self._batch is None:
+            return
+        with self._lock:
+            missing = sorted({key for key in run_ids if key and key not in self._seen})
+        if not missing:
+            return
+        try:
+            found = call_with_deadline(
+                lambda: self._batch(missing), timeout_seconds=5, slots=_PREFETCH_SLOTS,
+            )
+        except Exception as exc:
+            # 묶음 조회 실패는 기억하지 않는다. 후보별 2초 조회가 이어서 묻는다.
+            logger.warning("weather_export_status_prefetch_deferred reason=%s",
+                           failure_reason(exc))
+            return
+        finally:
+            with self._lock:
+                self.calls += 1
+        with self._lock:
+            for key in missing:
+                self._seen.setdefault(key, found.get(key))
+
+
+def _probe(dagster_status, orchestrator_id):
+    """business DB 연결 없이 orchestrator 상태만 본다. 조회 실패·시간 초과는 None이다."""
+    if not orchestrator_id or dagster_status is None:
+        return None
+    cached = getattr(dagster_status, "cached", None)
+    if callable(cached):
+        hit, status = cached(orchestrator_id)
+        if hit:
+            return status
+    try:
+        return call_with_deadline(
+            lambda: dagster_status(orchestrator_id), timeout_seconds=2,
+            slots=_PUBLISHER_PROBE_SLOTS,
+        )
+    except Exception:
+        remember = getattr(dagster_status, "remember_unknown", None)
+        if callable(remember):
+            remember(orchestrator_id)
+        return None
+
+
+def _prefetch(dagster_status, rows) -> None:
+    prefetch = getattr(dagster_status, "prefetch", None)
+    if callable(prefetch):
+        prefetch([
+            row.orchestrator_run_id for row in rows
+            if row.execution_mode == "dagster" and row.run_status not in _FAILED_NATIVE
+        ])
 
 
 def _publisher_terminal(heads, identity, dagster_status):
@@ -410,40 +601,21 @@ def _publisher_terminal(heads, identity, dagster_status):
         native, mode = run["status"], attempt["execution_mode"]
         orchestrator_id = attempt["orchestrator_run_id"]
         epochs = attempt["owner_epochs"]
-        if epochs and set(epochs) == set(attempt["planned_sources"]):
+        if epochs:
             owners = heads.lifecycle.owners
-            rows = session.execute(select(owners).where(
+            # claim과 같은 정렬 순서로 owner 행을 잠근 뒤 일괄 퇴역과 같은 SQL로 판정한다.
+            session.execute(select(owners.c.source_scope).where(
                 owners.c.source_scope.in_(sorted(epochs)),
-            ).order_by(owners.c.source_scope).with_for_update()).mappings().all()
-            # 모든 scope가 실제 더 새 epoch로 넘어간 것만 퇴역한다. 일부 충돌,
-            # 누락/미확정 owner는 현재 scope가 섞인 시도를 실패로 위장하지 않는다.
-            superseded = len(rows) == len(epochs) and all(
-                row["owner_epoch"] > epochs[row["source_scope"]]
-                and row["active_attempt_id"] != identity.attempt_id for row in rows
-            )
-            if superseded and session.scalar(select(heads.generations.c.generation_id).where(
-                heads.generations.c.attempt_id == identity.attempt_id,
-            )) is None:
-                session.execute(update(heads.lifecycle.attempts).where(
-                    heads.lifecycle.attempts.c.attempt_id == identity.attempt_id,
-                    heads.lifecycle.attempts.c.owner_id == identity.owner_id,
-                    heads.lifecycle.attempts.c.status.in_(["preparing", "sealed"]),
-                ).values(status="failed", error_code="SUPERSEDED"))
-                session.execute(heads.pins.delete().where(
-                    heads.pins.c.attempt_id == identity.attempt_id,
-                ))
+            ).order_by(owners.c.source_scope).with_for_update())
+            if _is_superseded(session, heads, identity.attempt_id):
+                _retire(session, heads, [identity.attempt_id], "SUPERSEDED",
+                        owner_id=identity.owner_id)
                 return "SUPERSEDED", None
     status = None
     if native not in _FAILED_NATIVE and mode == "dagster":
         if not orchestrator_id or dagster_status is None:
             return "NOT_READY", None
-        try:
-            status = call_with_deadline(
-                lambda: dagster_status(orchestrator_id), timeout_seconds=2,
-                slots=_PUBLISHER_PROBE_SLOTS,
-            )
-        except Exception:
-            return "NOT_READY", None
+        status = _probe(dagster_status, orchestrator_id)
         if status not in {"SUCCESS", "FAILURE", "CANCELED"}:
             return "NOT_READY", None
     if native not in _FAILED_NATIVE and status not in {"FAILURE", "CANCELED"}:
@@ -470,13 +642,151 @@ def _publisher_terminal(heads, identity, dagster_status):
                 error="EXPORT_ORCHESTRATOR_TERMINAL",
                 export_status_pending=runs.c.export_status_scopes.is_not(None),
             ))
-        session.execute(update(heads.lifecycle.attempts).where(
-            heads.lifecycle.attempts.c.attempt_id == identity.attempt_id,
-            heads.lifecycle.attempts.c.owner_id == identity.owner_id,
-            heads.lifecycle.attempts.c.status.in_(["preparing", "sealed"]),
-        ).values(status="failed", error_code="CONFIRMED_TERMINAL"))
-        session.execute(heads.pins.delete().where(heads.pins.c.attempt_id == identity.attempt_id))
+        _retire(session, heads, [identity.attempt_id], "CONFIRMED_TERMINAL",
+                owner_id=identity.owner_id)
     return "REJECTED", status
+
+
+def retire_settled_attempts(repository, *, limit: int = RETIRE_BATCH) -> dict[str, int]:
+    """승격될 수 없는 pending을 `_publisher_terminal`과 같은 판정·기록으로 일괄 퇴역한다.
+
+    - ``SUPERSEDED``: 모든 claim scope가 더 새 epoch·다른 attempt로 넘어갔다(같은 SQL).
+    - ``CONFIRMED_TERMINAL``: 원본 native run이 실패·부분·취소로 끝났다(같은 상태 집합).
+    generation이 이미 있는 attempt는 건드리지 않는다. 후보는 ``FOR UPDATE SKIP LOCKED``로만
+    잡아 수집·단건 publisher가 잡은 행을 기다리지 않는다. 각 문장은 ``limit``개까지다.
+    """
+    if not 1 <= limit <= 5000:
+        raise ValueError("일괄 퇴역 상한이 올바르지 않습니다.")
+    if repository.engine.dialect.name != "postgresql":
+        return {}
+    heads = ExportHeads(repository)
+    attempts = heads.lifecycle.attempts
+    retired = {}
+    for code, condition in (
+        ("SUPERSEDED", _SUPERSEDED_OWNERSHIP),
+        # 단건 경로처럼 SUPERSEDED 판정이 먼저다. 둘 다 해당하면 SUPERSEDED로 남는다.
+        ("CONFIRMED_TERMINAL", and_(_native_failed(heads), not_(_SUPERSEDED_OWNERSHIP))),
+    ):
+        with heads._transaction() as session:
+            ids = list(session.scalars(
+                select(attempts.c.attempt_id)
+                .where(*_pending(attempts), _no_generation(heads), condition)
+                .order_by(attempts.c.attempt_id)
+                .limit(limit)
+                .with_for_update(of=attempts, skip_locked=True)
+            ))
+            if ids:
+                _retire(session, heads, ids, code)
+        retired[code] = len(ids)
+    return retired
+
+
+def _lock_free_outcome(row, dagster_status):
+    """행 잠금 없이 확정할 수 있는 NOT_READY다. None이면 기존 잠금 경로로 간다.
+
+    수집 중인 run의 행은 같은 run의 ingest가 잡고 있어 3초 lock_timeout에 걸린다.
+    orchestrator가 아직 끝나지 않은 run(한 job이 여러 dataset을 이어 도는 경우)도
+    `_publisher_terminal`은 NOT_READY로 끝난다. 둘 다 잠그지 않고 넘긴다.
+    """
+    native = row.run_status
+    if native in _FAILED_NATIVE:
+        return None
+    if row.execution_mode == "dagster":
+        status = _probe(dagster_status, row.orchestrator_run_id)
+        if status in {"FAILURE", "CANCELED"}:
+            return None
+        return "NOT_READY" if status != "SUCCESS" or native == "running" else None
+    return "NOT_READY" if native == "running" else None
+
+
+def _process_candidate(heads, artifacts, row, dagster_status):
+    early = _lock_free_outcome(row, dagster_status)
+    if early is not None:
+        return early
+    identity = ExportAttempt(row.attempt_id, row.owner_id)
+    outcome, _ = _publisher_terminal(heads, identity, dagster_status)
+    if outcome is None:
+        # begin/claim 후 declare 이전의 crash도 terminal 복구한다. plan이
+        # 없는 성공/미확정 후보를 승격하거나 성공으로 추측하지 않는다.
+        outcome = (
+            heads.promote(identity, artifacts, dagster_status=dagster_status)
+            if row.plan_id is not None else "NOT_READY"
+        )
+        if outcome == "REJECTED":
+            _publisher_terminal(heads, identity, dagster_status)
+    return outcome
+
+
+def _systemic(exc: BaseException) -> bool:
+    """후보와 무관한 DB 장애인가. 잠금·문장 시간 초과와 코드 오류는 그 후보만의 일이다."""
+    if not isinstance(exc, DBAPIError):
+        return False
+    return bool(exc.connection_invalidated) or _sqlstate(exc) not in _PER_CANDIDATE_SQLSTATES
+
+
+class PublisherTally:
+    """한 tick의 결과·미룬 사유. DB 장애가 연속 상한에 닿으면 ``stopped``가 된다.
+
+    ``seen``은 같은 tick의 phase가 같은 후보를 두 번 처리하지 않게 한다.
+    """
+
+    def __init__(self) -> None:
+        self.results: Counter[str] = Counter()
+        self.reasons: Counter[str] = Counter()
+        self.seen: set[str] = set()
+        self.consecutive = 0
+        self.stopped = False
+
+
+def _drain(heads, artifacts, rows, *, deadline, dagster_status, tally):
+    """후보를 차례로 처리한다. 한 후보의 잠금 시간 초과·예상 밖 오류는 그 후보만 미룬다.
+
+    반환값은 (처리한 수, 마지막으로 처리한 후보)다. 미룬 후보와 이미 본 후보도 처리 수에
+    들어가 keyset이 그 뒤로 넘어간다. 미룬 후보는 다음 sweep에서 다시 본다.
+    """
+    processed, last = 0, None
+    for row in rows:
+        if tally.stopped or time.monotonic() >= deadline:
+            break
+        processed, last = processed + 1, row
+        if row.attempt_id in tally.seen:
+            continue
+        tally.seen.add(row.attempt_id)
+        try:
+            outcome = _process_candidate(heads, artifacts, row, dagster_status)
+        except (ExportArtifactError, OSError):
+            # 손상/누락 파일은 이전 head를 그대로 남긴다. 후속 sweep/재수집으로 복구한다.
+            outcome = "NOT_READY"
+            tally.consecutive = 0
+        except Exception as exc:
+            # 한 후보의 잠금 시간 초과·statement timeout·예상 밖 오류가 tick 전체를
+            # 미루지 않게 한다. 사유는 분류만 남기고 원문 메시지는 남기지 않는다.
+            reason = failure_reason(exc)
+            logger.warning(
+                "weather_export_candidate_deferred attempt_id=%s reason=%s",
+                row.attempt_id, reason,
+            )
+            outcome = "DEFERRED"
+            tally.reasons[reason] += 1
+            tally.consecutive = tally.consecutive + 1 if _systemic(exc) else 0
+            tally.stopped = tally.consecutive >= MAX_CONSECUTIVE_CANDIDATE_ERRORS
+        else:
+            tally.consecutive = 0
+        tally.results[outcome] += 1
+    return processed, last
+
+
+def _candidate_columns(heads):
+    attempts = heads.lifecycle.attempts
+    runs = heads.metadata.tables["weather_sync_runs"]
+    return (
+        attempts.c.attempt_id,
+        attempts.c.owner_id,
+        attempts.c.execution_mode,
+        attempts.c.orchestrator_run_id,
+        runs.c.status.label("run_status"),
+        heads.plans.c.attempt_id.label("plan_id"),
+    )
 
 
 def publish_pending_exports(
@@ -488,63 +798,123 @@ def publish_pending_exports(
     budget_seconds: float = 20,
     dagster_status: Callable[[str], str | None] | None = None,
     daily_summaries: bool = False,
+    tally: PublisherTally | None = None,
 ):
     """keyset sweep을 재개한다. pending 한 건이 뒤 성공 후보를 막지 않는다.
 
     callback은 exact DagsterRunStatus의 이름만 반환한다. 실행 중/조회 실패는 승격하지 않는다.
+    수집 중인 run이나 아직 끝나지 않은 orchestrator의 후보는 행 잠금 없이 NOT_READY다.
+    한 후보의 잠금 시간 초과·예상 밖 오류는 그 후보만 ``DEFERRED``로 미루고 계속한다.
+    ``limit``은 한 번에 읽는 작은 후보 행 수다. 승격(파일 검증)은 한 후보씩 한다.
     이 함수는 collector job 밖에서 호출한다. daemon/전국 자동활성화는 별도 설정이다.
     """
-    if not 1 <= limit <= 32 or not 0 < budget_seconds <= 60:
+    if not 1 <= limit <= MAX_CANDIDATE_PAGE or not 0 < budget_seconds <= 60:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
     deadline = time.monotonic() + budget_seconds
     heads, artifacts = ExportHeads(repository), ExportArtifactStore(artifact_root)
     attempts = heads.lifecycle.attempts
+    runs = heads.metadata.tables["weather_sync_runs"]
+    own = tally is None
+    tally = tally or PublisherTally()
+    before_results, before_reasons = Counter(tally.results), Counter(tally.reasons)
     with heads._transaction() as session:
         query = (
-            select(attempts.c.attempt_id, attempts.c.owner_id,
-                   heads.plans.c.attempt_id.label("plan_id"))
-            .outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
-            .where(
-                # 고정 상태를 literal로 남겨 generic plan에서도 partial index의
-                # predicate를 증명한다. 사용자 입력은 여기로 들어오지 않는다.
-                attempts.c.status.in_([
-                    literal_column("'preparing'"), literal_column("'sealed'"),
-                ]),
-                attempts.c.published_at.is_(None),
-                ~select(heads.generations.c.generation_id)
-                .where(heads.generations.c.attempt_id == attempts.c.attempt_id)
-                .exists(),
+            select(*_candidate_columns(heads))
+            .select_from(
+                attempts.outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
+                .outerjoin(runs, runs.c.run_id == attempts.c.run_id)
             )
+            .where(*_pending(attempts), _no_generation(heads))
         )
         if cursor:
             query = query.where(attempts.c.attempt_id > cursor)
         rows = session.execute(query.order_by(attempts.c.attempt_id).limit(limit + 1)).all()
-    results, processed, last = {}, 0, cursor
-    for row in rows[:limit]:
-        if time.monotonic() >= deadline:
-            break
-        identity = ExportAttempt(row.attempt_id, row.owner_id)
-        try:
-            outcome, _ = _publisher_terminal(heads, identity, dagster_status)
-            if outcome is None:
-                # begin/claim 후 declare 이전의 crash도 terminal 복구한다. plan이
-                # 없는 성공/미확정 후보를 승격하거나 성공으로 추측하지 않는다.
-                outcome = (
-                    heads.promote(identity, artifacts, dagster_status=dagster_status)
-                    if row.plan_id is not None else "NOT_READY"
-                )
-                if outcome == "REJECTED":
-                    _publisher_terminal(heads, identity, dagster_status)
-        except (ExportArtifactError, OSError):
-            # 손상/누락 파일은 이전 head를 그대로 남긴다. 후속 sweep/재수집으로 복구한다.
-            outcome = "NOT_READY"
-        results[outcome] = results.get(outcome, 0) + 1
-        processed += 1
-        last = row.attempt_id
+    _prefetch(dagster_status, rows[:limit])
+    processed, last = _drain(
+        heads, artifacts, rows[:limit], deadline=deadline,
+        dagster_status=dagster_status, tally=tally,
+    )
     more = processed < len(rows)
     if daily_summaries and time.monotonic() < deadline:
         refresh_publisher_daily(repository, artifact_root, deadline=deadline)
-    return ExportPublisherProgress(processed, results, last if more else None, more)
+    last_id = last.attempt_id if last is not None else cursor
+    results = tally.results if own else tally.results - before_results
+    reasons = tally.reasons if own else tally.reasons - before_reasons
+    return ExportPublisherProgress(
+        processed, dict(results), last_id if more else None, more, dict(reasons),
+    )
+
+
+def publish_fresh_exports(
+    repository,
+    artifact_root: Path,
+    *,
+    budget_seconds: float,
+    dagster_status: Callable[[str], str | None] | None = None,
+    limit: int = 32,
+    max_candidates: int = 1024,
+    tally: PublisherTally | None = None,
+) -> ExportPublisherProgress:
+    """가장 최근에 SUCCESS로 끝난 run의, 아직 시도하지 않은 현재 소유 attempt부터 승격한다.
+
+    run이 끝난 뒤 몇 분 안에 새 회차가 공개되도록 sweep보다 먼저 돈다. 대상은 계획이 닫혔고
+    원본 run이 success이며 모든 claim scope의 현재 owner(같은 scope의 최신 attempt)인
+    ``preparing`` attempt다. 한 번 승격을 시도해 ``sealed``가 된 후보(증명 실패·CONFLICT
+    등)는 여기서 다시 고르지 않고 sweep이 이어서 본다. 같은 tick 안에서는
+    (finished_at, attempt_id) 키셋으로 한 번씩만 본다. cursor는 남기지 않는다.
+    """
+    if not 1 <= limit <= MAX_CANDIDATE_PAGE or not 0 < budget_seconds <= 60 or max_candidates < 1:
+        raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
+    deadline = time.monotonic() + budget_seconds
+    heads, artifacts = ExportHeads(repository), ExportArtifactStore(artifact_root)
+    attempts = heads.lifecycle.attempts
+    runs = heads.metadata.tables["weather_sync_runs"]
+    own = tally is None
+    tally = tally or PublisherTally()
+    before_results, before_reasons = Counter(tally.results), Counter(tally.reasons)
+    total, after, more = 0, None, False
+    while total < max_candidates and not tally.stopped and time.monotonic() < deadline:
+        with heads._transaction() as session:
+            query = (
+                select(*_candidate_columns(heads), runs.c.finished_at)
+                .select_from(
+                    attempts.join(runs, runs.c.run_id == attempts.c.run_id)
+                    .join(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
+                )
+                .where(
+                    *_pending(attempts),
+                    attempts.c.status == literal_column("'preparing'"),
+                    attempts.c.plan_closed_at.is_not(None),
+                    runs.c.status == literal_column("'success'"),
+                    runs.c.finished_at.is_not(None),
+                    _no_generation(heads),
+                    _CURRENT_OWNERSHIP,
+                )
+            )
+            if after is not None:
+                query = query.where(
+                    tuple_(runs.c.finished_at, attempts.c.attempt_id) < tuple_(*after)
+                )
+            rows = session.execute(
+                query.order_by(runs.c.finished_at.desc(), attempts.c.attempt_id.desc())
+                .limit(min(limit, max_candidates - total))
+            ).all()
+        if not rows:
+            break
+        _prefetch(dagster_status, rows)
+        processed, last = _drain(
+            heads, artifacts, rows, deadline=deadline,
+            dagster_status=dagster_status, tally=tally,
+        )
+        total += processed
+        if last is not None:
+            after = (last.finished_at, last.attempt_id)
+        if processed < len(rows):
+            more = True
+            break
+    results = tally.results if own else tally.results - before_results
+    reasons = tally.reasons if own else tally.reasons - before_reasons
+    return ExportPublisherProgress(total, dict(results), None, more, dict(reasons))
 
 
 def refresh_publisher_daily(
@@ -567,9 +937,9 @@ def refresh_publisher_daily(
                 break
         if time.monotonic() < deadline:
             prune_daily_summaries(repository)
-    except Exception:
+    except Exception as exc:
         more = True
-        logger.warning("weather_daily_summary_refresh_deferred")
+        logger.warning("weather_daily_summary_refresh_deferred reason=%s", failure_reason(exc))
     return {"processed": total, "has_more": more}
 
 

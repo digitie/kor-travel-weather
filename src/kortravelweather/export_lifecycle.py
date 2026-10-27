@@ -612,12 +612,14 @@ class ExportLifecycle:
         receipts = bounded
         for receipt in receipts:
             try:
-                for _ in artifacts.read(
+                # 파일 이름이 곧 내용 hash다. 여기서는 hash·크기·줄 수만 확인하고 point
+                # 해석은 승격 단계가 한 번만 한다. 승격의 배타 guard 안이면 그 단계는
+                # 이 hash를 다시 계산하지 않는다(ExportArtifactStore.verify).
+                artifacts.verify(
                     receipt["artifact_digest"],
                     byte_count=receipt["byte_count"],
                     point_count=receipt["point_count"],
-                ):
-                    pass
+                )
             except (OSError, ExportArtifactError, ValueError):
                 return "NOT_READY"
         with self._transaction() as session:
