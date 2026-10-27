@@ -38,4 +38,8 @@ Common main `aa232ad5f255233184de80eceaab2e9b6ccb00c9`(PR #47, T-217)의 `git ar
 산출물과 byte 단위로 같다. tokens는 `0.1.0` 그대로다(같은 source의 새 pack은 내용이 같고 파일 mode만 달라 교체하지 않는다).
 `LoginForm`은 SSR·최초 hydration 동안 아이디·비밀번호·제출을 native disabled로 두고 client handler가 준비된 뒤 연다.
 준비 전 제출은 callback 없이 막는다. 공개 props·슬롯·인증 정책은 같아 Weather `components/auth/LoginForm.tsx`는
-바뀌지 않는다. Playwright `fill()`/`click()`은 활성화를 기다리므로 기존 로그인 e2e도 그대로다. dev.6~dev.8은 이력으로 보존한다.
+바뀌지 않으며, 그 서버 렌더가 세 슬롯을 닫는지는 `components/auth/LoginForm.test.ts`가 고정한다.
+기존 로그인 e2e는 `fill()`/`click()`이 활성화를 기다리는 Playwright 동작상 그대로일 것으로 보지만 CI는 Playwright를
+돌리지 않으므로 시험 결과가 아니다. hydration 전에는 Weather 전역 `button:disabled`(opacity 0.55) 때문에 제출 버튼이 잠시
+흐리게 보이고, 브라우저 자동완성은 비활성 입력을 채우지 않을 수 있어 저장된 계정을 목록에서 고르게 될 수 있다.
+JS가 로드되지 않으면 폼이 계속 비활성이다. dev.6~dev.8은 이력으로 보존한다.

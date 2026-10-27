@@ -4,8 +4,10 @@
   `npm ci`·build·check·UI79 뒤 `npm pack -w packages/ui`로 재생성했다. SHA256 `b738d882…b403`(27파일)으로
   Common 기록·Transport 채택 산출물과 byte 단위로 같다. package.json·lock(version·resolved·integrity)만 바꿨다.
 - 공용 `LoginForm`은 SSR·최초 hydration 동안 입력·제출을 native disabled로 두고 handler 준비 뒤 연다.
-  Weather 래퍼는 공개 props만 쓰므로 앱 코드 변경은 없다. Vitest에 로그인 폼 시험·snapshot은 없고
-  Playwright 로그인은 `fill()`/`click()`이 활성화를 기다려 그대로다. tokens `0.1.0`과 dev.6~dev.8은 보존한다.
+  Weather 래퍼는 공개 props만 쓰므로 앱 코드 변경은 없다. 래퍼의 서버 렌더가 세 슬롯을 닫는지 SSR Vitest를
+  추가했다. 기존 Playwright 로그인은 `fill()`/`click()`이 활성화를 기다리므로 그대로일 것으로 보지만 CI 밖이라
+  시험 결과는 아니다. hydration 전 제출 버튼은 전역 `button:disabled`로 잠시 흐리고, 자동완성은 비활성 입력을
+  채우지 않을 수 있다. tokens `0.1.0`과 dev.6~dev.8은 보존한다.
   [vendor 기록](../packages/kor-travel-weather-admin/frontend/vendor/README.md).
 
 ## 2026-10-27 — 지도 마커 배치 병목과 미확인 표시 보강 중
