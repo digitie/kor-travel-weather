@@ -45,10 +45,31 @@ def test_hour_winners_deduplicate_providers_replays_and_metric_rows():
     assert replay == state
     summary = summarize(*KEY, replay, now=NOW)
     assert summary["temp_min"] == 12 and summary["temp_max"] == 14
-    assert summary["temp_avg"] == 13 and summary["precip_sum_mm"] == 5
+    # RN1은 6시간 중2시간뿐이다. 부분 합(5mm)을 구간 합계로 내보내지 않는다.
+    assert summary["temp_avg"] == 13 and summary["precip_sum_mm"] is None
     assert summary["sample_count"] == 3  # rain[05,06), rain+temp[06,07), temp[07,08)
     assert summary["source_providers"] == ["python-kma-api"]
     assert summary["precip_occurred"] is True and summary["partial"] is False
+
+
+DRY_MORNING = {hour: "0" for hour in range(6, 12)}  # 06~11시 관측 RN1 = [05,11) 6시간
+
+
+@pytest.mark.parametrize("rain,expected", [
+    (DRY_MORNING, (0.0, False)),
+    ({**DRY_MORNING, 7: "1", 10: "2.5"}, (3.5, True)),
+    ({hour: "0" for hour in range(6, 11)}, (None, None)),  # 5/6시간은 무강수 단정 불가
+    ({**DRY_MORNING, 9: "1mm 미만"}, (None, True)),
+    ({6: "0", 7: "0"}, (None, None)),
+])
+def test_precipitation_total_and_dry_slot_need_every_hour_of_the_slot(rain, expected):
+    points = [
+        point(hour, "RN1", "0", value_text=value) if "미만" in value else point(hour, "RN1", value)
+        for hour, value in rain.items()
+    ]
+    state = merge_observations({}, points, key=KEY, now=NOW)
+    result = summarize(*KEY, state, now=NOW)
+    assert (result["precip_sum_mm"], result["precip_occurred"]) == expected
 
 
 def test_kst_slot_boundary_rain_interval_and_future_forecasts_are_not_observations():
