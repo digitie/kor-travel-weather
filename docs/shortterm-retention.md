@@ -1,5 +1,8 @@
 # KMA 단기예보의 지난 대상시각 보존정책
 
+> **2026-10-27 현재 동작**은 아래 [상시 실패와 이어 읽기](#2026-10-27-상시-실패와-이어-읽기) 절이 정본이다.
+> 그 아래의 SKIP LOCKED·매 batch 남은행 확인·예산 소진 Failure 서술은 당시 구현 기록이다.
+
 2026-10-17 root 초기 정리에서 기존55,987 fact 삭제와 현재 경계 만료0건을 확인했다.
 미래 예보8개 표본·참조/인덱스 보존 및 삭제 뒤36개 live UI 통과는
 [운영 결과](reviews/2026-10-17-weather-short-forecast-initial-purge.md)에 기록한다.
@@ -26,10 +29,15 @@ timeout/lock 실패는 rollback하며 자동 재전송·강제취소를 추가�
 
 새 ingest는 batch 시작 때 경계를 한 번 계산하여 만료 fact를 새로 저장하지 않고,
 기존 만료 replay도 projection으로 되살리지 않는다. source/raw와 기존 fact 충돌 검증은 유지한다.
-전용 job은10분 주기로 최대100×1000행을 협력적60초 예산 안에서 정리한다.
-문장당5초/lock1초이며 각 문장·pool/연결 대기 때문에 전체 wall은60초를 넘을 수 있으며 hard deadline은 아니다.
-SKIP LOCKED로 선택하지 못한 행도 남았는지 확인하여 빈 batch를 완료로 오인하지 않는다.
-queue 대기/중단/예산 소진이면 물리 정리가 늦어지며 완료 metadata 대신 실패를 남긴다.
+전용 job은10분 주기로 최대100×1000행을 협력적 실행당 예산 안에서 정리한다. 예산은
+`KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초; 잘못된 값은 거절하지 않고
+경고와 함께 180초 또는 기본150초로 보정 — 모든 weather asset이 같은 설정을 읽기 때문)다.
+문장당5초/lock1초다. 이어 읽을 위치가 없을 때의 첫 후보 선택만 남은 예산 안 최대45초를 쓴다.
+각 문장·pool/연결 대기 때문에 전체 wall은 예산을 넘을 수 있으며 hard deadline은 아니다.
+잠긴 행은 SKIP LOCKED로 건너뛰지 않고 lock_timeout 안에서 기다리며, timeout이면 그 batch만 연기한다.
+지운 행이 있으면 backlog가 남아도 성공이다. 진척0이거나, 24시간 넘게 뒤처진 채 지연 상한이
+7회(약70분) 연속 줄지 않을 때만 실패로 남긴다. 자세한 현재 동작은 아래 2026-10-27 절을 따른다
+(2026-10-17 당시에는 SKIP LOCKED·매 batch 남은행 확인·60초 예산·예산 소진 실패였다).
 현재 daemon OFF/배포·초기정리는 root의 별도 검토·운영 영역이다.
 
 ## 운영 명령
@@ -37,7 +45,7 @@ queue 대기/중단/예산 소진이면 물리 정리가 늦어지며 완료 met
 ktwctl purge-short-forecast는 기본 dry-run이며 batch 선택수만 센다. 전체 fact count가 아니다.
 --execute에서만 삭제한다. --cutoff에 dry-run이 반환한 aware 경계를 고정할 수 있으나
 현재시각-6시간보다 늦은 cutoff는 거절하여 미래/최근값 삭제를 막는다.
---batch-size1~1000/--max-batches1~100/--budget-seconds0초초과60초이하를 사용한다.
+--batch-size1~1000/--max-batches1~100/--budget-seconds0초초과180초이하(기본60)를 사용한다.
 operation_id/cutoff와 batch 전 intent·commit 뒤 누적 삭제수·남은행 존재를 JSON으로 남긴다.
 raw/DSN/주소/credential은 출력하지 않고 실패는 error_class만 기록한다.
 중간 실패는 이미 commit한 batch를 되돌렸다고 하지 않으며 자동 재전송하지 않는다.
@@ -148,3 +156,88 @@ JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서�
 
 독립 리뷰의 최초 반례·수정·시험 이력은
 [closure](reviews/2026-10-16-weather-shortterm-retention-closure.md)에 보관한다.
+
+## 2026-10-27 상시 실패와 이어 읽기
+
+### 관측(운영 odroid, 읽기 전용 2026-10-26 22:2xZ)
+
+- 공용 Dagster: `weather_short_forecast_retention_job`의 마지막 성공은 10-20 22:50Z이고 그 뒤 모든 run이
+  FAILURE다(최근7일 FAILURE835·SUCCESS63, 성공은 모두 10-19 22:30Z~10-20 22:50Z).
+  실패 run은 batch9~17개×1000행을 지우고도 `budget_exhausted`라 Failure였다.
+  21:40Z·22:00Z run은 첫 후보 SELECT가 5초 `statement_timeout`(QueryCanceled)으로 죽었다.
+- 일별 partition은 7~9M행(heap4~5GB·index3.5~4.6GB)이고 단기예보 부분 인덱스 leaf는 1~2.9M항목이다.
+  삭제가 일어난 1020/1021/1022 leaf의 dead는 1,276,815/800,872/282,038, 마지막 autovacuum은 각
+  10-20/21/22였다. 기본 scale factor0.2에서는 약1.4M dead 전에는 vacuum되지 않는다.
+- 전체 partition 머리부터 첫 만료 행 1개를 찾는 데 cold 15.3초·buffer read34,708이 걸렸다(1020 20,986,
+  1021 13,704). dead가 없는 1023 leaf에서 1000행 선택은 22ms·21 buffer다.
+- 같은 1000키의 PK 탐색은 fact 1,525 page·2.5초, pointer 948 page·2.4초였다. 삭제 계획은 둘 다
+  VALUES×PK Nested Loop이다. xmin을 붙든 긴 transaction·slot·prepared xact는 없었다.
+
+### 원인
+
+1. 매 batch가 부분 인덱스 머리부터 후보 SELECT와 남은행 EXISTS를 두 번 다시 읽었다. 지운 행의
+   인덱스 항목은 VACUUM 전까지 머리에 남으므로 batch마다 수백만 dead 항목을 지났다(batch5~8초).
+2. 진척이 있어도 완료가 아니면 Failure여서 실행마다 실패 이력·경보를 남겼다.
+3. 실행당 약1만 행은 유입(약2.5~2.9M행/일, 10분당1.7~2만)보다 적어 backlog가 줄지 않았다.
+
+### 현재 동작
+
+- 후보는 부분 인덱스 순서 `(valid_at, known_at, value_id)`로 고른다. 다음 batch는 앞 batch의 마지막
+  키 뒤에서(`ROW(...) > ROW(...)`가 Index Cond), 다음 실행은 앞 materialization metadata의
+  `resume_valid_at/resume_known_at/resume_value_id` 위치에서 시작한다. 위치가 없을 때만 첫 선택이
+  머리를 지나며 그 한 문장에 남은 예산 안 최대45초를 준다. 나머지 문장은 5초·lock1초 그대로다.
+- 위치는 검사한 뒤에만 쓴다(`resume_position`). 정책(`resume_policy` = 6시간+predicate 해시)이나
+  DB 이름(`resume_database`)이 다르면, 위치가 경계보다 앞서 있으면(시계 역행), 마지막 머리 훑기
+  (`head_scan_at`)가 24시간 넘었으면 머리부터 다시 시작한다. 정상 수집은 경계보다 오래된 단기예보를
+  저장하지 않지만 복원·늦은 commit·시계 역행 등으로 위치 앞에 만료 행이 생길 수 있어, 하루 한 번의
+  머리 훑기가 그런 행을 영구히 놓치지 않게 한다. 주기 훑기의 첫 선택이 VACUUM 전 죽은 항목 때문에
+  45초 안에 끝나지 않으면(QueryCanceled) 같은 실행이 저장 위치에서 이어 정리하고
+  `head_sweep_timed_out=true`를 남긴다(훑기는 다음 주기에 다시 시도). 행 잠금은 SKIP LOCKED 대신
+  `lock_timeout` 안에서 기다리므로 한 실행이 건너뛴 잠긴 행이 위치 앞에 남지는 않는다.
+- pointer는 기존처럼 정확 pair로 먼저 지운다. fact는 같은 transaction에서 FOR UPDATE로 잠근 행을
+  `tableoid`+`ctid`로 partition마다 지운다(known_at 범위로 pruning). RETURNING 키 집합이 고른 키와
+  같아야 commit한다. PK 재탐색이 없어진다.
+- 남은행 확인은 덜 찬 batch면 생략(위치 뒤를 모두 고름), 찬 batch면 위치 뒤 EXISTS만 쓴다.
+- 문장 timeout·잠금 timeout·deadlock(57014/55P03/40P01)은 그 batch만 rollback하고 `deferred`로
+  돌린다. 앞 batch commit과 위치는 유효하다. 다른 SQL 오류는 그대로 실패다.
+- 판정: 지운 행이 있거나 `complete_snapshot`이면 SUCCESS다. backlog가 남으면 warning과
+  `backlog_lag_seconds`를 남긴다. 이 값은 경계 − 마지막으로 지운 키의 대상시각이고 남은 가장 오래된
+  행은 그 뒤에 있으므로 실제 지연의 **상한**이다. `lag_stall_runs`는 이 상한이 24시간을 넘는 채 앞
+  materialization보다 줄지 않은 연속 실행 수다(줄면, 또는 24시간 이하면 0). Failure는 진척0일 때와
+  `lag_stall_runs`가 7(약70분) 이상일 때만 남긴다. 뒤처졌어도 줄고 있으면(따라잡는 중) SUCCESS다.
+  valid_at은 정시 단위라 지연 상한은 같은 정시 안에서 실행마다 600초씩 오르다가 위치가 다음 정시로
+  넘어갈 때 한꺼번에 준다. 처리량이 유입 이상이면 6실행(1시간) 안에 정시를 넘어 횟수가 0으로 돌아가므로
+  7회 연속은 1시간 넘게 정시 하나도 넘지 못한 상태(처리량이 유입의 약0.85배 미만)다.
+  정책·DB 변경·시계 역행으로 위치를 버린 실행은 앞 지연·횟수를 이어 쓰지 않고 새로 센다.
+  후자의 Failure도 실패 전에 같은 metadata로 materialization을 먼저 기록해 다음 실행이 위치와 횟수를
+  승계한다. dry-run은 진척으로 세지 않는다.
+- 실행당 예산은 설정 `KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초)다.
+  운영 실측 batch 약3초/1000행이면 실행당 약5만 행으로 유입(10분당 약1.7~2만)의 약2.5배다. 마지막 batch와
+  run 기동을 더해도 job의 `dagster/max_runtime` 300초 안에 끝나는 상한이다. odroid 부하가 높으면 낮춘다.
+  weather 동시 run 상한(6) 중 한 자리를 실행마다 약2.5~3.5분 쓴다.
+- 6시간 경계·미래 보존·advisory lock·100batch/1000행·10분 주기는 바꾸지 않았다.
+  CLI `ktwctl purge-short-forecast`(기본 예산60초)는 위치를 저장하지 않고 머리부터 실행 안에서만 이어
+  읽는다(위치를 의심할 때의 전체 재확인 경로).
+
+### 배포 후 확인
+
+1. `weather_short_forecast_retention_job`을 한 번 실행하거나 다음 10분 tick을 기다린다.
+2. 첫 run은 위치가 없어 머리를 한 번 지난다(최대45초). SUCCESS·`facts_deleted>0`·`resume_*`·
+   `head_scan_at`·`resumed=false`·`budget_seconds=150`을 확인한다. backlog가 남으면 `budget_exhausted`·
+   `remaining=true`이고 배포 직후에는 10-20부터 쌓인 backlog 때문에 `backlog_lag_seconds`가 24시간을 넘는다.
+3. 다음 run부터 `resumed=true`이다. `backlog_lag_seconds`는 같은 정시 안에서 run마다 600초씩 오르고 정시를
+   넘을 때 크게 준다. 시간 단위로 보아 줄면 따라잡는 중이며 `lag_stall_runs`는 0~5 사이를 오간다.
+   BATCH_COMMITTED observation의 `elapsed_seconds` 증가 폭이 batch 시간이다. 하루 한 번은
+   `resume_discarded=periodic_head_sweep`인 머리 훑기 run이다(`head_sweep_timed_out=true`면 위치에서 이어 정리).
+4. Failure는 두 경우뿐이다. 진척0(`facts_deleted=0`, `error_class`로 잠금/timeout 구분)과, 24시간 넘게
+   뒤처진 채 7회(약70분) 연속 줄지 않음(`lag_stall_runs>=7`, 처리량 부족 — 예산을 올리거나 부하를 확인).
+
+### 남은 한계
+
+- 1000행마다 pointer FK(RESTRICT) 검사가 pointer PK를 무작위로 찾는 비용(운영 cold 약2.4초)은 남는다.
+  처리량 추정(약5만 행/실행)은 이 비용 기준이며 운영 부하에 따라 달라진다. 실제 따라잡는 속도는 배포 뒤
+  `backlog_lag_seconds` 추이로 확인한다.
+- 위치 앞에 늦게 들어온 만료 행은 다음 하루 머리 훑기까지(최대 약24시간) 남을 수 있다. 머리 훑기가 죽은
+  항목 때문에 계속 시간 초과면 그 행은 7일 partition DROP까지 남는다. CLI 전체 실행은 언제든 머리부터 정리한다.
+- 지연 상한 gauge는 아직 내보내지 않는다. 짧은 run worker의 multiprocess live gauge는 run이 끝나면
+  사라지고, API scrape 시점 계산은 머리 탐색 비용이 든다. 현재 알림 신호는 위 두 Failure다.

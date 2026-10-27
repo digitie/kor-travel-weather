@@ -136,7 +136,7 @@ loopback 24602 프록시는 첫 요청을 지연시켜 24102 native GraphQL로 �
 
 ## SQL 실행 제한시간 보존 후속
 
-당시 pin은 89291f36d731ab906161b96757522e1cd833b4ef다(2026-10-21 common main `e746e4b81b9b62dd1a74ca90ba0a1204951c2885`로 교체 — 89291f3은 main의 조상이 아니었다). 이전 a68d049의
+당시 pin은 89291f36d731ab906161b96757522e1cd833b4ef다(2026-10-21 common main `e746e4b81b9b62dd1a74ca90ba0a1204951c2885`로 교체 — 89291f3은 main의 조상이 아니었다. 2026-10-27 현재 pin은 `aa232ad5f255233184de80eceaab2e9b6ccb00c9`). 이전 a68d049의
 독립 제출 연결에서 native statement_timeout이 빠지는 반례를 수정했다.
 공식 SQLAlchemy Pool.recreate로 연결 생성 설정과 listener를 보존하고 원래 풀의
 연결을 빌리지 않는다. 기존 연결 유실 시 제출 차단도 유지한다.

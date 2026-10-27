@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildWeatherClusterData, type WeatherClusterMarker } from "./weather-clusters";
+import { buildWeatherClusterData, weatherConditionIcon, weatherConditionLabel, type WeatherClusterMarker } from "./weather-clusters";
 
 describe("buildWeatherClusterData", () => {
   it("keeps valid weather points and their marker state", () => {
@@ -57,5 +57,13 @@ describe("buildWeatherClusterData", () => {
     const data = buildWeatherClusterData(markers);
     expect(data.features).toHaveLength(1);
     expect(data.features[0].properties.marker_id).toBe("busan");
+  });
+});
+
+describe("날씨 미확인 표시", () => {
+  it("값이 없는 지점을 구름으로 위장하지 않는다", () => {
+    expect(weatherConditionLabel("unknown")).toBe("정보 없음");
+    expect(weatherConditionIcon("unknown")).not.toBe(weatherConditionIcon("cloudy"));
+    expect(weatherConditionLabel("cloudy")).toBe("구름");
   });
 });

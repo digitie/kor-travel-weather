@@ -50,6 +50,7 @@ from sqlalchemy import (
     select,
     text,
     true,
+    union_all,
     update,
     values,
 )
@@ -136,9 +137,14 @@ from .partitions import (
     write_deferral_mark,
 )
 from .retention import (
+    MAX_BATCH_SIZE,
+    SHORT_FORECAST_CANDIDATES_AFTER_SQL,
     SHORT_FORECAST_CANDIDATES_SQL,
-    SHORT_FORECAST_EXISTS_SQL,
+    SHORT_FORECAST_DELETE_SQL,
+    SHORT_FORECAST_EXISTS_AFTER_SQL,
     SHORT_FORECAST_PREDICATE,
+    STATEMENT_TIMEOUT_MS,
+    ShortForecastKey,
     ShortForecastPartitionRetained,
     expired_short_forecast,
     retained_short_forecast,
@@ -421,6 +427,12 @@ class WeatherValueRow(Base):
 
 _MARKER_METRIC_KEYS = ("TEMP", "T1H", "TMP", "WEATHER_CODE", "SKY", "PTY")
 _PROVIDER_MARKER_PREDICATE = "metric_key IN ('TEMP', 'T1H', 'TMP', 'WEATHER_CODE', 'SKY', 'PTY')"
+_MARKER_CURRENT_PREDICATE = (
+    _PROVIDER_MARKER_PREDICATE + " AND forecast_style IN ('observed', 'nowcast')"
+)
+_MARKER_FORECAST_PREDICATE = (
+    _PROVIDER_MARKER_PREDICATE + " AND forecast_style IN ('ultra_short', 'short', 'mid')"
+)
 
 
 class WeatherCurrentValueRow(Base):
@@ -493,6 +505,37 @@ class WeatherCurrentValueRow(Base):
             text(_CURRENT_PREFERENCE_EXPRESSION),
             text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
             text("value_id DESC"), postgresql_where=text(_PROVIDER_MARKER_PREDICATE),
+        ),
+        # 종류별 마커는 제공처 미지정도 metric/target prefix에서 바로 대표를 찾는다.
+        # 현재값은 최신 target, 예보는 가까운 target을 쓰므로 방향을 분리한다.
+        Index(
+            "ix_weather_current_values_marker_current",
+            text("location_id"), text("metric_key"), text("target_at DESC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_CURRENT_PREDICATE),
+            postgresql_include=["provider", "forecast_style", "weather_domain", "dataset_key"],
+        ),
+        Index(
+            "ix_weather_current_values_marker_forecast",
+            text("location_id"), text("metric_key"), text("target_at ASC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_FORECAST_PREDICATE),
+            postgresql_include=["provider", "forecast_style", "weather_domain", "dataset_key"],
+        ),
+        # 단일 제공처를 선택한 generic plan도 다른 제공처의 이력을 훑지 않는다.
+        Index(
+            "ix_weather_current_values_marker_provider_current",
+            text("location_id"), text("provider"), text("metric_key"), text("target_at DESC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_CURRENT_PREDICATE),
+            postgresql_include=["forecast_style", "weather_domain", "dataset_key"],
+        ),
+        Index(
+            "ix_weather_current_values_marker_provider_forecast",
+            text("location_id"), text("provider"), text("metric_key"), text("target_at ASC"),
+            text("known_at DESC NULLS LAST"), text("source_record_key DESC NULLS LAST"),
+            text("value_id DESC"), postgresql_where=text(_MARKER_FORECAST_PREDICATE),
+            postgresql_include=["forecast_style", "weather_domain", "dataset_key"],
         ),
         # The fact table is partitioned by ``known_at``, so its primary key is
         # ``(value_id, known_at)`` and a reference has to name both.  The
@@ -973,6 +1016,10 @@ WHERE (
 """
 
 PURGE_GUC = "kortravelweather.purge"
+
+#: 단기예보 정리 batch를 실패 대신 연기하는 SQLSTATE: 문장 timeout/취소(57014),
+#: 잠금 timeout(55P03), deadlock(40P01). 그 batch만 rollback되고 앞 commit은 유효하다.
+_SHORT_RETENTION_DEFERRABLE = frozenset({"57014", "55P03", "40P01"})
 
 #: Delete a source record once nothing still cites it. Both ``NOT EXISTS``
 #: subqueries key on ``source_record_key``, served by
@@ -2695,7 +2742,11 @@ class WeatherRepository:
                                for style in ("observed", "nowcast"))
         timestamp = WeatherCurrentValueRow.target_at
         order: list[Any] = []
-        if prefer_current:
+        current_marker = per_metric and kinds is not None and set(kinds) <= {"observed", "nowcast"}
+        forecast_marker = per_metric and kinds is not None and set(kinds) <= {
+            "ultra_short", "short", "mid",
+        }
+        if prefer_current and not current_marker:
             order.append(
                 case(
                     (
@@ -2744,6 +2795,20 @@ class WeatherRepository:
             candidate = candidate.where(
                 WeatherCurrentValueRow.metric_key == requested_locations.c.metric_key,
             )
+            if current_marker or forecast_marker:
+                # 고정 부분 인덱스 조건만 literal이다. 실제 요청 필터와 시각은 계속
+                # bind로 유지해 prepared generic plan에서도 인덱스를 증명한다.
+                styles = ("observed", "nowcast") if current_marker else (
+                    "ultra_short", "short", "mid",
+                )
+                candidate = candidate.where(
+                    WeatherCurrentValueRow.metric_key.in_(tuple(
+                        literal(key, literal_execute=True) for key in _MARKER_METRIC_KEYS
+                    )),
+                    WeatherCurrentValueRow.forecast_style.in_(tuple(
+                        literal(style, literal_execute=True) for style in styles
+                    )),
+                )
         if prefer_current:
             # "현재 날씨" falls back to a forecast only once observed/nowcast is
             # exhausted, and the fallback must be the nearest slot that has
@@ -2797,43 +2862,90 @@ class WeatherRepository:
                 alert_filter if alerts_only else not_(alert_filter)
             )
         if alert_active_at is not None:
-            # Mirror ``active_alert_values``: the max-age bound applies only to
-            # announcements with no explicit end time.  A typhoon or heat
-            # advisory carries ``valid_until`` and stays active well past three
-            # days, so a plain ``target_at`` window would hide exactly the
-            # warnings that matter most.
-            #
-            # ``valid_until`` is the one sort/filter column still on the fact,
-            # so the join belongs here rather than beside the other options: a
-            # predicate added without it compiles to a silent cross join.
-            candidate = candidate.join(
-                WeatherValueRow,
-                and_(
-                    WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
-                    WeatherValueRow.known_at == WeatherCurrentValueRow.known_at,
-                ),
-            ).where(
-                or_(
-                    WeatherCurrentValueRow.target_at >= alert_active_at - ALERT_MAX_AGE,
-                    WeatherValueRow.valid_until > alert_active_at,
-                )
-            )
-        candidate = candidate.lateral().alias("current_value_candidates")
-        pairs = session.execute(
-            select(
-                requested_locations.c.location_id, candidate.c.value_id, candidate.c.known_at,
-            ).select_from(requested_locations.join(candidate, true()))
-        ).all()
+            # 유효 특보는 LIMIT 전에 판정한다. 오래된 명시 종료시각을 생략하지
+            # 않되 후보와 원본 키 배열은 512행씩 읽어 이력 전체를 메모리에 쌓지 않는다.
+            pointer_rows = session.execute(candidate.limit(None).order_by(None).add_columns(
+                requested_locations.c.location_id.label("location_id"),
+                WeatherCurrentValueRow.target_at.label("target_at"),
+                WeatherCurrentValueRow.source_record_key.label("source_record_key"),
+                WeatherCurrentValueRow.forecast_style.label("forecast_style"),
+                WeatherCurrentValueRow.metric_key.label("metric_key"),
+            ).execution_options(yield_per=512))
+            winners: dict[str, list[Any]] = {}
+            cutoff = alert_active_at - ALERT_MAX_AGE
+            for pointers in pointer_rows.partitions(512):
+                active = {(p.value_id, p.known_at) for p in pointers if p.target_at >= cutoff}
+                older = [p for p in pointers if p.target_at < cutoff]
+                if older:
+                    alert_keys = func.unnest(
+                        bindparam("alert_value_ids", [p.value_id for p in older],
+                                  type_=ARRAY(String)),
+                        bindparam("alert_known_ats", [p.known_at for p in older],
+                                  type_=ARRAY(AwareDateTime())),
+                    ).table_valued("value_id", "known_at").render_derived(name="marker_alert_keys")
+                    clocks = [p.known_at for p in older]
+                    active.update(session.execute(select(
+                        WeatherValueRow.value_id, WeatherValueRow.known_at,
+                    ).join(alert_keys, and_(
+                        WeatherValueRow.value_id == alert_keys.c.value_id,
+                        WeatherValueRow.known_at == alert_keys.c.known_at,
+                    )).where(
+                        WeatherValueRow.known_at >= min(clocks),
+                        WeatherValueRow.known_at <= max(clocks),
+                        WeatherValueRow.valid_until > alert_active_at,
+                    )).all())
+                for pointer in pointers:
+                    if (pointer.value_id, pointer.known_at) in active:
+                        winners.setdefault(pointer.location_id, []).append(pointer)
+                for key, choices in winners.items():
+                    choices.sort(key=lambda p: (
+                        p.known_at, p.source_record_key is not None,
+                        p.source_record_key or "", p.value_id,
+                    ), reverse=True)
+                    if newest_first:
+                        choices.sort(key=lambda p: p.target_at, reverse=True)
+                    else:
+                        choices.sort(key=lambda p: (p.target_at, p.metric_key))
+                    if prefer_current:
+                        choices.sort(key=lambda p: p.forecast_style not in ("observed", "nowcast"))
+                    winners[key] = choices[:limit_per_location]
+            pairs = [(p.location_id, p.value_id, p.known_at)
+                     for choices in winners.values() for p in choices]
+        else:
+            if per_metric and providers is not None and len(set(providers)) > 1:
+                # 다중 제공처도 각각의 정렬된 prefix에서 대표만 읽은 뒤 병합한다.
+                # IN 전체 이력을 먼저 정렬하면 generic plan의 비용이 다시 커진다.
+                per_provider = union_all(*[
+                    candidate.add_columns(
+                        WeatherCurrentValueRow.target_at.label("target_at"),
+                        WeatherCurrentValueRow.source_record_key.label("source_record_key"),
+                    ).where(WeatherCurrentValueRow.provider == provider).correlate(
+                        requested_locations,
+                    ) for provider in dict.fromkeys(providers)
+                ]).subquery("marker_provider_candidates")
+                candidate = select(per_provider.c.value_id, per_provider.c.known_at).order_by(
+                    per_provider.c.target_at.desc() if newest_first else per_provider.c.target_at,
+                    per_provider.c.known_at.desc().nullslast(),
+                    per_provider.c.source_record_key.desc().nullslast(),
+                    per_provider.c.value_id.desc(),
+                ).limit(limit_per_location)
+            candidate = candidate.lateral().alias("current_value_candidates")
+            pairs = session.execute(
+                select(
+                    requested_locations.c.location_id, candidate.c.value_id, candidate.c.known_at,
+                ).select_from(requested_locations.join(candidate, true()))
+            ).all()
         if not pairs:
             return result
         # UUID만 조회하면 모든 날짜 partition을 탐색하고 다른 revision도 섞인다.
         # 배열의 같은 인덱스가 정확한 복합 키이며, 범위 조건은 partition을 제거한다.
         keys = func.unnest(
-            bindparam("current_value_ids", [row.value_id for row in pairs], type_=ARRAY(String)),
-            bindparam("current_known_ats", [row.known_at for row in pairs],
+            bindparam("current_value_ids", [value_id for _, value_id, _ in pairs],
+                      type_=ARRAY(String)),
+            bindparam("current_known_ats", [known_at for _, _, known_at in pairs],
                       type_=ARRAY(AwareDateTime())),
         ).table_valued("value_id", "known_at").render_derived(name="current_fact_keys")
-        clocks = [row.known_at for row in pairs]
+        clocks = [known_at for _, _, known_at in pairs]
         rows = session.scalars(
             select(WeatherValueRow).join(keys, and_(
                 WeatherValueRow.value_id == keys.c.value_id,
@@ -3996,8 +4108,26 @@ class WeatherRepository:
 
     def purge_expired_short_forecast(
         self, *, cutoff: datetime, batch_size: int = 1000, dry_run: bool = True,
+        after: ShortForecastKey | None = None,
+        statement_timeout_ms: int = STATEMENT_TIMEOUT_MS,
     ) -> dict[str, Any]:
-        """KMA 단기예보의 지난 valid_at만 복합키 단위로 유한 정리한다."""
+        """KMA 단기예보의 지난 valid_at만 복합키 단위로 유한 정리한다.
+
+        후보는 부분 인덱스 순서로 고르고, ``after``가 있으면 그 키 뒤에서 index scan을
+        시작한다. 지운 행의 인덱스 항목은 VACUUM 전까지 머리에 죽은 채 남는다.
+        2026-10-26 운영(odroid)에서 매 batch가 머리부터 후보 선택과 남은행 확인을
+        두 번 다시 읽어 약236만 죽은 항목을 지나느라 batch당5~8초가 걸렸고,
+        결국 첫 선택이5초 문장 예산을 넘었다. 이어 읽기는 그 항목을 다시 지나지 않는다.
+
+        ``statement_timeout_ms``는 후보 선택에만 쓴다. 위치가 없을 때 머리 탐색 한 번에
+        더 긴 상한을 줄 수 있게 하며, 삭제와 남은행 확인은 늘 정상 예산을 쓴다.
+        행 잠금은 SKIP LOCKED가 아니라 ``lock_timeout`` 안에서 기다린다. 이 batch가 건너뛴
+        잠긴 행이 위치 앞에 남지 않는다. 다만 위치 앞에 나중에 만료 행이 들어올 수는 있어
+        (복원·늦은 commit·시계 역행 등) 호출자가 위치를 검사하고 주기적으로 머리부터 훑는다
+        (``retention.resume_position``). 잠금/문장 timeout은 이 batch만 rollback하고
+        ``deferred``로 돌려 이미 commit한 앞 batch의 진척을 보존한다.
+        다른 SQL 오류는 그대로 전파한다.
+        """
         latest_cutoff = short_forecast_cutoff(kst_now())
         if cutoff.tzinfo is None or cutoff.utcoffset() is None:
             raise ValueError("cutoff는 timezone-aware여야 합니다.")
@@ -4006,61 +4136,102 @@ class WeatherRepository:
             raise ValueError("cutoff는 현재시각에서6시간을 뺀 값보다 늦을 수 없습니다.")
         if (
             isinstance(batch_size, bool) or not isinstance(batch_size, int)
-            or not 1 <= batch_size <= 1000
+            or not 1 <= batch_size <= MAX_BATCH_SIZE
         ):
             raise ValueError("batch_size는1~1000 정수여야 합니다.")
+        if (
+            isinstance(statement_timeout_ms, bool) or not isinstance(statement_timeout_ms, int)
+            or not STATEMENT_TIMEOUT_MS <= statement_timeout_ms <= 60000
+        ):
+            raise ValueError("statement_timeout_ms는5000~60000 정수여야 합니다.")
+        if after is not None and (
+            after.valid_at.tzinfo is None or after.known_at.tzinfo is None
+            or not isinstance(after.value_id, str)
+        ):
+            raise ValueError("이어 읽을 위치는 timezone-aware 키여야 합니다.")
         started = time.monotonic()
         report: dict[str, Any] = {
             "cutoff": cutoff.isoformat(), "matched_in_batch": 0,
             "pointers_deleted": 0, "facts_deleted": 0,
-            "remaining": None, "deferred": False,
+            "remaining": None, "deferred": False, "last_key": None, "error_class": None,
         }
-        with self._session_factory.begin() as session:
-            if dry_run:
-                session.execute(text("SET TRANSACTION READ ONLY"))
-            session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
-            session.execute(text("SET LOCAL lock_timeout = '1000ms'"))
-            if not dry_run and not session.scalar(text(
-                "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
-            )):
-                report["deferred"] = True
-                report["elapsed_seconds"] = time.monotonic() - started
-                return report
-            statement = SHORT_FORECAST_CANDIDATES_SQL
-            if not dry_run:
-                statement += " FOR UPDATE SKIP LOCKED"
-            keys = [tuple(row) for row in session.execute(
-                text(statement), {"cutoff": cutoff, "batch_size": batch_size},
-            ).all()]
-            report["matched_in_batch"] = len(keys)
-            if keys and not dry_run:
-                relation = values(
-                    column("value_id", String(64)),
-                    column("known_at", AwareDateTime()),
-                    name="expired_short_keys",
-                ).data(keys)
-                pair = [
-                    WeatherCurrentValueRow.value_id == relation.c.value_id,
-                    WeatherCurrentValueRow.known_at == relation.c.known_at,
-                ]
-                report["pointers_deleted"] = int(session.execute(
-                    delete(WeatherCurrentValueRow).where(*pair)
-                ).rowcount or 0)
-                session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
-                report["facts_deleted"] = int(session.execute(
-                    delete(WeatherValueRow).where(
-                        WeatherValueRow.value_id == relation.c.value_id,
-                        WeatherValueRow.known_at == relation.c.known_at,
-                        WeatherValueRow.known_at >= min(key[1] for key in keys),
-                        WeatherValueRow.known_at <= max(key[1] for key in keys),
+        try:
+            with self._session_factory.begin() as session:
+                if dry_run:
+                    session.execute(text("SET TRANSACTION READ ONLY"))
+                session.execute(text(f"SET LOCAL statement_timeout = '{statement_timeout_ms}ms'"))
+                session.execute(text("SET LOCAL lock_timeout = '1000ms'"))
+                if not dry_run and not session.scalar(text(
+                    "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
+                )):
+                    report["deferred"] = True
+                    report["elapsed_seconds"] = time.monotonic() - started
+                    return report
+                statement = SHORT_FORECAST_CANDIDATES_SQL
+                params: dict[str, Any] = {"cutoff": cutoff, "batch_size": batch_size}
+                if after is not None:
+                    statement = SHORT_FORECAST_CANDIDATES_AFTER_SQL
+                    params.update(after.params())
+                if not dry_run:
+                    statement += " FOR UPDATE"
+                rows = session.execute(text(statement), params).all()
+                if statement_timeout_ms != STATEMENT_TIMEOUT_MS:
+                    session.execute(
+                        text(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
                     )
-                ).rowcount or 0)
-                if report["facts_deleted"] != len(keys):
-                    raise RuntimeError("선택한 단기예보 fact 삭제 수가 일치하지 않습니다.")
-            # SKIP LOCKED로 못 고른 행도 읽으므로 빈 batch를 전체 완료로 오인하지 않는다.
-            report["remaining"] = bool(session.scalar(
-                text(SHORT_FORECAST_EXISTS_SQL), {"cutoff": cutoff},
-            ))
+                keys = [(row[0], row[1]) for row in rows]
+                report["matched_in_batch"] = len(keys)
+                if keys and not dry_run:
+                    relation = values(
+                        column("value_id", String(64)),
+                        column("known_at", AwareDateTime()),
+                        name="expired_short_keys",
+                    ).data(keys)
+                    pair = [
+                        WeatherCurrentValueRow.value_id == relation.c.value_id,
+                        WeatherCurrentValueRow.known_at == relation.c.known_at,
+                    ]
+                    report["pointers_deleted"] = int(session.execute(
+                        delete(WeatherCurrentValueRow).where(*pair)
+                    ).rowcount or 0)
+                    session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+                    by_partition: dict[int, list[Any]] = {}
+                    for row in rows:
+                        by_partition.setdefault(int(row[3]), []).append(row)
+                    deleted: list[tuple[Any, ...]] = []
+                    for oid, group in by_partition.items():
+                        deleted.extend(tuple(item) for item in session.execute(
+                            text(SHORT_FORECAST_DELETE_SQL),
+                            {
+                                "relation": oid,
+                                "tids": "{" + ",".join(f'"{row[4]}"' for row in group) + "}",
+                                "low": min(row[1] for row in group),
+                                "high": max(row[1] for row in group),
+                            },
+                        ).all())
+                    report["facts_deleted"] = len(deleted)
+                    if sorted(deleted) != sorted(keys):
+                        raise RuntimeError("선택한 단기예보 fact 삭제 수가 일치하지 않습니다.")
+                last_key = ShortForecastKey(rows[-1][2], rows[-1][1], rows[-1][0]) if rows else None
+                report["last_key"] = last_key
+                if last_key is None or len(rows) < batch_size:
+                    # 잠금을 건너뛰지 않으므로 덜 찬 batch는 위치 뒤의 만료 행을 모두 고른 것이다.
+                    report["remaining"] = False
+                else:
+                    report["remaining"] = bool(session.scalar(
+                        text(SHORT_FORECAST_EXISTS_AFTER_SQL),
+                        {"cutoff": cutoff, **last_key.params()},
+                    ))
+        except OperationalError as exc:
+            sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+            if sqlstate not in _SHORT_RETENTION_DEFERRABLE:
+                raise
+            # 이 batch는 rollback됐다. 앞 batch의 commit과 위치는 그대로 유효하다.
+            report.update(
+                matched_in_batch=0, pointers_deleted=0, facts_deleted=0,
+                remaining=None, deferred=True, last_key=None,
+                error_class=type(exc.orig).__name__,
+            )
         report["elapsed_seconds"] = time.monotonic() - started
         return report
 

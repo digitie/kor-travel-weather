@@ -1,3 +1,40 @@
+## 2026-10-27 — Common aa232ad 고정과 단기예보 정리 상시 실패 수정(PR #174)
+
+- Common pin을 `e746e4b` → main `aa232ad5f255233184de80eceaab2e9b6ccb00c9`로 바꿨다(pyproject 두 파일·
+  uv.lock·health 채택 시험). 그 사이 Python 변경은 #44 `daemon_pool`의 opt-in
+  `KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS`(60|180)뿐이며 공용 daemon 전용이라 Weather 코드 변경은 없다.
+  `@kor-travel/ui` dev.9 vendoring은 이 PR 머지 뒤 별도 PR로 한다.
+- odroid 읽기 전용 실측: `weather_short_forecast_retention_job`은 10-20 22:50Z 마지막 성공 뒤 상시 FAILURE
+  (최근7일 FAILURE835). a164db3 커밋 메시지의 "성공 0"은 그 뒤 기간의 뜻이다. 매 batch가 부분
+  인덱스 머리의 dead 약236만 항목(1020/1021/1022, 마지막 autovacuum 10-20~22)을 후보 SELECT와 EXISTS로
+  두 번 지났고(머리 탐색 cold 15.3초·34,708 read), 진척이 있어도 완료가 아니면 Failure였다.
+- 수정: 부분 인덱스 순서의 위치 이어 읽기(batch는 앞 마지막 키 뒤, 실행은 앞 materialization의
+  `resume_*`), 잠근 행의 tableoid+ctid 삭제, lock_timeout 대기(SKIP LOCKED 제거), 잠금/timeout은 batch
+  연기. [원인·동작·확인 방법](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
+- 적대 리뷰 반영: 위치는 정책 해시·DB 이름·경계 앞섬·24시간 주기 머리 훑기로 검사한 뒤에만 쓰고
+  (훑기가 시간 초과면 같은 실행이 저장 위치에서 이어 정리), dry-run은 진척이 아니다.
+- 소유자 지시(job이 실패를 멈출 것) 반영: Failure는 진척0과 "24시간 넘게 뒤처진 채 지연 상한이 7회(약70분) 연속
+  줄지 않음"뿐이다. 뒤처져도 줄고 있으면 SUCCESS+warning이다. 실행당 예산을 설정
+  `KOR_TRAVEL_WEATHER_SHORT_FORECAST_RETENTION_BUDGET_SECONDS`(기본150초, 상한180초)로 올려 유입의 약2.5배로 했다.
+- 운영 쓰기·VACUUM·DDL은 하지 않았다. 남은 한계는 pointer FK 검사의 무작위 PK 탐색 비용이다.
+
+## 2026-10-27 — 지도 마커 배치 병목과 미확인 표시 보강 중
+
+실제 UI 면적/상세 통과와 별도로 마커 배치504·미확인 구름 오표시를 재현했다.
+0034의 현재/예보·제공처 prefix 부분 인덱스, 다중 제공처 대표 병합, 특보512키 스트리밍,
+미확인 표시·지도 전용 재조회를 보강했다. 집중PG15/계약27·migration보호31·frontend259/type/lint/build·
+Ruff는 통과했고 정확 후속 정확SHA 전체CI/2인 리뷰와 수집 종료 뒤 운영 수용은 진행 중이다.
+[실측·실패안·인덱스 비용·배포/되돌리기 경계](reports/2026-10-27-marker-batch-and-unknown.md).
+
+후속 독립 리뷰에서504 뒤 검색 결과0/종류해제 시 옛 재조회가 남는 경계를 두 회귀로
+재현하고 조회할 위치가 있을 때만 노출하도록 보강했다. 위치 복귀 시 실제 요청도 확인했다.
+
+후속1bda CI의1318통과/1실패는57,600행 fixture FK 적재의30초 한계였다.
+측정 쿼리/timeout/FK는 바꾸지 않고 적재를10지점씩 나누고 총행 수를 검산했다.
+
+첫 후보5ba2의 CI Python1299/frontend257은 통과했다. 리뷰의 인덱스 소유/정의·schema
+충돌 보호를 별도 worktree/DB에서 보강했으며 원본 전체 실행과 운영 수집은 보존했다.
+
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
 
 - PR #171의 최종74482는 정확 lock CI Python1292·frontend253/type/lint/build 및 독립2인

@@ -11,7 +11,11 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex
 
 from kortravelweather.repository import WeatherRepository, WeatherValueRow
-from kortravelweather.retention import SHORT_FORECAST_CANDIDATES_SQL, SHORT_FORECAST_PREDICATE
+from kortravelweather.retention import (
+    SHORT_FORECAST_CANDIDATES_AFTER_SQL,
+    SHORT_FORECAST_CANDIDATES_SQL,
+    SHORT_FORECAST_PREDICATE,
+)
 
 
 @pytest.mark.parametrize("original", ["0", "60s", "2s", "50ms"])
@@ -84,6 +88,21 @@ def test_retention_index_plan_migration_and_future_leaf(weather_test_database_ur
             nodes = _nodes(plan[0]["Plan"])
             assert not any(n["Node Type"] == "Sort" for n in nodes)
             assert any(n["Node Type"] in {"Index Scan", "Index Only Scan"} for n in nodes)
+            # 이어 읽기: 앞 batch의 마지막 키는 index scan의 시작 조건(Index Cond)이어야
+            # 이미 지운 머리의 죽은 항목을 다시 지나지 않는다. Filter면 머리부터 읽는다.
+            last = after[11]
+            resume = {**params, "after_valid_at": last.valid_at,
+                      "after_known_at": last.known_at, "after_value_id": last.value_id}
+            continued = connection.execute(text(SHORT_FORECAST_CANDIDATES_AFTER_SQL), resume).all()
+            assert continued[:13] == after[12:] and len(continued) == 25
+            plan = connection.scalar(
+                text("EXPLAIN (FORMAT JSON) " + SHORT_FORECAST_CANDIDATES_AFTER_SQL), resume,
+            )
+            scans = [n for n in _nodes(plan[0]["Plan"])
+                     if n["Node Type"] in {"Index Scan", "Index Only Scan"}]
+            assert scans and all("ROW(" in n["Index Cond"] for n in scans)
+            assert not any("ROW(" in n.get("Filter", "") for n in scans)
+            assert not any(n["Node Type"] == "Sort" for n in _nodes(plan[0]["Plan"]))
             valid = connection.scalar(text(
                 "SELECT indisvalid FROM pg_index WHERE indexrelid=CAST(:name AS regclass)"
             ), {"name": revision.INDEX})

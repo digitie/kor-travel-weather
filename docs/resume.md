@@ -1,3 +1,31 @@
+## 2026-10-27 — Common aa232ad·단기예보 정리 수정 PR #174
+
+- 현재 상태: [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)는 Python만 다룬다. Common
+  `aa232ad` 고정과 `weather_short_forecast_retention_job` 상시 실패 수정(검사한 위치 이어 읽기·ctid 삭제·
+  실행당 예산 설정 기본150초·진척0 또는 뒤처진 채 7회(약70분) 연속 줄지 않을 때만 Failure)이다. n150 CI-parity 게이트와
+  GitHub CI·독립 리뷰 결과는 PR이 정본이다.
+- 다음 한 작업: 머지·배포 뒤 job 첫 run SUCCESS(`resumed=false`→다음 run `true`)와 `backlog_lag_seconds`
+  감소를 확인한다([확인 방법](shortterm-retention.md#배포-후-확인)). 이어서 `@kor-travel/ui` dev.9를 별도
+  PR로 vendoring한다(로그인 hydration 준비 전 입력·제출 비활성).
+
+## 2026-10-27 — 지도 마커 실제 값 수용 보강 중
+
+- 현재: 운영95020의 지도 면적·상세 통과와 별도로60ID 지연/504·미확인 구름을 재현했다.
+  별도 후보는0034 인덱스4개·제공처 대표 병합·특보512키 스트리밍·실패 재조회를 포함한다.
+- 집중PG15/계약27·migration보호31·frontend259/type/lint/build·Ruff 통과. 후속 정확SHA 전체CI·독립2인 리뷰,
+  수집/queued/실worker 자연 종료 후 공식 배포와 실제 마커 값 수용이 다음 작업이다.
+- 새 이미지 교체 완료가 아니다. daemon/PG/타 프로젝트 유지와 배포직전 instigator 개별
+  상태를 보존한다. [실측·남은 수용·되돌리기](reports/2026-10-27-marker-batch-and-unknown.md).
+
+후속 독립 리뷰에서504 뒤 검색 결과0/종류해제 시 옛 재조회가 남는 경계를 두 회귀로
+재현하고 조회할 위치가 있을 때만 노출하도록 보강했다. 위치 복귀 시 실제 요청도 확인했다.
+
+후속1bda CI의1318통과/1실패는57,600행 fixture FK 적재의30초 한계였다.
+측정 쿼리/timeout/FK는 바꾸지 않고 적재를10지점씩 나누고 총행 수를 검산했다.
+
+첫 후보5ba2의 CI Python1299/frontend257은 통과했다. 리뷰의 인덱스 소유/정의·schema
+충돌 보호를 별도 worktree/DB에서 보강했으며 원본 전체 실행과 운영 수집은 보존했다.
+
 ## 2026-10-27 — Weather171 배포·기존 metrics·공개 UI 수용 정산
 
 - PR #171의 최종74482는 정확 lock CI Python1292·frontend253/type/lint/build 및 독립2인

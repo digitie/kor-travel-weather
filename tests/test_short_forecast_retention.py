@@ -6,14 +6,20 @@ import pytest
 from sqlalchemy import func, select, text, update
 
 from kortravelweather import repository as module
-from kortravelweather.models import WeatherLocation, WeatherValue
+from kortravelweather.models import KST, WeatherLocation, WeatherValue
 from kortravelweather.repository import (
     SourceRecordRow,
     WeatherCurrentValueRow,
     WeatherRepository,
     WeatherValueRow,
 )
-from kortravelweather.retention import ShortForecastPartitionRetained
+from kortravelweather.retention import (
+    SHORT_FORECAST_PREDICATE,
+    ShortForecastKey,
+    ShortForecastPartitionRetained,
+    made_progress,
+    run_short_forecast_retention,
+)
 
 
 @pytest.fixture
@@ -78,6 +84,119 @@ def test_purge_keeps_boundary_future_other_provider_and_raw(repository, monkeypa
     assert repository.upsert_values([expired]) == 0
     with repository._session_factory() as session:
         assert session.scalar(select(func.count()).select_from(WeatherValueRow)) == 4
+
+
+_EXPIRED_ORDER = (
+    "SELECT value_id FROM weather_values WHERE " + SHORT_FORECAST_PREDICATE
+    + " AND valid_at < :cutoff ORDER BY valid_at, known_at, value_id"
+)
+
+
+def _expired_in_order(repository, cutoff):
+    with repository.engine.connect() as connection:
+        return list(connection.scalars(text(_EXPIRED_ORDER), {"cutoff": cutoff}))
+
+
+def test_backlog_drains_across_runs_in_index_order_without_failure(repository, monkeypatch):
+    """운영처럼 한 실행이 다 못 지우는 backlog를 위치에서 이어 여러 실행으로 비운다."""
+    from kortravelweather.partitions import ensure_partitions, kst_midnight
+
+    repository.upsert_location(WeatherLocation(
+        location_id="retention-local", name="이어정리", latitude=37, longitude=127,
+    ))
+    first_day = (NOW - timedelta(days=3)).astimezone(KST).date()
+    with repository.engine.begin() as connection:
+        ensure_partitions(connection, start=first_day, end=first_day + timedelta(days=1))
+    known = [kst_midnight(first_day + timedelta(days=day)) + timedelta(hours=2) for day in (0, 1)]
+    cutoff = NOW - timedelta(hours=6)
+    # 다섯 대상시각에 두 partition의 발표가 섞여 (valid_at, known_at) 동률이 batch 경계를 넘는다.
+    expired = [
+        _value(cutoff - timedelta(hours=1 + n % 5), known_at=known[n % 2],
+               collected_at=known[n % 2], metric_key=f"M{n:02d}",
+               source_record_key=f"drain-{n:02d}")
+        for n in range(25)
+    ]
+    future = [
+        _value(NOW + timedelta(hours=1 + n), known_at=known[1], collected_at=known[1],
+               metric_key=f"F{n}", source_record_key=f"future-{n}")
+        for n in range(3)
+    ]
+    monkeypatch.setattr(module, "kst_now", lambda: known[0] - timedelta(hours=1))
+    _record(repository, *expired, *future)
+    assert repository.upsert_values([*expired, *future]) == 28
+    monkeypatch.setattr(module, "kst_now", lambda: NOW)
+    order = _expired_in_order(repository, cutoff)
+    assert len(order) == 25
+    with repository.engine.connect() as connection:
+        assert connection.scalar(text(
+            "SELECT count(DISTINCT tableoid) FROM weather_values WHERE valid_at < :cutoff"
+        ), {"cutoff": cutoff}) == 2
+
+    runs, after = [], None
+    for _ in range(6):
+        result = run_short_forecast_retention(
+            repository, cutoff=cutoff, dry_run=False, batch_size=4, max_batches=2, after=after,
+        )
+        runs.append(result)
+        # 각 실행은 인덱스 순서의 다음 구간만 지우고 건너뛴 행이 없다.
+        deleted = sum(item["facts_deleted"] for item in runs)
+        assert _expired_in_order(repository, cutoff) == order[deleted:]
+        after = ShortForecastKey.from_metadata(result)
+        if result["status"] == "complete_snapshot":
+            break
+    assert [item["facts_deleted"] for item in runs] == [8, 8, 8, 1]
+    assert [item["pointers_deleted"] for item in runs] == [8, 8, 8, 1]
+    assert [item["status"] for item in runs] == ["budget_exhausted"] * 3 + ["complete_snapshot"]
+    # 남은 backlog가 있어도 지운 행이 있는 실행은 실패가 아니다.
+    assert all(made_progress(item) for item in runs)
+    assert [item["resumed"] for item in runs] == [False, True, True, True]
+    assert all(item["backlog_lag_seconds"] > 0 for item in runs[:3])
+    assert runs[-1]["backlog_lag_seconds"] == 0.0 and runs[-1]["remaining"] is False
+    with repository._session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(WeatherValueRow)) == 3
+        assert session.scalar(select(func.count()).select_from(WeatherCurrentValueRow)) == 3
+        assert session.scalar(select(func.count()).select_from(SourceRecordRow)) == 28
+    # 다 지운 뒤 같은 위치로 다시 실행해도 진척 없음이 아니라 완료다.
+    again = run_short_forecast_retention(
+        repository, cutoff=cutoff, dry_run=False, batch_size=4, max_batches=2, after=after,
+    )
+    assert again["status"] == "complete_snapshot" and again["facts_deleted"] == 0
+    assert made_progress(again)
+
+
+def test_locked_expired_fact_defers_the_batch_instead_of_skipping(
+    repository, monkeypatch, weather_test_database_url,
+):
+    from sqlalchemy import create_engine
+
+    repository.upsert_location(WeatherLocation(
+        location_id="retention-local", name="잠금연기", latitude=37, longitude=127,
+    ))
+    cutoff = NOW - timedelta(hours=6)
+    rows = [_value(cutoff - timedelta(hours=2)),
+            _value(cutoff - timedelta(hours=1), metric_key="REH")]
+    monkeypatch.setattr(module, "kst_now", lambda: NOW - timedelta(days=1))
+    _record(repository, *rows)
+    assert repository.upsert_values(rows) == 2
+    monkeypatch.setattr(module, "kst_now", lambda: NOW)
+    later = _expired_in_order(repository, cutoff)[1]
+    other = create_engine(weather_test_database_url)
+    try:
+        with other.begin() as connection:
+            # 수집의 FK 검사와 같은 KEY SHARE 잠금이 두 번째 후보에 걸려 있다.
+            connection.execute(text(
+                "SELECT 1 FROM weather_values WHERE value_id = :id FOR KEY SHARE"
+            ), {"id": later})
+            report = repository.purge_expired_short_forecast(cutoff=cutoff, dry_run=False)
+            assert report["deferred"] is True and report["error_class"] == "LockNotAvailable"
+            assert report["facts_deleted"] == 0 and report["last_key"] is None
+        # 앞 행만 지우고 잠긴 행을 건너뛰면 위치 뒤에 행이 남는다. 연기는 둘 다 보존한다.
+        assert len(_expired_in_order(repository, cutoff)) == 2
+        report = repository.purge_expired_short_forecast(cutoff=cutoff, dry_run=False)
+        assert report["facts_deleted"] == report["pointers_deleted"] == 2
+        assert report["remaining"] is False and _expired_in_order(repository, cutoff) == []
+    finally:
+        other.dispose()
 
 
 def test_same_value_id_other_known_at_pointer_is_not_deleted(repository, monkeypatch):
