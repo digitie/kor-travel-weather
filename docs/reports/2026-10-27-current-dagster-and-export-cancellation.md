@@ -1,0 +1,60 @@
+# Weather 현재 Dagster 배포 확인과 export 취소 정산
+
+기준은 2026-10-27 12:08–12:41 UTC의 새 운영 관측이다. 이전95020 배포와173 정산을 현재로 복사하지 않았다. 이번 작업에서 새 image build·교체·migration·수집 강제 실행은 하지 않았다.
+
+## 실제 버전과 중복 배포 생략
+
+| 역할 | 실제 source | 상태 |
+|---|---|---|
+| API | `e39362a3803272e14bbd033359d0fe377b7441e0`(PR176 merge) | running/healthy, restart0 |
+| Dagster code-server | `e39362a3803272e14bbd033359d0fe377b7441e0` | running/healthy, restart0 |
+| web | `5098d2d80486df7e23753296e66b38ba8045660f`(PR177 merge) | running, healthcheck 없음, restart0 |
+| Manager 설치 | `aeb2d34ce276e5e219761a62cd4b1c8f39cad72a` | 원 설치 보존 |
+
+관측한 제품 main5098과 실제 API/collector e393의 차이는 문서2개와 로그인 UI 시험·package/lock·vendor dev.9뿐이다. Python core·Dagster·pyproject·uv.lock·Python Dockerfile·migration 입력은 같다. 따라서 #174의 CommonAA와 단기예보 정리 개선은 이미 운영 이미지에 포함됐으며 재빌드·교체하지 않았다. 웹도 최신5098이어서 교체할 것이 없다. 이후 doc-only PR183의 main2f49를 정상 merge로 흡수했고 journal/resume의 양쪽 새 절과 기존 본문을 모두 보존했다. 이 문서 진전은 제품 image 변경이 아니다. 원본 checkout의 미추적 Prometheus .db4개는 손대지 않고 별도 worktree에서 문서만 작성한다.
+
+## 실제 Common·schema·정본 bind
+
+API와 code-server 각각에서 Common distribution의 실제 VCS commit이 `aa232ad5f255233184de80eceaab2e9b6ccb00c9`, Python source19개 hash가 검토한 정본과 완전히 같음을 확인했다. metrics/retention/repository/definitions/pyproject/uv.lock6개도 e393 Git blob SHA와 일치했다. 이것은 source 설치 증거이며 모든 Common 분기의 실제 실행이나 CPU/RSS 감소를 증명하지 않는다.
+
+실제 API Cmd는 `0.0.0.0:12201`이었다. 그 정본 포트의 health/version GET은200이며 version은e393이다. 최초 역사 포트14101의 URLError는 API 장애 증거가 아니므로 성공 수용으로도 대체하지 않고 이력으로 분리한다. API의 실제 DB에서 READ ONLY transaction/3초 statement·0.5초 lock cap으로 schema `0034_marker_kind_indexes`를 확인했다.
+
+Manager 실제 release와 DockerRoot의 findmnt는 `/dev/nvme0n1` ext4였다. 앱/이미지 재배치나 부팅 조건을 추가하지 않았다. 읽기 전후 Weather3+공용 plane3+PG의7개 CID/image/start/restart가 같았고 공용 daemon은 계속 running/healthy였다. 온도·주파수·다른 서비스 이미지·HAProxy·SameSite 설정은 변경하지 않았다.
+
+## 자연 단기예보 정리 관측
+
+정본 `short_forecast_retention_every_ten_minutes` schedule tag와 Weather location을 가진 run `3ea573eb-3fd3-4525-9753-05b3ee3b3678`은 SUCCESS(156.153초)였다. 다음 `cce472b6-1aea-41c6-aa60-361f5bf1a237`은12:16 관측 시 STARTED였고,12:41의 제한된 후속 RO에서 같은 run이 SUCCESS(154.611초)로 끝났음을 확인했다. 강제 run은0이다.
+
+이 run의 실제 materialization은 `resumed=true`, facts41,000/pointers11,062 삭제, 본문150.309초, `status=budget_exhausted`, `remaining=true`, backlog lag400,442.518초/stall0이었다. 뒤 `18da2492-da7e-437c-bb0b-0d8608267359` materialization은 facts34,000/150.774초, remaining true, lag401,634.389초/stall1이었다(그run의 최종 status는 이번 query에서 읽지 않았다). 정리 진척은 실제로 있지만 backlog 약4.65일이 남고 lag 감소는 수용하지 못했다. 이로써 과거6시간 보존 완료·backlog 해소·장기 실패 전부 해결·CPU/RSS 감소를 주장하지 않는다.
+
+## 사용자 취소: export desired STOPPED
+
+사용자가 Weather export 작업 취소를 명시해, 실제 snapshot에서 RUNNING이던 **`weather_export_publisher` sensor 하나만** 정본 Dagster stopSensor로 STOPPED로 바꿨다(12:11:53 UTC). 정확 sensor ID와 readback을 대조했고, 전체47 native 일정 중 나머지 ID/상태는 완전히 같았다. flags·기존 API·원천 데이터·다른 일정·공용 daemon은 바꾸지 않았다.
+
+중지 직전 시작된 tick111545(12:11:36 UTC)는 강제 종료하지 않았다. 이후12:16 관측에서 같은 tick이 자연 SKIPPED로 끝났고 sensor는 STOPPED였다. 이 publisher는 sensor 본문에서 직접 평가하며 RunRequest로 별도 export job을 만드는 구조가 아니다. 임의 job/worker kill이나 오래된 메타데이터 종료 처리는 하지 않았다.
+
+**이 sensor의 desired state는 앞으로도 STOPPED다.** 향후 배포의 일반 original-RUNNING 복원 규칙보다 사용자 취소가 우선하며, 이전 RUNNING snapshot을 이유로 다시 켜지 않는다. export 기능 코드/기존 API를 삭제하거나 Map consumer/profile/설정을 활성화하지 않는다. 원래 STOPPED인 native incarnation recovery도 그대로다.
+
+## 공개 UI와 수용 범위
+
+현재web5098/API e393에 결박한 공개 HTTPS UI를 두 source 리뷰와 n150 단독 browser 슬롯 뒤 한 번 실행했다. user known password를 hiddenTTY→RAM/stdin으로만 전달해 실제web exactCID의 정본 환경에서 offline검증한 뒤 HTTP를 허용했다. credential 파일/argv/env/log·추측·reset·재시도는0이다. 기존21사례/check/시간/cleanup·immutable cached browser image·caps는 그대로다.
+
+**새 현재Weather UI21은21/21 PASS(18.705초)**다. 정상 login200·HttpOnly/Secure cookie·메뉴4·인증 reload·날씨 지도canvas/실제tile20·목록1450행/원천catalog오류0·읽기API2005개·logout200·쿠키삭제·보호화면login복귀를 확인했다. JS/console/HTTP/network/domain write 오류는0이며 navigation ERR_ABORTED11은 별도 관측으로 남긴다. 이 결과를 기존95020/Map의 UI 결과에서 승계하지 않았다.
+
+wrapper exit0/own C7 container 부재와7runtime(CID/image/source/start/restart/health) 전후동일을 확인했다. 보호API GET401이나 직접SID/DB 폐기 행을 조회한 시험으로 확대하지 않는다. 실행 뒤export sensor는STOPPED, 마지막tick111545도SKIPPED였다.
+
+이21사례는 정상 로그인·메뉴·날씨 지도/목록·로그아웃 회귀다. SSR 직후 script 강제 정지·저장 계정 자동완성·모든 수집/성능 회귀를 대신하지 않는다.
+
+## 원장 결박
+
+| 원장 | SHA256 |
+|---|---|
+| weather-dagster-resume-current-readonly-actual-w-r1.json | c4ae182c3666e6fbea7b2cc7ced9f82fa16ca75743a24abc736f4bf7ffd4266f |
+| weather-export-cancel-exact-sensor-actual-w-r1.json | 7b9e0ccc2c7da8d2c0cc622b81910a210e94621f0e2a900963ee7eb672cd2f51 |
+| weather-dagster-resume-metadata-readonly-actual-w-r1.json | 18c2f6e58b7fb4f2cb6a1d5c153f5b3a3e981b74b6253c5830180a9825306b20 |
+| weather-current-public21-source-preparation-w-r1.json | 23290320ba578c3cc7df56c8fe676d1a9a8e31c82451c6916d82e4c96a344517 |
+| weather-current-public21-entry-5ad59d34420c4b0fa7f767fdd612ee98.json | 8cedbc8166150aa7d63af8bd1ccc6307f918ab52cfafbf963d40cfd0c7e25645 |
+| weather-current-public21-ui-5ad59d34420c4b0fa7f767fdd612ee98.json | a0fa6baf222e1d17495f56dd5529c2df8e4c035a8aa7db4edc06908eaf704735 |
+| weather-current-retention-final-readonly-actual-r1.json | be0b9d4a9c3e2948fb407647b4da47015075acf693a959f45c99ea1f7b1b0d37 |
+
+원장은 운영 감사 디렉터리의 비밀 없는 선택 필드/metadata/hash 증빙이다. 비밀번호·쿠키·원 env·provider payload를 문서에 옮기지 않는다.
