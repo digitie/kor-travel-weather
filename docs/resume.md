@@ -7,15 +7,23 @@
   predicate literal 보완이다. Backend 집중56/56, frontend265/265·WSL build actual0이지만
   제품이 같은1d2 WSL전체1518 PASS와 시험 한 파일만 보완한a707 Docker전체1517 PASS/1 SKIP를 확인했다.
   PR187의 정확 CI·리뷰 정본과 최종 배포·운영 성능/UI 수용은 따로 판단한다.
-- export 목표중지/publisher STOP/Map·PinVi flags OFF를 유지한다. 새 Dagster 이미지 승인은 있으나
+- API의 `service_exports_enabled=True` 원 관측은 유지하며 publisher STOP/Map·PinVi 소비 flag OFF와 구분한다.
+  export 목표중지는 그대로다. 새 Dagster 이미지 승인은 있으나
   e393→5098의 Dagster 제품 입력이 같고 기존 개선이 운영 중이므로 중복 CS 교체는 하지 않는다.
 - 전체 QA 원본27실패는 실행기의 spawn 진입/PYCACHE 환경 문제였고 같은27건 재검증을 통과했다.
   첫 Docker1515 PASS/2 FAIL/1 SKIP는06:01 KST의 미공개 중기회차 fixture 오류였으며 SDK 공개지연을
-  반영한 시험만 보완했다. 원문은 보존하고 제품644파일 동일성·고정06:01/18:01 회귀를 구분한다.
+  반영한 시험만 보완했다. 원문은 보존하고 나머지644파일 동일성·고정06:01/18:01 회귀를 구분한다.
 - 다음 한 작업: PR187 코드 머지 대상을 고정한 뒤 API+web 후보의 별도 배포·실제25초/모바일/overlay를
   수용한다.21:33 UTC 정산 시점 R6는 준비 상태이고 실제 입력은False/None·새 배포0이다.
   소유 QA의 모든 실행·DB가 끝났고 PG는 정상 exit0으로 종료·삭제했다. Transport G/R과 직렬 조율한다.
   [범위·증거·한계](reports/2026-10-28-marker-request-budget.md).
+
+## 2026-10-28 — retention 카탈로그 실측·현재 API 소스 정합
+
+- API는 외부 전환된main210이며 release/파일지문을 확인했다. old source guard의 DB진입 전 실패를 보존했고 current에 결박한 bounded RO1회만 정산한다. 이번 문서의 새 운영 변경은0이다.
+- retention parent+16leaf coverage·valid/ready/live와 current value_id PK를 확인했다. 누락index 가설 근거는 없고 current11index/INCLUDE4가 현재 관측이다. NOT VALID FK17과 통계live899만/dead120만을 orphan·병목·정확행수로 단정하지 않는다.
+- 자연7 SUCCESS/1 STARTED·8 materialization 21만facts 진척도 모두remaining/budget_exhausted다. 과거6h 정리는 미완이고 위치지연상한·통계reset 경위 미상·CPU/IO 미측정 한계를 유지한다.
+- export publisher desired STOPPED를 유지한다. 과거APIe393/web5098 UI21은 당시수용이며 현재210 UI재검증이 아니다. [관측·원실패·남은수용](reports/2026-10-28-retention-catalog-and-current-source.md). 아래 기록은 각 작성시점 이력이다.
 
 ## 2026-10-28 — 특보 계획 통계 차이 보강
 

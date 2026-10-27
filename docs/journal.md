@@ -1,7 +1,7 @@
 ## 2026-10-28 — 실제 마커 실패 보존·요청 예산과 특보 부분 인덱스 후속
 
 - Root R4 API210/image1b3d 교체(actual0) 뒤에도 cold60×3의19701/30020/21016ms 중1개가504였다.
-  CS e393/web5098·일정21R2S는 유지했고 모바일/overlay 미실행·로그아웃 쿠키0을 분리해 기록했다.
+  CS e393/web5098·일정21R2S와 API endpoint의 `service_exports_enabled=True`는 유지했고 모바일/overlay 미실행·로그아웃 쿠키0을 분리해 기록했다.
 - browser 동시2/in-flight 공유/실패수동retry/숨은상세조회제거와 generic 특보 고정 predicate를 보완한다.
   Backend 집중 WSL56/Docker56 actual0, frontend WSL/Docker265·타입/린트/WSL build actual0이다.
   source7/lock/vendor 보존과 소유 QA 정리를 확인했으며 원 fixture2실패도 남겼다.
@@ -11,9 +11,16 @@
   전자는 같은27건 PASS, 후자는 SDK 공개 회차 함수로만 보완해06:01/18:01의 기존2파트를 각각
   2 FAIL→2 PASS, 현재 시각2 PASS로 검산했다. 제품·SDK·timeout·assert 변경0이다.
 - 소유 QA PG/nonceDB/fixture/volume/network를 정상 exit0·잔여0으로 정리했다. PR187 정확 CI·리뷰와
-  배포/liveUI는 별도이며21:33 UTC R6 입력은False/None·새 배포0이다. export/publisher/flags/GC·
+  배포/liveUI는 별도이며21:33 UTC R6 입력은False/None·새 배포0이다. export/publisher/소비 flags/GC·
   공용 daemon·CS 변경0이고 운영20초 지연이 해결됐다고 하지 않는다.
   [변경·검증·현재 운영 구분](reports/2026-10-28-marker-request-budget.md).
+
+## 2026-10-28 — retention 카탈로그 실측·현재 API 소스 정합
+
+- API는 외부 전환된main210이며 release/파일지문을 확인했다. old source guard의 DB진입 전 실패를 보존했고 current에 결박한 bounded RO1회만 정산한다. 이번 문서의 새 운영 변경은0이다.
+- retention parent+16leaf coverage·valid/ready/live와 current value_id PK를 확인했다. 누락index 가설 근거는 없고 current11index/INCLUDE4가 현재 관측이다. NOT VALID FK17과 통계live899만/dead120만을 orphan·병목·정확행수로 단정하지 않는다.
+- 자연7 SUCCESS/1 STARTED·8 materialization 21만facts 진척도 모두remaining/budget_exhausted다. 과거6h 정리는 미완이고 위치지연상한·통계reset 경위 미상·CPU/IO 미측정 한계를 유지한다.
+- export publisher desired STOPPED를 유지한다. 과거APIe393/web5098 UI21은 당시수용이며 현재210 UI재검증이 아니다. [관측·원실패·남은수용](reports/2026-10-28-retention-catalog-and-current-source.md). 아래 기록은 각 작성시점 이력이다.
 
 ## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
 

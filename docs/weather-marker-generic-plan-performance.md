@@ -35,8 +35,8 @@ PG18 custom/generic rawplan4개는 alert_lookup와 정확한 fact 복합 키·pa
 
 ### 전체 QA 정산과 운영 미검증
 
-1d2 제품의 WSL전체1518 PASS와 test-only a707의 Docker전체1517 PASS/1 SKIP를 회수했다.
-두 소스의644파일은 바이트·mode가 같고, 차이는 중기예보 시험의 SDK 공개지연 계산 한 파일이다.
+1d2 소스의 WSL전체1518 PASS와 test-only a707의 Docker전체1517 PASS/1 SKIP를 회수했다.
+시험 한 파일을 제외한 나머지644파일은 바이트·mode가 같고, 차이는 중기예보 시험의 SDK 공개지연 계산 한 파일이다.
 원 WSL27 QA실패·Docker2 시각 fixture실패와 보완 증거를 삭제하지 않았다. 소유 PG는 정상
 exit0으로 종료했고 자원을 정리했다. 이는 운영 generic 선택·20초 지연 기여·25초 목표를 입증하지 않는다.
 R6는21:33 UTC 정산 당시 준비 상태(입력False/None)이며 새 API+web 교체·실제 UI는 별도다.

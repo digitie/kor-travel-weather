@@ -5,6 +5,8 @@
 Root의 R4 API 단독 교체는 2026-10-27 19:49:40 UTC에 actual exit0으로 끝났다. API는
 `2107839d3302f6cb938d14380193200421fdf58e`/image `sha256:1b3d208b08f6347fb199397c8a2d7190bd7806a0410a516fd6b51fd276577230`이다.
 CS는 e39362a, web은5098d2d이며 공용 daemon과 일정21 RUNNING/2 STOPPED를 교체하지 않았다.
+retention 카탈로그 문서의19:47:54 UTC는 API 전환 관측이고, 위19:49:40 UTC는 R4 제어기의 완료 시각이다.
+그 이전 API e393·웹5098 공개UI21 관측은 당시 이력이며 API210의 UI 수용으로 승계하지 않는다.
 90초 healthcheck 이전에 끝나던75초 대기는180초로 보완했지만, 배포 성공과 마커 성능 수용은 구분한다.
 
 새 실제 Chromium cold60×3은 **19701ms200 / 30020ms504 / 21016ms200**으로 실패했다.
@@ -14,7 +16,8 @@ CS는 e39362a, web은5098d2d이며 공용 daemon과 일정21 RUNNING/2 STOPPED�
 
 사용자는 export 목표를 일시중지했고 새 Dagster 이미지도 허용했다. 그러나 e393→5098의
 Python/Dagster/build/migration 입력은 같고 기존 개선이 이미 운영 중이므로 중복 CS 교체 근거는 없다.
-publisher STOPPED·Map `weather_state_*`(locations 제외)와 PinVi weather flag OFF를 유지한다.
+publisher STOPPED·Map `weather_state_*`(locations 제외)와 PinVi weather 소비 flag OFF를 유지한다.
+API endpoint의 `service_exports_enabled=True` 원 관측은 별개이며 이를 False로 바꾸지 않는다.
 이 변경에서 수집·export 재개, GC 모드, flags, CS/공용 daemon을 수정하지 않는다.
 
 ## 사용자의 지도 요청에 맞춘 최소 변경
@@ -66,8 +69,8 @@ Docker는 배포 Dockerfile의 Node/npm과 같은 값으로 별도 복사본·�
 ## 전체 QA 원본과 시험 입력 보완
 
 - 원1d2 WSL전체는1491 PASS/27 FAIL이었다. QA 실행기의 main guard 누락으로 spawn이 pytest 인자를
-  출력 경로로 다시 읽었고, PYTHONPYCACHEPREFIX가 명시 bytecode 목적지 계약과 충돌했다. 제품·시험
-  조건을 바꾸지 않고 실행기만 보완한 동일27건은27 PASS였고 이후1d2 전체1518 PASS를 회수했다.
+  출력 경로로 다시 읽었고, PYTHONPYCACHEPREFIX가 명시 bytecode 목적지 계약과 충돌했다. 제품/시험 소스를 바꾸지 않고 실행기의 spawn 진입과 QA bytecode 환경만 보완한 동일27건은
+  27 PASS였고 이후1d2 전체1518 PASS를 회수했다.
 - 첫 Docker전체1d2는1515 PASS/2 FAIL/1 SKIP였다. 기존 중기 fixture가06:01 KST에 아직 공개되지 않은
   06시 회차를 선택했다. SDK 공개지연10분을 준수하도록 `latest_mid_fcst_time(now)`만 사용했다.
   추가 SDK 단위시험을 만들지 않고 기존 land/temperature 두 항목을06:01·18:01 고정 시각에서 각각
