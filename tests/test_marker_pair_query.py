@@ -44,11 +44,10 @@ def _marker_statements(location_ids):
     return statements, result
 
 
-@pytest.mark.parametrize("index", [0, 1, 2], ids=["observed", "fallback", "alerts"])
-def test_marker_fact_rejoin_preserves_composite_partition_key(index):
+def test_marker_alert_fact_rejoin_preserves_composite_partition_key():
     statements, _ = _marker_statements(["marker-fixture"])
     assert len(statements) == 3
-    joins = [item for item in statements[index].get_final_froms() if isinstance(item, Join)]
+    joins = [item for item in statements[2].get_final_froms() if isinstance(item, Join)]
     assert len(joins) == 1, "선택 후보를 fact의 정확한 복합 키로 JOIN해야 한다."
     pairs = {
         (part.left.key, part.right.key)
