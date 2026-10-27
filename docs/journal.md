@@ -1,3 +1,34 @@
+## 2026-10-28 — 운영 API210·웹5098 공개 기본UI21 수용
+
+- fresh f192 capability와 두 소스 리뷰 뒤 실제21개가20.241초에 통과했다. 목록1450/tile20/API4·오류0·탐색abort6별도, 로그인/로그아웃·쿠키/보호화면과 소유 C7 정리·7runtime 전후동일을 수용했다.
+- 첫125 실패는 driver/21case 미실행으로 보존하며 제품실패로 확정하지 않는다. 옛UI39와현재이미지 동일성은 주장하지 않는다.
+- 공유plane2는여전히unhealthy였고 mounted dagster.yaml 지문 불일치 진단만했다. 기본21PASS는마커성능·추가상호작용/모바일·전체plane건강·retention완료가 아니다. export desired STOPPED와제품/운영설정을 유지한다.
+- 문서base는main d9d0(PR187 포함)이지만 수용은 API210/CS e393/web5098만이다. [실제 수용·원실패·남은범위](reports/2026-10-28-retention-catalog-and-current-source.md#후속-공개-기본-ui21-수용). 아래기록은당시이력으로보존한다.
+
+## 2026-10-28 — 실제 마커 실패 보존·요청 예산과 특보 부분 인덱스 후속
+
+- Root R4 API210/image1b3d 교체(actual0) 뒤에도 cold60×3의19701/30020/21016ms 중1개가504였다.
+  CS e393/web5098·일정21R2S와 API endpoint의 `service_exports_enabled=True`는 유지했고 모바일/overlay 미실행·로그아웃 쿠키0을 분리해 기록했다.
+- browser 동시2/in-flight 공유/실패수동retry/숨은상세조회제거와 generic 특보 고정 predicate를 보완한다.
+  Backend 집중 WSL56/Docker56 actual0, frontend WSL/Docker265·타입/린트/WSL build actual0이다.
+  source7/lock/vendor 보존과 소유 QA 정리를 확인했으며 원 fixture2실패도 남겼다.
+- 제품이 같은1d2 WSL전체1518 PASS/actual0과 시험 한 파일만 보완한a707 Docker전체1517 PASS/
+  1 SKIP/actual0·독립 wait0을 회수했다. Docker의1 SKIP는 Docker CLI가 없는 배포 계약 검사다.
+- 최초 WSL27실패(실행기 spawn/PYCACHE)와 첫 Docker2실패(06:01 미공개 중기회차 fixture)를 보존했다.
+  전자는 같은27건 PASS, 후자는 SDK 공개 회차 함수로만 보완해06:01/18:01의 기존2파트를 각각
+  2 FAIL→2 PASS, 현재 시각2 PASS로 검산했다. 제품·SDK·timeout·assert 변경0이다.
+- 소유 QA PG/nonceDB/fixture/volume/network를 정상 exit0·잔여0으로 정리했다. PR187 정확 CI·리뷰와
+  배포/liveUI는 별도이며21:33 UTC R6 입력은False/None·새 배포0이다. export/publisher/소비 flags/GC·
+  공용 daemon·CS 변경0이고 운영20초 지연이 해결됐다고 하지 않는다.
+  [변경·검증·현재 운영 구분](reports/2026-10-28-marker-request-budget.md).
+
+## 2026-10-28 — retention 카탈로그 실측·현재 API 소스 정합
+
+- API는 외부 전환된main210이며 release/파일지문을 확인했다. old source guard의 DB진입 전 실패를 보존했고 current에 결박한 bounded RO1회만 정산한다. 이번 문서의 새 운영 변경은0이다.
+- retention parent+16leaf coverage·valid/ready/live와 current value_id PK를 확인했다. 누락index 가설 근거는 없고 current11index/INCLUDE4가 현재 관측이다. NOT VALID FK17과 통계live899만/dead120만을 orphan·병목·정확행수로 단정하지 않는다.
+- 자연7 SUCCESS/1 STARTED·8 materialization 21만facts 진척도 모두remaining/budget_exhausted다. 과거6h 정리는 미완이고 위치지연상한·통계reset 경위 미상·CPU/IO 미측정 한계를 유지한다.
+- export publisher desired STOPPED를 유지한다. 과거APIe393/web5098 UI21은 당시수용이며 현재210 UI재검증이 아니다. [관측·원실패·남은수용](reports/2026-10-28-retention-catalog-and-current-source.md). 아래 기록은 각 작성시점 이력이다.
+
 ## 2026-10-28 — 특보 hash 전역 스캔 경계와 CI 시험 입력 보강
 
 - 정확1bafa CI756 1510/3FAIL·757 1511/2FAIL 원문을 보존했다. 기존 SQL recorder 대역과23시 변조 no-op를

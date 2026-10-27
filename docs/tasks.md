@@ -1,5 +1,14 @@
 # Weather 남은 작업
 
+## 2026-10-28 — retention 현재 수용 경계
+
+- [ ] **W-RET-COMPLETE-01 / P1** — 자연7 SUCCESS·8 materialization 21만facts 진척과 별개로 과거6h 물리 정리 완료·미래값 보존을 수용한다. 8 materialization은remaining/budget_exhausted이며 lag는위치상한이다.
+- [ ] **W-RET-COST-01 / P2** — parent+16leaf retention index와 current PK는정상이다. current11index/INCLUDE4·NOT VALID FK17·통계추정만으로 비용원인을단정하지말고 한가지가설을별도검토된측정으로확인한다.
+- [x] **W-UI-BASIC210-01** — 현재API210/웹5098의 기존 공개기본UI21·실제 인증/지도/목록·소유정리를 후속20.241초 실행으로 수용했다. 첫125실패·옛39이미지비증명은보존한다.
+- [ ] **W-UI-CURRENT-01 / P2** — 기본21 한정 수용과 별개로 마커성능·추가상호작용/모바일·공유plane건강은미완이다. PR187 제품의운영수용으로승계하지않는다.
+
+[실측·소스정합·원실패와한계](reports/2026-10-28-retention-catalog-and-current-source.md)를따른다. 아래W-OPS-04의첫자연SUCCESS는현재부분수용됐지만6h완료/유입비교는미완이다. export publisher는취소desired STOPPED로유지하며재개/GC설정전환은이번범위가아니다. 아래기록은각시점의이력이다.
+
 ## 2026-10-27 — Codex PR 리뷰 정리(W01~W15) 후속
 
 리뷰 정리 PR(브랜치 `review/codex-10d-weather`)에 넣지 않고 남긴 항목이다. 상세 근거는 PR 본문.

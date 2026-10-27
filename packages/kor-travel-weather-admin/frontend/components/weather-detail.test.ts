@@ -17,14 +17,14 @@ function visit(node: ts.Node) {
     helpers.push(node.getText(tree));
   }
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect"
-    && node.arguments[1]?.getText(tree) === "[refreshToken, selectedLocationId, providerFilter, kindFilter]") callback = node.arguments[0];
+    && node.arguments[1]?.getText(tree) === "[detailOpen, refreshToken, selectedLocationId, providerFilter, kindFilter]") callback = node.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(tree);
 if (!callback || helpers.length !== 2) throw new Error("상세 effect를 찾지 못했습니다.");
 const setters = ["setValues", "setForecast", "setMessage", "setForecastMessage",
   "setLastRefreshedAt", "setLoading", "setForecastLoading"];
-const effect = new Function("selectedLocationId", "providerFilter", ...setters, "getLatest", "getForecast", "forecastWindowStart", "kindFilter",
+const effect = new Function("selectedLocationId", "providerFilter", "detailOpen", ...setters, "getLatest", "getForecast", "forecastWindowStart", "kindFilter",
   ts.transpileModule(helpers.join("\n") + "\nreturn (" + callback.getText(tree) + ")();", {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText,
@@ -37,7 +37,7 @@ function setup() {
     requests.push({ url, signal: options.signal as AbortSignal, resolve });
   })));
   const state: Record<string, unknown> = {};
-  const mount = (id: string | undefined) => effect(id, undefined,
+  const mount = (id: string | undefined, open = true) => effect(id, undefined, open,
     ...setters.map((key) => (value: unknown) => { state[key] = value; }),
     getLatest, getForecast, forecastWindowStart);
   return { requests, state, mount };
@@ -51,6 +51,19 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => vi.unstubAllGlobals());
 
 describe("선택 위치의 독립 상세 로딩", () => {
+  it("상세가 닫힌 최초 지도에서는 조회하지 않고 열면 두 요청을 시작한다", () => {
+    const { requests, state, mount } = setup();
+    mount("one", false)();
+    expect(requests).toHaveLength(0);
+    expect(state.setLoading).toBe(false);
+    expect(state.setForecastLoading).toBe(false);
+    const cleanup = mount("one", true);
+    expect(requests).toHaveLength(2);
+    cleanup();
+    expect(requests.every((request) => request.signal.aborted)).toBe(true);
+    mount("one", false)();
+    expect(requests).toHaveLength(2);
+  });
   it("예보가 멈춰도 최신값을 먼저 표시하고, 예보 실패가 최신값을 지우지 않는다", async () => {
     const { requests, state, mount } = setup();
     mount("one");
