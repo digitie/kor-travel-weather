@@ -738,7 +738,7 @@ def test_sync_run_source_provider_and_dataset_must_match(tmp_path) -> None:
 
 
 def test_bundle_read_joins_the_fact_table_only_for_the_alert_window() -> None:
-    """일반 후보는 원본을 읽지 않고, 오래된 특보는 정확한 복합 키로만 유효시각을 읽는다."""
+    """일반 후보는 원본을 읽지 않고, 특보는 같은 SQL에서 유효한 복합 키를 고른다."""
     import contextlib
     from datetime import UTC, datetime, timedelta
     from types import SimpleNamespace
@@ -762,8 +762,14 @@ def test_bundle_read_joins_the_fact_table_only_for_the_alert_window() -> None:
             captured.append(str(statement.compile(dialect=postgresql.dialect())))
             if self.follow_alerts and len(captured) == 1:
                 pointer = SimpleNamespace(value_id="exact-value", known_at=now,
-                                          target_at=now-timedelta(days=8))
+                                          target_at=now-timedelta(days=8), location_id="anywhere",
+                                          source_record_key="source", forecast_style="observed",
+                                          metric_key="ALERT")
                 return SimpleNamespace(partitions=lambda size: [[pointer]])
+            raise _Stop
+
+        def scalars(self, statement):  # noqa: ANN001
+            captured.append(str(statement.compile(dialect=postgresql.dialect())))
             raise _Stop
 
     def compiled(**kwargs) -> list[str]:
@@ -779,13 +785,17 @@ def test_bundle_read_joins_the_fact_table_only_for_the_alert_window() -> None:
     without_alerts = compiled()
     assert len(without_alerts) == 1 and "weather_values" not in without_alerts[0]
     with_alerts = compiled(alerts_only=True, alert_active_at=now)
-    assert len(with_alerts) == 2 and "weather_values" not in with_alerts[0]
+    assert len(with_alerts) == 2 and "EXISTS (SELECT 1" in with_alerts[0]
+    assert "weather_values.value_id = weather_current_values.value_id" in with_alerts[0]
+    assert "weather_values.known_at = weather_current_values.known_at" in with_alerts[0]
+    assert "weather_current_values.target_at >=" in with_alerts[0]
+    assert "valid_until" in with_alerts[0] and "any(" in with_alerts[0]
+    assert all("marker_alert_keys" not in statement for statement in with_alerts)
     assert "weather_values JOIN unnest" in with_alerts[1]
-    assert "weather_values.value_id = marker_alert_keys.value_id" in with_alerts[1]
-    assert "weather_values.known_at = marker_alert_keys.known_at" in with_alerts[1]
+    assert "weather_values.value_id = current_fact_keys.value_id" in with_alerts[1]
+    assert "weather_values.known_at = current_fact_keys.known_at" in with_alerts[1]
     assert "weather_values.known_at >=" in with_alerts[1]
     assert "weather_values.known_at <=" in with_alerts[1]
-    assert "valid_until" in with_alerts[1]
 
 
 def test_projection_sort_keys_move_with_the_pointer() -> None:
