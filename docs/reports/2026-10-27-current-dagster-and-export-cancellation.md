@@ -25,7 +25,7 @@ Manager 실제 release와 DockerRoot의 findmnt는 `/dev/nvme0n1` ext4였다. �
 
 정본 `short_forecast_retention_every_ten_minutes` schedule tag와 Weather location을 가진 run `3ea573eb-3fd3-4525-9753-05b3ee3b3678`은 SUCCESS(156.153초)였다. 다음 `cce472b6-1aea-41c6-aa60-361f5bf1a237`은12:16 관측 시 STARTED였고,12:41의 제한된 후속 RO에서 같은 run이 SUCCESS(154.611초)로 끝났음을 확인했다. 강제 run은0이다.
 
-이 run의 실제 materialization은 `resumed=true`, facts41,000/pointers11,062 삭제, 본문150.309초, `status=budget_exhausted`, `remaining=true`, backlog lag400,442.518초/stall0이었다. 뒤 `18da2492-da7e-437c-bb0b-0d8608267359` materialization은 facts34,000/150.774초, remaining true, lag401,634.389초/stall1이었다(그run의 최종 status는 이번 query에서 읽지 않았다). 정리 진척은 실제로 있지만 backlog 약4.65일이 남고 lag 감소는 수용하지 못했다. 이로써 과거6시간 보존 완료·backlog 해소·장기 실패 전부 해결·CPU/RSS 감소를 주장하지 않는다.
+이 run의 실제 materialization은 `resumed=true`, facts41,000/pointers11,062 삭제, 본문150.309초, `status=budget_exhausted`, `remaining=true`, backlog lag400,442.518초/stall0이었다. 뒤 `18da2492-da7e-437c-bb0b-0d8608267359` materialization은 facts34,000/150.774초, remaining true, lag401,634.389초/stall1이었다(그run의 최종 status는 이번 query에서 읽지 않았다). 정리 진척은 실제로 있지만 `backlog_lag_seconds` 약4.65일은 **cutoff−마지막 삭제 valid_at의 진행 위치 기반 지연 상한**이며, 실제 가장 오래된 남은행의 age나 누적행수를 측정한 값이 아니다([계산 정의](../../src/kortravelweather/retention.py#L250)). `valid_at` 정시 bucket 안에서는 실제 행을 지우며 전진해도 cutoff가 이동해 lag 상한이 오르다가 다음 정시로 넘어갈 때 감소한다([bucket 정의](../../src/kortravelweather/retention.py#L80)). 따라서 두 표본과 stall1만으로 정체를 확정하지 않는다. 남은행이 있어 과거6시간 물리 정리 완료·backlog 해소는 미수용이며, 장기 실패 전부 해결·CPU/RSS 감소도 주장하지 않는다.
 
 ## 사용자 취소: export desired STOPPED
 
