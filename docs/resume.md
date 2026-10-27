@@ -2,7 +2,8 @@
 
 - 현재: 2026-10-17 이후 Codex PR 리뷰의 개선 15건을 브랜치 `review/codex-10d-weather` 한 PR로
   올렸다. 소유자 승인 전 머지·배포하지 않는다. 내용·시험·보류 이유는 PR 본문과
-  [journal](journal.md) 같은 날짜 절이 정본이다.
+  [journal](journal.md) 같은 날짜 절이 정본이다. 소유자가 export 목표를 일시중지했으므로(같은 날짜
+  소유자 결정) 이 PR의 export 가용성 수정은 재개 때 효과가 난다.
 - 가장 급한 보류: 운영 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`. 저장소·Manager 기본값의
   tomorrow_io·weatherbit·weatherstack·accuweather는 export 경로가 없어 `/current`·
   `/forecasts?style=external`·`/daily-summaries`가 설계상 503이다. env 명시와 '실제 구성된
