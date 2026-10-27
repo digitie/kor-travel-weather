@@ -1,6 +1,6 @@
 # Weather 현재 Dagster 배포 확인과 export 취소 정산
 
-기준은 2026-10-27 12:08–12:16 UTC의 새 운영 관측이다. 이전95020 배포와173 정산을 현재로 복사하지 않았다. 이번 작업에서 새 image build·교체·migration·수집 강제 실행은 하지 않았다.
+기준은 2026-10-27 12:08–12:41 UTC의 새 운영 관측이다. 이전95020 배포와173 정산을 현재로 복사하지 않았다. 이번 작업에서 새 image build·교체·migration·수집 강제 실행은 하지 않았다.
 
 ## 실제 버전과 중복 배포 생략
 
@@ -23,7 +23,9 @@ Manager 실제 release와 DockerRoot의 findmnt는 `/dev/nvme0n1` ext4였다. �
 
 ## 자연 단기예보 정리 관측
 
-정본 `short_forecast_retention_every_ten_minutes` schedule tag와 Weather location을 가진 run `3ea573eb-3fd3-4525-9753-05b3ee3b3678`은 SUCCESS(156.153초)였다. 다음 `cce472b6-1aea-41c6-aa60-361f5bf1a237`은 관측 시 STARTED였다. 강제 run은0이다. 이 표본만으로 모든 backlog가 비었거나 장기 실패가 전부 없어졌다고 주장하지 않는다. 삭제 행수·lag 감소·CPU/RSS는 이번 관측에 포함하지 않았다.
+정본 `short_forecast_retention_every_ten_minutes` schedule tag와 Weather location을 가진 run `3ea573eb-3fd3-4525-9753-05b3ee3b3678`은 SUCCESS(156.153초)였다. 다음 `cce472b6-1aea-41c6-aa60-361f5bf1a237`은12:16 관측 시 STARTED였고,12:41의 제한된 후속 RO에서 같은 run이 SUCCESS(154.611초)로 끝났음을 확인했다. 강제 run은0이다.
+
+이 run의 실제 materialization은 `resumed=true`, facts41,000/pointers11,062 삭제, 본문150.309초, `status=budget_exhausted`, `remaining=true`, backlog lag400,442.518초/stall0이었다. 뒤 `18da2492-da7e-437c-bb0b-0d8608267359` materialization은 facts34,000/150.774초, remaining true, lag401,634.389초/stall1이었다(그run의 최종 status는 이번 query에서 읽지 않았다). 정리 진척은 실제로 있지만 backlog 약4.65일이 남고 lag 감소는 수용하지 못했다. 이로써 과거6시간 보존 완료·backlog 해소·장기 실패 전부 해결·CPU/RSS 감소를 주장하지 않는다.
 
 ## 사용자 취소: export desired STOPPED
 
@@ -35,7 +37,11 @@ Manager 실제 release와 DockerRoot의 findmnt는 `/dev/nvme0n1` ext4였다. �
 
 ## 공개 UI와 수용 범위
 
-현재web5098/API e393에 결박한 기존21사례 공개 HTTPS UI 검증을 준비했다. 검토된 driver/check/시간/cleanup은 유지하고, 정확7runtime·immutable browser image·known password offline검증 뒤에만 HTTP를 허용한다. **현재 새 실제 UI21은 아직 실행 전이며 수용 대기다.** 기존95020 UI21이나 Map의 UI 결과를 현재Weather 성공으로 승계하지 않는다. 두 source 리뷰와 n150 browser 슬롯 뒤 한 번 수행하고 원 실패/성공·자기 session/container 정리를 별도로 정산한다.
+현재web5098/API e393에 결박한 공개 HTTPS UI를 두 source 리뷰와 n150 단독 browser 슬롯 뒤 한 번 실행했다. user known password를 hiddenTTY→RAM/stdin으로만 전달해 실제web exactCID의 정본 환경에서 offline검증한 뒤 HTTP를 허용했다. credential 파일/argv/env/log·추측·reset·재시도는0이다. 기존21사례/check/시간/cleanup·immutable cached browser image·caps는 그대로다.
+
+**새 현재Weather UI21은21/21 PASS(18.705초)**다. 정상 login200·HttpOnly/Secure cookie·메뉴4·인증 reload·날씨 지도canvas/실제tile20·목록1450행/원천catalog오류0·읽기API2005개·logout200·쿠키삭제·보호화면login복귀를 확인했다. JS/console/HTTP/network/domain write 오류는0이며 navigation ERR_ABORTED11은 별도 관측으로 남긴다. 이 결과를 기존95020/Map의 UI 결과에서 승계하지 않았다.
+
+wrapper exit0/own C7 container 부재와7runtime(CID/image/source/start/restart/health) 전후동일을 확인했다. 보호API GET401이나 직접SID/DB 폐기 행을 조회한 시험으로 확대하지 않는다. 실행 뒤export sensor는STOPPED, 마지막tick111545도SKIPPED였다.
 
 이21사례는 정상 로그인·메뉴·날씨 지도/목록·로그아웃 회귀다. SSR 직후 script 강제 정지·저장 계정 자동완성·모든 수집/성능 회귀를 대신하지 않는다.
 
@@ -47,5 +53,8 @@ Manager 실제 release와 DockerRoot의 findmnt는 `/dev/nvme0n1` ext4였다. �
 | weather-export-cancel-exact-sensor-actual-w-r1.json | 7b9e0ccc2c7da8d2c0cc622b81910a210e94621f0e2a900963ee7eb672cd2f51 |
 | weather-dagster-resume-metadata-readonly-actual-w-r1.json | 18c2f6e58b7fb4f2cb6a1d5c153f5b3a3e981b74b6253c5830180a9825306b20 |
 | weather-current-public21-source-preparation-w-r1.json | 23290320ba578c3cc7df56c8fe676d1a9a8e31c82451c6916d82e4c96a344517 |
+| weather-current-public21-entry-5ad59d34420c4b0fa7f767fdd612ee98.json | 8cedbc8166150aa7d63af8bd1ccc6307f918ab52cfafbf963d40cfd0c7e25645 |
+| weather-current-public21-ui-5ad59d34420c4b0fa7f767fdd612ee98.json | a0fa6baf222e1d17495f56dd5529c2df8e4c035a8aa7db4edc06908eaf704735 |
+| weather-current-retention-final-readonly-actual-r1.json | be0b9d4a9c3e2948fb407647b4da47015075acf693a959f45c99ea1f7b1b0d37 |
 
 원장은 운영 감사 디렉터리의 비밀 없는 선택 필드/metadata/hash 증빙이다. 비밀번호·쿠키·원 env·provider payload를 문서에 옮기지 않는다.
