@@ -2862,9 +2862,22 @@ class WeatherRepository:
                 alert_filter if alerts_only else not_(alert_filter)
             )
         if alert_active_at is not None:
-            # 유효 특보는 LIMIT 전에 판정한다. 오래된 명시 종료시각을 생략하지
-            # 않되 후보와 원본 키 배열은 512행씩 읽어 이력 전체를 메모리에 쌓지 않는다.
-            pointer_rows = session.execute(candidate.limit(None).order_by(None).add_columns(
+            # 오래된 특보의 명시 종료시각은 같은 복합 fact 키에서 LIMIT 전에 판정한다.
+            # 최근 행은 명시 만료·해제도 기존처럼 후보에 남겨 최종 reducer가 처리한다.
+            # 후보를 512행씩 읽는 동안 별도 fact 검산을 반복하지 않는다.
+            cutoff = alert_active_at - ALERT_MAX_AGE
+            active_fact = select(1).where(
+                WeatherValueRow.value_id == WeatherCurrentValueRow.value_id,
+                WeatherValueRow.known_at == WeatherCurrentValueRow.known_at,
+                WeatherValueRow.valid_until > alert_active_at,
+            ).correlate(WeatherCurrentValueRow).exists()
+            # Hash Join보다 fact 검산이 먼저 계획되어도 요청 밖 위치를 읽지 않는다.
+            pointer_rows = session.execute(candidate.where(
+                WeatherCurrentValueRow.location_id == func.any(bindparam(
+                    "current_location_ids", list(unique_ids), type_=ARRAY(String),
+                )), or_(
+                WeatherCurrentValueRow.target_at >= cutoff, active_fact,
+            )).limit(None).order_by(None).add_columns(
                 requested_locations.c.location_id.label("location_id"),
                 WeatherCurrentValueRow.target_at.label("target_at"),
                 WeatherCurrentValueRow.source_record_key.label("source_record_key"),
@@ -2872,31 +2885,9 @@ class WeatherRepository:
                 WeatherCurrentValueRow.metric_key.label("metric_key"),
             ).execution_options(yield_per=512))
             winners: dict[str, list[Any]] = {}
-            cutoff = alert_active_at - ALERT_MAX_AGE
             for pointers in pointer_rows.partitions(512):
-                active = {(p.value_id, p.known_at) for p in pointers if p.target_at >= cutoff}
-                older = [p for p in pointers if p.target_at < cutoff]
-                if older:
-                    alert_keys = func.unnest(
-                        bindparam("alert_value_ids", [p.value_id for p in older],
-                                  type_=ARRAY(String)),
-                        bindparam("alert_known_ats", [p.known_at for p in older],
-                                  type_=ARRAY(AwareDateTime())),
-                    ).table_valued("value_id", "known_at").render_derived(name="marker_alert_keys")
-                    clocks = [p.known_at for p in older]
-                    active.update(session.execute(select(
-                        WeatherValueRow.value_id, WeatherValueRow.known_at,
-                    ).join(alert_keys, and_(
-                        WeatherValueRow.value_id == alert_keys.c.value_id,
-                        WeatherValueRow.known_at == alert_keys.c.known_at,
-                    )).where(
-                        WeatherValueRow.known_at >= min(clocks),
-                        WeatherValueRow.known_at <= max(clocks),
-                        WeatherValueRow.valid_until > alert_active_at,
-                    )).all())
                 for pointer in pointers:
-                    if (pointer.value_id, pointer.known_at) in active:
-                        winners.setdefault(pointer.location_id, []).append(pointer)
+                    winners.setdefault(pointer.location_id, []).append(pointer)
                 for key, choices in winners.items():
                     choices.sort(key=lambda p: (
                         p.known_at, p.source_record_key is not None,

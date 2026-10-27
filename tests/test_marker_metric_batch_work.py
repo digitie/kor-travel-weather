@@ -263,7 +263,7 @@ def test_sixty_location_kind_batches_preserve_provider_and_alert_results(
 def test_marker_maximum_location_alert_keys_are_chunked_before_global_limit(
     weather_test_database_url,
 ):
-    """API 최대 500지점에서도 키는 512행 배열로 제한하고 전체 최종 winner를 유지한다."""
+    """API 최대 500지점에서도 pointer 스트림은 512행이며 최종 winner를 유지한다."""
     from sqlalchemy import event
 
     repo = WeatherRepository(weather_test_database_url)
@@ -284,10 +284,13 @@ def test_marker_maximum_location_alert_keys_are_chunked_before_global_limit(
         for location in ids for days, label in [(9, "먼 특보"), (8, "가까운 특보")]
     ])
     batches = []
+    stream_limits = []
 
     def record(connection, cursor, statement, parameters, context, executemany):
         if isinstance(parameters, dict) and "alert_value_ids" in parameters:
             batches.append((len(parameters["alert_value_ids"]), len(parameters)))
+        if context.execution_options.get("yield_per"):
+            stream_limits.append(context.execution_options["yield_per"])
 
     event.listen(repo.engine, "before_cursor_execute", record)
     try:
@@ -295,8 +298,8 @@ def test_marker_maximum_location_alert_keys_are_chunked_before_global_limit(
         assert len(result) == 500
         assert all(len(rows) == 1 and rows[0].value_text == "가까운 특보"
                    for rows in result.values())
-        assert len(batches) == 2 and sum(size for size, _ in batches) == 1000
-        assert all(size <= 512 and binds < 10 for size, binds in batches)
+        assert batches == []
+        assert stream_limits == [512]
     finally:
         event.remove(repo.engine, "before_cursor_execute", record)
         repo.engine.dispose()
