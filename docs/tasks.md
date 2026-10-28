@@ -1,12 +1,12 @@
 # Weather 남은 작업
 
-## 2026-10-28 — 특보 후보 제한 후속
+## 2026-10-28 — 특보 후보 제한 한정 수용
 
-- [ ] **W-MARKER-PREFIX-01 / P1** — 최근 적격 후보가 충분할 때 이길 수 없는 옛 특보의 fact 검산을
-  생략하는 후보를 정확 CI·독립 두 리뷰·통합 전체 QA 뒤 배포하고 최초 cold60×3을 수용한다.
-  관련 WSL150/Docker150 actual0은 완료했지만 운영25초 목표는 미검증이다.
-  a707 최초 cold26초대 실패와 warm 화면/키보드 진단을 구분한다.
-  [근거·실패·의미 보존](reports/2026-10-28-marker-alert-prefix.md).
+W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
+[완료 목록](tasks-done.md#2026-10-28--특보-후보-제한-api-단독-배포와-첫-cold-수용)으로 옮겼다.
+[운영 수용 범위](reports/2026-10-28-marker-prefix-deployment-acceptance.md)를 따른다.
+아래 기존 마커·UI 과제의 이전 실패는 이력으로 보존하며 전국 전체·장시간 성능,
+공유 plane 건강·retention·특보 지역 적용 정합까지 완료로 확대하지 않는다.
 
 ## 2026-10-28 — retention 현재 수용 경계
 
