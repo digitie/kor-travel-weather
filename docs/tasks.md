@@ -1,5 +1,13 @@
 # Weather 남은 작업
 
+## 2026-10-28 — 특보 후보 제한 후속
+
+- [ ] **W-MARKER-PREFIX-01 / P1** — 최근 적격 후보가 충분할 때 이길 수 없는 옛 특보의 fact 검산을
+  생략하는 후보를 정확 CI·독립 두 리뷰·통합 전체 QA 뒤 배포하고 최초 cold60×3을 수용한다.
+  관련 WSL150/Docker150 actual0은 완료했지만 운영25초 목표는 미검증이다.
+  a707 최초 cold26초대 실패와 warm 화면/키보드 진단을 구분한다.
+  [근거·실패·의미 보존](reports/2026-10-28-marker-alert-prefix.md).
+
 ## 2026-10-28 — retention 현재 수용 경계
 
 - [ ] **W-RET-COMPLETE-01 / P1** — 자연7 SUCCESS·8 materialization 21만facts 진척과 별개로 과거6h 물리 정리 완료·미래값 보존을 수용한다. 8 materialization은remaining/budget_exhausted이며 lag는위치상한이다.

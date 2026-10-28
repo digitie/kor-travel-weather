@@ -1,3 +1,22 @@
+## 2026-10-28 — 특보 후보와 mainbd561 통합 검증 구분
+
+- 원21d9·150개 양환경 검증은 보존하고 별도 WT에서 mainbd561을 정상 merge한다.
+  marker 함수 원문은 그대로이며 main의 export 보완27줄도 보존한다.
+- main의0035/export/UI는 별도 추가 제품이다. 통합 관련 시험·CI 전체는 새 head로 회수한다.
+  운영a707 API·웹/e393 CS·schema0034와 publisher/소비 flags는 이번 작업에서 바꾸지 않는다.
+  원21d9 API-only 배포 여부는 Root의 별도 최종 동결 뒤 판단한다.
+  [검증과 배포 범위](reports/2026-10-28-marker-alert-prefix.md#최신-main-통합과-배포-범위).
+
+## 2026-10-28 — 특보 적격 prefix·정렬 의미 보존과 운영 실패 정산
+
+- a707 API·웹 실제 배포 뒤 최초 cold 세 응답26초대 FAIL을 유지한다. 별도 R17 warm 진단은
+  지도 면적·오버레이·타일·℃/풍속·키보드·로그아웃을 확인했지만 cold 수용이 아니다.
+- 실제 한 지점 계획의 옛 fact35회 검산을 근거로 최근 적격 행이 예산을 채운 경우만 CASE로
+  불필요 검산을 생략한다. LATERAL prefix, C 문자열 순서, 전체 payload와 기존 reducer를 검산한다.
+- 관련 WSL150/Docker150 PASS·actual0·독립 wait0·자식 종료·연결0을 회수했다.
+  schema/provider/writer/DTO/동시성/timeout·운영 설정 변경0이며 전체 지연 해결은 미입증이다.
+  [변경·반례·실제 운영 구분](reports/2026-10-28-marker-alert-prefix.md).
+
 ## 2026-10-28 — 운영 API210·웹5098 공개 기본UI21 수용
 
 - fresh f192 capability와 두 소스 리뷰 뒤 실제21개가20.241초에 통과했다. 목록1450/tile20/API4·오류0·탐색abort6별도, 로그인/로그아웃·쿠키/보호화면과 소유 C7 정리·7runtime 전후동일을 수용했다.

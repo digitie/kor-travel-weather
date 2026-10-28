@@ -160,7 +160,22 @@ def test_six_kind_alert_candidates_keep_order_without_batch_rechecks(
                             json.dumps(plan, default=str))
                         scans = list(fact_scans(plan[0]["Plan"]))
                         if providers is None or providers == ["selected"]:
-                            assert sum(s["Actual Loops"] for s in scans) == 60 * 40
+                            loops = sum(s["Actual Loops"] for s in scans)
+                            recent_count = sum(
+                                v.identity_key() in projected and v.location_id == ids[0]
+                                and v.metric_key == "ALERT"
+                                and (providers is None or v.provider in providers)
+                                and v.target_at >= now - ALERT_MAX_AGE
+                                for v in values
+                            )
+                            if recent_count >= 26:
+                                assert loops == 0
+                            elif providers is None:
+                                # raw40은 logical projection20+동률1이다. 부족분을
+                                # 채울 옛 검산은 필요하며 원래2400 상한을 넘지 않는다.
+                                assert 0 < loops <= 60 * 40
+                            else:
+                                assert loops == 60 * 40
                             assert all("value_id" in s.get("Index Cond", "")
                                        and "known_at" in s.get("Index Cond", "")
                                        for s in scans if s["Actual Loops"] > 0)
