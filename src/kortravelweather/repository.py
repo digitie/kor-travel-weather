@@ -2874,19 +2874,51 @@ class WeatherRepository:
                 WeatherValueRow.known_at == WeatherCurrentValueRow.known_at,
                 WeatherValueRow.valid_until > alert_active_at,
             ).correlate(WeatherCurrentValueRow).offset(0).exists()
+            if newest_first and not prefer_current and not per_metric and limit_per_location > 0:
+                # target 내림차순에서 최근 적격 행이 예산을 채우면 옛 행은 이길 수
+                # 없다. LIMIT 전 Sort/Bitmap 계획도 CASE 밖의 fact 검산은 하지 않는다.
+                recent_prefix_full = candidate.where(
+                    WeatherCurrentValueRow.target_at >= cutoff,
+                ).order_by(None).offset(limit_per_location - 1).limit(1).correlate(
+                    requested_locations,
+                ).exists()
+                active_fact = case((recent_prefix_full, false()), else_=active_fact)
             # Hash Join보다 fact 검산이 먼저 계획되어도 요청 밖 위치를 읽지 않는다.
-            pointer_rows = session.execute(candidate.where(
+            # 기존 Python 문자열 비교와 같은 순서로 LIMIT 경계의 동률을 고른다.
+            # DB locale의 대소문자/문자 정렬이 다르면 prefix 구성원이 바뀔 수 있다.
+            alert_order: list[Any] = []
+            if prefer_current and not current_marker:
+                alert_order.append(order[0])
+            alert_order.extend([desc(timestamp)] if newest_first else [
+                timestamp, WeatherCurrentValueRow.metric_key.collate("C"),
+            ])
+            alert_order.extend([
+                nullslast(desc(WeatherCurrentValueRow.known_at)),
+                nullslast(desc(WeatherCurrentValueRow.source_record_key.collate("C"))),
+                desc(WeatherCurrentValueRow.value_id.collate("C")),
+            ])
+            candidate = candidate.order_by(None).order_by(*alert_order)
+            # 적격 판정 뒤 같은 전체 정렬의 위치별 prefix만 읽는다. 최근 후보가
+            # 예산을 채우면 더 오래된 행의 fact 검산은 최종 순위를 바꿀 수 없다.
+            alert_candidates = candidate.where(
                 WeatherCurrentValueRow.location_id == func.any(bindparam(
                     "current_location_ids", list(unique_ids), type_=ARRAY(String),
                 )), or_(
                 WeatherCurrentValueRow.target_at >= cutoff, active_fact,
-            )).limit(None).order_by(None).add_columns(
-                requested_locations.c.location_id.label("location_id"),
+            )).add_columns(
                 WeatherCurrentValueRow.target_at.label("target_at"),
                 WeatherCurrentValueRow.source_record_key.label("source_record_key"),
                 WeatherCurrentValueRow.forecast_style.label("forecast_style"),
                 WeatherCurrentValueRow.metric_key.label("metric_key"),
-            ).execution_options(yield_per=512))
+            ).lateral("active_alert_candidates")
+            pointer_rows = session.execute(select(
+                requested_locations.c.location_id.label("location_id"),
+                alert_candidates.c.value_id, alert_candidates.c.known_at,
+                alert_candidates.c.target_at, alert_candidates.c.source_record_key,
+                alert_candidates.c.forecast_style, alert_candidates.c.metric_key,
+            ).select_from(requested_locations.join(
+                alert_candidates, true(),
+            )).execution_options(yield_per=512))
             winners: dict[str, list[Any]] = {}
             for pointers in pointer_rows.partitions(512):
                 for pointer in pointers:

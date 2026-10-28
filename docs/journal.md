@@ -1,3 +1,13 @@
+## 2026-10-28 — 특보 적격 prefix·정렬 의미 보존과 운영 실패 정산
+
+- a707 API·웹 실제 배포 뒤 최초 cold 세 응답26초대 FAIL을 유지한다. 별도 R17 warm 진단은
+  지도 면적·오버레이·타일·℃/풍속·키보드·로그아웃을 확인했지만 cold 수용이 아니다.
+- 실제 한 지점 계획의 옛 fact35회 검산을 근거로 최근 적격 행이 예산을 채운 경우만 CASE로
+  불필요 검산을 생략한다. LATERAL prefix, C 문자열 순서, 전체 payload와 기존 reducer를 검산한다.
+- 관련 WSL150/Docker150 PASS·actual0·독립 wait0·자식 종료·연결0을 회수했다.
+  schema/provider/writer/DTO/동시성/timeout·운영 설정 변경0이며 전체 지연 해결은 미입증이다.
+  [변경·반례·실제 운영 구분](reports/2026-10-28-marker-alert-prefix.md).
+
 ## 2026-10-28 — 운영 API210·웹5098 공개 기본UI21 수용
 
 - fresh f192 capability와 두 소스 리뷰 뒤 실제21개가20.241초에 통과했다. 목록1450/tile20/API4·오류0·탐색abort6별도, 로그인/로그아웃·쿠키/보호화면과 소유 C7 정리·7runtime 전후동일을 수용했다.

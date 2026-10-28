@@ -1,3 +1,15 @@
+## 2026-10-28 — a707 운영 cold 실패 후 특보 후보 제한 후속
+
+- 현재 API·웹은 a707 배포(actual0)다. CS e393·daemon·원 export 값·publisher 중지를 유지한다.
+  첫 cold60×3은 모두200이나26.817/25.539/25.316초로25초 목표 FAIL이다.
+  후속 warm 진단의 화면·타일·단위·키보드29항목 PASS를 cold 성공으로 바꾸지 않는다.
+- 새 특보 후보 제한은 최근 적격 행이 충분할 때 이길 수 없는 옛 행의 fact 검산만 줄인다.
+  SQL LIMIT과 Python 문자열 동률을 맞추고 full payload·reducer·복합키 의미를 유지한다.
+  소유 PG18 관련 WSL150/Docker150 PASS·actual0·wait0이며 새 변경은 미배포다.
+- 다음 한 작업: 최종 Docker 결과·정확 CI·독립 리뷰와 통합 전체 게이트를 회수한 뒤
+  조율된 배포·최초 cold 수용을 진행한다. 아래 API210/web5098 기록은 당시 이력이다.
+  [근거·실패 원문·검증 범위](reports/2026-10-28-marker-alert-prefix.md).
+
 ## 2026-10-28 — 운영 API210·웹5098 공개 기본UI21 수용
 
 - fresh f192 capability와 두 소스 리뷰 뒤 실제21개가20.241초에 통과했다. 목록1450/tile20/API4·오류0·탐색abort6별도, 로그인/로그아웃·쿠키/보호화면과 소유 C7 정리·7runtime 전후동일을 수용했다.
