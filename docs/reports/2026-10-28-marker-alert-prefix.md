@@ -75,6 +75,20 @@ R17 진단 receipt는 `/var/tmp/weather-live-next-a707-20261028-c0c224c03d/root-
 남은 게이트는 정확 후보 CI·독립 두 소스 리뷰·통합 전체 검증 및 조율된 새 배포 뒤 최초 cold 수용이다.
 전체 QA나 운영 효과를 관련 집중 시험으로 대신 통과 처리하지 않는다.
 
+## 최신 main 통합과 배포 범위
+
+원 검증 후보 `21d9ea9`를 부모로 두고 main `bd56152`를 정상 merge한다. 원 후보와 WSL150/Docker150
+원장은 바꾸지 않는다. main의 repository 추가27줄은 export terminal 상태 보완이며 marker 함수 밖이다.
+통합 marker 함수 원문은 원 후보와 같고, 그 밖 repository 원문은 main과 같다.
+의존성·API middleware와 기존 두 marker 시험도 원 후보와 같다.
+
+main에는 migration0035·export·UI 등 별도 변경이 있다. 원150개가 그 전체를 검증했다고 하지 않는다.
+통합 head의 관련 시험과 CI 전체를 따로 회수하며 결과가 나오기 전 통과로 세지 않는다.
+운영은 여전히 a707 API·웹/e393 CS, schema0034다. 이번 작업은 운영0035 전환이나 CS·daemon 교체,
+publisher/소비 flag/export 설정 변경을 수행하지 않는다.
+원21d9는 병합 뒤에도 도달 가능한 새 API-only 후보로 남지만 실제 배포 소스·역할·게이트는 Root가
+별도 동결한다. 통합 main 전체 배포나 원 후보 운영 성능 개선을 미리 주장하지 않는다.
+
 ## 참고
 
 - [PostgreSQL 18 EXPLAIN](https://www.postgresql.org/docs/18/sql-explain.html): ANALYZE는 실제 문장을 실행한다.

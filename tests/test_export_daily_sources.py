@@ -197,3 +197,126 @@ def test_new_approved_location_waits_for_reducer_without_losing_previous_full_ro
     ready = client.get(path, params=params, headers=headers)
     assert ready.status_code == 200 and ready.json()["meta"]["source_status"] == "ok"
     assert len(ready.json()["items"]) == 12
+
+
+def test_never_approved_anchor_makes_full_roster_stale_instead_of_503(
+    external_repository, tmp_path, monkeypatch,
+):
+    """한 번도 승인되지 않은 관측 anchor가 이전 집합 없는 전체 목록을 영구503으로 막지 않는다.
+
+    개별 위치 최초 조회의 필수 원천 미승인은503을 유지하고, 선택 원천(청정넷)은 stale이다.
+    """
+    from datetime import datetime, timedelta
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from krforest.parser import parse_mountain_weather
+    from test_all_source_exports import _sdk
+
+    from kortravelweather.models import KST
+    from kortravelweather.providers import krforest, krforest_dust
+    from kortravelweather.settings import WeatherSettings
+
+    repo = external_repository
+    _sdk(repo, tmp_path, "mountain", monkeypatch)
+    _drain(repo, tmp_path)
+    observed = datetime.now(KST) - timedelta(hours=1)
+    # 산악 응답에서 계속 빠지는 지점과 측정값이 없는 청정넷 지점을 흉내 낸다.
+    mountain = krforest.station_location(parse_mountain_weather({
+        "obsId": "M999", "obsName": "미승인산", "latitude": 35.1, "longitude": 128.2,
+        "tm": observed.strftime("%Y-%m-%d %H:%M"), "tm2m": "-2", "hm2m": "70", "ws2m": "1",
+    }))
+    dust = krforest_dust.station_location(SimpleNamespace(
+        station_code="999", description="미승인 청정넷", latitude=35.2, longitude=128.3,
+        address="경남", elevation=None,
+    ))
+    for location in (mountain, dust):
+        repo.upsert_location(location)
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="never-approved", enabled_providers=["python-krforest-api"],
+        service_exports_enabled=True, service_export_artifact_root=tmp_path,
+    ), repo))
+    headers = {"x-admin-token": "never-approved"}
+    path = "/v1/service/exports/daily-summaries"
+    full = client.get(path, params={"days": 1}, headers=headers)
+    assert full.status_code == 200, full.text
+    assert full.json()["meta"]["source_status"] == "stale"
+    pending = [item for item in full.json()["items"]
+               if item["location_id"] in {mountain.location_id, dust.location_id}]
+    assert len(pending) == 6 and all(item["sample_count"] == 0 for item in pending)
+    assert len({item["location_id"] for item in full.json()["items"]}) == 3
+    assert client.get(path, params={"days": 1, "location_id": mountain.location_id},
+                      headers=headers).status_code == 503
+    optional = client.get(path, params={"days": 1, "location_id": dust.location_id},
+                          headers=headers)
+    assert optional.status_code == 200 and optional.json()["meta"]["source_status"] == "stale"
+    assert all(item["sample_count"] == 0 for item in optional.json()["items"])
+
+
+def test_daily_fallback_moves_its_date_window_to_the_current_kst_date(
+    external_repository, tmp_path, monkeypatch,
+):
+    """긴 fallback 동안에도 오늘 구간이 빠지지 않는다. roster·coverage digest는 유지한다."""
+    from datetime import UTC, datetime, timedelta
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from sqlalchemy import select, update
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_daily import KST
+    from kortravelweather.export_daily_reader import DailySummaryExports
+    from kortravelweather.export_heads import ExportHeads
+    from kortravelweather.export_snapshots import ExportSnapshotUnavailable, export_snapshot_tables
+    from kortravelweather.settings import WeatherSettings
+
+    repo = external_repository
+    heads, identity, capture, *_ = _candidate(repo, tmp_path, _descriptor(repo), cohort=True)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    _drain(repo, tmp_path)
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="daily-window", enabled_providers=["python-kma-api"],
+        service_exports_enabled=True, service_export_artifact_root=tmp_path,
+    ), repo))
+    headers = {"x-admin-token": "daily-window"}
+    path, params = "/v1/service/exports/daily-summaries", {"days": 2}
+    healthy = client.get(path, params=params, headers=headers)
+    assert healthy.status_code == 200
+    today = datetime.now(KST).date()
+    yesterday = today - timedelta(days=1)
+    snapshots, _ = export_snapshot_tables(ExportHeads(repo).metadata)
+    with repo.engine.begin() as connection:
+        row = connection.execute(select(snapshots).where(
+            snapshots.c.snapshot_id == healthy.json()["meta"]["snapshot_id"],
+        )).mappings().one()
+        # 어제 발급한 뒤 reducer 지연 등으로 계속 fallback 중인 상태를 만든다.
+        connection.execute(update(snapshots).where(
+            snapshots.c.snapshot_id == row["snapshot_id"],
+        ).values(manifest={
+            **row["manifest"], "first_date": (yesterday - timedelta(days=1)).isoformat(),
+            "last_date": yesterday.isoformat(),
+        }, expires_at=datetime.now(UTC) - timedelta(seconds=1)))
+
+    def unavailable(self):
+        raise ExportSnapshotUnavailable("시험용 reducer 지연")
+
+    monkeypatch.setattr(DailySummaryExports, "_freeze_daily_ready", unavailable)
+    fallback = client.get(path, params=params, headers=headers)
+    assert fallback.status_code == 200 and fallback.json()["meta"]["source_status"] == "stale"
+    assert {item["date"] for item in fallback.json()["items"]} == {
+        yesterday.isoformat(), today.isoformat(),
+    }
+    with repo.engine.connect() as connection:
+        manifest = connection.scalar(select(snapshots.c.manifest).where(
+            snapshots.c.snapshot_id == fallback.json()["meta"]["snapshot_id"],
+        ))
+    assert (manifest["first_date"], manifest["last_date"]) == (
+        yesterday.isoformat(), today.isoformat(),
+    )
+    assert manifest["fallback_unconfirmed"] is True
+    assert manifest["locations"] == row["manifest"]["locations"]
+    assert manifest["coverage"] == row["manifest"]["coverage"]
+    # 오늘 창의 유효한 fallback handle은 다시 복제하지 않는다.
+    again = client.get(path, params=params, headers=headers)
+    assert again.json()["meta"]["snapshot_id"] == fallback.json()["meta"]["snapshot_id"]

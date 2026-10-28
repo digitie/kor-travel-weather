@@ -6,7 +6,7 @@ from time import monotonic
 import pytest
 from fastapi.testclient import TestClient
 from kortravelweather_api.app import create_app
-from sqlalchemy import event, insert, select, text, true
+from sqlalchemy import event, insert, select, text, true, update
 
 from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_status import ExportSourceStatuses
@@ -299,3 +299,29 @@ def test_pending_lookup_uses_partial_index_among_many_completed_runs(repository)
                 value for child in node.get("Plans", []) for value in indexes(child)
             )]
         assert "ix_weather_sync_runs_export_pending" in indexes(plan[0]["Plan"])
+
+
+@pytest.mark.parametrize("drifted", [
+    # catalog에서 제거·개명된 dataset(ValueError 경로)
+    {"provider": PROVIDER, "dataset_key": "removed_dataset", "forecast_style": "nowcast"},
+    # SourceKey 모양이 바뀐 옛 항목(TypeError 경로)
+    {"provider": PROVIDER, "dataset_key": DATASET, "forecast_style": "nowcast", "region": "x"},
+])
+def test_drifted_stored_scope_is_repaired_instead_of_blocking_status(repository, drifted):
+    """catalog가 바뀐 뒤 남은 옛 계획 하나가 W4 전체를 영구503으로 막지 않는다."""
+    run = repository.start_sync_run(provider=PROVIDER, dataset_key=DATASET)
+    valid = {"provider": PROVIDER, "dataset_key": DATASET, "forecast_style": "nowcast"}
+    with repository.engine.begin() as connection:
+        connection.execute(update(SyncRunRow).where(SyncRunRow.run_id == run.run_id).values(
+            status="success", finished_at=datetime.now(UTC),
+            export_status_scopes=[valid, drifted], export_status_pending=True,
+        ))
+    assert repository.reconcile_export_status({PROVIDER}) == 1
+    with repository.engine.begin() as connection:
+        assert connection.scalar(select(SyncRunRow.export_status_pending).where(
+            SyncRunRow.run_id == run.run_id,
+        )) is False
+    assert state(repository).last_status == "success"
+    page, _ = read_status(repository, {PROVIDER}, as_of=datetime.now(UTC))
+    actual = next(item for item in page["items"] if item["dataset_key"] == DATASET)
+    assert actual["last_status"] == "success"

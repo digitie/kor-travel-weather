@@ -36,6 +36,17 @@ gzip과 약한 ETag/If-None-Match304를 지원한다. 큰 집합은 `meta.has_mo
 첫 페이지에서 새 snapshot을 시작한다. TTL 뒤 같은 의미의 데이터라도 새 handle을
 발급하며 이전 cursor를 가진 클라이언트에 잘못된304를 주지 않는다. 원천 실패는
 이전 성공 집합을 유지한 stale 응답이며, 최초 필수 승인 미준비는503이다.
+2026-10-27부터 첫 페이지가 같은 내용의 기존 handle을 재사용하면 그 handle의 만료를
+15분 뒤로 연장한다(snapshot_id·ETag 불변). 만료 직전 handle로 시작한 pagination이
+다음 페이지에서410을 반복하지 않는다. 만료 뒤 6시간이 지난 handle은 publisher가
+정리하므로, 6시간 넘게 요청하지 않은 selection은 이전 성공 집합 fallback이 없을 수 있다.
+
+활성 provider 범위: `ultra_short`·`short`·`mid`는 python-kma-api만 공급하므로 다른 활성
+provider(export 경로가 없는 유료 provider 포함)와 무관하게 응답한다. `current`·
+`forecasts?style=external`·`daily-summaries`는 export 경로가 없는 provider가 활성이면
+축소 성공 대신503이다(현재 저장소·Manager 기본 활성 목록의 tomorrow_io·weatherbit·
+weatherstack·accuweather가 여기에 해당한다. 운영 env 결정 필요). 503 응답의 원인은 API
+로그 `weather_service_export_unavailable resource=… reason=…`에 분류만 남는다.
 
 W1 `locations`의 실제 catalog 원천 수집 clock은 현재 확인할 수 없어
 `source_collected_at=null`, `source_status=stale`다. canonical reference 자체를
@@ -45,7 +56,9 @@ W1 `locations`의 실제 catalog 원천 수집 clock은 현재 확인할 수 없
 W3는 미래 target_at만 location×provider의 한 항목으로 묶고, 정렬된 target_at에
 metric 배열을 null 정렬한다. SKY 서술 문자열을 숫자로 바꾸지 않는다. 중기는 같은
 issued revision의 land/temperature 승인 head 둘이 있어야 완전 묶음이며 불일치·미확인
-원천은 이전 완전 vector stale/이전 집합 없으면503이다.
+원천은 이전 완전 vector stale/이전 집합 없으면503이다. 최신 승인 예보에 미래 시각이
+하나도 남지 않은 위치(순환 수집으로 갱신이 늦은 격자 등)는 그 페이지에서 빼고 응답을
+stale로 표시한다. 예전에는 그 위치에서503이 나 style 전체 동기화가 끝나지 않았다.
 
 W3 `known_at`은 원본 fact의 원천 시각이다. 동일 의미의 재수집·재승격에서도
 원본 값을 보존한다. `published_at` 및 `meta.next_since`는 **단조 공개 watermark**로
@@ -59,9 +72,22 @@ sample_count는 metric 행수가 아닌 채택된 관측 시간 bucket 수다. �
 중복 합산하지 않으며 의미가 확인되지 않은 누적 강수는 합산하지 않는다.
 원천별 최신 승인 generation의 reducer 진도가 부족하면 이전 완전 roster를
 stale로 유지하며 이전 성공 집합이 없는 선택만503이다. 기존 cursor도 새 원천의
-미처리를 stale로 표시하고 TTL 뒤 fallback은 새 handle로 발급한다.
+미처리를 stale로 표시하고 TTL 뒤 fallback은 새 handle로 발급한다. fallback의 날짜
+창은 요청 시점의 오늘(KST)로 옮긴다(roster·coverage는 이전 집합 그대로).
 관측 dataset 대상이 아닌 예보 전용 위치는 null/sample_count0이며 빌려 쓸 원천 clock이
 없으면 null/stale다. 요청은 작은 summary/coverage 표만 읽고 날짜 이력 전체를 집계하지 않는다.
+
+2026-10-27 변경(ADR-102·W04):
+- 전체 목록은 한 번도 승인되지 않은 관측 anchor(측정값 없는 측정소, 응답에서 계속
+  빠지는 산악 지점 등) 때문에 503이 되지 않고 stale이다. 그 위치는 승인된 원천만으로
+  요약하거나 null이며 `source_providers`가 실제 기여 원천이다. 단일 위치 최초 조회는 필수
+  원천 미승인이면503, 청정넷 같은 선택 원천은 stale이다.
+- W5 필수 원천에서 AirKorea를 뺐다. AirKorea 측정값은 W5 지표(기온·습도·풍속·강수)가 없다.
+  selection이 바뀌어 배포 직후 첫 W5 요청은 새 snapshot을 만든다(이전 cursor는15분 내 만료).
+- `precip_sum_mm`와 `precip_occurred=false`는 구간6시간 RN1이 모두 있을 때만 확정한다.
+  순환 수집으로 일부 시간만 있으면 합계는 null, 발생은 양의 강수·`1mm 미만`이 있을 때만
+  true이고 그 밖에는 null이다. 0035가 저장된 부분 합계 행을 같은 규칙으로 고쳤다.
+- `sky_code`는 승인된 관측 원천 중 SKY 관측을 내는 것이 없어 현재 항상 null이다.
 
 ## 제공처 bootstrap과 운영 비용 gate
 

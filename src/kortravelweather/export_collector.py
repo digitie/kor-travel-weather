@@ -994,7 +994,38 @@ def refresh_publisher_daily(
     except Exception as exc:
         more = True
         logger.warning("weather_daily_summary_refresh_deferred reason=%s", failure_reason(exc))
+    # snapshot handle 정리는 일별 drain 예산(deadline)·일별 정리 성공과 무관하게 tick 상한
+    # (hard_deadline) 안에서만 돈다. 일별 backlog가 길어도 handle 표가 계속 자라지 않는다.
+    _prune_snapshot_handles(repository, hard_deadline=hard_deadline)
     return {"processed": total, "has_more": more}
+
+
+# 다음 snapshot 정리의 한 문장 개수(프로세스 수명). statement 상한에 걸리면 절반으로 줄이고
+# 성공하면 두 배로 되돌린다. tick마다 같은 victim을 같은 개수로 재시도하며 멈추지 않게 한다.
+_SNAPSHOT_PRUNE_NEXT_LIMIT: list[int | None] = [None]
+
+
+def _prune_snapshot_handles(repository, *, hard_deadline: float | None = None) -> None:
+    """만료 뒤 오래된 snapshot handle을 작게 지운다. 실패는 일별 요약과 분리해 미룬다.
+
+    tick당 한 문장(최악 ``DAILY_PRUNE_WORST_SECONDS``)만 쓰고 개수는 위 상태로 적응한다.
+    """
+    from .export_snapshots import SNAPSHOT_PRUNE_LIMIT, prune_export_snapshots
+
+    if hard_deadline is not None and hard_deadline - time.monotonic() < DAILY_PRUNE_WORST_SECONDS:
+        return
+    limit = _SNAPSHOT_PRUNE_NEXT_LIMIT[0] or SNAPSHOT_PRUNE_LIMIT
+    try:
+        prune_export_snapshots(repository, limit=limit)
+    except Exception as exc:
+        if isinstance(exc, DBAPIError):
+            _SNAPSHOT_PRUNE_NEXT_LIMIT[0] = max(1, limit // 2)
+        logger.warning(
+            "weather_export_snapshot_prune_deferred reason=%s limit=%d",
+            failure_reason(exc), limit,
+        )
+        return
+    _SNAPSHOT_PRUNE_NEXT_LIMIT[0] = min(SNAPSHOT_PRUNE_LIMIT, limit * 2)
 
 
 def dagster_status_lookup(instance) -> Callable[[str], str | None]:

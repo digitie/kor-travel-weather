@@ -35,7 +35,11 @@ native 종료 시각을 수집 시각으로 대체하지 않는다.
 상태 조회는 pending=true 부분 인덱스에서 대기 실행 한 건만 복구를 시도하며, 해당
 provider에 미처리 실행이 있으면 옛 성공에 304를 주지 않고 503을 반환한다. 다음
 조회에서 잠금이 풀렸으면 복구한다. 사실 이력 전체 스캔과 수집 재실행은 하지 않는다.
-native 실행을 정리하면 flag도 함께 정리된다. 전체 실행 이력은 스캔하지 않는다.
+flag는 재투영이 성공할 때만 지워진다. native 실행 정리가 flag를 따로 지우는 경로는 없다
+(2026-10-27 정정). dataset 개명·제거나 SourceKey 모양 변경으로 저장 scope가 현재
+catalog와 맞지 않으면 재시도해도 같으므로, 아직 유효한 scope만 기록하고 flag를 지우며
+`weather_export_status_scope_repaired`를 남긴다. 상태 행 잠금·기록 실패는 flag를 남겨
+다음 조회가 다시 시도한다. 전체 실행 이력은 스캔하지 않는다.
 부분 인덱스와 조회 조건을 모두 `export_status_pending = true`로 맞춘다. 완료 실행
 5,000건과 대기 한 건을 둔 실제 PostgreSQL EXPLAIN에서 이 부분 인덱스 사용을 확인했다.
 알려진 cancelled/abandoned는 그대로 실패 상태로 표시하고, 미등록 native terminal도

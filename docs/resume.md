@@ -1,3 +1,12 @@
+## 2026-10-28 — 특보 후보와 mainbd561 통합 검증 구분
+
+- 원21d9·150개 양환경 검증은 보존하고 별도 WT에서 mainbd561을 정상 merge한다.
+  marker 함수 원문은 그대로이며 main의 export 보완27줄도 보존한다.
+- main의0035/export/UI는 별도 추가 제품이다. 통합 관련 시험·CI 전체는 새 head로 회수한다.
+  운영a707 API·웹/e393 CS·schema0034와 publisher/소비 flags는 이번 작업에서 바꾸지 않는다.
+  원21d9 API-only 배포 여부는 Root의 별도 최종 동결 뒤 판단한다.
+  [검증과 배포 범위](reports/2026-10-28-marker-alert-prefix.md#최신-main-통합과-배포-범위).
+
 ## 2026-10-28 — a707 운영 cold 실패 후 특보 후보 제한 후속
 
 - 현재 API·웹은 a707 배포(actual0)다. CS e393·daemon·원 export 값·publisher 중지를 유지한다.
@@ -6,7 +15,7 @@
 - 새 특보 후보 제한은 최근 적격 행이 충분할 때 이길 수 없는 옛 행의 fact 검산만 줄인다.
   SQL LIMIT과 Python 문자열 동률을 맞추고 full payload·reducer·복합키 의미를 유지한다.
   소유 PG18 관련 WSL150/Docker150 PASS·actual0·wait0이며 새 변경은 미배포다.
-- 다음 한 작업: 최종 Docker 결과·정확 CI·독립 리뷰와 통합 전체 게이트를 회수한 뒤
+- 다음 한 작업: 통합 관련 시험·정확 CI·독립 리뷰와 전체 게이트를 회수한 뒤
   조율된 배포·최초 cold 수용을 진행한다. 아래 API210/web5098 기록은 당시 이력이다.
   [근거·실패 원문·검증 범위](reports/2026-10-28-marker-alert-prefix.md).
 
@@ -86,6 +95,22 @@
   취소·운영25초 목표는 미검증이다. repository/index/DTO/병렬도/timeout 변경0이다.
 - 다음은 전체WSL·Docker·정확CI·독립2리뷰 후 새운영 수용을 별도 조율한다.
   [재현·정정·경계](reports/2026-10-27-marker-disconnect-admission.md).
+
+## 2026-10-27 — Codex PR 리뷰 정리 PR(W01~W15) 승인 대기
+
+- 현재: 2026-10-17 이후 Codex PR 리뷰의 개선 15건을 브랜치 `review/codex-10d-weather` 한 PR로
+  올렸다. 소유자 승인 전 머지·배포하지 않는다. 내용·시험·보류 이유는 PR 본문과
+  [journal](journal.md) 같은 날짜 절이 정본이다. 소유자가 export 목표를 일시중지했으므로(같은 날짜
+  소유자 결정) 이 PR의 export 가용성 수정은 재개 때 효과가 난다.
+- 가장 급한 보류: 운영 `KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS`. 저장소·Manager 기본값의
+  tomorrow_io·weatherbit·weatherstack·accuweather는 export 경로가 없어 `/current`·
+  `/forecasts?style=external`·`/daily-summaries`가 설계상 503이다. env 명시와 '실제 구성된
+  provider' 판정 중 소유자 결정이 필요하다(odroid 미확인).
+- 머지 순서: #174·#175·#176(publisher 처리량, 리뷰 W08 포함)·#177(ui dev.9) 머지 뒤 main으로
+  rebase했다. #176의 `refresh_publisher_daily`에서 snapshot handle 정리는 일별 정리 뒤 남은 tick
+  상한 안에서만 돈다. 배포 시 0035 데이터 보정이 포함된다(하루씩 commit, 되돌리기 no-op;
+  publisher sensor 정지 중 migrate 또는 이미지 교체 뒤 migrate). W11(marker 취소 middleware)은
+  #184(머지 `9521d16`)로 넘겼다. W02로 W5 fallback 기준 snapshot이 배포 때 초기화된다.
 
 ## 2026-10-27 — 현재 Dagster 재배포 불필요 확인·export 취소
 
