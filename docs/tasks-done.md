@@ -1,5 +1,17 @@
 # 완료 작업
 
+## 2026-10-28 — 특보 후보 제한 API 단독 배포와 첫 cold 수용
+
+- [x] **W-MARKER-PREFIX-01 / P1** — 원 후보21d9의 전체 WSL1545/Docker1544+1SKIP,
+  관련150×2, 통합7504의 관련150×2·정확 tree CI771, 원 소스2인·통합2인 검토를 구분해 회수했다.
+  [PR #190](https://github.com/digitie/kor-travel-weather/pull/190) 머지는0683431이다.
+- [x] API만 교체하고 실제 build·SDK·accept·rollout0 및 역할·보호파일 보존을 확인했다.
+  첫 Firefox29PASS/actual0, 첫60×3 HTTP200·본문18.075/16.469/17.593초·고유180지점·동시2,
+  1440/375 지도·실타일·상세·DTO·키보드·로그아웃 쿠키0·소유10PID 부재를 수용했다.
+- 원 a707 cold26초 FAIL·warm 진단·QA 실패 원문은 보존한다. 전국 전체25초/장시간/원인별 개선율,
+  main0035·CS/web 새 배포·외부 소비자 OFF 직접 관측·retention/특보 지역 정합 수용은 포함하지 않는다.
+  [증거·현재 이미지·미완 경계](reports/2026-10-28-marker-prefix-deployment-acceptance.md).
+
 ## 2026-10-25 — 첫 작은 UI 묶음 구현·로컬 검증
 
 - [x] **W-UI-BATCH-01 구현·로컬 검증** — Weather navy/dark `--kt-*` 연결, 지도 제목/상세 메타 `i`,
