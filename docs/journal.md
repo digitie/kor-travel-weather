@@ -4,6 +4,25 @@
 유가는 전체 지역의 유효 최신 가격을 유종별 집계하고, 날씨는 좌표가 일치하는 저장 역주소의 실제 대표 지점을 선택한다.
 [계약·검증 범위](regional-weather-details.md). 운영 배포/수집 변경은 없다.
 
+## 2026-10-29 — 최신 Weather 전체 이미지 배포
+
+- 최신 제품 소스 `ad4ee5350a50804e34b84679be29d7a743f9e443`로 API·관리 웹·Dagster 코드서버를
+  ARM64에서 새로 빌드해 배포했다. 현재 세 역할의 OCI revision과 실제 이미지 ID, Manager의
+  migrate 포함 네 역할 등록·검증·Compose 해석이 일치한다.
+- 작은 요약 표 백업 후 `0035_daily_precip_coverage`를 적용했다. 23:37 KST의 재조회에서
+  요약 1,086행과 잘못 확정된 부분 강수 0행을 확인했다. 교체 대상 외 컨테이너 16개의 ID·이미지·시작 시각은 유지했다.
+- 장시간 예약 수집 4건에는 `SAFE_TERMINATE`만 요청했다. 3건은 CANCELED 후 같은 설정·태그의
+  `ALL_STEPS` 재실행을 등록했고, Open-Meteo는 SUCCESS여서 재실행하지 않았다. 재실행은
+  Weatherstack SUCCESS·기상청 특보/초단기예보 STARTED이며 전체 수집 완료로 확대하지 않는다.
+- 교체 후 확인의 TimeoutError 원기록을 보존했다. 이후 현재 코드서버의 serverId와 workspace
+  LOADED 일치, 현재 이미지·DB·건강 상태를 검증해 schedule·sensor 합계 21개 RUNNING/2개 STOPPED를 복원했다.
+  API·CS export True는 기존 값이며 취소된 publisher와 native incarnation recovery는 계속 STOPPED다.
+- 별도 Firefox 기능 재검증 15항목은 실제 종료 0으로 통과했다. 지도·선택 기온·상세·제공처 필터,
+  PC1440/모바일375·실타일·로그아웃과 쿠키 0·소유 프로세스 0을 확인했다. 최초 로그인 PASS와 지도
+  504·검증기 저배율 전제 오류 FAIL을 보존하며, 재검증을 cold 25초·전국 전체 수용으로 바꾸지 않는다.
+  [배포·실패·복구·UI 검증 범위](reports/2026-10-29-latest-weather-deployment.md).
+  기존 retention·export 재개·Map 연동 과제는 완료로 바꾸지 않는다. 아래 기록은 각 시점의 이력이다.
+
 ## 2026-10-28 — API21d9 단독 배포·첫 cold 지도 수용 완료
 
 - [PR #190](https://github.com/digitie/kor-travel-weather/pull/190)은 main `0683431`로 머지됐다.

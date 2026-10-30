@@ -1,5 +1,13 @@
 # Weather 남은 작업
 
+## 2026-10-29 — 최신 배포와 UI 수용 경계
+
+API·웹·코드서버 `ad4ee535`와 schema0035·운영 표식 등록을 반영했다.
+[실제 배포·복구·검증](reports/2026-10-29-latest-weather-deployment.md)을 따른다.
+기능 재검증 15항목은 통과했고 최초 지도 조회의 HTTP504는 별개로 보존한다. 아래 **W-UI-CURRENT-01**의
+최초 전체 조회·장시간 성능, retention 물리 정리, export 재개·Map 소비자 수용은 완료로 바꾸지 않는다.
+
+
 ## 2026-10-28 — 특보 후보 제한 한정 수용
 
 W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
@@ -13,7 +21,7 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
 - [ ] **W-RET-COMPLETE-01 / P1** — 자연7 SUCCESS·8 materialization 21만facts 진척과 별개로 과거6h 물리 정리 완료·미래값 보존을 수용한다. 8 materialization은remaining/budget_exhausted이며 lag는위치상한이다.
 - [ ] **W-RET-COST-01 / P2** — parent+16leaf retention index와 current PK는정상이다. current11index/INCLUDE4·NOT VALID FK17·통계추정만으로 비용원인을단정하지말고 한가지가설을별도검토된측정으로확인한다.
 - [x] **W-UI-BASIC210-01** — 현재API210/웹5098의 기존 공개기본UI21·실제 인증/지도/목록·소유정리를 후속20.241초 실행으로 수용했다. 첫125실패·옛39이미지비증명은보존한다.
-- [ ] **W-UI-CURRENT-01 / P2** — 기본21 한정 수용과 별개로 마커성능·추가상호작용/모바일·공유plane건강은미완이다. PR187 제품의운영수용으로승계하지않는다.
+- [ ] **W-UI-CURRENT-01 / P2** — 2026-10-29 현재 ad4ee535의 기능15(상세·제공처·PC/모바일)는 별도로 통과했다. 최초 HTTP504·전국 마커/장시간 성능·공유 plane 장시간 검증은 미완이며, 옛 API210/웹5098의 기본21이나 cold 25초 수용과 합치지 않는다.
 
 [실측·소스정합·원실패와한계](reports/2026-10-28-retention-catalog-and-current-source.md)를따른다. 아래W-OPS-04의첫자연SUCCESS는현재부분수용됐지만6h완료/유입비교는미완이다. export publisher는취소desired STOPPED로유지하며재개/GC설정전환은이번범위가아니다. 아래기록은각시점의이력이다.
 
