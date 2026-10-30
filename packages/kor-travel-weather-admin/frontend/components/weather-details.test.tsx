@@ -52,3 +52,23 @@ describe("현재·내일 요약과 마지막 시간별 그래프", () => {
   expect(renderToStaticMarkup(<TemperatureGraph slots={[{...slots[0],values:[{...slots[0].values[0],unit:"K"}]}]}/>)).toContain("그래프로 표시할 기온 자료가 없습니다.");
  });
 });
+
+describe("운영 정본 키와 예보 갱신 우선순위",()=>{
+ it("서로 다른 데이터셋의 더 최신 발표를 항목 수보다 먼저 선택한다",()=>{
+  const old=[row("TMP",10),row("SKY",1),row("POP",10)].map(v=>({...v,dataset_key:"short",issued_at:"2026-10-30T12:00:00Z"}));
+  const fresh=[row("TMP",20),row("SKY",3)].map(v=>({...v,dataset_key:"ultra_short",issued_at:"2026-10-30T14:00:00Z"}));
+  expect(hourlyWeather([...old,...fresh])[0].values.find(v=>v.metric_key==="TMP")?.value_number).toBe(20);
+ });
+ it("현재 관측을 이미 시작된 예보 기온으로 덮지 않는다",()=>{
+  const values=[{...row("T1H",13),unit:"deg_c",forecast_style:"observed",target_at:"2026-10-31T01:50:00Z"},{...row("TMP",20),forecast_style:"short",target_at:"2026-10-31T02:00:00Z"}];
+  const html=renderToStaticMarkup(<WeatherDetails values={values} referenceAt="2026-10-31T02:10:00Z" condition={()=>({glyph:"☀",label:"맑음"})}/>);
+  expect(html).toContain("13°");expect(html).not.toContain("20°");
+ });
+ it("외부 제공처의 정본 강수확률·자외선 키를 표시한다",()=>{
+  const values=[{...row("UV_INDEX",3),unit:"index"}];
+  const current=renderToStaticMarkup(<WeatherDetails values={values} condition={()=>({glyph:"☀",label:"맑음"})}/>);
+  expect(current).toContain("<strong>3</strong>");
+  const forecast=renderToStaticMarkup(<WeatherDetails values={[]} forecast={[row("PRECIP_PROB",80)]} condition={()=>({glyph:"☀",label:"맑음"})}/>);
+  expect(forecast).toContain("80%");
+ });
+});

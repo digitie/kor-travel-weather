@@ -6,7 +6,7 @@ export const DETAIL_METRICS = {
   humidity: ["REH", "HUMIDITY", "relative_humidity_2m", "humidity"],
   wind: ["WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph"],
   direction: ["VEC", "WIND_DIRECTION", "wind_direction", "wind_direction_10m", "wind_degree"],
-  probability: ["POP", "precipitation_probability", "chance_of_rain", "chance_of_snow"],
+  probability: ["POP", "PRECIP_PROB", "precipitation_probability", "chance_of_rain", "chance_of_snow"],
   precipitation: ["RN1", "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm"],
   min: ["TMN", "temperature_2m_min", "mintemp_c"],
   max: ["TMX", "temperature_2m_max", "maxtemp_c"],
@@ -14,10 +14,11 @@ export const DETAIL_METRICS = {
   pm25: ["PM25", "pm25", "pm2_5"],
   sunrise: ["SUNRISE", "sunrise"],
   sunset: ["SUNSET", "sunset"],
-  uv: ["UV", "uv_index", "uv_index_max", "uv"],
+  uv: ["UV", "UV_INDEX", "uv_index", "uv_index_max", "uv"],
 } as const;
 export function weatherMetric(values: WeatherValue[], keys: readonly string[]) {
   return values.filter(v => keys.includes(v.metric_key)).sort((a, b) =>
+    Number(!["observed", "nowcast"].includes(a.forecast_style)) - Number(!["observed", "nowcast"].includes(b.forecast_style)) ||
     Date.parse(b.target_at) - Date.parse(a.target_at) || (b.issued_at ?? "").localeCompare(a.issued_at ?? "") || a.provider.localeCompare(b.provider))[0];
 }
 export function weatherDetailText(values: WeatherValue[], keys: readonly string[], suffix: string) {
@@ -47,7 +48,7 @@ export function hourlyWeather(values: WeatherValue[]) {
     const group = sources.get(key) ?? []; group.push(row); sources.set(key, group); slots.set(instant, sources);
   }
   return [...slots].sort(([a], [b]) => a.localeCompare(b)).slice(0, 24).map(([time, sources]) => ({ time,
-    values: [...sources.values()].sort((a, b) => b.length - a.length || (b[0].issued_at ?? "").localeCompare(a[0].issued_at ?? "") || a[0].provider.localeCompare(b[0].provider))[0],
+    values: [...sources.values()].sort((a, b) => (Date.parse(b[0].issued_at ?? b[0].known_at ?? "") || 0) - (Date.parse(a[0].issued_at ?? a[0].known_at ?? "") || 0) || b.length - a.length || a[0].provider.localeCompare(b[0].provider))[0],
   }));
 }
 type Condition = { glyph: string; label: string };
