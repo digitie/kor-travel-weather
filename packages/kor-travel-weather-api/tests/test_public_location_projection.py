@@ -95,14 +95,17 @@ def test_public_location_list_avoids_orm_metadata_and_keeps_contract(
     assert [row["location_id"] for row in payload["data"]] == expected_ids
     by_id = {location.location_id: location for location in locations}
     assert payload["data"] == [
-        by_id[location_id].model_dump(mode="json") | {"metadata": {}}
+        by_id[location_id].model_dump(mode="json")
+        | {"metadata": {}, "sido_name": None, "sigungu_name": None}
         for location_id in expected_ids
     ]
     assert payload["meta"]["page"]["total"] == total
     assert payload["meta"]["page"]["returned"] == len(expected_ids)
     # 공개 DTO에 없는 JSON·날짜를 전송/디코딩하거나 ORM 인스턴스를 만들지 않는다.
     assert loaded == []
-    assert len(statements) == 2  # 기존 목록과 count만, 지연 metadata SELECT도 없다.
+    # 목록·count와 비어 있지 않은 목록의 일괄 역주소 조회만 허용한다.
+    assert len(statements) == (3 if expected_ids else 2)
+    assert sum("payload" in columns for columns in statements) == 0
     assert all(
         not {"metadata", "created_at", "updated_at"}.intersection(columns) for columns in statements
     )

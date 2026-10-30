@@ -630,12 +630,12 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                   </div>
                 ) : null}
                 {!loading ? <>
-                <WeatherDetails values={values} condition={rows => markerState({ location_id: selected.location_id, latest: rows, alerts: [], measurement_point: null })} />
+                <WeatherDetails values={values} outlook={forecast} outlookPending={forecastLoading} outlookMessage={forecastMessage} condition={rows => markerState({ location_id: selected.location_id, latest: rows, alerts: [], measurement_point: null })} />
                 <div className="inspector-actions">
                   <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button>
                   <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button>
                 </div>
-                <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{metricDisplayValue(value)} <small>{metricDisplayUnit(value.unit)}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
+                <details className="inspector-section weather-source-details"><summary>측정 자료 {values.length}개 · 출처 보기</summary><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{metricDisplayValue(value)} <small>{metricDisplayUnit(value.unit)}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></details>
                 </> : null}
                 {selectedSummary?.measurement_point ? (
                   <div className="measurement-point">
@@ -647,7 +647,6 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                   </div>
                 ) : null}
                 <div className="inspector-section forecast-section">
-                  <div className="section-label"><span>예보 미리보기</span><span>{forecast.length}개</span></div>
                   {forecastLoading ? <div className="loading-block" role="status">예보 조회 중…</div> : forecastMessage ? <div className="empty" role="status">{forecastMessage}</div> : groupedForecast.length ? (
                     <WeatherDetails values={[]} forecast={forecast} condition={rows => markerState({ location_id: selected.location_id, latest: rows, alerts: [], measurement_point: null })} />
                   ) : <p className="muted-note">예보 데이터가 없습니다.</p>}

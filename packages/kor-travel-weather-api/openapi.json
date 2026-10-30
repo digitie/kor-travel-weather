@@ -3245,11 +3245,6 @@
             "type": "boolean",
             "title": "Enabled"
           },
-          "metadata": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Metadata"
-          },
           "sido_name": {
             "anyOf": [
               {
@@ -3271,6 +3266,11 @@
               }
             ],
             "title": "Sigungu Name"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
           }
         },
         "additionalProperties": false,
@@ -3557,6 +3557,28 @@
           "enabled": {
             "type": "boolean",
             "title": "Enabled"
+          },
+          "sido_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sido Name"
+          },
+          "sigungu_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sigungu Name"
           },
           "metadata": {
             "additionalProperties": true,
