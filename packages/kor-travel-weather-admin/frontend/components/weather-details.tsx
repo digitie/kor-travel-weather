@@ -18,7 +18,7 @@ export function weatherMetric(values: WeatherValue[], keys: readonly string[]) {
   return values.filter(v => keys.includes(v.metric_key)).sort((a, b) =>
     b.target_at.localeCompare(a.target_at) || (b.issued_at ?? "").localeCompare(a.issued_at ?? "") || a.provider.localeCompare(b.provider))[0];
 }
-function display(values: WeatherValue[], keys: readonly string[], suffix: string) {
+export function weatherDetailText(values: WeatherValue[], keys: readonly string[], suffix: string) {
   const row = weatherMetric(values, keys);
   if (!row) return "미제공";
   let value = row.value_number;
@@ -27,7 +27,12 @@ function display(values: WeatherValue[], keys: readonly string[], suffix: string
     const names = ["북", "북동", "동", "남동", "남", "남서", "서", "북서"];
     return `${names[Math.round(((value % 360 + 360) % 360) / 45) % 8]}풍 ${value}°`;
   }
-  return `${value ?? row.value_text ?? "미제공"}${value !== null ? suffix : ""}`;
+  const rawUnit = row.unit ?? "";
+  const known = ["deg_c", "°C", "℃", "m/s", "m_s", "km/h", "kph", "km_h", "kmh", "%", "mm", "deg", "degrees", "μg/m³", "ug/m3", ""];
+  const unit = !rawUnit ? "" : known.includes(rawUnit) ? suffix : ` ${rawUnit}`;
+  const number = value !== null && ["deg_c", "°C", "℃", "m/s", "m_s"].includes(rawUnit)
+    ? (Number(value.toLocaleString("ko-KR", {maximumFractionDigits:1,useGrouping:false})) === 0 && value !== 0 ? value : value.toLocaleString("ko-KR", {maximumFractionDigits:1,useGrouping:false})) : value;
+  return `${number ?? row.value_text ?? "미제공"}${unit}`;
 }
 /** 발표 단위·제공처를 섞지 않고 각 시각의 한 예보 묶음을 사용한다. */
 export function hourlyWeather(values: WeatherValue[]) {
@@ -49,10 +54,10 @@ export function WeatherDetails({ values, forecast, condition }: { values: Weathe
     ["기온", DETAIL_METRICS.temperature, "°"], ["강수확률", DETAIL_METRICS.probability, "%"],
     ["강수량", DETAIL_METRICS.precipitation, "mm"], ["습도", DETAIL_METRICS.humidity, "%"],
     ["풍속", DETAIL_METRICS.wind, "m/s"], ["풍향", DETAIL_METRICS.direction, "°"],
-  ].map(([label, keys, suffix]) => <tr key={label as string}><th scope="row">{label}</th>{hourlyWeather(forecast).map(slot => <td key={slot.time}>{display(slot.values, keys as readonly string[], suffix as string)}</td>)}</tr>)}</tbody></table></div>;
+  ].map(([label, keys, suffix]) => <tr key={label as string}><th scope="row">{label}</th>{hourlyWeather(forecast).map(slot => <td key={slot.time}>{weatherDetailText(slot.values, keys as readonly string[], suffix as string)}</td>)}</tr>)}</tbody></table></div>;
   const state = condition(values);
-  return <section className="weather-detail-overview" aria-label="현재 날씨 상세"><div className="weather-current-hero"><span>{state.glyph}</span><strong>{display(values, DETAIL_METRICS.temperature, "°")}</strong><span>{state.label}</span></div><p>최저 {display(values, DETAIL_METRICS.min, "°")} · 최고 {display(values, DETAIL_METRICS.max, "°")}</p><div className="metric-grid">{[
+  return <section className="weather-detail-overview" aria-label="현재 날씨 상세"><div className="weather-current-hero"><span>{state.glyph}</span><strong>{weatherDetailText(values, DETAIL_METRICS.temperature, "°")}</strong><span>{state.label}</span></div><p>최저 {weatherDetailText(values, DETAIL_METRICS.min, "°")} · 최고 {weatherDetailText(values, DETAIL_METRICS.max, "°")}</p><div className="metric-grid">{[
     ["체감", DETAIL_METRICS.feels, "°"], ["풍속", DETAIL_METRICS.wind, "m/s"], ["풍향", DETAIL_METRICS.direction, "°"],
     ["습도", DETAIL_METRICS.humidity, "%"], ["자외선", DETAIL_METRICS.uv, ""], ["미세먼지", DETAIL_METRICS.pm10, "μg/m³"], ["초미세먼지", DETAIL_METRICS.pm25, "μg/m³"],
-  ].map(([label, keys, suffix]) => <div className="metric-card" key={label as string}><span>{label}</span><strong>{display(values, keys as readonly string[], suffix as string)}</strong></div>)}</div></section>;
+  ].map(([label, keys, suffix]) => <div className="metric-card" key={label as string}><span>{label}</span><strong>{weatherDetailText(values, keys as readonly string[], suffix as string)}</strong></div>)}</div></section>;
 }

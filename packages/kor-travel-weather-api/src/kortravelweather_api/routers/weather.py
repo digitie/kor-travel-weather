@@ -480,7 +480,10 @@ async def list_locations(
     return envelope(
         request,
         started,
-        [{**location_out(row).model_dump(mode="json"), **regions.get(row.location_id, {})} for row in rows],
+        [
+            {**location_out(row).model_dump(mode="json"), **regions.get(row.location_id, {})}
+            for row in rows
+        ],
         limit=limit,
         offset=offset,
         total=total,

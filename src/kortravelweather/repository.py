@@ -1085,13 +1085,17 @@ class WeatherRepository:
         entries = Base.metadata.tables["reverse_address_entries"]
         if not locations:
             return {}
-        targets = {r.location_id: AddressTarget(r.location_id, r.longitude, r.latitude).coordinate_key for r in locations}
+        targets = {
+            r.location_id: AddressTarget(r.location_id, r.longitude, r.latitude).coordinate_key
+            for r in locations
+        }
         with self.engine.connect() as connection:
             rows = connection.execute(select(entries.c.target_key, entries.c.coordinate_key,
                 entries.c.payload["region"]["sido"].as_string().label("sido"),
                 entries.c.payload["region"]["sigungu"].as_string().label("sigungu"),
             ).where(entries.c.provider_id == VworldKakaoAddressResolver.provider_id,
-                    entries.c.status.in_(["ok", "error"]), entries.c.target_key.in_(targets))).mappings()
+                    entries.c.status.in_(["ok", "error"]),
+                    entries.c.target_key.in_(targets))).mappings()
             return {r["target_key"]: {"sido_name": r["sido"], "sigungu_name": r["sigungu"]}
                     for r in rows if r["coordinate_key"] == targets[r["target_key"]]}
 

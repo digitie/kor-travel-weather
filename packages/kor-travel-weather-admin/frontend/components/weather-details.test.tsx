@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { WeatherValue } from "@/lib/api";
 import { WeatherDetails, hourlyWeather } from "./weather-details";
 
-const row=(key:string,value:number,provider="kma")=>({value_id:key+provider,metric_key:key,value_number:value,value_text:null,unit:null,provider,dataset_key:"short",target_at:"2026-10-30T15:00:00Z",issued_at:"2026-10-30T14:00:00Z"} as WeatherValue);
+const row=(key:string,value:number,provider="kma")=>({value_id:key+provider,metric_key:key,value_number:value,value_text:null,unit:key==="TMP"?"deg_c":key==="WSD"?"m/s":"%",provider,dataset_key:"short",target_at:"2026-10-30T15:00:00Z",issued_at:"2026-10-30T14:00:00Z"} as WeatherValue);
 describe("날씨 상세",()=>{
  it("자정의 한국 날짜와 0% 강수를 보존하고 미제공 체감을 만들지 않는다",()=>{
   const html=renderToStaticMarkup(<WeatherDetails values={[]} forecast={[row("TMP",13),row("POP",0),row("REH",59)]} condition={()=>({glyph:"☀",label:"맑음"})}/>);
