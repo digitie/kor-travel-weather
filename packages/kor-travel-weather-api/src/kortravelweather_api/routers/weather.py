@@ -102,6 +102,8 @@ class LocationOut(BaseModel):
     ny: int | None = None
     region_code: str | None = None
     enabled: bool
+    sido_name: str | None = None
+    sigungu_name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -474,10 +476,11 @@ async def list_locations(
     total = await run_in_threadpool(
         repo.count_locations, enabled_only=True, search=search, **filters,
     )
+    regions = await run_in_threadpool(repo.public_location_regions, rows)
     return envelope(
         request,
         started,
-        [location_out(row).model_dump(mode="json") for row in rows],
+        [{**location_out(row).model_dump(mode="json"), **regions.get(row.location_id, {})} for row in rows],
         limit=limit,
         offset=offset,
         total=total,

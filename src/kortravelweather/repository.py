@@ -1078,6 +1078,23 @@ class WeatherRepository:
     작고 명시적이다. 장시간 provider I/O는 repository 밖 Dagster가 소유한다.
     """
 
+    def public_location_regions(self, locations: list) -> dict:
+        """현재 좌표와 일치하는 저장 역주소의 행정구역만 공개한다."""
+        from kortravelcommon.address_providers import VworldKakaoAddressResolver
+        from kortravelcommon.reverse_address import AddressTarget
+        entries = Base.metadata.tables["reverse_address_entries"]
+        if not locations:
+            return {}
+        targets = {r.location_id: AddressTarget(r.location_id, r.longitude, r.latitude).coordinate_key for r in locations}
+        with self.engine.connect() as connection:
+            rows = connection.execute(select(entries.c.target_key, entries.c.coordinate_key,
+                entries.c.payload["region"]["sido"].as_string().label("sido"),
+                entries.c.payload["region"]["sigungu"].as_string().label("sigungu"),
+            ).where(entries.c.provider_id == VworldKakaoAddressResolver.provider_id,
+                    entries.c.status.in_(["ok", "error"]), entries.c.target_key.in_(targets))).mappings()
+            return {r["target_key"]: {"sido_name": r["sido"], "sigungu_name": r["sigungu"]}
+                    for r in rows if r["coordinate_key"] == targets[r["target_key"]]}
+
     def __init__(self, database_url: str, *, export_status_enabled: bool = False) -> None:
         self.orchestrator_run_id: str | None = None
         self.export_status_enabled = export_status_enabled

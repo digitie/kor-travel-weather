@@ -3249,6 +3249,28 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Metadata"
+          },
+          "sido_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sido Name"
+          },
+          "sigungu_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sigungu Name"
           }
         },
         "additionalProperties": false,

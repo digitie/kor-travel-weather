@@ -29,6 +29,8 @@ export type ApiEnvelope<T> = {
 };
 
 export type Location = {
+  sido_name?: string | null;
+  sigungu_name?: string | null;
   location_id: string;
   name: string;
   latitude: number;
