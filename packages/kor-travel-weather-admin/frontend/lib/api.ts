@@ -25,6 +25,7 @@ export type ApiEnvelope<T> = {
     duration_ms: number;
     page?: PageMeta | null;
     bundle?: BundleMeta | null;
+    alert_scope_unverified?: boolean;
   };
 };
 
@@ -84,6 +85,7 @@ export type MeasurementPoint = {
 };
 
 export type NearbyWeather = Location & {
+  alert_scope_unverified?: boolean;
   distance_km: number;
   measurement_point: MeasurementPoint | null;
   latest: WeatherValue[];
@@ -92,6 +94,7 @@ export type NearbyWeather = Location & {
 };
 
 export type ResolvedWeather = {
+  alert_scope_unverified?: boolean;
   requested: { latitude: number; longitude: number };
   location: Location;
   distance_km: number;
@@ -103,6 +106,7 @@ export type ResolvedWeather = {
 };
 
 export type WeatherMarker = {
+  alert_scope_unverified?: boolean;
   location_id: string;
   measurement_point: MeasurementPoint | null;
   latest: WeatherValue[];

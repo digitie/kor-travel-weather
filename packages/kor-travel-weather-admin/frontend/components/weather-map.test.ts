@@ -250,17 +250,17 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
 
   it("예보 종류만 선택하면 지난 예보를 현재 값처럼 조회하지 않고 안내한다", async () => {
     const detail = effectWith("[detailOpen, refreshToken, selectedLocationId, providerFilter, kindFilter]", [
-      "setValues", "setForecast", "setMessage", "setForecastMessage", "setLastRefreshedAt",
+      "setValues", "setForecast", "setMessage", "setForecastMessage", "setLastRefreshedAt", "setAlertScopeUnverified",
       "setLoading", "setForecastLoading", "selectedLocationId", "getLatest", "getForecast",
       "forecastWindowStart", "providerFilter", "kindFilter", "detailOpen",
     ], ["CURRENT_KINDS", "includesCurrentKind"]);
     const mount = (kindFilter: string[] | undefined) => {
       const view = {
         setMessage: vi.fn(), setLoading: vi.fn(),
-        getLatest: vi.fn(() => Promise.resolve({ data: [] })),
+        getLatest: vi.fn(() => Promise.resolve({ data: [], meta: {} })),
         getForecast: vi.fn(() => Promise.resolve({ data: [] })),
       };
-      const cleanup = detail(vi.fn(), vi.fn(), view.setMessage, vi.fn(), vi.fn(), view.setLoading, vi.fn(),
+      const cleanup = detail(vi.fn(), vi.fn(), view.setMessage, vi.fn(), vi.fn(), vi.fn(), view.setLoading, vi.fn(),
         "a", view.getLatest, view.getForecast, () => "2026-10-27T00:00:00+09:00", undefined, kindFilter, true);
       return { ...view, cleanup };
     };

@@ -66,7 +66,7 @@ function forecastGroups(values: WeatherValue[]) {
 }
 
 type MarkerState = {
-  kind: "clear" | "cloud" | "rain" | "snow" | "storm" | "alert" | "unknown";
+  kind: "clear" | "cloud" | "rain" | "snow" | "storm" | "unknown";
   glyph: string;
   label: string;
 };
@@ -198,9 +198,7 @@ function markerValues(summary: WeatherMarker): WeatherValue[] {
 
 function markerState(summary: WeatherMarker | undefined): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
-  if (summary.alerts.length) {
-    return { kind: "alert", glyph: "!", label: `특보 ${summary.alerts.length}건` };
-  }
+  // 특보 종류는 현재 날씨가 아니다. 풍랑·강풍 등은 별도 특보 배지로 유지한다.
   const rows = markerValues(summary);
   const codeRows = rows.filter((row) =>
     ["WEATHER_CODE", "weather_code", "SKY", "PTY"].includes(row.metric_key),
@@ -226,7 +224,7 @@ function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
   if (kind === "clear") return "sunny";
   if (kind === "rain") return "rainy";
   if (kind === "snow") return "snowy";
-  if (kind === "storm" || kind === "alert") return "storm";
+  if (kind === "storm") return "storm";
   if (kind === "cloud") return "cloudy";
   return "unknown";
 }
@@ -282,6 +280,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
   const [mapReady, setMapReady] = useState(false);
   const [selectedId, setSelectedId] = useState(locations[0]?.location_id ?? "");
   const [values, setValues] = useState<WeatherValue[]>([]);
+  const [alertScopeUnverified, setAlertScopeUnverified] = useState(false);
   const [forecast, setForecast] = useState<WeatherValue[]>([]);
   const [query, setQuery] = useState("");
   const [selectedSources, setSelectedSources] = useState<string[] | null>(null);
@@ -475,6 +474,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
     const { signal } = controller;
     // 위치가 바뀌면 이전 값·오류와 진행 중 요청을 함께 격리한다.
     setValues([]);
+    setAlertScopeUnverified(false);
     setForecast([]);
     setMessage("");
     setForecastMessage("");
@@ -492,6 +492,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
         .then((latest) => {
           if (signal.aborted) return;
           setValues(latest.data);
+          setAlertScopeUnverified(latest.meta.alert_scope_unverified === true);
           setLastRefreshedAt(new Date());
           if (!latest.data.length) setMessage("아직 수집된 최신 값이 없습니다.");
         })
@@ -585,7 +586,8 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
   const filterLabel = ["지도 필터", selectedKinds.length === WEATHER_KINDS.length ? null : selectedKinds.length === 1 ? WEATHER_KINDS.find((kind) => kind.value === selectedKinds[0])?.label : `종류 ${selectedKinds.length}개`, selectedSources === null ? null : selectedSources.length === 1 ? providerLabels.get(selectedSources[0]) ?? selectedSources[0] : `출처 ${selectedSources.length}개`, query.trim() ? "검색 적용" : null].filter(Boolean).join(" · ");
   const visibleMapError = mode === "map" ? mapError : "";
   const visibleMarkerError = mode === "map" && mapLocations.length > 0 ? markerError : "";
-  const mapNotice = catalogLoading || catalogError || sourceLoading || sourceError || sourceListError || visibleMapError || visibleMarkerError || !visibleLocations.length ? (
+  const unverifiedMapAlerts = mapLocations.some(location => summaries[location.location_id]?.alert_scope_unverified);
+  const mapNotice = catalogLoading || catalogError || sourceLoading || sourceError || sourceListError || visibleMapError || visibleMarkerError || !visibleLocations.length || unverifiedMapAlerts ? (
             <div className="weather-map-notice" role={catalogError || sourceError || sourceListError || visibleMapError || visibleMarkerError ? "alert" : "status"} aria-live="polite">
               {catalogLoading ? <span>위치 카탈로그를 불러오는 중…</span> : catalogError ? <><span>{catalogError}</span>{onRetryCatalog ? <button type="button" className="secondary" onClick={onRetryCatalog}>다시 시도</button> : null}</> : !locations.length && !visibleLocations.length && !sourceLoading ? <span>활성화된 위치가 없습니다.</span> : !sourceLoading && !sourceError && !visibleLocations.length ? <span>검색 결과가 없습니다.</span> : null}
               {sourceError ? <span>{sourceError}</span> : null}
@@ -593,6 +595,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
               {!catalogLoading && sourceLoading ? <span>선택 조건의 위치 조회 중…</span> : null}
               {visibleMapError ? <span>{visibleMapError}</span> : null}
               {visibleMarkerError ? <><span>{visibleMarkerError}</span><button type="button" className="secondary" onClick={() => setMarkerRetryToken((value) => value + 1)}>날씨 다시 조회</button></> : null}
+              {unverifiedMapAlerts ? <span>적용 지역 미확인 특보는 위치에 표시하지 않습니다.</span> : null}
             </div>
           ) : null;
   const detailPanel = selected && detailOpen ? (
@@ -619,6 +622,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
               {includesCurrentKind(kindFilter) ? <div className="inspector-freshness weather-current-status"><span className={`status ${isFresh ? "on" : "warn"}`}>{isFresh ? "최신" : "오래됨"}</span><small>{latestCollectedAt ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}` : "수집 시각 없음"}</small></div> : null}
               {loading ? <div className="loading-block" role="status" aria-live="polite">날씨 조회 중…</div> : null}
                 {message ? <div className="empty" role="status">{message}</div> : null}
+                {alertScopeUnverified || selectedSummary?.alert_scope_unverified ? <p className="inspector-section" role="status">일부 특보의 적용 지역이 확인되지 않아 해당 특보를 이 위치에 표시하지 않습니다.</p> : null}
                 {selectedSummary?.alerts.length ? (
                   <div className="alert-panel" role="status">
                     <strong>기상특보</strong>

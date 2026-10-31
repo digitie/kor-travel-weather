@@ -3492,6 +3492,11 @@
                 "type": "null"
               }
             ]
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -3619,6 +3624,11 @@
             },
             "type": "array",
             "title": "Alerts"
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -3884,6 +3894,11 @@
             },
             "type": "array",
             "title": "Alerts"
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -4147,6 +4162,11 @@
             },
             "type": "array",
             "title": "Alerts"
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
