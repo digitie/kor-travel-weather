@@ -42,8 +42,8 @@ function setup() {
     getLatest, getForecast, forecastWindowStart);
   return { requests, state, mount };
 }
-function respond(request: Pending, data: unknown[], status = 200) {
-  request.resolve(new Response(JSON.stringify({ data, detail: "조회 실패" }), {
+function respond(request: Pending, data: unknown[], status = 200, scopeUnverified = false) {
+  request.resolve(new Response(JSON.stringify({ data, meta: { alert_scope_unverified: scopeUnverified }, detail: "조회 실패" }), {
     status, headers: { "content-type": "application/json" },
   }));
 }
@@ -51,6 +51,17 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => vi.unstubAllGlobals());
 
 describe("선택 위치의 독립 상세 로딩", () => {
+  it("적용 특보가 없는 응답의 구역 미확인 메타를 사용자 설명으로 만들지 않는다", async () => {
+    const { requests, state, mount } = setup();
+    mount("one");
+    respond(requests[0], [{ value_id: "current" }], 200, true);
+    await flush();
+    expect(state.setValues).toEqual([{ value_id: "current" }]);
+    expect(state.setMessage).toBe("");
+    mount("two");
+    expect(state.setValues).toEqual([]);
+    expect(state.setMessage).toBe("");
+  });
   it("상세가 닫힌 최초 지도에서는 조회하지 않고 열면 두 요청을 시작한다", () => {
     const { requests, state, mount } = setup();
     mount("one", false)();

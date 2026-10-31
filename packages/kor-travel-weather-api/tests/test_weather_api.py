@@ -332,6 +332,7 @@ def test_marker_projection_prefers_current_over_newer_forecast(api_client: TestC
         name="현재 우선 마커",
         latitude=37.51,
         longitude=127.01,
+        metadata={"kma_alert_area_codes": ["fixture-area"]},
     )
     repository.create_location(location)
     repository.record_source(
@@ -405,7 +406,7 @@ def test_marker_projection_prefers_current_over_newer_forecast(api_client: TestC
                 known_at=now - timedelta(minutes=10),
                 value_text="이전 특보",
                 severity="watch",
-                payload={"stn_id": "108", "seq": "1"},
+                payload={"stn_id": "108", "seq": "1", "areaCode": "fixture-area"},
                 source_record_key=alert_old_source,
             ),
             WeatherValue(
@@ -419,7 +420,7 @@ def test_marker_projection_prefers_current_over_newer_forecast(api_client: TestC
                 known_at=now - timedelta(minutes=1),
                 value_text="최신 특보",
                 severity="warning",
-                payload={"stn_id": "108", "seq": "1"},
+                payload={"stn_id": "108", "seq": "1", "areaCode": "fixture-area"},
                 source_record_key=alert_new_source,
             ),
         ]

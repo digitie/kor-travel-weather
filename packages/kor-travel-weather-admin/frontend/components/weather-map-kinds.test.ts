@@ -7,11 +7,11 @@ const source = readFileSync(new URL("./weather-map.tsx", import.meta.url), "utf8
 const tree = ts.createSourceFile("weather-map.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const helpers: string[] = [];
 for (const node of tree.statements) {
-  if (ts.isFunctionDeclaration(node) && ["numericCode", "classifyProviderCode", "markerValues", "markerState", "markerTemperature"].includes(node.name?.text ?? "")) helpers.push(node.getText(tree));
+  if (ts.isFunctionDeclaration(node) && ["numericCode", "classifyProviderCode", "markerValues", "markerState", "markerCondition", "markerTemperature"].includes(node.name?.text ?? "")) helpers.push(node.getText(tree));
 }
-const actual = new Function(ts.transpileModule(helpers.join("\n") + "\nreturn { markerState, markerTemperature };", {
+const actual = new Function(ts.transpileModule(helpers.join("\n") + "\nreturn { markerState, markerCondition, markerTemperature };", {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
-}).outputText)() as { markerState(summary: unknown): { kind: string; label: string }; markerTemperature(summary: unknown): number | null };
+}).outputText)() as { markerState(summary: unknown): { kind: string; label: string }; markerCondition(kind: string): string; markerTemperature(summary: unknown): number | null };
 const classify = actual.markerState;
 const target_at = "2026-10-24T01:00:00Z";
 
@@ -19,8 +19,23 @@ describe("종류를 선택한 예보 마커", () => {
   it.each([["맑음", "clear"], ["구름많음", "cloud"], ["흐리고 비", "rain"], ["흐리고 눈", "snow"]])("중기 SKY %s를 표시한다", (value_text, kind) => {
     expect(classify({ latest: [], alerts: [], forecast: [{ provider: "python-kma-api", metric_key: "SKY", value_number: null, value_text, target_at }] }).kind).toBe(kind);
   });
-  it("특보가 있으면 예보 상태와 구분해 우선 표시한다", () => {
-    expect(classify({ latest: [], forecast: [], alerts: [{}] }).label).toBe("특보 1건");
+  it.each([[1, "clear", "sunny"], [3, "cloud", "cloudy"]])("풍랑특보가 있어도 SKY %s의 실제 날씨를 유지한다", (code, kind, condition) => {
+    const summary = { latest: [{ provider: "python-kma-api", metric_key: "SKY", value_number: code }], forecast: [], alerts: [{ title: "풍랑주의보" }] };
+    const state = classify(summary);
+    expect(state.kind).toBe(kind);
+    expect(actual.markerCondition(state.kind)).toBe(condition);
+  });
+  it("특보만 있고 날씨가 없으면 뇌우로 만들지 않는다", () => {
+    const state = classify({ latest: [], forecast: [], alerts: [{ title: "풍랑주의보" }] });
+    expect(state.kind).toBe("unknown");
+    expect(actual.markerCondition(state.kind)).toBe("unknown");
+  });
+  it("실제 뇌우 코드가 있으면 특보 유무와 관계없이 뇌우를 표시한다", () => {
+    for (const alerts of [[], [{ title: "풍랑주의보" }]]) {
+      const state = classify({ latest: [{ provider: "open_meteo", metric_key: "WEATHER_CODE", value_number: 95 }], forecast: [], alerts });
+      expect(state.kind).toBe("storm");
+      expect(actual.markerCondition(state.kind)).toBe("storm");
+    }
   });
   it("SKY/PTY 행 순서에 관계없이 강수를 우선하며 PTY 0을 맑음으로 단정하지 않는다", () => {
     const sky = { provider: "python-kma-api", metric_key: "SKY", value_number: 1, target_at };

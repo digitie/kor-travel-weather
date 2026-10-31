@@ -44,6 +44,7 @@ class Meta(BaseModel):
     duration_ms: int
     page: PageMeta | None = None
     bundle: BundleMeta | None = None
+    alert_scope_unverified: bool = False
 
 
 ResponseData = TypeVar("ResponseData")
