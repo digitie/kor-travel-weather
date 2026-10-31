@@ -89,4 +89,25 @@ HTTP 확인으로 실제1 종료했다. Main0·cgroup 부재·소유 자식35개
 API의 구역 판정과 진단 플래그는 유지하며 미확인 특보를 다시 적용하지 않는다.
 WSL 전체287개(QA fixture2개 포함)·타입·lint·Next 빌드와 Docker 정식285개를 통과했다.
 첫 WSL 검사 도구의 setter 인자 이동과 Docker의 QA 전용 fixture 경로 실패는 보존하고 보완했다.
-이번 변경은 웹만 대상으로 하며 API·수집기·DB를 재배포하지 않는다. 실제 반영 결과는 후속 정산한다.
+이번 변경은 웹만 대상으로 하며 API·수집기·DB를 재배포하지 않는다. 실제 반영 결과는 아래 정산을 따른다.
+
+### 빈 특보 영역 제거의 실제 운영 결과
+
+웹 제품 `b8962e9d6f29e3aa12256514f3c1725a40ace0c5`만 반영했다.
+실제 웹 CID는 `af62ee8e062a472e4e9721ffa7f5bb60d3afc9f7c8b82e9ecaffdf3dd4aee358`,
+이미지는 `sha256:dc3fb615e9e91133e1392edce4fa28b7553d7c97d9670808e5fefaf1480648c0`, Cmd 포트12205다.
+API `9c9207d5e59b`/3f1236와 수집기 `2fdf108d1f61`/dba7a4는 재배포하지 않았다.
+기존 Compose 서비스의 CID·이미지·시작 시각, 보호4파일과 웹 실행 환경은 동일했다.
+DB·일정 설정·백업·복원 변경은 없다. 운영 수집은 유지했다.
+
+단일 unit82dd의 첫 Invocation `ee3525914d194393ad822208cbc2d3b1`은 실제 완료0이며
+동일 Invocation의 Finished/JOB_RESULT done·Main0·cgroup 부재·소유 자식 종료를 확인했다.
+Manager `/srv/ktdm-releases/weather-adopt-20261031T054809Z-4b51a804768846d08ad6375af857531a`는 healthy·issues0이다.
+실행 제품 b8962e9의 Python/프론트엔드 CI도 모두 성공했다. 이후 기록 문서로 이미지를 재빌드하지 않는다.
+
+Firefox157 PC1440·모바일375에서 서울 `kma-mid-seoul`을 실제 UI로 선택했다.
+API는 구역 미확인 플래그 참·ALERT0을 유지하지만, 지도 안내0·상세 설명0·특보 패널0이며 현재 날씨는 보인다.
+페이지 가로 넘침0·logout200·쿠키0, 캡처한 소유 브라우저/driver9PID의 동일 신원 잔여0과 검사 종료0을 확인했다.
+실제 캡처는 `weather-alert-empty-20261031/after-map-1440.png`, `after-detail-1440.png`,
+`after-map-375.png`, `after-detail-375.png`이고 원문·SHA는 `post-live-acceptance.json`에 결합했다.
+예보 로딩 중 화면도 포함하므로 상세 예보 전체 재수용으로 확대하지 않는다.
