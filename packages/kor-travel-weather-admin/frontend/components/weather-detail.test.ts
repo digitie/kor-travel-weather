@@ -23,7 +23,7 @@ function visit(node: ts.Node) {
 visit(tree);
 if (!callback || helpers.length !== 2) throw new Error("상세 effect를 찾지 못했습니다.");
 const setters = ["setValues", "setForecast", "setMessage", "setForecastMessage",
-  "setLastRefreshedAt", "setLoading", "setForecastLoading", "setAlertScopeUnverified"];
+  "setLastRefreshedAt", "setLoading", "setForecastLoading"];
 const effect = new Function("selectedLocationId", "providerFilter", "detailOpen", ...setters, "getLatest", "getForecast", "forecastWindowStart", "kindFilter",
   ts.transpileModule(helpers.join("\n") + "\nreturn (" + callback.getText(tree) + ")();", {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -51,15 +51,16 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => vi.unstubAllGlobals());
 
 describe("선택 위치의 독립 상세 로딩", () => {
-  it("구역 미확인 응답을 표시하고 다른 위치를 고르면 이전 판정을 지운다", async () => {
+  it("적용 특보가 없는 응답의 구역 미확인 메타를 사용자 설명으로 만들지 않는다", async () => {
     const { requests, state, mount } = setup();
     mount("one");
     respond(requests[0], [{ value_id: "current" }], 200, true);
     await flush();
-    expect(state.setAlertScopeUnverified).toBe(true);
+    expect(state.setValues).toEqual([{ value_id: "current" }]);
     expect(state.setMessage).toBe("");
     mount("two");
-    expect(state.setAlertScopeUnverified).toBe(false);
+    expect(state.setValues).toEqual([]);
+    expect(state.setMessage).toBe("");
   });
   it("상세가 닫힌 최초 지도에서는 조회하지 않고 열면 두 요청을 시작한다", () => {
     const { requests, state, mount } = setup();
