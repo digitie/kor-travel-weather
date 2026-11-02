@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import func, select, true, tuple_
 
 from .export_artifacts import ExportArtifactError
 from .export_capacity import MAX_SOURCE_SCOPES, read_scope_plans
@@ -13,7 +13,6 @@ from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
 from .export_inventory import export_inventory_table
 from .export_mid import MidScopeDescriptor
-from .export_mid_anchor import mid_anchor_columns
 from .export_sdk import SdkScopeDescriptor
 
 MAX_SELECTED_ROWS = 20000
@@ -23,15 +22,50 @@ SDK_NETWORKS = {
 }
 
 
-def catalog_source_columns(catalog):
-    """임의 metadata 전체를 읽지 않고 SDK anchor의 작은 allowlist만 투영한다."""
-    point = catalog.c.metadata["measurement_point"]
-    return [*mid_anchor_columns(catalog), *[
-            func.left(point[key].as_string(), maximum + 1).label("point_" + key)
-            for key, maximum in [
-                ("provider", 120), ("station_id", 120), ("station_name", 200),
-                ("sido_name", 32), ("network", 120),
-            ]]]
+#: catalog anchor 투영의 관측점 allowlist와 각 문자열 상한.
+_POINT_FIELDS = (
+    ("provider", 120), ("station_id", 120), ("station_name", 200),
+    ("sido_name", 32), ("network", 120),
+)
+
+
+def catalog_source_projection(catalog):
+    """SDK anchor allowlist 투영의 ``(FROM, 열)``. 임의 metadata 전체는 읽지 않는다.
+
+    ``metadata``는 json이라 경로 연산자마다 원문 전체를 다시 해석한다. 예전 7열은 행마다 약
+    14번 해석했고, 1,451곳 catalog 조회가 포화된 odroid에서 0.7~1.1초였다(2026-11-02 실측).
+    LATERAL에서 관측점 객체와 중기 코드 셋만 한 번씩 꺼낸다(원문 해석 4번). 관측점 다섯 열은
+    작은 관측점 json에서 꺼낸다. ``OFFSET 0``은 planner가 subquery를 바깥 열마다 펼치는 것을
+    막는다. json 연산 그대로라 값·오류 동작(전체 문서를 jsonb로 바꾸지 않음)은 예전과 같다.
+    호출마다 새 LATERAL을 만든다. FROM과 열이 같은 객체를 쓰므로 한 SELECT에서 함께 쓴다.
+    """
+    metadata = catalog.c.metadata
+    lateral = (
+        select(
+            metadata["measurement_point"].label("point"),
+            metadata["mid_land_region_code"].as_string().label("mid_land_region_code"),
+            metadata["mid_temperature_region_code"].as_string().label(
+                "mid_temperature_region_code"
+            ),
+            metadata["mid_region_code"].as_string().label("mid_region_code"),
+        )
+        .correlate(catalog)
+        .offset(0)
+        .lateral("catalog_source_metadata")
+    )
+    columns = [
+        *[
+            func.left(func.coalesce(
+                lateral.c[f"mid_{part}_region_code"], lateral.c.mid_region_code,
+            ), 33).label(f"mid_{part}_region")
+            for part in ("land", "temperature")
+        ],
+        *[
+            func.left(lateral.c.point[key].as_string(), maximum + 1).label("point_" + key)
+            for key, maximum in _POINT_FIELDS
+        ],
+    ]
+    return catalog.join(lateral, true()), columns
 
 
 def source_max_age(dataset):

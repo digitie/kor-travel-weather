@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from .export_artifacts import ExportArtifactError
 from .export_heads import ExportHeads
-from .export_inventory_selection import SDK_NETWORKS, catalog_source_columns
+from .export_inventory_selection import SDK_NETWORKS, catalog_source_projection
 from .export_sdk_collector import SdkExportCollector, sdk_descriptor
 from .export_source_cohorts import declare_source_cohort
 
@@ -74,11 +74,12 @@ def prepare_sdk_collection(repository, *, run_id, provider, dataset_key, artifac
     try:
         catalog = heads.metadata.tables["weather_locations"]
         # arbitrary metadata를 가져오지 않는다. 각 projected 필드에 byte/길이 상한이 있다.
+        source_from, source_columns = catalog_source_projection(catalog)
         with heads._transaction() as s:
             rows = s.execute(select(
                 catalog.c.location_id, catalog.c.latitude, catalog.c.longitude, catalog.c.enabled,
-                *catalog_source_columns(catalog),
-            ).where(
+                *source_columns,
+            ).select_from(source_from).where(
                 catalog.c.metadata["measurement_point"]["provider"].as_string() == provider,
                 catalog.c.metadata["measurement_point"]["network"].as_string()
                 == SDK_NETWORKS[dataset_key],
