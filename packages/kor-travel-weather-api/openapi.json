@@ -1512,7 +1512,15 @@
             "description": "데이터/vector/페이지/상태가 변경되지 않음"
           },
           "503": {
-            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "description": "code=EXPORT_NOT_READY: 완결된 성공 export가 없습니다. code=EXPORT_TEMPORARILY_UNAVAILABLE: DB/artifact 읽기 경합으로 상한 안에 끝나지 않았습니다. Retry-After 초 뒤 같은 요청(같은 cursor)을 다시 보내세요. 둘 다 빈 정상 집합으로 해석하지 마세요.",
+            "headers": {
+              "Retry-After": {
+                "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1632,7 +1640,15 @@
             "description": "데이터/vector/페이지/상태가 변경되지 않음"
           },
           "503": {
-            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "description": "code=EXPORT_NOT_READY: 완결된 성공 export가 없습니다. code=EXPORT_TEMPORARILY_UNAVAILABLE: DB/artifact 읽기 경합으로 상한 안에 끝나지 않았습니다. Retry-After 초 뒤 같은 요청(같은 cursor)을 다시 보내세요. 둘 다 빈 정상 집합으로 해석하지 마세요.",
+            "headers": {
+              "Retry-After": {
+                "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1702,7 +1718,15 @@
             "description": "데이터/vector/페이지/상태가 변경되지 않음"
           },
           "503": {
-            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "description": "code=EXPORT_NOT_READY: 완결된 성공 export가 없습니다. code=EXPORT_TEMPORARILY_UNAVAILABLE: DB/artifact 읽기 경합으로 상한 안에 끝나지 않았습니다. Retry-After 초 뒤 같은 요청(같은 cursor)을 다시 보내세요. 둘 다 빈 정상 집합으로 해석하지 마세요.",
+            "headers": {
+              "Retry-After": {
+                "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1856,7 +1880,15 @@
             "description": "데이터/vector/페이지/상태가 변경되지 않음"
           },
           "503": {
-            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "description": "code=EXPORT_NOT_READY: 완결된 성공 export가 없습니다. code=EXPORT_TEMPORARILY_UNAVAILABLE: DB/artifact 읽기 경합으로 상한 안에 끝나지 않았습니다. Retry-After 초 뒤 같은 요청(같은 cursor)을 다시 보내세요. 둘 다 빈 정상 집합으로 해석하지 마세요.",
+            "headers": {
+              "Retry-After": {
+                "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1988,7 +2020,15 @@
             "description": "데이터/vector/페이지/상태가 변경되지 않음"
           },
           "503": {
-            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "description": "code=EXPORT_NOT_READY: 완결된 성공 export가 없습니다. code=EXPORT_TEMPORARILY_UNAVAILABLE: DB/artifact 읽기 경합으로 상한 안에 끝나지 않았습니다. Retry-After 초 뒤 같은 요청(같은 cursor)을 다시 보내세요. 둘 다 빈 정상 집합으로 해석하지 마세요.",
+            "headers": {
+              "Retry-After": {
+                "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {

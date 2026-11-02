@@ -178,7 +178,7 @@ router = APIRouter(
             "headers": {
                 "Retry-After": {
                     "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
-                    "schema": {"type": "integer", "minimum": 1},
+                    "schema": {"type": "integer"},
                 },
             },
         },

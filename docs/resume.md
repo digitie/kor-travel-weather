@@ -1,3 +1,10 @@
+## 2026-11-03 — export 읽기 경합 503 구분(PR)
+
+- 읽기 경합(statement/lock timeout·guard 대기·연결)은 503 `EXPORT_TEMPORARILY_UNAVAILABLE` +
+  `Retry-After: 5`, 완결 export 부재는 계속 `EXPORT_NOT_READY`다. 승인 inventory 조회는 attempts·plans
+  join을 뺐다(odroid current 29k→1k buffer). API 배포는 #193 머지·소유자 OK 뒤 #196과 함께다.
+- Map은 같은 페이지만 `Retry-After`를 지켜 다시 묻는다(Map PR, 다음 회전).
+
 ## 2026-11-02 — #194 CS 배포 완료(odroid)
 
 - `9e70cc8e`의 Dagster 코드서버만 ARM64로 빌드해(`kor-travel-weather-dagster:rel-9e70cc8ed3f1`, id `739b1b77`)

@@ -78,7 +78,7 @@ def test_service_openapi_has_existing_security_and_typed_failed_response(export_
         }
         # 일시 경합 503만 Retry-After를 단다. 부재 503과 code로 구분한다.
         retry = operation["responses"]["503"]["headers"]["Retry-After"]
-        assert retry["schema"] == {"type": "integer", "minimum": 1}
+        assert retry["schema"] == {"type": "integer"}
         assert "EXPORT_TEMPORARILY_UNAVAILABLE" in operation["responses"]["503"]["description"]
         if resource == "status":
             assert not operation.get("parameters")  # 최대 128개의 작은 전체 목록
