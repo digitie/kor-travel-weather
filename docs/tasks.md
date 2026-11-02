@@ -66,6 +66,9 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
   current part도 긴 forecast sweep 뒤에서 기다린다. 선택지: (a) current part를 fast lane으로(동시 sweep·
   openweathermap 겹침 위험), (b) open_meteo 위치 상한 380→약 150(env만, quota 중립), (c) 둘 다. #196 배포 뒤
   같은 지표(provider별 sweep 소요·slow lane 대기 수·current 승격 지연)를 다시 재고 결정한다.
+  2026-11-02 #196 배포 뒤 재측정(12:00Z~): current part는 3~11분, forecast part는 여전히 길다(open_meteo
+  forecast tick 11:17 겹침 skip, inventory p50 5.3h; openweathermap forecast 마지막 10:57, p50 1.9h). export 첫 페이지
+  freeze는 slow lane 한가할 때 current 27·short 118·external 89초, 동시 진행 때 46·196·149초(journal 11-03).
 - [ ] **W-EXP-GC-01 / P1 (목표 2026-11-03)** — PR #176 artifact GC를 `dry_run`으로 약 1주 관찰한 뒤
   `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`로 바꾼다. 볼 것: `ktw_export_artifact_gc_reclaimable_bytes`
   추이와 publisher sensor skip 메시지의 `stages=…gc:<초>`. 전환 조건은 배타 guard 안 참조 재확인이
