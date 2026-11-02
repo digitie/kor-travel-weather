@@ -132,7 +132,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0035_daily_precip_coverage"
+            assert version == "0036_snapshot_kind_projection"
             snapshot_order = next(column for column in inspector.get_columns(
                 "weather_export_snapshots"
             ) if column["name"] == "issue_order")
@@ -1090,13 +1090,14 @@ def test_daily_precip_coverage_migration_commits_each_day(monkeypatch):
             holder.execute(text(
                 "SELECT 1 FROM weather_daily_summaries WHERE date = '2026-10-26' FOR UPDATE"
             ))
+            # 이후 head의 DDL과 섞지 않고 0035 자체의 부분 commit·재시도만 검증한다.
             with pytest.raises(Exception, match="lock timeout"):
-                command.upgrade(config, "head")
+                command.upgrade(config, "0035_daily_precip_coverage")
             assert totals() == {"2026-10-25": None, "2026-10-26": "0.0"}
         finally:
             holder.rollback()
             holder.close()
-        command.upgrade(config, "head")
+        command.upgrade(config, "0035_daily_precip_coverage")
         assert totals() == {"2026-10-25": None, "2026-10-26": None}
         with repo.engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (

@@ -1,3 +1,26 @@
+## 2026-11-03 — 읽기 개선 API·DB·HTTP 수용 완료
+
+제품539d6의 새 API4c349d·schema0036·원 설정/다른 역할/일정 보존·Manager healthy·부모 실제0/종료를 확인했다. 자기 invalid index는 정확 신원을 검산한 일반 REINDEX 한 개로 복구했고37행의 메타데이터 지문이 같다. 실제500행200·조건부304를 확인했으며 최초일시GuardTimeout503도 보존했다. [수용 범위와 한계](reports/2026-11-03-weather-read-performance.md)를 따른다.
+
+다음 한 작업은 시험 전용a712 후속 CI 정산이다. 제품539d6 이미지를 문서·시험 변경으로 재빌드하지 않는다. 별도 Transport 이식·운영은 해당 저장소에서 진행 중이다.
+
+## 2026-11-03 — PR199 CI 시험 전용 후속
+
+원 CI41543400028은 0035 전용 시험의 head/기대 revision 불일치 1건으로 실패했다.
+시험 target만 0035로 한정했으며 제품539d6·0036 writer와 분리한 변경이다.
+Python3.12/PG16·WSL Python3.13/PG16·Docker의 관련 3개씩과 ruff를 통과했다.
+다음 한 작업은 Root가 이 시험 전용 커밋을 PR199에 push하고 새 CI 결과를 확인하는 것이다.
+[실패 원문과 검증 범위](reports/2026-11-03-weather-read-performance.md#pr199-ci의-0035-전용-시험-후속).
+
+## 2026-11-03 — Weather 읽기 반복 비용 구현·로컬 검증 완료
+
+`codex/weather-read-performance-20261103`에서 W1 snapshot 종류의 stored generated projection,
+304 직렬화 생략/200 직접 JSON, 예보 metric 단일 순회를 구현했다. 격리 PG18의 W1 반복 조회는
+77.2→6.2ms이며 운영 수치는 아니다. Docker 기존67·최종추가16, WSL 추가16·공개마커23과
+Alembic/daily14, ruff를 통과했다. [측정·보존 의미·적용 순서](reports/2026-11-03-weather-read-performance.md).
+다음 한 작업은 Root가 정상 배포 경로에서 0036을 API 교체 전에 적용하고 실제 요청을 관측하는 것이다.
+운영·push·PR·배포는 이번 구현 작업에서 실행하지 않았다.
+
 ## 2026-11-03 — PR198 새 API 이미지 운영 반영 완료
 
 제품 `643bb34e094f474486ef872a7e6fdbe5c9dfbcaa`의 API 새 이미지`b4da586588b4`를 포트12201에 반영했다. 일시 경합503/Retry-After 분류14사례, 실제 health/status200·15항목, Manager healthy와 배포 부모 실제0/정상 종료를 확인했다. 웹·수집기·일정·다른 서비스·환경은 보존했고 백업·복원은 사용자 지시로 생략했다. [실제 이미지·원 실패·검증 범위](reports/2026-11-03-pr198-api-release.md).

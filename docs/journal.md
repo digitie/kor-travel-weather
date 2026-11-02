@@ -1,3 +1,23 @@
+## 2026-11-03 — 읽기 개선 API와 DB0036 실제 수용
+
+제품539d6의 API4c349d를 실제 포트12201로 반영했다. 기존 웹·수집 서버·환경·일정을 보존했고 Manager healthy·부모 실제0/MainPID0/cgroup 부재를 확인했다. 첫0036의 invalid index는 원 실패를 남긴 채 정확 자기 객체만 검산해 일반 REINDEX 후 같은0036 정상 upgrade로 복구했다. DROP·stamp·행 삭제는 없으며37행의 식별자/digest/clock 지문이 같다. 실제500행200·304를 확인했고 최초GuardTimeout503과 운영 배율 미측정의 한계도 [수용 기록](reports/2026-11-03-weather-read-performance.md)에 남겼다. 새 백업·복원·독립 리뷰는 추가하지 않았다.
+
+## 2026-11-03 — PR199의 0035 전용 migration 시험 계약 수정
+
+CI41543400028의 유일한 실패는 0035 전용 시험이 최신 head0036을 적용하고 0035를 기대한 점이었다.
+같은 실패를 로컬 PG16에서 재현하고 해당 시험의 upgrade target 두 곳만 0035로 한정했다.
+하루별 부분 commit·잠금 해제 후 재시도·최신 head schema 계약을 Python3.12/PG16 3개,
+WSL Python3.13/PG16 3개와 Docker 3개로 확인했다. 시험 ruff 통과, 제품 코드와 writer 변경은 없다.
+[원 CI·수정 범위](reports/2026-11-03-weather-read-performance.md#pr199-ci의-0035-전용-시험-후속).
+
+## 2026-11-03 — reference 조회와 export 직렬화 반복 비용 개선
+
+큰 JSON을 종류 조건으로 반복 해석하는 W1을 실제 로컬 PG18에서 재현하고 0036의 작은 generated
+종류 컬럼으로 바꿨다. 같은 snapshot을 선택하며 warm77.2→6.2ms였다. DTO 검증을 유지한 304 직렬화
+생략·200 직접 JSON과 예보 metric 단일 순회를 함께 반영했다. Docker67·최종추가16, WSL 추가16·
+공개마커23·Alembic/daily14와 ruff 통과. 운영 변경 없이 feature branch 구현만 완료했다.
+[측정과 한계](reports/2026-11-03-weather-read-performance.md).
+
 ## 2026-11-03 — PR198 새 API 이미지 운영 반영 완료
 
 제품 `643bb34e094f474486ef872a7e6fdbe5c9dfbcaa`의 API 새 이미지`b4da586588b4`를 포트12201에 반영했다. 일시 경합503/Retry-After 분류14사례, 실제 health/status200·15항목, Manager healthy와 배포 부모 실제0/정상 종료를 확인했다. 웹·수집기·일정·다른 서비스·환경은 보존했고 백업·복원은 사용자 지시로 생략했다. [실제 이미지·원 실패·검증 범위](reports/2026-11-03-pr198-api-release.md).

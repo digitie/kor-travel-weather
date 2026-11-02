@@ -1130,20 +1130,20 @@ def test_export_page_is_validated_serialized_and_compressed_off_the_event_loop(
     repository, tmp_path, monkeypatch
 ):
     """4MiB까지의 페이지 직렬화·gzip이 event loop(일반 API·health)를 막지 않는다."""
-    import json as real_json
     import threading
-    from types import SimpleNamespace
 
     from kortravelweather_api.routers import service_exports
 
     _collect(repository, tmp_path)
     threads = []
 
-    def dumps(*args, **kwargs):
-        threads.append(threading.current_thread().name)
-        return real_json.dumps(*args, **kwargs)
+    original = service_exports.ExportPage.model_dump_json
 
-    monkeypatch.setattr(service_exports, "json", SimpleNamespace(dumps=dumps))
+    def dump_json(self, *args, **kwargs):
+        threads.append(threading.current_thread().name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(service_exports.ExportPage, "model_dump_json", dump_json)
     client = _client(repository, tmp_path)
     response = client.get("/v1/service/exports/current", headers=HEADERS)
     assert response.status_code == 200 and response.headers["content-encoding"] == "gzip"
@@ -1181,7 +1181,7 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     assert "secret" not in caplog.text and "postgresql" not in caplog.text
 
 
-@pytest.mark.parametrize("resource", ["current", "forecasts"])
+@pytest.mark.parametrize("resource", ["current", "forecasts", "locations"])
 def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypatch, resource):
     """만료 직전 handle을 재사용한 새 pagination도 다음 페이지에서410이 되지 않는다."""
     from kortravelweather import export_forecasts, export_snapshots
@@ -1190,10 +1190,15 @@ def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypat
     if resource == "current":
         _collect(repository, tmp_path)
         url, params, module = "/v1/service/exports/current", {"limit": 1}, export_snapshots
-    else:
+    elif resource == "forecasts":
         _collect_forecast(repository, tmp_path)
         url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 1}
         module = export_forecasts
+    else:
+        from kortravelweather import export_locations
+
+        _collect(repository, tmp_path)
+        url, params, module = "/v1/service/exports/locations", {"limit": 1}, export_locations
     client = _client(repository, tmp_path)
     first = client.get(url, params=params, headers=HEADERS)
     assert first.status_code == 200 and first.json()["meta"]["has_more"]

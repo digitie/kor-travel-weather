@@ -20,9 +20,11 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Column,
+    Computed,
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     MetaData,
     String,
@@ -83,10 +85,19 @@ def export_snapshot_tables(metadata: MetaData):
         Column("issue_order", BigInteger, Identity(), nullable=False, index=True),
         Column("manifest_digest", String(64), nullable=False, index=True),
         Column("manifest", JSON, nullable=False),
+        # JSON/TOAST 해석은 발급 때 한 번만 한다. 작은 snapshot 표에서는 expression
+        # index가 있어도 planner가 full scan을 골라 매 요청 큰 JSON을 다시 해석했다.
+        Column("selection_kind", String, Computed(
+            "(manifest -> 'selection') ->> 'kind'", persisted=True,
+        )),
         Column("source_collected_at", DateTime(timezone=True)),
         Column("data_revision_at", DateTime(timezone=True), nullable=False),
         Column("created_at", DateTime(timezone=True), nullable=False),
         Column("expires_at", DateTime(timezone=True), nullable=False, index=True),
+    )
+    Index(
+        "ix_weather_export_snapshots_kind_issue",
+        snapshots.c.selection_kind, snapshots.c.issue_order.desc(),
     )
     refs = Table(
         "weather_export_snapshot_refs",
@@ -495,6 +506,7 @@ class FrozenCurrentExports:
                 frozen["_reused"] = True
             else:
                 frozen.pop("issue_order", None)
+                frozen.pop("selection_kind", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
                 )
@@ -555,7 +567,7 @@ class FrozenCurrentExports:
             return frozen
         now = datetime.now(UTC)
         row = {key: value for key, value in frozen.items()
-               if key in self.snapshots.c and key != "issue_order"}
+               if key in self.snapshots.c and key not in {"issue_order", "selection_kind"}}
         row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL,
                    manifest=dict(frozen["manifest"], capacity_limited=True))
         MetadataBudget().add(row["manifest"])

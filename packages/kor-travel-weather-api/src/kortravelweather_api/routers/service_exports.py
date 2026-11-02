@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import gzip
-import json
 import logging
 from collections.abc import Callable
 from datetime import date
@@ -296,16 +295,16 @@ def _render_page(
     막지 않게 한다. 304이면 payload는 None이다.
     """
     page, etag = read()
-    body = model.model_validate(page).model_dump(mode="json")
+    body = model.model_validate(page)
     headers = {
         "etag": etag,
         "vary": "Accept-Encoding",
         "cache-control": "private, max-age=0, must-revalidate",
-        "x-source-status": body["meta"]["source_status"],
+        "x-source-status": body.meta.source_status,
     }
     if _matches_etag(if_none_match, etag):
         return None, headers
-    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    payload = body.model_dump_json().encode()
     if len(payload) >= gzip_minimum and _accepts_gzip(accept_encoding):
         payload = gzip.compress(payload, compresslevel=4, mtime=0)
         headers["content-encoding"] = "gzip"
