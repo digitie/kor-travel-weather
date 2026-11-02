@@ -2,9 +2,8 @@
 
 - descriptor namespace(정규 JSON sha256)를 같은 descriptor마다 한 번만 계산한다. 외부 예보 첫 페이지
   하나가 descriptor 약 780개에 namespace를 6,081번(3.5초) 계산했다.
-- catalog anchor 투영이 행마다 metadata(json)를 한 번만 해석한다. json 경로 연산자는 매번 원문을
-다시
-  해석해 1,451곳 조회가 0.7~1.1초였다.
+- catalog anchor 투영이 metadata(json) 원문을 열마다가 아니라 LATERAL에서 네 번만 해석한다.
+  json 경로 연산자는 매번 원문을 다시 해석해 1,451곳 조회가 0.7~1.1초였다.
 """
 
 import os
@@ -17,10 +16,7 @@ from test_export_external import external_repository as external_repository
 
 from kortravelweather import export_heads
 from kortravelweather.export_external import RetrievalScopeDescriptor
-from kortravelweather.export_inventory_selection import (
-    catalog_source_columns,
-    catalog_source_from,
-)
+from kortravelweather.export_inventory_selection import catalog_source_projection
 from kortravelweather.export_mid_anchor import mid_region_expression
 from kortravelweather.models import WeatherLocation
 
@@ -77,17 +73,22 @@ def repository():
     repo.engine.dispose()
 
 
-def test_catalog_projection_casts_metadata_once_per_row(repository):
+def test_catalog_projection_reads_metadata_in_one_lateral(repository):
     from kortravelweather.export_heads import ExportHeads
 
     catalog = ExportHeads(repository).metadata.tables["weather_locations"]
-    sql = str(select(catalog.c.location_id, *catalog_source_columns(catalog)).select_from(
-        catalog_source_from(catalog),
-    ).compile(dialect=postgresql.dialect()))
-    assert sql.count("CAST(weather_locations.metadata AS JSONB)") == 1
+    source_from, source_columns = catalog_source_projection(catalog)
+    sql = str(select(catalog.c.location_id, *source_columns).select_from(source_from).compile(
+        dialect=postgresql.dialect(),
+    ))
     assert sql.count("JOIN LATERAL") == 1
-    # 투영 열이 json 원문 열을 직접 경로 연산하지 않는다(열마다 다시 해석하던 원인).
-    assert "weather_locations.metadata ->" not in sql
+    # 원문 json 경로 연산은 LATERAL 안의 네 번(관측점 객체 + 중기 코드 셋)뿐이다.
+    # 예전은 열마다 14번이었다.
+    assert sql.count("weather_locations.metadata ->") == 4
+    # 전체 문서를 jsonb로 바꾸지 않는다(json이 받아 둔 escape가 cast에서 실패하지 않게).
+    assert "JSONB" not in sql.upper()
+    # 호출마다 새 LATERAL이다(FROM과 열이 같은 객체 — 동시 첫 호출에서도 섞이지 않는다).
+    assert catalog_source_projection(catalog)[0] is not source_from
 
 
 def test_catalog_projection_values_match_the_json_path_projection(repository):
@@ -120,9 +121,9 @@ def test_catalog_projection_values_match_the_json_path_projection(repository):
     ]
     where = catalog.c.location_id.like(prefix + "-%")
     with repository.engine.connect() as connection:
+        source_from, source_columns = catalog_source_projection(catalog)
         new = {row["location_id"]: dict(row) for row in connection.execute(
-            select(catalog.c.location_id, *catalog_source_columns(catalog))
-            .select_from(catalog_source_from(catalog)).where(where)
+            select(catalog.c.location_id, *source_columns).select_from(source_from).where(where)
         ).mappings()}
         old = {row["location_id"]: dict(row) for row in connection.execute(
             select(catalog.c.location_id, *reference).where(where)
@@ -137,10 +138,19 @@ def test_lateral_join_keeps_catalog_rows_without_metadata_keys(repository):
     # LATERAL은 행마다 정확히 한 행을 낸다 — ON true join이 catalog 행을 늘리거나 줄이지 않는다.
     from kortravelweather.export_heads import ExportHeads
 
+    prefix = "rows-" + uuid.uuid4().hex[:10]
+    for key, metadata in {"empty": {}, "point": {"measurement_point": {"provider": "p"}},
+                          "nested": {"measurement_point": {"x": {"y": [1, 2]}}}}.items():
+        repository.create_location(WeatherLocation(
+            location_id=f"{prefix}-{key}", name=key, latitude=36.5, longitude=128.7,
+            metadata=metadata,
+        ))
     catalog = ExportHeads(repository).metadata.tables["weather_locations"]
+    source_from, _ = catalog_source_projection(catalog)
     with repository.engine.connect() as connection:
         plain = connection.scalar(select(func.count()).select_from(catalog))
-        joined = connection.scalar(select(func.count()).select_from(catalog_source_from(catalog)))
+        joined = connection.scalar(select(func.count()).select_from(source_from))
+    assert plain >= 3
     assert joined == plain
 
 

@@ -17,11 +17,7 @@ from .export_capacity import (
     read_generation_refs,
 )
 from .export_heads import ScopeDescriptor, _digest
-from .export_inventory_selection import (
-    approved_source_selection,
-    catalog_source_columns,
-    catalog_source_from,
-)
+from .export_inventory_selection import approved_source_selection, catalog_source_projection
 from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
@@ -91,6 +87,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if self.since is not None and self.since > watermark:
                 raise ExportCursorInvalid("아직 발급되지 않은 publication watermark입니다.")
             catalog = self.heads.metadata.tables["weather_locations"]
+            source_from, source_columns = (
+                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+            )
             roster = c.execute(
                 select(
                     catalog.c.location_id,
@@ -98,9 +97,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                     catalog.c.ny,
                     catalog.c.latitude,
                     catalog.c.longitude,
-                    *(catalog_source_columns(catalog) if self.source_inventory else []),
+                    *source_columns,
                 )
-                .select_from(catalog_source_from(catalog) if self.source_inventory else catalog)
+                .select_from(source_from)
                 .where(catalog.c.enabled.is_(True))
                 .order_by(catalog.c.location_id)
                 .limit(MAX_SNAPSHOT_LOCATIONS + 1)
@@ -586,10 +585,11 @@ class FrozenForecastExports(FrozenCurrentExports):
         ):
             c.execute(text("SET LOCAL statement_timeout = '5s'"))
             catalog = self.heads.metadata.tables["weather_locations"]
+            source_from, source_columns = catalog_source_projection(catalog)
             locations = c.execute(select(
                 catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
-                catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
-            ).select_from(catalog_source_from(catalog)).where(
+                catalog.c.nx, catalog.c.ny, *source_columns,
+            ).select_from(source_from).where(
                 catalog.c.enabled.is_(True),
             ).limit(MAX_SNAPSHOT_LOCATIONS + 1)).mappings().all()
             if len(locations) > MAX_SNAPSHOT_LOCATIONS:

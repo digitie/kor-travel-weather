@@ -3,10 +3,8 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from functools import lru_cache
 
-from sqlalchemy import Text, cast, func, select, true, tuple_
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import func, select, true, tuple_
 
 from .export_artifacts import ExportArtifactError
 from .export_capacity import MAX_SOURCE_SCOPES, read_scope_plans
@@ -24,53 +22,50 @@ SDK_NETWORKS = {
 }
 
 
-@lru_cache(maxsize=64)
-def _catalog_metadata(catalog):
-    """catalog의 ``metadata``(json)를 행마다 **한 번만** jsonb로 바꾸는 LATERAL.
+#: catalog anchor 투영의 관측점 allowlist와 각 문자열 상한.
+_POINT_FIELDS = (
+    ("provider", 120), ("station_id", 120), ("station_name", 200),
+    ("sido_name", 32), ("network", 120),
+)
 
-    json 열은 경로 연산자마다 원문을 다시 해석한다. anchor 투영 7열(중기 coalesce 둘 +
-    관측점 다섯)이 행마다 약 14번 해석하므로 1,451곳 catalog 조회가 포화된 odroid에서
-    0.7~1.1초였다(2026-11-02 실측). ``OFFSET 0``은 planner가 이 subquery를 바깥 식에 펼쳐
-    열마다 cast하는 것을 막는다(펼치면 더 느렸다).
+
+def catalog_source_projection(catalog):
+    """SDK anchor allowlist 투영의 ``(FROM, 열)``. 임의 metadata 전체는 읽지 않는다.
+
+    ``metadata``는 json이라 경로 연산자마다 원문 전체를 다시 해석한다. 예전 7열은 행마다 약
+    14번 해석했고, 1,451곳 catalog 조회가 포화된 odroid에서 0.7~1.1초였다(2026-11-02 실측).
+    LATERAL에서 관측점 객체와 중기 코드 셋만 한 번씩 꺼낸다(원문 해석 4번). 관측점 다섯 열은
+    작은 관측점 json에서 꺼낸다. ``OFFSET 0``은 planner가 subquery를 바깥 열마다 펼치는 것을
+    막는다. json 연산 그대로라 값·오류 동작(전체 문서를 jsonb로 바꾸지 않음)은 예전과 같다.
+    호출마다 새 LATERAL을 만든다. FROM과 열이 같은 객체를 쓰므로 한 SELECT에서 함께 쓴다.
     """
-    return (
-        select(cast(catalog.c.metadata, JSONB).label("m"))
+    metadata = catalog.c.metadata
+    lateral = (
+        select(
+            metadata["measurement_point"].label("point"),
+            metadata["mid_land_region_code"].as_string().label("mid_land_region_code"),
+            metadata["mid_temperature_region_code"].as_string().label(
+                "mid_temperature_region_code"
+            ),
+            metadata["mid_region_code"].as_string().label("mid_region_code"),
+        )
         .correlate(catalog)
         .offset(0)
         .lateral("catalog_source_metadata")
     )
-
-
-def catalog_source_from(catalog):
-    """``catalog_source_columns``를 고르는 SELECT의 FROM. 투영 열이 쓰는 LATERAL을 붙인다."""
-    return catalog.join(_catalog_metadata(catalog), true())
-
-
-def _text(value, key):
-    return value.op("->>", return_type=Text)(key)
-
-
-def catalog_source_columns(catalog):
-    """임의 metadata 전체를 읽지 않고 SDK anchor의 작은 allowlist만 투영한다.
-
-    SELECT는 ``catalog_source_from(catalog)``에서 읽어야 한다(행마다 metadata를 한 번만 해석한다).
-    값은 json 경로 연산과 같다 — 중기 지역은 ``mid_<part>_region_code`` → ``mid_region_code``
-    순이다.
-    """
-    metadata = _catalog_metadata(catalog).c.m
-    point = metadata.op("->", return_type=JSONB)("measurement_point")
-    mid = [
-        func.left(func.coalesce(
-            _text(metadata, f"mid_{part}_region_code"), _text(metadata, "mid_region_code"),
-        ), 33).label(f"mid_{part}_region")
-        for part in ("land", "temperature")
+    columns = [
+        *[
+            func.left(func.coalesce(
+                lateral.c[f"mid_{part}_region_code"], lateral.c.mid_region_code,
+            ), 33).label(f"mid_{part}_region")
+            for part in ("land", "temperature")
+        ],
+        *[
+            func.left(lateral.c.point[key].as_string(), maximum + 1).label("point_" + key)
+            for key, maximum in _POINT_FIELDS
+        ],
     ]
-    return [*mid, *[
-            func.left(_text(point, key), maximum + 1).label("point_" + key)
-            for key, maximum in [
-                ("provider", 120), ("station_id", 120), ("station_name", 200),
-                ("sido_name", 32), ("network", 120),
-            ]]]
+    return catalog.join(lateral, true()), columns
 
 
 def source_max_age(dataset):

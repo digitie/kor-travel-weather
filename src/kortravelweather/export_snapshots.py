@@ -295,7 +295,11 @@ class FrozenCurrentExports:
         ):
             connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
             catalog = self.heads.metadata.tables["weather_locations"]
-            from .export_inventory_selection import catalog_source_columns, catalog_source_from
+            from .export_inventory_selection import catalog_source_projection
+
+            source_from, source_columns = (
+                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+            )
 
             locations = list(
                 connection.execute(
@@ -306,9 +310,9 @@ class FrozenCurrentExports:
                         catalog.c.longitude,
                         catalog.c.nx,
                         catalog.c.ny,
-                        *(catalog_source_columns(catalog) if self.source_inventory else []),
+                        *source_columns,
                     )
-                    .select_from(catalog_source_from(catalog) if self.source_inventory else catalog)
+                    .select_from(source_from)
                     .where(catalog.c.enabled.is_(True))
                     .order_by(catalog.c.location_id)
                     .limit(MAX_SNAPSHOT_LOCATIONS + 1)
@@ -433,7 +437,7 @@ class FrozenCurrentExports:
             if existing is not None and connection.scalar(
                 select(self.snapshots.c.issue_order).where(
                     self.snapshots.c.issue_order > existing["issue_order"],
-                    self._same_selection(),
+                    *self._same_selection(),
                 ).limit(1)
             ) is None:
                 return {**existing, "_reused": True}
@@ -461,13 +465,14 @@ class FrozenCurrentExports:
             return row
 
     def _same_selection(self):
-        """이 reader와 같은 selection(없으면 selection 없는 기본 집합)인 snapshot 행 조건."""
+        """이 reader와 같은 selection(없으면 selection 없는 기본 집합)인 snapshot 행 조건들.
+
+        하위 reader(예보)도 같은 모양(조건 tuple)을 돌려준다. 호출부는 풀어서 쓴다.
+        """
+        selection = self.snapshots.c.manifest["selection"]
         if self.current_selection is None:
-            return self.snapshots.c.manifest["selection"]["kind"].as_string().is_(None)
-        return (
-            self.snapshots.c.manifest["selection"]["signature"].as_string()
-            == self.current_selection["signature"]
-        )
+            return (selection["kind"].as_string().is_(None),)
+        return (selection["signature"].as_string() == self.current_selection["signature"],)
 
     def _previous_success(self):
         # reader TTL와 마지막 승인 data manifest의 수명은 다르다. 새 handle만 만든다.
@@ -475,7 +480,7 @@ class FrozenCurrentExports:
             row = (
                 session.execute(
                     select(self.snapshots)
-                    .where(self._same_selection())
+                    .where(*self._same_selection())
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
@@ -712,7 +717,11 @@ class FrozenCurrentExports:
         ):
             session.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
             catalog = self.heads.metadata.tables["weather_locations"]
-            from .export_inventory_selection import catalog_source_columns, catalog_source_from
+            from .export_inventory_selection import catalog_source_projection
+
+            source_from, source_columns = (
+                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+            )
 
             roster = session.execute(
                 select(
@@ -721,9 +730,9 @@ class FrozenCurrentExports:
                     catalog.c.ny,
                     catalog.c.latitude,
                     catalog.c.longitude,
-                    *(catalog_source_columns(catalog) if self.source_inventory else []),
+                    *source_columns,
                 )
-                .select_from(catalog_source_from(catalog) if self.source_inventory else catalog)
+                .select_from(source_from)
                 .where(catalog.c.enabled.is_(True))
                 .order_by(catalog.c.location_id)
                 .limit(MAX_SNAPSHOT_LOCATIONS + 1)

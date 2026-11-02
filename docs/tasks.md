@@ -59,6 +59,13 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
   나눈다. "run SUCCESS 뒤에만 승격" 규칙은 그대로 두고 step 단위 승격 판정은 도입하지 않는다. 수용:
   current 승격 지연이 current job 소요 시간 수준으로 줄고, forecast 실패가 current 승격을 막지 않으며,
   provider 호출 수·quota가 분리 전과 같거나 적다.
+- [ ] **W-EXP-LANE-01 / P1 (소유자 2026-11-02: 지금은 그대로, #196 배포 뒤 재측정)** — 외부 slow lane(상한 1)은
+  분리 전부터 용량을 넘었다. 2026-10-29~11-02 성공 run 소요는 open_meteo 200~223분, openweathermap 60~82분,
+  weatherapi 26~36분이다. 3시간 주기에 sweep이 약 5시간이다. 분리 뒤 2026-11-02 12:10Z에는 open_meteo_forecast가
+  09:57Z부터 2시간 넘게 돌았고, 그 뒤에 open_meteo_current·weatherapi_forecast·openweathermap_forecast가 대기열에 있었다.
+  current part도 긴 forecast sweep 뒤에서 기다린다. 선택지: (a) current part를 fast lane으로(동시 sweep·
+  openweathermap 겹침 위험), (b) open_meteo 위치 상한 380→약 150(env만, quota 중립), (c) 둘 다. #196 배포 뒤
+  같은 지표(provider별 sweep 소요·slow lane 대기 수·current 승격 지연)를 다시 재고 결정한다.
 - [ ] **W-EXP-GC-01 / P1 (목표 2026-11-03)** — PR #176 artifact GC를 `dry_run`으로 약 1주 관찰한 뒤
   `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`로 바꾼다. 볼 것: `ktw_export_artifact_gc_reclaimable_bytes`
   추이와 publisher sensor skip 메시지의 `stages=…gc:<초>`. 전환 조건은 배타 guard 안 참조 재확인이

@@ -83,6 +83,9 @@ pythonpath = [
   "src",
   "packages/kor-travel-weather-api/src",
   "packages/kor-travel-weather-dagster/src",
+  # tests/test_export_daily_sources.py가 API 시험의 fixture 모듈(test_all_source_exports)을 쓴다.
+  # 전체 실행에서는 그 디렉터리가 수집될 때 경로에 올라 우연히 됐다. 파일 단위 실행에서도 되게 명시한다.
+  "packages/kor-travel-weather-api/tests",
 ]
 asyncio_mode = "auto"
 
