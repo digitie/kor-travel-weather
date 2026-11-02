@@ -328,7 +328,8 @@ def test_expiry_horizon_derives_from_freshness_and_spares_kma_rotation():
         source_max_age,
     )
 
-    assert (SOURCE_EXPIRY_FLOOR, SOURCE_EXPIRY_FACTOR) == (timedelta(hours=24), 2)
+    assert SOURCE_EXPIRY_FLOOR == timedelta(hours=24)
+    assert SOURCE_EXPIRY_FACTOR == 2
     expected_hours = {
         "kma_ultra_short_nowcast": 24, "kma_ultra_short_forecast": 24, "kma_short_forecast": 24,
         "kma_mid_forecast": 36, "airkorea_realtime_measurement": 24, "open_meteo_current": 24,
