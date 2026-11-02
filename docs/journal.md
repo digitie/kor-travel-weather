@@ -1,3 +1,11 @@
+## 2026-11-03 — reference 조회와 export 직렬화 반복 비용 개선
+
+큰 JSON을 종류 조건으로 반복 해석하는 W1을 실제 로컬 PG18에서 재현하고 0036의 작은 generated
+종류 컬럼으로 바꿨다. 같은 snapshot을 선택하며 warm77.2→6.2ms였다. DTO 검증을 유지한 304 직렬화
+생략·200 직접 JSON과 예보 metric 단일 순회를 함께 반영했다. Docker67·최종추가16, WSL 추가16·
+공개마커23·Alembic/daily14와 ruff 통과. 운영 변경 없이 feature branch 구현만 완료했다.
+[측정과 한계](reports/2026-11-03-weather-read-performance.md).
+
 ## 2026-11-03 — PR198 새 API 이미지 운영 반영 완료
 
 제품 `643bb34e094f474486ef872a7e6fdbe5c9dfbcaa`의 API 새 이미지`b4da586588b4`를 포트12201에 반영했다. 일시 경합503/Retry-After 분류14사례, 실제 health/status200·15항목, Manager healthy와 배포 부모 실제0/정상 종료를 확인했다. 웹·수집기·일정·다른 서비스·환경은 보존했고 백업·복원은 사용자 지시로 생략했다. [실제 이미지·원 실패·검증 범위](reports/2026-11-03-pr198-api-release.md).

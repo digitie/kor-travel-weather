@@ -209,6 +209,7 @@ def test_a_newer_handle_of_the_same_selection_still_blocks_reuse(external_reposi
             snapshots.c.snapshot_id == first["meta"]["snapshot_id"],
         )).mappings().one())
         row.pop("issue_order")
+        row.pop("selection_kind")
         newer_id = str(uuid.uuid4())
         row.update(snapshot_id=newer_id, manifest_digest="0" * 64)
         connection.execute(snapshots.insert().values(**row))
