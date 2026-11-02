@@ -121,5 +121,5 @@ def read_scope_plans(connection, table, attempt_ids):
     finally:
         result.close()
     if set(plans) != set(attempt_ids):
-        raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
+        raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
     return plans
