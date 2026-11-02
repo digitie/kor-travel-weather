@@ -1,5 +1,10 @@
 ## 2026-11-02 — #194 CS 배포(odroid)·Map 하한 실측
 
+## 2026-11-02 전체 PR 새 이미지 반영 완료
+
+제품 소스 `ccaed85630efba4df3220e2797b152d05e100ac4`의 새 이미지를 운영에 반영했다. 웹부터 교체한 뒤 수집 자연 종료·migration·API/수집 서버 교체·원 일정 복원·Manager metadata 정산을 마쳤다. Firefox PC/모바일 실제 결과와 범위는 [통합 배포 기록](reports/2026-11-02-all-pr-images-release.md)에 정리했다. 백업·복원과 추가 독립 리뷰는 사용자 지시로 생략했다.
+
+
 - CS만 `9e70cc8e`로 교체했다(09:27Z, G 안). 단기예보 run은 상한 tag를 14400으로 늘려 보호했고,
   `adopt --replace-current`로 등록했다(verify healthy). 교체 뒤 fresh 승격이 tick당 27~50건으로 돈다.
 - Map 소비 실측(n150): 위치 1451·current 1414·초단기 1203·중기 21(중기 target 21곳)·W5 1451 적재.

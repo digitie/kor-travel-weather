@@ -1,5 +1,10 @@
 ## 2026-11-02 — #194 CS 배포 완료(odroid)
 
+## 2026-11-02 전체 PR 새 이미지 반영 완료
+
+제품 소스 `ccaed85630efba4df3220e2797b152d05e100ac4`의 새 이미지를 운영에 반영했다. 웹부터 교체한 뒤 수집 자연 종료·migration·API/수집 서버 교체·원 일정 복원·Manager metadata 정산을 마쳤다. Firefox PC/모바일 실제 결과와 범위는 [통합 배포 기록](reports/2026-11-02-all-pr-images-release.md)에 정리했다. 백업·복원과 추가 독립 리뷰는 사용자 지시로 생략했다.
+
+
 - `9e70cc8e`의 Dagster 코드서버만 ARM64로 빌드해(`kor-travel-weather-dagster:rel-9e70cc8ed3f1`, id `739b1b77`)
   09:27Z에 교체했다. API·웹·스키마(0035)는 그대로다. 단기예보 run `b08abd91`(05:43 시작, 3시간+)은
   tag 상한을 14400으로 늘려 끝까지 보호한 뒤 교체했다. 나머지 진행 run은 SAFE 취소 후 새 job으로 다시
