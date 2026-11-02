@@ -28,6 +28,10 @@ class ExportArtifactError(RuntimeError):
     """불완전한 export 후보는 원천 성공/공개 세대와 구분한다."""
 
 
+class ExportGuardTimeout(ExportArtifactError):
+    """artifact guard를 상한 안에 얻지 못했다. export 부재가 아니라 일시 경합이다."""
+
+
 @dataclass(frozen=True)
 class PreparedExportChunk:
     payload: bytes
@@ -118,7 +122,7 @@ class ExportArtifactStore:
                     raise
                 return descriptor
             if time.monotonic() >= deadline:
-                raise ExportArtifactError("artifact 동시 읽기 대기 상한을 넘었습니다.")
+                raise ExportGuardTimeout("artifact 동시 읽기 대기 상한을 넘었습니다.")
             time.sleep(0.01)
 
     def _turnstile(self, deadline: float) -> int:
@@ -139,7 +143,7 @@ class ExportArtifactStore:
                     return descriptor
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise ExportArtifactError("artifact 입장 대기 상한을 넘었습니다.") from None
+                        raise ExportGuardTimeout("artifact 입장 대기 상한을 넘었습니다.") from None
                     time.sleep(0.01)
         except BaseException:
             os.close(descriptor)
@@ -171,7 +175,7 @@ class ExportArtifactStore:
                     acquired = True
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise ExportArtifactError(
+                        raise ExportGuardTimeout(
                             "artifact guard 대기 상한을 넘었습니다."
                         ) from None
                     time.sleep(0.01)
