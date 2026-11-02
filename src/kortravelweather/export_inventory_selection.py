@@ -89,10 +89,11 @@ SOURCE_EXPIRY_FACTOR = 2
 def source_expiry(dataset):
     """이 나이를 넘은 위치별 승인은 값·meta·건강도 어디에도 쓰지 않는다(coverage 공백).
 
-    나이는 ``source_collected_at``(원천이 이 위치를 마지막으로 준 때)로만 잰다. 원천이 계속 주되
-    관측 시각(``data_revision_at``)이 멈춘 경우는 공백이 아니라 원천의 stale 값이므로 그대로 내보내고
-    stale로 표시한다. 요청한 원천이 전부 만료면 낼 것이 없어 reader가 이전 snapshot으로 fallback한다
-    (단일 원천 export는 옛 값을 stale로 계속 낸다 — 만료 전과 같되 정직하게 표시된다).
+    나이는 ``source_collected_at``(원천이 이 위치를 마지막으로 준 때)로만 잰다. 원천이 계속
+    주되 관측 시각(``data_revision_at``)이 멈춘 경우는 공백이 아니라 원천의 stale 값이므로
+    그대로 내보내고 stale로 표시한다. 요청한 원천이 전부 만료면 낼 것이 없어 reader가 이전
+    snapshot으로 fallback한다(단일 원천 export는 옛 값을 stale로 계속 낸다 — 만료 전과 같되
+    정직하게 표시).
     """
     return max(SOURCE_EXPIRY_FLOOR, SOURCE_EXPIRY_FACTOR * source_max_age(dataset))
 
