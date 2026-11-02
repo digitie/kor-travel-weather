@@ -549,15 +549,14 @@ class _Orig(Exception):
 
 
 def _errors():
+    # guard 대기는 위의 실제 flock 시험이 다룬다.
     from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
     from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-    from kortravelweather.export_artifacts import ExportGuardTimeout
     from kortravelweather.export_snapshots import ExportSnapshotUnavailable
 
     retry, missing = "EXPORT_TEMPORARILY_UNAVAILABLE", "EXPORT_NOT_READY"
     return [
-        (ExportGuardTimeout("artifact guard 대기 상한을 넘었습니다."), retry),
         (OperationalError("SELECT 1", {}, _Orig(None)), retry),
         (DBAPIError("SELECT 1", {}, _Orig("57014")), retry),  # statement_timeout
         (DBAPIError("SELECT 1", {}, _Orig("55P03")), retry),  # lock_timeout
@@ -570,16 +569,16 @@ def _errors():
     ]
 
 
-@pytest.mark.parametrize("case", range(len(_errors())))
+@pytest.mark.parametrize(("error", "code"), _errors(), ids=[
+    "operational", "57014", "55P03", "40001", "pool", "bare", "42703", "missing", "oserror",
+])
 def test_read_contention_is_retryable_503_and_missing_export_stays_not_ready(
-    repository, tmp_path, monkeypatch, case
+    repository, tmp_path, monkeypatch, error, code
 ):
-    """timeout·guard 대기는 재시도 503, 진짜 부재·결함은 EXPORT_NOT_READY로 남긴다."""
+    """timeout·경합은 재시도 503, 진짜 부재·결함은 EXPORT_NOT_READY로 남긴다."""
     from kortravelweather_api.routers import service_exports
 
     from kortravelweather.export_snapshots import FrozenCurrentExports
-
-    error, code = _errors()[case]
 
     def fail(*args, **kwargs):
         raise error
