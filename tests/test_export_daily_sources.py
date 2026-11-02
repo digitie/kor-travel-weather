@@ -271,7 +271,7 @@ def test_expired_observation_source_is_a_coverage_gap_not_a_503(
     from kortravelweather.settings import WeatherSettings
 
     repo = external_repository
-    for kind in ("mountain", "krex"):
+    for kind in ("mountain", "dust", "krex"):  # krforest는 산악·청정넷 둘 다 기대한다
         _sdk(repo, tmp_path, kind, monkeypatch)
     _drain(repo, tmp_path)
     client = TestClient(create_app(WeatherSettings(
