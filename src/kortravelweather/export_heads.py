@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from functools import lru_cache
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -64,6 +65,27 @@ def _digest(value: Any) -> str:
             default=str,
         ).encode()
     ).hexdigest()
+
+
+#: 한 freeze가 같은 descriptor의 namespace를 여러 번 묻는다(2026-11-02 운영 실측: 외부 예보 첫
+#: 페이지 하나에 descriptor 약 780개, namespace 계산 6,081번·3.5초). descriptor는 frozen이라 필드
+#: 값이 같으면 namespace도 같다. 그래서 필드 값(hash·eq)을 key로 기억한다.
+#: ``model_copy(update=…)``로 만든 descriptor는 필드가 달라 key도 달라진다.
+_NAMESPACE_CACHE_SIZE = 65_536
+
+
+@lru_cache(maxsize=_NAMESPACE_CACHE_SIZE)
+def _cached_namespace(descriptor: BaseModel) -> str:
+    return _digest(descriptor.model_dump(mode="json"))
+
+
+def descriptor_namespace(descriptor: BaseModel) -> str:
+    """frozen scope descriptor의 head namespace(정규 JSON의 sha256)."""
+    try:
+        return _cached_namespace(descriptor)
+    except TypeError:
+        # hash할 수 없는 필드 값이 있으면 기억하지 않고 계산한다(결과는 같다).
+        return _digest(descriptor.model_dump(mode="json"))
 
 
 def semantic_point_digest(point: Mapping[str, Any]) -> str:
@@ -137,7 +159,7 @@ class ScopeDescriptor(BaseModel):
 
     @property
     def namespace(self) -> str:
-        return _digest(self.model_dump(mode="json"))
+        return descriptor_namespace(self)
 
 
 def parse_scope_descriptor(value):

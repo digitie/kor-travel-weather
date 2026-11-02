@@ -14,6 +14,7 @@ from .export_inventory_selection import (
     SDK_NETWORKS,
     approved_source_selection,
     catalog_source_columns,
+    catalog_source_from,
     source_max_age,
 )
 from .export_snapshots import (
@@ -124,7 +125,9 @@ class DailySummaryExports(FrozenCurrentExports):
         locations = connection.execute(select(
             catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
             catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
-        ).where(catalog.c.enabled.is_(True)).order_by(catalog.c.location_id).limit(
+        ).select_from(catalog_source_from(catalog)).where(
+            catalog.c.enabled.is_(True),
+        ).order_by(catalog.c.location_id).limit(
             MAX_SNAPSHOT_LOCATIONS + 1,
         )).mappings().all()
         if len(locations) > MAX_SNAPSHOT_LOCATIONS:

@@ -12,6 +12,7 @@ from .export_heads import _digest
 from .export_inventory_selection import (
     approved_source_selection,
     catalog_source_columns,
+    catalog_source_from,
     source_max_age,
 )
 from .export_snapshots import (
@@ -230,7 +231,7 @@ class FrozenMidForecastExports(FrozenForecastExports):
             rows = connection.execute(select(
                 catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
                 catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
-            ).where(catalog.c.enabled.is_(True)).limit(
+            ).select_from(catalog_source_from(catalog)).where(catalog.c.enabled.is_(True)).limit(
                 MAX_SNAPSHOT_LOCATIONS + 1,
             )).mappings().all()
             if len(rows) > MAX_SNAPSHOT_LOCATIONS:

@@ -50,9 +50,9 @@ class RetrievalScopeDescriptor(BaseModel):
 
     @property
     def namespace(self):
-        from .export_heads import _digest
+        from .export_heads import descriptor_namespace
 
-        return _digest(self.model_dump(mode="json"))
+        return descriptor_namespace(self)
 
 
 class _NoNetwork:
