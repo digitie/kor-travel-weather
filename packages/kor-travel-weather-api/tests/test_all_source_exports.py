@@ -240,7 +240,8 @@ def test_expired_source_is_left_out_of_current_and_kma_rotation_age_is_not(
     assert "python-kma-api" in {item["provider"] for item in rotating.json()["items"]}
     _age_source(repo, "python-kma-api", timedelta(0))
     # 응답에서 계속 빠지는 원천: 만료를 넘으면 그 원천 없이 200 stale, meta는 살아 있는 원천 기준.
-    _age_source(repo, "python-krex-api", source_expiry("krex_restarea_weather") + timedelta(hours=1))
+    dead = source_expiry("krex_restarea_weather") + timedelta(hours=1)
+    _age_source(repo, "python-krex-api", dead)
     expired = client.get(url, headers=headers)
     assert expired.status_code == 200 and expired.json()["meta"]["source_status"] == "stale"
     providers = {item["provider"] for item in expired.json()["items"]}

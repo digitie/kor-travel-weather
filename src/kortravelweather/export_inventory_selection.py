@@ -80,7 +80,8 @@ def source_max_age(dataset):
 
 #: 승인 만료 = max(하한, 배수 × 신선도 상한). 신선도 상한을 넘으면 stale, 만료를 넘으면 그 원천이
 #: 더 이상 그 위치를 내지 않는 것으로 보고 export에서 뺀다(2026-11-03: 응답에서 빠진 지점의 6일 전
-#: 값이 "현재값"으로 나가며 전체 meta를 10-26으로 끌어내렸다). KMA 회전 slot은 수 시간 안에 갱신된다.
+#: 값이 "현재값"으로 나가며 전체 meta를 10-26으로 끌어내렸다). KMA 회전 slot은 수 시간 안에
+#: 갱신된다.
 SOURCE_EXPIRY_FLOOR = timedelta(hours=24)
 SOURCE_EXPIRY_FACTOR = 2
 
