@@ -8,7 +8,14 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, select, true, tuple_
 
 from .export_artifacts import ExportArtifactError
-from .export_capacity import MAX_SOURCE_SCOPES, ExportCapacityExceeded, any_of, read_scope_plans
+from .export_capacity import (
+    MAX_MANIFEST_BYTES,
+    MAX_SOURCE_SCOPES,
+    ExportCapacityExceeded,
+    MetadataBudget,
+    any_of,
+    read_scope_plans,
+)
 from .export_external import RetrievalScopeDescriptor
 from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
@@ -149,7 +156,10 @@ class ApprovedSelection:
 #: plan 3,307개를 서버 cursor로 읽고 해석하는 데 6~8초였다. 기억한 plan은 존재만 다시 확인한다
 #: (유실 탐지 유지).
 _PLAN_CACHE_SIZE = 16_384
-_parsed_plans: OrderedDict[str, object] = OrderedDict()
+_PLAN_CACHE_BYTES = 64 * 1024 * 1024
+#: attempt_id -> (해석된 descriptor, 정규 JSON 바이트 수). 바이트로도 상한을 둔다.
+_parsed_plans: OrderedDict[str, tuple[object, int]] = OrderedDict()
+_parsed_plans_bytes = 0
 _parsed_plans_lock = threading.Lock()
 
 
@@ -165,16 +175,26 @@ def _remembered_plans(attempt_ids):
 
 
 def _remember_plans(parsed):
+    global _parsed_plans_bytes
     with _parsed_plans_lock:
         for key, value in parsed.items():
+            previous = _parsed_plans.pop(key, None)
+            if previous is not None:
+                _parsed_plans_bytes -= previous[1]
             _parsed_plans[key] = value
-            _parsed_plans.move_to_end(key)
-        while len(_parsed_plans) > _PLAN_CACHE_SIZE:
-            _parsed_plans.popitem(last=False)
+            _parsed_plans_bytes += value[1]
+        while _parsed_plans and (
+            len(_parsed_plans) > _PLAN_CACHE_SIZE or _parsed_plans_bytes > _PLAN_CACHE_BYTES
+        ):
+            _parsed_plans_bytes -= _parsed_plans.popitem(last=False)[1][1]
 
 
 def parsed_scope_plans(connection, plans, attempt_ids):
-    """attempt별 해석된 plan. 기억한 것은 행 존재만, 나머지는 읽어서 해석하고 기억한다."""
+    """attempt별 해석된 plan. 기억한 것은 행 존재만, 나머지는 읽어서 해석하고 기억한다.
+
+    선택 전체의 누적 메타데이터 예산(``MAX_MANIFEST_BYTES``)은 기억 여부와 무관하게 같은 바이트로
+    다시 센다 — 결과가 프로세스 이력에 따라 달라지지 않는다.
+    """
     attempt_ids = tuple(dict.fromkeys(attempt_ids))
     if len(attempt_ids) > MAX_SOURCE_SCOPES:
         raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
@@ -186,12 +206,15 @@ def parsed_scope_plans(connection, plans, attempt_ids):
         if present != remembered.keys():
             raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
     missing = [key for key in attempt_ids if key not in remembered]
-    parsed = {
-        key: parse_scope_descriptor(value)
+    encoder = MetadataBudget().encoder
+    fresh = {
+        key: (parse_scope_descriptor(value), len(encoder.encode(value).encode("utf-8")))
         for key, value in read_scope_plans(connection, plans, missing).items()
     }
-    _remember_plans(parsed)
-    return {**remembered, **parsed}
+    if sum(size for _, size in (*remembered.values(), *fresh.values())) > MAX_MANIFEST_BYTES:
+        raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+    _remember_plans(fresh)
+    return {key: value[0] for key, value in {**remembered, **fresh}.items()}
 
 
 def _cohort_descriptors(row):

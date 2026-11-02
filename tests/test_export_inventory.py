@@ -278,6 +278,8 @@ def test_parsed_plans_are_remembered_per_attempt_and_a_lost_plan_is_still_detect
         ))
     _publish(repo, tmp_path, targets)
     selection_module._parsed_plans.clear()
+    selection_module._parsed_plans_bytes = 0
+
     def descriptor_reads(seen):
         return [s for s, _ in seen if "weather_export_scope_plans.descriptor" in s]
 
@@ -289,6 +291,11 @@ def test_parsed_plans_are_remembered_per_attempt_and_a_lost_plan_is_still_detect
     assert [(s.descriptor, s.location_ids) for s in second.scopes] == [
         (s.descriptor, s.location_ids) for s in first.scopes
     ]
+    # 누적 예산은 기억 여부와 무관하다(데워진 프로세스도 같은 결과).
+    with pytest.MonkeyPatch.context() as tight:
+        tight.setattr(selection_module, "MAX_MANIFEST_BYTES", 1)
+        with pytest.raises(ExportArtifactError, match="예산"):
+            _selection(repo)
     heads = ExportHeads(repo)
     with repo.engine.begin() as c:
         c.execute(delete(heads.plans).where(heads.plans.c.attempt_id == select(
@@ -325,7 +332,8 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
         name in s for name in ("weather_export_scope_plans", "weather_export_heads.namespace",
                                "weather_export_scope_owners")
     )]
-    assert big and all(len(p) <= 3 for _, p in big)  # 목록 하나가 파라미터 하나다
+    # 목록 하나가 배열 파라미터 하나다(위치 3곳이라 개수로는 IN 목록과 구별되지 않는다).
+    assert big and all("= ANY(" in s and " IN (" not in s for s, _ in big)
     heads = ExportHeads(repo)
     runs_table = heads.metadata.tables["weather_sync_runs"]
     with repo.engine.begin() as c:
