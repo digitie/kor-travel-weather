@@ -14,9 +14,14 @@ from anyio import to_thread
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
-from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+from kortravelweather.export_artifacts import (
+    ExportArtifactError,
+    ExportArtifactStore,
+    ExportGuardTimeout,
+)
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
@@ -33,6 +38,13 @@ from ..auth import require_admin
 from ..response import Problem, request_id
 
 logger = logging.getLogger(__name__)
+
+#: 일시 경합 503의 재시도 간격(초). DB statement/lock 상한(5s/1s)과 reader guard(2s)를
+#: 넘긴 요청이 같은 요청(같은 cursor)을 다시 보낼 때까지의 최소 대기다.
+EXPORT_RETRY_AFTER_SECONDS = 5
+TEMPORARILY_UNAVAILABLE = "EXPORT_TEMPORARILY_UNAVAILABLE"
+#: SQLSTATE 분류(``failure_reason``) 중 export 부재가 아니라 읽기 경합인 것.
+_TRANSIENT_REASONS = frozenset({"statement_timeout", "lock_timeout", "deadlock", "serialization"})
 
 SourceStatus = Literal["ok", "stale", "failed"]
 ExportStyle = Literal["observed", "nowcast", "ultra_short", "short", "mid", "external"]
@@ -157,7 +169,18 @@ router = APIRouter(
         304: {"description": "데이터/vector/페이지/상태가 변경되지 않음"},
         503: {
             "model": ExportUnavailable,
-            "description": "완결된 성공 export가 없습니다. 빈 정상 집합으로 해석하지 마세요.",
+            "description": (
+                "code=EXPORT_NOT_READY: 완결된 성공 export가 없습니다. "
+                "code=EXPORT_TEMPORARILY_UNAVAILABLE: DB/artifact 읽기 경합으로 상한 안에 "
+                "끝나지 않았습니다. Retry-After 초 뒤 같은 요청(같은 cursor)을 다시 보내세요. "
+                "둘 다 빈 정상 집합으로 해석하지 마세요."
+            ),
+            "headers": {
+                "Retry-After": {
+                    "description": "EXPORT_TEMPORARILY_UNAVAILABLE일 때만. 재시도까지 최소 초",
+                    "schema": {"type": "integer", "minimum": 1},
+                },
+            },
         },
     },
 )
@@ -170,10 +193,16 @@ def _unavailable(
 ) -> JSONResponse:
     # mutable current의 부분 commit을 성공 snapshot으로 공개하지 않는다.
     # 다음 단계의 receipt·terminal 성공 승격 전에는 DB/provider도 조회하지 않는다.
+    transient = code == TEMPORARILY_UNAVAILABLE
     body = ExportUnavailable(
-        title="서비스 export 준비 중",
+        title="서비스 export 일시 경합" if transient else "서비스 export 준비 중",
         status=status,
-        detail="완결된 성공 export 집합이 아직 없습니다.",
+        detail=(
+            "export 읽기가 일시 경합으로 상한 안에 끝나지 않았습니다. "
+            "Retry-After 뒤 같은 요청을 다시 보내세요."
+            if transient
+            else "완결된 성공 export 집합이 아직 없습니다."
+        ),
         code=code,
         request_id=request_id(request),
         meta=ExportMeta(
@@ -187,8 +216,26 @@ def _unavailable(
         status_code=status,
         content=body.model_dump(mode="json"),
         media_type="application/problem+json",
-        headers={"cache-control": "no-store, private", "x-source-status": "failed"},
+        headers={
+            "cache-control": "no-store, private",
+            "x-source-status": "failed",
+            **({"retry-after": str(EXPORT_RETRY_AFTER_SECONDS)} if transient else {}),
+        },
     )
+
+
+def _transient(exc: Exception) -> bool:
+    """export 부재가 아니라 읽기 경합이면 참이다. 재시도하면 같은 snapshot을 읽는다."""
+    if isinstance(exc, ExportGuardTimeout | OperationalError | PoolTimeoutError):
+        return True
+    return isinstance(exc, SQLAlchemyError) and _cause(exc) in _TRANSIENT_REASONS
+
+
+def _failed(request: Request, resource: str, exc: Exception) -> JSONResponse:
+    _log_unavailable(request, resource, _cause(exc))
+    if _transient(exc):
+        return _unavailable(request, code=TEMPORARILY_UNAVAILABLE)
+    return _unavailable(request)
 
 
 def _accepts_gzip(header: str) -> bool:
@@ -338,8 +385,7 @@ async def _frozen_response(
     except ExportSnapshotExpired:
         return _unavailable(request, status=410, code="EXPORT_SNAPSHOT_EXPIRED")
     except (ExportArtifactError, OSError, SQLAlchemyError) as exc:
-        _log_unavailable(request, resource, _cause(exc))
-        return _unavailable(request)
+        return _failed(request, resource, exc)
     return _rendered(payload, headers)
 
 
@@ -398,8 +444,7 @@ async def export_status(
             limiter=request.app.state.service_export_limiter,
         )
     except (ExportArtifactError, SQLAlchemyError) as exc:
-        _log_unavailable(request, "status", _cause(exc))
-        return _unavailable(request)
+        return _failed(request, "status", exc)
     return _rendered(payload, headers)
 
 

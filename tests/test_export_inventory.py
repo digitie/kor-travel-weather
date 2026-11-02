@@ -184,6 +184,58 @@ def test_selection_preserves_failed_intent_and_distinguishes_optional_from_requi
         ))
 
 
+def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_retention(
+    external_repository, tmp_path,
+):
+    """위치마다 attempt·plan을 join하지 않는다. attempt 이력 정리는 승인 위치를 지우지 않는다."""
+    from sqlalchemy import event
+
+    from kortravelweather.export_external_cohorts import external_cohort_table
+
+    repo = external_repository
+    target = ProviderLocation("attempt-retention-" + uuid.uuid4().hex, 37.5, 127, {})
+    repo.create_location(WeatherLocation(
+        location_id=target.location_id, name="attempt 이력 정리", latitude=37.5, longitude=127,
+    ))
+    generation = _publish(repo, tmp_path, [target])[target.location_id]["generation_id"]
+    heads = ExportHeads(repo)
+
+    def statements():
+        seen = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            seen.append(" ".join(statement.split()))
+
+        event.listen(repo.engine, "before_cursor_execute", capture)
+        try:
+            selection = _selection(repo)
+        finally:
+            event.remove(repo.engine, "before_cursor_execute", capture)
+        run_ids = [s for s in seen if s.startswith(
+            "SELECT weather_export_attempts.attempt_id, weather_export_attempts.run_id FROM"
+        )]
+        inventory = [s for s in seen if "FROM weather_export_approved_locations" in s]
+        return selection, inventory, run_ids
+
+    selection, inventory, run_ids = statements()
+    assert not selection.unconfirmed and len(inventory) == len(run_ids) == 1
+    assert "weather_export_attempts" not in inventory[0]
+    assert "weather_export_scope_plans" not in inventory[0]
+    with repo.engine.begin() as c:
+        c.execute(delete(heads.lifecycle.attempts).where(
+            heads.lifecycle.attempts.c.attempt_id == select(heads.generations.c.attempt_id).where(
+                heads.generations.c.generation_id == generation,
+            ).scalar_subquery(),
+        ))
+    retained, _, _ = statements()
+    assert retained.unconfirmed  # 이력이 없으면 cohort 대조를 확인할 수 없다
+    assert target.location_id in {key for scope in retained.scopes for key in scope.location_ids}
+    with repo.engine.begin() as c:
+        c.execute(delete(external_cohort_table(heads.metadata)))
+    _, _, run_ids = statements()
+    assert run_ids == []  # cohort 대조가 없으면 run_id를 읽지 않는다
+
+
 def test_inventory_generation_is_a_live_root_even_after_head_replacement(
     external_repository, tmp_path,
 ):
