@@ -151,7 +151,11 @@ def _selection_scans(repo, run):
     seen = []
 
     def capture(_conn, _cursor, statement, parameters, _context, _many):
-        if "weather_export_snapshots" in statement and "selection" in repr(parameters):
+        if (
+            statement.lstrip().upper().startswith("SELECT")
+            and "weather_export_snapshots" in statement
+            and "selection" in repr(parameters)
+        ):
             seen.append(statement)
 
     event.listen(repo.engine, "before_cursor_execute", capture)

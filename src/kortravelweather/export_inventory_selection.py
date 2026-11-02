@@ -24,7 +24,7 @@ SDK_NETWORKS = {
 }
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=64)
 def _catalog_metadata(catalog):
     """catalog의 ``metadata``(json)를 행마다 **한 번만** jsonb로 바꾸는 LATERAL.
 
