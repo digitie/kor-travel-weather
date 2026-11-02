@@ -78,6 +78,18 @@ def source_max_age(dataset):
     return timedelta(hours=3)
 
 
+#: 승인 만료 = max(하한, 배수 × 신선도 상한). 신선도 상한을 넘으면 stale, 만료를 넘으면 그 원천이
+#: 더 이상 그 위치를 내지 않는 것으로 보고 export에서 뺀다(2026-11-03: 응답에서 빠진 지점의 6일 전
+#: 값이 "현재값"으로 나가며 전체 meta를 10-26으로 끌어내렸다). KMA 회전 slot은 수 시간 안에 갱신된다.
+SOURCE_EXPIRY_FLOOR = timedelta(hours=24)
+SOURCE_EXPIRY_FACTOR = 2
+
+
+def source_expiry(dataset):
+    """이 나이를 넘은 위치별 승인은 값·meta·건강도 어디에도 쓰지 않는다(coverage 공백)."""
+    return max(SOURCE_EXPIRY_FLOOR, SOURCE_EXPIRY_FACTOR * source_max_age(dataset))
+
+
 def _validate_anchor(descriptor, current):
     if isinstance(descriptor, ScopeDescriptor):
         if (
@@ -119,6 +131,8 @@ class ApprovedScope:
 class ApprovedSelection:
     scopes: tuple[ApprovedScope, ...]
     unconfirmed: bool
+    #: 만료로 뺀 (provider, dataset_key, location_id). 미확인이 아니라 coverage 공백이다.
+    expired: frozenset[tuple[str, str, str]] = frozenset()
 
 
 def _cohort_descriptors(row):
@@ -164,6 +178,20 @@ def approved_source_selection(
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
     catalog = {row["location_id"]: row for row in locations}
+    now = datetime.now(UTC)
+    # 만료한 승인은 값을 내지 않으므로 plan·좌표·건강도 검증 대상도 아니다. 최초 승인 여부만 센다.
+    ever = {(row["provider"], row["dataset_key"]) for row in rows if row["location_id"] in catalog}
+    expired_parts = {
+        (row["provider"], row["dataset_key"], row["location_id"], row["source_part"])
+        for row in rows
+        if row["location_id"] in catalog
+        and now - row["source_collected_at"] > source_expiry(row["dataset_key"])
+    }
+    rows = [
+        row for row in rows
+        if (row["provider"], row["dataset_key"], row["location_id"], row["source_part"])
+        not in expired_parts
+    ]
     missing = {row["location_id"] for row in rows} - catalog.keys()
     if missing:
         catalog_table = metadata.tables["weather_locations"]
@@ -210,9 +238,8 @@ def approved_source_selection(
         key = row["provider"], row["dataset_key"], row["location_id"], row["source_part"]
         valid[key] = row
         sources.add(key[:2])
-    if expected - optional - sources:
+    if expected - optional - ever:
         raise ExportArtifactError("필수 provider/dataset의 최초 승인 위치가 없습니다.")
-    now = datetime.now(UTC)
     health_rows = [
         r for r in valid.values() if health_keys is None or r["location_id"] in health_keys
     ]
@@ -295,6 +322,8 @@ def approved_source_selection(
                 if health_keys is not None and key not in health_keys:
                     continue
                 approved = valid.get((*source, key, part))
+                if approved is None and (*source, key, part) in expired_parts:
+                    continue  # 만료 = 이 원천이 내지 않는 위치(공백). 이번 실패의 미확인이 아니다.
                 if approved is None or (
                     approved["namespace"] != descriptor_namespace
                     or run_ids.get(approved["plan_attempt_id"]) is None
@@ -321,4 +350,6 @@ def approved_source_selection(
         ))
     if not scopes or len(scopes) > MAX_SOURCE_SCOPES:
         raise ExportArtifactError("승인 source vector가 비었거나 상한을 넘었습니다.")
-    return ApprovedSelection(tuple(scopes), unconfirmed)
+    return ApprovedSelection(
+        tuple(scopes), unconfirmed, frozenset(key[:3] for key in expired_parts),
+    )

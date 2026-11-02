@@ -254,6 +254,51 @@ def test_never_approved_anchor_makes_full_roster_stale_instead_of_503(
     assert all(item["sample_count"] == 0 for item in optional.json()["items"])
 
 
+def test_expired_observation_source_is_a_coverage_gap_not_a_503(
+    external_repository, tmp_path, monkeypatch,
+):
+    """응답에서 빠진 지점의 만료한 승인은 개별 위치 조회를 503으로 막지 않는다(공백, stale)."""
+    from datetime import UTC, datetime, timedelta
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from sqlalchemy import select, update
+    from test_all_source_exports import _sdk
+
+    from kortravelweather.export_heads import ExportHeads
+    from kortravelweather.export_inventory import export_inventory_table
+    from kortravelweather.export_inventory_selection import source_expiry
+    from kortravelweather.settings import WeatherSettings
+
+    repo = external_repository
+    for kind in ("mountain", "krex"):
+        _sdk(repo, tmp_path, kind, monkeypatch)
+    _drain(repo, tmp_path)
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="expired-daily", enabled_providers=["python-krforest-api", "python-krex-api"],
+        service_exports_enabled=True, service_export_artifact_root=tmp_path,
+    ), repo))
+    headers, path = {"x-admin-token": "expired-daily"}, "/v1/service/exports/daily-summaries"
+    assert client.get(path, params={"days": 1}, headers=headers).json()["meta"][
+        "source_status"
+    ] == "ok"
+    table = export_inventory_table(ExportHeads(repo).metadata)
+    with repo.engine.begin() as connection:
+        krex_key = connection.scalar(select(table.c.location_id).where(
+            table.c.provider == "python-krex-api",
+        ))
+        connection.execute(update(table).where(table.c.provider == "python-krex-api").values(
+            source_collected_at=datetime.now(UTC)
+            - source_expiry("krex_restarea_weather") - timedelta(hours=1),
+        ))
+    full = client.get(path, params={"days": 1}, headers=headers)
+    assert full.status_code == 200 and full.json()["meta"]["source_status"] == "stale"
+    single = client.get(path, params={"days": 1, "location_id": krex_key}, headers=headers)
+    assert single.status_code == 200, single.text
+    assert single.json()["meta"]["source_status"] == "stale"
+    assert all(item["sample_count"] == 0 for item in single.json()["items"])
+
+
 def test_daily_fallback_moves_its_date_window_to_the_current_kst_date(
     external_repository, tmp_path, monkeypatch,
 ):
