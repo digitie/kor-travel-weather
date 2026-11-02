@@ -17,7 +17,7 @@ from .export_capacity import (
     read_generation_refs,
 )
 from .export_heads import ScopeDescriptor, _digest
-from .export_inventory_selection import approved_source_selection, catalog_source_columns
+from .export_inventory_selection import approved_source_selection, catalog_source_projection
 from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
@@ -87,6 +87,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if self.since is not None and self.since > watermark:
                 raise ExportCursorInvalid("아직 발급되지 않은 publication watermark입니다.")
             catalog = self.heads.metadata.tables["weather_locations"]
+            source_from, source_columns = (
+                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+            )
             roster = c.execute(
                 select(
                     catalog.c.location_id,
@@ -94,8 +97,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                     catalog.c.ny,
                     catalog.c.latitude,
                     catalog.c.longitude,
-                    *(catalog_source_columns(catalog) if self.source_inventory else []),
+                    *source_columns,
                 )
+                .select_from(source_from)
                 .where(catalog.c.enabled.is_(True))
                 .order_by(catalog.c.location_id)
                 .limit(MAX_SNAPSHOT_LOCATIONS + 1)
@@ -225,21 +229,16 @@ class FrozenForecastExports(FrozenCurrentExports):
             manifest = self._prepare_manifest(manifest)
             MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
             digest = _digest(manifest)
-            latest = select(self.snapshots.c.issue_order).where(
-                self.snapshots.c.manifest["selection"]["kind"].as_string() == "forecasts",
-                self.snapshots.c.manifest["selection"]["style"].as_string() == self.style,
-                self.snapshots.c.manifest["selection"]["since"].as_string()
-                == self.selection["since"],
-                self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
-                == self.selection.get("provider_signature"),
-            ).order_by(self.snapshots.c.issue_order.desc()).limit(1).correlate(None).scalar_subquery()
+            # 재사용 조건은 그대로다(같은 digest의 유효 handle이 그 selection의 가장 최근 발급).
+            # digest를 먼저 index로 찾고 그보다 새 행만 selection 조건으로 해석한다. 예전처럼
+            # selection 조건으로 표 전체를 먼저 훑으면 행마다 큰 manifest json을 조건 수만큼 해석해
+            # 5초 상한을 넘겼다 (2026-11-02 odroid: 한 조건으로 65행 약 3.7초).
             previous = (
                 c.execute(
                     select(self.snapshots)
                     .where(
                         self.snapshots.c.manifest_digest == digest,
                         self.snapshots.c.expires_at > now,
-                        self.snapshots.c.issue_order == latest,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
@@ -247,7 +246,12 @@ class FrozenForecastExports(FrozenCurrentExports):
                 .mappings()
                 .one_or_none()
             )
-            if previous is not None:
+            if previous is not None and c.scalar(
+                select(self.snapshots.c.issue_order).where(
+                    self.snapshots.c.issue_order > previous["issue_order"],
+                    *self._same_selection(),
+                ).limit(1)
+            ) is None:
                 return {**previous, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
@@ -272,19 +276,22 @@ class FrozenForecastExports(FrozenCurrentExports):
             )
             return row
 
+    def _same_selection(self):
+        """이 reader와 같은 forecasts selection(style·since·provider 서명)인 snapshot 행 조건."""
+        selection = self.snapshots.c.manifest["selection"]
+        return (
+            selection["kind"].as_string() == "forecasts",
+            selection["style"].as_string() == self.style,
+            selection["since"].as_string() == self.selection["since"],
+            selection["provider_signature"].as_string() == self.selection.get("provider_signature"),
+        )
+
     def _previous_forecasts(self):
         with self.heads._transaction() as s:
             row = (
                 s.execute(
                     select(self.snapshots)
-                    .where(
-                        self.snapshots.c.manifest["selection"]["kind"].as_string() == "forecasts",
-                        self.snapshots.c.manifest["selection"]["style"].as_string() == self.style,
-                        self.snapshots.c.manifest["selection"]["since"].as_string()
-                        == self.selection["since"],
-                        self.snapshots.c.manifest["selection"]["provider_signature"].as_string()
-                        == self.selection.get("provider_signature"),
-                    )
+                    .where(*self._same_selection())
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
                 )
@@ -578,10 +585,13 @@ class FrozenForecastExports(FrozenCurrentExports):
         ):
             c.execute(text("SET LOCAL statement_timeout = '5s'"))
             catalog = self.heads.metadata.tables["weather_locations"]
+            source_from, source_columns = catalog_source_projection(catalog)
             locations = c.execute(select(
                 catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
-                catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
-            ).where(catalog.c.enabled.is_(True)).limit(MAX_SNAPSHOT_LOCATIONS + 1)).mappings().all()
+                catalog.c.nx, catalog.c.ny, *source_columns,
+            ).select_from(source_from).where(
+                catalog.c.enabled.is_(True),
+            ).limit(MAX_SNAPSHOT_LOCATIONS + 1)).mappings().all()
             if len(locations) > MAX_SNAPSHOT_LOCATIONS:
                 return True
             try:

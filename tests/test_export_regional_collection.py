@@ -127,17 +127,20 @@ def test_actual_regional_runner_prepares_then_captures_full_sdk_response(
     if kind == "krex":
         from kortravelweather.export_inventory_selection import (
             approved_source_selection,
-            catalog_source_columns,
+            catalog_source_projection,
         )
 
         Client.partial = True
         assert invoke()["source_records"] == 1  # 같은 원문 재수집은 기존 fact를 유지한다.
         with repo.engine.connect() as c:
             catalog = heads.metadata.tables["weather_locations"]
+            source_from, source_columns = catalog_source_projection(catalog)
             locations = c.execute(select(
                 catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
-                catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
-            ).where(catalog.c.enabled.is_(True))).mappings().all()
+                catalog.c.nx, catalog.c.ny, *source_columns,
+            ).select_from(source_from).where(
+                catalog.c.enabled.is_(True),
+            )).mappings().all()
             selected = approved_source_selection(
                 c, heads.metadata, locations,
                 expected=[(descriptor.provider, descriptor.dataset_key)],

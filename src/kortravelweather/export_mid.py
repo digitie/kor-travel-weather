@@ -62,9 +62,9 @@ class MidScopeDescriptor(BaseModel):
 
     @property
     def namespace(self) -> str:
-        from .export_heads import _digest
+        from .export_heads import descriptor_namespace
 
-        return _digest(self.model_dump(mode="json"))
+        return descriptor_namespace(self)
 
 
 @dataclass(frozen=True)

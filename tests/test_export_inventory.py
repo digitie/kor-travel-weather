@@ -86,18 +86,21 @@ def test_quota_rotation_updates_selected_only_and_older_projection_cannot_overwr
 def _selection(repo, *, expected=None, optional=()):
     from kortravelweather.export_inventory_selection import (
         approved_source_selection,
-        catalog_source_columns,
+        catalog_source_projection,
     )
 
     heads = ExportHeads(repo)
     catalog = heads.metadata.tables["weather_locations"]
     with repo.engine.connect().execution_options(isolation_level="REPEATABLE READ") as c, c.begin():
         c.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
+        source_from, source_columns = catalog_source_projection(catalog)
         locations = c.execute(select(
             catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
             catalog.c.nx, catalog.c.ny,
-            *catalog_source_columns(catalog),
-        ).where(catalog.c.enabled.is_(True))).mappings().all()
+            *source_columns,
+        ).select_from(source_from).where(
+            catalog.c.enabled.is_(True),
+        )).mappings().all()
         return approved_source_selection(
             c, heads.metadata, locations,
             expected=expected or [("open_meteo", "open_meteo_current")], optional=optional,

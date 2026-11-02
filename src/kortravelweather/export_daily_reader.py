@@ -13,7 +13,7 @@ from .export_inventory_selection import (
     MAX_SELECTED_ROWS,
     SDK_NETWORKS,
     approved_source_selection,
-    catalog_source_columns,
+    catalog_source_projection,
     source_max_age,
 )
 from .export_snapshots import (
@@ -121,10 +121,13 @@ class DailySummaryExports(FrozenCurrentExports):
     def _inventory_coverage(self, connection, keys, rows):
         """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
         catalog = self.heads.metadata.tables["weather_locations"]
+        source_from, source_columns = catalog_source_projection(catalog)
         locations = connection.execute(select(
             catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
-            catalog.c.nx, catalog.c.ny, *catalog_source_columns(catalog),
-        ).where(catalog.c.enabled.is_(True)).order_by(catalog.c.location_id).limit(
+            catalog.c.nx, catalog.c.ny, *source_columns,
+        ).select_from(source_from).where(
+            catalog.c.enabled.is_(True),
+        ).order_by(catalog.c.location_id).limit(
             MAX_SNAPSHOT_LOCATIONS + 1,
         )).mappings().all()
         if len(locations) > MAX_SNAPSHOT_LOCATIONS:
