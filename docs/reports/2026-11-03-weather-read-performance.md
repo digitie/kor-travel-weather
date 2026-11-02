@@ -1,5 +1,31 @@
 # 2026-11-03 Weather 읽기 반복 비용 개선
 
+## 실제 API·DB 반영과 수용 완료
+
+제품 `539d6c87f5d170f5a1da2302a3a0e11601553638`의 API 이미지
+`sha256:4c349d4cf55d66b0e1c36f96ac1a112fbd9daa8f24e1bbd1a3aef0216c660350`를 반영했다.
+실제 API CID는 `c063f2a0dce548e2745d469ad29046deeda4ecd29c41f18f4a57e423600ed325`이며
+실제 명령 포트12201·기존 설정·VWorld 입력·웹과 수집 서버·일정을 보존했다.
+DB0036·API healthy·Manager adopt/verify/show healthy를 확인했다. 부모 첫 Invocation
+`88f0a691827648ac83fbf83c3fc485ed`는 실제0·MainPID0·cgroup 부재·소유 자식 종료다.
+
+첫0036 실행은 generated column 뒤 concurrent index가 invalid/ready로 남으며 실제1로 종료했다.
+원 실패와 schema35를 보존하고 일반·concurrent REINDEX를 격리 PG18에서 재현했다. 자기 인덱스의
+OID·표·정의·생성식·동작 중 builder 부재를 검산한 뒤 정상 G/R 아래 일반 REINDEX 한 개로 복구했다.
+잠금 최대5초·문장 최대180초에서 더 짧은 caller 설정은 유지했다. 인덱스·컬럼 DROP과 수동 stamp는
+없다. 기존37행의 식별자·순서·저장 digest·clock 지문을 보존하고 같은0036 정상 upgrade로 완료했다.
+원 운영 실패 원인은 stderr에 남지 않아 로컬55P03 재현과 동일하다고 단정하지 않는다.
+
+실제 HTTP는 health200·status200(15항목)·locations200(500항목)·조건부304(본문0바이트)를 확인했다.
+이 묶음의 관측 시간은 각각151/221/1266/1042ms이며 운영 전후 성능 배율이나 cold 수치가 아니다.
+최초 locations는 2.1초 후 ExportGuardTimeout/503·Retry-After5였다. 원문을 보존했고 충분히 지난
+다음 읽기에서200/304를 관측했다. 이를 원천 수집·캐시 warm으로 성공시킨 것이 아니며 지속 경합이
+없다고 단정하지 않는다. HTTP/로그에 토큰·원문 payload·URL query는 출력하지 않았다.
+
+정본 수용 원장은 로컬 `transport-map-parking-perf-20261103/weather-acceptance.json`, SHA256
+`a0a2a7160a73290eca21df3ec92e312a3462cfdf17a34cf9237ae75504003f00`이다.
+백업·복원과 새 독립 리뷰는 사용자 지시로 생략했다. 문서·시험 전용 후속은 이 제품 이미지와 분리한다.
+
 ## PR199 CI의 0035 전용 시험 후속
 
 [원 CI41543400028](https://github.com/digitie/kor-travel-weather/actions/runs/41543400028)의 source539d6는
@@ -13,7 +39,7 @@ Python3.12/PG16에서 3개, WSL Python3.13/PG16에서 3개, Docker Python3.13/PG
 로컬 원문은 WSL `/var/tmp/weather-read-performance-20261103/pr199-*.log`에 보존했다.
 
 현재 통합 소스의 기능을 보존한 `codex/weather-read-performance-20261103`에서 구현했다.
-이 문서는 로컬 검증 결과다. 운영 이미지·DB·수집 일정은 변경하지 않았고 push·PR·배포도 하지 않았다.
+아래는 초기 로컬 검증 결과다. 실제 운영 반영은 위 수용 절에 별도로 기록했다.
 
 ## 재현과 변경
 
@@ -85,5 +111,5 @@ generated column 추가는 기존 snapshot 표를 한 번 계산하며 table 잠
 작은 복합 인덱스는 concurrent로 생성한다. 기존 이름·정의·소유 표·상태가 충돌하면 실패로 남기고
 기존 객체를 자동 삭제하지 않는다. 원본/이력/기존 cursor를 정리하는 작업은 없다.
 
-현재 운영 성능과 migration 완료는 미관측이다. 이후 실제 이미지 반영·동일 선택의 첫/반복 페이지·304
-관측은 Root의 운영 후속이다. 새 백업·복원·독립 리뷰를 선행 조건으로 추가하지 않는다.
+실제 migration과 HTTP 수용은 위 절에서 완료했다. 로컬 합성 배율을 운영 배율로 해석하지 않는다.
+원본/이력/기존 cursor 정리나 새 백업·복원·독립 리뷰 게이트를 추가하지 않는다.

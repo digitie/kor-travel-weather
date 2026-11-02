@@ -1,8 +1,8 @@
 # Weather 남은 작업
 
-- [ ] **W-READ-COST-01 운영 후속** — reference/직렬화/예보 반복 비용의 구현·로컬 검증은 완료했다.
-  Root가 0036을 API 교체 전에 적용하고 실제 첫·반복 페이지와 304를 관측한다. 운영 성능은 아직
-  수용하지 않았다. [로컬 실제 측정·적용 순서](reports/2026-11-03-weather-read-performance.md).
+W-READ-COST-01 구현·DB0036·API 이미지·실제200/304 수용은 [완료 목록](tasks-done.md)과
+[검증 기록](reports/2026-11-03-weather-read-performance.md)에 정산했다. 최초503의 지속 경합 유무와
+운영 전후 성능 배율을 완료로 꾸미지 않는다. 문서·시험 전용 CI 후속은 제품 배포와 구분한다.
 
 PR198의 API 새 이미지 반영·읽기 경합 재시도 분류는 [완료 목록](tasks-done.md)과 [운영 기록](reports/2026-11-03-pr198-api-release.md)에 정산했다. 아래 별도 과제는 그대로 남는다.
 

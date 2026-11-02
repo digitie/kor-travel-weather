@@ -1,3 +1,7 @@
+## 2026-11-03 — 읽기 개선 API와 DB0036 실제 수용
+
+제품539d6의 API4c349d를 실제 포트12201로 반영했다. 기존 웹·수집 서버·환경·일정을 보존했고 Manager healthy·부모 실제0/MainPID0/cgroup 부재를 확인했다. 첫0036의 invalid index는 원 실패를 남긴 채 정확 자기 객체만 검산해 일반 REINDEX 후 같은0036 정상 upgrade로 복구했다. DROP·stamp·행 삭제는 없으며37행의 식별자/digest/clock 지문이 같다. 실제500행200·304를 확인했고 최초GuardTimeout503과 운영 배율 미측정의 한계도 [수용 기록](reports/2026-11-03-weather-read-performance.md)에 남겼다. 새 백업·복원·독립 리뷰는 추가하지 않았다.
+
 ## 2026-11-03 — PR199의 0035 전용 migration 시험 계약 수정
 
 CI41543400028의 유일한 실패는 0035 전용 시험이 최신 head0036을 적용하고 0035를 기대한 점이었다.

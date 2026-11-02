@@ -1,3 +1,7 @@
+## 2026-11-03 — 읽기 비용 API·DB·실제 HTTP 수용
+
+- [x] **W-READ-COST-01 운영 후속** — 제품539d6/API4c349d·schema0036·healthy·Manager 정산·부모 실제0/종료를 확인했다. 기존 웹·CS·일정·환경을 보존했다. 자기 invalid index 한 개를 삭제 없이 검산·복구하고37행의 메타데이터 지문을 보존했다. 실제500행200·조건부304를 관측했으며 최초GuardTimeout503도 보존했다. [실제 증거와 한계](reports/2026-11-03-weather-read-performance.md).
+
 ## 2026-11-03 — 읽기 반복 비용 구현·로컬 검증
 
 - [x] **W-READ-COST-01 구현** — W1 큰 JSON 조건 반복 해석, 304 불필요한 전체 직렬화,
