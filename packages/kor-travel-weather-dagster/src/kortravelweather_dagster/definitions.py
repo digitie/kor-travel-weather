@@ -1119,7 +1119,9 @@ def _make_external_provider_asset(collection: ExternalCollection):
 
 
 EXTERNAL_COLLECTIONS = _external_collections()
-_EXTERNAL_COLLECTIONS_BY_JOB = {collection.job_name: collection for collection in EXTERNAL_COLLECTIONS}
+_EXTERNAL_COLLECTIONS_BY_JOB = {
+    collection.job_name: collection for collection in EXTERNAL_COLLECTIONS
+}
 _EXTERNAL_PROVIDER_ASSETS = tuple(
     _make_external_provider_asset(collection) for collection in EXTERNAL_COLLECTIONS
 )

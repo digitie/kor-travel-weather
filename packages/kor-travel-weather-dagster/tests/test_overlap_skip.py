@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
 from dagster import build_asset_context
 from kortravelweather_dagster import definitions
 
@@ -61,9 +62,12 @@ def test_a_regional_overlap_is_a_recorded_skip(monkeypatch) -> None:
     assert _skips(*labels) == before + 1
 
 
-def test_an_external_dataset_overlap_is_skipped_not_failed(monkeypatch) -> None:
+@pytest.mark.parametrize("part", [None, "current", "forecast"])
+def test_an_external_dataset_overlap_is_skipped_not_failed(monkeypatch, part) -> None:
     provider = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr(definitions, "skipped_when_disabled", lambda *a: None)
+    # 분리한 part의 형제 대기는 test_definitions가 따로 본다. 여기서는 겹침 skip만 본다.
+    monkeypatch.setattr(definitions, "_wait_for_sibling_part", lambda *a, **k: None)
     monkeypatch.setattr(definitions, "_external_targets", lambda *a: [])
     monkeypatch.setattr(definitions, "create_configured_provider", lambda *a, **kw: provider)
 
@@ -72,7 +76,9 @@ def test_an_external_dataset_overlap_is_skipped_not_failed(monkeypatch) -> None:
 
     monkeypatch.setattr(definitions, "run_external_weather_sync", overlapping)
     with _context() as context:
-        result = definitions._make_external_provider_asset("open_meteo")(context)
+        result = definitions._make_external_provider_asset(
+            definitions.ExternalCollection("open_meteo", part)
+        )(context)
     assert result["failed_datasets"] == []
     assert result["status"] == "skipped"
     # Each of the provider's datasets overlapped, and each is a skip.
