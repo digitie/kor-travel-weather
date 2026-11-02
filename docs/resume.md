@@ -1,3 +1,13 @@
+## 2026-11-02 — export 재개·W-EXP-SPLIT-01·publisher 처리량
+
+- 소유자가 export를 재개했다. publisher sensor RUNNING, 일시중지 backlog 198천 건 퇴역, catch-up
+  승격 진행. 이 PR(current/forecast 분리·fresh run 묶음·퇴역 주기·kma_short 10800초)은 CS만
+  새 이미지로 배포한다(API·웹은 현행 유지). 배포 뒤 확인: 분리 schedule 6개 RUNNING·옛
+  `three_hourly_{open_meteo,openweathermap,weatherapi}_weather` 정지(옛 job의 대기 run 취소), publisher tick의
+  `fresh=`>0와 `retire` 5분 주기, current 승격 지연이 current job 시간 수준인지.
+- 남은 용량 과제: 승격 1건이 포화된 odroid에서 약 0.7~1초(배타 guard 직렬)라 tick 예산
+  (분당 30초)으로는 시간당 생성 약 2천 건에 근접한다. 장기 해법은 승격 비용 자체다(W-MAP-06).
+
 ## 2026-10-29 — 최신 Weather 전체 이미지 배포
 
 - 최신 제품 소스 `ad4ee5350a50804e34b84679be29d7a743f9e443`로 API·관리 웹·Dagster 코드서버를

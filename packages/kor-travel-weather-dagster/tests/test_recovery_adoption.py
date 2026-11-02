@@ -36,7 +36,8 @@ def mapping(monkeypatch):
 
 def test_single_asset_jobs_in_process_and_regional_and_implicit_bounded():
     jobs = definitions._COLLECTION_JOBS
-    assert len(jobs) == 18
+    # 외부 provider 9개 + 분리한 3개의 forecast job(W-EXP-SPLIT-01).
+    assert len(jobs) == 21
     for job in jobs:
         if job.name == "regional_weather_job":
             assert len(job.graph.node_names()) == 4

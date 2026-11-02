@@ -27,7 +27,9 @@ def test_abandoned_fetch_never_reuses_or_closes_the_provider(monkeypatch):
         build_asset_context(resources={"weather_repository": resource}) as context,
         pytest.raises(DeadlineExceeded),
     ):
-        definitions._make_external_provider_asset("open_meteo")(context)
+        definitions._make_external_provider_asset(definitions.ExternalCollection("open_meteo"))(
+            context
+        )
     assert len(calls) == 1
     assert "close" not in calls
 

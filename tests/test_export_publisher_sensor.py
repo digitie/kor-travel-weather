@@ -26,6 +26,12 @@ candidate = fixtures.candidate
 state = fixtures.state
 
 
+@pytest.fixture(autouse=True)
+def _retire_due_each_test(monkeypatch):
+    # 일괄 퇴역은 프로세스당 주기다. 시험마다 새 프로세스처럼 첫 tick에 돌게 한다.
+    monkeypatch.setattr(module, "_RETIRE_NEXT", [0.0])
+
+
 @job
 def metadata_only_job():
     pass
@@ -301,6 +307,8 @@ def test_failed_run_backlog_is_retired_in_one_tick_without_visiting_candidates(
         first = evaluate(sensor, instance)
         # 실패 run의 300건은 후보를 하나씩 방문하지 않고 한 문장으로 퇴역한다.
         assert "0개 후보" in first.skip_message and "retired=300" in first.skip_message
+        # 퇴역은 5분 주기다. 두 번째 tick도 실제로 퇴역을 돌려 남은 것이 없음을 본다.
+        module._RETIRE_NEXT[0] = 0.0
         assert "retired=0" in evaluate(sensor, instance, cursor=first.cursor).skip_message
     heads = ExportHeads(repo)
     with repo.engine.connect() as connection:

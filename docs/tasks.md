@@ -53,7 +53,7 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
 - **상태 — export 목표 일시중지(소유자 2026-10-27).** Map `weather_state_*` schedule(locations 제외)과
   PinVi weather flag는 꺼 둔 채로 둔다. 다시 켜는 것은 소유자 재개 지시 뒤다. KHOA 해수욕장 한 곳의
   catalog 좌표 수정도 재개 때까지 미룬다. 아래 W-MAP-05·Map 소비자 수용은 재개 전까지 진행하지 않는다.
-- [ ] **W-EXP-SPLIT-01 / P1 (보류 — export 재개 시)** — openweathermap·weatherapi·open_meteo의
+- [ ] **W-EXP-SPLIT-01 / P1 (2026-11-02 구현 — 배포·수용 대기)** — openweathermap·weatherapi·open_meteo의
   `<provider>_weather_job`이 current와 forecast를 한 run에서 받아, 승격이 run 전체 SUCCESS를 기다리는
   동안 current가 약 1시간 늦게 공개된다. current와 forecast를 **별도 job**(별도 schedule·run group)으로
   나눈다. "run SUCCESS 뒤에만 승격" 규칙은 그대로 두고 step 단위 승격 판정은 도입하지 않는다. 수용:

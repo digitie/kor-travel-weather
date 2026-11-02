@@ -8,7 +8,7 @@ import hashlib
 import json
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -255,6 +255,48 @@ def test_fresh_phase_only_picks_untried_current_owners_of_successful_runs(
     finally:
         repo.finish_sync_run(run.run_id, status="failed")
     assert superseded and running
+
+
+def test_fresh_window_moves_to_older_runs_when_the_newest_has_no_current_owner(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    """fresh는 run 묶음(``run_window``)마다 후보를 본다. 가장 최근에 끝난 run의 후보가
+    모두 현재 소유자가 아니면(더 새 attempt가 scope를 가져감) 더 오래된 묶음으로 넘어간다.
+    """
+    from test_export_heads import _descriptor
+
+    repo = publisher_repository
+    descriptor = _descriptor(repo)
+    heads, superseded, *_ = candidate(repo, tmp_path, monkeypatch, descriptor=descriptor)
+    _, latest, *_ = candidate(repo, tmp_path, monkeypatch, descriptor=descriptor)
+    attempts = heads.lifecycle.attempts
+    runs = heads.metadata.tables["weather_sync_runs"]
+    with repo.engine.begin() as connection:
+        superseded_run = connection.scalar(
+            select(attempts.c.run_id).where(attempts.c.attempt_id == superseded.attempt_id)
+        )
+        # 소유권을 잃은 attempt의 run이 가장 늦게 끝난 것으로 둔다.
+        connection.execute(runs.update().where(runs.c.run_id == superseded_run).values(
+            finished_at=datetime.now(UTC) + timedelta(days=1),
+        ))
+    seen = []
+    original = export_collector._process_candidate
+
+    def spy(heads_, artifacts, row, dagster_status, **kwargs):
+        seen.append(row.attempt_id)
+        return original(heads_, artifacts, row, dagster_status, **kwargs)
+
+    monkeypatch.setattr(export_collector, "_process_candidate", spy)
+    result = publish_fresh_exports(repo, tmp_path, budget_seconds=30, run_window=1)
+    assert seen == [latest.attempt_id]
+    assert result.results == {"PUBLISHED": 1}
+    assert state(repo, heads, superseded)[0]["published_at"] is None
+
+
+@pytest.mark.parametrize("window", [0, export_collector.MAX_FRESH_RUN_WINDOW + 1])
+def test_fresh_window_size_is_bounded(publisher_repository, tmp_path, window):
+    with pytest.raises(ValueError):
+        publish_fresh_exports(publisher_repository, tmp_path, budget_seconds=30, run_window=window)
 
 
 def test_fresh_shortcut_rechecks_ownership_inside_promotion(

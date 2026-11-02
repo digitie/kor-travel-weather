@@ -688,8 +688,90 @@ if not set(EXTERNAL_PROVIDER_KEYS) >= SLOW_EXTERNAL_PROVIDER_KEYS:
     )
 
 
+#: W-EXP-SPLIT-01(소유자 결정 2026-10-27): 실제 sweep을 하는 provider는 현재값(current)과
+#: 예보(forecast)를 **별도 job·schedule**로 받는다. 한 run이 둘 다 받으면 export 승격이 run
+#: 전체 SUCCESS를 기다리는 동안 current가 forecast sweep만큼(약 1시간) 늦게 공개되고,
+#: forecast 실패가 current 승격까지 막는다. "run SUCCESS 뒤에만 승격" 규칙은 그대로 두고
+#: (step 단위 승격 없음) run을 나눈다.
+#:
+#: - 두 part 모두 slow 그룹(instance 상한 1)이다. sweep은 분리 전처럼 한 번에 하나만 돌아
+#:   CPU 몫이 그대로이고, 같은 provider의 두 run도 겹치지 않는다 — 요청 간격(openweathermap
+#:   1.25초, 무료 등급 분당 60회 안)은 프로세스 안에서만 지켜지므로 겹치면 분당 호출이 두 배가
+#:   된다. current는 앞 sweep이 끝나면 바로 돌고 자기 run이 끝나면 곧 공개된다.
+#: - forecast schedule은 current보다 ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 늦게 시작한다.
+#: - 하루 호출 수는 그대로다: 각 dataset이 3시간마다 한 번씩, 같은 위치 상한으로 돈다.
+#:
+#: 기본 위치 상한이 있는(실제로 sweep하는) provider 집합과 같다. 다른 provider를 켜려면
+#: 먼저 SLOW 집합에 넣는 변경이 배포돼야 하고(위 주석), 그러면 분리도 따라온다.
+SPLIT_EXTERNAL_PROVIDER_KEYS = SLOW_EXTERNAL_PROVIDER_KEYS
+EXTERNAL_PART_CURRENT = "current"
+EXTERNAL_PART_FORECAST = "forecast"
+#: 같은 provider의 current 시작 뒤 forecast가 시작하기까지의 분. 3시간 주기의 절반으로,
+#: 기존 provider phase(20분 간격) 사이의 빈 10분 자리에 forecast가 들어간다.
+SPLIT_FORECAST_PHASE_OFFSET_MINUTES = 90
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalCollection:
+    """외부 provider 수집 단위 하나 — asset·job·schedule이 한 벌씩 붙는다.
+
+    ``part``가 None이면 provider의 모든 dataset을 한 run에서 받는다(분리 안 함).
+    """
+
+    provider_key: str
+    part: str | None = None
+
+    @property
+    def slug(self) -> str:
+        base = _external_slug(self.provider_key)
+        return f"{base}_{self.part}" if self.part else base
+
+    @property
+    def asset_name(self) -> str:
+        return f"{self.slug}_weather_sync"
+
+    @property
+    def job_name(self) -> str:
+        return f"{self.slug}_weather_job"
+
+    @property
+    def schedule_name(self) -> str:
+        return f"three_hourly_{self.slug}_weather"
+
+    @property
+    def run_group(self) -> str:
+        # 분리한 두 part 모두 provider의 그룹(slow) 그대로다 — 아래 주석.
+        return external_run_group(self.provider_key)
+
+    @property
+    def phase_minutes(self) -> int:
+        phase = _EXTERNAL_PHASE_MINUTES[self.provider_key]
+        if self.part == EXTERNAL_PART_FORECAST:
+            phase += SPLIT_FORECAST_PHASE_OFFSET_MINUTES
+        return phase
+
+    def dataset_keys(self) -> tuple[str, ...]:
+        datasets = provider_spec(self.provider_key).datasets
+        if self.part == EXTERNAL_PART_CURRENT:
+            return tuple(dataset.key for dataset in datasets if not dataset.forecast)
+        if self.part == EXTERNAL_PART_FORECAST:
+            return tuple(dataset.key for dataset in datasets if dataset.forecast)
+        return tuple(dataset.key for dataset in datasets)
+
+
+def _external_collections() -> tuple[ExternalCollection, ...]:
+    collections: list[ExternalCollection] = []
+    for key in EXTERNAL_PROVIDER_KEYS:
+        if key in SPLIT_EXTERNAL_PROVIDER_KEYS:
+            collections.append(ExternalCollection(key, EXTERNAL_PART_CURRENT))
+            collections.append(ExternalCollection(key, EXTERNAL_PART_FORECAST))
+        else:
+            collections.append(ExternalCollection(key))
+    return tuple(collections)
+
+
 def external_run_group(provider_key: str) -> str:
-    """외부 provider job이 받을 ``EXTERNAL_RUN_GROUP_TAG`` 값."""
+    """분리하지 않은 외부 provider job이 받을 ``EXTERNAL_RUN_GROUP_TAG`` 값."""
     if provider_key in SLOW_EXTERNAL_PROVIDER_KEYS:
         return EXTERNAL_SLOW_RUN_GROUP
     return EXTERNAL_RUN_GROUP
@@ -717,6 +799,12 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
     )
     if job_name == "regional_weather_job":
         seconds = 21600
+    if job_name == "kma_short_forecast_job":
+        # 300격자 단기예보 한 회차는 2026-10-24..26 50~70분이었으나 CPU가 포화된 odroid에서
+        # 10-27부터 2시간을 넘겨 7200초 상한에 거의 매번 회수됐다(10-29 07:13 뒤 성공 0).
+        # 같은 일을 끝내도록 발표 주기(3시간)까지 둔다. 다음 회차는 작업별 동시 1 제한으로
+        # 대기열에서 기다리므로 겹치지 않는다.
+        seconds = 10800
     if job_name == "address_refresh_job":
         seconds = 120
     if job_name == "weather_short_forecast_retention_job":
@@ -728,37 +816,47 @@ def _job_tags(job_name: str) -> dict[str, str]:
     return _job_policy(job_name).tags(project="weather", job_name=job_name)
 
 
-def _weather_schedule(**kwargs):
+_KMA_STATUS_DATASETS = {
+    "kma_ultra_short_nowcast_job": "kma_ultra_short_nowcast",
+    "kma_ultra_short_forecast_job": "kma_ultra_short_forecast",
+    "kma_short_forecast_job": "kma_short_forecast",
+    "kma_mid_forecast_job": "kma_mid_forecast",
+}
+
+
+def schedule_status_sources(job_name: str, settings: WeatherSettings):
+    """schedule이 /status의 다음 예정 시각을 기록할 dataset 범위.
+
+    분리한 job(W-EXP-SPLIT-01)은 자기 part의 dataset만 기록한다.
+    """
     from kortravelweather.export_status_scopes import dataset_scopes, status_scopes
 
+    if not settings.service_exports_enabled:
+        return ()
+    enabled = set(settings.enabled_providers)
+    if job_name in _KMA_STATUS_DATASETS:
+        return dataset_scopes("python-kma-api", {_KMA_STATUS_DATASETS[job_name]}) if (
+            "python-kma-api" in enabled
+        ) else ()
+    if job_name == "airkorea_weather_job":
+        return status_scopes(enabled & {"python-airkorea-api"})
+    if job_name == "regional_weather_job":
+        return status_scopes(enabled & {
+            "python-khoa-api", "python-krforest-api", "python-krex-api",
+        })
+    collection = _EXTERNAL_COLLECTIONS_BY_JOB.get(job_name)
+    if collection is None or collection.provider_key not in enabled:
+        return ()
+    return dataset_scopes(collection.provider_key, set(collection.dataset_keys()))
+
+
+def _weather_schedule(**kwargs):
     from .export_schedule_status import schedule_with_export_status
 
     job_name = kwargs["job"].name
-    kma_datasets = {
-        "kma_ultra_short_nowcast_job": "kma_ultra_short_nowcast",
-        "kma_ultra_short_forecast_job": "kma_ultra_short_forecast",
-        "kma_short_forecast_job": "kma_short_forecast",
-        "kma_mid_forecast_job": "kma_mid_forecast",
-    }
 
     def sources(_context):
-        settings = WeatherSettings()
-        if not settings.service_exports_enabled:
-            return ()
-        enabled = set(settings.enabled_providers)
-        if job_name in kma_datasets:
-            return dataset_scopes("python-kma-api", {kma_datasets[job_name]}) if (
-                "python-kma-api" in enabled
-            ) else ()
-        if job_name == "airkorea_weather_job":
-            return status_scopes(enabled & {"python-airkorea-api"})
-        if job_name == "regional_weather_job":
-            return status_scopes(enabled & {
-                "python-khoa-api", "python-krforest-api", "python-krex-api",
-            })
-        return status_scopes({
-            provider for provider in enabled if external_job_name(provider) == job_name
-        })
+        return schedule_status_sources(job_name, WeatherSettings())
 
     def repository_factory(_context):
         settings = WeatherSettings()
@@ -781,14 +879,6 @@ def _run_repository(context) -> WeatherRepository:
 
 def _external_slug(provider_key: str) -> str:
     return provider_key.replace("-", "_").replace(".", "_")
-
-
-def external_asset_name(provider_key: str) -> str:
-    return f"{_external_slug(provider_key)}_weather_sync"
-
-
-def external_job_name(provider_key: str) -> str:
-    return f"{_external_slug(provider_key)}_weather_job"
 
 
 def _external_targets(repository: WeatherRepository) -> list[ProviderLocation]:
@@ -819,22 +909,29 @@ def _fetch_deadline_seconds(runtime: WeatherSettings) -> float:
     return runtime.provider_http_timeout_seconds * attempts + 60.0
 
 
-def _make_external_provider_asset(provider_key: str):
-    """Build the collection asset for one external provider.
+def _make_external_provider_asset(collection: ExternalCollection):
+    """Build the collection asset for one external provider (or one part of it).
 
     One asset per provider, rather than the single asset that looped over all
     of them: that shape meant the slowest source set the pace for every other,
     and a source that stopped responding stalled all nine at once.  A run that
     wedged this way held a concurrency slot until somebody noticed -- which
     took eighteen hours the last time, with every other schedule queued behind
-    it.  Split, a wedged provider costs one slot and one source.
+    it.  Split, a wedged provider costs one slot and one source.  Providers in
+    ``SPLIT_EXTERNAL_PROVIDER_KEYS`` get one asset per part (current/forecast).
     """
+    provider_key = collection.provider_key
     spec = provider_spec(provider_key)
+    dataset_keys = set(collection.dataset_keys())
+    datasets = tuple(dataset for dataset in spec.datasets if dataset.key in dataset_keys)
+    part_label = {EXTERNAL_PART_CURRENT: " 현재값", EXTERNAL_PART_FORECAST: " 예보"}.get(
+        collection.part or "", ""
+    )
 
     @asset(
-        name=external_asset_name(provider_key),
+        name=collection.asset_name,
         required_resource_keys={"weather_repository"},
-        description=f"{spec.label}의 응답을 atomic publish한다.",
+        description=f"{spec.label}{part_label}의 응답을 atomic publish한다.",
     )
     @skips_live_overlap
     def _external_provider_sync(context: AssetExecutionContext) -> dict[str, object]:
@@ -881,7 +978,7 @@ def _make_external_provider_asset(provider_key: str):
         skipped_datasets: list[dict[str, object]] = []
         abandoned = False
         try:
-            for dataset in spec.datasets:
+            for dataset in datasets:
                 try:
                     results.append(
                         run_external_weather_sync(
@@ -956,8 +1053,12 @@ def _make_external_provider_asset(provider_key: str):
     return _external_provider_sync
 
 
+EXTERNAL_COLLECTIONS = _external_collections()
+_EXTERNAL_COLLECTIONS_BY_JOB = {
+    collection.job_name: collection for collection in EXTERNAL_COLLECTIONS
+}
 _EXTERNAL_PROVIDER_ASSETS = tuple(
-    _make_external_provider_asset(key) for key in EXTERNAL_PROVIDER_KEYS
+    _make_external_provider_asset(collection) for collection in EXTERNAL_COLLECTIONS
 )
 
 
@@ -1344,12 +1445,12 @@ _unresolved_airkorea_job = define_asset_job(
     tags=_job_tags("airkorea_weather_job"),
 )
 _unresolved_external_jobs = {
-    key: define_asset_job(
-        external_job_name(key),
+    collection.slug: define_asset_job(
+        collection.job_name,
         selection=[asset_def],
-        tags={**_job_tags(external_job_name(key)), EXTERNAL_RUN_GROUP_TAG: external_run_group(key)},
+        tags={**_job_tags(collection.job_name), EXTERNAL_RUN_GROUP_TAG: collection.run_group},
     )
-    for key, asset_def in zip(EXTERNAL_PROVIDER_KEYS, _EXTERNAL_PROVIDER_ASSETS, strict=True)
+    for collection, asset_def in zip(EXTERNAL_COLLECTIONS, _EXTERNAL_PROVIDER_ASSETS, strict=True)
 }
 _unresolved_retention_job = define_asset_job(
     "weather_retention_job",
@@ -1539,17 +1640,19 @@ _EXTERNAL_PHASE_MINUTES = {
     "accuweather": 147,
     "wttr_in": 167,
 }
+# 분리한 provider(W-EXP-SPLIT-01)의 current는 provider phase 그대로, forecast는
+# ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 뒤(기존 20분 간격 phase 사이의 빈 10분 자리)다.
 external_weather_schedules = [
     _weather_schedule(
-        name=f"three_hourly_{_external_slug(key)}_weather",
+        name=collection.schedule_name,
         cron_schedule=staggered_cron(
-            interval_minutes=180, phase_minutes=_EXTERNAL_PHASE_MINUTES[key]
+            interval_minutes=180, phase_minutes=collection.phase_minutes
         ),
-        job=job,
+        job=external_weather_jobs[collection.slug],
         execution_timezone="Asia/Seoul",
         default_status=DefaultScheduleStatus.RUNNING,
     )
-    for key, job in external_weather_jobs.items()
+    for collection in EXTERNAL_COLLECTIONS
 ]
 
 

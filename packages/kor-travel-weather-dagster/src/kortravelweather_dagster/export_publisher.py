@@ -3,7 +3,8 @@
 한 tick의 순서는 다음과 같다. 각 단계의 오류는 그 단계만 미루고 사유(SQLSTATE 분류·예외
 클래스 이름)를 남긴다. 이미 처리한 진행(cursor)은 보존한다.
 
-1. 승격될 수 없는 pending을 일괄 퇴역(SUPERSEDED·CONFIRMED_TERMINAL, SKIP LOCKED)
+1. 승격될 수 없는 pending을 일괄 퇴역(SUPERSEDED·CONFIRMED_TERMINAL, SKIP LOCKED).
+   프로세스당 ``RETIRE_INTERVAL_SECONDS``마다 한 번이다(아래 상수 주석).
 2. 가장 최근에 SUCCESS로 끝난 run의 현재 소유 attempt부터 승격(fresh phase)
 3. 남은 예산으로 attempt_id keyset sweep(재시도·죽은 worker 복구·나머지 후보)
 4. 일별 집계(별도 예산)
@@ -60,6 +61,12 @@ GC_WORST_SECONDS = 10
 GC_INTERVAL_SECONDS = 600
 #: 이 프로세스에서 다음 GC를 시작할 monotonic 시각. 재시작하면 첫 tick에 한 번 돈다.
 _GC_NEXT = [0.0]
+#: 일괄 퇴역의 주기(초). 두 문장은 pending 전체에 소유권 판정(JSON)을 건다. 수천 행이면
+#: CPU가 포화된 호스트에서 5초 head 상한을 넘겨(2026-11-02 odroid 6~11초) 매 tick 예산만
+#: 쓰고 아무것도 퇴역하지 못했다. 퇴역은 정리일 뿐이고 sweep의 후보별 판정도 같은 기록으로
+#: 퇴역시키므로 매 tick 돌 필요가 없다. 재시작하면 첫 tick에 한 번 돈다.
+RETIRE_INTERVAL_SECONDS = 300
+_RETIRE_NEXT = [0.0]
 
 
 def _cursor(value: str | None) -> str | None:
@@ -215,11 +222,13 @@ def _run_tick(tick: _Tick, repository, root, settings) -> None:
         dagster_status_lookup(tick.context.instance),
         dagster_status_batch(tick.context.instance),
     )
-    with tick.stage("retire"):
-        try:
-            tick.retired.update(retire_settled_attempts(repository))
-        except Exception as exc:
-            tick.defer("retire", exc)
+    if started >= _RETIRE_NEXT[0]:
+        _RETIRE_NEXT[0] = started + RETIRE_INTERVAL_SECONDS
+        with tick.stage("retire"):
+            try:
+                tick.retired.update(retire_settled_attempts(repository))
+            except Exception as exc:
+                tick.defer("retire", exc)
     fresh_budget = min(budget * FRESH_SHARE, source_deadline - time.monotonic())
     if fresh_budget > 0:
         with tick.stage("fresh"):
