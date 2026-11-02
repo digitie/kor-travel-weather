@@ -2,7 +2,6 @@
 
 import logging
 import os
-import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -690,20 +689,16 @@ if not set(EXTERNAL_PROVIDER_KEYS) >= SLOW_EXTERNAL_PROVIDER_KEYS:
 
 
 #: W-EXP-SPLIT-01(소유자 결정 2026-10-27): 실제 sweep을 하는 provider는 현재값(current)과
-#: 예보(forecast)를 **별도 job·schedule·run group**으로 받는다. 한 run이 둘 다 받으면
-#: export 승격이 run 전체 SUCCESS를 기다리는 동안 current가 forecast sweep만큼(약 1시간)
-#: 늦게 공개되고, forecast 실패가 current 승격까지 막는다. "run SUCCESS 뒤에만 승격"
-#: 규칙은 그대로 두고(step 단위 승격 없음) run을 나눈다.
+#: 예보(forecast)를 **별도 job·schedule**로 받는다. 한 run이 둘 다 받으면 export 승격이 run
+#: 전체 SUCCESS를 기다리는 동안 current가 forecast sweep만큼(약 1시간) 늦게 공개되고,
+#: forecast 실패가 current 승격까지 막는다. "run SUCCESS 뒤에만 승격" 규칙은 그대로 두고
+#: (step 단위 승격 없음) run을 나눈다.
 #:
-#: - current job은 fast 그룹(``EXTERNAL_RUN_GROUP``)이다. slow 그룹(상한 1)에 두면 다른
-#:   provider의 73~90분 forecast sweep 뒤에서 기다려 분리한 의미가 없다.
-#: - forecast job은 slow 그룹이다(분리 전 provider job의 그룹 그대로).
-#: - 같은 provider의 두 job은 겹치지 않게 돈다. 분리 전에는 한 run 안에서 dataset을
-#:   차례로 받았으므로 provider의 분당 호출 수(openweathermap은 요청 간격 1.25초 — 무료
-#:   등급 분당 60회 안)가 그대로였다. 요청 간격은 프로세스 안에서만 지켜지므로 두 run이
-#:   동시에 돌면 분당 호출이 두 배가 된다. 그래서 forecast schedule은 current보다
-#:   ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 늦게 시작하고, 그래도 형제 dataset의 sync run이
-#:   살아 있으면 끝날 때까지 기다린다(``_wait_for_sibling_part``).
+#: - 두 part 모두 slow 그룹(instance 상한 1)이다. sweep은 분리 전처럼 한 번에 하나만 돌아
+#:   CPU 몫이 그대로이고, 같은 provider의 두 run도 겹치지 않는다 — 요청 간격(openweathermap
+#:   1.25초, 무료 등급 분당 60회 안)은 프로세스 안에서만 지켜지므로 겹치면 분당 호출이 두 배가
+#:   된다. current는 앞 sweep이 끝나면 바로 돌고 자기 run이 끝나면 곧 공개된다.
+#: - forecast schedule은 current보다 ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 늦게 시작한다.
 #: - 하루 호출 수는 그대로다: 각 dataset이 3시간마다 한 번씩, 같은 위치 상한으로 돈다.
 #:
 #: 기본 위치 상한이 있는(실제로 sweep하는) provider 집합과 같다. 다른 provider를 켜려면
@@ -714,11 +709,6 @@ EXTERNAL_PART_FORECAST = "forecast"
 #: 같은 provider의 current 시작 뒤 forecast가 시작하기까지의 분. 3시간 주기의 절반으로,
 #: 기존 provider phase(20분 간격) 사이의 빈 10분 자리에 forecast가 들어간다.
 SPLIT_FORECAST_PHASE_OFFSET_MINUTES = 90
-#: 형제 dataset sync run이 살아 있을 때 기다리는 상한·간격(초). 상한을 넘기면 이번 회차는
-#: 기록된 skip(SUCCESS)으로 끝낸다 — 호출 한도를 지키는 쪽이 한 회차의 신선도보다 앞선다.
-SIBLING_WAIT_SECONDS = 1800
-SIBLING_POLL_SECONDS = 30
-SIBLING_RUNNING_REASON = "sibling_running"
 
 
 @dataclass(frozen=True, slots=True)
@@ -750,10 +740,7 @@ class ExternalCollection:
 
     @property
     def run_group(self) -> str:
-        if self.part == EXTERNAL_PART_CURRENT:
-            return EXTERNAL_RUN_GROUP
-        if self.part == EXTERNAL_PART_FORECAST:
-            return EXTERNAL_SLOW_RUN_GROUP
+        # 분리한 두 part 모두 provider의 그룹(slow) 그대로다 — 아래 주석.
         return external_run_group(self.provider_key)
 
     @property
@@ -770,16 +757,6 @@ class ExternalCollection:
         if self.part == EXTERNAL_PART_FORECAST:
             return tuple(dataset.key for dataset in datasets if dataset.forecast)
         return tuple(dataset.key for dataset in datasets)
-
-    def sibling_dataset_keys(self) -> tuple[str, ...]:
-        """같은 provider의 다른 part가 받는 dataset. 분리하지 않았으면 비어 있다."""
-        if self.part is None:
-            return ()
-        own = set(self.dataset_keys())
-        return tuple(
-            dataset.key for dataset in provider_spec(self.provider_key).datasets
-            if dataset.key not in own
-        )
 
 
 def _external_collections() -> tuple[ExternalCollection, ...]:
@@ -839,38 +816,47 @@ def _job_tags(job_name: str) -> dict[str, str]:
     return _job_policy(job_name).tags(project="weather", job_name=job_name)
 
 
-def _weather_schedule(**kwargs):
+_KMA_STATUS_DATASETS = {
+    "kma_ultra_short_nowcast_job": "kma_ultra_short_nowcast",
+    "kma_ultra_short_forecast_job": "kma_ultra_short_forecast",
+    "kma_short_forecast_job": "kma_short_forecast",
+    "kma_mid_forecast_job": "kma_mid_forecast",
+}
+
+
+def schedule_status_sources(job_name: str, settings: WeatherSettings):
+    """schedule이 /status의 다음 예정 시각을 기록할 dataset 범위.
+
+    분리한 job(W-EXP-SPLIT-01)은 자기 part의 dataset만 기록한다.
+    """
     from kortravelweather.export_status_scopes import dataset_scopes, status_scopes
 
+    if not settings.service_exports_enabled:
+        return ()
+    enabled = set(settings.enabled_providers)
+    if job_name in _KMA_STATUS_DATASETS:
+        return dataset_scopes("python-kma-api", {_KMA_STATUS_DATASETS[job_name]}) if (
+            "python-kma-api" in enabled
+        ) else ()
+    if job_name == "airkorea_weather_job":
+        return status_scopes(enabled & {"python-airkorea-api"})
+    if job_name == "regional_weather_job":
+        return status_scopes(enabled & {
+            "python-khoa-api", "python-krforest-api", "python-krex-api",
+        })
+    collection = _EXTERNAL_COLLECTIONS_BY_JOB.get(job_name)
+    if collection is None or collection.provider_key not in enabled:
+        return ()
+    return dataset_scopes(collection.provider_key, set(collection.dataset_keys()))
+
+
+def _weather_schedule(**kwargs):
     from .export_schedule_status import schedule_with_export_status
 
     job_name = kwargs["job"].name
-    kma_datasets = {
-        "kma_ultra_short_nowcast_job": "kma_ultra_short_nowcast",
-        "kma_ultra_short_forecast_job": "kma_ultra_short_forecast",
-        "kma_short_forecast_job": "kma_short_forecast",
-        "kma_mid_forecast_job": "kma_mid_forecast",
-    }
 
     def sources(_context):
-        settings = WeatherSettings()
-        if not settings.service_exports_enabled:
-            return ()
-        enabled = set(settings.enabled_providers)
-        if job_name in kma_datasets:
-            return dataset_scopes("python-kma-api", {kma_datasets[job_name]}) if (
-                "python-kma-api" in enabled
-            ) else ()
-        if job_name == "airkorea_weather_job":
-            return status_scopes(enabled & {"python-airkorea-api"})
-        if job_name == "regional_weather_job":
-            return status_scopes(enabled & {
-                "python-khoa-api", "python-krforest-api", "python-krex-api",
-            })
-        collection = _EXTERNAL_COLLECTIONS_BY_JOB.get(job_name)
-        if collection is None or collection.provider_key not in enabled:
-            return ()
-        return dataset_scopes(collection.provider_key, set(collection.dataset_keys()))
+        return schedule_status_sources(job_name, WeatherSettings())
 
     def repository_factory(_context):
         settings = WeatherSettings()
@@ -893,53 +879,6 @@ def _run_repository(context) -> WeatherRepository:
 
 def _external_slug(provider_key: str) -> str:
     return provider_key.replace("-", "_").replace(".", "_")
-
-
-def _wait_for_sibling_part(
-    context: AssetExecutionContext,
-    repository: WeatherRepository,
-    collection: ExternalCollection,
-    *,
-    wait_seconds: float = SIBLING_WAIT_SECONDS,
-    poll_seconds: float = SIBLING_POLL_SECONDS,
-) -> dict[str, object] | None:
-    """같은 provider의 다른 part가 수집 중이면 끝날 때까지 기다린다.
-
-    상한 안에 끝나면 None(수집 진행), 넘기면 기록된 skip 결과를 돌려준다. 분리 전처럼
-    한 provider의 요청이 한 번에 한 sweep에서만 나가게 한다(요청 간격은 프로세스 단위).
-    """
-    siblings = collection.sibling_dataset_keys()
-    if not siblings:
-        return None
-    deadline = time.monotonic() + wait_seconds
-    logged = False
-    while True:
-        live = repository.live_sync_run_datasets(
-            provider=collection.provider_key, dataset_keys=siblings,
-        )
-        if not live:
-            return None
-        if time.monotonic() >= deadline:
-            result: dict[str, object] = {
-                "provider": collection.provider_key,
-                "datasets": [],
-                "skipped": True,
-                "reason": SIBLING_RUNNING_REASON,
-                "sibling_datasets": sorted(live),
-                "waited_seconds": wait_seconds,
-            }
-            context.log.info(
-                f"{collection.provider_key}/{collection.part}: 형제 수집 {sorted(live)}이 "
-                f"{wait_seconds:.0f}초 안에 끝나지 않아 이번 회차는 건너뜀"
-            )
-            return result
-        if not logged:
-            context.log.info(
-                f"{collection.provider_key}/{collection.part}: 형제 수집 {sorted(live)}이 "
-                "끝날 때까지 기다림(provider 호출 간격 보존)"
-            )
-            logged = True
-        time.sleep(poll_seconds)
 
 
 def _external_targets(repository: WeatherRepository) -> list[ProviderLocation]:
@@ -1002,10 +941,6 @@ def _make_external_provider_asset(collection: ExternalCollection):
             context.add_output_metadata(skipped)
             return skipped
         repository = _run_repository(context)
-        waited = _wait_for_sibling_part(context, repository, collection)
-        if waited is not None:
-            context.add_output_metadata(waited)
-            return waited
         catalog_targets = _external_targets(repository)
         cap = runtime.provider_location_caps.get(provider_key)
         targets = (

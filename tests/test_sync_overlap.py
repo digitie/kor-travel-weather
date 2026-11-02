@@ -83,30 +83,3 @@ def test_a_predecessor_with_an_expired_lease_still_fails(repository) -> None:
     assert not isinstance(caught.value, SyncRunAlreadyActive)
     assert "이미 진행 중" in str(caught.value)
     repository.finish_sync_run(first.run_id, status="failed", error="test cleanup")
-
-
-def test_live_sync_run_datasets_uses_the_same_lease_as_the_overlap_check(repository) -> None:
-    # W-EXP-SPLIT-01: 분리한 current/forecast job이 형제 dataset의 살아 있는 run을 기다린다.
-    provider = f"sibling-{uuid.uuid4().hex}"
-    assert repository.live_sync_run_datasets(provider=provider, dataset_keys=[]) == set()
-    live = repository.start_sync_run(provider=provider, dataset_key="forecast")
-    stale = repository.start_sync_run(provider=provider, dataset_key="current")
-    with repository.engine.begin() as connection:
-        connection.execute(
-            text(
-                "UPDATE weather_sync_runs SET heartbeat_at = now() - interval '4 hours', "
-                "started_at = now() - interval '5 hours' WHERE run_id = :r"
-            ),
-            {"r": stale.run_id},
-        )
-    # lease가 지난 running 행은 겹침 판정과 같이 살아 있지 않다. 다른 provider는 무관하다.
-    assert repository.live_sync_run_datasets(
-        provider=provider, dataset_keys=["current", "forecast", "other"],
-    ) == {"forecast"}
-    assert repository.live_sync_run_datasets(
-        provider=f"other-{uuid.uuid4().hex}", dataset_keys=["forecast"],
-    ) == set()
-    repository.finish_sync_run(live.run_id, status="success")
-    assert repository.live_sync_run_datasets(
-        provider=provider, dataset_keys=["forecast"],
-    ) == set()

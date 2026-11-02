@@ -66,8 +66,6 @@ def test_a_regional_overlap_is_a_recorded_skip(monkeypatch) -> None:
 def test_an_external_dataset_overlap_is_skipped_not_failed(monkeypatch, part) -> None:
     provider = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr(definitions, "skipped_when_disabled", lambda *a: None)
-    # 분리한 part의 형제 대기는 test_definitions가 따로 본다. 여기서는 겹침 skip만 본다.
-    monkeypatch.setattr(definitions, "_wait_for_sibling_part", lambda *a, **k: None)
     monkeypatch.setattr(definitions, "_external_targets", lambda *a: [])
     monkeypatch.setattr(definitions, "create_configured_provider", lambda *a, **kw: provider)
 

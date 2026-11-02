@@ -10,9 +10,9 @@
   한 번도 돌지 못해 sweep(행당 약 0.7초)만 남았고, 생성(시간당 약 2천 건)을 따라가지 못했다.
 - 이 PR: fresh는 승격 후보가 남은 최근 SUCCESS run 2개씩만 보고(싼 열로 run을 먼저 고른다)
   일괄 퇴역은 프로세스당 5분마다다. W-EXP-SPLIT-01: open_meteo·openweathermap·weatherapi를
-  current(fast 그룹, 기존 phase)와 forecast(slow 그룹, +90분) job·schedule로 나눴고, 같은
-  provider의 두 run은 겹치지 않는다(형제 sync run이 살아 있으면 최대 30분 기다리고 넘으면
-  기록된 skip). `kma_short_forecast_job` 상한은 7200→10800초(10-27부터 거의 매번 2시간 상한에 회수).
+  current(기존 phase)와 forecast(+90분) job·schedule로 나눴다. 두 part 모두 slow 그룹(상한 1)이라
+  sweep은 분리 전처럼 한 번에 하나이고 같은 provider의 두 run도 겹치지 않는다(요청 간격 보존).
+  `kma_short_forecast_job` 상한은 7200→10800초(10-27부터 거의 매번 2시간 상한에 회수).
 - 운영의 실행 중 kma_short run 하나는 tag `dagster/max_runtime`을 14400으로 늘려 회수를 피했다.
   geo 전량 적재 run은 소유자 지시로 건드리지 않았다.
 

@@ -994,7 +994,10 @@ def publish_fresh_exports(
         if not rows:
             # 이 묶음의 후보가 다했다. 더 오래된 run 묶음으로 넘어간다.
             oldest = window[-1]
-            window_after, window = (oldest.finished_at, oldest.run_id), None
+            # 묶음끼리 run이 겹치지 않으므로 행 keyset은 새 묶음에서 처음부터다(같은 tick의
+            # 중복은 ``tally.seen``이 막는다). 이전 묶음의 keyset을 이어 쓰면 같은 finished_at의
+            # 다음 묶음 run 행 일부를 건너뛴다.
+            window_after, window, after = (oldest.finished_at, oldest.run_id), None, None
             continue
         _prefetch(dagster_status, rows)
         processed, last = _drain(
