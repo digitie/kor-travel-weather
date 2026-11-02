@@ -171,6 +171,7 @@ def test_blocked_scrape_leaves_default_worker_pool_available(
     client.app.state.repository = SimpleNamespace(
         list_locations=lambda **kwargs: [],
         count_locations=lambda **kwargs: 0,
+        public_location_regions=lambda rows: {},
     )
     with client, ThreadPoolExecutor(max_workers=2) as executor:
         assert client.portal is not None
