@@ -1,3 +1,7 @@
+## 2026-11-03 — PR198 새 API 이미지 운영 반영 완료
+
+제품 `643bb34e094f474486ef872a7e6fdbe5c9dfbcaa`의 API 새 이미지`b4da586588b4`를 포트12201에 반영했다. 일시 경합503/Retry-After 분류14사례, 실제 health/status200·15항목, Manager healthy와 배포 부모 실제0/정상 종료를 확인했다. 웹·수집기·일정·다른 서비스·환경은 보존했고 백업·복원은 사용자 지시로 생략했다. [실제 이미지·원 실패·검증 범위](reports/2026-11-03-pr198-api-release.md).
+
 ## 2026-11-03 — export 읽기 경합 503 구분·승인 inventory 조회 축소
 
 - Map weather_state가 받은 503은 export 부재가 아니라 읽기 경합이었다(freeze 문장 5초 상한·artifact
