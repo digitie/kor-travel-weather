@@ -31,7 +31,7 @@ from kortravelweather.export_snapshots import (
     FrozenCurrentExports,
 )
 from kortravelweather.export_source_registry import select_export_sources
-from kortravelweather.export_status_reader import read_status
+from kortravelweather.export_status_reader import ExportStatusPending, read_status
 from kortravelweather.models import kst_now
 
 from ..auth import require_admin
@@ -43,8 +43,11 @@ logger = logging.getLogger(__name__)
 #: 넘긴 요청이 같은 요청(같은 cursor)을 다시 보낼 때까지의 최소 대기다.
 EXPORT_RETRY_AFTER_SECONDS = 5
 TEMPORARILY_UNAVAILABLE = "EXPORT_TEMPORARILY_UNAVAILABLE"
-#: SQLSTATE 분류(``failure_reason``) 중 export 부재가 아니라 읽기 경합인 것.
-_TRANSIENT_REASONS = frozenset({"statement_timeout", "lock_timeout", "deadlock", "serialization"})
+#: 읽기 경합·일시 장애 SQLSTATE(statement·lock timeout, deadlock, 직렬화, 연결 수 초과, 종료 중).
+#: 연결 오류 class 08도 같다. 권한(28)·디스크(53100)·I/O(58)·결함(42 등)은 경합이 아니다.
+_TRANSIENT_SQLSTATES = frozenset(
+    {"57014", "55P03", "40P01", "40001", "53300", "57P01", "57P02", "57P03"}
+)
 
 SourceStatus = Literal["ok", "stale", "failed"]
 ExportStyle = Literal["observed", "nowcast", "ultra_short", "short", "mid", "external"]
@@ -226,9 +229,15 @@ def _unavailable(
 
 def _transient(exc: Exception) -> bool:
     """export 부재가 아니라 읽기 경합이면 참이다. 재시도하면 같은 snapshot을 읽는다."""
-    if isinstance(exc, ExportGuardTimeout | OperationalError | PoolTimeoutError):
+    if isinstance(exc, ExportGuardTimeout | ExportStatusPending | PoolTimeoutError):
         return True
-    return isinstance(exc, SQLAlchemyError) and _cause(exc) in _TRANSIENT_REASONS
+    if not isinstance(exc, SQLAlchemyError):
+        return False
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    if isinstance(sqlstate, str):
+        return sqlstate in _TRANSIENT_SQLSTATES or sqlstate.startswith("08")
+    # SQLSTATE가 없는 연결 단절(server closed·refused)만 일시 장애로 본다.
+    return isinstance(exc, OperationalError)
 
 
 def _failed(request: Request, resource: str, exc: Exception) -> JSONResponse:

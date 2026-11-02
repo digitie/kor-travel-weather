@@ -197,7 +197,8 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
     repo.create_location(WeatherLocation(
         location_id=target.location_id, name="attempt 이력 정리", latitude=37.5, longitude=127,
     ))
-    generation = _publish(repo, tmp_path, [target])[target.location_id]["generation_id"]
+    approved = _publish(repo, tmp_path, [target])[target.location_id]
+    generation = approved["generation_id"]
     heads = ExportHeads(repo)
 
     def statements():
@@ -221,6 +222,14 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
     assert not selection.unconfirmed and len(inventory) == len(run_ids) == 1
     assert "weather_export_attempts" not in inventory[0]
     assert "weather_export_scope_plans" not in inventory[0]
+    # 다음 수집이 소유권을 가져가 진행 중이어도 이전 승인은 확인된 채다(대조군). 그래서 아래의
+    # 미확인은 소유권 검사가 아니라 이력 없는 run_id 대조에서만 나온다.
+    rerun = repo.start_sync_run(provider="open_meteo", dataset_key="open_meteo_current")
+    heads.lifecycle.claim(repo.begin_export_attempt(
+        run_id=rerun.run_id, scope_key="attempt-retention-rerun",
+        planned_sources=[approved["source_scope"]], execution_mode="native",
+    ))
+    assert not _selection(repo).unconfirmed
     with repo.engine.begin() as c:
         c.execute(delete(heads.lifecycle.attempts).where(
             heads.lifecycle.attempts.c.attempt_id == select(heads.generations.c.attempt_id).where(

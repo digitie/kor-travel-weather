@@ -176,6 +176,7 @@ def approved_source_selection(
             raise ExportArtifactError("승인 source의 canonical catalog 행이 유실됐습니다.")
     valid, sources = {}, set()
     shown = {row["plan_attempt_id"] for row in rows if row["location_id"] in catalog}
+    # 보이는 위치의 plan이 없으면 read_scope_plans가 "plan 유실"로 거절한다.
     plans_by_attempt = read_scope_plans(connection, plans, sorted(shown))
     hidden = {row["plan_attempt_id"] for row in rows} - shown
     if hidden:
@@ -183,7 +184,7 @@ def approved_source_selection(
         hidden -= set(connection.scalars(
             select(plans.c.attempt_id).where(plans.c.attempt_id.in_(sorted(hidden)))
         ))
-    if shown - plans_by_attempt.keys() or hidden:
+    if hidden:
         raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
     parsed_plans = {key: parse_scope_descriptor(value) for key, value in plans_by_attempt.items()}
     plan_namespaces = {key: value.namespace for key, value in parsed_plans.items()}

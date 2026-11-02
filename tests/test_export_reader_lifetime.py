@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
@@ -58,7 +58,7 @@ def test_public_page_protects_metadata_and_releases_after_return_error_or_kill(
     store = ExportArtifactStore(tmp_path)
     try:
         assert entered.wait(10), f"page metadata 진입 실패: exit={process.exitcode}"
-        with pytest.raises(ExportArtifactError, match="대기 상한"), store.guard(
+        with pytest.raises(ExportGuardTimeout, match="대기 상한"), store.guard(
             timeout_seconds=0.05,
         ):
             pytest.fail("metadata 단계의 reader를 EX writer가 추월했습니다.")
@@ -95,7 +95,7 @@ def test_two_public_pages_do_not_nest_reader_slots(tmp_path):
             children.append(process)
             assert entered.wait(10)
         store = ExportArtifactStore(tmp_path)
-        with pytest.raises(ExportArtifactError, match="동시 읽기 대기 상한"), store.guard(
+        with pytest.raises(ExportGuardTimeout, match="동시 읽기 대기 상한"), store.guard(
             shared=True, timeout_seconds=0.05,
         ):
             pytest.fail("두 공개 page 외에 세 번째 reader가 입장했습니다.")
@@ -120,6 +120,6 @@ def test_public_page_admission_timeout_precedes_metadata(tmp_path):
     reader._page_guarded = forbidden_metadata
     with reader.artifacts.guard():
         started = time.monotonic()
-        with pytest.raises(ExportArtifactError, match="대기 상한"):
+        with pytest.raises(ExportGuardTimeout, match="대기 상한"):
             reader.page(limit=1, cursor=None)
         assert time.monotonic() - started < 3

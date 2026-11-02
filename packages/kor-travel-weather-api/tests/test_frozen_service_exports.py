@@ -554,23 +554,29 @@ def _errors():
     from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
     from kortravelweather.export_snapshots import ExportSnapshotUnavailable
+    from kortravelweather.export_status_reader import ExportStatusPending
 
     retry, missing = "EXPORT_TEMPORARILY_UNAVAILABLE", "EXPORT_NOT_READY"
     return [
-        (OperationalError("SELECT 1", {}, _Orig(None)), retry),
-        (DBAPIError("SELECT 1", {}, _Orig("57014")), retry),  # statement_timeout
+        (OperationalError("SELECT 1", {}, _Orig(None)), retry),  # 연결 단절(SQLSTATE 없음)
+        (OperationalError("SELECT 1", {}, _Orig("57014")), retry),  # statement_timeout
         (DBAPIError("SELECT 1", {}, _Orig("55P03")), retry),  # lock_timeout
         (DBAPIError("SELECT 1", {}, _Orig("40001")), retry),  # serialization
+        (OperationalError("SELECT 1", {}, _Orig("08006")), retry),  # 연결 실패
         (PoolTimeoutError("QueuePool limit"), retry),
+        (ExportStatusPending("수집 상태 재투영을 기다리고 있습니다."), retry),
         (SQLAlchemyError("postgresql://user:secret@db/weather"), missing),
         (DBAPIError("SELECT 1", {}, _Orig("42703")), missing),  # 결함은 경합이 아니다
+        (OperationalError("SELECT 1", {}, _Orig("28P01")), missing),  # 인증은 기다려도 같다
+        (OperationalError("SELECT 1", {}, _Orig("53100")), missing),  # 디스크 부족
         (ExportSnapshotUnavailable("이전 승인 집합이 없습니다."), missing),
         (OSError("artifact"), missing),
     ]
 
 
 @pytest.mark.parametrize(("error", "code"), _errors(), ids=[
-    "operational", "57014", "55P03", "40001", "pool", "bare", "42703", "missing", "oserror",
+    "disconnect", "57014", "55P03", "40001", "08006", "pool", "status_pending",
+    "bare", "42703", "28P01", "53100", "missing", "oserror",
 ])
 def test_read_contention_is_retryable_503_and_missing_export_stays_not_ready(
     repository, tmp_path, monkeypatch, error, code
