@@ -28,14 +28,15 @@ from kortravelweather.models import WeatherLocation
 from kortravelweather.providers import OpenMeteoProvider, ProviderLocation
 
 
-def _publish(repo, root, locations):
+def _publish(repo, root, locations, dataset_key="open_meteo_current"):
     from kortravelweather_dagster.external_weather import run_external_weather_sync
 
+    forecast = dataset_key.endswith("forecast")
     result = run_external_weather_sync(
         repository=repo, provider=OpenMeteoProvider(transport=FixtureTransport(*[
-            FakeResponse(_external_payload("open_meteo", forecast=False, at=datetime.now(UTC)))
+            FakeResponse(_external_payload("open_meteo", forecast=forecast, at=datetime.now(UTC)))
             for _ in locations
-        ])), targets=locations, dataset_key="open_meteo_current", export_artifact_root=root,
+        ])), targets=locations, dataset_key=dataset_key, export_artifact_root=root,
     )
     heads = ExportHeads(repo)
     with repo.engine.connect() as c:
@@ -310,32 +311,12 @@ def test_fully_expired_required_source_is_served_without_it_and_marked_stale(
     repo.create_location(WeatherLocation(
         location_id=other.location_id, name="살아 있는 원천", latitude=37.6, longitude=127.1,
     ))
-    _publish_dataset(repo, tmp_path, [other], "open_meteo_forecast")
+    _publish(repo, tmp_path, [other], "open_meteo_forecast")
     both = [("open_meteo", "open_meteo_current"), ("open_meteo", "open_meteo_forecast")]
     selection = _selection(repo, expected=both)
     assert selection.unconfirmed
     assert {scope.descriptor.dataset_key for scope in selection.scopes} == {"open_meteo_forecast"}
     assert ("open_meteo", "open_meteo_current", target.location_id) in selection.expired
-
-
-def _publish_dataset(repo, root, locations, dataset_key):
-    from kortravelweather_dagster.external_weather import run_external_weather_sync
-
-    result = run_external_weather_sync(
-        repository=repo, provider=OpenMeteoProvider(transport=FixtureTransport(*[
-            FakeResponse(_external_payload(
-                "open_meteo", forecast=dataset_key.endswith("forecast"), at=datetime.now(UTC),
-            ))
-            for _ in locations
-        ])), targets=locations, dataset_key=dataset_key, export_artifact_root=root,
-    )
-    heads = ExportHeads(repo)
-    with repo.engine.connect() as c:
-        identities = c.execute(select(
-            heads.lifecycle.attempts.c.attempt_id, heads.lifecycle.attempts.c.owner_id,
-        ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])).all()
-    for identity in identities:
-        assert heads.promote(ExportAttempt(*identity), ExportArtifactStore(root)) == "PUBLISHED"
 
 
 def test_expiry_horizon_derives_from_freshness_and_spares_kma_rotation():
@@ -347,16 +328,17 @@ def test_expiry_horizon_derives_from_freshness_and_spares_kma_rotation():
         source_max_age,
     )
 
-    kma = ("kma_ultra_short_nowcast", "kma_ultra_short_forecast", "kma_short_forecast",
-           "kma_mid_forecast")
-    others = ("airkorea_realtime_measurement", "open_meteo_current", "weatherapi_forecast",
-              "krforest_mountain_weather", "krex_restarea_weather")
-    for dataset in kma + others:
-        assert source_expiry(dataset) == max(
-            SOURCE_EXPIRY_FLOOR, SOURCE_EXPIRY_FACTOR * source_max_age(dataset),
-        )
+    assert (SOURCE_EXPIRY_FLOOR, SOURCE_EXPIRY_FACTOR) == (timedelta(hours=24), 2)
+    expected_hours = {
+        "kma_ultra_short_nowcast": 24, "kma_ultra_short_forecast": 24, "kma_short_forecast": 24,
+        "kma_mid_forecast": 36, "airkorea_realtime_measurement": 24, "open_meteo_current": 24,
+        "weatherapi_forecast": 24, "krforest_mountain_weather": 72, "krex_restarea_weather": 72,
+    }
+    for dataset, hours in expected_hours.items():
+        assert source_expiry(dataset) == timedelta(hours=hours), dataset
         assert source_expiry(dataset) > source_max_age(dataset)
     rotation_refresh = timedelta(hours=6)  # 운영: 단기 437 target/run 300 → 두 slot(3시간 간격)
+    kma = [key for key in expected_hours if key.startswith("kma_")]
     assert all(source_expiry(dataset) >= 2 * rotation_refresh for dataset in kma)
 
 
