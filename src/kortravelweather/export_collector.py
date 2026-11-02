@@ -414,6 +414,10 @@ MAX_CONSECUTIVE_CANDIDATE_ERRORS = 3
 _PER_CANDIDATE_SQLSTATES = frozenset({"55P03", "57014", "40P01", "40001"})
 #: 후보 조회 한 번의 행 수 상한. 작은 식별 열만 읽으므로 RAM과 무관하다.
 MAX_CANDIDATE_PAGE = 256
+#: fresh가 한 번에 후보를 보는 run 수(``_fresh_run_window``). 소유권 판정은 이 run들의
+#: pending 행에만 걸린다. 한 run은 위치 수만큼(최대 약 700) attempt를 낸다.
+FRESH_RUN_WINDOW = 2
+MAX_FRESH_RUN_WINDOW = 16
 #: publisher transaction의 행 잠금 대기 상한(ms). 승격은 배타 artifact guard를 잡은 채
 #: transaction을 이어 가므로 원본 ingest의 3초(3×deadlock_timeout)씩 기다리지 않는다.
 #: 넘기면 그 후보만 lock_timeout으로 미뤄지고 다음 tick에 다시 본다.
@@ -892,6 +896,33 @@ def publish_pending_exports(
     )
 
 
+def _fresh_run_window(heads, *, after, size):
+    """승격 후보가 남은 가장 최근 SUCCESS run ``size``개(finished_at, run_id 내림차순).
+
+    후보 조회의 소유권 판정(JSON)은 행마다 비싸다. pending 전체(수천 행)에 그 판정을 걸면
+    CPU가 포화된 호스트에서 5초 head 상한을 넘겨 fresh가 한 번도 돌지 못했다(2026-11-02
+    odroid, pending 5.5천 행에 6~12초). 먼저 싼 열(상태·계획 닫힘)만으로 run을 고르고,
+    판정은 그 run의 행에만 건다.
+    """
+    attempts = heads.lifecycle.attempts
+    runs = heads.metadata.tables["weather_sync_runs"]
+    pending_attempts = attempts.alias("fresh_pending_attempts")
+    pending_runs = select(pending_attempts.c.run_id).where(
+        pending_attempts.c.status.in_([literal_column("'preparing'"), literal_column("'sealed'")]),
+        pending_attempts.c.published_at.is_(None),
+        pending_attempts.c.status == literal_column("'preparing'"),
+        pending_attempts.c.plan_closed_at.is_not(None),
+    )
+    query = select(runs.c.run_id, runs.c.finished_at).where(
+        runs.c.status == literal_column("'success'"),
+        runs.c.finished_at.is_not(None),
+        runs.c.run_id.in_(pending_runs),
+    )
+    if after is not None:
+        query = query.where(tuple_(runs.c.finished_at, runs.c.run_id) < tuple_(*after))
+    return query.order_by(runs.c.finished_at.desc(), runs.c.run_id.desc()).limit(size)
+
+
 def publish_fresh_exports(
     repository,
     artifact_root: Path,
@@ -901,6 +932,7 @@ def publish_fresh_exports(
     limit: int = 32,
     max_candidates: int = 1024,
     tally: PublisherTally | None = None,
+    run_window: int = FRESH_RUN_WINDOW,
 ) -> ExportPublisherProgress:
     """가장 최근에 SUCCESS로 끝난 run의, 아직 시도하지 않은 현재 소유 attempt부터 승격한다.
 
@@ -909,9 +941,14 @@ def publish_fresh_exports(
     ``preparing`` attempt다. 한 번 승격을 시도해 ``sealed``가 된 후보(증명 실패·CONFLICT
     등)는 여기서 다시 고르지 않고 sweep이 이어서 본다. 같은 tick 안에서는
     (finished_at, attempt_id) 키셋으로 한 번씩만 본다. cursor는 남기지 않는다.
+
+    후보는 ``run_window``개 run씩 본다(``_fresh_run_window``). 한 묶음의 후보가 다하면
+    더 오래된 run 묶음으로 넘어가므로 순서(최신 run 먼저)는 전체를 한 번에 본 것과 같다.
     """
     if not 1 <= limit <= MAX_CANDIDATE_PAGE or not 0 < budget_seconds <= 60 or max_candidates < 1:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
+    if not 1 <= run_window <= MAX_FRESH_RUN_WINDOW:
+        raise ValueError("fresh run 묶음 크기가 올바르지 않습니다.")
     deadline = time.monotonic() + budget_seconds
     heads, artifacts = _publisher_heads(repository), ExportArtifactStore(artifact_root)
     attempts = heads.lifecycle.attempts
@@ -920,8 +957,15 @@ def publish_fresh_exports(
     tally = tally or PublisherTally()
     before_results, before_reasons = Counter(tally.results), Counter(tally.reasons)
     total, after, more = 0, None, False
+    window, window_after = None, None
     while total < max_candidates and not tally.stopped and time.monotonic() < deadline:
         with heads._transaction() as session:
+            if window is None:
+                window = session.execute(
+                    _fresh_run_window(heads, after=window_after, size=run_window)
+                ).all()
+                if not window:
+                    break
             query = (
                 select(*_candidate_columns(heads), runs.c.finished_at)
                 .select_from(
@@ -929,6 +973,7 @@ def publish_fresh_exports(
                     .join(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
                 )
                 .where(
+                    attempts.c.run_id.in_([run.run_id for run in window]),
                     *_pending(attempts),
                     attempts.c.status == literal_column("'preparing'"),
                     attempts.c.plan_closed_at.is_not(None),
@@ -947,7 +992,10 @@ def publish_fresh_exports(
                 .limit(min(limit, max_candidates - total))
             ).all()
         if not rows:
-            break
+            # 이 묶음의 후보가 다했다. 더 오래된 run 묶음으로 넘어간다.
+            oldest = window[-1]
+            window_after, window = (oldest.finished_at, oldest.run_id), None
+            continue
         _prefetch(dagster_status, rows)
         processed, last = _drain(
             heads, artifacts, rows, deadline=deadline,

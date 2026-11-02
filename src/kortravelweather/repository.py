@@ -3924,6 +3924,30 @@ class WeatherRepository:
         observe_sync_started(provider, dataset_key)
         return run
 
+    def live_sync_run_datasets(
+        self, *, provider: str, dataset_keys: Sequence[str],
+    ) -> set[str]:
+        """``dataset_keys`` 중 살아 있는(running이고 heartbeat가 lease 안인) sync run이 있는 것.
+
+        ``start_sync_run``이 같은 provider/dataset의 겹침을 판정하는 기준과 같다. 분리한
+        외부 provider의 current/forecast job이 서로 겹치지 않게 기다릴 때 쓴다.
+        """
+        if not dataset_keys:
+            return set()
+        cutoff = kst_now() - timedelta(minutes=SYNC_RUN_LEASE_MINUTES)
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(SyncRunRow.dataset_key)
+                .where(
+                    SyncRunRow.provider == provider,
+                    SyncRunRow.dataset_key.in_(sorted(set(dataset_keys))),
+                    SyncRunRow.status == "running",
+                    func.coalesce(SyncRunRow.heartbeat_at, SyncRunRow.started_at) >= cutoff,
+                )
+                .distinct()
+            ).scalars()
+            return set(rows)
+
     def set_sync_run_locations_total(self, run_id: str, total: int) -> None:
         """bulk 응답 뒤에 알게 된 대상 수만 소유 native 실행에 기록한다."""
         if total < 0:

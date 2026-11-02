@@ -36,6 +36,11 @@ describe("jobLabel", () => {
     expect(jobLabel("accuweather_weather_sync")).toBe("AccuWeather 날씨 수집");
   });
 
+  it("names the part for providers split into current and forecast jobs", () => {
+    expect(jobLabel("open_meteo_current_weather_job")).toBe("Open-Meteo 현재 날씨 수집");
+    expect(jobLabel("openweathermap_forecast_weather_sync")).toBe("OpenWeatherMap 예보 날씨 수집");
+  });
+
   it("translates a known step name the same way as a job name", () => {
     expect(jobLabel("krforest_dust_sync")).toBe("청정넷 미세먼지 수집");
   });

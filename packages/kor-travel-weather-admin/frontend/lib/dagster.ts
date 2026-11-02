@@ -20,13 +20,21 @@ const EXTERNAL_PROVIDER_LABELS: Record<string, string> = {
   wttr_in: "wttr.in",
 };
 
-function externalLabels(suffix: string): Record<string, string> {
+function externalLabels(suffix: string, part = ""): Record<string, string> {
   return Object.fromEntries(
     Object.entries(EXTERNAL_PROVIDER_LABELS).map(([key, label]) => [
       `${key}${suffix}`,
-      `${label} 날씨 수집`,
+      `${label} ${part}날씨 수집`,
     ]),
   );
+}
+
+// 실제 sweep을 하는 provider는 현재값과 예보를 따로 받는다(W-EXP-SPLIT-01).
+function externalPartLabels(kind: "job" | "sync"): Record<string, string> {
+  return {
+    ...externalLabels(`_current_weather_${kind}`, "현재 "),
+    ...externalLabels(`_forecast_weather_${kind}`, "예보 "),
+  };
 }
 
 // dagster job/schedule/asset names are internal identifiers, not something an
@@ -41,6 +49,7 @@ const JOB_LABELS: Record<string, string> = {
   weather_retention_job: "보존 기간 만료 데이터 정리",
   regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집",
   ...externalLabels("_weather_job"),
+  ...externalPartLabels("job"),
 };
 
 const STEP_LABELS: Record<string, string> = {
@@ -56,6 +65,7 @@ const STEP_LABELS: Record<string, string> = {
   krforest_dust_sync: "청정넷 미세먼지 수집",
   krex_restarea_sync: "고속도로 휴게소 날씨 수집",
   ...externalLabels("_weather_sync"),
+  ...externalPartLabels("sync"),
 };
 
 /**

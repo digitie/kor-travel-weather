@@ -205,6 +205,7 @@ def test_every_run_carries_its_own_max_runtime() -> None:
 
 def test_external_jobs_keep_their_run_group_next_to_the_runtime_tag() -> None:
     from kortravelweather_dagster.definitions import (
+        EXTERNAL_COLLECTIONS,
         EXTERNAL_RUN_GROUP,
         EXTERNAL_RUN_GROUP_TAG,
         EXTERNAL_SLOW_RUN_GROUP,
@@ -212,14 +213,112 @@ def test_external_jobs_keep_their_run_group_next_to_the_runtime_tag() -> None:
     )
 
     # 같은 태그 키에 두 값. slow 소속은 코드가 명시하며 아래 목록이 그 정본의 사본이다.
+    # 분리한 provider(W-EXP-SPLIT-01)는 forecast만 slow이고 current는 fast다: current가
+    # 다른 provider의 긴 forecast sweep 뒤에서 기다리면 분리한 의미가 없다.
     slow = {"open_meteo", "openweathermap", "weatherapi"}
-    assert external_weather_jobs
-    assert slow <= set(external_weather_jobs)
-    for key, job in external_weather_jobs.items():
-        expected = EXTERNAL_SLOW_RUN_GROUP if key in slow else EXTERNAL_RUN_GROUP
-        assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) == expected, job.name
+    assert set(external_weather_jobs) == {collection.slug for collection in EXTERNAL_COLLECTIONS}
+    expected = {}
+    for collection in EXTERNAL_COLLECTIONS:
+        if collection.provider_key in slow:
+            assert collection.part in {"current", "forecast"}, collection
+            expected[collection.slug] = (
+                EXTERNAL_SLOW_RUN_GROUP if collection.part == "forecast" else EXTERNAL_RUN_GROUP
+            )
+        else:
+            assert collection.part is None, collection
+            expected[collection.slug] = EXTERNAL_RUN_GROUP
+    for slug, job in external_weather_jobs.items():
+        assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) == expected[slug], job.name
+    assert {slug for slug, group in expected.items() if group == EXTERNAL_SLOW_RUN_GROUP} == {
+        f"{key}_forecast" for key in slow
+    }
     # fast 쪽이 비면 분리가 아무 run도 앞당기지 못한다.
-    assert set(external_weather_jobs) - slow
+    assert {slug for slug, group in expected.items() if group == EXTERNAL_RUN_GROUP} - {
+        f"{key}_current" for key in slow
+    }
+
+
+def test_split_providers_partition_their_catalog_datasets_by_part() -> None:
+    # W-EXP-SPLIT-01: current와 forecast가 provider dataset을 빠짐·겹침 없이 나눈다.
+    # 하루 호출 수는 분리 전과 같다(각 dataset이 같은 3시간 주기로 한 번).
+    from kortravelweather_dagster.definitions import (
+        EXTERNAL_COLLECTIONS,
+        EXTERNAL_PROVIDER_KEYS,
+        SPLIT_EXTERNAL_PROVIDER_KEYS,
+    )
+
+    from kortravelweather.providers.catalog import provider_spec
+
+    by_provider: dict[str, list] = {}
+    for collection in EXTERNAL_COLLECTIONS:
+        by_provider.setdefault(collection.provider_key, []).append(collection)
+    assert set(by_provider) == set(EXTERNAL_PROVIDER_KEYS)
+    for key, collections in by_provider.items():
+        spec = provider_spec(key)
+        datasets = [d for c in collections for d in c.dataset_keys()]
+        assert sorted(datasets) == sorted(d.key for d in spec.datasets), key
+        if key in SPLIT_EXTERNAL_PROVIDER_KEYS:
+            parts = {c.part: c for c in collections}
+            assert set(parts) == {"current", "forecast"}, key
+            assert all(
+                not d.forecast for d in spec.datasets if d.key in parts["current"].dataset_keys()
+            )
+            assert all(d.forecast for d in spec.datasets if d.key in parts["forecast"].dataset_keys())
+            assert parts["current"].dataset_keys() and parts["forecast"].dataset_keys(), key
+            assert set(parts["current"].sibling_dataset_keys()) == set(parts["forecast"].dataset_keys())
+            assert set(parts["forecast"].sibling_dataset_keys()) == set(parts["current"].dataset_keys())
+        else:
+            assert [c.part for c in collections] == [None], key
+            assert collections[0].sibling_dataset_keys() == ()
+
+
+def test_split_jobs_report_only_their_own_dataset_status_scopes(monkeypatch) -> None:
+    # /status의 next_scheduled_at은 schedule이 기록한다. current job이 forecast의 다음
+    # 예정을 기록하면 소비자는 forecast가 곧 갱신된다고 오해한다.
+    from kortravelweather_dagster import definitions
+
+    from kortravelweather.export_status_scopes import dataset_scopes
+
+    current = definitions._EXTERNAL_COLLECTIONS_BY_JOB["open_meteo_current_weather_job"]
+    forecast = definitions._EXTERNAL_COLLECTIONS_BY_JOB["open_meteo_forecast_weather_job"]
+    assert current.dataset_keys() == ("open_meteo_current",)
+    assert forecast.dataset_keys() == ("open_meteo_forecast",)
+    assert {key.forecast_style for key in dataset_scopes("open_meteo", set(current.dataset_keys()))} == {
+        "observed"
+    }
+    assert {key.forecast_style for key in dataset_scopes("open_meteo", set(forecast.dataset_keys()))} == {
+        "external"
+    }
+    # 분리 전 이름은 남기지 않는다(두 job이 같은 dataset을 받으면 호출이 두 배가 된다).
+    job_names = {job.name for job in defs.get_repository_def().get_all_jobs()}
+    for key in definitions.SPLIT_EXTERNAL_PROVIDER_KEYS:
+        assert f"{key}_weather_job" not in job_names
+        assert {f"{key}_current_weather_job", f"{key}_forecast_weather_job"} <= job_names
+
+
+def test_split_forecast_starts_after_its_current_inside_the_cycle() -> None:
+    from kortravelweather_dagster.definitions import (
+        EXTERNAL_COLLECTIONS,
+        SPLIT_FORECAST_PHASE_OFFSET_MINUTES,
+    )
+
+    phases = {c.slug: c.phase_minutes for c in EXTERNAL_COLLECTIONS}
+    for c in EXTERNAL_COLLECTIONS:
+        if c.part == "forecast":
+            current = phases[c.slug.removesuffix("_forecast") + "_current"]
+            assert c.phase_minutes - current == SPLIT_FORECAST_PHASE_OFFSET_MINUTES >= 60
+        assert 0 <= c.phase_minutes < 180, c
+    assert len(set(phases.values())) == len(phases)
+
+
+def test_kma_short_forecast_runtime_covers_its_publish_interval() -> None:
+    # 단기예보는 3시간마다 발표한다. 포화된 odroid에서 한 회차가 2시간을 넘겨 7200초 상한에
+    # 거의 매번 회수됐다(2026-10-27~11-02). 상한은 발표 주기와 같다.
+    job = defs.get_repository_def().get_job("kma_short_forecast_job")
+    assert job.run_tags["dagster/max_runtime"] == "10800"
+    assert defs.get_repository_def().get_job("kma_ultra_short_forecast_job").run_tags[
+        "dagster/max_runtime"
+    ] == "7200"
 
 
 def test_every_location_capped_provider_runs_in_the_slow_group() -> None:
@@ -303,7 +402,8 @@ def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_bo
     start = datetime(2026, 10, 31, tzinfo=ZoneInfo("Asia/Seoul"))
     end = start + timedelta(days=2)
     launches = []
-    assert len(external_weather_schedules) == 9
+    # 9 provider + 분리한 3 provider의 forecast schedule(W-EXP-SPLIT-01).
+    assert len(external_weather_schedules) == 12
     for schedule in external_weather_schedules:
         times = []
         for tick in schedule_execution_time_iterator(
@@ -321,7 +421,8 @@ def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_bo
         launches.extend(times)
     assert max(Counter(launches).values()) == 1
     ordered = sorted(launches)
-    assert all(b - a == timedelta(minutes=20) for a, b in pairwise(ordered))
+    # 기존 provider phase는 20분 간격 그대로이고 분리한 forecast는 그 사이 10분 자리다.
+    assert all(b - a >= timedelta(minutes=10) for a, b in pairwise(ordered))
 
 
 def test_short_forecast_retention_has_its_own_bounded_schedule() -> None:
@@ -334,3 +435,96 @@ def test_short_forecast_retention_has_its_own_bounded_schedule() -> None:
     assert schedule.default_status == DefaultScheduleStatus.RUNNING
     job = defs.get_repository_def().get_job(schedule.job_name)
     assert job.tags["dagster/max_runtime"] == "300"
+
+
+class _SiblingRepository:
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), []
+
+    def live_sync_run_datasets(self, *, provider, dataset_keys):
+        self.calls.append((provider, tuple(dataset_keys)))
+        return self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+
+
+def _fake_time(monkeypatch, module):
+    from types import SimpleNamespace
+
+    clock, sleeps = [0.0], []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    return sleeps
+
+
+def _log_context():
+    from types import SimpleNamespace
+
+    logs: list[str] = []
+    return SimpleNamespace(log=SimpleNamespace(info=logs.append)), logs
+
+
+def test_split_part_waits_for_a_live_sibling_then_collects(monkeypatch) -> None:
+    from kortravelweather_dagster import definitions
+
+    sleeps = _fake_time(monkeypatch, definitions)
+    collection = definitions._EXTERNAL_COLLECTIONS_BY_JOB["openweathermap_forecast_weather_job"]
+    repo = _SiblingRepository([{"openweathermap_current"}, {"openweathermap_current"}, set()])
+    context, logs = _log_context()
+    assert definitions._wait_for_sibling_part(
+        context, repo, collection, wait_seconds=100, poll_seconds=30,
+    ) is None
+    assert repo.calls == [("openweathermap", ("openweathermap_current",))] * 3
+    assert sleeps == [30, 30] and len(logs) == 1
+
+
+def test_split_part_skips_when_the_sibling_outlives_the_wait(monkeypatch) -> None:
+    from kortravelweather_dagster import definitions
+
+    sleeps = _fake_time(monkeypatch, definitions)
+    collection = definitions._EXTERNAL_COLLECTIONS_BY_JOB["openweathermap_current_weather_job"]
+    repo = _SiblingRepository([{"openweathermap_forecast"}])
+    context, _ = _log_context()
+    result = definitions._wait_for_sibling_part(
+        context, repo, collection, wait_seconds=60, poll_seconds=30,
+    )
+    assert result is not None and result["skipped"] is True
+    assert result["reason"] == definitions.SIBLING_RUNNING_REASON
+    assert result["sibling_datasets"] == ["openweathermap_forecast"]
+    assert sleeps == [30, 30]
+
+
+def test_unsplit_provider_does_not_look_for_siblings() -> None:
+    from kortravelweather_dagster import definitions
+
+    class Forbidden:
+        def live_sync_run_datasets(self, **kwargs):
+            raise AssertionError("분리하지 않은 provider는 형제 run을 찾지 않는다")
+
+    collection = definitions._EXTERNAL_COLLECTIONS_BY_JOB["wttr_in_weather_job"]
+    context, _ = _log_context()
+    assert definitions._wait_for_sibling_part(context, Forbidden(), collection) is None
+
+
+def test_split_asset_returns_the_sibling_skip_before_touching_the_provider(monkeypatch) -> None:
+    from dagster import build_asset_context
+    from kortravelweather_dagster import definitions
+
+    skip = {"provider": "openweathermap", "skipped": True, "reason": "sibling_running"}
+    monkeypatch.setattr(definitions, "skipped_when_disabled", lambda *a: None)
+    monkeypatch.setattr(definitions, "_run_repository", lambda context: object())
+    monkeypatch.setattr(definitions, "_wait_for_sibling_part", lambda *a, **k: skip)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("기다림이 skip이면 provider를 만들지 않는다")
+
+    monkeypatch.setattr(definitions, "create_configured_provider", forbidden)
+    monkeypatch.setattr(definitions, "_external_targets", lambda repository: [])
+    asset_def = next(
+        a for a in definitions._EXTERNAL_PROVIDER_ASSETS
+        if a.key.path[-1] == "openweathermap_forecast_weather_sync"
+    )
+    with build_asset_context(resources={"weather_repository": object()}) as context:
+        assert asset_def(context) == skip

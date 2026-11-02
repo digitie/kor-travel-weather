@@ -1,3 +1,21 @@
+## 2026-11-02 — export 재개(소유자 지시)·current/forecast 분리·publisher 처리량 보강
+
+- 소유자 재개 지시로 odroid `weather_export_publisher` sensor를 시작했다(03:13Z). 일시중지
+  동안 쌓인 pending attempt 233,173건 때문에 tick의 retire·fresh·sweep 세 단계가 모두 5초
+  statement 상한에 걸려 진행이 0이었다. 배포된 제품 함수의 같은 SQL·기록으로(statement 상한만
+  600초) 198,028건을 SUPERSEDED로 퇴역했고(남은 pending 5.5천 건 = 현재 소유자), 이어 같은
+  제품 함수의 일회성 catch-up 실행(lease 보유, statement 60초)으로 승격을 따라잡게 했다.
+- 원인 실측(EXPLAIN ANALYZE, 읽기 전용): retire 두 문장과 fresh 후보 조회는 pending 행마다
+  소유권 JSON 판정을 건다. 포화된 odroid에서 행당 1~2 ms라 5.5천 행에 6~12초다. fresh가
+  한 번도 돌지 못해 sweep(행당 약 0.7초)만 남았고, 생성(시간당 약 2천 건)을 따라가지 못했다.
+- 이 PR: fresh는 승격 후보가 남은 최근 SUCCESS run 2개씩만 보고(싼 열로 run을 먼저 고른다)
+  일괄 퇴역은 프로세스당 5분마다다. W-EXP-SPLIT-01: open_meteo·openweathermap·weatherapi를
+  current(fast 그룹, 기존 phase)와 forecast(slow 그룹, +90분) job·schedule로 나눴고, 같은
+  provider의 두 run은 겹치지 않는다(형제 sync run이 살아 있으면 최대 30분 기다리고 넘으면
+  기록된 skip). `kma_short_forecast_job` 상한은 7200→10800초(10-27부터 거의 매번 2시간 상한에 회수).
+- 운영의 실행 중 kma_short run 하나는 tag `dagster/max_runtime`을 14400으로 늘려 회수를 피했다.
+  geo 전량 적재 run은 소유자 지시로 건드리지 않았다.
+
 ## 2026-10-29 — 최신 Weather 전체 이미지 배포
 
 - 최신 제품 소스 `ad4ee5350a50804e34b84679be29d7a743f9e443`로 API·관리 웹·Dagster 코드서버를

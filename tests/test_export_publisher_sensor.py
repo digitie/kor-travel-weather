@@ -26,6 +26,12 @@ candidate = fixtures.candidate
 state = fixtures.state
 
 
+@pytest.fixture(autouse=True)
+def _retire_due_each_test(monkeypatch):
+    # 일괄 퇴역은 프로세스당 주기다. 시험마다 새 프로세스처럼 첫 tick에 돌게 한다.
+    monkeypatch.setattr(module, "_RETIRE_NEXT", [0.0])
+
+
 @job
 def metadata_only_job():
     pass
