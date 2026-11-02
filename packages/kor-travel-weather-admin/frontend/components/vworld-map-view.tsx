@@ -347,6 +347,7 @@ export function VWorldMarker({
 
 export type VWorldWeatherMarkerProps = Omit<VWorldMarkerProps, "children"> & {
   temperature: number | null;
+  regionLabel?: string;
   condition: WeatherCondition;
   alertCount?: number;
 };
@@ -360,6 +361,7 @@ export function VWorldWeatherMarker({
   temperature,
   condition,
   alertCount = 0,
+  regionLabel,
   ...markerProps
 }: VWorldWeatherMarkerProps) {
   return (
@@ -380,7 +382,7 @@ export function VWorldWeatherMarker({
         type="button"
       >
         <span aria-hidden="true" className="vworld-weather-marker-icon">{weatherConditionIcon(condition)}</span>
-        <span className="vworld-weather-marker-copy">
+        <span className="vworld-weather-marker-copy">{regionLabel ? <small>{regionLabel}</small> : null}
           <strong>{temperature === null ? "—" : `${Math.round(temperature)}°`}</strong>
           <small>{weatherConditionLabel(condition)}</small>
         </span>

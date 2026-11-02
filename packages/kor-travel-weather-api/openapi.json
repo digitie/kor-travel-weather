@@ -3245,6 +3245,28 @@
             "type": "boolean",
             "title": "Enabled"
           },
+          "sido_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sido Name"
+          },
+          "sigungu_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sigungu Name"
+          },
           "metadata": {
             "additionalProperties": true,
             "type": "object",
@@ -3470,6 +3492,11 @@
                 "type": "null"
               }
             ]
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -3536,6 +3563,28 @@
             "type": "boolean",
             "title": "Enabled"
           },
+          "sido_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sido Name"
+          },
+          "sigungu_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sigungu Name"
+          },
           "metadata": {
             "additionalProperties": true,
             "type": "object",
@@ -3575,6 +3624,11 @@
             },
             "type": "array",
             "title": "Alerts"
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -3840,6 +3894,11 @@
             },
             "type": "array",
             "title": "Alerts"
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -4103,6 +4162,11 @@
             },
             "type": "array",
             "title": "Alerts"
+          },
+          "alert_scope_unverified": {
+            "type": "boolean",
+            "title": "Alert Scope Unverified",
+            "default": false
           }
         },
         "additionalProperties": false,

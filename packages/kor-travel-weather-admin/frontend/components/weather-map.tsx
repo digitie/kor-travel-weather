@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, CalendarDays, Cloud, Crosshair, Eye, RefreshCw, Thermometer, Timer, Wind } from "lucide-react";
+import { Bell, CalendarDays, Cloud, Crosshair, Eye, RefreshCw, Timer } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MapDetailOverlay, MapFilterBar, MapFilterField, MapFilterPanel, MapKindFilter, MapStage, MapTabs, MapTabPanel, MapViewTabs, MapWorkspace, type MapViewportReadout } from "@kor-travel/ui/map-controls";
@@ -20,7 +20,10 @@ import {
 import {
   VWorldMapView,
   VWorldWeatherClusters,
+  VWorldWeatherMarker,
 } from "@/components/vworld-map-view";
+import { weatherRepresentatives, weatherRegionLevel } from "@/lib/weather-regions";
+import { WeatherDetails } from "./weather-details";
 import type { WeatherCondition } from "@/lib/weather-clusters";
 
 import { SourceMultiSelect, type SourceOption } from "@/components/source-multi-select";
@@ -48,12 +51,6 @@ function metricDisplayValue(value: WeatherValue) {
   return String(number);
 }
 
-function valueFor(values: WeatherValue[], ...keys: string[]) {
-  const found = values.find((value) => keys.includes(value.metric_key));
-  if (!found) return "—";
-  const unit = metricDisplayUnit(found.unit);
-  return `${metricDisplayValue(found)}${unit ? ` ${unit}` : ""}`;
-}
 
 function forecastGroups(values: WeatherValue[]) {
   const groups = new Map<string, WeatherValue[]>();
@@ -65,11 +62,11 @@ function forecastGroups(values: WeatherValue[]) {
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .slice(0, 6);
+    .slice(0, 24);
 }
 
 type MarkerState = {
-  kind: "clear" | "cloud" | "rain" | "snow" | "storm" | "alert" | "unknown";
+  kind: "clear" | "cloud" | "rain" | "snow" | "storm" | "unknown";
   glyph: string;
   label: string;
 };
@@ -201,9 +198,7 @@ function markerValues(summary: WeatherMarker): WeatherValue[] {
 
 function markerState(summary: WeatherMarker | undefined): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
-  if (summary.alerts.length) {
-    return { kind: "alert", glyph: "!", label: `특보 ${summary.alerts.length}건` };
-  }
+  // 특보 종류는 현재 날씨가 아니다. 풍랑·강풍 등은 별도 특보 배지로 유지한다.
   const rows = markerValues(summary);
   const codeRows = rows.filter((row) =>
     ["WEATHER_CODE", "weather_code", "SKY", "PTY"].includes(row.metric_key),
@@ -229,7 +224,7 @@ function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
   if (kind === "clear") return "sunny";
   if (kind === "rain") return "rainy";
   if (kind === "snow") return "snowy";
-  if (kind === "storm" || kind === "alert") return "storm";
+  if (kind === "storm") return "storm";
   if (kind === "cloud") return "cloudy";
   return "unknown";
 }
@@ -376,14 +371,18 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
   const selectedPositionRef = useRef<[number, number] | null>(null);
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
-    const inViewport = visibleLocations.filter((location) => isInViewport(location, viewport));
+    const candidates = weatherRegionLevel(mapViewport?.zoom ?? initialCamera.zoom)
+      ? weatherRepresentatives(visibleLocations, mapViewport?.zoom ?? initialCamera.zoom).map(r => r.location) : visibleLocations;
+    const inViewport = candidates.filter((location) => isInViewport(location, viewport));
     if (!selected || inViewport.some((location) => location.location_id === selected.location_id)) {
       return inViewport;
     }
     return [selected, ...inViewport];
-  }, [selected, viewport, visibleLocations]);
+  }, [selected, viewport, visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
   // 상세·제공처 상태만 바뀐 렌더는 동일한 GeoJSON을 다시 만들지 않는다.
-  const markers = useMemo(() => mapLocations.map((location) => {
+  const regionLevel = weatherRegionLevel(mapViewport?.zoom ?? initialCamera.zoom);
+  const regional = useMemo(() => weatherRepresentatives(visibleLocations, mapViewport?.zoom ?? initialCamera.zoom), [visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
+  const markers = useMemo(() => mapLocations.filter(location => !regionLevel || regional.some(r => r.location.location_id === location.location_id)).map((location) => {
     const summary = markerRefreshRef.current === JSON.stringify([refreshToken, providerFilter, kindFilter]) ? summaries[location.location_id] : undefined;
     const state = markerState(summary);
     return {
@@ -394,10 +393,11 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
       alertCount: summary?.alerts.length ?? 0,
       selected: location.location_id === selectedId,
       ariaLabel: `${location.name}: ${state.label} 날씨 보기`,
-      title: location.name,
+      regionLabel: regionLevel ? regional.find(r => r.location.location_id === location.location_id)?.label : undefined,
+      title: regionLevel ? `${regional.find(r => r.location.location_id === location.location_id)?.label} · 대표 지점 ${location.name}` : location.name,
       onClick: () => { setSelectedId(location.location_id); setDetailOpen(true); requestAnimationFrame(() => detailRef.current?.focus()); },
     };
-  }), [mapLocations, selectedId, summaries, providerFilter, kindFilter, refreshToken]);
+  }), [mapLocations, selectedId, summaries, providerFilter, kindFilter, refreshToken, regionLevel, regional]);
   const selectedSummary = markerRefreshRef.current === JSON.stringify([refreshToken, providerFilter, kindFilter]) && selected
     ? summaries[selected.location_id] : undefined;
   const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
@@ -501,7 +501,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
         });
     }
     // 예보가 늦거나 실패해도 먼저 도착한 현재 날씨는 즉시 표시한다.
-    void getForecast(selectedLocationId, forecastWindowStart(), undefined, 100, signal, providerFilter, kindFilter)
+    void getForecast(selectedLocationId, forecastWindowStart(), undefined, 1000, signal, providerFilter, kindFilter)
       .then((next) => {
         if (!signal.aborted) setForecast(next.data);
       })
@@ -628,12 +628,12 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                   </div>
                 ) : null}
                 {!loading ? <>
-                <div className="metric-grid"><div className="metric-card primary"><Thermometer size={17} /><span>기온</span><strong>{valueFor(values, "T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c")}</strong></div><div className="metric-card"><Wind size={17} /><span>풍속</span><strong>{valueFor(values, "WSD", "WIND_SPEED", "wind_speed", "wind_speed_10m", "wind_kph")}</strong></div><div className="metric-card"><span>습도</span><strong>{valueFor(values, "REH", "HUMIDITY", "relative_humidity_2m", "humidity")}</strong></div><div className="metric-card"><span>강수</span><strong>{valueFor(values, "RN1", "PCP", "PRECIP", "precipitation", "precipitation_sum", "precip_mm")}</strong></div></div>
+                <WeatherDetails values={values} outlook={forecast} outlookPending={forecastLoading} outlookMessage={forecastMessage} condition={rows => markerState({ location_id: selected.location_id, latest: rows, alerts: [], measurement_point: null })} />
                 <div className="inspector-actions">
                   <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침" onClick={() => setRefreshToken((value) => value + 1)}><RefreshCw size={17} /></button>
                   <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동" onClick={() => map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 10, duration: 500 })}><Crosshair size={17} /></button>
                 </div>
-                <div className="inspector-section"><div className="section-label"><span>최근 측정값</span><span>{values.length}개</span></div><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{metricDisplayValue(value)} <small>{metricDisplayUnit(value.unit)}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></div>
+                <details className="inspector-section weather-source-details"><summary>측정 자료 {values.length}개 · 출처 보기</summary><div className="metric-rows">{values.slice(0, 8).map((value) => <div key={value.value_id}><span><strong>{value.metric_name ?? value.metric_key}</strong><small>{datasetLabels.get(value.dataset_key) ?? value.dataset_key}</small></span><b>{metricDisplayValue(value)} <small>{metricDisplayUnit(value.unit)}</small></b></div>)}{!values.length ? <div className="empty">표시할 측정값이 없습니다.</div> : null}</div></details>
                 </> : null}
                 {selectedSummary?.measurement_point ? (
                   <div className="measurement-point">
@@ -645,22 +645,8 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                   </div>
                 ) : null}
                 <div className="inspector-section forecast-section">
-                  <div className="section-label"><span>예보 미리보기</span><span>{forecast.length}개</span></div>
                   {forecastLoading ? <div className="loading-block" role="status">예보 조회 중…</div> : forecastMessage ? <div className="empty" role="status">{forecastMessage}</div> : groupedForecast.length ? (
-                    <div className="forecast-list">
-                      {groupedForecast.map(([targetAt, items]) => (
-                        <div className="forecast-row" key={targetAt}>
-                          <time dateTime={targetAt}>{new Date(targetAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time>
-                          <div className="forecast-values">
-                            {items.slice(0, 4).map((value) => (
-                              <span key={value.value_id}>
-                                <b>{value.metric_name ?? value.metric_key}</b> {metricDisplayValue(value)}{metricDisplayUnit(value.unit) ? ` ${metricDisplayUnit(value.unit)}` : ""}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
+                    <WeatherDetails values={[]} forecast={forecast} condition={rows => markerState({ location_id: selected.location_id, latest: rows, alerts: [], measurement_point: null })} />
                   ) : <p className="muted-note">예보 데이터가 없습니다.</p>}
                 </div>
     </MapDetailOverlay>
@@ -703,8 +689,10 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
               zoom={initialCamera.zoom}
             >
               <VWorldWeatherClusters
-                markers={markers}
+                markers={regionLevel ? [] : markers}
               />
+              {regionLevel && !regional.length && visibleLocations.length ? <p role="status">행정구역 주소가 확인된 지점이 없습니다. 확대하면 개별 지점을 확인할 수 있습니다.</p> : null}
+              {regionLevel ? markers.map(marker => <VWorldWeatherMarker key={marker.id} {...marker} />) : null}
             </VWorldMapView>
           </MapStage>
         </MapTabPanel>
