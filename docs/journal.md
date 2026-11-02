@@ -1,3 +1,11 @@
+## 2026-11-03 — PR199의 0035 전용 migration 시험 계약 수정
+
+CI41543400028의 유일한 실패는 0035 전용 시험이 최신 head0036을 적용하고 0035를 기대한 점이었다.
+같은 실패를 로컬 PG16에서 재현하고 해당 시험의 upgrade target 두 곳만 0035로 한정했다.
+하루별 부분 commit·잠금 해제 후 재시도·최신 head schema 계약을 Python3.12/PG16 3개,
+WSL Python3.13/PG16 3개와 Docker 3개로 확인했다. 시험 ruff 통과, 제품 코드와 writer 변경은 없다.
+[원 CI·수정 범위](reports/2026-11-03-weather-read-performance.md#pr199-ci의-0035-전용-시험-후속).
+
 ## 2026-11-03 — reference 조회와 export 직렬화 반복 비용 개선
 
 큰 JSON을 종류 조건으로 반복 해석하는 W1을 실제 로컬 PG18에서 재현하고 0036의 작은 generated

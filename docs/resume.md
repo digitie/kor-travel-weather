@@ -1,3 +1,11 @@
+## 2026-11-03 — PR199 CI 시험 전용 후속
+
+원 CI41543400028은 0035 전용 시험의 head/기대 revision 불일치 1건으로 실패했다.
+시험 target만 0035로 한정했으며 제품539d6·0036 writer와 분리한 변경이다.
+Python3.12/PG16·WSL Python3.13/PG16·Docker의 관련 3개씩과 ruff를 통과했다.
+다음 한 작업은 Root가 이 시험 전용 커밋을 PR199에 push하고 새 CI 결과를 확인하는 것이다.
+[실패 원문과 검증 범위](reports/2026-11-03-weather-read-performance.md#pr199-ci의-0035-전용-시험-후속).
+
 ## 2026-11-03 — Weather 읽기 반복 비용 구현·로컬 검증 완료
 
 `codex/weather-read-performance-20261103`에서 W1 snapshot 종류의 stored generated projection,

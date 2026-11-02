@@ -1,5 +1,17 @@
 # 2026-11-03 Weather 읽기 반복 비용 개선
 
+## PR199 CI의 0035 전용 시험 후속
+
+[원 CI41543400028](https://github.com/digitie/kor-travel-weather/actions/runs/41543400028)의 source539d6는
+Python 시험 1개 실패·1,647개 통과였고 frontend와 PostgreSQL migration 단계는 성공했다.
+유일한 실패는 0035 하루 단위 commit·재시도 시험이 `head`까지 올리면서 마지막 버전은 0035로
+기대한 내부 불일치다. 로컬 PG16에서도 같은 기대값 실패를 재현했다.
+해당 시험의 upgrade target 두 곳만 0035로 한정했다. 제품 코드·0036 writer는 변경하지 않았다.
+최신 head0036은 별도 전체 schema 계약 시험이 계속 검증한다. 관련 세 시험은 CI와 같은
+Python3.12/PG16에서 3개, WSL Python3.13/PG16에서 3개, Docker Python3.13/PG16에서 3개 통과했다.
+시험 파일 ruff도 통과했다. 원 실패 CI는 보존하며 전체 시험을 새로 통과했다고 보고하지 않는다.
+로컬 원문은 WSL `/var/tmp/weather-read-performance-20261103/pr199-*.log`에 보존했다.
+
 현재 통합 소스의 기능을 보존한 `codex/weather-read-performance-20261103`에서 구현했다.
 이 문서는 로컬 검증 결과다. 운영 이미지·DB·수집 일정은 변경하지 않았고 push·PR·배포도 하지 않았다.
 
