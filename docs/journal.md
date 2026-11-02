@@ -1,3 +1,13 @@
+## 2026-11-02 — #194 CS 배포(odroid)·Map 하한 실측
+
+- CS만 `9e70cc8e`로 교체했다(09:27Z, G 안). 단기예보 run은 상한 tag를 14400으로 늘려 보호했고,
+  `adopt --replace-current`로 등록했다(verify healthy). 교체 뒤 fresh 승격이 tick당 27~50건으로 돈다.
+- Map 소비 실측(n150): 위치 1451·current 1414·초단기 1203·중기 21(중기 target 21곳)·W5 1451 적재.
+  단기는 위치 273곳(완결 약 340~375곳)이라 Map 하한 1,000을 넘지 못했다. 외부 예보 한 페이지는 약 100초,
+  단기는 약 73초라 Map read timeout 60초를 넘겼다. Map #1435(하한)와 Manager #576(timeout env)로 고친다.
+- export page 고정비 약 18초의 위치: `export_forecasts._freeze_forecasts` →
+  `export_inventory_selection.approved_source_selection`. 이 DB 조회가 부하 때 5초 상한에 걸려 503이 된다(후속 과제).
+
 ## 2026-11-02 — export 재개(소유자 지시)·current/forecast 분리·publisher 처리량 보강
 
 - 소유자 재개 지시로 odroid `weather_export_publisher` sensor를 시작했다(03:13Z). 일시중지
