@@ -1,3 +1,17 @@
+## 2026-11-02 — #194 CS 배포 완료(odroid)
+
+- `9e70cc8e`의 Dagster 코드서버만 ARM64로 빌드해(`kor-travel-weather-dagster:rel-9e70cc8ed3f1`, id `739b1b77`)
+  09:27Z에 교체했다. API·웹·스키마(0035)는 그대로다. 단기예보 run `b08abd91`(05:43 시작, 3시간+)은
+  tag 상한을 14400으로 늘려 끝까지 보호한 뒤 교체했다. 나머지 진행 run은 SAFE 취소 후 새 job으로 다시
+  띄웠다. `/opt/dagster/state`를 백업·복원했고, `ktdctl service-release adopt weather --replace-current`로
+  current를 `weather-adopt-20261102T092901Z-…`(verify healthy)로 등록했다.
+- 분리 schedule 6개 RUNNING, 옛 3개 정지. 교체 직후 publisher tick은 fresh 27~50·published 36~58이다
+  (교체 전 tick당 약 15건, fresh는 매번 statement_timeout).
+- 첫 시도는 Manager 전역 잠금 G를 10분 기다리다 그만뒀다(다른 배포 `vworld-server-deploy-*`가 08:34~09:26 보유).
+  두 번째 시도는 G를 기다려 교체했다. G는 강제로 풀지 않았다.
+- 다음: current 승격 지연(분리 current job 소요 수준인지)과 시간당 승격량을 실측한다(W-EXP-SPLIT-01 수용).
+  Map 쪽 단기·외부 예보 적재는 Map #1435·Manager #576과 n150 timeout 300 회전 뒤다.
+
 ## 2026-11-02 — export 재개·W-EXP-SPLIT-01·publisher 처리량
 
 - 소유자가 export를 재개했다. publisher sensor RUNNING, 일시중지 backlog 198천 건 퇴역, catch-up
