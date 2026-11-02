@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
 
 
 def _holder(root, shared, ready, release):
@@ -52,14 +52,14 @@ def test_two_readers_share_guard_and_writer_waits_until_both_release(tmp_path):
     with _holding(tmp_path, shared=True):
         with (
             _holding(tmp_path, shared=True),
-            pytest.raises(ExportArtifactError, match="대기 상한"),
+            pytest.raises(ExportGuardTimeout, match="대기 상한"),
             store.guard(timeout_seconds=0.05),
         ):
             pytest.fail("읽는 중 배타 guard를 얻으면 안 됩니다.")
         # read slot도 프로세스 간 공유되므로 세 번째 reader를 무제한 추가하지 않는다.
         with (
             _holding(tmp_path, shared=True),
-            pytest.raises(ExportArtifactError, match="동시 읽기 대기 상한"),
+            pytest.raises(ExportGuardTimeout, match="동시 읽기 대기 상한"),
             store.guard(shared=True, timeout_seconds=0.05),
         ):
             pytest.fail("동시에 세 번의 파일 읽기를 허용하면 안 됩니다.")
@@ -67,7 +67,7 @@ def test_two_readers_share_guard_and_writer_waits_until_both_release(tmp_path):
         with store.guard(shared=True, timeout_seconds=0.05):
             pass
         with (
-            pytest.raises(ExportArtifactError, match="대기 상한"),
+            pytest.raises(ExportGuardTimeout, match="대기 상한"),
             store.guard(timeout_seconds=0.05),
         ):
             pytest.fail("마지막 reader가 남아 있습니다.")
@@ -80,7 +80,7 @@ def test_exclusive_writer_blocks_shared_and_default_exclusive_reader(tmp_path):
     with _holding(tmp_path, shared=False):
         for shared in (False, True):
             with (
-                pytest.raises(ExportArtifactError, match="대기 상한"),
+                pytest.raises(ExportGuardTimeout, match="대기 상한"),
                 store.guard(shared=shared, timeout_seconds=0.05),
             ):
                 pytest.fail("writer가 있는 동안 다른 guard를 얻으면 안 됩니다.")
@@ -123,7 +123,7 @@ def test_waiting_writer_blocks_new_reader_before_existing_reader_finishes(tmp_pa
             assert waiting.wait(10)
             assert not acquired.is_set()
             with (
-                pytest.raises(ExportArtifactError, match="입장 대기 상한"),
+                pytest.raises(ExportGuardTimeout, match="입장 대기 상한"),
                 store.guard(shared=True, timeout_seconds=0.05),
             ):
                 pytest.fail("writer가 대기 중이면 새 reader를 막아야 합니다.")

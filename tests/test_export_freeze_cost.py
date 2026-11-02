@@ -88,7 +88,7 @@ def test_catalog_projection_reads_metadata_in_one_lateral(repository):
     # 전체 문서를 jsonb로 바꾸지 않는다(json이 받아 둔 escape가 cast에서 실패하지 않게).
     assert "JSONB" not in sql.upper()
     # 호출마다 새 LATERAL이다(FROM과 열이 같은 객체 — 동시 첫 호출에서도 섞이지 않는다).
-    assert catalog_source_projection(catalog)[0] is not source_from
+    assert catalog_source_projection(catalog)[0].right is not source_from.right
 
 
 def test_catalog_projection_values_match_the_json_path_projection(repository):

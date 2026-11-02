@@ -150,20 +150,19 @@ def approved_source_selection(
     attempts, runs = (
         metadata.tables["weather_export_attempts"], metadata.tables["weather_sync_runs"]
     )
+    # 위치마다 attempt·plan을 PK로 두 번 더 찾던 join은 부하 때 5s 상한을 넘었다.
+    # plan은 attempt마다 한 번(read_scope_plans), run_id는 cohort 대조에 필요한 것만 읽는다.
+    # generation은 attempt 이력 정리와 독립인 공개 성공 증거다(FK 없음).
     rows = connection.execute(select(
-        table, plans.c.attempt_id.label("plan_attempt_id"), attempts.c.run_id,
+        table, generations.c.attempt_id.label("plan_attempt_id"),
         generations.c.data_revision_at, generations.c.created_at.label("generation_published_at"),
     ).select_from(
         table.join(generations, table.c.generation_id == generations.c.generation_id)
-        .join(attempts, generations.c.attempt_id == attempts.c.attempt_id)
-        .outerjoin(plans, plans.c.attempt_id == attempts.c.attempt_id)
     ).where(tuple_(table.c.provider, table.c.dataset_key).in_(expected)).order_by(
         table.c.provider, table.c.dataset_key, table.c.location_id,
     ).limit(MAX_SELECTED_ROWS + 1)).mappings().all()
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
-    if any(row["plan_attempt_id"] is None for row in rows):
-        raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
     catalog = {row["location_id"]: row for row in locations}
     missing = {row["location_id"] for row in rows} - catalog.keys()
     if missing:
@@ -176,10 +175,17 @@ def approved_source_selection(
             # 실제 catalog 유실은 이전 완전 snapshot으로 fallback해야 한다.
             raise ExportArtifactError("승인 source의 canonical catalog 행이 유실됐습니다.")
     valid, sources = {}, set()
-    plans_by_attempt = read_scope_plans(
-        connection, plans, [row["plan_attempt_id"] for row in rows
-                            if row["location_id"] in catalog],
-    )
+    shown = {row["plan_attempt_id"] for row in rows if row["location_id"] in catalog}
+    # 보이는 위치의 plan이 없으면 read_scope_plans가 "plan 유실"로 거절한다.
+    plans_by_attempt = read_scope_plans(connection, plans, sorted(shown))
+    hidden = {row["plan_attempt_id"] for row in rows} - shown
+    if hidden:
+        # 명시 비활성 위치의 plan은 descriptor를 읽지 않고 존재만 확인한다.
+        hidden -= set(connection.scalars(
+            select(plans.c.attempt_id).where(plans.c.attempt_id.in_(sorted(hidden)))
+        ))
+    if hidden:
+        raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
     parsed_plans = {key: parse_scope_descriptor(value) for key, value in plans_by_attempt.items()}
     plan_namespaces = {key: value.namespace for key, value in parsed_plans.items()}
     descriptors_by_namespace = {}
@@ -249,6 +255,14 @@ def approved_source_selection(
             tuple_(cohorts.c.provider, cohorts.c.dataset_key).in_(expected),
         )).mappings()
     }
+    # cohort 대조에만 run_id가 필요하다. attempt 이력이 정리됐으면 미확인으로 본다.
+    needed = sorted({
+        row["plan_attempt_id"] for row in health_rows
+        if (row["provider"], row["dataset_key"]) in declarations
+    })
+    run_ids = dict(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
+        attempts.c.attempt_id.in_(needed),
+    )).tuples().all()) if needed else {}
     for source in expected:
         row = declarations.get(source)
         if row is None:
@@ -283,7 +297,8 @@ def approved_source_selection(
                 approved = valid.get((*source, key, part))
                 if approved is None or (
                     approved["namespace"] != descriptor_namespace
-                    or approved["run_id"] != row["run_id"]
+                    or run_ids.get(approved["plan_attempt_id"]) is None
+                    or run_ids[approved["plan_attempt_id"]] != row["run_id"]
                 ):
                     unconfirmed = True
         if selected != {item["location_id"] for item in row["targets"]}:

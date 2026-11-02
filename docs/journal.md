@@ -1,3 +1,13 @@
+## 2026-11-03 — export 읽기 경합 503 구분·승인 inventory 조회 축소
+
+- Map weather_state가 받은 503은 export 부재가 아니라 읽기 경합이었다(freeze 문장 5초 상한·artifact
+  guard 2초 대기). 이제 그 503은 `EXPORT_TEMPORARILY_UNAVAILABLE` + `Retry-After: 5`이고
+  `EXPORT_NOT_READY`는 완결 export 부재(와 결함)에만 남는다. OpenAPI 503에 두 code와 header를 적었다.
+- `approved_source_selection`: 위치마다 attempts·scope_plans를 PK로 찾던 inventory join을 generations
+  join만으로 줄였다. odroid 읽기 전용 EXPLAIN: current 29k→1k buffer, 0.36~3.0초→0.3초. run_id는 cohort
+  대조가 필요한 attempt만 따로 읽고, attempt 이력이 정리돼도 승인 위치는 남기되 미확인으로 표시한다.
+- 같은 함수의 Python 시간(descriptor 해석·namespace, 약 5초)은 #196 namespace 캐시 배포 뒤 재측정한다.
+
 ## 2026-11-02 — #194 CS 배포(odroid)·Map 하한 실측
 
 ## 2026-11-02 전체 PR 새 이미지 반영 완료

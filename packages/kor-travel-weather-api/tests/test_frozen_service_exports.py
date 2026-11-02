@@ -517,12 +517,93 @@ def test_forecast_snapshot_metadata_lock_has_bounded_wait_and_recovers(repositor
         )
         elapsed = time.monotonic() - started
         assert response.status_code == 503 and elapsed < 7
+        # 잠금 대기는 export 부재가 아니다. 같은 요청을 다시 보내라는 구분 코드다.
+        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+        assert response.headers["retry-after"] == "5"
     assert (
         client.get(
             "/v1/service/exports/forecasts", params={"style": "ultra_short"}, headers=HEADERS
         ).status_code
         == 200
     )
+
+
+def test_reader_guard_wait_is_retryable_and_the_same_request_recovers(repository, tmp_path):
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url, params = "/v1/service/exports/forecasts", {"style": "ultra_short"}
+    with ExportArtifactStore(tmp_path).guard(timeout_seconds=5):  # 승격 writer가 잡은 상태
+        busy = client.get(url, params=params, headers=HEADERS)
+    assert busy.status_code == 503
+    assert busy.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+    assert busy.headers["retry-after"] == "5" and "etag" not in busy.headers
+    assert client.get(url, params=params, headers=HEADERS).status_code == 200
+
+
+class _Orig(Exception):
+    def __init__(self, sqlstate):
+        super().__init__("canceling statement")
+        self.sqlstate = sqlstate
+
+
+def _errors():
+    # guard 대기는 위의 실제 flock 시험이 다룬다.
+    from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
+    from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
+    from kortravelweather.export_snapshots import ExportSnapshotUnavailable
+    from kortravelweather.export_status_reader import ExportStatusPending
+
+    retry, missing = "EXPORT_TEMPORARILY_UNAVAILABLE", "EXPORT_NOT_READY"
+    return [
+        (OperationalError("SELECT 1", {}, _Orig(None)), retry),  # 연결 단절(SQLSTATE 없음)
+        (OperationalError("SELECT 1", {}, _Orig("57014")), retry),  # statement_timeout
+        (DBAPIError("SELECT 1", {}, _Orig("55P03")), retry),  # lock_timeout
+        (DBAPIError("SELECT 1", {}, _Orig("40001")), retry),  # serialization
+        (OperationalError("SELECT 1", {}, _Orig("08006")), retry),  # 연결 실패
+        (PoolTimeoutError("QueuePool limit"), retry),
+        (ExportStatusPending("수집 상태 재투영을 기다리고 있습니다."), retry),
+        (SQLAlchemyError("postgresql://user:secret@db/weather"), missing),
+        (DBAPIError("SELECT 1", {}, _Orig("42703")), missing),  # 결함은 경합이 아니다
+        (OperationalError("SELECT 1", {}, _Orig("28P01")), missing),  # 인증은 기다려도 같다
+        (OperationalError("SELECT 1", {}, _Orig("53100")), missing),  # 디스크 부족
+        (ExportSnapshotUnavailable("이전 승인 집합이 없습니다."), missing),
+        (OSError("artifact"), missing),
+    ]
+
+
+@pytest.mark.parametrize(("error", "code"), _errors(), ids=[
+    "disconnect", "57014", "55P03", "40001", "08006", "pool", "status_pending",
+    "bare", "42703", "28P01", "53100", "missing", "oserror",
+])
+def test_read_contention_is_retryable_503_and_missing_export_stays_not_ready(
+    repository, tmp_path, monkeypatch, error, code
+):
+    """timeout·경합은 재시도 503, 진짜 부재·결함은 EXPORT_NOT_READY로 남긴다."""
+    from kortravelweather_api.routers import service_exports
+
+    from kortravelweather.export_snapshots import FrozenCurrentExports
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(FrozenCurrentExports, "page", fail)
+    monkeypatch.setattr(service_exports, "read_status", fail)
+    client = _client(repository, tmp_path)
+    # status는 artifact 파일을 읽지 않으므로 OSError 분기가 없다.
+    for resource in ("current", "status")[: 1 if isinstance(error, OSError) else 2]:
+        response = client.get(f"/v1/service/exports/{resource}", headers=HEADERS)
+        assert response.status_code == 503
+        assert response.headers["content-type"].startswith("application/problem+json")
+        body = response.json()
+        assert body["code"] == code and "items" not in body
+        assert body["meta"]["source_status"] == "failed"
+        assert ("retry-after" in response.headers) is (code != "EXPORT_NOT_READY")
+        if code != "EXPORT_NOT_READY":
+            assert int(response.headers["retry-after"]) >= 1
+        assert "secret" not in response.text
 
 
 @pytest.mark.parametrize("previous", [False, True])

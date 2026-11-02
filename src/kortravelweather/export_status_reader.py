@@ -13,6 +13,10 @@ from .export_status import ExportSourceStatuses, status_transaction
 from .export_status_scopes import status_scopes
 
 
+class ExportStatusPending(ExportArtifactError):
+    """수집 상태 재투영이 아직 남았다. 요청마다 한 run씩 고치므로 곧 다시 읽으면 된다."""
+
+
 def read_status(repository, providers: set[str], *, as_of: datetime) -> tuple[dict, str]:
     keys = status_scopes(providers)
     if not keys or providers != {key.provider for key in keys}:
@@ -27,7 +31,7 @@ def read_status(repository, providers: set[str], *, as_of: datetime) -> tuple[di
         if connection.scalar(select(SyncRunRow.run_id).where(
             SyncRunRow.export_status_pending == true(), SyncRunRow.provider.in_(providers),
         ).limit(1)) is not None:
-            raise ExportArtifactError("수집 상태 재투영을 기다리고 있습니다.")
+            raise ExportStatusPending("수집 상태 재투영을 기다리고 있습니다.")
         states = ExportSourceStatuses(repository_metadata()).read(connection, keys, as_of=now)
     # 계획/스케줄만으로 성공처럼 보이지 않도록 최초 terminal까지 준비 중으로 둔다.
     if not any(state.last_status is not None for state in states):
