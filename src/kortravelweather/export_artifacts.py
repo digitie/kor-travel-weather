@@ -203,6 +203,32 @@ class ExportArtifactStore:
             if read_slot is not None:
                 os.close(read_slot)
 
+    @contextmanager
+    def verifying(self):
+        """guard 없이 같은 thread의 verify→read가 hash를 한 번만 계산하게 한다.
+
+        파일 이름이 내용 hash이고 managed writer(``publish``)는 같은 hash의 내용으로만 바꾸므로
+        한 번 맞은 digest의 bytes는 그 뒤에도 같다. 사라지면(GC·외부 unlink) 다음 open이 실패한다.
+        이미 guard·verifying 안이면 바깥 scope를 그대로 쓴다.
+        """
+        owned = getattr(self._scope, "verified", None) is None
+        if owned:
+            self._scope.verified = set()
+        try:
+            yield
+        finally:
+            if owned:
+                self._scope.verified = None
+
+    def present(self, digest: str, *, byte_count: int) -> None:
+        """내용을 읽지 않고 파일이 같은 크기의 일반 파일로 남아 있는지만 본다(최종 CAS 직전)."""
+        try:
+            info = os.stat(self._path(digest), follow_symlinks=False)
+        except OSError as exc:
+            raise ExportArtifactError("export artifact가 없거나 손상됐습니다.") from exc
+        if not stat.S_ISREG(info.st_mode) or info.st_size != byte_count:
+            raise ExportArtifactError("export artifact가 없거나 손상됐습니다.")
+
     def publish(self, chunk: PreparedExportChunk) -> None:
         with self.guard():
             self._publish(chunk)

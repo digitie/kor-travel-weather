@@ -1,3 +1,16 @@
+## 2026-11-03 — 승격의 배타 guard를 최종 CAS로 줄인다(reader 503의 주원인)
+
+- Map 회전(t1103a, 02:14Z) 뒤 12시간 export 503(읽기 전용 집계, API 539d6c87): `ExportGuardTimeout` 190,
+  `statement_timeout` 13, 진짜 부재(`ExportSnapshotUnavailable`) 2. 경합 503의 대부분은 publisher가 승격 전체
+  (receipt 검증·파일 hash·point 해석·digest·직전 파일 재검증·CAS)를 배타 guard로 잡는 동안 reader가 2초 대기에
+  걸린 것이다. Map #1437의 페이지 재시도(5·10·20초)가 대부분을 흡수했고, 중기 09:40 run 하나가 12번 503 끝에
+  실패해 10:40에 회복했다.
+- 단기예보 Map 적재(02:30·05:30·08:30·11:30): 첫 페이지 약 200·165·155·263초(run 시작 기준 상한),
+  둘째 페이지 11·19·41·114초 — 300초 read timeout 안이지만 11:30은 여유 약 37초.
+- 이 PR: 검증은 guard 밖(같은 thread의 verify→read는 hash 한 번), 배타 guard는 최종 head CAS에만 잡고 그 안에서
+  새 generation이 가리킬 파일의 존재·크기만 확인한다. 검증 중 파일은 GC가 지우지 않는다(미공개 attempt receipt·
+  승격 pin·현재 head 참조). reader guard 대기 2초는 그대로 두고 배포 뒤 재측정한다.
+
 ## 2026-11-03 — 승인 만료(오래된 지점이 export freshness를 끌어내리지 않게)·#198 배포 뒤 실측
 
 - 운영 current·daily meta.source_collected_at이 10-26으로 묶인 원인: 같은 cohort 안에서 응답에서 계속 빠지는
