@@ -1,5 +1,6 @@
 """quota 회전에 선택하지 않은 위치의 승인과 파일 root를 잃지 않는다."""
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -333,7 +334,9 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
                                "weather_export_scope_owners")
     )]
     # 목록 하나가 배열 파라미터 하나다(위치 3곳이라 개수로는 IN 목록과 구별되지 않는다).
-    assert big and all("= ANY(" in s and " IN (" not in s for s, _ in big)
+    assert big and all(
+        re.search(r"= ANY ?\(", s) and " IN (" not in s for s, _ in big
+    ), [s[:160] for s, _ in big]
     heads = ExportHeads(repo)
     runs_table = heads.metadata.tables["weather_sync_runs"]
     with repo.engine.begin() as c:
