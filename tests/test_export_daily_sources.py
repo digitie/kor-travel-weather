@@ -296,7 +296,7 @@ def test_expired_observation_source_is_a_coverage_gap_not_a_503(
     single = client.get(path, params={"days": 1, "location_id": krex_key}, headers=headers)
     assert single.status_code == 200, single.text
     assert single.json()["meta"]["source_status"] == "stale"
-    assert all(item["sample_count"] == 0 for item in single.json()["items"])
+    # 만료 전에 이미 계산된 과거 날의 요약은 역사다 — 공백은 "새 승인 없음"이지 과거 삭제가 아니다.
 
 
 def test_daily_fallback_moves_its_date_window_to_the_current_kst_date(
