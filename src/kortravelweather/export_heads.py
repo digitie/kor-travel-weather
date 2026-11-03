@@ -800,20 +800,13 @@ class ExportHeads:
     def promote(self, identity, artifacts, *, dagster_status=None) -> str:
         """검증(파일 hash·해석·digest)은 guard 밖, 배타 guard는 최종 head CAS에만 잡는다.
 
-        검증 중 파일은 GC가 지우지 않는다: 후보는 미공개 attempt의 receipt·승격 pin이, 직전
-        head는 현재 head 참조가 지킨다(export_gc). 그래서 reader를 막는 배타 구간은 파일 존재
-        확인과 작은 metadata transaction뿐이다. 2026-11-03 운영: 승격 전체를 배타로 잡아 reader
-        503(``ExportGuardTimeout``) 190건/12시간이 났다.
+        검증 중 파일은 GC가 지우지 않는다: 후보는 미공개 attempt의 receipt가, 후보·직전 head
+        파일은 두 번째 transaction이 commit한 승격 pin이 지킨다(export_gc). 그래서 reader를
+        막는 배타 구간은 파일 존재 확인과 작은 metadata transaction뿐이다. 2026-11-03 운영:
+        승격 전체를 배타로 잡아 reader 503(``ExportGuardTimeout``)이 12시간 190건 났다.
         """
         with artifacts.verifying():
             return self._promote(identity, artifacts, dagster_status=dagster_status)
-
-    @contextmanager
-    def _final_guard(self, artifacts, refs):
-        with artifacts.guard(timeout_seconds=5):
-            for ref in refs:
-                artifacts.present(ref["artifact_digest"], byte_count=ref["byte_count"])
-            yield
 
     def _promote(
         self,
@@ -984,10 +977,7 @@ class ExportHeads:
                 # 0026에서 승인된 파일은 위치 index가 NULL이다. 같은 bytes를
                 # 재사용하면서 실제 파일에서 index만 복구해 재수집 후 공개가 재개된다.
                 r["location_ids"] = sorted(parent_locations)
-        with (
-            self._final_guard(artifacts, parent_refs if reuse else receipts),
-            self._transaction() as session,
-        ):
+        with artifacts.guard(timeout_seconds=5), self._transaction() as session:
             committed = (
                 session.execute(
                     select(self.generations).where(
@@ -1032,6 +1022,10 @@ class ExportHeads:
                 and old["content_digest"] != content
             ):
                 return "CONFLICT"
+            # 검증은 guard 밖이었다. 새 generation이 가리킬 파일이 그대로인지 CAS 판정 뒤
+            # (경쟁 결과를 먼저 돌려준다) 배타 guard 안에서 크기만 다시 본다.
+            for ref in parent_refs if reuse else receipts:
+                artifacts.present(ref["artifact_digest"], byte_count=ref["byte_count"])
             generation = str(uuid4())
             clock = self.metadata.tables["weather_export_publication_clock"]
             # fact/원천 known_at과 별도인 공개 watermark다. 파일 IO 후의 작은

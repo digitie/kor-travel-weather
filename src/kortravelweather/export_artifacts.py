@@ -151,7 +151,8 @@ class ExportArtifactStore:
 
     @contextmanager
     def guard(self, *, timeout_seconds: float = 5, shared: bool = False):
-        # 관리되는 replace/unlink와 승격의 검증→CAS 구간을 같은 유한 guard로 보호한다.
+        # 관리되는 replace/unlink와 승격의 최종 CAS(파일 존재 재확인 포함)를 같은 유한 guard로
+        # 보호한다.
         # 관리자 외부 unlink/디스크 장애까지 원자적으로 묶는다는 뜻은 아니다.
         # reader끼리는 두 개의 OS 공유 slot 안에서만 겹치며 writer 기본값은 배타다.
         import fcntl
