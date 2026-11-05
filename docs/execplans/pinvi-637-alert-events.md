@@ -63,3 +63,11 @@ f756d91에서 실제 관리자 로그인·durable session·공개 API proxy·발
 두 f756 리뷰의 잔여 P2는 종결 SQL 잠금 대기의 무상한이었다. 실제 PG FOR UPDATE를 유지한 provider 오류/취소2건이 수정 전 실패했다. 이제 cleanup 호출만 timeout_ms5000을 전달하고 같은 transaction의 lock_timeout/statement_timeout을 제한한다. 더 엄격한 기존 설정도 유지한다. 실제 잠금을 잡은 상태에서도 원래 오류·취소·close·계측이 먼저 반환되고 기존 session값이 유지되는3검사가 통과했다.
 
 ed8081d에서 시작한 전체 진단 실행은1677통과/3실패로 끝났다. 실행 도중 후속 cleanup/metrics가 바뀌었으므로 정확 최종 source 전체 검증으로 주장하지 않는다. 원격 f756 CI도 같은3건이 실패했다. 두 건은 최신 metadata를0033으로 stamp한 과거 인덱스 fixture가 후속0036 테이블을 다시 만들던 구성 오류로, 의도한0034만 검증하도록 고정했다. 나머지는 새 작업을 반영해22개 기대값을 갱신했다. 실패한 경계와 인덱스 guard 전체를 포함한24검사가 통과했다. 신규 migration에서 외부의 기존 table을 임의로 허용하는 우회는 추가하지 않았다.
+
+## 최종 제품 후보 검증
+
+정확 제품 후보0db86ce에서 WSL 관련·마이그레이션·회수160건, 웹23파일280건·타입·lint·프로덕션 빌드가 통과했다. 같은 후보의 원격 Python 전체1691건과 Ruff, frontend CI가 모두 성공했다. 두 전문 리뷰어가 독립 재검토하여 남은 P0/P1/P2가 없다고 보고했다. 리뷰어는 소스와 기록을 읽었으며 직접 테스트를 실행한 것으로 표시하지 않는다.
+
+같은0db86ce의 실제 소유 PG·API·공개 SDK TCP fixture·프로덕션 웹 Chromium7흐름과 실제 Prometheus Docker1흐름도 모두 통과했다. 브라우저 pageerror0, 인증 없는 metrics401·인증 scrape up1·success5/failed2/client_close1을 확인했다. 화면에서 긴 실행 ID의 필드 경계와 줄바꿈도 확인했다. 기존 색상 토큰은 유지했다. 소유 live stack은 종료했으며 운영 접근·실제 KMA 호출·Telegram 전송은 없었다.
+
+검증 후보와 실행 증거의 SHA256, 제품 파일 manifest는 docs/reviews/pinvi-637-weather-wsl-live.json에 보존한다. 이 증거 문서 커밋의 정확 HEAD를 두 리뷰어가 다시 확인하고 적용 CI2개가 성공한 뒤 일반 squash merge한다. 운영 최종 테스트는 Claude Code 담당이다.
