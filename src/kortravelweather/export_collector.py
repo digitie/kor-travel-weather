@@ -731,7 +731,7 @@ def _lock_free_verdict(row, dagster_status):
 
 
 def _promote_and_yield(heads, identity, artifacts, dagster_status):
-    """승격은 처음부터 끝까지 배타 artifact guard를 잡는다. 놓은 뒤에는 잠깐 쉰다.
+    """승격은 최종 head CAS에서만 배타 artifact guard를 잡는다(검증은 guard 밖). 놓은 뒤 잠깐 쉰다.
 
     연속 승격이 guard를 곧바로 다시 잡으면, 10ms마다 다시 시도하는 API reader와
     collector 쓰기가 상한(2초/5초)까지 들어오지 못한다. 성공·실패와 무관하게 쉰다.

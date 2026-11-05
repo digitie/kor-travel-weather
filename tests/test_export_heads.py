@@ -388,6 +388,88 @@ def test_missing_file_cannot_publish_even_after_lifecycle_eligible(repository, t
         )
 
 
+def _shared_probe(root, commands, replies):
+    store = ExportArtifactStore(root)
+    while commands.get() != "stop":
+        try:
+            with store.guard(timeout_seconds=0.2, shared=True):
+                pass
+        except ExportArtifactError:
+            replies.put(False)
+        else:
+            replies.put(True)
+
+
+def test_promotion_verifies_files_outside_the_exclusive_guard_and_holds_it_only_for_cas(
+    repository, tmp_path,
+):
+    """reader(공유 guard)는 승격의 파일 검증 중에도 들어온다. 배타 guard는 최종 CAS에만 잡는다.
+
+    2026-11-03 운영: 승격 전체를 배타로 잡아 reader가 2초 guard 대기에서 503을 받았다(12시간
+    190건).
+    """
+    import multiprocessing
+    from contextlib import contextmanager
+
+    context = multiprocessing.get_context("spawn")
+    commands, replies = context.Queue(), context.Queue()
+    process = context.Process(target=_shared_probe, args=(tmp_path, commands, replies))
+    process.start()
+
+    def reader_enters():
+        commands.put("probe")
+        return replies.get(timeout=20)
+
+    class Audited(ExportArtifactStore):
+        def __init__(self, root):
+            super().__init__(root)
+            self.during_read, self.exclusive_blocked = [], []
+
+        def read(self, *args, **kwargs):
+            self.during_read.append(reader_enters())
+            yield from super().read(*args, **kwargs)
+
+        @contextmanager
+        def guard(self, **kwargs):
+            with super().guard(**kwargs):
+                if not kwargs.get("shared"):
+                    self.exclusive_blocked.append(not reader_enters())
+                yield
+
+    try:
+        descriptor = _descriptor(repository)
+        heads, identity, *_ = _candidate(repository, tmp_path, descriptor)
+        store = Audited(tmp_path)
+        assert heads.promote(identity, store) == "PUBLISHED"
+        assert store.during_read and all(store.during_read)  # 파일 검증 중 reader가 들어왔다
+        assert store.exclusive_blocked == [True]  # 배타 guard는 최종 CAS 한 번뿐이다
+        assert _head(heads, descriptor) is not None
+        assert reader_enters()  # 다 끝나면 guard가 남지 않는다
+    finally:
+        commands.put("stop")
+        process.join(20)
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+    assert process.exitcode == 0
+
+
+def test_promotion_rejects_a_file_lost_between_verification_and_cas(repository, tmp_path):
+    """guard 밖 검증 뒤 최종 CAS 전에 파일이 사라지면 공개하지 않는다(head 불변)."""
+
+    class LosesFiles(ExportArtifactStore):
+        def read(self, *args, **kwargs):
+            yield from super().read(*args, **kwargs)
+            for path in tmp_path.glob("*.jsonl"):
+                path.unlink()  # 검증을 마친 직후, CAS 전
+
+    descriptor = _descriptor(repository)
+    heads, identity, *_ = _candidate(repository, tmp_path, descriptor)
+    with pytest.raises(ExportArtifactError, match="없거나"):
+        heads.promote(identity, LosesFiles(tmp_path))
+    assert _head(heads, descriptor) is None
+
+
 def test_known_success_survives_run_and_receipt_retention(repository, tmp_path):
     descriptor = _descriptor(repository)
     heads, identity, capture, record, _, _ = _candidate(repository, tmp_path, descriptor)
