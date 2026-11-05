@@ -80,7 +80,7 @@ def refresh_daily_summaries(repository, artifacts: ExportArtifactStore, *, limit
     if not 1 <= limit <= 8:
         raise ValueError("요약 tick의 generation 상한은 1~8입니다.")
     # checkpoint/refs 조회부터 파일 검증과 최종 summary CAS까지 한 수명이다.
-    with artifacts.guard(timeout_seconds=2, shared=True):
+    with artifacts.guard(shared=True):
         return _refresh_daily_summaries_guarded(repository, artifacts, limit=limit)
 
 

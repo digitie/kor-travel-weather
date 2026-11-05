@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
@@ -18,10 +19,33 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 MAX_CHUNK_POINTS = 5000
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_SHARED_ARTIFACT_READERS = 2
+#: 공유(reader) guard 대기 기본·범위(초). 2026-11-05 운영: 승격 배타 구간을 줄인 뒤에도 eMMC fsync가
+#: 섞인 짧은 배타 보유가 2초를 넘겨 reader 503이 시간당 약 6건 남았다. writer 상한(5초)과 맞춘다.
+READER_GUARD_SECONDS = 5.0
+READER_GUARD_SECONDS_RANGE = (0.5, 10.0)
+#: 배타 guard 보유가 이 시간을 넘으면 보유자를 경고 log로 남긴다.
+SLOW_EXCLUSIVE_HOLD_SECONDS = 2.0
+_HOLDERS = frozenset({"publish", "gc", "promotion_cas", "other"})
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+
+
+
+def _observe_exclusive_hold(holder: str, seconds: float) -> None:
+    """배타 guard 보유 시간을 보유자별 histogram에 넣고, 길면 경고 log를 남긴다."""
+    label = holder if holder in _HOLDERS else "other"
+    try:
+        from .metrics import observe_export_guard_hold
+
+        observe_export_guard_hold(label, seconds)
+    except Exception:  # noqa: BLE001 - 계측 실패가 guard 해제를 막지 않는다
+        pass
+    if seconds > SLOW_EXCLUSIVE_HOLD_SECONDS:
+        logger.warning("weather_export_guard_hold holder=%s seconds=%.2f", label, seconds)
 
 
 class ExportArtifactError(RuntimeError):
@@ -86,9 +110,13 @@ def prepare_export_chunk(
 
 
 class ExportArtifactStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, reader_guard_seconds: float = READER_GUARD_SECONDS) -> None:
         if not root.is_absolute():
             raise ExportArtifactError("export artifact 경로는 절대 경로여야 합니다.")
+        low, high = READER_GUARD_SECONDS_RANGE
+        if not low <= reader_guard_seconds <= high:
+            raise ExportArtifactError("reader guard 대기 상한이 범위를 벗어났습니다.")
+        self.reader_guard_seconds = reader_guard_seconds
         self.root = root.resolve()
         # 배타 guard 한 번 안에서 이미 hash를 확인한 digest. 관리되는 writer/GC는 같은
         # 배타 guard를 기다리므로 그 안에서는 내용이 바뀌지 않는다. guard를 나가면 버린다.
@@ -150,7 +178,9 @@ class ExportArtifactStore:
             raise
 
     @contextmanager
-    def guard(self, *, timeout_seconds: float = 5, shared: bool = False):
+    def guard(
+        self, *, timeout_seconds: float | None = None, shared: bool = False, holder: str = "other",
+    ):
         # 관리되는 replace/unlink와 승격의 최종 CAS(파일 존재 재확인 포함)를 같은 유한 guard로
         # 보호한다.
         # 관리자 외부 unlink/디스크 장애까지 원자적으로 묶는다는 뜻은 아니다.
@@ -162,7 +192,10 @@ class ExportArtifactStore:
             self.root / ".export.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
         )
         acquired, read_slot, admission = False, None, None
+        if timeout_seconds is None:
+            timeout_seconds = self.reader_guard_seconds if shared else 5
         deadline = time.monotonic() + timeout_seconds
+        held_since = None
         try:
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                 raise ExportArtifactError("artifact guard는 일반 파일이어야 합니다.")
@@ -174,6 +207,7 @@ class ExportArtifactStore:
                     mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
                     fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
                     acquired = True
+                    held_since = time.monotonic()
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
                         raise ExportGuardTimeout(
@@ -198,6 +232,8 @@ class ExportArtifactStore:
         finally:
             if acquired:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
+                if not shared and held_since is not None:
+                    _observe_exclusive_hold(holder, time.monotonic() - held_since)
             os.close(descriptor)
             if admission is not None:
                 os.close(admission)
@@ -231,7 +267,7 @@ class ExportArtifactStore:
             raise ExportArtifactError("export artifact가 없거나 손상됐습니다.")
 
     def publish(self, chunk: PreparedExportChunk) -> None:
-        with self.guard():
+        with self.guard(holder="publish"):
             self._publish(chunk)
 
     def _publish(self, chunk: PreparedExportChunk) -> None:

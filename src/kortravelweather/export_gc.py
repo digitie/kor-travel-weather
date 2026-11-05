@@ -204,7 +204,7 @@ def collect_export_artifacts(
             if (match := _ARTIFACT.fullmatch(name)) is not None
         ]
         try:
-            with store.guard(timeout_seconds=GC_GUARD_TIMEOUT_SECONDS):
+            with store.guard(timeout_seconds=GC_GUARD_TIMEOUT_SECONDS, holder="gc"):
                 # reader의 freeze·승격·collector 쓰기는 같은 guard 안에서 commit한다.
                 # 배타 guard를 잡은 뒤 이 묶음의 digest만 참조를 다시 읽는다.
                 rechecked = live_artifact_digests(

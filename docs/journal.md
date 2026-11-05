@@ -1,3 +1,23 @@
+## 2026-11-05 — #200·#202·#203 배포 뒤 재측정, reader guard 대기 2초→5초
+
+배포(odroid API·code-server 9acc4090, 11:32Z·13:29Z) 뒤 13:30~21:06Z(7.6시간, export 요청 약 560건) 읽기 전용 실측:
+
+| 지표 | 배포 전(11-03, 12시간) | 배포 뒤 |
+| --- | --- | --- |
+| `ExportGuardTimeout` 503 | 190(15.8/h) | 48(6.3/h) |
+| `statement_timeout` 503 | 13(1.08/h) | 8(1.05/h) |
+| 진짜 부재 503 | 2 | 0 |
+| 첫 페이지 short·external·current·daily | 118~196·89~149·27~46·16~37초 | 144·126·32·18초(load 13) |
+| `approved_source_selection` current(warm) | SQL 약 8.4초 | SQL 약 1.3초, 전체 4.0초 |
+| current·daily `source_collected_at` | 10-26 | 11-02 21:10·11-03 21:36(SDK 72시간 만료 경계) |
+
+- Map(n150) weather_state 13:30Z 뒤: current 14/15(1건 503 페이지 재시도+step 재시도로 480초 상한), daily 8/8,
+  short 3/3(run 전체 217·278·245초, 요청 300초 안), external 2/2, ultra_short 3/8(5건 하한 거부 — 배포 직후 원천 지연,
+  18:48부터 회복).
+- 남은 guard 503은 짧은 배타 보유(collector `publish`의 파일 쓰기+eMMC fsync, GC, 승격 CAS)가 2초를 넘는 경우다.
+  이 PR: reader 공유 guard 대기 기본 5초(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_READER_GUARD_SECONDS`, 0.5~10),
+  배타 보유 시간을 보유자별 histogram(`ktw_export_guard_exclusive_hold_seconds{holder}`)과 2초 초과 경고 log로 남긴다.
+
 ## 2026-11-03 — 승격의 배타 guard를 최종 CAS로 줄인다(reader 503의 주원인)
 
 - Map 회전(t1103a, 02:14Z) 뒤 12시간 export 503(읽기 전용 집계, API 539d6c87): `ExportGuardTimeout` 190,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -540,6 +541,75 @@ def test_reader_guard_wait_is_retryable_and_the_same_request_recovers(repository
     assert busy.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
     assert busy.headers["retry-after"] == "5" and "etag" not in busy.headers
     assert client.get(url, params=params, headers=HEADERS).status_code == 200
+
+
+def test_reader_waits_out_a_short_exclusive_hold_instead_of_503(repository, tmp_path):
+    """배타 보유가 2초를 조금 넘어도 reader는 기본 5초 안에서 기다려 200을 낸다(2026-11-05 운영)."""
+    import threading
+    import time
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    held, release = threading.Event(), threading.Event()
+
+    def writer():
+        with ExportArtifactStore(tmp_path).guard(timeout_seconds=5, holder="publish"):
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    assert held.wait(10)
+    threading.Timer(3.0, release.set).start()
+    started = time.monotonic()
+    response = client.get("/v1/service/exports/current", headers=HEADERS)
+    thread.join(10)
+    assert response.status_code == 200, response.text
+    assert 2.5 < time.monotonic() - started < 9
+
+
+def test_reader_guard_wait_is_configurable_and_bounded():
+    from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+
+    assert WeatherSettings().service_export_reader_guard_seconds == 5.0
+    configured = WeatherSettings(service_export_reader_guard_seconds=8)
+    assert configured.service_export_reader_guard_seconds == 8
+    for bad in (0, 0.1, 60, "x"):
+        assert WeatherSettings(
+            service_export_reader_guard_seconds=bad,
+        ).service_export_reader_guard_seconds == 5.0
+    with pytest.raises(ExportArtifactError):
+        ExportArtifactStore(Path("/tmp/weather-guard-bound"), reader_guard_seconds=30)
+
+
+def test_exclusive_guard_hold_is_measured_per_holder_and_slow_holds_are_logged(
+    tmp_path, monkeypatch, caplog,
+):
+    import time
+
+    from kortravelweather import export_artifacts
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    seen = []
+    monkeypatch.setattr(
+        "kortravelweather.metrics.observe_export_guard_hold",
+        lambda holder, seconds: seen.append((holder, seconds)),
+    )
+    monkeypatch.setattr(export_artifacts, "SLOW_EXCLUSIVE_HOLD_SECONDS", 0.05)
+    monkeypatch.setattr(export_artifacts.logger, "disabled", False)
+    store = ExportArtifactStore(tmp_path)
+    with caplog.at_level("WARNING", logger="kortravelweather.export_artifacts"):
+        with store.guard(holder="gc"):
+            time.sleep(0.1)
+        with store.guard(holder="not-a-holder"):
+            pass
+        with store.guard(shared=True):
+            pass
+    assert [h for h, _ in seen] == ["gc", "other"]  # 공유 guard는 세지 않는다
+    assert seen[0][1] >= 0.1
+    assert "weather_export_guard_hold holder=gc" in caplog.text
 
 
 class _Orig(Exception):

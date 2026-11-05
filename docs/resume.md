@@ -1,3 +1,8 @@
+## 2026-11-05 — 배포 뒤 재측정·reader guard 5초 PR
+
+- guard 503 15.8/h→6.3/h, statement 1.1/h 그대로, 부재 0. selection SQL 8.4→1.3초. meta 10-26 해소.
+- 이 PR: reader guard 대기 5초(설정, 0.5~10)와 배타 보유자별 보유 시간 계측. 다음: 배포 뒤 보유자별 분포로 남은 원인 확정.
+
 ## 2026-11-03 — 승격 배타 guard 축소 PR
 
 - 12시간 503: guard 190·statement 13·부재 2. 승격의 배타 guard를 최종 CAS로 줄인다(파일 검증은 guard 밖).
