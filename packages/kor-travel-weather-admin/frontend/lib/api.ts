@@ -1,3 +1,4 @@
+import type { RegionalAlertEvents } from "@/lib/alert-event-types";
 import { failureMessage, readBody } from "@/lib/http";
 
 export type PageMeta = {
@@ -403,3 +404,11 @@ export type AddressRefreshSummary = {
   configured: boolean; auto_enabled: boolean; in_progress: boolean; manual_cycle: boolean;
   last_resolved_at: string | null; items: AddressItem[];
 };
+
+export function getRegionalAlertEvents(
+  bjdCode: string, since?: string, signal?: AbortSignal,
+): Promise<ApiEnvelope<RegionalAlertEvents>> {
+  const query = new URLSearchParams({ bjd_code: bjdCode });
+  if (since) query.set("since", since);
+  return request<RegionalAlertEvents>(`/v1/weather/alert-events?${query}`, { signal });
+}

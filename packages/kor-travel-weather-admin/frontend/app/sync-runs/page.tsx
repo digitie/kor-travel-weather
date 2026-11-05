@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
+import { REGIONAL_ALERT_DATASET, REGIONAL_ALERT_LABEL, syncRunErrorText } from "@/lib/alert-event-labels";
 import {
   getProviders,
   getSyncRunSources,
@@ -29,6 +30,7 @@ function providerLabel(providers: Map<string, Provider>, providerKey: string) {
 }
 
 function datasetLabel(providers: Map<string, Provider>, providerKey: string, datasetKey: string) {
+  if (datasetKey === REGIONAL_ALERT_DATASET) return REGIONAL_ALERT_LABEL;
   return providers.get(providerKey)?.datasets.find((dataset) => dataset.key === datasetKey)?.label ?? datasetKey;
 }
 
@@ -58,7 +60,7 @@ function RunDetail({ run, providers }: { run: SyncRun; providers: Map<string, Pr
           {run.error ? (
             <div>
               <div className="eyebrow">실패 원인</div>
-              <p className="error-cell">{run.error}</p>
+              <p className="error-cell">{syncRunErrorText(run.dataset_key, run.error)}</p>
             </div>
           ) : null}
           <div className="sync-run-detail-grid">
@@ -112,6 +114,7 @@ function RunDetail({ run, providers }: { run: SyncRun; providers: Map<string, Pr
 }
 
 function RunRow({ run, providers, expanded, onToggle }: { run: SyncRun; providers: Map<string, Provider>; expanded: boolean; onToggle: () => void }) {
+  const errorText = syncRunErrorText(run.dataset_key, run.error);
   return (
     <>
       <tr className={expanded ? "sync-run-row-expanded" : undefined}>
@@ -126,7 +129,7 @@ function RunRow({ run, providers, expanded, onToggle }: { run: SyncRun; provider
         <td><span className={`status ${statusClass(run.status)}`}>{syncRunStatusLabel(run.status)}</span></td>
         <td><code>{timestamp(run.started_at)}</code></td>
         <td>{run.values_loaded}</td>
-        <td className="error-cell">{run.error ? (run.error.length > 60 ? `${run.error.slice(0, 60)}…` : run.error) : "—"}</td>
+        <td className="error-cell" title={errorText ?? undefined}>{errorText ? (errorText.length > 60 ? errorText.slice(0, 60) + "…" : errorText) : "—"}</td>
       </tr>
       {expanded ? <RunDetail run={run} providers={providers} /> : null}
     </>
@@ -153,7 +156,7 @@ export default function SyncRunsPage() {
   return (
     <>
       <PageHeader
-        description="매시간 날씨 데이터를 가져온 결과입니다. 실패한 항목은 표에서 바로 보이고, 행을 펼치면 실패 원인과 어떤 원본 데이터를 가져왔는지 확인할 수 있습니다."
+        description="예약 일정에 따라 날씨 데이터를 가져온 결과입니다. 실패한 항목은 표에서 바로 보이고, 행을 펼치면 실패 원인과 어떤 원본 데이터를 가져왔는지 확인할 수 있습니다."
         section="수집 파이프라인"
         title="수집 실행"
       />

@@ -15,6 +15,7 @@ from dagster import (
     Definitions,
     Failure,
     MetadataValue,
+    ScheduleDefinition,
     asset,
     define_asset_job,
     in_process_executor,
@@ -50,6 +51,7 @@ from kortravelweather.settings import WeatherSettings
 
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
+from .alert_events import run_alert_event_sync
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -606,6 +608,25 @@ kma_weather_alerts_sync = _make_kma_dataset_asset(
 
 
 @asset(
+    name="kma_regional_alert_events_sync",
+    required_resource_keys={"kma_client", "weather_repository"},
+    description="공식 getPwnCd의 명시적 지역별 발표 관측을 수집한다.",
+)
+@skips_live_overlap
+def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, object]:
+    repository = _run_repository(context)
+    try:
+        client = context.resources.kma_client.create_data_client(
+            settings=WeatherSettings(), repository=repository,
+        )
+        result = run_alert_event_sync(repository=repository, client=client)
+        context.add_output_metadata(result)
+        return result
+    finally:
+        repository.engine.dispose()
+
+
+@asset(
     name="airkorea_weather_sync",
     required_resource_keys={"airkorea_client", "weather_repository"},
     description="AirKorea 측정소 catalog와 최신 대기질 관측을 hourly publish한다.",
@@ -805,6 +826,8 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
         # 같은 일을 끝내도록 발표 주기(3시간)까지 둔다. 다음 회차는 작업별 동시 1 제한으로
         # 대기열에서 기다리므로 겹치지 않는다.
         seconds = 10800
+    if job_name == "kma_regional_alert_events_job":
+        seconds = 300
     if job_name == "address_refresh_job":
         seconds = 120
     if job_name == "weather_short_forecast_retention_job":
@@ -1404,6 +1427,7 @@ _ASSETS = [
     kma_short_forecast_sync,
     kma_mid_forecast_sync,
     kma_weather_alerts_sync,
+    kma_regional_alert_events_sync,
     airkorea_weather_sync,
     *_EXTERNAL_PROVIDER_ASSETS,
     khoa_beach_index_sync,
@@ -1438,6 +1462,11 @@ _unresolved_kma_weather_alerts_job = define_asset_job(
     "kma_weather_alerts_job",
     selection=[kma_weather_alerts_sync],
     tags=_job_tags("kma_weather_alerts_job"),
+)
+_unresolved_kma_regional_alert_events_job = define_asset_job(
+    "kma_regional_alert_events_job",
+    selection=[kma_regional_alert_events_sync],
+    tags=_job_tags("kma_regional_alert_events_job"),
 )
 _unresolved_airkorea_job = define_asset_job(
     "airkorea_weather_job",
@@ -1519,6 +1548,7 @@ kma_ultra_short_forecast_job = _resolve_job(_unresolved_kma_ultra_short_forecast
 kma_short_forecast_job = _resolve_job(_unresolved_kma_short_forecast_job)
 kma_mid_forecast_job = _resolve_job(_unresolved_kma_mid_forecast_job)
 kma_weather_alerts_job = _resolve_job(_unresolved_kma_weather_alerts_job)
+kma_regional_alert_events_job = _resolve_job(_unresolved_kma_regional_alert_events_job)
 airkorea_job = _resolve_job(_unresolved_airkorea_job)
 external_weather_jobs = {
     key: _resolve_job(unresolved) for key, unresolved in _unresolved_external_jobs.items()
@@ -1600,6 +1630,15 @@ hourly_kma_weather_alerts_schedule = _weather_schedule(
     name="hourly_kma_weather_alerts",
     cron_schedule="5 * * * *",
     job=kma_weather_alerts_job,
+    execution_timezone="Asia/Seoul",
+    default_status=DefaultScheduleStatus.RUNNING,
+)
+
+# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다.
+regional_alert_events_schedule = ScheduleDefinition(
+    name="regional_alert_events_every_five_minutes",
+    cron_schedule="*/5 * * * *",
+    job=kma_regional_alert_events_job,
     execution_timezone="Asia/Seoul",
     default_status=DefaultScheduleStatus.RUNNING,
 )
@@ -1696,6 +1735,7 @@ _COLLECTION_JOBS = [
     kma_short_forecast_job,
     kma_mid_forecast_job,
     kma_weather_alerts_job,
+    kma_regional_alert_events_job,
     airkorea_job,
     *external_weather_jobs.values(),
     regional_weather_job,
@@ -1713,6 +1753,7 @@ defs = Definitions(
         kma_short_forecast_schedule,
         kma_mid_forecast_schedule,
         hourly_kma_weather_alerts_schedule,
+        regional_alert_events_schedule,
         hourly_airkorea_weather_schedule,
         *external_weather_schedules,
         regional_weather_schedule,
