@@ -265,3 +265,5 @@ collector/head·정상0·비용/frozen·W3/W5·운영 수용을 완료 처리하
 - 3B 내부KMA실황성공head는PR143 main476c9f11로수용(전체PG812·정확CI·2리뷰·격리API/UI).
 - 실제nonempty collector opt-in/별도정확성공publisher는PR144 main089bdc32로수용(정확CI전체·집중33·2리뷰·격리API/UI). 기본OFF다.
 - W-MAP-02 전체는계속미완이다. strict8category/실제KMA W1/W2 frozen reader는PR145 진행중이며, 모든provider/current·forecast W3·상태W4·사전요약W5·GC/비용gate·Map소비/운영수용은남는다. 위초기진행이력의3B미착수표현은이정산으로갱신한다.
+
+- [ ] 최신 Weather 제품9acc409 배포: 웹·API·DB0037·PC/모바일 확인 완료. 기존 단일 배포 Root의 수집 자연 종료→CS 교체·원 일정 복원·Manager 정산을 관측한다.

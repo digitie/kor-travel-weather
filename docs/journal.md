@@ -1,3 +1,10 @@
+## 2026-11-05 — 최신 Weather 웹·API 반영, 수집기 자연 종료 대기
+
+main240f342(PR200~203)과 기존 상세 UI/성능 변경을 합친 제품9acc409의 세 이미지를 빌드했다.
+웹508a438·API99bdacb·DB0037은 반영했고 실제 PC/모바일 상세/시간별/지도와 기본 API200을 확인했다.
+조건부 export503은 원문으로 남겼다. 기존 수집의 자연 종료 뒤 CS1731ff3 교체·원 일정 복원·Manager
+정산이 남아 있으며 배포 부모는 실행 중이다. [실제 결과와 범위](reports/2026-11-05-latest-weather-release.md).
+
 ## 2026-11-03 — 읽기 개선 API와 DB0036 실제 수용
 
 제품539d6의 API4c349d를 실제 포트12201로 반영했다. 기존 웹·수집 서버·환경·일정을 보존했고 Manager healthy·부모 실제0/MainPID0/cgroup 부재를 확인했다. 첫0036의 invalid index는 원 실패를 남긴 채 정확 자기 객체만 검산해 일반 REINDEX 후 같은0036 정상 upgrade로 복구했다. DROP·stamp·행 삭제는 없으며37행의 식별자/digest/clock 지문이 같다. 실제500행200·304를 확인했고 최초GuardTimeout503과 운영 배율 미측정의 한계도 [수용 기록](reports/2026-11-03-weather-read-performance.md)에 남겼다. 새 백업·복원·독립 리뷰는 추가하지 않았다.

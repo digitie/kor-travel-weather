@@ -1101,7 +1101,7 @@ def test_daily_precip_coverage_migration_commits_each_day(monkeypatch):
         assert totals() == {"2026-10-25": None, "2026-10-26": None}
         with repo.engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0036_regional_alert_events"
+                "0035_daily_precip_coverage"
             )
     finally:
         repo.engine.dispose()
