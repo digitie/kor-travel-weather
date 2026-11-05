@@ -1,5 +1,6 @@
 """quota 회전에 선택하지 않은 위치의 승인과 파일 root를 잃지 않는다."""
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -220,7 +221,8 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
         return selection, inventory, run_ids
 
     selection, inventory, run_ids = statements()
-    assert not selection.unconfirmed and len(inventory) == len(run_ids) == 1
+    assert not selection.unconfirmed and len(inventory) == 1
+    assert run_ids == []  # 승인 attempt가 지금의 소유 attempt면 소유자 조회의 run_id를 다시 쓴다
     assert "weather_export_attempts" not in inventory[0]
     assert "weather_export_scope_plans" not in inventory[0]
     # 다음 수집이 소유권을 가져가 진행 중이어도 이전 승인은 확인된 채다(대조군). 그래서 아래의
@@ -237,13 +239,114 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
                 heads.generations.c.generation_id == generation,
             ).scalar_subquery(),
         ))
-    retained, _, _ = statements()
+    retained, _, run_ids = statements()
     assert retained.unconfirmed  # 이력이 없으면 cohort 대조를 확인할 수 없다
+    assert len(run_ids) == 1  # 소유자 조회에 없는 승인 attempt만 따로 찾는다
     assert target.location_id in {key for scope in retained.scopes for key in scope.location_ids}
     with repo.engine.begin() as c:
         c.execute(delete(external_cohort_table(heads.metadata)))
     _, _, run_ids = statements()
     assert run_ids == []  # cohort 대조가 없으면 run_id를 읽지 않는다
+
+
+def _captured(repo, call):
+    from sqlalchemy import event
+
+    seen = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append((" ".join(statement.split()), parameters))
+
+    event.listen(repo.engine, "before_cursor_execute", capture)
+    try:
+        return call(), seen
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", capture)
+
+
+def test_parsed_plans_are_remembered_per_attempt_and_a_lost_plan_is_still_detected(
+    external_repository, tmp_path,
+):
+    """불변 plan은 프로세스가 한 번만 읽어 해석한다. 기억한 plan도 행이 사라지면 거절한다."""
+    from kortravelweather import export_inventory_selection as selection_module
+    from kortravelweather.export_artifacts import ExportArtifactError
+
+    repo = external_repository
+    targets = [ProviderLocation("plan-cache-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(3)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="plan 기억", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    selection_module._parsed_plans.clear()
+    selection_module._parsed_plans_bytes = 0
+
+    def descriptor_reads(seen):
+        return [s for s, _ in seen if "weather_export_scope_plans.descriptor" in s]
+
+    first, seen = _captured(repo, lambda: _selection(repo))
+    assert len(descriptor_reads(seen)) == 1
+    second, seen = _captured(repo, lambda: _selection(repo))
+    assert descriptor_reads(seen) == []  # 존재만 확인한다
+    assert any("FROM weather_export_scope_plans WHERE" in s for s, _ in seen)
+    assert [(s.descriptor, s.location_ids) for s in second.scopes] == [
+        (s.descriptor, s.location_ids) for s in first.scopes
+    ]
+    # 누적 예산은 기억 여부와 무관하다(데워진 프로세스도 같은 결과).
+    with pytest.MonkeyPatch.context() as tight:
+        tight.setattr(selection_module, "MAX_MANIFEST_BYTES", 1)
+        with pytest.raises(ExportArtifactError, match="예산"):
+            _selection(repo)
+    heads = ExportHeads(repo)
+    with repo.engine.begin() as c:
+        c.execute(delete(heads.plans).where(heads.plans.c.attempt_id == select(
+            heads.generations.c.attempt_id,
+        ).where(
+            heads.generations.c.generation_id == first.scopes[0].generation_id,
+        ).scalar_subquery()))
+    with pytest.raises(ExportArtifactError, match="plan"):
+        _selection(repo)
+
+
+def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
+    external_repository, tmp_path,
+):
+    """scope마다 run 행을 다시 찾지 않는다. 수천 개짜리 목록은 배열 파라미터 하나다."""
+    from sqlalchemy import update
+
+    repo = external_repository
+    targets = [ProviderLocation("owner-run-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(3)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="run 상태", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    selection, seen = _captured(repo, lambda: _selection(repo))
+    assert not selection.unconfirmed
+    owners = [s for s, _ in seen if "FROM weather_export_scope_owners JOIN" in s]
+    assert len(owners) == 1 and "weather_sync_runs" not in owners[0]
+    runs = [s for s, _ in seen if s.startswith(
+        "SELECT weather_sync_runs.run_id, weather_sync_runs.status",
+    )]
+    assert len(runs) == 1
+    big = [(s, p) for s, p in seen if any(
+        name in s for name in ("weather_export_scope_plans", "weather_export_heads.namespace",
+                               "weather_export_scope_owners")
+    )]
+    # 목록 하나가 배열 파라미터 하나다(위치 3곳이라 개수로는 IN 목록과 구별되지 않는다).
+    assert big and all(
+        re.search(r"= ANY ?\(", s) and " IN (" not in s for s, _ in big
+    ), [s[:160] for s, _ in big]
+    heads = ExportHeads(repo)
+    runs_table = heads.metadata.tables["weather_sync_runs"]
+    with repo.engine.begin() as c:
+        c.execute(update(runs_table).where(runs_table.c.run_id == select(
+            heads.lifecycle.attempts.c.run_id,
+        ).where(heads.lifecycle.attempts.c.attempt_id == select(
+            heads.generations.c.attempt_id,
+        ).where(heads.generations.c.generation_id == selection.scopes[0].generation_id)
+            .scalar_subquery()).scalar_subquery()).values(status="failed"))
+    assert _selection(repo).unconfirmed  # 따로 읽은 run 상태도 건강도에 들어간다
 
 
 def _age(repo, location_id, age):

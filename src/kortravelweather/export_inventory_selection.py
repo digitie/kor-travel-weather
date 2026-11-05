@@ -1,13 +1,21 @@
 """실제 승인 위치와 최신 HTTP 전 선택 집합을 같은 MVCC에서 함께 읽는다."""
 
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, true, tuple_
 
 from .export_artifacts import ExportArtifactError
-from .export_capacity import MAX_SOURCE_SCOPES, read_scope_plans
+from .export_capacity import (
+    MAX_MANIFEST_BYTES,
+    MAX_SOURCE_SCOPES,
+    ExportCapacityExceeded,
+    MetadataBudget,
+    any_of,
+    read_scope_plans,
+)
 from .export_external import RetrievalScopeDescriptor
 from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
@@ -143,6 +151,72 @@ class ApprovedSelection:
     expired: frozenset[tuple[str, str, str]] = frozenset()
 
 
+#: attempt별 불변 plan의 해석 결과. descriptor 열은 insert 뒤 바뀌지 않으므로(export_heads는
+#: revision·digest 열만 갱신) attempt_id로 기억해도 된다. 2026-11-02 odroid 실측: 한 freeze가
+#: plan 3,307개를 서버 cursor로 읽고 해석하는 데 6~8초였다. 기억한 plan은 존재만 다시 확인한다
+#: (유실 탐지 유지).
+_PLAN_CACHE_SIZE = 16_384
+_PLAN_CACHE_BYTES = 64 * 1024 * 1024
+#: attempt_id -> (해석된 descriptor, 정규 JSON 바이트 수). 바이트로도 상한을 둔다.
+_parsed_plans: OrderedDict[str, tuple[object, int]] = OrderedDict()
+_parsed_plans_bytes = 0
+_parsed_plans_lock = threading.Lock()
+
+
+def _remembered_plans(attempt_ids):
+    with _parsed_plans_lock:
+        found = {}
+        for key in attempt_ids:
+            value = _parsed_plans.get(key)
+            if value is not None:
+                _parsed_plans.move_to_end(key)
+                found[key] = value
+        return found
+
+
+def _remember_plans(parsed):
+    global _parsed_plans_bytes
+    with _parsed_plans_lock:
+        for key, value in parsed.items():
+            previous = _parsed_plans.pop(key, None)
+            if previous is not None:
+                _parsed_plans_bytes -= previous[1]
+            _parsed_plans[key] = value
+            _parsed_plans_bytes += value[1]
+        while _parsed_plans and (
+            len(_parsed_plans) > _PLAN_CACHE_SIZE or _parsed_plans_bytes > _PLAN_CACHE_BYTES
+        ):
+            _parsed_plans_bytes -= _parsed_plans.popitem(last=False)[1][1]
+
+
+def parsed_scope_plans(connection, plans, attempt_ids):
+    """attempt별 해석된 plan. 기억한 것은 행 존재만, 나머지는 읽어서 해석하고 기억한다.
+
+    선택 전체의 누적 메타데이터 예산(``MAX_MANIFEST_BYTES``)은 기억 여부와 무관하게 같은 바이트로
+    다시 센다 — 결과가 프로세스 이력에 따라 달라지지 않는다.
+    """
+    attempt_ids = tuple(dict.fromkeys(attempt_ids))
+    if len(attempt_ids) > MAX_SOURCE_SCOPES:
+        raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
+    remembered = _remembered_plans(attempt_ids)
+    if remembered:
+        present = set(connection.scalars(select(plans.c.attempt_id).where(
+            any_of(plans.c.attempt_id, sorted(remembered)),
+        )))
+        if present != remembered.keys():
+            raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
+    missing = [key for key in attempt_ids if key not in remembered]
+    encoder = MetadataBudget().encoder
+    fresh = {
+        key: (parse_scope_descriptor(value), len(encoder.encode(value).encode("utf-8")))
+        for key, value in read_scope_plans(connection, plans, missing).items()
+    }
+    if sum(size for _, size in (*remembered.values(), *fresh.values())) > MAX_MANIFEST_BYTES:
+        raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+    _remember_plans(fresh)
+    return {key: value[0] for key, value in {**remembered, **fresh}.items()}
+
+
 def _cohort_descriptors(row):
     if row["descriptors"] is not None:
         if not isinstance(row["descriptors"], list) or not 1 <= len(row["descriptors"]) <= 5000:
@@ -212,17 +286,16 @@ def approved_source_selection(
             raise ExportArtifactError("승인 source의 canonical catalog 행이 유실됐습니다.")
     valid, sources = {}, set()
     shown = {row["plan_attempt_id"] for row in rows if row["location_id"] in catalog}
-    # 보이는 위치의 plan이 없으면 read_scope_plans가 "plan 유실"로 거절한다.
-    plans_by_attempt = read_scope_plans(connection, plans, sorted(shown))
+    # 보이는 위치의 plan이 없으면 parsed_scope_plans가 "plan 유실"로 거절한다.
+    parsed_plans = parsed_scope_plans(connection, plans, sorted(shown))
     hidden = {row["plan_attempt_id"] for row in rows} - shown
     if hidden:
         # 명시 비활성 위치의 plan은 descriptor를 읽지 않고 존재만 확인한다.
         hidden -= set(connection.scalars(
-            select(plans.c.attempt_id).where(plans.c.attempt_id.in_(sorted(hidden)))
+            select(plans.c.attempt_id).where(any_of(plans.c.attempt_id, sorted(hidden)))
         ))
     if hidden:
         raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
-    parsed_plans = {key: parse_scope_descriptor(value) for key, value in plans_by_attempt.items()}
     plan_namespaces = {key: value.namespace for key, value in parsed_plans.items()}
     descriptors_by_namespace = {}
     for row in rows:
@@ -259,28 +332,35 @@ def approved_source_selection(
     namespaces = {row["namespace"] for row in health_rows}
     heads = metadata.tables["weather_export_heads"]
     live_heads = set(connection.scalars(select(heads.c.namespace).where(
-        heads.c.namespace.in_(namespaces),
+        any_of(heads.c.namespace, sorted(namespaces)),
     )))
     # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
     unconfirmed |= live_heads != namespaces
     owners = metadata.tables["weather_export_scope_owners"]
     source_scopes = {row["source_scope"] for row in health_rows}
+    # scope마다 attempt 행을 찾는 join에 run 행까지 붙이면 scope 수만큼 run을 다시 찾는다(실제 run은
+    # 수십 개). run 상태는 distinct run_id로 따로 읽고, 여기서 읽은 attempt의 run_id는 아래 cohort
+    # 대조에 다시 쓴다(승인 attempt의 약 2/3가 지금의 소유 attempt다).
     active = list(connection.execute(select(
-        owners.c.source_scope, attempts.c.status, runs.c.status,
+        owners.c.source_scope, attempts.c.attempt_id, attempts.c.run_id, attempts.c.status,
         generations.c.generation_id, owners.c.owner_epoch,
         func.left(attempts.c.owner_epochs[owners.c.source_scope].as_string(), 32),
     ).select_from(owners.join(
         attempts, owners.c.active_attempt_id == attempts.c.attempt_id,
-    ).join(runs, runs.c.run_id == attempts.c.run_id).outerjoin(
+    ).outerjoin(
         generations, generations.c.attempt_id == attempts.c.attempt_id,
-    )).where(owners.c.source_scope.in_(source_scopes))))
+    )).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    active_run_ids = sorted({row[2] for row in active})
+    native_status = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
+        any_of(runs.c.run_id, active_run_ids),
+    )).tuples().all()) if active_run_ids else {}
     # native terminal뿐 아니라 확정된 Dagster 실패를 publisher가 기록한 attempt도
     # 현재 승인 집합의 건강도에 반영한다. 이전 파일과 inventory는 그대로 보존한다.
     unconfirmed |= len(active) != len(source_scopes) or any(
-        attempt == "failed" or native not in {"running", "success"}
-        or native == "success" and generation is None
+        attempt == "failed" or native_status.get(run_id) not in {"running", "success"}
+        or native_status.get(run_id) == "success" and generation is None
         or claimed_epoch != str(epoch)
-        for _, attempt, native, generation, epoch, claimed_epoch in active
+        for _, _, run_id, attempt, generation, epoch, claimed_epoch in active
     )
     cohorts = external_cohort_table(metadata)
     declarations = {
@@ -291,13 +371,16 @@ def approved_source_selection(
         )).mappings()
     }
     # cohort 대조에만 run_id가 필요하다. attempt 이력이 정리됐으면 미확인으로 본다.
+    run_ids = {row[1]: row[2] for row in active}
     needed = sorted({
         row["plan_attempt_id"] for row in health_rows
         if (row["provider"], row["dataset_key"]) in declarations
+        and row["plan_attempt_id"] not in run_ids
     })
-    run_ids = dict(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
-        attempts.c.attempt_id.in_(needed),
-    )).tuples().all()) if needed else {}
+    if needed:
+        run_ids.update(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
+            any_of(attempts.c.attempt_id, needed),
+        )).tuples().all())
     for source in expected:
         row = declarations.get(source)
         if row is None:
