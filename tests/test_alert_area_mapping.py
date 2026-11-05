@@ -46,10 +46,10 @@ def test_bjd_namespace_and_official_administration_are_required():
 
 
 def test_mapping_is_only_valid_during_official_registry_interval():
-    assert scope_at("L1082500", datetime(2026, 11, 5, tzinfo=KST))
+    assert scope_at("L1082500", datetime(2026, 11, 6, tzinfo=KST))
     assert scope_at("L1082500", datetime(2024, 5, 1, tzinfo=KST)) is None
     assert scope_at("L1082500", None) is None
-    assert scope_at("UNKNOWN", datetime(2026, 11, 5, tzinfo=KST)) is None
+    assert scope_at("UNKNOWN", datetime(2026, 11, 6, tzinfo=KST)) is None
 
 
 def test_source_evidence_is_official_and_byte_identified():
@@ -66,3 +66,18 @@ def test_source_evidence_is_official_and_byte_identified():
     assert all(
         area["bjd_prefixes"] for area in area_index().values() if area["scope_status"] == "verified"
     )
+
+
+def test_unverified_dong_suffix_is_unknown_even_with_real_district_prefix():
+    assert not known_bjd("2635099999")
+    assert candidate_areas("2635099999") == []
+
+
+def test_current_administrative_mapping_does_not_certify_2020():
+    assert scope_at("L1020000", datetime(2020, 11, 5, tzinfo=KST)) is None
+
+
+def test_canonical_aggregate_codes_are_separate_from_individual_bjd():
+    assert known_bjd("2600000000") and known_bjd("2635000000")
+    assert candidate_areas("2600000000") == candidate_areas("26")
+    assert candidate_areas("2635000000") == candidate_areas("26350")

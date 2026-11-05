@@ -11,6 +11,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -84,6 +85,7 @@ def registry_rows(path):
 def juso_administration(path):
     provinces = defaultdict(set)
     districts = defaultdict(set)
+    suffixes = defaultdict(set)
     with zipfile.ZipFile(path) as archive:
         for name in archive.namelist():
             if not name.lower().endswith(".txt"):
@@ -95,15 +97,19 @@ def juso_administration(path):
                         continue
                     provinces[row[1][:2]].add(row[2])
                     districts[row[1][:5]].add((row[2], row[3]))
+                    suffixes[row[1][:5]].add(row[1][5:])
     return (
         {k: next(iter(v)) for k, v in provinces.items() if len(v) == 1},
         {k: next(iter(v)) for k, v in districts.items() if len(v) == 1},
+        {k: ",".join(sorted(v)) for k, v in sorted(suffixes.items())},
     )
 
 
-def build(registry, zones, guide, juso):
+def build(registry, zones, guide, juso, verified_at):
+    if verified_at.tzinfo is None:
+        raise ValueError("verified-at은 timezone-aware여야 합니다.")
     records = registry_rows(registry)
-    provinces, districts = juso_administration(juso)
+    provinces, districts, suffixes = juso_administration(juso)
     province_codes = {name: code for code, name in provinces.items()}
     parser = GuideRows()
     parser.feed(guide.read_text())
@@ -179,7 +185,7 @@ def build(registry, zones, guide, juso):
             "guide_coverage": [],
         }
         if row and row["F"] == name:
-            entry.update(parent_code=row["E"], valid_from=row["B"], valid_until=row["C"])
+            entry.update(parent_code=row["E"], code_valid_from=row["B"], code_valid_until=row["C"])
             province = province_for(code)
             outcomes = (
                 [(coverage, *resolve(coverage, province)) for coverage in sorted(by_name[name])]
@@ -198,6 +204,8 @@ def build(registry, zones, guide, juso):
     return {
         "version": "official-260601-juso-202605-v1",
         "namespace": "kr_bjd",
+        "mapping_valid_from": verified_at.isoformat(),
+        "mapping_valid_until": None,
         "sources": {
             "registry": {
                 "sha256": digest(registry),
@@ -219,6 +227,7 @@ def build(registry, zones, guide, juso):
         },
         "known_province_codes": sorted(provinces),
         "known_district_codes": sorted(districts),
+        "known_bjd_suffixes": suffixes,
         "areas": result,
     }
 
@@ -227,8 +236,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("registry", "zones", "guide", "juso", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--verified-at", type=datetime.fromisoformat, required=True)
     args = parser.parse_args()
-    document = build(args.registry, args.zones, args.guide, args.juso)
+    document = build(args.registry, args.zones, args.guide, args.juso, args.verified_at)
     args.output.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n")
     print(
         len(document["areas"]),

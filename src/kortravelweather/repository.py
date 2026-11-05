@@ -261,6 +261,29 @@ class SourceRecordRow(Base):
     imported_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
+class WeatherAlertEventRow(Base):
+    """공식 발표 관측. 원천이 없는 경보 회차를 생성하지 않는다."""
+
+    __tablename__ = "weather_alert_events"
+    __table_args__ = (
+        Index("ix_weather_alert_events_area_seen", "area_code", "first_seen_at", "event_id"),
+        Index("ix_weather_alert_events_source", "source_record_key"),
+        Index("ix_weather_alert_events_announcement", "announcement_id", "first_seen_at"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(68), primary_key=True)
+    announcement_id: Mapped[str] = mapped_column(String(68), nullable=False)
+    area_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    issued_at: Mapped[datetime | None] = mapped_column(AwareDateTime())
+    first_seen_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    event: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_record_key: Mapped[str] = mapped_column(
+        String(255),
+        ForeignKey("weather_source_records.source_record_key", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+
 #: Observed and nowcast rows describe now; forecast rows describe later.  A
 #: bundle's ``latest`` wants the former first, and the index that serves that
 #: ordering must spell the expression exactly as the query does.  The query
@@ -1021,12 +1044,13 @@ PURGE_GUC = "kortravelweather.purge"
 #: 잠금 timeout(55P03), deadlock(40P01). 그 batch만 rollback되고 앞 commit은 유효하다.
 _SHORT_RETENTION_DEFERRABLE = frozenset({"57014", "55P03", "40P01"})
 
-#: Delete a source record once nothing still cites it. Both ``NOT EXISTS``
+#: Delete a source record once nothing still cites it. Three ``NOT EXISTS``
 #: subqueries key on ``source_record_key``, served by
 #: ``ix_weather_values_source_record_key`` and
 #: ``ix_weather_sync_run_sources_source_record_key``; a test binds this exact
 #: string to those indexes so a future edit cannot silently reintroduce the
-#: full scan those indexes exist to avoid.
+#: full scan those indexes exist to avoid. Regional events use
+#: ix_weather_alert_events_source as their third lineage reference.
 PURGE_SOURCE_RECORDS_SQL = (
     "DELETE FROM weather_source_records sr "
     "WHERE sr.fetched_at < :cutoff "
@@ -1035,7 +1059,10 @@ PURGE_SOURCE_RECORDS_SQL = (
     "    WHERE wv.source_record_key = sr.source_record_key) "
     "  AND NOT EXISTS ("
     "    SELECT 1 FROM weather_sync_run_sources rs "
-    "    WHERE rs.source_record_key = sr.source_record_key)"
+    "    WHERE rs.source_record_key = sr.source_record_key) "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM weather_alert_events ae "
+    "    WHERE ae.source_record_key = sr.source_record_key)"
 )
 
 #: Kept as one string because both schema paths must install it byte-identically
@@ -1063,7 +1090,7 @@ def install_immutability_triggers(engine: Engine) -> None:
         # ``RAISE``.  Going through ``text()`` with no parameters keeps the body
         # byte-identical to the alembic revision's, which a test asserts.
         connection.execute(text(IMMUTABLE_ROW_FUNCTION_SQL))
-        for table in ("weather_source_records", "weather_values"):
+        for table in ("weather_source_records", "weather_values", "weather_alert_events"):
             connection.exec_driver_sql(f"DROP TRIGGER IF EXISTS {table}_immutable ON {table}")
             connection.exec_driver_sql(
                 f"CREATE TRIGGER {table}_immutable BEFORE UPDATE OR DELETE ON {table} "
@@ -2421,6 +2448,22 @@ class WeatherRepository:
             values=loaded,
         )
         return loaded, finished
+
+    def publish_alert_events(
+        self, *, run_id: str, source_records: list[Mapping[str, Any]],
+        requests_fetched: int,
+    ) -> tuple[int, SyncRun]:
+        from .alert_event_store import publish_alert_events
+
+        return publish_alert_events(
+            self, run_id=run_id, source_records=source_records,
+            requests_fetched=requests_fetched,
+        )
+
+    def read_alert_events(self, *, bjd_code: str, since: datetime) -> dict[str, Any]:
+        from .alert_event_store import read_alert_events
+
+        return read_alert_events(self, bjd_code=bjd_code, since=since)
 
     def upsert_values(self, values: list[WeatherValue]) -> int:
         # Historical method name is retained for callers; semantics are now
@@ -4379,6 +4422,9 @@ class WeatherRepository:
             )
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+            from .alert_event_store import purge_alert_events
+
+            alert_events_deleted = purge_alert_events(session, cutoff=cutoff)
             sources = session.execute(
                 text(PURGE_SOURCE_RECORDS_SQL + held), {"cutoff": cutoff}
             ).rowcount
@@ -4396,6 +4442,7 @@ class WeatherRepository:
             partition_ddl_stopped=self._ddl_stopped(),
             pointers_deleted=int(pointers or 0),
             sources_deleted=int(sources or 0),
+            alert_events_deleted=alert_events_deleted,
             rows_outside_any_partition=stranded,
             default_floor=floor,
             forward_partition_days=forward_days,
