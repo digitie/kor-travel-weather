@@ -296,6 +296,13 @@ PROVIDER_DURATION = Histogram(
     registry=_INSTRUMENTATION_REGISTRY,
 )
 
+ALERT_CLEANUP_FAILURES = Counter(
+    "ktw_alert_cleanup_failures_total",
+    "Deferred alert run terminalization or client cleanup failures.",
+    ("stage",),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+
 SYNC_STARTED = Counter(
     "ktw_sync_runs_started_total",
     "Weather sync runs successfully opened.",
@@ -440,6 +447,7 @@ _KNOWN_DATASETS = frozenset(
         "kma_short_forecast",
         "kma_mid_forecast",
         "kma_weather_alerts",
+        "kma_regional_alert_events",
         "airkorea_station_catalog",
         "airkorea_measurement",
         "airkorea_realtime_measurement",
@@ -473,6 +481,7 @@ _FIXED_ROUTES = frozenset(
         "/version",
         "/metrics",
         "/v1/weather/locations",
+        "/v1/weather/alert-events",
         "/v1/weather/nearby",
         "/v1/weather/resolve",
         "/v1/weather/markers",
@@ -535,6 +544,11 @@ def observe_metric_error(operation: str) -> None:
     """Count an instrumentation failure that was swallowed (see ``_safe``)."""
     with suppress(Exception):
         METRIC_ERRORS.labels(operation=operation).inc()
+
+
+def observe_alert_cleanup_failure(stage: str) -> None:
+    safe_stage = stage if stage in {"terminalize", "client_close"} else "other"
+    _safe("alert_cleanup", lambda: ALERT_CLEANUP_FAILURES.labels(stage=safe_stage).inc())
 
 
 def observe_http_request(
@@ -611,7 +625,9 @@ def observe_sync_finished(
     values: int = 0,
 ) -> None:
     safe_provider, safe_dataset = provider_label(provider), dataset_label(dataset)
-    safe_status = status if status in {"success", "failed", "partial", "running"} else "other"
+    safe_status = (
+        status if status in {"success", "failed", "partial", "running", "cancelled"} else "other"
+    )
     request_count, source_count, value_count = (
         max(0, int(requests)),
         max(0, int(sources)),

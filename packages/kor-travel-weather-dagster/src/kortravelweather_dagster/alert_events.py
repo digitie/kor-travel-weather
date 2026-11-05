@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
@@ -21,6 +22,7 @@ from kortravelweather.alert_events import (
     canonical_hash,
     normalize_alert,
 )
+from kortravelweather.metrics import observe_alert_cleanup_failure
 from kortravelweather.models import KST, kst_now
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 
@@ -28,6 +30,8 @@ PAGE_SIZE = 100
 MAX_PAGES = 100
 MAX_BYTES = 8 * 1024 * 1024
 COLLECTION_TIMEOUT_SECONDS = 180
+CLEANUP_TIMEOUT_SECONDS = 5
+logger = logging.getLogger(__name__)
 
 
 class AlertCollectionError(RuntimeError):
@@ -182,6 +186,37 @@ def safe_collection_error(exc: Exception) -> str:
     return "ALERT_COLLECTION_FAILED"
 
 
+def _cleanup_notice(stage: str) -> None:
+    # 원문/exception chain은 기록하지 않고 고정 stage만 관측한다.
+    with suppress(Exception):
+        observe_alert_cleanup_failure(stage)
+    with suppress(Exception):
+        logger.warning("ALERT_CLEANUP_DEFERRED stage=%s", stage)
+
+
+async def _safe_terminalize(
+    repository: WeatherRepository,
+    run_id: str,
+    *,
+    status: str,
+    error: str,
+) -> None:
+    try:
+        await asyncio.to_thread(repository.finish_sync_run, run_id, status=status, error=error)
+    except Exception:
+        # DB 종결이 불가능하면 기존 lease/orchestrator 회수가 처리한다.
+        _cleanup_notice("terminalize")
+
+
+async def _safe_close(client: Any) -> None:
+    try:
+        async with asyncio.timeout(CLEANUP_TIMEOUT_SECONDS):
+            await client.aclose()
+    except Exception:
+        # 성공한 commit·정제 오류·원래 취소를 cleanup 장애로 뒤집지 않는다.
+        _cleanup_notice("client_close")
+
+
 async def run_alert_event_sync_async(
     *,
     repository: WeatherRepository,
@@ -228,8 +263,8 @@ async def run_alert_event_sync_async(
             with suppress(Exception):
                 run = await asyncio.shield(start_task)
         if run is not None:
-            await asyncio.to_thread(
-                repository.finish_sync_run,
+            await _safe_terminalize(
+                repository,
                 run.run_id,
                 status="cancelled",
                 error="ALERT_COLLECTION_CANCELLED",
@@ -240,13 +275,11 @@ async def run_alert_event_sync_async(
     except Exception as exc:
         code = safe_collection_error(exc)
         if run is not None:
-            await asyncio.to_thread(
-                repository.finish_sync_run, run.run_id, status="failed", error=code
-            )
+            await _safe_terminalize(repository, run.run_id, status="failed", error=code)
         # 원문 KMA 오류가 가진 URL·credential은 Dagster 예외 chain에도 남기지 않는다.
         raise AlertCollectionError(code) from None
     finally:
-        await client.aclose()
+        await _safe_close(client)
 
 
 def run_alert_event_sync(

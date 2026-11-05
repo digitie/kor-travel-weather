@@ -47,3 +47,11 @@ WSL 소유 Postgres에서 정규화19건과 매핑6건, 총25건이 통과했다
 DB 시작 thread가 commit하고 결과 반환이 늦을 때 취소하면 running이 남는 회귀를 실제로 재현했다. 시작 결과를 shield하여 회수한 뒤 실행을 취소 상태로 닫는다. 수정 후 원천 의미·매핑·실제 PG·공개 SDK HTTP fixture·공개 API의72건이 통과했다. 이후 같은 취소 경계의 lint 권고 표현만 suppress로 정리했다. 전체 Ruff는 통과했고0036 downgrade/upgrade를 소유 DB에서 재실행했다.
 
 웹 타입·lint와22파일277테스트도 통과했다. API/웹 전체 회귀·실제 TCP와 브라우저·최종 두 전문 리뷰·정확 HEAD CI는 후속이다. 이 기록은 owner 병합 완료를 뜻하지 않는다.
+
+## 2차 적대 리뷰·정리 경계와 운영 UI 보완
+
+ed8081d를 두 전문 리뷰어가 독립 검토하여 동일 P2를 지적했다. 종결 DB 오류나 client close 오류가 정제한 원인·취소·이미 커밋된 성공을 덮을 수 있었다. 다섯 경로를 실제 실패로 고정하고 별도 safe cleanup으로 보완했다. 종결 불가는 원문 없는 고정 로그·telemetry와 기존 lease/orchestrator 회수에 맡긴다. close에는5초 상한을 둔다.
+
+동시에 신규 dataset/공개 route가 기존 telemetry의 other/unmatched로 합쳐지는 누락도 실패 우선으로 고정했다. 고정 allowlist·cancelled 상태와 cleanup stage counter를 연결했다. 이6건은 수정 전 모두 실패했다. 수정 후 관련 이벤트·원천·DB·API·metrics102건이 통과했고, 실제 close 지연과 stage/status 상한의 별도3건도 통과했다(이 중 기존 label1건 중복).
+
+수집 실행 UI에는 지역별 특보의 한국어 dataset명과 상세 원인·코드를 넣었다. 알 수 없는 원문·prototype 키는 그대로 노출하지 않으며 기존 색상/CSS를 바꾸지 않았다. 웹280테스트·타입/lint와 새 프로덕션 빌드도 통과했다. ed8081d의 전체 Python 회귀는 별도 실행 중이며 최종 source 차이를 구분한다. 새 정확 후보의 두 리뷰·실제 TCP/UI·최종 CI는 후속이다.

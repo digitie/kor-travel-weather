@@ -269,3 +269,107 @@ async def test_public_sdk_and_real_postgres_publish_replay_once(repo):
     runs = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)
     assert len(runs) == 2 and runs[0].status == runs[1].status == "success"
     assert repo.list_sync_run_sources(runs[0].run_id) == repo.list_sync_run_sources(runs[1].run_id)
+
+
+@pytest.mark.parametrize(
+    ("mode", "stage"),
+    [
+        ("provider", "terminalize"),
+        ("provider", "client_close"),
+        ("cancel", "terminalize"),
+        ("cancel", "client_close"),
+        ("success", "client_close"),
+    ],
+)
+async def test_cleanup_failures_preserve_safe_failure_cancellation_or_committed_success(
+    repo,
+    monkeypatch,
+    mode,
+    stage,
+    caplog,
+):
+    from dagster._utils.error import serializable_error_info_from_exc_info
+    from kma.exceptions import KmaAuthError
+
+    from kortravelweather.metrics import ALERT_CLEANUP_FAILURES
+
+    before = ALERT_CLEANUP_FAILURES.labels(stage=stage)._value.get()
+    original_finish = repo.finish_sync_run
+
+    class CleanupClient(BlockingClient):
+        async def request_with_metadata(self, *args, **kwargs):
+            if mode == "provider":
+                raise KmaAuthError("provider fixture-private-value", failure_kind="auth")
+            if mode == "success":
+                return body([raw_row()]), None
+            return await super().request_with_metadata(*args, **kwargs)
+
+        async def aclose(self):
+            self.closed = True
+            if stage == "client_close":
+                raise RuntimeError("close fixture-private-value")
+
+    def failed_finish(*args, **kwargs):
+        raise RuntimeError("database fixture-private-value")
+
+    if stage == "terminalize":
+        monkeypatch.setattr(repo, "finish_sync_run", failed_finish)
+    client = CleanupClient()
+    try:
+        if mode == "cancel":
+            task = asyncio.create_task(
+                module.run_alert_event_sync_async(
+                    repository=repo,
+                    client=client,
+                )
+            )
+            await asyncio.wait_for(client.entered.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif mode == "provider":
+            with pytest.raises(module.AlertCollectionError, match="ALERT_PROVIDER_AUTH") as caught:
+                await module.run_alert_event_sync_async(repository=repo, client=client)
+            error = caught.value
+            serialized = serializable_error_info_from_exc_info(
+                (
+                    type(error),
+                    error,
+                    error.__traceback__,
+                )
+            ).to_string()
+            assert "fixture-private-value" not in serialized
+            assert "ALERT_PROVIDER_AUTH" in serialized
+        else:
+            result = await module.run_alert_event_sync_async(repository=repo, client=client)
+            assert result["status"] == "success" and result["events_loaded"] == 1
+            run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
+            assert run.status == "success" and run.values_loaded == 1
+        assert client.closed and "fixture-private-value" not in caplog.text
+        assert ALERT_CLEANUP_FAILURES.labels(stage=stage)._value.get() == before + 1
+    finally:
+        runs = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)
+        if runs:
+            original_finish(runs[0].run_id, status="failed", error="fixture_cleanup")
+
+
+async def test_hanging_client_close_does_not_reverse_committed_success(repo, monkeypatch):
+    from kortravelweather.metrics import ALERT_CLEANUP_FAILURES
+
+    class SlowCloseClient(BlockingClient):
+        async def request_with_metadata(self, *args, **kwargs):
+            return body([]), None
+
+        async def aclose(self):
+            self.entered.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(module, "CLEANUP_TIMEOUT_SECONDS", 0.05)
+    before = ALERT_CLEANUP_FAILURES.labels(stage="client_close")._value.get()
+    client = SlowCloseClient()
+    result = await asyncio.wait_for(
+        module.run_alert_event_sync_async(repository=repo, client=client),
+        timeout=5,
+    )
+    assert result["status"] == "success" and client.entered.is_set()
+    assert ALERT_CLEANUP_FAILURES.labels(stage="client_close")._value.get() == before + 1
