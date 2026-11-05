@@ -16,7 +16,9 @@
   18:48부터 회복).
 - 남은 guard 503은 짧은 배타 보유(collector `publish`의 파일 쓰기+eMMC fsync, GC, 승격 CAS)가 2초를 넘는 경우다.
   이 PR: reader 공유 guard 대기 기본 5초(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_READER_GUARD_SECONDS`, 0.5~10),
-  배타 보유 시간을 보유자별 histogram(`ktw_export_guard_exclusive_hold_seconds{holder}`)과 2초 초과 경고 log로 남긴다.
+  배타 writer가 reader를 막은 시간(turnstile 취득→해제)을 보유자별 histogram(`ktw_export_guard_exclusive_hold_seconds{holder}`)과
+  2초 초과 경고 log로 남긴다. 주의: API export 전체가 `CapacityLimiter(2)`를 공유하므로 guard를 기다리는 reader가 최대 5초 동안
+  token을 쥐어 `/status` 등이 그만큼 줄을 설 수 있다(정확성 문제는 아니다, 배포 뒤 지연으로 확인).
 
 ## 2026-11-03 — 승격의 배타 guard를 최종 CAS로 줄인다(reader 503의 주원인)
 

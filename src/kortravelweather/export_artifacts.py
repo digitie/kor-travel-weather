@@ -34,18 +34,17 @@ _HOLDERS = frozenset({"publish", "gc", "promotion_cas", "other"})
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
-
 def _observe_exclusive_hold(holder: str, seconds: float) -> None:
-    """배타 guard 보유 시간을 보유자별 histogram에 넣고, 길면 경고 log를 남긴다."""
-    label = holder if holder in _HOLDERS else "other"
+    """배타 writer가 reader를 막은 시간(turnstile 취득→해제)을 보유자별로 센다(예외 없음)."""
     try:
+        label = holder if holder in _HOLDERS else "other"
         from .metrics import observe_export_guard_hold
 
         observe_export_guard_hold(label, seconds)
-    except Exception:  # noqa: BLE001 - 계측 실패가 guard 해제를 막지 않는다
+        if seconds > SLOW_EXCLUSIVE_HOLD_SECONDS:
+            logger.warning("weather_export_guard_hold holder=%s seconds=%.2f", label, seconds)
+    except Exception:  # noqa: BLE001 - 계측 실패가 guard 해제·원래 예외를 바꾸지 않는다
         pass
-    if seconds > SLOW_EXCLUSIVE_HOLD_SECONDS:
-        logger.warning("weather_export_guard_hold holder=%s seconds=%.2f", label, seconds)
 
 
 class ExportArtifactError(RuntimeError):
@@ -202,12 +201,14 @@ class ExportArtifactStore:
             if shared:
                 read_slot = self._shared_slot(deadline)
             admission = self._turnstile(deadline)
+            if not shared:
+                # 새 reader는 writer가 turnstile을 잡은 순간부터 막힌다(기존 reader 대기 포함).
+                held_since = time.monotonic()
             while not acquired:
                 try:
                     mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
                     fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
                     acquired = True
-                    held_since = time.monotonic()
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
                         raise ExportGuardTimeout(
@@ -230,15 +231,20 @@ class ExportArtifactStore:
                     if owned:
                         self._scope.verified = None
         finally:
+            hold = None
             if acquired:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
-                if not shared and held_since is not None:
-                    _observe_exclusive_hold(holder, time.monotonic() - held_since)
+            if not shared and held_since is not None:
+                hold = time.monotonic() - held_since
             os.close(descriptor)
             if admission is not None:
                 os.close(admission)
             if read_slot is not None:
                 os.close(read_slot)
+            if hold is not None:
+                # 모든 fd를 닫은 뒤에 센다. 계측이 진행 중 예외를 바꾸거나 turnstile을 붙들지
+                # 않는다.
+                _observe_exclusive_hold(holder, hold)
 
     @contextmanager
     def verifying(self):

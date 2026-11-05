@@ -555,7 +555,7 @@ def test_reader_waits_out_a_short_exclusive_hold_instead_of_503(repository, tmp_
     held, release = threading.Event(), threading.Event()
 
     def writer():
-        with ExportArtifactStore(tmp_path).guard(timeout_seconds=5, holder="publish"):
+        with ExportArtifactStore(tmp_path).guard(timeout_seconds=5):  # base에서도 같은 호출
             held.set()
             release.wait(10)
 
