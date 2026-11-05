@@ -1,9 +1,6 @@
-## 2026-11-05 — 최신 Weather 웹·API 반영, 수집기 자연 종료 대기
+## 2026-11-05 — 최신 Weather 세 역할 배포·실제 화면 확인 완료
 
-main240f342(PR200~203)과 기존 상세 UI/성능 변경을 합친 제품9acc409의 세 이미지를 빌드했다.
-웹508a438·API99bdacb·DB0037은 반영했고 실제 PC/모바일 상세/시간별/지도와 기본 API200을 확인했다.
-조건부 export503은 원문으로 남겼다. 기존 수집의 자연 종료 뒤 CS1731ff3 교체·원 일정 복원·Manager
-정산이 남아 있으며 배포 부모는 실행 중이다. [실제 결과와 범위](reports/2026-11-05-latest-weather-release.md).
+main240f342(PR200~203)과 기존 상세 UI/성능 기능을 합친 제품9acc409를 웹508a438·API99bdacb·CS1731ff3에 반영했다. 같은 DB0037·원26상태 복원·새 특보 일정·Manager healthy·배포 최초 Invocation 실제 done/종료를 확인했다. PC/모바일 상세·시간별·지도와 실제 HTTP를 확인했고 최초 조건부503은 보존했다. [실제 이미지·검증 범위·원 실패](reports/2026-11-05-latest-weather-release.md).
 
 ## 2026-11-03 — 읽기 개선 API·DB·HTTP 수용 완료
 

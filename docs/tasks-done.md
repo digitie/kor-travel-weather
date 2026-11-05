@@ -1,3 +1,5 @@
+- [x] 2026-11-05 최신 Weather 제품9acc409의 웹·API·CS 이미지, DB0037, 원26상태·새 특보 일정, Manager·부모 실제 종료와 PC/모바일 화면을 확인했다. 백업·복원은 사용자 지시로 생략. [수용 기록](reports/2026-11-05-latest-weather-release.md).
+
 ## 2026-11-03 — 읽기 비용 API·DB·실제 HTTP 수용
 
 - [x] **W-READ-COST-01 운영 후속** — 제품539d6/API4c349d·schema0036·healthy·Manager 정산·부모 실제0/종료를 확인했다. 기존 웹·CS·일정·환경을 보존했다. 자기 invalid index 한 개를 삭제 없이 검산·복구하고37행의 메타데이터 지문을 보존했다. 실제500행200·조건부304를 관측했으며 최초GuardTimeout503도 보존했다. [실제 증거와 한계](reports/2026-11-03-weather-read-performance.md).

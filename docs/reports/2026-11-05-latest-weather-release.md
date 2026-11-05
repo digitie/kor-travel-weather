@@ -34,37 +34,28 @@ WSL의 격리 PostgreSQL18에서 최신 head migration·특보 저장/정규화�
 비공개 VWorld 입력은 BuildKit secret으로 전달하고 실제 현재 입력과 일치 여부만 확인한다.
 키 값은 문서·Git·출력에 기록하지 않는다. 사용자 지시에 따라 백업·복원은 생략한다.
 
-## 실제 배포 상태
+## 실제 배포 완료
 
-세 ARM64 이미지 빌드는 모두 실제 Docker0이며 마지막 빌드 Root의 첫 Invocation
-`7b807a25c9dd4a01b65853f12231934f`는 journal `done`, MainPID0·cgroup 부재다.
-API 이미지는 `99bdacb984e5`, 수집기 이미지는 `1731ff3c7376`, 웹 이미지는 `508a4383eea8`이다.
+제품 `9acc40906d421ab58712838605649af10496cc2b`의 세 역할을 실제 반영했다. 최신 main240f342와 기존 배포 기능을 포함하며 문서·시험 후속 커밋으로 제품 이미지를 재빌드하지 않았다.
 
-웹 CID `b1d95fc7e3b2`(12205)와 API CID `094b8338dc6b`(12201)를 실제 교체했다.
-같은 DB의 새 revision은 `0037_release_merge`이며 native Settings의 VWorld 키 일치도 확인했다.
-기존 테이블을 변경하지 않는 특보 테이블 추가와 API 반영을 먼저 끝냈다.
-운영 수집기는 기존 작업의 자연 종료를 기다리는 중이다. 새 수집기·일정 복원·최종 Manager
-정산·배포 부모 실제 종료는 아직 완료로 기록하지 않는다.
+| 역할 | 실제 CID | 이미지 | 실제 명령 |
+| --- | --- | --- | --- |
+| kor-travel-weather-dagster-code-server | `6b0cfb6bea723313bb65035b5aeae2ccc429acfa3c714b6bcef013d2efb41cdc` | `sha256:1731ff3c73762290b67893aec65c2d5ac7f3fabdb3002649a384927a2a6d8bd6` | `dagster code-server start -h 127.0.0.1 -p 12206 -m kortravelweather_dagster.definitions --inject-env-vars-from-instance` |
+| kor-travel-weather-api | `094b8338dc6b1d671cda352e1ee398099365c403fd166d2dac02c56b2b0082ae` | `sha256:99bdacb984e54dba2536a4be57f090b1df71133540f2be9fb86067285e9f6435` | `uvicorn kortravelweather_api.app:app --host 0.0.0.0 --port 12201` |
+| kor-travel-weather-web | `b1d95fc7e3b2a593781d06e8fa531e7bdcaf711c9845c7dda854a30a53259e9b` | `sha256:508a4383eea8eff4ac1469d09f23d4c1482d9b5f167b7e4d3479c948e16dfa7a` | `npm run start -- --hostname 0.0.0.0 --port 12205` |
 
-실제 API health·version·지역 특보 이벤트·export status·500행 위치 응답은 모두200이다.
-같은 관측의 조건부 위치 요청은 `EXPORT_TEMPORARILY_UNAVAILABLE`503/Retry-After5였다.
-이 원문을 보존하고 조건부304 성공이나 전국 성능 개선으로 바꾸지 않는다.
-이때 수집기는 아직 기존 코드이므로 publisher guard 개선의 최종 수용과 구분한다.
+같은 PostgreSQL18의 schema는 `0037_release_merge`다. 원 26개 Weather 일정/센서의 상태를 복원했고 새 `regional_alert_events_every_five_minutes`는 후보의 기본 RUNNING으로 명시 정산했다. 다른 서비스의 실행 신원과 보호 환경 파일은 같다.
 
-Firefox157 PC1440·모바일375에서 서울 상세의 현재 날씨·내일 최저3/최고9도·시간별 그래프
-24시간·지도 배경을 실제 확인했다. 두 화면 overflow0, 비어 있는 특보 설명0,
-logout200·소유 브라우저 자식 종료·잔여0이다. 미세먼지 등 원천에서 없는 항목은 미제공으로
-남으며 이번 배포를 데이터 충족으로 과장하지 않는다. 화면 원문은 `live-ui/results.json`,
-`overview-ready-1440.png`, `overview-ready-375.png`, `hourly-1440.png`, `hourly-375.png`다.
+Manager adopt/verify/show는 healthy이며 current는 `/srv/ktdm-releases/weather-adopt-20261105T133024Z-5364cd182e564184b6eac623a38f21f6`다. 배포 최초 Invocation `2219cd940ec54c85b7b9db1e9c5ffb4a`의 journal done·실제 정상 종료, MainPID0·cgroup 부재·소유 자식 종료를 확인했다. 빌드 최초 Invocation `7b807a25c9dd4a01b65853f12231934f` 역시 실제 done이다.
 
-0035 전용 migration 시험 기대값 수정도 별도1개 시험과 ruff를 통과했다.
-Python 시험은 서로 다른85+16+1개다. 웹 Next 컴파일·타입 검사·정적 페이지15개 생성도 통과했다.
+## 실제 HTTP·화면 검증
 
-실행 중인 단일 배포 Root는 `weather-latest-deploy-20261105-4b58099995.service`, 최초 Invocation
-`2219cd940ec54c85b7b9db1e9c5ffb4a`다. 새 독립 검토·백업·복원·추가 운영 Root를 만들지 않는다.
-정상 Manager G→R/FD9를 유지하며 Weather 원26일정만 일시 정지했다. 기존 수집이 끝나면
-수집기를 교체하고 원26상태 및 새 지역 특보 일정의 기본 RUNNING을 명시 정산한다.
-다른 서비스의 일정·환경·컨테이너를 변경하지 않는다.
+최종 health·version·지역 특보 API·export status·500행 위치 응답은 모두200이다. version의 실제 git_commit도 제품9acc409와 같다. 최종 조건부 위치 요청은 HTTP304이며 재시도0이다. 최초 관측의 `EXPORT_TEMPORARILY_UNAVAILABLE`503/Retry-After5는 `live-api.json`에 별도 보존한다. 이 표본으로 전국/첫 요청 성능 배율을 주장하지 않는다.
 
-정본은 Git 밖 `C:/Users/digit/.codex/tmp/weather-latest-release-20261105/checkpoint.json`과
-각 build/deployment 결과다. 원 실패와 진행 중인 부모를 성공으로 승격하지 않는다.
+Firefox157 PC1440·모바일375에서 현재 날씨·내일 예보·24시간 그래프·지도 배경을 확인했다. 두 화면 overflow0·불필요한 빈 특보 설명0·logout200·소유 브라우저 자식 종료·잔여0이다. 화면 원문은 `live-ui/results.json`, `overview-ready-1440.png`, `overview-ready-375.png`, `hourly-1440.png`, `hourly-375.png`다. 원천에 없는 미세먼지·체감·일출 등은 미제공으로 남으며 데이터 충족 성공으로 바꾸지 않는다. 새 특보 API200은 제공기관의 실제 특보 수집 성공과도 구분한다.
+
+검증은 격리 PG18의 서로 다른85+16+1개, 새 실행 원인 표시 Vitest3개와 ruff, 실제 ARM64 웹 컴파일·타입 검사·정적 페이지15개 생성이다. Vitest는 버전이 같은 시험 도구만 재사용했고 런타임 의존성은 실제 이미지 빌드의 고정 lock 기준이다. 백업·복원은 사용자 지시로 생략했다.
+
+정본 원문은 Git 밖 `C:/Users/digit/.codex/tmp/weather-latest-release-20261105/final-evidence.json`, SHA256 `57e29b3dc4b8f14a5e8940ddfd8092cf37d4e6342c4172a48e2c102d88f31450`다. 원 실패·자연 종료 대기와 실제 배포 완료를 구분해 보존한다.
+
+CI42020322703의 head `d2aa054c681e12ed8b0df77a54cd603f322b749b`에서 Python·frontend가 모두 SUCCESS다. 원 실패·진행 중 CI를 성공으로 바꾼 것이 아니며 GitHub의 완료 결과를 한 번 정산했다.
