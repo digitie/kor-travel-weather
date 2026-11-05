@@ -6,11 +6,17 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from .alert_area_mapping import area_mapping, candidate_areas, known_bjd, scope_at
-from .alert_events import ALERT_DATASET, ALERT_PROVIDER, AlertEvent, normalize_alert
+from .alert_events import (
+    ALERT_DATASET,
+    ALERT_PROVIDER,
+    ALERT_SAFE_ERROR_CODES,
+    AlertEvent,
+    normalize_alert,
+)
 from .metrics import observe_sync_finished
 from .models import SyncRun, kst_now
 from .repository import (
@@ -52,6 +58,7 @@ def publish_alert_events(
     def step() -> tuple[int, SyncRun]:
         with repo._session_factory.begin() as session:
             repo._set_ingest_lock_timeout(session)
+            session.execute(text("SET LOCAL statement_timeout = '30s'"))
             run = session.scalar(
                 select(SyncRunRow).where(SyncRunRow.run_id == run_id).with_for_update()
             )
@@ -238,7 +245,11 @@ def read_alert_events(
             "last_success_at": success.finished_at if success else None,
             # 저장한 provider 오류 원문 대신 알려진 안전한 분류만 공개한다.
             "last_error_code": (
-                "ALERT_COLLECTION_FAILED"
+                (
+                    latest.error
+                    if latest.error in ALERT_SAFE_ERROR_CODES
+                    else "ALERT_COLLECTION_FAILED"
+                )
                 if latest
                 and latest.status
                 not in {

@@ -39,3 +39,11 @@ WSL 소유 Postgres에서 정규화19건과 매핑6건, 총25건이 통과했다
 신규 이벤트 테이블과 원천 FK·불변 trigger·조회 인덱스, 기존 실행·원천의 같은 transaction 게시, 회수된 실행의 게시 차단을 추가했다. 동일 원천의 이전 canonical key를 재사용하고, 원천 row에서 직접 정규화하여 별도 가짜 이벤트 입력 경계를 만들지 않는다. 31일 이전 이벤트 정리와 원천 GC의 새 참조 보호도 연결했다.
 
 보완 후 정규화·매핑·실제 PG 저장/권한/보존 검증41건이 통과했다. 공개 API·수집 job과 최종 전체 검증·리뷰는 아직 남아 있다.
+
+## 수집·공개 계약 체크포인트
+
+별도 getPwnCd 수집 job/5분 schedule과 공개 alert-events API, OpenAPI export·TypeScript 타입/조회 helper를 연결했다. source row에서 정규화한 관측을 페이지 검증 후에만 게시한다. 최신 실패·정상 빈 목록·부분 지역 매핑·확인 전 관측·보존 범위·조회 상한을 구분하며, 기존 활성 카드의 의미는 유지한다.
+
+DB 시작 thread가 commit하고 결과 반환이 늦을 때 취소하면 running이 남는 회귀를 실제로 재현했다. 시작 결과를 shield하여 회수한 뒤 실행을 취소 상태로 닫는다. 수정 후 원천 의미·매핑·실제 PG·공개 SDK HTTP fixture·공개 API의72건이 통과했다. 이후 같은 취소 경계의 lint 권고 표현만 suppress로 정리했다. 전체 Ruff는 통과했고0036 downgrade/upgrade를 소유 DB에서 재실행했다.
+
+웹 타입·lint와22파일277테스트도 통과했다. API/웹 전체 회귀·실제 TCP와 브라우저·최종 두 전문 리뷰·정확 HEAD CI는 후속이다. 이 기록은 owner 병합 완료를 뜻하지 않는다.

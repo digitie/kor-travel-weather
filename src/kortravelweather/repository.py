@@ -268,6 +268,7 @@ class WeatherAlertEventRow(Base):
     __table_args__ = (
         Index("ix_weather_alert_events_area_seen", "area_code", "first_seen_at", "event_id"),
         Index("ix_weather_alert_events_source", "source_record_key"),
+        Index("ix_weather_alert_events_seen", "first_seen_at"),
         Index("ix_weather_alert_events_announcement", "announcement_id", "first_seen_at"),
     )
 

@@ -165,3 +165,5 @@ response idempotency와 run overlap guard로 중복 publish를 막고 매 실행
 ## 라이선스
 
 GPL-3.0-or-later. Provider 원천 데이터와 API 응답은 각 기관의 이용약관을 따른다.
+
+공식 기상특보 발표 관측의 원천·지역 검증·수집/보존·공개 API 경계는 [특보 이벤트 계약](docs/pinvi-alert-events.md)을 따른다. 기존 활성 카드와 빈 목록의 의미는 유지한다.

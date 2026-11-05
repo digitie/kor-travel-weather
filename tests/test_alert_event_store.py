@@ -212,3 +212,16 @@ def test_cancel_and_change_release_are_preserved_as_different_observations(repo)
         "changed_release",
     }
     assert normalize_alert(raw_row()).occurrence_id is None
+
+
+def test_expired_event_and_unreferenced_source_are_collected_after_31_days(repo, monkeypatch):
+    from kortravelweather import alert_event_store as module
+
+    publish(repo, [source([raw_row()])])
+    future = kst_now() + timedelta(days=32)
+    monkeypatch.setattr(module, "kst_now", lambda: future)
+    with repo._session_factory.begin() as session:
+        session.execute(text("SET LOCAL kortravelweather.purge = 'on'"))
+        assert purge_alert_events(session, cutoff=future) == 1
+        session.execute(text("DELETE FROM weather_sync_run_sources"))
+        assert session.execute(text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": future}).rowcount == 1

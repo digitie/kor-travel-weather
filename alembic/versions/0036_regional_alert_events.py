@@ -31,6 +31,7 @@ def upgrade():
         "weather_alert_events",
         ["area_code", "first_seen_at", "event_id"],
     )
+    op.create_index("ix_weather_alert_events_seen", "weather_alert_events", ["first_seen_at"])
     op.create_index("ix_weather_alert_events_source", "weather_alert_events", ["source_record_key"])
     op.create_index(
         "ix_weather_alert_events_announcement",

@@ -151,3 +151,23 @@ def normalize_alert(raw: Mapping[str, Any]) -> AlertEvent:
         ends_at=source_time(observation["endTime"]),
         all_ends_at=source_time(observation["allEndTime"]),
     )
+
+
+# provider 오류 원문·URL 대신 공개할 수 있는 고정 분류만 남긴다.
+ALERT_SAFE_ERROR_CODES = frozenset(
+    {
+        "ALERT_PAGE_METADATA",
+        "ALERT_PAGE_ROWS",
+        "ALERT_PAGE_TOTAL_CHANGED",
+        "ALERT_PAGE_DUPLICATE",
+        "ALERT_TOO_MANY_ROWS",
+        "ALERT_RESPONSE_TOO_LARGE",
+        "ALERT_FIRST_PAGE_CHANGED",
+        "ALERT_RUN_OWNERSHIP_LOST",
+        "ALERT_TIMEOUT",
+        "ALERT_PROVIDER_AUTH",
+        "ALERT_PROVIDER_RATE_LIMIT",
+        "ALERT_PROVIDER_UNAVAILABLE",
+        "ALERT_COLLECTION_FAILED",
+    }
+)
