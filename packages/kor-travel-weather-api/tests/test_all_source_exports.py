@@ -195,6 +195,61 @@ def test_default_current_exports_every_enabled_observation_source_and_keeps_fail
     assert continued.status_code == 200 and continued.json()["meta"]["source_status"] == "stale"
 
 
+def _age_source(repo, provider, age):
+    from sqlalchemy import update
+
+    from kortravelweather.export_inventory import export_inventory_table
+
+    table = export_inventory_table(ExportHeads(repo).metadata)
+    with repo.engine.begin() as c:
+        c.execute(update(table).where(table.c.provider == provider).values(
+            source_collected_at=datetime.now(UTC) - age,
+        ))
+
+
+def test_expired_source_is_left_out_of_current_and_kma_rotation_age_is_not(
+    external_repository,
+    tmp_path,
+    monkeypatch,
+):
+    """만료한 원천은 값·meta에서 빠지고 200 stale이다(503 아님). 회전 나이의 KMA는 남는다."""
+    from datetime import timedelta
+
+    from kortravelweather.export_inventory_selection import source_expiry
+
+    repo = external_repository
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="expired-source-fixture",
+        enabled_providers=sorted(KNOWN),
+        service_exports_enabled=True,
+        service_export_artifact_root=tmp_path,
+    ), repo))
+    url, headers = "/v1/service/exports/current", {"x-admin-token": "expired-source-fixture"}
+    _collect(repo, tmp_path)
+    for adapter in (OpenMeteoProvider, WeatherApiProvider, OpenWeatherMapProvider):
+        _http_adapter(repo, tmp_path, adapter)
+    for kind in ("air", "mountain", "dust", "krex"):
+        _sdk(repo, tmp_path, kind, monkeypatch)
+    healthy = client.get(url, headers=headers)
+    assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    # KMA 회전 slot은 다음 sweep까지 수 시간(운영 약 6시간) 묵는다. 신선도 상한(3시간)은 넘어
+    # stale이지만 만료되지는 않는다 — 값은 그대로 나간다.
+    _age_source(repo, "python-kma-api", timedelta(hours=6, minutes=30))
+    rotating = client.get(url, headers=headers)
+    assert rotating.status_code == 200 and rotating.json()["meta"]["source_status"] == "stale"
+    assert "python-kma-api" in {item["provider"] for item in rotating.json()["items"]}
+    _age_source(repo, "python-kma-api", timedelta(0))
+    # 응답에서 계속 빠지는 원천: 만료를 넘으면 그 원천 없이 200 stale, meta는 살아 있는 원천 기준.
+    dead = source_expiry("krex_restarea_weather") + timedelta(hours=1)
+    _age_source(repo, "python-krex-api", dead)
+    expired = client.get(url, headers=headers)
+    assert expired.status_code == 200 and expired.json()["meta"]["source_status"] == "stale"
+    providers = {item["provider"] for item in expired.json()["items"]}
+    assert providers == KNOWN - {"python-khoa-api", "python-krex-api"}
+    collected = datetime.fromisoformat(expired.json()["meta"]["source_collected_at"])
+    assert datetime.now(UTC) - collected < timedelta(hours=1)
+
+
 def test_khoa_external_forecast_is_public_and_current_is_not_fabricated(
     external_repository,
     tmp_path,

@@ -28,14 +28,15 @@ from kortravelweather.models import WeatherLocation
 from kortravelweather.providers import OpenMeteoProvider, ProviderLocation
 
 
-def _publish(repo, root, locations):
+def _publish(repo, root, locations, dataset_key="open_meteo_current"):
     from kortravelweather_dagster.external_weather import run_external_weather_sync
 
+    forecast = dataset_key.endswith("forecast")
     result = run_external_weather_sync(
         repository=repo, provider=OpenMeteoProvider(transport=FixtureTransport(*[
-            FakeResponse(_external_payload("open_meteo", forecast=False, at=datetime.now(UTC)))
+            FakeResponse(_external_payload("open_meteo", forecast=forecast, at=datetime.now(UTC)))
             for _ in locations
-        ])), targets=locations, dataset_key="open_meteo_current", export_artifact_root=root,
+        ])), targets=locations, dataset_key=dataset_key, export_artifact_root=root,
     )
     heads = ExportHeads(repo)
     with repo.engine.connect() as c:
@@ -243,6 +244,99 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
         c.execute(delete(external_cohort_table(heads.metadata)))
     _, _, run_ids = statements()
     assert run_ids == []  # cohort 대조가 없으면 run_id를 읽지 않는다
+
+
+def _age(repo, location_id, age):
+    from sqlalchemy import update
+
+    table = export_inventory_table(ExportHeads(repo).metadata)
+    with repo.engine.begin() as c:
+        c.execute(update(table).where(table.c.location_id == location_id).values(
+            source_collected_at=datetime.now(UTC) - age,
+        ))
+
+
+def test_long_dead_location_expires_instead_of_dragging_freshness_or_partial_flag(
+    external_repository, tmp_path,
+):
+    """응답에서 계속 빠지는 위치(같은 cohort 안)의 오래된 승인은 값·meta·미확인에서 빠진다.
+
+    운영 2026-11-02: 그런 위치 몇 곳의 10-26 승인 때문에 current 전체 meta가 10-26·stale이었다.
+    신선도 상한(3시간)과 만료(24시간) 사이는 계속 내보내고 stale로 표시한다.
+    """
+    from kortravelweather.export_inventory_selection import source_expiry, source_max_age
+
+    repo = external_repository
+    targets = [ProviderLocation("expiry-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(2)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="만료", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    dead = targets[1].location_id
+    source = ("open_meteo", "open_meteo_current")
+    assert source_expiry(source[1]) == max(timedelta(hours=24), 2 * source_max_age(source[1]))
+    _age(repo, dead, source_max_age(source[1]) + timedelta(hours=2))
+    lagging = _selection(repo)
+    assert lagging.unconfirmed  # 상한과 만료 사이: 계속 내보내되 stale
+    assert dead in {key for scope in lagging.scopes for key in scope.location_ids}
+    _age(repo, dead, source_expiry(source[1]) + timedelta(hours=1))
+    selection = _selection(repo)
+    assert dead not in {key for scope in selection.scopes for key in scope.location_ids}
+    assert (*source, dead) in selection.expired
+    assert not selection.unconfirmed  # 공백이지 이번 수집의 실패가 아니다
+    assert min(scope.source_collected_at for scope in selection.scopes) > (
+        datetime.now(UTC) - timedelta(hours=1)
+    )
+
+
+def test_fully_expired_required_source_is_served_without_it_and_marked_stale(
+    external_repository, tmp_path,
+):
+    from kortravelweather.export_artifacts import ExportArtifactError
+    from kortravelweather.export_inventory_selection import source_expiry
+
+    repo = external_repository
+    target = ProviderLocation("expired-source-" + uuid.uuid4().hex, 37.5, 127, {})
+    repo.create_location(WeatherLocation(
+        location_id=target.location_id, name="원천 만료", latitude=37.5, longitude=127,
+    ))
+    _publish(repo, tmp_path, [target])
+    _age(repo, target.location_id, source_expiry("open_meteo_current") + timedelta(hours=1))
+    # 유일한 source가 전부 만료면 낼 값이 없다(이전 완전 snapshot으로 fallback한다).
+    with pytest.raises(ExportArtifactError, match="비었거나"):
+        _selection(repo)
+    # 다른 원천이 살아 있으면 만료한 원천 없이 내보내고 stale이다(최초 승인 거절·503이 아니다).
+    other = ProviderLocation("live-source-" + uuid.uuid4().hex, 37.6, 127.1, {})
+    repo.create_location(WeatherLocation(
+        location_id=other.location_id, name="살아 있는 원천", latitude=37.6, longitude=127.1,
+    ))
+    _publish(repo, tmp_path, [other], "open_meteo_forecast")
+    both = [("open_meteo", "open_meteo_current"), ("open_meteo", "open_meteo_forecast")]
+    selection = _selection(repo, expected=both)
+    assert selection.unconfirmed
+    assert {scope.descriptor.dataset_key for scope in selection.scopes} == {"open_meteo_forecast"}
+    assert ("open_meteo", "open_meteo_current", target.location_id) in selection.expired
+
+
+def test_expiry_horizon_derives_from_freshness_and_spares_kma_rotation():
+    """만료는 dataset 신선도 상한에서 파생한다. KMA 회전 slot(수 시간 안 갱신)은 만료되지 않는다."""
+    from kortravelweather.export_inventory_selection import (
+        source_expiry,
+        source_max_age,
+    )
+
+    expected_hours = {
+        "kma_ultra_short_nowcast": 24, "kma_ultra_short_forecast": 24, "kma_short_forecast": 24,
+        "kma_mid_forecast": 36, "airkorea_realtime_measurement": 24, "open_meteo_current": 24,
+        "weatherapi_forecast": 24, "krforest_mountain_weather": 72, "krex_restarea_weather": 72,
+    }
+    for dataset, hours in expected_hours.items():
+        assert source_expiry(dataset) == timedelta(hours=hours), dataset
+        assert source_expiry(dataset) > source_max_age(dataset)
+    rotation_refresh = timedelta(hours=6)  # 운영: 단기 437 target/run 300 → 두 slot(3시간 간격)
+    kma = [key for key in expected_hours if key.startswith("kma_")]
+    assert all(source_expiry(dataset) >= 2 * rotation_refresh for dataset in kma)
 
 
 def test_inventory_generation_is_a_live_root_even_after_head_replacement(

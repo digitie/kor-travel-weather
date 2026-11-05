@@ -183,7 +183,8 @@ class DailySummaryExports(FrozenCurrentExports):
         ).distinct().limit(MAX_SELECTED_ROWS + 1)))
         if len(declared) > MAX_SELECTED_ROWS:
             raise ExportSnapshotUnavailable("사전 관측 source metadata 상한을 넘었습니다.")
-        missing = (declared | known_observed) - approved_sources
+        # 만료한 승인은 미승인이 아니라 그 원천이 더는 내지 않는 위치다(공백, stale 아님).
+        missing = (declared | known_observed) - approved_sources - selection.expired
         optional = set(self.optional_sources)
         if self.location_id is not None and any(
             (provider, dataset) not in optional for provider, dataset, _ in missing

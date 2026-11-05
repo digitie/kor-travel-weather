@@ -1,3 +1,10 @@
+## 2026-11-03 — 승인 만료 PR·#198 배포 실측
+
+- 응답에서 빠진 지점의 오래된 승인(10-26)이 current·daily meta를 끌어내렸다. 만료(max(24h, 2×신선도 상한))를
+  넘은 위치별 승인은 값·meta·미확인에서 뺀다. 원천 전체 만료는 그 원천 없이 200 stale.
+- #198은 odroid API 643bb34e(21:42Z)에 있다. 503은 전부 재시도 code+Retry-After다. 다음: scope_owners join·
+  run_id 조회 비용 축소 PR, t1103a 회전 뒤 short job 2회차에서 300초 초과 요청 감시.
+
 ## 2026-11-03 — export 읽기 경합 503 구분(PR)
 
 - 읽기 경합(statement/lock timeout·guard 대기·연결)은 503 `EXPORT_TEMPORARILY_UNAVAILABLE` +
