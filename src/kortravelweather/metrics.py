@@ -288,6 +288,14 @@ PROVIDER_REQUESTS = Counter(
     ("provider", "dataset", "outcome"),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+EXPORT_GUARD_HOLD = Histogram(
+    "ktw_export_guard_exclusive_hold_seconds",
+    "Exclusive export artifact guard hold time by holder.",
+    ("holder",),
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+
 PROVIDER_DURATION = Histogram(
     "ktw_provider_request_duration_seconds",
     "Provider request duration in seconds.",
@@ -568,6 +576,13 @@ def observe_http_request(
         )
 
     _safe("http", observe)
+
+
+def observe_export_guard_hold(holder: str, seconds: float) -> None:
+    def observe() -> None:
+        EXPORT_GUARD_HOLD.labels(holder=holder).observe(max(0.0, seconds))
+
+    _safe("export_guard", observe)
 
 
 def change_http_in_flight(method: str, delta: float) -> None:

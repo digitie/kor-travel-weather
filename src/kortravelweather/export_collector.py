@@ -423,7 +423,7 @@ MAX_FRESH_RUN_WINDOW = 16
 #: 넘기면 그 후보만 lock_timeout으로 미뤄지고 다음 tick에 다시 본다.
 PUBLISHER_LOCK_TIMEOUT_MS = 500
 #: 승격 하나가 배타 guard를 놓은 뒤 쉬는 시간. 같은 guard를 10ms마다 다시 시도하는
-#: API reader(2초 상한)와 collector 쓰기(5초 상한)가 연속 승격 사이에 들어오게 한다.
+#: API reader(기본 5초 상한)와 collector 쓰기(5초 상한)가 연속 승격 사이에 들어오게 한다.
 GUARD_YIELD_SECONDS = 0.03
 #: 일별 요약 정리 한 문장의 최악 시간(statement 상한). tick 상한이 이보다 가까우면 건너뛴다.
 DAILY_PRUNE_WORST_SECONDS = 5.0

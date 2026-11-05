@@ -112,7 +112,7 @@ def test_two_public_pages_do_not_nest_reader_slots(tmp_path):
 
 def test_public_page_admission_timeout_precedes_metadata(tmp_path):
     reader = object.__new__(FrozenForecastExports)
-    reader.artifacts = ExportArtifactStore(tmp_path)
+    reader.artifacts = ExportArtifactStore(tmp_path, reader_guard_seconds=0.5)
 
     def forbidden_metadata(**_kwargs):
         pytest.fail("guard 취득 전 metadata에 접근했습니다.")
