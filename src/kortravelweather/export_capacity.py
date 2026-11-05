@@ -6,7 +6,8 @@
 import json
 from collections import defaultdict
 
-from sqlalchemy import Text, case, cast, func, select
+from sqlalchemy import String, Text, any_, bindparam, case, cast, func, select
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from .export_artifacts import ExportArtifactError
 
@@ -93,6 +94,12 @@ def read_generation_refs(connection, table, generation_ids):
     return grouped
 
 
+def any_of(column, values):
+    """``column = ANY(배열 파라미터 하나)``. 수천 개짜리 ``IN`` 목록은 psycopg가 값마다 파라미터로
+    바꾸느라 요청마다 수 초를 썼다(2026-11-02 odroid: 7문장에 3.0초)."""
+    return column == any_(bindparam(None, list(values), type_=ARRAY(String()), unique=True))
+
+
 def read_scope_plans(connection, table, attempt_ids):
     """위치별 inventory에 반복된 descriptor를 attempt마다 한 번만 읽는다."""
     attempt_ids = tuple(dict.fromkeys(attempt_ids))
@@ -105,7 +112,7 @@ def read_scope_plans(connection, table, attempt_ids):
         table.c.attempt_id,
         case((oversized, None), else_=table.c.descriptor).label("descriptor"),
         oversized.label("oversized_descriptor"),
-    ).where(table.c.attempt_id.in_(attempt_ids)).order_by(table.c.attempt_id).limit(
+    ).where(any_of(table.c.attempt_id, attempt_ids)).order_by(table.c.attempt_id).limit(
         MAX_SOURCE_SCOPES + 1,
     ).execution_options(
         stream_results=True, yield_per=REF_FETCH_ROWS, max_row_buffer=REF_FETCH_ROWS,

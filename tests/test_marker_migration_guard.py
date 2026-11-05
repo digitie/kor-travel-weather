@@ -49,6 +49,7 @@ def migration_database(weather_test_database_url, monkeypatch):
     with repo.engine.begin() as connection:
         connection.exec_driver_sql("DROP SCHEMA public CASCADE")
         connection.exec_driver_sql("CREATE SCHEMA public")
+    # 이 fixture는0034 인덱스만 검증한다. 이후 table migration을 가짜0033 stamp와 섞지 않는다.
     repo.create_schema()
     with repo.engine.begin() as connection:
         definitions = dict(
@@ -85,7 +86,7 @@ def test_other_table_collision_is_never_dropped_or_skipped(migration_database, v
         )
     before = db.indexes()
     with pytest.raises(RuntimeError, match="충돌"):
-        command.upgrade(Config("alembic.ini"), "head")
+        command.upgrade(Config("alembic.ini"), "0034_marker_kind_indexes")
     assert db.indexes() == before and set(before) == {name}
     assert db.version() == "0033_export_source_inventory"
     with db.repo.engine.connect() as connection:
@@ -142,7 +143,7 @@ def test_wrong_definition_is_never_dropped_or_marked_complete(migration_database
         )
     before = db.indexes()
     with pytest.raises(RuntimeError, match="충돌"):
-        command.upgrade(Config("alembic.ini"), "head")
+        command.upgrade(Config("alembic.ini"), "0034_marker_kind_indexes")
     assert db.indexes() == before and set(before) == {name}
     assert db.version() == "0033_export_source_inventory"
 
@@ -163,7 +164,7 @@ def test_resolved_table_schema_is_used_even_with_another_first_schema(
         ).scalar_one()
     monkeypatch.setenv("PGOPTIONS", "-csearch_path=marker_search,public")
     try:
-        command.upgrade(Config("alembic.ini"), "head")
+        command.upgrade(Config("alembic.ini"), "0034_marker_kind_indexes")
         assert set(db.indexes()) == set(NAMES)
         command.downgrade(Config("alembic.ini"), "0033_export_source_inventory")
         assert not db.indexes()
@@ -181,7 +182,7 @@ def test_resolved_table_schema_is_used_even_with_another_first_schema(
 
 def test_downgrade_rejects_a_replaced_foreign_index_before_dropping_anything(migration_database):
     db = migration_database
-    command.upgrade(Config("alembic.ini"), "head")
+    command.upgrade(Config("alembic.ini"), "0034_marker_kind_indexes")
     name = NAMES[0]
     with db.repo.engine.begin() as connection:
         connection.exec_driver_sql("DROP INDEX " + name)

@@ -1,13 +1,21 @@
 """실제 승인 위치와 최신 HTTP 전 선택 집합을 같은 MVCC에서 함께 읽는다."""
 
-from collections import defaultdict
+import threading
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, true, tuple_
 
 from .export_artifacts import ExportArtifactError
-from .export_capacity import MAX_SOURCE_SCOPES, read_scope_plans
+from .export_capacity import (
+    MAX_MANIFEST_BYTES,
+    MAX_SOURCE_SCOPES,
+    ExportCapacityExceeded,
+    MetadataBudget,
+    any_of,
+    read_scope_plans,
+)
 from .export_external import RetrievalScopeDescriptor
 from .export_external_cohorts import external_cohort_table
 from .export_heads import ScopeDescriptor, parse_scope_descriptor
@@ -78,6 +86,26 @@ def source_max_age(dataset):
     return timedelta(hours=3)
 
 
+#: 승인 만료 = max(하한, 배수 × 신선도 상한). 신선도 상한을 넘으면 stale, 만료를 넘으면 그 원천이
+#: 더 이상 그 위치를 내지 않는 것으로 보고 export에서 뺀다(2026-11-03: 응답에서 빠진 지점의 6일 전
+#: 값이 "현재값"으로 나가며 전체 meta를 10-26으로 끌어내렸다). KMA 회전 slot은 수 시간 안에
+#: 갱신된다.
+SOURCE_EXPIRY_FLOOR = timedelta(hours=24)
+SOURCE_EXPIRY_FACTOR = 2
+
+
+def source_expiry(dataset):
+    """이 나이를 넘은 위치별 승인은 값·meta·건강도 어디에도 쓰지 않는다(coverage 공백).
+
+    나이는 ``source_collected_at``(원천이 이 위치를 마지막으로 준 때)로만 잰다. 원천이 계속
+    주되 관측 시각(``data_revision_at``)이 멈춘 경우는 공백이 아니라 원천의 stale 값이므로
+    그대로 내보내고 stale로 표시한다. 요청한 원천이 전부 만료면 낼 것이 없어 reader가 이전
+    snapshot으로 fallback한다(단일 원천 export는 옛 값을 stale로 계속 낸다 — 만료 전과 같되
+    정직하게 표시).
+    """
+    return max(SOURCE_EXPIRY_FLOOR, SOURCE_EXPIRY_FACTOR * source_max_age(dataset))
+
+
 def _validate_anchor(descriptor, current):
     if isinstance(descriptor, ScopeDescriptor):
         if (
@@ -119,6 +147,74 @@ class ApprovedScope:
 class ApprovedSelection:
     scopes: tuple[ApprovedScope, ...]
     unconfirmed: bool
+    #: 만료로 뺀 (provider, dataset_key, location_id). 미확인이 아니라 coverage 공백이다.
+    expired: frozenset[tuple[str, str, str]] = frozenset()
+
+
+#: attempt별 불변 plan의 해석 결과. descriptor 열은 insert 뒤 바뀌지 않으므로(export_heads는
+#: revision·digest 열만 갱신) attempt_id로 기억해도 된다. 2026-11-02 odroid 실측: 한 freeze가
+#: plan 3,307개를 서버 cursor로 읽고 해석하는 데 6~8초였다. 기억한 plan은 존재만 다시 확인한다
+#: (유실 탐지 유지).
+_PLAN_CACHE_SIZE = 16_384
+_PLAN_CACHE_BYTES = 64 * 1024 * 1024
+#: attempt_id -> (해석된 descriptor, 정규 JSON 바이트 수). 바이트로도 상한을 둔다.
+_parsed_plans: OrderedDict[str, tuple[object, int]] = OrderedDict()
+_parsed_plans_bytes = 0
+_parsed_plans_lock = threading.Lock()
+
+
+def _remembered_plans(attempt_ids):
+    with _parsed_plans_lock:
+        found = {}
+        for key in attempt_ids:
+            value = _parsed_plans.get(key)
+            if value is not None:
+                _parsed_plans.move_to_end(key)
+                found[key] = value
+        return found
+
+
+def _remember_plans(parsed):
+    global _parsed_plans_bytes
+    with _parsed_plans_lock:
+        for key, value in parsed.items():
+            previous = _parsed_plans.pop(key, None)
+            if previous is not None:
+                _parsed_plans_bytes -= previous[1]
+            _parsed_plans[key] = value
+            _parsed_plans_bytes += value[1]
+        while _parsed_plans and (
+            len(_parsed_plans) > _PLAN_CACHE_SIZE or _parsed_plans_bytes > _PLAN_CACHE_BYTES
+        ):
+            _parsed_plans_bytes -= _parsed_plans.popitem(last=False)[1][1]
+
+
+def parsed_scope_plans(connection, plans, attempt_ids):
+    """attempt별 해석된 plan. 기억한 것은 행 존재만, 나머지는 읽어서 해석하고 기억한다.
+
+    선택 전체의 누적 메타데이터 예산(``MAX_MANIFEST_BYTES``)은 기억 여부와 무관하게 같은 바이트로
+    다시 센다 — 결과가 프로세스 이력에 따라 달라지지 않는다.
+    """
+    attempt_ids = tuple(dict.fromkeys(attempt_ids))
+    if len(attempt_ids) > MAX_SOURCE_SCOPES:
+        raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
+    remembered = _remembered_plans(attempt_ids)
+    if remembered:
+        present = set(connection.scalars(select(plans.c.attempt_id).where(
+            any_of(plans.c.attempt_id, sorted(remembered)),
+        )))
+        if present != remembered.keys():
+            raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
+    missing = [key for key in attempt_ids if key not in remembered]
+    encoder = MetadataBudget().encoder
+    fresh = {
+        key: (parse_scope_descriptor(value), len(encoder.encode(value).encode("utf-8")))
+        for key, value in read_scope_plans(connection, plans, missing).items()
+    }
+    if sum(size for _, size in (*remembered.values(), *fresh.values())) > MAX_MANIFEST_BYTES:
+        raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+    _remember_plans(fresh)
+    return {key: value[0] for key, value in {**remembered, **fresh}.items()}
 
 
 def _cohort_descriptors(row):
@@ -164,6 +260,20 @@ def approved_source_selection(
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
     catalog = {row["location_id"]: row for row in locations}
+    now = datetime.now(UTC)
+    # 만료한 승인은 값을 내지 않으므로 plan·좌표·건강도 검증 대상도 아니다. 최초 승인 여부만 센다.
+    ever = {(row["provider"], row["dataset_key"]) for row in rows if row["location_id"] in catalog}
+    expired_parts = {
+        (row["provider"], row["dataset_key"], row["location_id"], row["source_part"])
+        for row in rows
+        if row["location_id"] in catalog
+        and now - row["source_collected_at"] > source_expiry(row["dataset_key"])
+    }
+    rows = [
+        row for row in rows
+        if (row["provider"], row["dataset_key"], row["location_id"], row["source_part"])
+        not in expired_parts
+    ]
     missing = {row["location_id"] for row in rows} - catalog.keys()
     if missing:
         catalog_table = metadata.tables["weather_locations"]
@@ -176,17 +286,16 @@ def approved_source_selection(
             raise ExportArtifactError("승인 source의 canonical catalog 행이 유실됐습니다.")
     valid, sources = {}, set()
     shown = {row["plan_attempt_id"] for row in rows if row["location_id"] in catalog}
-    # 보이는 위치의 plan이 없으면 read_scope_plans가 "plan 유실"로 거절한다.
-    plans_by_attempt = read_scope_plans(connection, plans, sorted(shown))
+    # 보이는 위치의 plan이 없으면 parsed_scope_plans가 "plan 유실"로 거절한다.
+    parsed_plans = parsed_scope_plans(connection, plans, sorted(shown))
     hidden = {row["plan_attempt_id"] for row in rows} - shown
     if hidden:
         # 명시 비활성 위치의 plan은 descriptor를 읽지 않고 존재만 확인한다.
         hidden -= set(connection.scalars(
-            select(plans.c.attempt_id).where(plans.c.attempt_id.in_(sorted(hidden)))
+            select(plans.c.attempt_id).where(any_of(plans.c.attempt_id, sorted(hidden)))
         ))
     if hidden:
         raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
-    parsed_plans = {key: parse_scope_descriptor(value) for key, value in plans_by_attempt.items()}
     plan_namespaces = {key: value.namespace for key, value in parsed_plans.items()}
     descriptors_by_namespace = {}
     for row in rows:
@@ -210,9 +319,8 @@ def approved_source_selection(
         key = row["provider"], row["dataset_key"], row["location_id"], row["source_part"]
         valid[key] = row
         sources.add(key[:2])
-    if expected - optional - sources:
+    if expected - optional - ever:
         raise ExportArtifactError("필수 provider/dataset의 최초 승인 위치가 없습니다.")
-    now = datetime.now(UTC)
     health_rows = [
         r for r in valid.values() if health_keys is None or r["location_id"] in health_keys
     ]
@@ -224,28 +332,35 @@ def approved_source_selection(
     namespaces = {row["namespace"] for row in health_rows}
     heads = metadata.tables["weather_export_heads"]
     live_heads = set(connection.scalars(select(heads.c.namespace).where(
-        heads.c.namespace.in_(namespaces),
+        any_of(heads.c.namespace, sorted(namespaces)),
     )))
     # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
     unconfirmed |= live_heads != namespaces
     owners = metadata.tables["weather_export_scope_owners"]
     source_scopes = {row["source_scope"] for row in health_rows}
+    # scope마다 attempt 행을 찾는 join에 run 행까지 붙이면 scope 수만큼 run을 다시 찾는다(실제 run은
+    # 수십 개). run 상태는 distinct run_id로 따로 읽고, 여기서 읽은 attempt의 run_id는 아래 cohort
+    # 대조에 다시 쓴다(승인 attempt의 약 2/3가 지금의 소유 attempt다).
     active = list(connection.execute(select(
-        owners.c.source_scope, attempts.c.status, runs.c.status,
+        owners.c.source_scope, attempts.c.attempt_id, attempts.c.run_id, attempts.c.status,
         generations.c.generation_id, owners.c.owner_epoch,
         func.left(attempts.c.owner_epochs[owners.c.source_scope].as_string(), 32),
     ).select_from(owners.join(
         attempts, owners.c.active_attempt_id == attempts.c.attempt_id,
-    ).join(runs, runs.c.run_id == attempts.c.run_id).outerjoin(
+    ).outerjoin(
         generations, generations.c.attempt_id == attempts.c.attempt_id,
-    )).where(owners.c.source_scope.in_(source_scopes))))
+    )).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    active_run_ids = sorted({row[2] for row in active})
+    native_status = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
+        any_of(runs.c.run_id, active_run_ids),
+    )).tuples().all()) if active_run_ids else {}
     # native terminal뿐 아니라 확정된 Dagster 실패를 publisher가 기록한 attempt도
     # 현재 승인 집합의 건강도에 반영한다. 이전 파일과 inventory는 그대로 보존한다.
     unconfirmed |= len(active) != len(source_scopes) or any(
-        attempt == "failed" or native not in {"running", "success"}
-        or native == "success" and generation is None
+        attempt == "failed" or native_status.get(run_id) not in {"running", "success"}
+        or native_status.get(run_id) == "success" and generation is None
         or claimed_epoch != str(epoch)
-        for _, attempt, native, generation, epoch, claimed_epoch in active
+        for _, _, run_id, attempt, generation, epoch, claimed_epoch in active
     )
     cohorts = external_cohort_table(metadata)
     declarations = {
@@ -256,13 +371,16 @@ def approved_source_selection(
         )).mappings()
     }
     # cohort 대조에만 run_id가 필요하다. attempt 이력이 정리됐으면 미확인으로 본다.
+    run_ids = {row[1]: row[2] for row in active}
     needed = sorted({
         row["plan_attempt_id"] for row in health_rows
         if (row["provider"], row["dataset_key"]) in declarations
+        and row["plan_attempt_id"] not in run_ids
     })
-    run_ids = dict(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
-        attempts.c.attempt_id.in_(needed),
-    )).tuples().all()) if needed else {}
+    if needed:
+        run_ids.update(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
+            any_of(attempts.c.attempt_id, needed),
+        )).tuples().all())
     for source in expected:
         row = declarations.get(source)
         if row is None:
@@ -295,6 +413,8 @@ def approved_source_selection(
                 if health_keys is not None and key not in health_keys:
                     continue
                 approved = valid.get((*source, key, part))
+                if approved is None and (*source, key, part) in expired_parts:
+                    continue  # 만료 = 이 원천이 내지 않는 위치(공백). 이번 실패의 미확인이 아니다.
                 if approved is None or (
                     approved["namespace"] != descriptor_namespace
                     or run_ids.get(approved["plan_attempt_id"]) is None
@@ -321,4 +441,6 @@ def approved_source_selection(
         ))
     if not scopes or len(scopes) > MAX_SOURCE_SCOPES:
         raise ExportArtifactError("승인 source vector가 비었거나 상한을 넘었습니다.")
-    return ApprovedSelection(tuple(scopes), unconfirmed)
+    return ApprovedSelection(
+        tuple(scopes), unconfirmed, frozenset(key[:3] for key in expired_parts),
+    )

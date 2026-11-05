@@ -307,6 +307,7 @@ class PurgeReport(BaseModel):
     #: reporting loses its current value once its last reading ages out.
     pointers_deleted: int = 0
     sources_deleted: int = 0
+    alert_events_deleted: int = 0
     #: Rows that landed outside every dated partition, so retention will never
     #: reach them.  Non-zero means a partition was missing when something
     #: inserted -- silent growth is exactly what partitioning was meant to end.

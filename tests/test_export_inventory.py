@@ -1,5 +1,6 @@
 """quota 회전에 선택하지 않은 위치의 승인과 파일 root를 잃지 않는다."""
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -28,14 +29,15 @@ from kortravelweather.models import WeatherLocation
 from kortravelweather.providers import OpenMeteoProvider, ProviderLocation
 
 
-def _publish(repo, root, locations):
+def _publish(repo, root, locations, dataset_key="open_meteo_current"):
     from kortravelweather_dagster.external_weather import run_external_weather_sync
 
+    forecast = dataset_key.endswith("forecast")
     result = run_external_weather_sync(
         repository=repo, provider=OpenMeteoProvider(transport=FixtureTransport(*[
-            FakeResponse(_external_payload("open_meteo", forecast=False, at=datetime.now(UTC)))
+            FakeResponse(_external_payload("open_meteo", forecast=forecast, at=datetime.now(UTC)))
             for _ in locations
-        ])), targets=locations, dataset_key="open_meteo_current", export_artifact_root=root,
+        ])), targets=locations, dataset_key=dataset_key, export_artifact_root=root,
     )
     heads = ExportHeads(repo)
     with repo.engine.connect() as c:
@@ -219,7 +221,8 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
         return selection, inventory, run_ids
 
     selection, inventory, run_ids = statements()
-    assert not selection.unconfirmed and len(inventory) == len(run_ids) == 1
+    assert not selection.unconfirmed and len(inventory) == 1
+    assert run_ids == []  # 승인 attempt가 지금의 소유 attempt면 소유자 조회의 run_id를 다시 쓴다
     assert "weather_export_attempts" not in inventory[0]
     assert "weather_export_scope_plans" not in inventory[0]
     # 다음 수집이 소유권을 가져가 진행 중이어도 이전 승인은 확인된 채다(대조군). 그래서 아래의
@@ -236,13 +239,207 @@ def test_selection_reads_run_id_only_for_cohort_check_and_survives_attempt_reten
                 heads.generations.c.generation_id == generation,
             ).scalar_subquery(),
         ))
-    retained, _, _ = statements()
+    retained, _, run_ids = statements()
     assert retained.unconfirmed  # 이력이 없으면 cohort 대조를 확인할 수 없다
+    assert len(run_ids) == 1  # 소유자 조회에 없는 승인 attempt만 따로 찾는다
     assert target.location_id in {key for scope in retained.scopes for key in scope.location_ids}
     with repo.engine.begin() as c:
         c.execute(delete(external_cohort_table(heads.metadata)))
     _, _, run_ids = statements()
     assert run_ids == []  # cohort 대조가 없으면 run_id를 읽지 않는다
+
+
+def _captured(repo, call):
+    from sqlalchemy import event
+
+    seen = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        seen.append((" ".join(statement.split()), parameters))
+
+    event.listen(repo.engine, "before_cursor_execute", capture)
+    try:
+        return call(), seen
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", capture)
+
+
+def test_parsed_plans_are_remembered_per_attempt_and_a_lost_plan_is_still_detected(
+    external_repository, tmp_path,
+):
+    """불변 plan은 프로세스가 한 번만 읽어 해석한다. 기억한 plan도 행이 사라지면 거절한다."""
+    from kortravelweather import export_inventory_selection as selection_module
+    from kortravelweather.export_artifacts import ExportArtifactError
+
+    repo = external_repository
+    targets = [ProviderLocation("plan-cache-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(3)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="plan 기억", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    selection_module._parsed_plans.clear()
+    selection_module._parsed_plans_bytes = 0
+
+    def descriptor_reads(seen):
+        return [s for s, _ in seen if "weather_export_scope_plans.descriptor" in s]
+
+    first, seen = _captured(repo, lambda: _selection(repo))
+    assert len(descriptor_reads(seen)) == 1
+    second, seen = _captured(repo, lambda: _selection(repo))
+    assert descriptor_reads(seen) == []  # 존재만 확인한다
+    assert any("FROM weather_export_scope_plans WHERE" in s for s, _ in seen)
+    assert [(s.descriptor, s.location_ids) for s in second.scopes] == [
+        (s.descriptor, s.location_ids) for s in first.scopes
+    ]
+    # 누적 예산은 기억 여부와 무관하다(데워진 프로세스도 같은 결과).
+    with pytest.MonkeyPatch.context() as tight:
+        tight.setattr(selection_module, "MAX_MANIFEST_BYTES", 1)
+        with pytest.raises(ExportArtifactError, match="예산"):
+            _selection(repo)
+    heads = ExportHeads(repo)
+    with repo.engine.begin() as c:
+        c.execute(delete(heads.plans).where(heads.plans.c.attempt_id == select(
+            heads.generations.c.attempt_id,
+        ).where(
+            heads.generations.c.generation_id == first.scopes[0].generation_id,
+        ).scalar_subquery()))
+    with pytest.raises(ExportArtifactError, match="plan"):
+        _selection(repo)
+
+
+def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
+    external_repository, tmp_path,
+):
+    """scope마다 run 행을 다시 찾지 않는다. 수천 개짜리 목록은 배열 파라미터 하나다."""
+    from sqlalchemy import update
+
+    repo = external_repository
+    targets = [ProviderLocation("owner-run-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(3)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="run 상태", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    selection, seen = _captured(repo, lambda: _selection(repo))
+    assert not selection.unconfirmed
+    owners = [s for s, _ in seen if "FROM weather_export_scope_owners JOIN" in s]
+    assert len(owners) == 1 and "weather_sync_runs" not in owners[0]
+    runs = [s for s, _ in seen if s.startswith(
+        "SELECT weather_sync_runs.run_id, weather_sync_runs.status",
+    )]
+    assert len(runs) == 1
+    big = [(s, p) for s, p in seen if any(
+        name in s for name in ("weather_export_scope_plans", "weather_export_heads.namespace",
+                               "weather_export_scope_owners")
+    )]
+    # 목록 하나가 배열 파라미터 하나다(위치 3곳이라 개수로는 IN 목록과 구별되지 않는다).
+    assert big and all(
+        re.search(r"= ANY ?\(", s) and " IN (" not in s for s, _ in big
+    ), [s[:160] for s, _ in big]
+    heads = ExportHeads(repo)
+    runs_table = heads.metadata.tables["weather_sync_runs"]
+    with repo.engine.begin() as c:
+        c.execute(update(runs_table).where(runs_table.c.run_id == select(
+            heads.lifecycle.attempts.c.run_id,
+        ).where(heads.lifecycle.attempts.c.attempt_id == select(
+            heads.generations.c.attempt_id,
+        ).where(heads.generations.c.generation_id == selection.scopes[0].generation_id)
+            .scalar_subquery()).scalar_subquery()).values(status="failed"))
+    assert _selection(repo).unconfirmed  # 따로 읽은 run 상태도 건강도에 들어간다
+
+
+def _age(repo, location_id, age):
+    from sqlalchemy import update
+
+    table = export_inventory_table(ExportHeads(repo).metadata)
+    with repo.engine.begin() as c:
+        c.execute(update(table).where(table.c.location_id == location_id).values(
+            source_collected_at=datetime.now(UTC) - age,
+        ))
+
+
+def test_long_dead_location_expires_instead_of_dragging_freshness_or_partial_flag(
+    external_repository, tmp_path,
+):
+    """응답에서 계속 빠지는 위치(같은 cohort 안)의 오래된 승인은 값·meta·미확인에서 빠진다.
+
+    운영 2026-11-02: 그런 위치 몇 곳의 10-26 승인 때문에 current 전체 meta가 10-26·stale이었다.
+    신선도 상한(3시간)과 만료(24시간) 사이는 계속 내보내고 stale로 표시한다.
+    """
+    from kortravelweather.export_inventory_selection import source_expiry, source_max_age
+
+    repo = external_repository
+    targets = [ProviderLocation("expiry-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(2)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="만료", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    dead = targets[1].location_id
+    source = ("open_meteo", "open_meteo_current")
+    assert source_expiry(source[1]) == max(timedelta(hours=24), 2 * source_max_age(source[1]))
+    _age(repo, dead, source_max_age(source[1]) + timedelta(hours=2))
+    lagging = _selection(repo)
+    assert lagging.unconfirmed  # 상한과 만료 사이: 계속 내보내되 stale
+    assert dead in {key for scope in lagging.scopes for key in scope.location_ids}
+    _age(repo, dead, source_expiry(source[1]) + timedelta(hours=1))
+    selection = _selection(repo)
+    assert dead not in {key for scope in selection.scopes for key in scope.location_ids}
+    assert (*source, dead) in selection.expired
+    assert not selection.unconfirmed  # 공백이지 이번 수집의 실패가 아니다
+    assert min(scope.source_collected_at for scope in selection.scopes) > (
+        datetime.now(UTC) - timedelta(hours=1)
+    )
+
+
+def test_fully_expired_required_source_is_served_without_it_and_marked_stale(
+    external_repository, tmp_path,
+):
+    from kortravelweather.export_artifacts import ExportArtifactError
+    from kortravelweather.export_inventory_selection import source_expiry
+
+    repo = external_repository
+    target = ProviderLocation("expired-source-" + uuid.uuid4().hex, 37.5, 127, {})
+    repo.create_location(WeatherLocation(
+        location_id=target.location_id, name="원천 만료", latitude=37.5, longitude=127,
+    ))
+    _publish(repo, tmp_path, [target])
+    _age(repo, target.location_id, source_expiry("open_meteo_current") + timedelta(hours=1))
+    # 유일한 source가 전부 만료면 낼 값이 없다(이전 완전 snapshot으로 fallback한다).
+    with pytest.raises(ExportArtifactError, match="비었거나"):
+        _selection(repo)
+    # 다른 원천이 살아 있으면 만료한 원천 없이 내보내고 stale이다(최초 승인 거절·503이 아니다).
+    other = ProviderLocation("live-source-" + uuid.uuid4().hex, 37.6, 127.1, {})
+    repo.create_location(WeatherLocation(
+        location_id=other.location_id, name="살아 있는 원천", latitude=37.6, longitude=127.1,
+    ))
+    _publish(repo, tmp_path, [other], "open_meteo_forecast")
+    both = [("open_meteo", "open_meteo_current"), ("open_meteo", "open_meteo_forecast")]
+    selection = _selection(repo, expected=both)
+    assert selection.unconfirmed
+    assert {scope.descriptor.dataset_key for scope in selection.scopes} == {"open_meteo_forecast"}
+    assert ("open_meteo", "open_meteo_current", target.location_id) in selection.expired
+
+
+def test_expiry_horizon_derives_from_freshness_and_spares_kma_rotation():
+    """만료는 dataset 신선도 상한에서 파생한다. KMA 회전 slot(수 시간 안 갱신)은 만료되지 않는다."""
+    from kortravelweather.export_inventory_selection import (
+        source_expiry,
+        source_max_age,
+    )
+
+    expected_hours = {
+        "kma_ultra_short_nowcast": 24, "kma_ultra_short_forecast": 24, "kma_short_forecast": 24,
+        "kma_mid_forecast": 36, "airkorea_realtime_measurement": 24, "open_meteo_current": 24,
+        "weatherapi_forecast": 24, "krforest_mountain_weather": 72, "krex_restarea_weather": 72,
+    }
+    for dataset, hours in expected_hours.items():
+        assert source_expiry(dataset) == timedelta(hours=hours), dataset
+        assert source_expiry(dataset) > source_max_age(dataset)
+    rotation_refresh = timedelta(hours=6)  # 운영: 단기 437 target/run 300 → 두 slot(3시간 간격)
+    kma = [key for key in expected_hours if key.startswith("kma_")]
+    assert all(source_expiry(dataset) >= 2 * rotation_refresh for dataset in kma)
 
 
 def test_inventory_generation_is_a_live_root_even_after_head_replacement(

@@ -22,6 +22,38 @@ WSL Python3.13/PG16 3개와 Docker 3개로 확인했다. 시험 ruff 통과, 제
 
 제품 `643bb34e094f474486ef872a7e6fdbe5c9dfbcaa`의 API 새 이미지`b4da586588b4`를 포트12201에 반영했다. 일시 경합503/Retry-After 분류14사례, 실제 health/status200·15항목, Manager healthy와 배포 부모 실제0/정상 종료를 확인했다. 웹·수집기·일정·다른 서비스·환경은 보존했고 백업·복원은 사용자 지시로 생략했다. [실제 이미지·원 실패·검증 범위](reports/2026-11-03-pr198-api-release.md).
 
+## 2026-11-03 — 승격의 배타 guard를 최종 CAS로 줄인다(reader 503의 주원인)
+
+- Map 회전(t1103a, 02:14Z) 뒤 12시간 export 503(읽기 전용 집계, API 539d6c87): `ExportGuardTimeout` 190,
+  `statement_timeout` 13, 진짜 부재(`ExportSnapshotUnavailable`) 2. 경합 503의 대부분은 publisher가 승격 전체
+  (receipt 검증·파일 hash·point 해석·digest·직전 파일 재검증·CAS)를 배타 guard로 잡는 동안 reader가 2초 대기에
+  걸린 것이다. Map #1437의 페이지 재시도(5·10·20초)가 대부분을 흡수했고, 중기 09:40 run 하나가 12번 503 끝에
+  실패해 10:40에 회복했다.
+- 단기예보 Map 적재(02:30·05:30·08:30·11:30): 첫 페이지 약 200·165·155·263초(run 시작 기준 상한),
+  둘째 페이지 11·19·41·114초 — 300초 read timeout 안이지만 11:30은 여유 약 37초.
+- 이 PR: 검증은 guard 밖(같은 thread의 verify→read는 hash 한 번), 배타 guard는 최종 head CAS에만 잡고 그 안에서
+  새 generation이 가리킬 파일의 존재·크기만 확인한다. 검증 중 파일은 GC가 지우지 않는다(미공개 attempt receipt·
+  승격 pin·현재 head 참조). reader guard 대기 2초는 그대로 두고 배포 뒤 재측정한다.
+
+## 2026-11-03 — 승인 만료(오래된 지점이 export freshness를 끌어내리지 않게)·#198 배포 뒤 실측
+
+- 운영 current·daily meta.source_collected_at이 10-26으로 묶인 원인: 같은 cohort 안에서 응답에서 계속 빠지는
+  지점(krforest-5914, open_meteo khoa-f8ff·krex-073 등, not_in_response)의 6일 전 승인이 "현재값"으로 계속
+  나갔다. 회전으로 빠진 scope가 아니다(회전 밖 행은 KMA에만 있고 수 시간 안에 갱신된다).
+- `source_expiry(dataset) = max(24h, 2 × source_max_age)`: 이 나이를 넘은 위치별 승인은 값·meta·미확인
+  판정에서 뺀다(coverage 공백). 원천 전체가 만료되면 그 원천 없이 내보내고 stale이다(503 아님). daily는
+  만료 위치의 개별 조회를 503 대신 200 stale·sample_count 0으로 낸다.
+- Map 쪽 예상 효과(배포 뒤 대조용): open_meteo_current 약 2곳·open_meteo_forecast 약 10곳·krforest_mountain 5곳·
+  airkorea 7곳의 값이 빠지고 위치 수는 그대로(하한 거부 없음), current·daily source_collected_at이 10-26에서
+  살아 있는 scope 기준(11-02)으로 간다. openweathermap_current처럼 slow lane이 밀려 3시간을 넘은 원천은
+  계속 stale이 맞다.
+- #198 배포(API 643bb34e, 21:42Z) 뒤 읽기 전용 실측: 503 5/54건 전부 `ExportGuardTimeout`→
+  `EXPORT_TEMPORARILY_UNAVAILABLE` + `Retry-After: 5`(mid 직접 표본으로 확인), statement_timeout 0, 진짜
+  NOT_READY 0. 첫 페이지 freeze 지연은 16:30Z(slow lane 한가) current 27.5·ultra 34·short 118·external 89·
+  daily 16초, 22:05Z(openweathermap current·weatherapi forecast·airkorea 동시 진행) 46·44·196·149·37초.
+  short 196초는 Map read timeout 300초에 가깝다. `approved_source_selection`은 inventory join 0.3~1.2초로
+  줄었고 남은 시간은 scope_owners/attempts join(1~5초)·run_id 조회(0.8~1.4초)다 — 다음 PR.
+
 ## 2026-11-03 — export 읽기 경합 503 구분·승인 inventory 조회 축소
 
 - Map weather_state가 받은 503은 export 부재가 아니라 읽기 경합이었다(freeze 문장 5초 상한·artifact

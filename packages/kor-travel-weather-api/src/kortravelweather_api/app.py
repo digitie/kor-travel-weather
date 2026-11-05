@@ -32,6 +32,7 @@ from kortravelweather.settings import WeatherSettings, get_settings
 
 from . import __version__
 from .response import Problem, request_id
+from .routers.alert_events import router as alert_event_router
 from .routers.service_exports import router as service_export_router
 from .routers.weather import admin_router, router
 
@@ -272,6 +273,7 @@ def create_app(
     api.include_router(router)
     api.include_router(admin_router)
     api.include_router(service_export_router)
+    api.include_router(alert_event_router)
 
     def custom_openapi() -> dict[str, object]:
         if api.openapi_schema:

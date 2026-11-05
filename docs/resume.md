@@ -25,6 +25,18 @@ Alembic/daily14, ruff를 통과했다. [측정·보존 의미·적용 순서](re
 
 제품 `643bb34e094f474486ef872a7e6fdbe5c9dfbcaa`의 API 새 이미지`b4da586588b4`를 포트12201에 반영했다. 일시 경합503/Retry-After 분류14사례, 실제 health/status200·15항목, Manager healthy와 배포 부모 실제0/정상 종료를 확인했다. 웹·수집기·일정·다른 서비스·환경은 보존했고 백업·복원은 사용자 지시로 생략했다. [실제 이미지·원 실패·검증 범위](reports/2026-11-03-pr198-api-release.md).
 
+## 2026-11-03 — 승격 배타 guard 축소 PR
+
+- 12시간 503: guard 190·statement 13·부재 2. 승격의 배타 guard를 최종 CAS로 줄인다(파일 검증은 guard 밖).
+  다음 이미지 배포 뒤 같은 집계를 다시 잰다(reader guard 대기 상향은 그 뒤 판단).
+
+## 2026-11-03 — 승인 만료 PR·#198 배포 실측
+
+- 응답에서 빠진 지점의 오래된 승인(10-26)이 current·daily meta를 끌어내렸다. 만료(max(24h, 2×신선도 상한))를
+  넘은 위치별 승인은 값·meta·미확인에서 뺀다. 원천 전체 만료는 그 원천 없이 200 stale.
+- #198은 odroid API 643bb34e(21:42Z)에 있다. 503은 전부 재시도 code+Retry-After다. 다음: scope_owners join·
+  run_id 조회 비용 축소 PR, t1103a 회전 뒤 short job 2회차에서 300초 초과 요청 감시.
+
 ## 2026-11-03 — export 읽기 경합 503 구분(PR)
 
 - 읽기 경합(statement/lock timeout·guard 대기·연결)은 503 `EXPORT_TEMPORARILY_UNAVAILABLE` +

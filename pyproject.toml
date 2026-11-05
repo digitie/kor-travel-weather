@@ -102,3 +102,6 @@ python-airkorea-api = { path = "packages/python-airkorea-api" }
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[tool.setuptools.package-data]
+kortravelweather = ["reference/*.json"]

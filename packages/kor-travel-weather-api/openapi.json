@@ -2064,6 +2064,68 @@
           }
         ]
       }
+    },
+    "/v1/weather/alert-events": {
+      "get": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "공식 기상특보 발표 관측 조회",
+        "description": "BJD namespace의 시도/시군구/검증된 개별 코드로 전체 행정구역 교집합을 조회한다. 확인 전 과거 매핑·산지·일부/제외 구역은 추정하지 않는다. 관측 부재는 해제가 아니다. since는 최초 관측 시각 기준이며 31일 이내다. 이벤트의 회차 연결은 미확정이다.",
+        "operationId": "alert_events_v1_weather_alert_events_get",
+        "parameters": [
+          {
+            "name": "bjd_code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 10,
+              "pattern": "^(?:[0-9]{2}|[0-9]{5}|[0-9]{10})$",
+              "title": "Bjd Code"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_AlertEventsOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2137,6 +2199,149 @@
         ],
         "title": "AddressRefreshSummary"
       },
+      "AlertEventsOut": {
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "const": "kr_bjd",
+            "title": "Namespace"
+          },
+          "bjd_code": {
+            "type": "string",
+            "title": "Bjd Code"
+          },
+          "region_status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unknown"
+            ],
+            "title": "Region Status"
+          },
+          "mapping_version": {
+            "type": "string",
+            "title": "Mapping Version"
+          },
+          "mapping_valid_from": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Mapping Valid From"
+          },
+          "mapping_coverage": {
+            "type": "string",
+            "const": "partial",
+            "title": "Mapping Coverage"
+          },
+          "unverified_scope_count": {
+            "type": "integer",
+            "title": "Unverified Scope Count"
+          },
+          "collection_status": {
+            "type": "string",
+            "title": "Collection Status"
+          },
+          "last_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "fresh": {
+            "type": "boolean",
+            "title": "Fresh"
+          },
+          "events_complete": {
+            "type": "boolean",
+            "title": "Events Complete"
+          },
+          "retained_since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Retained Since"
+          },
+          "history_available_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "History Available Since"
+          },
+          "queried_since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Queried Since"
+          },
+          "absence_is_clear": {
+            "type": "boolean",
+            "const": false,
+            "title": "Absence Is Clear"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/ScopedAlertEventOut"
+            },
+            "type": "array",
+            "title": "Events"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "namespace",
+          "bjd_code",
+          "region_status",
+          "mapping_version",
+          "mapping_valid_from",
+          "mapping_coverage",
+          "unverified_scope_count",
+          "collection_status",
+          "last_attempt_at",
+          "last_success_at",
+          "last_error_code",
+          "fresh",
+          "events_complete",
+          "retained_since",
+          "history_available_since",
+          "queried_since",
+          "absence_is_clear",
+          "events"
+        ],
+        "title": "AlertEventsOut"
+      },
       "BundleMeta": {
         "properties": {
           "latest_per_location": {
@@ -2192,6 +2397,23 @@
           "meta"
         ],
         "title": "Envelope[AddressRefreshSummary]"
+      },
+      "Envelope_AlertEventsOut_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/AlertEventsOut"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[AlertEventsOut]"
       },
       "Envelope_LocationOut_": {
         "properties": {
@@ -3949,6 +4171,186 @@
           "distance_km"
         ],
         "title": "ResolvedWeatherOut"
+      },
+      "ScopedAlertEventOut": {
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "title": "Event Id"
+          },
+          "announcement_id": {
+            "type": "string",
+            "title": "Announcement Id"
+          },
+          "area_code": {
+            "type": "string",
+            "title": "Area Code"
+          },
+          "area_name": {
+            "type": "string",
+            "title": "Area Name"
+          },
+          "warn_var": {
+            "type": "string",
+            "title": "Warn Var"
+          },
+          "warning_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warning Name"
+          },
+          "warn_stress": {
+            "type": "string",
+            "title": "Warn Stress"
+          },
+          "stress_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Name"
+          },
+          "command": {
+            "type": "string",
+            "title": "Command"
+          },
+          "cancel": {
+            "type": "string",
+            "title": "Cancel"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "issued",
+              "released",
+              "extended",
+              "corrected",
+              "changed_issue",
+              "changed_release",
+              "cancelled",
+              "unknown"
+            ],
+            "title": "Action"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issued At"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ends At"
+          },
+          "all_ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "All Ends At"
+          },
+          "occurrence_id": {
+            "type": "null",
+            "title": "Occurrence Id"
+          },
+          "correlation_status": {
+            "type": "string",
+            "const": "unresolved",
+            "title": "Correlation Status",
+            "default": "unresolved"
+          },
+          "normalization_version": {
+            "type": "string",
+            "title": "Normalization Version",
+            "default": "datagokr-pwncd-260601-v1"
+          },
+          "first_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "First Seen At"
+          },
+          "source_record_key": {
+            "type": "string",
+            "title": "Source Record Key"
+          },
+          "scope_status": {
+            "type": "string",
+            "const": "verified",
+            "title": "Scope Status"
+          },
+          "bjd_prefixes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Bjd Prefixes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event_id",
+          "announcement_id",
+          "area_code",
+          "area_name",
+          "warn_var",
+          "warning_name",
+          "warn_stress",
+          "stress_name",
+          "command",
+          "cancel",
+          "action",
+          "issued_at",
+          "starts_at",
+          "ends_at",
+          "all_ends_at",
+          "first_seen_at",
+          "source_record_key",
+          "scope_status",
+          "bjd_prefixes"
+        ],
+        "title": "ScopedAlertEventOut"
       },
       "SourceRecordSummary": {
         "properties": {

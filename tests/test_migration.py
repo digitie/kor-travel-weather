@@ -132,7 +132,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0036_snapshot_kind_projection"
+            assert version == "0037_release_merge"
             snapshot_order = next(column for column in inspector.get_columns(
                 "weather_export_snapshots"
             ) if column["name"] == "issue_order")
@@ -907,7 +907,7 @@ def test_marker_kind_indexes_recover_retry_and_downgrade(monkeypatch):
             connection.exec_driver_sql("DROP SCHEMA public CASCADE")
             connection.exec_driver_sql("CREATE SCHEMA public")
         config = Config("alembic.ini")
-        command.upgrade(config, "head")
+        command.upgrade(config, "0034_marker_kind_indexes")
         names = ["ix_weather_current_values_marker_current",
                  "ix_weather_current_values_marker_forecast",
                  "ix_weather_current_values_marker_provider_current",
@@ -921,7 +921,7 @@ def test_marker_kind_indexes_recover_retry_and_downgrade(monkeypatch):
                 "UPDATE pg_index SET indisvalid=false WHERE indexrelid=:oid"
             ), {"oid": before[names[1]]})
         command.stamp(config, "0033_export_source_inventory")
-        command.upgrade(config, "head")
+        command.upgrade(config, "0034_marker_kind_indexes")
         with repo.engine.connect() as connection:
             after = dict(connection.execute(text(
                 "SELECT relname,oid FROM pg_class WHERE relname=ANY(:names)"
@@ -937,7 +937,7 @@ def test_marker_kind_indexes_recover_retry_and_downgrade(monkeypatch):
             assert connection.execute(text(
                 "SELECT count(*) FROM pg_class WHERE relname=ANY(:names)"
             ), {"names": names}).scalar_one() == 0
-        command.upgrade(config, "head")
+        command.upgrade(config, "0034_marker_kind_indexes")
     finally:
         repo.engine.dispose()
         get_settings.cache_clear()
@@ -1101,7 +1101,7 @@ def test_daily_precip_coverage_migration_commits_each_day(monkeypatch):
         assert totals() == {"2026-10-25": None, "2026-10-26": None}
         with repo.engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-                "0035_daily_precip_coverage"
+                "0036_regional_alert_events"
             )
     finally:
         repo.engine.dispose()

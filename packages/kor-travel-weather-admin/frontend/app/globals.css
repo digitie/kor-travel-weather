@@ -1879,9 +1879,14 @@ tbody tr:hover {
 }
 
 .sync-run-detail-grid > div {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
+}
+
+.sync-run-detail-grid code {
+  overflow-wrap: anywhere;
 }
 
 .sync-run-detail-grid span {
