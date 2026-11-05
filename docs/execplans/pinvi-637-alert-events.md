@@ -55,3 +55,11 @@ ed8081d를 두 전문 리뷰어가 독립 검토하여 동일 P2를 지적했다
 동시에 신규 dataset/공개 route가 기존 telemetry의 other/unmatched로 합쳐지는 누락도 실패 우선으로 고정했다. 고정 allowlist·cancelled 상태와 cleanup stage counter를 연결했다. 이6건은 수정 전 모두 실패했다. 수정 후 관련 이벤트·원천·DB·API·metrics102건이 통과했고, 실제 close 지연과 stage/status 상한의 별도3건도 통과했다(이 중 기존 label1건 중복).
 
 수집 실행 UI에는 지역별 특보의 한국어 dataset명과 상세 원인·코드를 넣었다. 알 수 없는 원문·prototype 키는 그대로 노출하지 않으며 기존 색상/CSS를 바꾸지 않았다. 웹280테스트·타입/lint와 새 프로덕션 빌드도 통과했다. ed8081d의 전체 Python 회귀는 별도 실행 중이며 최종 source 차이를 구분한다. 새 정확 후보의 두 리뷰·실제 TCP/UI·최종 CI는 후속이다.
+
+## 실제 UI·Prometheus와 종결 SQL 대기 보완
+
+f756d91에서 실제 관리자 로그인·durable session·공개 API proxy·발령/해제 분리·페이지 변경 실패·HTTP403의 한국어 상세 원인·정상 빈 결과/close 장애·기존 WeatherValue 분리의 브라우저7흐름이 통과했다. pageerror0이며 provider 응답 대체는 소유 TCP KMA fixture뿐이다. 별도 실제 Prometheus Docker가 인증 scrape로 성공5/실패2/close1과 고정 dataset/route를 읽었다. 합계8검증이며 운영 접근은 없다. 화면 QA에서 실행 ID가 옆 필드와 겹치는 기존 문제를 확인해 색상 토큰을 유지한 채 해당 grid의 줄바꿈만 보완했다. 다음 실제 UI에서 경계 폭도 확인한다.
+
+두 f756 리뷰의 잔여 P2는 종결 SQL 잠금 대기의 무상한이었다. 실제 PG FOR UPDATE를 유지한 provider 오류/취소2건이 수정 전 실패했다. 이제 cleanup 호출만 timeout_ms5000을 전달하고 같은 transaction의 lock_timeout/statement_timeout을 제한한다. 더 엄격한 기존 설정도 유지한다. 실제 잠금을 잡은 상태에서도 원래 오류·취소·close·계측이 먼저 반환되고 기존 session값이 유지되는3검사가 통과했다.
+
+ed8081d에서 시작한 전체 진단 실행은1677통과/3실패로 끝났다. 실행 도중 후속 cleanup/metrics가 바뀌었으므로 정확 최종 source 전체 검증으로 주장하지 않는다. 원격 f756 CI도 같은3건이 실패했다. 두 건은 최신 metadata를0033으로 stamp한 과거 인덱스 fixture가 후속0036 테이블을 다시 만들던 구성 오류로, 의도한0034만 검증하도록 고정했다. 나머지는 새 작업을 반영해22개 기대값을 갱신했다. 실패한 경계와 인덱스 guard 전체를 포함한24검사가 통과했다. 신규 migration에서 외부의 기존 table을 임의로 허용하는 우회는 추가하지 않았다.

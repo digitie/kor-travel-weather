@@ -48,7 +48,7 @@ kma_regional_alert_events_job을5분마다 실행한다. 기존 활성 카드의
 
 모든 페이지를 받은 후 원천 canonical key·이벤트·run-source 연결과 성공 종결을 같은 짧은 transaction으로 게시한다. 실행 행을 잠그고 running 소유권을 다시 확인하여 회수된 실행이 뒤늦게 게시하지 못한다. 시작 결과를 기다리는 중 취소돼도 DB thread의 결과를 회수하여 실행을 취소 상태로 닫는다. 한 관측은 최초 관측 시각과 원천 연결을 유지한다.
 
-이벤트는31일 보존한다. 기존 정리 작업에서 오래된 이벤트를 지운 뒤 어떤 이벤트도 참조하지 않는 원천만 정리한다. 기존 fact/run-source 참조 보호도 유지한다. DB 종결 실패는 고정 로그와 ktw_alert_cleanup_failures_total의 terminalize stage로 알리고 기존 lease/orchestrator 회수에 맡긴다. client_close 장애는 같은 지표의 별도 stage로 기록하며5초 정리 상한을 둔다. 정리 장애가 원래 취소·정제 오류·이미 커밋된 성공을 덮지 않는다. 같은 원천을 재조회한 시각으로 데이터의 최초 관측 시각을 덮지 않는다. source의 최초 fetched_at을 수집 성공 최신성으로 오용하지 않는다.
+이벤트는31일 보존한다. 기존 정리 작업에서 오래된 이벤트를 지운 뒤 어떤 이벤트도 참조하지 않는 원천만 정리한다. 기존 fact/run-source 참조 보호도 유지한다. 특보 cleanup은 종결 SQL의 lock/statement 대기를 각각5초로 제한하고 더 엄격한 기존 session 설정은 유지한다. DB 종결 실패는 고정 로그와 ktw_alert_cleanup_failures_total의 terminalize stage로 알리고 기존 lease/orchestrator 회수에 맡긴다. client_close 장애는 같은 지표의 별도 stage로 기록하며5초 정리 상한을 둔다. 정리 장애가 원래 취소·정제 오류·이미 커밋된 성공을 덮지 않는다. 같은 원천을 재조회한 시각으로 데이터의 최초 관측 시각을 덮지 않는다. source의 최초 fetched_at을 수집 성공 최신성으로 오용하지 않는다.
 
 ## 오류 분류와 검증
 

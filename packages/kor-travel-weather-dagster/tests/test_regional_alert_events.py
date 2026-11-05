@@ -373,3 +373,68 @@ async def test_hanging_client_close_does_not_reverse_committed_success(repo, mon
     )
     assert result["status"] == "success" and client.entered.is_set()
     assert ALERT_CLEANUP_FAILURES.labels(stage="client_close")._value.get() == before + 1
+
+
+@pytest.mark.parametrize("mode", ["provider", "cancel"])
+async def test_row_locked_terminalization_returns_original_outcome_before_lock_release(
+    repo,
+    monkeypatch,
+    mode,
+):
+    from kma.exceptions import KmaAuthError
+    from sqlalchemy import text
+
+    from kortravelweather.metrics import ALERT_CLEANUP_FAILURES
+
+    monkeypatch.setattr(module, "TERMINAL_TIMEOUT_MS", 100, raising=False)
+    locked = asyncio.Event()
+    released = False
+    blocker = transaction = None
+    original_finish = repo.finish_sync_run
+
+    class RowLockedClient(BlockingClient):
+        async def request_with_metadata(self, *args, **kwargs):
+            nonlocal blocker, transaction
+            run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
+            blocker = repo.engine.connect()
+            transaction = blocker.begin()
+            blocker.execute(
+                text("SELECT run_id FROM weather_sync_runs WHERE run_id=:id FOR UPDATE"),
+                {"id": run.run_id},
+            )
+            locked.set()
+            if mode == "provider":
+                raise KmaAuthError("fixture-private-lock", failure_kind="auth")
+            await asyncio.Event().wait()
+
+    def unlock():
+        nonlocal released
+        if not released and transaction is not None:
+            released = True
+            transaction.rollback()
+            blocker.close()
+
+    client = RowLockedClient()
+    before = ALERT_CLEANUP_FAILURES.labels(stage="terminalize")._value.get()
+    task = asyncio.create_task(module.run_alert_event_sync_async(repository=repo, client=client))
+    await asyncio.wait_for(locked.wait(), timeout=5)
+    delayed_release = asyncio.get_running_loop().call_later(1.5, unlock)
+    try:
+        if mode == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(module.AlertCollectionError, match="ALERT_PROVIDER_AUTH"):
+                await task
+        assert not released, "종결 SQL이 잠금 해제까지 기다리면 원래 결과 반환이 지연된다"
+        assert client.closed
+        assert ALERT_CLEANUP_FAILURES.labels(stage="terminalize")._value.get() == before + 1
+        run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
+        assert run.status == "running"
+    finally:
+        delayed_release.cancel()
+        unlock()
+        runs = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)
+        if runs:
+            original_finish(runs[0].run_id, status="failed", error="fixture_cleanup")

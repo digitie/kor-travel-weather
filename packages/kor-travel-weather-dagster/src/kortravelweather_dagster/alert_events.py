@@ -31,6 +31,7 @@ MAX_PAGES = 100
 MAX_BYTES = 8 * 1024 * 1024
 COLLECTION_TIMEOUT_SECONDS = 180
 CLEANUP_TIMEOUT_SECONDS = 5
+TERMINAL_TIMEOUT_MS = 5000
 logger = logging.getLogger(__name__)
 
 
@@ -202,7 +203,13 @@ async def _safe_terminalize(
     error: str,
 ) -> None:
     try:
-        await asyncio.to_thread(repository.finish_sync_run, run_id, status=status, error=error)
+        await asyncio.to_thread(
+            repository.finish_sync_run,
+            run_id,
+            status=status,
+            error=error,
+            timeout_ms=TERMINAL_TIMEOUT_MS,
+        )
     except Exception:
         # DB 종결이 불가능하면 기존 lease/orchestrator 회수가 처리한다.
         _cleanup_notice("terminalize")

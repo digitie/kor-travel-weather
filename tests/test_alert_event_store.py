@@ -225,3 +225,48 @@ def test_expired_event_and_unreferenced_source_are_collected_after_31_days(repo,
         assert purge_alert_events(session, cutoff=future) == 1
         session.execute(text("DELETE FROM weather_sync_run_sources"))
         assert session.execute(text(PURGE_SOURCE_RECORDS_SQL), {"cutoff": future}).rowcount == 1
+
+
+def test_terminalization_budget_preserves_stricter_inherited_timeouts_and_local_scope(repo):
+    import time
+
+    from sqlalchemy import create_engine
+
+    # 같은 session 기본값을 확인하도록 시험 pool을 한 연결로 고정한다.
+    original_engine = repo.engine
+    repo.engine = create_engine(original_engine.url, pool_size=1, max_overflow=0)
+    repo._session_factory.configure(bind=repo.engine)
+    original_engine.dispose()
+    run = repo.start_sync_run(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)
+    blocker_engine = create_engine(repo.engine.url)
+    blocker = blocker_engine.connect()
+    transaction = blocker.begin()
+    try:
+        blocker.execute(
+            text("SELECT run_id FROM weather_sync_runs WHERE run_id=:id FOR UPDATE"),
+            {"id": run.run_id},
+        )
+        with repo.engine.begin() as connection:
+            connection.execute(text("SET statement_timeout='75ms'"))
+            connection.execute(text("SET lock_timeout='40ms'"))
+        started = time.monotonic()
+        with pytest.raises(DBAPIError, match="lock timeout"):
+            repo.finish_sync_run(
+                run.run_id,
+                status="failed",
+                error="fixture",
+                timeout_ms=5000,
+            )
+        assert time.monotonic() - started < 1
+        with repo.engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT current_setting('lock_timeout'),current_setting('statement_timeout')")
+            ).one() == ("40ms", "75ms")
+    finally:
+        transaction.rollback()
+        blocker.close()
+        blocker_engine.dispose()
+        with repo.engine.begin() as connection:
+            connection.execute(text("SET lock_timeout='0'"))
+            connection.execute(text("SET statement_timeout='0'"))
+        repo.finish_sync_run(run.run_id, status="failed", error="fixture_cleanup")

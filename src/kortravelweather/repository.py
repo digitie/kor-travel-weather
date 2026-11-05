@@ -4872,17 +4872,35 @@ class WeatherRepository:
         requests_fetched: int = 0,
         values_loaded: int | None = None,
         error: str | None = None,
+        timeout_ms: int | None = None,
     ) -> SyncRun:
         """Terminalize a running run; a no-op on one already terminal.
 
         ``values_loaded=None`` keeps the count the run's publishes recorded
         (``_ingest_batch_session`` adds each committed batch to it).
         """
+        if timeout_ms is not None and (
+            isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int)
+            or not 1 <= timeout_ms <= 30000
+        ):
+            raise ValueError("sync run 종결 timeout_ms는1..30000 정수여야 합니다.")
         transitioned = False
         counts: dict[str, Any] = {}
         if values_loaded is not None:
             counts["values_loaded"] = values_loaded
         with self._session_factory.begin() as session:
+            if timeout_ms is not None:
+                # 특보 cleanup만 제한하며 기존 호출자의 더 엄격한 설정은 유지한다.
+                limits = dict(session.execute(text(
+                    "SELECT name,setting::bigint FROM pg_settings "
+                    "WHERE name IN ('lock_timeout','statement_timeout')"
+                )).all())
+                for name, inherited in limits.items():
+                    limit = min(inherited or timeout_ms, timeout_ms)
+                    session.execute(
+                        text("SELECT set_config(:name,:value,true)"),
+                        {"name": name, "value": f"{limit}ms"},
+                    )
             result = session.execute(
                 update(SyncRunRow)
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
