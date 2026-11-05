@@ -25,3 +25,9 @@ https://www.data.go.kr/cmm/cmm/fileDownload.do?atchFileId=FILE_000000003648415&f
 https://www.data.go.kr/data/15043573/fileData.do ,
 https://www.weather.go.kr/w/forecast/guide/wrn-area.do .
 원본 자료는 workspace 밖의 소유 캐시에 보존하며 원본 dataset은 편집하거나 커밋하지 않는다.
+
+## 원천 의미·지역 매핑 체크포인트
+
+공식 command·취소·회차 미확정 정규화와 전체 행정구역 매핑을 추가했다. 원본 CSV·XLSX·기상청 HTML·Juso ZIP을 읽기만 하는 재생성 스크립트와 원천 SHA256을 함께 보존한다. 공식 REG_UP 상위 관계로 광주·고성 동명이역을 구분하며, 제외·산지·평지·모호한 안내는 전체 시군구로 넓히지 않는다. 현재413구역 중178개는 전체 행정구역 근거가 확인됐고 나머지는 unknown이다. 이 수치는 전국 지역 커버리지 비율이 아니다.
+
+WSL 소유 Postgres에서 정규화19건과 매핑6건, 총25건이 통과했다. 기본 pytest autouse가 DB를 요구하므로 순수 정규화 시험에도 소유 PG를 사용했다. 처음 WSL idle 종료로 시험 컨테이너가 사라진 환경 오류는 제품 실패와 구분하고, 작업 중 전용 WSL shell을 유지하여 재실행했다. 아직 신규 저장·수집·공개 API·전체 검증·최종 리뷰는 남아 있다.
