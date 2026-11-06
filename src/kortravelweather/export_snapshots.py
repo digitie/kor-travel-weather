@@ -527,7 +527,7 @@ class FrozenCurrentExports:
 
     def page(self, resource: str, *, limit: int, cursor: str | None):
         # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(timeout_seconds=2, shared=True):
+        with self.artifacts.guard(shared=True):
             return self._page_guarded(resource, limit=limit, cursor=cursor)
 
     def _renew_reused(self, frozen):

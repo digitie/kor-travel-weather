@@ -91,6 +91,23 @@ class WeatherSettings(BaseSettings):
     service_export_artifact_gc: Literal["off", "dry_run", "delete"] = "dry_run"
     # 현재 head/승인 inventory/대기 receipt/frozen snapshot 밖의 공개 세대 파일을 지키는 시간.
     service_export_artifact_retention_hours: int = SERVICE_EXPORT_ARTIFACT_RETENTION_DEFAULT
+    # API reader의 공유 artifact guard 대기(초, 0.5~10). 범위 밖·숫자 아님은 경고와 함께 기본 5초.
+    service_export_reader_guard_seconds: float = 5.0
+
+    @field_validator("service_export_reader_guard_seconds", mode="before")
+    @classmethod
+    def _bounded_reader_guard(cls, value: object) -> float:
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            number = math.nan
+        if math.isnan(number) or not 0.5 <= number <= 10.0:
+            _logger.warning(
+                "KOR_TRAVEL_WEATHER_SERVICE_EXPORT_READER_GUARD_SECONDS가 0.5~10이 아니어서 "
+                "5초를 씁니다."
+            )
+            return 5.0
+        return number
 
     @field_validator("service_export_publisher_budget_seconds", mode="before")
     @classmethod

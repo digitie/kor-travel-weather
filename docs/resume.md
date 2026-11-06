@@ -1,3 +1,8 @@
+## 2026-11-05 — 배포 뒤 재측정·reader guard 5초 PR
+
+- guard 503 15.8/h→6.3/h, statement 1.1/h 그대로, 부재 0. selection SQL 8.4→1.3초. meta 10-26 해소.
+- 이 PR: reader guard 대기 5초(설정, 0.5~10)와 배타 보유자별 보유 시간 계측. 다음: 배포 뒤 보유자별 분포로 남은 원인 확정.
+
 ## 2026-11-05 — 최신 Weather 세 역할 배포·실제 화면 확인 완료
 
 main240f342(PR200~203)과 기존 상세 UI/성능 기능을 합친 제품9acc409를 웹508a438·API99bdacb·CS1731ff3에 반영했다. 같은 DB0037·원26상태 복원·새 특보 일정·Manager healthy·배포 최초 Invocation 실제 done/종료를 확인했다. PC/모바일 상세·시간별·지도와 실제 HTTP를 확인했고 최초 조건부503은 보존했다. [실제 이미지·검증 범위·원 실패](reports/2026-11-05-latest-weather-release.md).

@@ -1,3 +1,25 @@
+## 2026-11-05 — #200·#202·#203 배포 뒤 재측정, reader guard 대기 2초→5초
+
+배포(odroid API·code-server 9acc4090, 11:32Z·13:29Z) 뒤 13:30~21:06Z(7.6시간, export 요청 약 560건) 읽기 전용 실측:
+
+| 지표 | 배포 전(11-03, 12시간) | 배포 뒤 |
+| --- | --- | --- |
+| `ExportGuardTimeout` 503 | 190(15.8/h) | 48(6.3/h) |
+| `statement_timeout` 503 | 13(1.08/h) | 8(1.05/h) |
+| 진짜 부재 503 | 2 | 0 |
+| 첫 페이지 short·external·current·daily | 118~196·89~149·27~46·16~37초 | 144·126·32·18초(load 13) |
+| `approved_source_selection` current(warm) | SQL 약 8.4초 | SQL 약 1.3초, 전체 4.0초 |
+| current·daily `source_collected_at` | 10-26 | 11-02 21:10·11-03 21:36(SDK 72시간 만료 경계) |
+
+- Map(n150) weather_state 13:30Z 뒤: current 14/15(1건 503 페이지 재시도+step 재시도로 480초 상한), daily 8/8,
+  short 3/3(run 전체 217·278·245초, 요청 300초 안), external 2/2, ultra_short 3/8(5건 하한 거부 — 배포 직후 원천 지연,
+  18:48부터 회복).
+- 남은 guard 503은 짧은 배타 보유(collector `publish`의 파일 쓰기+eMMC fsync, GC, 승격 CAS)가 2초를 넘는 경우다.
+  이 PR: reader 공유 guard 대기 기본 5초(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_READER_GUARD_SECONDS`, 0.5~10),
+  배타 writer가 reader를 막은 시간(turnstile 취득→해제)을 보유자별 histogram(`ktw_export_guard_exclusive_hold_seconds{holder}`)과
+  2초 초과 경고 log로 남긴다. 주의: API export 전체가 `CapacityLimiter(2)`를 공유하므로 guard를 기다리는 reader가 최대 5초 동안
+  token을 쥐어 `/status` 등이 그만큼 줄을 설 수 있다(정확성 문제는 아니다, 배포 뒤 지연으로 확인).
+
 ## 2026-11-05 — 최신 Weather 세 역할 배포·실제 화면 확인 완료
 
 main240f342(PR200~203)과 기존 상세 UI/성능 기능을 합친 제품9acc409를 웹508a438·API99bdacb·CS1731ff3에 반영했다. 같은 DB0037·원26상태 복원·새 특보 일정·Manager healthy·배포 최초 Invocation 실제 done/종료를 확인했다. PC/모바일 상세·시간별·지도와 실제 HTTP를 확인했고 최초 조건부503은 보존했다. [실제 이미지·검증 범위·원 실패](reports/2026-11-05-latest-weather-release.md).

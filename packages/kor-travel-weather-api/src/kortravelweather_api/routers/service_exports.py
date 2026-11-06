@@ -38,7 +38,7 @@ from ..response import Problem, request_id
 
 logger = logging.getLogger(__name__)
 
-#: 일시 경합 503의 재시도 간격(초). DB statement/lock 상한(5s/1s)과 reader guard(2s)를
+#: 일시 경합 503의 재시도 간격(초). DB statement/lock 상한(5s/1s)과 reader guard(기본 5s)를
 #: 넘긴 요청이 같은 요청(같은 cursor)을 다시 보낼 때까지의 최소 대기다.
 EXPORT_RETRY_AFTER_SECONDS = 5
 TEMPORARILY_UNAVAILABLE = "EXPORT_TEMPORARILY_UNAVAILABLE"
@@ -360,7 +360,10 @@ async def _frozen_response(
             reader_class = FrozenMidForecastExports
         reader = reader_class(
             request.app.state.repository,
-            ExportArtifactStore(settings.service_export_artifact_root),
+            ExportArtifactStore(
+                settings.service_export_artifact_root,
+                reader_guard_seconds=settings.service_export_reader_guard_seconds,
+            ),
             signing_key=settings.admin_token.get_secret_value(),
             **(
                 {"providers": selection.providers, "source_inventory": True,

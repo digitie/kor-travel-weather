@@ -977,7 +977,10 @@ class ExportHeads:
                 # 0026에서 승인된 파일은 위치 index가 NULL이다. 같은 bytes를
                 # 재사용하면서 실제 파일에서 index만 복구해 재수집 후 공개가 재개된다.
                 r["location_ids"] = sorted(parent_locations)
-        with artifacts.guard(timeout_seconds=5), self._transaction() as session:
+        with (
+            artifacts.guard(timeout_seconds=5, holder="promotion_cas"),
+            self._transaction() as session,
+        ):
             committed = (
                 session.execute(
                     select(self.generations).where(
