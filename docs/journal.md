@@ -1,3 +1,7 @@
+## 2026-11-06 — PR205 API 반영·수집기 자연 종료 대기
+
+main76f2806을 통합한 제품ba66543의 API·CS 이미지를 빌드했다. API4e59e13의 실제 reader guard5초와 API200/304·PC/모바일 화면을 확인했다. 웹 tree와 DB0037은 그대로다. 수집기는 기존 수집의 자연 종료 뒤 교체하도록 단일 Root가 진행 중이다. [범위와 실제 상태](reports/2026-11-06-weather-reader205-release.md).
+
 ## 2026-11-05 — #200·#202·#203 배포 뒤 재측정, reader guard 대기 2초→5초
 
 배포(odroid API·code-server 9acc4090, 11:32Z·13:29Z) 뒤 13:30~21:06Z(7.6시간, export 요청 약 560건) 읽기 전용 실측:
