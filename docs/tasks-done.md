@@ -1,3 +1,5 @@
+- [x] 2026-11-06 Weather PR205 제품ba66543 API·CS 반영·실제5초·원27상태·Manager·부모 실제 종료·PC/모바일/API 확인 완료. 웹·DB 유지, 백업·복원 생략. [기록](reports/2026-11-06-weather-reader205-release.md).
+
 - [x] 2026-11-05 최신 Weather 제품9acc409의 웹·API·CS 이미지, DB0037, 원26상태·새 특보 일정, Manager·부모 실제 종료와 PC/모바일 화면을 확인했다. 백업·복원은 사용자 지시로 생략. [수용 기록](reports/2026-11-05-latest-weather-release.md).
 
 ## 2026-11-03 — 읽기 비용 API·DB·실제 HTTP 수용
