@@ -612,6 +612,23 @@ def test_exclusive_guard_hold_is_measured_per_holder_and_slow_holds_are_logged(
     assert "weather_export_guard_hold holder=gc" in caplog.text
 
 
+@pytest.fixture
+def restore_daily_progress(repository):
+    """daily checkpoint 표는 fixture TRUNCATE 밖이다. 미래로 옮긴 checkpoint가 뒤 테스트로 새면
+    reducer가 새 generation을 영영 건너뛴다(CI 전체 실행 순서에서 실제로 깨졌다)."""
+    from kortravelweather.export_daily_store import daily_summary_tables
+    from kortravelweather.export_heads import ExportHeads
+
+    _, progress = daily_summary_tables(ExportHeads(repository).metadata)
+    with repository.engine.begin() as connection:
+        saved = [dict(row) for row in connection.execute(progress.select()).mappings()]
+    yield
+    with repository.engine.begin() as connection:
+        connection.execute(progress.delete())
+        if saved:
+            connection.execute(progress.insert(), saved)
+
+
 def _make_old_generations_collectable(repository, root):
     """retention·일별 checkpoint·유예가 지키지 않게 만든다(snapshot ref·head만 남는다)."""
     import os
@@ -639,7 +656,7 @@ def _make_old_generations_collectable(repository, root):
 
 
 def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
-    repository, tmp_path, monkeypatch,
+    repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
     """commit된 snapshot ref가 파일을 지킨다 — guard 없이 GC가 파일 읽기 앞에 끼어들어도 읽는다.
 
@@ -677,7 +694,7 @@ def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
 
 
 def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
-    repository, tmp_path, monkeypatch,
+    repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
     """freeze가 commit하기 전(GC가 ref를 못 보는 때)에 head가 바뀌고 GC가 지우면 다시 발급한다."""
     from sqlalchemy import event
