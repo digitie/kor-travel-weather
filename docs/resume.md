@@ -1,3 +1,11 @@
+## 2026-11-07 — Weather 세 회차 최종 이미지·실제 수용 완료
+
+제품7ccf88a를 API034cfebc·수집기93d11ca7에 반영했다. 원27일정 복원·Manager healthy·설정/키5초·schema0038·웹/다른 서비스 보존과 최초 Invocation1f98e72c의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 기존 수집과 worker는 자연 종료했으며 최종 배포 migration은 없었다.
+
+실제 HTTP10요청은200/304였다. 단일 관측 current100행19.73초/조건부12.12초, daily10행12.13초/조건부9.74초, 위치500행0.79초/조건부0.59초였다. 이전 current45초 초과·daily22~30초는 원문으로 보존하며, 서로 다른 부하·재사용 상태의 단일 관측을 p95·전국/cold 보장으로 바꾸지 않는다. stale·일부 날씨/미세먼지 미제공은 남아 있다. Firefox157 PC1440/모바일375 상세·내일·시간별24열 그래프·overflow0·logout200·브라우저 종료와 실제 캡처를 확인했다. 정본은 Git 밖 release-final/final-acceptance.json(SHA306ef3b49c7308fd9d6af52c250d8c6ae15f5590612d3c8ee8b2ee4f277fb479)이다.
+
+다음은 Transport의 같은 관점 세 회차다. Weather 완료분을 재배포·반복 검증하거나 문서 변경으로 이미지를 재빌드하지 않는다. Draft PR208·백업/복원 생략·새 리뷰/머지 없음은 유지한다.
+
 ## 2026-11-07 — 1회차 배포 종료·원 일정 복원, 최종 이미지 빌드 시작
 
 기존 KMA·Open-Meteo·WeatherAPI 수집과 worker가 자연 종료한 뒤 API481f5478·수집기14a8764c의 제품674d6f8 반영을 마쳤다. 원 Weather27개 상태 복원·Manager healthy·설정/키·웹/다른 서비스 보존과 최초 Invocation07ab4b4의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 실제 수용 원문은 Git 밖 release-cycle1/deployment-r2에 보존했다. 최초 배포의 실패 원문과 current45초 초과·daily22~30초는 여전히 별도 한계다.
