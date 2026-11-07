@@ -44,6 +44,7 @@ from .export_capacity import (
     ExportCapacityExceeded,
     MetadataBudget,
     bounded_manifest_digest,
+    any_of,
     read_generation_refs,
 )
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
@@ -296,9 +297,23 @@ class FrozenCurrentExports:
         )
         result, deadline = self.selection_cache.read(
             key, read, checked_after=self.selection_checked_after,
+            validate=lambda selection: self._validate_cached_selection(connection, selection),
         )
         self.selection_deadline = min(self.selection_deadline or deadline, deadline)
         return result
+
+    def _validate_cached_selection(self, connection, selection):
+        # 60초 승인은 수집/실패 상태에만 적용한다. 불변 plan·공개 세대 유실은 즉시 검산한다.
+        # 파일·chunk 참조 검산은 기존 page/guard 경로에서 계속 수행한다.
+        wanted = {scope.generation_id for scope in selection.scopes}
+        if not wanted:
+            return
+        generations, plans = self.heads.generations, self.heads.plans
+        present = set(connection.scalars(select(generations.c.generation_id).select_from(
+            generations.join(plans, plans.c.attempt_id == generations.c.attempt_id),
+        ).where(any_of(generations.c.generation_id, sorted(wanted)))))
+        if present != wanted:
+            raise ExportArtifactError("승인 source의 불변 plan 또는 공개 세대가 유실됐습니다.")
 
     def require_current_selection(self):
         # 파일 검사·페이지 DB 조회·직렬화가 길어져도 만료 캐시로 200/304를 만들지 않는다.

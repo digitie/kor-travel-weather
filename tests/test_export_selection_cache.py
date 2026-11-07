@@ -113,3 +113,18 @@ def test_selection_cache_budget_includes_expired_coverage_keys(monkeypatch):
     value = ApprovedSelection((), True, frozenset({("p", "d", "긴 위치" * 100)}))
     assert cache.read("key", lambda: value, checked_after=0)[0] == value
     assert not cache.entries and cache.bytes == 0
+
+
+def test_selection_cache_checks_integrity_outside_lock_and_evicts_failed_hit():
+    cache = ExportSelectionCache(clock=lambda: 0)
+    value = ApprovedSelection((), False)
+    cache.read("key", lambda: value, checked_after=0)
+
+    def lost_plan(selection):
+        assert selection is value and cache.lock.acquire(blocking=False)
+        cache.lock.release()
+        raise ValueError("불변 plan 유실")
+
+    with pytest.raises(ValueError, match="plan 유실"):
+        cache.read("key", lambda: pytest.fail("hit"), checked_after=0, validate=lost_plan)
+    assert not cache.entries and not cache.inflight and cache.bytes == 0

@@ -58,7 +58,7 @@ class ExportSelectionCache:
             ),
         )
 
-    def read(self, key, load, *, checked_after):
+    def read(self, key, load, *, checked_after, validate=None):
         now = self.clock()
         with self.lock:
             for old_key, (_, deadline, size) in list(self.entries.items()):
@@ -68,10 +68,21 @@ class ExportSelectionCache:
             found = self.entries.get(key)
             if found is not None:
                 self.entries.move_to_end(key)
+            else:
+                if key in self.inflight or len(self.inflight) >= _MAX_ENTRIES:
+                    raise ExportGuardTimeout("승인 상태 갱신이 이미 진행 중입니다.")
+                self.inflight.add(key)
+        if found is not None:
+            try:
+                if validate is not None:
+                    validate(found[0])  # DB 무결성 조회도 LRU 잠금 밖이다.
+                self.require_current(found[1])
                 return found[0], found[1]
-            if key in self.inflight or len(self.inflight) >= _MAX_ENTRIES:
-                raise ExportGuardTimeout("승인 상태 갱신이 이미 진행 중입니다.")
-            self.inflight.add(key)
+            except BaseException:
+                with self.lock:
+                    if self.entries.get(key) is found:
+                        self.bytes -= self.entries.pop(key)[2]
+                raise
         try:
             result = load()
             deadline = checked_after + SELECTION_MAX_AGE_SECONDS

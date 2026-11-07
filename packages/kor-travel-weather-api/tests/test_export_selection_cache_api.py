@@ -62,3 +62,24 @@ def test_expired_cache_refresh_error_never_falls_back_to_cached_ok(
     assert response.status_code == 503
     assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
     assert "etag" not in response.headers
+
+
+def test_warm_selection_does_not_hide_lost_immutable_plan(repository, tmp_path):
+    from sqlalchemy import delete, select
+
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/current"
+    first = client.get(url, headers=HEADERS)
+    assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
+    assert client.app.state.export_selection_cache.entries
+    heads = ExportHeads(repository)
+    with repository.engine.begin() as c:
+        attempt_id = c.scalar(select(heads.generations.c.attempt_id).limit(1))
+        c.execute(delete(heads.plans).where(heads.plans.c.attempt_id == attempt_id))
+    current = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    assert current.status_code == 503 or (
+        current.status_code == 200 and current.json()["meta"]["source_status"] == "stale"
+    )
