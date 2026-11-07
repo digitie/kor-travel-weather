@@ -13,6 +13,7 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from time import monotonic
 
 from kortravelcommon.address_providers import VworldKakaoAddressResolver
 from kortravelcommon.reverse_address import AddressTarget
@@ -199,10 +200,13 @@ def ensure_snapshot_files(artifacts, issue):
 class FrozenCurrentExports:
     def __init__(
         self, repository, artifacts: ExportArtifactStore, *, signing_key: str, providers=None,
-        source_inventory=False, expected_sources=(), optional_sources=(),
+        source_inventory=False, expected_sources=(), optional_sources=(), selection_cache=None,
     ):
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
+        self.selection_cache = selection_cache
+        self.selection_checked_after = monotonic()
+        self.selection_deadline = None
         self.repository = repository
         self.heads = ExportHeads(repository)
         self.snapshots, self.refs = export_snapshot_tables(self.heads.metadata)
@@ -275,15 +279,38 @@ class FrozenCurrentExports:
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise ExportCursorInvalid("cursor 형식/서명이 올바르지 않습니다.") from exc
 
+    def _approved_selection(self, connection, locations, *, health_location_ids=None):
+        from .export_inventory_selection import approved_source_selection
+
+        def read():
+            return approved_source_selection(
+                connection, self.heads.metadata, locations,
+                expected=self.expected_sources, optional=self.optional_sources,
+                health_location_ids=health_location_ids,
+            )
+
+        if self.selection_cache is None:
+            return read()
+        key = self.selection_cache.key(
+            connection, locations, self.expected_sources, self.optional_sources, health_location_ids,
+        )
+        result, deadline = self.selection_cache.read(
+            key, read, checked_after=self.selection_checked_after,
+        )
+        self.selection_deadline = min(self.selection_deadline or deadline, deadline)
+        return result
+
+    def require_current_selection(self):
+        # 파일 검사·페이지 DB 조회·직렬화가 길어져도 만료 캐시로 200/304를 만들지 않는다.
+        if self.selection_cache is not None and self.selection_deadline is not None:
+            self.selection_cache.require_current(self.selection_deadline)
+
     def _select_current_scopes(self, connection, locations):
         if self.source_inventory:
-            from .export_inventory_selection import approved_source_selection
-
             try:
-                selection = approved_source_selection(
-                    connection, self.heads.metadata, locations,
-                    expected=self.expected_sources, optional=self.optional_sources,
-                )
+                selection = self._approved_selection(connection, locations)
+            except ExportGuardTimeout:
+                raise
             except (ExportArtifactError, KeyError, ValueError, TypeError) as exc:
                 raise ExportSnapshotUnavailable(
                     "실제 승인 source 집합이 준비되지 않았습니다."
@@ -819,12 +846,9 @@ class FrozenCurrentExports:
             ).all()
             stale |= len(roster) > MAX_SNAPSHOT_LOCATIONS
             if self.source_inventory:
-                from .export_inventory_selection import approved_source_selection
-
                 try:
-                    latest = approved_source_selection(
-                        session, self.heads.metadata, [row._mapping for row in roster],
-                        expected=self.expected_sources, optional=self.optional_sources,
+                    latest = self._approved_selection(
+                        session, [row._mapping for row in roster],
                     )
                     stale |= latest.unconfirmed or {
                         (item.descriptor.namespace, item.location_ids) for item in latest.scopes
@@ -832,6 +856,8 @@ class FrozenCurrentExports:
                         (scope["namespace"], tuple(scope["location_ids"]))
                         for scope in manifest["scopes"]
                     }
+                except ExportGuardTimeout:
+                    raise
                 except (ExportArtifactError, KeyError, ValueError, TypeError):
                     stale = True
             else:

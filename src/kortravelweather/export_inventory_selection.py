@@ -292,6 +292,61 @@ def _parse_cohort_descriptors(row):
     ) for item in row["targets"]]
 
 
+def _active_scope_states(connection, metadata, source_scopes):
+    """같은 MVCC의 소유·시도·공개 증거·run 상태를 시도별 한 행으로 읽는다.
+
+    owner_epochs 원본 JSON은 PostgreSQL jsonb로 강제 변환하지 않는다. 예를 들어 1e0은
+    Python에서 1.0이며 epoch 1과 다르다. 기존 str/32자 판정을 그대로 적용한다.
+    MATERIALIZED는 여러 scope가 공유하는 시도·run을 scope마다 다시 찾는 것을 막는다.
+    """
+    if not source_scopes:
+        return []
+    owners = metadata.tables["weather_export_scope_owners"]
+    attempts = metadata.tables["weather_export_attempts"]
+    runs = metadata.tables["weather_sync_runs"]
+    generations = metadata.tables["weather_export_generations"]
+    selected_owners = select(
+        owners.c.active_attempt_id,
+        func.json_agg(func.json_build_array(
+            owners.c.source_scope, owners.c.owner_epoch,
+        )).label("owner_rows"),
+    ).where(any_of(owners.c.source_scope, sorted(source_scopes))).group_by(
+        owners.c.active_attempt_id,
+    ).cte("selected_owners").prefix_with("MATERIALIZED")
+    selected_attempts = select(
+        attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
+    ).where(attempts.c.attempt_id.in_(
+        select(selected_owners.c.active_attempt_id),
+    )).cte("selected_attempts").prefix_with("MATERIALIZED")
+    selected_runs = select(runs.c.run_id, runs.c.status).where(runs.c.run_id.in_(
+        select(selected_attempts.c.run_id).distinct(),
+    )).cte("selected_run_states").prefix_with("MATERIALIZED")
+    publications = select(generations.c.attempt_id, generations.c.generation_id).where(
+        generations.c.attempt_id.in_(select(selected_attempts.c.attempt_id)),
+    ).cte("selected_publications").prefix_with("MATERIALIZED")
+    statement = select(
+        selected_attempts.c.attempt_id, selected_attempts.c.run_id,
+        selected_attempts.c.status, publications.c.generation_id,
+        selected_runs.c.status.label("native_status"), selected_attempts.c.owner_epochs,
+        selected_owners.c.owner_rows,
+    ).select_from(selected_owners.join(
+        selected_attempts, selected_attempts.c.attempt_id == selected_owners.c.active_attempt_id,
+    ).outerjoin(
+        publications, publications.c.attempt_id == selected_attempts.c.attempt_id,
+    ).outerjoin(selected_runs, selected_runs.c.run_id == selected_attempts.c.run_id))
+    active = []
+    for attempt_id, run_id, status, generation, native_status, epochs, claims in (
+        connection.execute(statement)
+    ):
+        for scope, epoch in claims:
+            claimed = epochs.get(scope) if isinstance(epochs, dict) else None
+            active.append((
+                scope, attempt_id, run_id, status, generation, native_status,
+                (str(claimed)[:32] if claimed is not None else None) == str(epoch),
+            ))
+    return active
+
+
 def approved_source_selection(
     connection, metadata, locations, *, expected, optional=(), health_location_ids=None,
 ):
@@ -422,55 +477,15 @@ def approved_source_selection(
     )))
     # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
     unconfirmed |= live_heads != namespaces
-    owners = metadata.tables["weather_export_scope_owners"]
     source_scopes = {row["source_scope"] for row in health_rows}
-    # scope마다 attempt 행을 찾는 join에 run 행까지 붙이면 scope 수만큼 run을 다시 찾는다(실제 run은
-    # 수십 개). run 상태는 distinct run_id로 따로 읽고, 여기서 읽은 attempt의 run_id는 아래 cohort
-    # 대조에 다시 쓴다(승인 attempt의 약 2/3가 지금의 소유 attempt다).
-    # owner의 다중 JOIN도 운영5초 상한을 넘었다. 서로 다른 attempt만 읽고,
-    # 위에서 읽은 승인 generation을 재사용한다. 같은 RR의 epoch 대조는 생략하지 않는다.
-    ownership = list(connection.execute(select(
-        owners.c.source_scope, owners.c.active_attempt_id, owners.c.owner_epoch,
-    ).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
-    attempt_ids = sorted({row.active_attempt_id for row in ownership})
-    active_attempts = {
-        row.attempt_id: row for row in connection.execute(select(
-            attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
-        ).where(any_of(attempts.c.attempt_id, attempt_ids)))
-    } if attempt_ids else {}
-    published_attempts = {
-        row["plan_attempt_id"]: row["generation_id"] for row in approved.values()
-    }
-    missing = sorted(set(attempt_ids) - published_attempts.keys())
-    if missing:
-        published_attempts.update(connection.execute(select(
-            generations.c.attempt_id, generations.c.generation_id,
-        ).where(any_of(generations.c.attempt_id, missing))).tuples().all())
-    active = []
-    for source_scope, attempt_id, epoch in ownership:
-        attempt = active_attempts.get(attempt_id)
-        if attempt is None:
-            continue  # 기존 INNER JOIN과 같이 유실은 아래 개수·cohort 검사에서 미확인이다.
-        claimed = (
-            attempt.owner_epochs.get(source_scope)
-            if isinstance(attempt.owner_epochs, dict) else None
-        )
-        active.append((
-            source_scope, attempt_id, attempt.run_id, attempt.status,
-            published_attempts.get(attempt_id), epoch,
-            str(claimed)[:32] if claimed is not None else None,
-        ))
-    active_run_ids = sorted({row[2] for row in active})
-    native_status = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
-        any_of(runs.c.run_id, active_run_ids),
-    )).tuples().all()) if active_run_ids else {}
-    # native terminal뿐 아니라 확정된 Dagster 실패를 publisher가 기록한 attempt도
-    # 현재 승인 집합의 건강도에 반영한다. 이전 파일과 inventory는 그대로 보존한다.
+    # 시도 유실은 INNER JOIN 누락 → 개수/cohort 대조에서 미확인이다. 공개 세대는
+    # attempt 이력과 독립인 성공 증거이며, 같은 RR에서 원본 epoch·native 상태를 대조한다.
+    active = _active_scope_states(connection, metadata, source_scopes)
     unconfirmed |= len(active) != len(source_scopes) or any(
-        attempt == "failed" or native_status.get(run_id) not in {"running", "success"}
-        or native_status.get(run_id) == "success" and generation is None
-        or claimed_epoch != str(epoch)
-        for _, _, run_id, attempt, generation, epoch, claimed_epoch in active
+        attempt == "failed" or native_status not in {"running", "success"}
+        or native_status == "success" and generation is None
+        or not epoch_matches
+        for _, _, _, attempt, generation, native_status, epoch_matches in active
     )
     cohorts = external_cohort_table(metadata)
     declarations = {

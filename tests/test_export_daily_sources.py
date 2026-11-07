@@ -263,7 +263,7 @@ def test_expired_observation_source_is_a_coverage_gap_not_a_503(
     from fastapi.testclient import TestClient
     from kortravelweather_api.app import create_app
     from sqlalchemy import select, update
-    from test_all_source_exports import _sdk
+    from test_all_source_exports import _sdk, _selection_clock
 
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_inventory import export_inventory_table
@@ -278,6 +278,7 @@ def test_expired_observation_source_is_a_coverage_gap_not_a_503(
         admin_token="expired-daily", enabled_providers=["python-krforest-api", "python-krex-api"],
         service_exports_enabled=True, service_export_artifact_root=tmp_path,
     ), repo))
+    clock = _selection_clock(client, monkeypatch)
     headers, path = {"x-admin-token": "expired-daily"}, "/v1/service/exports/daily-summaries"
     assert client.get(path, params={"days": 1}, headers=headers).json()["meta"][
         "source_status"
@@ -291,6 +292,9 @@ def test_expired_observation_source_is_a_coverage_gap_not_a_503(
             source_collected_at=datetime.now(UTC)
             - source_expiry("krex_restarea_weather") - timedelta(hours=1),
         ))
+    clock[0] += 59
+    assert client.get(path, params={"days": 1}, headers=headers).json()["meta"]["source_status"] == "ok"
+    clock[0] += 1
     full = client.get(path, params={"days": 1}, headers=headers)
     assert full.status_code == 200 and full.json()["meta"]["source_status"] == "stale"
     single = client.get(path, params={"days": 1, "location_id": krex_key}, headers=headers)

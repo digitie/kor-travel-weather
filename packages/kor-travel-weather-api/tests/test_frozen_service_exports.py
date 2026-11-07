@@ -1002,9 +1002,12 @@ def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository,
         )
 
 
-def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path):
+def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path, monkeypatch):
     _collect(repository, tmp_path, hours=1)
+    from test_all_source_exports import _selection_clock
+
     client = _client(repository, tmp_path)
+    clock = _selection_clock(client, monkeypatch)
     url = "/v1/service/exports/current?limit=1"
     first = client.get(url, headers=HEADERS).json()
     cursor = first["meta"]["next_cursor"]
@@ -1019,6 +1022,10 @@ def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(reposi
     assert len(values) == 24 and all(
         row["value"] == 18.4 for row in values if row["metric_key"] == "T1H"
     )
+    clock[0] += 59
+    within = client.get("/v1/service/exports/current", headers=HEADERS).json()
+    assert within["meta"]["snapshot_id"] == first["meta"]["snapshot_id"]
+    clock[0] += 1
     latest = client.get("/v1/service/exports/current", headers=HEADERS).json()
     assert latest["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
     assert all(row["value"] == 20.4 for row in latest["items"] if row["metric_key"] == "T1H")
