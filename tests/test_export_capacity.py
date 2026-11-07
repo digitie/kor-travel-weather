@@ -79,7 +79,7 @@ def ref_row(generation="generation", ordinal=0, locations=None):
                 byte_count=1024, point_count=1, location_ids=locations)
 
 
-def test_pg_server_cursor_fetch64_and_legacy_null_projection(refs_connection):
+def test_pg_server_cursor_uses_bounded_ref_buffer_and_legacy_null_projection(refs_connection):
     connection, table = refs_connection
     rows = [ref_row(ordinal=n, locations=[f"장소-{n}"]) for n in range(130)]
     rows.append(ref_row("legacy", locations=None))
@@ -95,7 +95,8 @@ def test_pg_server_cursor_fetch64_and_legacy_null_projection(refs_connection):
         result = capacity.read_generation_refs(connection, table, ["generation", "legacy"])
     finally:
         event.remove(connection.engine, "before_cursor_execute", inspect_cursor)
-    assert observed == [(True, 64)]
+    assert observed == [(True, 256)]
+    assert capacity.REF_FETCH_ROWS * capacity.MAX_REF_LOCATION_BYTES <= 16 * 1024 * 1024
     assert result["generation"] == rows[:-1]
     assert result["legacy"][0]["location_ids"] is None
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
@@ -131,18 +132,30 @@ def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, f
     connection.execute(plans.insert(), [{"attempt_id": part, "descriptor": value}
                                        for part in ["land", "temperature"]])
     wanted = ["land", "temperature"] * 1000
+    observed = []
+
+    def inspect_cursor(_connection, cursor, _statement, _parameters, context, _many):
+        if context.execution_options.get("stream_results"):
+            observed.append((bool(cursor.name), context.execution_options["yield_per"]))
+
+    event.listen(connection.engine, "before_cursor_execute", inspect_cursor)
     if failure == "missing":
         wanted.append("absent")
     elif failure == "total_budget":
         original = capacity.MetadataBudget
         monkeypatch.setattr(capacity, "MetadataBudget", lambda: original(1))
-    if failure:
-        with pytest.raises(capacity.ExportCapacityExceeded):
-            capacity.read_scope_plans(connection, plans, wanted)
-    else:
-        assert capacity.read_scope_plans(connection, plans, wanted) == {
-            "land": value, "temperature": value,
-        }
+    try:
+        if failure:
+            with pytest.raises(capacity.ExportCapacityExceeded):
+                capacity.read_scope_plans(connection, plans, wanted)
+        else:
+            assert capacity.read_scope_plans(connection, plans, wanted) == {
+                "land": value, "temperature": value,
+            }
+    finally:
+        event.remove(connection.engine, "before_cursor_execute", inspect_cursor)
+    assert observed == [(True, 128)]
+    assert capacity.PLAN_FETCH_ROWS * capacity.MAX_SCOPE_PLAN_BYTES <= 32 * 1024 * 1024
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
 
 
