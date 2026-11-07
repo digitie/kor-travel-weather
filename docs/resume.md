@@ -1,3 +1,8 @@
+## 2026-11-07 — 일간 요약 backfill PR·freshness 원인
+
+- 10-25~11-01 W5 공백을 KMA 실황 원천 응답으로 다시 채우는 일회성 backfill(성공 run만, head 불변).
+- current·daily stale은 산림청 산악기상 3곳이 응답에서 빠져 SDK 만료(72시간)까지 남은 것 — 제안은 PR 본문.
+
 ## 2026-11-05 — 배포 뒤 재측정·reader guard 5초 PR
 
 - guard 503 15.8/h→6.3/h, statement 1.1/h 그대로, 부재 0. selection SQL 8.4→1.3초. meta 10-26 해소.

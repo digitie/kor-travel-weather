@@ -611,3 +611,73 @@ def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invali
     assert changed.status_code == 200
     assert changed.json()["meta"]["source_status"] == "stale"
     assert changed.json()["items"] == healthy.json()["items"]
+
+
+def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_the_live_path(
+    daily_repository, tmp_path,
+):
+    """승인 generation이 없는 날(퇴역한 attempt)의 요약을 원천 응답으로 다시 채운다(2026-11-07).
+
+    결과는 같은 응답을 정상 승격·요약했을 때와 같아야 한다. 실패한 run의 응답은 쓰지 않고, 다시
+    돌려도 바뀌지 않는다.
+    """
+    from datetime import timedelta
+
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_daily_backfill import backfill_daily_from_kma_nowcast
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    descriptor = descriptor.model_copy(update={"entity_id": "grid:60:127"})
+    now = datetime.now(KST)
+    day = (now - timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+    table, _ = daily_summary_tables(Base.metadata)
+    for hour, value in [(0, "10"), (1, "20")]:
+        heads, identity, capture, _, _, _ = _candidate(
+            repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value,
+        )
+        # 같은 scope의 다음 수집이 소유권을 가져가기 전에 승격한다(요약 reducer는 아직 안 돌린다).
+        assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    stats = backfill_daily_from_kma_nowcast(
+        repository, first_day=day.date(), last_day=day.date(), batch=1, pause_seconds=0,
+    )
+    assert stats["done"] and stats["updated"] >= 1
+    with repository.engine.connect() as c:
+        rebuilt = {(r.slot, r.date): r.summary for r in c.execute(select(table))}
+    assert rebuilt and all(s["sample_count"] == 2 for s in rebuilt.values())
+    assert next(iter(rebuilt.values()))["temp_avg"] == 15
+    again = backfill_daily_from_kma_nowcast(
+        repository, first_day=day.date(), last_day=day.date(), pause_seconds=0,
+    )
+    assert again["updated"] == 0  # 다시 돌려도 같다
+    # 같은 응답을 정상 경로(승격→요약)로 낸 결과와 같다.
+    with repository.engine.begin() as c:
+        c.execute(table.delete())
+    refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+    with repository.engine.connect() as c:
+        live = {(r.slot, r.date): r.summary for r in c.execute(select(table))}
+
+    def strip(rows):
+        return {k: {f: v for f, v in s.items() if f != "partial"} for k, s in rows.items()}
+
+    assert strip(live) == strip(rebuilt)
+    # 실패한 run의 응답(같은 격자, 다른 시간·값)은 쓰지 않는다.
+    _candidate(repository, tmp_path, descriptor, revision=day + timedelta(hours=2), value="90",
+               finish="failed")
+    excluded = backfill_daily_from_kma_nowcast(
+        repository, first_day=day.date(), last_day=day.date(), pause_seconds=0,
+    )
+    assert excluded["records"] >= 2 and excluded["updated"] == 0
+
+
+def test_backfill_refuses_ranges_outside_the_retained_window(daily_repository):
+    from datetime import timedelta
+
+    from kortravelweather.export_daily_backfill import backfill_daily_from_kma_nowcast
+
+    today = datetime.now(KST).date()
+    for first, last in [(today - timedelta(days=40), today), (today, today + timedelta(days=1)),
+                        (today, today - timedelta(days=1))]:
+        with pytest.raises(ValueError):
+            backfill_daily_from_kma_nowcast(daily_repository, first_day=first, last_day=last)
