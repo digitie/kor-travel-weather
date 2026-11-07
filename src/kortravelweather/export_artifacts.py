@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -263,6 +263,38 @@ class ExportArtifactStore:
             if owned:
                 self._scope.verified = None
 
+    def read_shared(
+        self, digest: str, *, byte_count: int, point_count: int,
+    ) -> list[dict[str, Any]]:
+        """공유 guard를 파일 하나 읽는 동안만 잡는다(최대 8MB를 메모리로 읽고 바로 놓는다).
+
+        reader가 snapshot freeze·DB 단계 내내 공유 guard를 쥐면 writer(collector publish·승격
+        CAS)가 5초 상한에서 실패했다(2026-11-07 운영: 6시간마다 450~700건). 읽는 파일은 이미
+        commit된 snapshot ref·head·보존 창이 GC에서 지킨다(export_gc); guard는 관리되는
+        replace/unlink와 한 파일 읽기를 겹치지 않게 할 뿐이다.
+        """
+        with self.guard(shared=True):
+            return list(self.read(digest, byte_count=byte_count, point_count=point_count))
+
+    @contextmanager
+    def exclusive(self, *, holder: str, attempts: int = 3, timeout_seconds: float = 5):
+        """배타 guard. 대기 상한에 걸리면 짧게 쉬고 몇 번 더 시도한다(writer 일시 경합)."""
+        import random
+
+        for attempt in range(1, attempts + 1):
+            stack = ExitStack()
+            try:
+                stack.enter_context(self.guard(timeout_seconds=timeout_seconds, holder=holder))
+            except ExportGuardTimeout:
+                stack.close()
+                if attempt >= attempts:
+                    raise
+                time.sleep(random.uniform(0.2, 1.0))
+                continue
+            with stack:
+                yield
+            return
+
     def present(self, digest: str, *, byte_count: int) -> None:
         """내용을 읽지 않고 파일이 같은 크기의 일반 파일로 남아 있는지만 본다(최종 CAS 직전)."""
         try:
@@ -273,7 +305,7 @@ class ExportArtifactStore:
             raise ExportArtifactError("export artifact가 없거나 손상됐습니다.")
 
     def publish(self, chunk: PreparedExportChunk) -> None:
-        with self.guard(holder="publish"):
+        with self.exclusive(holder="publish"):
             self._publish(chunk)
 
     def _publish(self, chunk: PreparedExportChunk) -> None:

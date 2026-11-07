@@ -167,9 +167,9 @@ class FrozenLocationExports(FrozenCurrentExports):
             return frozen
 
     def page(self, resource, *, limit, cursor):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(resource, limit=limit, cursor=cursor)
+        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
+        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        return self._page_guarded(resource, limit=limit, cursor=cursor)
 
     def _page_guarded(self, resource, *, limit, cursor):
         if resource != "locations" or not 1 <= limit <= 5000:

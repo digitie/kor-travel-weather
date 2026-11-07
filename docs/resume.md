@@ -1,3 +1,7 @@
+## 2026-11-07 — reader guard 범위 축소 PR
+
+- 공유 guard는 파일 읽기만, writer는 짧은 재시도. 배포 뒤 artifact_write_failed·guard 보유 분포를 다시 잰다.
+
 ## 2026-11-07 — 신선도 창 PR·backfill 완료
 
 - meta·stale은 24시간 안 승인만(값은 만료까지). backfill 10-25~11-01 완료(요약 행 약 63,500건).

@@ -612,6 +612,76 @@ def test_exclusive_guard_hold_is_measured_per_holder_and_slow_holds_are_logged(
     assert "weather_export_guard_hold holder=gc" in caplog.text
 
 
+def test_gc_between_freeze_and_file_read_cannot_remove_the_snapshot_files(
+    repository, tmp_path, monkeypatch,
+):
+    """freeze가 commit한 snapshot ref가 파일을 지킨다 — guard 없이 GC가 끼어들어도 읽는다.
+
+    reader는 이제 freeze·health 동안 guard를 쥐지 않는다(2026-11-07). 그 사이 새 수집이 head를
+    옮기고(이전 generation은 head 아님) 모든 파일이 유예·보존 창 밖이 된 뒤 GC가 지워도, 방금
+    freeze한 snapshot의 파일은 남아 응답이 완결된다. 최근 snapshot 규칙은 꺼서 유효 snapshot
+    ref만으로 지켜지는지 본다.
+    """
+    import os
+    import time as clock
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_gc import collect_export_artifacts
+
+    _collect(repository, tmp_path, hours=2, value="11")
+    client = _client(repository, tmp_path)
+    original = ExportArtifactStore.read_shared
+    raced = {}
+
+    def gc_then_read(self, *args, **kwargs):
+        if not raced:
+            _collect(repository, tmp_path, hours=0, value="22")  # head를 새 generation으로
+            past = clock.time() - 10 * 3600
+            for path in tmp_path.glob("*.jsonl"):
+                os.utime(path, (past, past))
+            monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 0)
+            raced["report"] = collect_export_artifacts(
+                repository, tmp_path, mode="delete", deadline=float("inf"),
+                retention=timedelta(hours=1),
+            )
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ExportArtifactStore, "read_shared", gc_then_read)
+    response = client.get("/v1/service/exports/current", headers=HEADERS)
+    assert raced["report"]["mode"] == "delete"
+    assert response.status_code == 200, response.text
+    assert {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"} == {
+        11.0
+    }
+
+
+def test_writer_retries_a_short_guard_contention_instead_of_failing(tmp_path):
+    """collector publish·승격 CAS는 guard 대기 상한에 한 번 걸려도 짧게 쉬고 다시 시도한다."""
+    import threading
+    import time as clock
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    store = ExportArtifactStore(tmp_path)
+    held, release = threading.Event(), threading.Event()
+
+    def other_writer():
+        with store.guard(timeout_seconds=5):
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=other_writer)
+    thread.start()
+    assert held.wait(10)
+    threading.Timer(0.8, release.set).start()
+    started = clock.monotonic()
+    with store.exclusive(holder="publish", attempts=5, timeout_seconds=0.3):
+        pass
+    thread.join(10)
+    assert clock.monotonic() - started >= 0.6  # 첫 시도는 상한에 걸렸다
+
+
 class _Orig(Exception):
     def __init__(self, sqlstate):
         super().__init__("canceling statement")
