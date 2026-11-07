@@ -185,7 +185,8 @@ def test_alert_kind_is_disjoint_from_observed_and_matches_same_provider(filtered
     repo = filtered_client.app.state.repository
     now = datetime.now(UTC)
     repo.upsert_location(WeatherLocation(location_id="alert-only", name="특보 전용",
-                                        latitude=37, longitude=127))
+                                        latitude=37, longitude=127,
+                                        metadata={"kma_alert_area_codes": ["fixture-area"]}))
     repo.record_source(source_record_key="kind-alert", provider="python-kma-api",
                        dataset_key="regional_WARNING", source_entity_type="response",
                        source_entity_id="kind-alert", payload={}, fetched_at=now)
@@ -193,6 +194,7 @@ def test_alert_kind_is_disjoint_from_observed_and_matches_same_provider(filtered
         location_id="alert-only", provider="python-kma-api", dataset_key="regional_WARNING",
         weather_domain="weather", forecast_style="observed", metric_key="TEXT",
         value_text="호우주의보 발표", target_at=now, known_at=now,
+        payload={"areaCode": "fixture-area"},
         valid_until=now + timedelta(hours=6), source_record_key="kind-alert",
     )])
     path = "/v1/weather/locations?provider=python-kma-api&search=alert-only"

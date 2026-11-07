@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .models import WeatherValue
+from .models import WeatherLocation, WeatherValue
 
 _RELEASE_RE = re.compile(r"(?:해제|취소|종료|소멸|cancel(?:led)?|expired|ended)", re.IGNORECASE)
 _ACTION_RE = re.compile(
@@ -37,6 +37,33 @@ announcements this module would still report as active.
 """
 
 _DEFAULT_ALERT_MAX_AGE = ALERT_MAX_AGE
+
+
+def alert_location_scope(row: WeatherValue, location: WeatherLocation) -> str:
+    """발표 관서·중기예보 코드 대신 확인된 특보구역의 정확한 일치만 사용한다.
+
+    기존 KMA 목록은 발표 관서별로 여러 위치에 복제됐다. location_id 자체나
+    구역 필드의 부재는 적용 근거가 아니다. 구역 확인이 없으면 지점 특보로 쓰지 않는다.
+    """
+    if row.provider not in {"python-kma-api", "kma"}:
+        return "matched" if row.location_id == location.location_id else "different"
+    expected = location.metadata.get("kma_alert_area_codes")
+    if not isinstance(expected, list) or not expected or not all(
+        isinstance(code, str) and code.strip() for code in expected
+    ):
+        return "unverified"
+    payload = row.payload
+    raw = payload.get("raw")
+    fields = (payload, raw) if isinstance(raw, dict) else (payload,)
+    returned = {
+        str(value).strip()
+        for values in fields
+        for key in ("reg_id", "regId", "area_code", "areaCode", "zone_code", "zoneCode")
+        if (value := values.get(key)) not in (None, "") and isinstance(value, (str, int))
+    }
+    if len(returned) != 1:
+        return "unverified"
+    return "matched" if returned.intersection(code.strip() for code in expected) else "different"
 
 
 def _payload_value(row: WeatherValue, *names: str) -> Any:

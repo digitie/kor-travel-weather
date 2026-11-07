@@ -1,3 +1,41 @@
+- [x] 2026-11-07 Weather PR207 최신 제품3a4ae3f API·수집기 배포, 자연 drain·원27상태 복원·Manager·실제 종료·PC/모바일/API 검증. 웹·DB 유지, backfill 미실행. [기록](reports/2026-11-07-weather-pr207-release.md).
+
+- [x] 2026-11-07 Weather PR206 최신 제품87a0b50 API·수집기 배포, 자연 drain·원27상태 복원·Manager·실제 종료·PC/모바일/API 검증. 웹·DB 유지, backfill 미실행. [기록](reports/2026-11-07-weather-pr206-release.md).
+
+- [x] 2026-11-06 Weather PR205 제품ba66543 API·CS 반영·실제5초·원27상태·Manager·부모 실제 종료·PC/모바일/API 확인 완료. 웹·DB 유지, 백업·복원 생략. [기록](reports/2026-11-06-weather-reader205-release.md).
+
+- [x] 2026-11-05 최신 Weather 제품9acc409의 웹·API·CS 이미지, DB0037, 원26상태·새 특보 일정, Manager·부모 실제 종료와 PC/모바일 화면을 확인했다. 백업·복원은 사용자 지시로 생략. [수용 기록](reports/2026-11-05-latest-weather-release.md).
+
+## 2026-11-03 — 읽기 비용 API·DB·실제 HTTP 수용
+
+- [x] **W-READ-COST-01 운영 후속** — 제품539d6/API4c349d·schema0036·healthy·Manager 정산·부모 실제0/종료를 확인했다. 기존 웹·CS·일정·환경을 보존했다. 자기 invalid index 한 개를 삭제 없이 검산·복구하고37행의 메타데이터 지문을 보존했다. 실제500행200·조건부304를 관측했으며 최초GuardTimeout503도 보존했다. [실제 증거와 한계](reports/2026-11-03-weather-read-performance.md).
+
+## 2026-11-03 — 읽기 반복 비용 구현·로컬 검증
+
+- [x] **W-READ-COST-01 구현** — W1 큰 JSON 조건 반복 해석, 304 불필요한 전체 직렬화,
+  일반 예보 metric별 재순회를 줄였다. 원문·발급순·TTL·cursor·결측·출력 값 회귀를 확인했다.
+- [x] 격리 PG18·WSL/Docker 집중 검증 완료. 운영 반영과 운영 cold 성능은 별도 미완이다.
+  [측정·검증·적용 경계](reports/2026-11-03-weather-read-performance.md).
+
+## 2026-10-31 — 적용 특보가 없을 때 빈 칸 숨김
+
+- [x] 지도·상세 미확인 설명과 불필요한 칸을 제거하고 유효한 특보가 있을 때만 카드를 유지했다.
+- [x] 웹 단독 배포·실제 PC1440/모바일375·설명/특보 패널0을 확인했다.
+  API/수집기 재배포·백업/복원은 하지 않았다. [실제 결과](reports/2026-10-31-alert-weather-separation.md).
+
+## 2026-10-31 — 특보의 뇌우 오변환과 미확인 구역 적용 방지
+
+- [x] 특보와 실제 날씨 상태를 분리하고 KMA 구역의 정확한 일치와 미확인 안내를 반영했다.
+- [x] API·웹 c712956 운영 반영·Manager healthy·실제 PC/모바일 마커와 서울 상세 검사를 완료했다.
+- 구역 자료의 실제 연결은 W-ALERT-ZONE-01로 남겼다. [원 실패·전후 캡처·한계](reports/2026-10-31-alert-weather-separation.md).
+
+## 2026-10-31 — 날씨 상세·지역 대표값 운영 화면 확인
+
+- [x] API·웹 `e8733c5e`를 운영 반영하고 정본 Manager 등록·검증을 완료했다.
+- [x] 실제 Firefox1440/375에서 현재/내일·작은 부가 정보·맨 아래 시간별 그래프·대표값/클러스터 전환을 확인했다.
+- 수집기·기존 실행·DB·환경은 유지했고 백업·복원은 사용자 지시로 생략했다.
+  행정구역 별칭과 미제공 자료의 한계는 [실측 원장](reports/2026-10-31-details-regional-live.md)을 따른다.
+
 # 완료 작업
 
 ## 2026-10-28 — 특보 후보 제한 API 단독 배포와 첫 cold 수용
@@ -33,3 +71,6 @@
 
 - [x] **Next.js 보안 갱신 — Next.js 16.4.3**. npm 직접/전이 보안 패치와 공통 버전 정합, 이 저장소 기존 테스트 243개·타입·린트·빌드 검증을 반영했다. 최종 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-weather/pull/166), 잔여 상류 권고와 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
 
+- [x] 2026-11-02 모든 미반영 PR 통합·새 ARM64 이미지 운영 반영·PC/모바일 실제 확인. [결과](reports/2026-11-02-all-pr-images-release.md)
+
+- [x] 2026-11-03 PR198 API 새 이미지 반영·응답14사례·실제 health/status200·Manager 정산. [원 실패와 범위](reports/2026-11-03-pr198-api-release.md)

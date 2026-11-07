@@ -315,6 +315,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 frozen["_reused"] = True
             else:
                 frozen.pop("issue_order", None)
+                frozen.pop("selection_kind", None)
                 frozen.update(
                     snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
                 )
@@ -454,18 +455,15 @@ class FrozenForecastExports(FrozenCurrentExports):
                     state["p"] += 1
                     continue
                 targets = sorted({p["target_at"] for p in future})
-                metrics = {
-                    metric: {
-                        p["target_at"]: (
-                            float(p["value_number"])
-                            if p["value_number"] is not None
-                            else p["value_text"]
-                        )
-                        for p in future
-                        if p["metric_key"] == metric
-                    }
-                    for metric in sorted({p["metric_key"] for p in future})
-                }
+                # metric마다 같은 point 목록을 반복 순회하지 않는다. 같은 target/metric의
+                # 마지막 값 우선과 누락 target의 null, metric 정렬은 기존 출력과 같다.
+                metrics = defaultdict(dict)
+                for point in future:
+                    metrics[point["metric_key"]][point["target_at"]] = (
+                        float(point["value_number"])
+                        if point["value_number"] is not None
+                        else point["value_text"]
+                    )
                 item = {
                     "location_id": key,
                     "provider": scope.get("provider", "python-kma-api"),
@@ -475,7 +473,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                     "target_at": targets,
                     "metrics": {
                         metric: [values.get(t) for t in targets]
-                        for metric, values in metrics.items()
+                        for metric, values in sorted(metrics.items())
                     },
                 }
                 item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1

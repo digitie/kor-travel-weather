@@ -27,7 +27,7 @@ class FrozenLocationExports(FrozenCurrentExports):
         row = (
             connection.execute(
                 select(self.snapshots)
-                .where(self.snapshots.c.manifest["selection"]["kind"].as_string() == "locations")
+                .where(self.snapshots.c.selection_kind == "locations")
                 .order_by(self.snapshots.c.issue_order.desc())
                 .limit(1)
             )
@@ -42,6 +42,7 @@ class FrozenLocationExports(FrozenCurrentExports):
             # 재사용 handle은 page가 freeze transaction 밖에서 TTL을 연장한다.
             return {**frozen, "_reused": True}
         frozen.pop("issue_order", None)
+        frozen.pop("selection_kind", None)
         frozen = {
             **frozen,
             "snapshot_id": str(uuid4()),

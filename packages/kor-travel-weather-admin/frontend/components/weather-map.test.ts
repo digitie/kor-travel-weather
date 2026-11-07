@@ -17,7 +17,7 @@ describe("마커 모델 참조 보존", () => {
   function renderer() {
     if (!markerMemo) throw new Error("marker 모델의 useMemo가 필요합니다.");
     const render = new Function(
-      "useMemo", "mapLocations", "selectedId", "summaries", "setSelectedId",
+      "regionLevel", "regional", "useMemo", "mapLocations", "selectedId", "summaries", "setSelectedId",
       "markerState", "markerTemperature", "markerCondition", "markerRefreshRef", "providerFilter", "refreshToken", "kindFilter", "setDetailOpen", "requestAnimationFrame", "detailRef",
       ts.transpileModule("return " + markerMemo.getText(tree), {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -32,13 +32,14 @@ describe("마커 모델 참조 보존", () => {
       }
       return value;
     };
+    const emptyRegions: unknown[] = [];
     const select = vi.fn();
     const locations = [
       { location_id: "a", name: "가", longitude: 127, latitude: 37 },
       { location_id: "b", name: "나", longitude: 128, latitude: 36 },
     ];
     const call = (selectedId = "a", summaries = {}, points = locations) => render(
-      useMemo, points, selectedId, summaries, select,
+      null, emptyRegions, useMemo, points, selectedId, summaries, select,
       () => ({ kind: "clear", label: "맑음" }),
       (summary: { temperature?: number } | undefined) => summary?.temperature ?? null,
       (kind: string) => kind, { current: JSON.stringify([0, undefined, undefined]) }, undefined, 0, undefined, vi.fn(), vi.fn(), { current: null },
@@ -256,7 +257,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
     const mount = (kindFilter: string[] | undefined) => {
       const view = {
         setMessage: vi.fn(), setLoading: vi.fn(),
-        getLatest: vi.fn(() => Promise.resolve({ data: [] })),
+        getLatest: vi.fn(() => Promise.resolve({ data: [], meta: {} })),
         getForecast: vi.fn(() => Promise.resolve({ data: [] })),
       };
       const cleanup = detail(vi.fn(), vi.fn(), view.setMessage, vi.fn(), vi.fn(), view.setLoading, vi.fn(),

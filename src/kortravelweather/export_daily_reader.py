@@ -245,6 +245,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 return {**previous, "_reused": True}
             row = dict(previous)
             row.pop("issue_order", None)
+            row.pop("selection_kind", None)
             row["manifest"] = {**row["manifest"], **window, "fallback_unconfirmed": True}
             row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
                        created_at=now, expires_at=now + SNAPSHOT_TTL)
