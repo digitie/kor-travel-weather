@@ -1,3 +1,7 @@
+## 2026-11-07 — 추가 조회 개선 구현·집중 검증, 새 배포 진행
+
+사용자 추가 요청으로 Transport의 부모/장소 좌표 이중 검증 구성과 Weather의 JSON UTF-8 크기 중복 계산을 줄였다. 값·검증·상태/신선도·예산을 보존한 국소 전후 검산과 Transport WSL/Docker PG18각26개·Weather각40개를 통과했다. 겹침은 합산하지 않는다. Weather5초 초과 원 관측과 wall이 좋아지지 않은 cohort batch 후보를 보존했고 timeout 확대/추정 index 변경은 하지 않았다. 새 이미지·실제 배포는 아직 완료 전이며 기존 수집 자연 종료 정책을 유지한다. [근거와 남은 실제 단계](reports/2026-11-07-read-next.md).
+
 ## 2026-11-07 — Weather 세 회차 최종 이미지·실제 수용 완료
 
 제품7ccf88a를 API034cfebc·수집기93d11ca7에 반영했다. 원27일정 복원·Manager healthy·설정/키5초·schema0038·웹/다른 서비스 보존과 최초 Invocation1f98e72c의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 기존 수집과 worker는 자연 종료했으며 최종 배포 migration은 없었다.

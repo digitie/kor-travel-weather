@@ -126,7 +126,7 @@ def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, f
         prefixes=["TEMPORARY"],
     )
     plans.create(connection)
-    value = {"location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)]}
+    value = {"location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)], "한글": ["서울", '"\\\n']}
     if failure == "oversized":
         value["oversized"] = "x" * (capacity.MAX_SCOPE_PLAN_BYTES + 1)
     connection.execute(plans.insert(), [{"attempt_id": part, "descriptor": value}
@@ -149,9 +149,13 @@ def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, f
             with pytest.raises(capacity.ExportCapacityExceeded):
                 capacity.read_scope_plans(connection, plans, wanted)
         else:
-            assert capacity.read_scope_plans(connection, plans, wanted) == {
+            byte_sizes = {}
+            assert capacity.read_scope_plans(connection, plans, wanted, byte_sizes=byte_sizes) == {
                 "land": value, "temperature": value,
             }
+            size = len(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":"), allow_nan=False).encode("utf-8"))
+            assert byte_sizes == {"land": size, "temperature": size}
     finally:
         event.remove(connection.engine, "before_cursor_execute", inspect_cursor)
     assert observed == [(True, 128)]

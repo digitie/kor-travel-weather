@@ -120,8 +120,8 @@ def any_of(column, values):
     return column == any_(bindparam(None, list(values), type_=ARRAY(String()), unique=True))
 
 
-def read_scope_plans(connection, table, attempt_ids):
-    """위치별 inventory에 반복된 descriptor를 attempt마다 한 번만 읽는다."""
+def read_scope_plans(connection, table, attempt_ids, *, byte_sizes=None):
+    """descriptor를 attempt마다 한 번 읽고 선택적으로 같은 검산의 UTF-8 바이트 수도 돌려준다."""
     attempt_ids = tuple(dict.fromkeys(attempt_ids))
     if len(attempt_ids) > MAX_SOURCE_SCOPES:
         raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
@@ -143,7 +143,10 @@ def read_scope_plans(connection, table, attempt_ids):
         for row in result.mappings():
             if row["oversized_descriptor"] or row["descriptor"] is None:
                 raise ExportCapacityExceeded("승인 source plan 메타데이터 상한을 넘었습니다.")
+            before = budget.used
             budget.add_bounded_record(row["descriptor"], MAX_SCOPE_PLAN_BYTES)
+            if byte_sizes is not None:
+                byte_sizes[row["attempt_id"]] = budget.used - before
             plans[row["attempt_id"]] = row["descriptor"]
     finally:
         result.close()

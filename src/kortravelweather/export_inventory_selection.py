@@ -227,10 +227,14 @@ def parsed_scope_plans(connection, plans, attempt_ids):
         if present != remembered.keys():
             raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
     missing = [key for key in attempt_ids if key not in remembered]
-    encoder = MetadataBudget().encoder
+    # 개별/누적 거부 검사에서 이미 계산한 정규 UTF-8 크기를 cache 예산에도 쓴다.
+    # 같은 descriptor를 다시 JSON으로 만들지 않으며 cache hit/miss의 전체 상한은 같다.
+    byte_sizes = {}
     fresh = {
-        key: (parse_scope_descriptor(value), len(encoder.encode(value).encode("utf-8")))
-        for key, value in read_scope_plans(connection, plans, missing).items()
+        key: (parse_scope_descriptor(value), byte_sizes[key])
+        for key, value in read_scope_plans(
+            connection, plans, missing, byte_sizes=byte_sizes,
+        ).items()
     }
     if sum(size for _, size in (*remembered.values(), *fresh.values())) > MAX_MANIFEST_BYTES:
         raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
