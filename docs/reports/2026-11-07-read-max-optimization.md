@@ -161,3 +161,8 @@ WSL 집중189개, 후속58개, 계측3개는 각각 통과했다. 겹치는 시�
 SQL은 oversized 단건을 JSON 대신 null/거부 표식으로 반환하고, 본문은 같은8MiB 누적 예산을 적용한다. 원천/참조/파일/페이지 상한은 바꾸지 않았다. 묶음당 투영 JSON 최대는 ref16MiB·plan32MiB이고 Python 객체·드라이버 overhead는 별도다. 무제한 fetchall로 바꾸지 않았다. DB 오류·크기 초과·행 누락 뒤에도 cursor가 닫히고 같은 연결을 계속 쓸 수 있음을 WSL/Docker95개씩 확인했다. 서로 겹치는 시험 횟수를 합산하지 않는다.
 
 현재 세 회차의 구현과 집중 검증은 끝났고2·3회차 배포는 대기다. 1회차 운영 API674d6f8/DB0038과 unchanged 웹을 실제 PC/모바일에서 확인했으나, 수집기 교체를 기다리는 Root07ab4b4는 아직 종료하지 않았다. 자연 종료를 기다리는 작업을 강제 중단하거나 같은 배포·빌드를 중복하지 않는다. 전체 Weather 반영이 끝난 뒤 Transport를 같은 세 회차로 진행한다.
+
+
+### 다음 실제 반영 입력 고정
+
+최신 ‘진행’ 뒤 KMA 단기예보의 공식 SUCCESS 종료를 확인했다. 최종7ccf88a archive SHA는`b12ae5961c6d0761e16acbaa32770f3ccb9d125c5f27f1f1cd1996a9a7e54340`이며 기존 W1 이미지481f5478/14a8764c를 실제 builder base로 검산했다. 의존성·웹·Alembic 동일성을 유지하고0038 migration/index repair를 반복하지 않는다. 새 빌드 dispatch 가드는 기존 Root의 실제 종료·원27복원·Manager healthy를 검사하며 현재는WAITING/새Root0/intent0이다. 이 준비를 최종 이미지 또는 전체 배포 완료로 세지 않는다.
