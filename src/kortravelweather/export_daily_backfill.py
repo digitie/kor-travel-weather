@@ -167,10 +167,13 @@ def backfill_daily_from_kma_nowcast(
                 for key in keys:
                     previous = existing.get(key)
                     state = merge_observations(previous or {}, grouped[key], key=key, now=now)
-                    if previous is not None and state == previous:
+                    summary = summarize(*key, state, now=now)
+                    # 정상 경로가 이미 같은 값을 낸 행은 그대로 둔다(동률 tie-break hash만
+                    # 다른 winner로 바꿔 쓰지 않는다).
+                    if previous is not None and summarize(*key, previous, now=now) == summary:
                         continue
                     values = {
-                        "summary": summarize(*key, state, now=now),
+                        "summary": summary,
                         "hourly_winners": state,
                         "updated_at": now,
                     }

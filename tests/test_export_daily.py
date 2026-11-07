@@ -639,15 +639,13 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
             repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value,
         )
         published.append((heads, identity, capture))
-    _candidate(repository, tmp_path, descriptor, revision=day + timedelta(hours=2), value="90",
-               finish="failed")
     stats = backfill_daily_from_kma_nowcast(
         repository, first_day=day.date(), last_day=day.date(), batch=1, pause_seconds=0,
     )
     assert stats["done"] and stats["updated"] >= 1
     with repository.engine.connect() as c:
         rebuilt = {(r.slot, r.date): r.summary for r in c.execute(select(table))}
-    assert rebuilt and all(s["sample_count"] == 2 for s in rebuilt.values())  # 실패 run 90은 없다
+    assert rebuilt and all(s["sample_count"] == 2 for s in rebuilt.values())
     assert next(iter(rebuilt.values()))["temp_avg"] == 15
     again = backfill_daily_from_kma_nowcast(
         repository, first_day=day.date(), last_day=day.date(), pause_seconds=0,
@@ -661,10 +659,18 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
     refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
     with repository.engine.connect() as c:
         live = {(r.slot, r.date): r.summary for r in c.execute(select(table))}
+
     def strip(rows):
         return {k: {f: v for f, v in s.items() if f != "partial"} for k, s in rows.items()}
 
     assert strip(live) == strip(rebuilt)
+    # 실패한 run의 응답(같은 격자, 다른 시간·값)은 쓰지 않는다.
+    _candidate(repository, tmp_path, descriptor, revision=day + timedelta(hours=2), value="90",
+               finish="failed")
+    excluded = backfill_daily_from_kma_nowcast(
+        repository, first_day=day.date(), last_day=day.date(), pause_seconds=0,
+    )
+    assert excluded["records"] >= 2 and excluded["updated"] == 0
 
 
 def test_backfill_refuses_ranges_outside_the_retained_window(daily_repository):
