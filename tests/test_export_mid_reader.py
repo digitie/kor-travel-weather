@@ -59,6 +59,14 @@ class Files:
         self.reads.append(digest)
         return iter(self.points[digest])
 
+    def read_shared(self, digest, **kwargs):
+        # 실제 store처럼 파일 하나를 공유 guard 안에서 끝까지 읽는다.
+        with self.guard(shared=True):
+            return list(self.read(digest, **kwargs))
+
+    def all_present(self, refs):
+        return all(ref["artifact_digest"] in self.points for ref in refs)
+
 
 def reader(selected):
     return FrozenMidForecastExports(SimpleNamespace(), Files(selected), signing_key="test-only")
