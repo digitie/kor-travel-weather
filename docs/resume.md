@@ -1,3 +1,7 @@
+## 2026-11-07 — 조회 성능 1회차 전체 확정 항목 반영 중
+
+사용자 지시로 첫 검토의 확정 병목 전체를 구현한다. inventory/generation·owner/attempt 배치 조회, 최소15분을 보장하는 분 단위 TTL 연장, DB-only 위치/일별 조회의 파일 guard 분리, snapshot 선택 조건의 저장 projection(0038), 내용 기반 불변 descriptor·artifact 해석 캐시와 export 경로별 계측이다. 원천 상태·파일 유실/변조·cursor 검증은 유지한다. WSL 격리 PG18 집중189개·후속58개, Docker 집중243개가 통과했다. 캐시 보완·전체 migration 경로의 최종 집중20개도 WSL/Docker 각각 통과했다. 합성5000point 재검증은12.89→4.54ms였다(운영 p95가 아님). 운영은 아직 제품3a4ae3f/DB0037이며 개선 제품 배포 완료가 아니다. [측정과 남은 회차](reports/2026-11-07-read-max-optimization.md), Draft PR208.
+
 ## 2026-11-07 — PR207 최신 API·수집기 이미지 배포 완료
 
 제품3a4ae3f에 PR207 24시간 신선도 창 개선을 통합해 API·수집기를 반영했다. 웹·DB0037·사용자 설정과 다른 서비스를 유지했고 원27개 상태 복원·Manager healthy·부모 실제 종료·API200/304·PC/모바일을 확인했다. 실제 backfill·백업/복원은 실행하지 않았다. [배포 원문과 검증 범위](reports/2026-11-07-weather-pr207-release.md).

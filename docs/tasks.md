@@ -1,3 +1,6 @@
+- [ ] **W-READ-MAX-01** — 1회차 전체 확정 항목 구현·WSL/Docker·전후 검산 뒤 새 이미지·DB0038 반영. [근거](reports/2026-11-07-read-max-optimization.md).
+- [ ] **W-READ-MAX-02/03** — 첫 반영 뒤 실제 남은 병목을 새로 찾아 두 회차 개선·검증한다. 이후 Transport도 같은 세 회차를 진행한다.
+
 # Weather 남은 작업
 
 W-READ-COST-01 구현·DB0036·API 이미지·실제200/304 수용은 [완료 목록](tasks-done.md)과

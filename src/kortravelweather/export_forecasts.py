@@ -22,12 +22,12 @@ from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
-    SNAPSHOT_TTL,
     ExportCursorInvalid,
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
     ensure_snapshot_files,
+    snapshot_expires_at,
 )
 
 
@@ -271,7 +271,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "manifest": manifest,
                 **_freshness(heads.values(), now),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**row))
             c.execute(
@@ -289,12 +289,13 @@ class FrozenForecastExports(FrozenCurrentExports):
 
     def _same_selection(self):
         """이 reader와 같은 forecasts selection(style·since·provider 서명)인 snapshot 행 조건."""
-        selection = self.snapshots.c.manifest["selection"]
         return (
-            selection["kind"].as_string() == "forecasts",
-            selection["style"].as_string() == self.style,
-            selection["since"].as_string() == self.selection["since"],
-            selection["provider_signature"].as_string() == self.selection.get("provider_signature"),
+            self.snapshots.c.selection_kind == "forecasts",
+            self.snapshots.c.forecast_style == self.style,
+            self.snapshots.c.forecast_since == self.selection["since"],
+            self.snapshots.c.forecast_provider_signature == self.selection.get(
+                "provider_signature",
+            ),
         )
 
     def _previous_forecasts(self):
@@ -316,9 +317,11 @@ class FrozenForecastExports(FrozenCurrentExports):
                 frozen["_reused"] = True
             else:
                 frozen.pop("issue_order", None)
-                frozen.pop("selection_kind", None)
+                for column in self.snapshots.c:
+                    if column.computed is not None:
+                        frozen.pop(column.name, None)
                 frozen.update(
-                    snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
+                    snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now)
                 )
                 s.execute(self.snapshots.insert().values(**frozen))
                 s.execute(

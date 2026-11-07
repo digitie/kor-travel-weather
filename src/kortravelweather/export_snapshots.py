@@ -30,7 +30,6 @@ from sqlalchemy import (
     String,
     Table,
     delete,
-    func,
     select,
     update,
 )
@@ -51,6 +50,13 @@ MAX_SNAPSHOT_LOCATIONS = 5000
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 PAGE_META_RESERVE = 8192
 SNAPSHOT_TTL = timedelta(minutes=15)
+
+
+def snapshot_expires_at(now):
+    """첫 요청 뒤 최소15분을 보장하며 같은 분의 재사용 UPDATE를 합친다."""
+    return now.replace(second=0, microsecond=0) + timedelta(minutes=1) + SNAPSHOT_TTL
+
+
 SOURCE_MAX_AGE = timedelta(hours=3)
 # 만료 뒤 이만큼 지난 handle만 publisher tick이 지운다. 유효 cursor(만료 전)는 대상이 아니다.
 SNAPSHOT_PRUNE_RETAIN = timedelta(hours=6)
@@ -90,6 +96,13 @@ def export_snapshot_tables(metadata: MetaData):
         Column("selection_kind", String, Computed(
             "(manifest -> 'selection') ->> 'kind'", persisted=True,
         )),
+        *[Column(name, String, Computed(expression, persisted=True)) for name, expression in (
+            ("selection_signature", "(manifest -> 'selection') ->> 'signature'"),
+            ("forecast_style", "(manifest -> 'selection') ->> 'style'"),
+            ("forecast_since", "(manifest -> 'selection') ->> 'since'"),
+            ("forecast_provider_signature", "(manifest -> 'selection') ->> 'provider_signature'"),
+            ("daily_resource", "manifest ->> 'daily_resource'"),
+        )],
         Column("source_collected_at", DateTime(timezone=True)),
         Column("data_revision_at", DateTime(timezone=True), nullable=False),
         Column("created_at", DateTime(timezone=True), nullable=False),
@@ -99,6 +112,13 @@ def export_snapshot_tables(metadata: MetaData):
         "ix_weather_export_snapshots_kind_issue",
         snapshots.c.selection_kind, snapshots.c.issue_order.desc(),
     )
+    Index("ix_weather_export_snapshots_signature_issue",
+          snapshots.c.selection_signature, snapshots.c.issue_order.desc())
+    Index("ix_weather_export_snapshots_forecast_issue", snapshots.c.selection_kind,
+          snapshots.c.forecast_style, snapshots.c.forecast_since,
+          snapshots.c.forecast_provider_signature, snapshots.c.issue_order.desc())
+    Index("ix_weather_export_snapshots_daily_issue",
+          snapshots.c.daily_resource, snapshots.c.issue_order.desc())
     refs = Table(
         "weather_export_snapshot_refs",
         metadata,
@@ -487,7 +507,7 @@ class FrozenCurrentExports:
                 "manifest": manifest,
                 **_freshness(heads.values(), now),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             connection.execute(self.snapshots.insert().values(**row))
             connection.execute(
@@ -508,10 +528,9 @@ class FrozenCurrentExports:
 
         하위 reader(예보)도 같은 모양(조건 tuple)을 돌려준다. 호출부는 풀어서 쓴다.
         """
-        selection = self.snapshots.c.manifest["selection"]
         if self.current_selection is None:
-            return (selection["kind"].as_string().is_(None),)
-        return (selection["signature"].as_string() == self.current_selection["signature"],)
+            return (self.snapshots.c.selection_kind.is_(None),)
+        return (self.snapshots.c.selection_signature == self.current_selection["signature"],)
 
     def _previous_success(self):
         # reader TTL와 마지막 승인 data manifest의 수명은 다르다. 새 handle만 만든다.
@@ -534,9 +553,11 @@ class FrozenCurrentExports:
                 frozen["_reused"] = True
             else:
                 frozen.pop("issue_order", None)
-                frozen.pop("selection_kind", None)
+                for column in self.snapshots.c:
+                    if column.computed is not None:
+                        frozen.pop(column.name, None)
                 frozen.update(
-                    snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
+                    snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now)
                 )
                 session.execute(self.snapshots.insert().values(**frozen))
                 session.execute(
@@ -569,6 +590,9 @@ class FrozenCurrentExports:
         if not frozen.pop("_reused", False):
             return frozen
         now = datetime.now(UTC)
+        # 새 handle은 분 경계까지 여유를 둔다. 충분한 수명이 남았으면 DB 쓰기·잠금이 없다.
+        if frozen["expires_at"] >= now + SNAPSHOT_TTL:
+            return frozen
         table = self.snapshots
         try:
             with self.repository.engine.connect() as connection, connection.begin():
@@ -576,8 +600,12 @@ class FrozenCurrentExports:
                 connection.exec_driver_sql("SET LOCAL lock_timeout = '1s'")
                 renewed = connection.execute(
                     update(table)
-                    .where(table.c.snapshot_id == frozen["snapshot_id"], table.c.expires_at > now)
-                    .values(expires_at=func.greatest(table.c.expires_at, now + SNAPSHOT_TTL))
+                    .where(
+                        table.c.snapshot_id == frozen["snapshot_id"],
+                        table.c.expires_at > now,
+                        table.c.expires_at < snapshot_expires_at(now),
+                    )
+                    .values(expires_at=snapshot_expires_at(now))
                     .returning(table.c.expires_at)
                 ).scalar_one_or_none()
         except SQLAlchemyError as exc:
@@ -595,8 +623,9 @@ class FrozenCurrentExports:
             return frozen
         now = datetime.now(UTC)
         row = {key: value for key, value in frozen.items()
-               if key in self.snapshots.c and key not in {"issue_order", "selection_kind"}}
-        row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL,
+               if key in self.snapshots.c and key != "issue_order"
+               and self.snapshots.c[key].computed is None}
+        row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now),
                    manifest=dict(frozen["manifest"], capacity_limited=True))
         MetadataBudget().add(row["manifest"])
         row["manifest_digest"] = _digest(row["manifest"])

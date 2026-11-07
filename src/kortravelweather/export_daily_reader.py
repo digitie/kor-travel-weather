@@ -22,11 +22,11 @@ from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
-    SNAPSHOT_TTL,
     ExportCursorInvalid,
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    snapshot_expires_at,
 )
 
 
@@ -233,7 +233,7 @@ class DailySummaryExports(FrozenCurrentExports):
         }
         with self.heads._transaction() as connection:
             previous = connection.execute(select(self.snapshots).where(
-                self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+                self.snapshots.c.daily_resource == self.resource,
             ).order_by(self.snapshots.c.issue_order.desc()).limit(1)).mappings().one_or_none()
             if previous is None:
                 return None
@@ -245,10 +245,12 @@ class DailySummaryExports(FrozenCurrentExports):
                 return {**previous, "_reused": True}
             row = dict(previous)
             row.pop("issue_order", None)
-            row.pop("selection_kind", None)
+            for column in self.snapshots.c:
+                if column.computed is not None:
+                    row.pop(column.name, None)
             row["manifest"] = {**row["manifest"], **window, "fallback_unconfirmed": True}
             row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
-                       created_at=now, expires_at=now + SNAPSHOT_TTL)
+                       created_at=now, expires_at=snapshot_expires_at(now))
             connection.execute(self.snapshots.insert().values(**row))
             return row
 
@@ -290,7 +292,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 c.execute(
                     select(self.snapshots)
                     .where(
-                        self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+                        self.snapshots.c.daily_resource == self.resource,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
@@ -317,14 +319,13 @@ class DailySummaryExports(FrozenCurrentExports):
                     default=ready["published_at"],
                 ),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**row))
             return row
 
     def page(self, *, limit, cursor):
-        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
-        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        # 파일을 읽지 않는 DB page다. 각 RR 조회가 값을 복사하므로 GC의 파일 잠금은 불필요하다.
         return self._page_guarded(limit=limit, cursor=cursor)
 
     def _page_guarded(self, *, limit, cursor):

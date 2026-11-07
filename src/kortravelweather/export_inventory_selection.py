@@ -1,5 +1,6 @@
 """실제 승인 위치와 최신 HTTP 전 선택 집합을 같은 MVCC에서 함께 읽는다."""
 
+import hashlib
 import threading
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -237,7 +238,43 @@ def parsed_scope_plans(connection, plans, attempt_ids):
     return {key: value[0] for key, value in {**remembered, **fresh}.items()}
 
 
+_cohort_cache = OrderedDict()
+_cohort_cache_bytes = 0
+_cohort_cache_lock = threading.Lock()
+_COHORT_CACHE_BYTES = 16 * 1024 * 1024
+_COHORT_CACHE_ENTRIES = 256
+
+
 def _cohort_descriptors(row):
+    """불변 descriptor 해석만 기억한다. roster 내용·존재·run 상태는 매번 실제로 읽는다."""
+    global _cohort_cache_bytes
+    payload = MetadataBudget().encoder.encode([
+        row["provider"], row["dataset_key"], row["descriptors"], row["targets"],
+    ]).encode("utf-8")
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise ExportCapacityExceeded("실제 source roster 메타데이터 예산을 넘었습니다.")
+    key = hashlib.sha256(payload).digest()
+    with _cohort_cache_lock:
+        remembered = _cohort_cache.get(key)
+        if remembered is not None:
+            _cohort_cache.move_to_end(key)
+            return list(remembered[0])
+    descriptors = _parse_cohort_descriptors(row)
+    with _cohort_cache_lock:
+        previous = _cohort_cache.pop(key, None)
+        if previous is not None:
+            _cohort_cache_bytes -= previous[1]
+        _cohort_cache[key] = (tuple(descriptors), len(payload))
+        _cohort_cache_bytes += len(payload)
+        while _cohort_cache and (
+            len(_cohort_cache) > _COHORT_CACHE_ENTRIES
+            or _cohort_cache_bytes > _COHORT_CACHE_BYTES
+        ):
+            _cohort_cache_bytes -= _cohort_cache.popitem(last=False)[1][1]
+    return descriptors
+
+
+def _parse_cohort_descriptors(row):
     if row["descriptors"] is not None:
         if not isinstance(row["descriptors"], list) or not 1 <= len(row["descriptors"]) <= 5000:
             raise ExportArtifactError("실제 source roster 상한이 올바르지 않습니다.")

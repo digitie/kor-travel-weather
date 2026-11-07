@@ -50,7 +50,7 @@ def _paused_public_page(root, kind, entered, release, fail):
             raise
 
 
-@pytest.mark.parametrize("kind", READERS)
+@pytest.mark.parametrize("kind", ["current", "forecast", "mid"])
 @pytest.mark.parametrize("finish", ["return", "error", "kill"])
 def test_long_page_metadata_phase_does_not_starve_writers(tmp_path, kind, finish):
     """freeze·health가 오래 걸려도 writer는 그동안 배타 guard를 얻는다.
