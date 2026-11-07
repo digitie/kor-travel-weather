@@ -250,6 +250,46 @@ def test_expired_source_is_left_out_of_current_and_kma_rotation_age_is_not(
     assert datetime.now(UTC) - collected < timedelta(hours=1)
 
 
+def test_slow_sdk_source_keeps_serving_but_leaves_freshness_after_the_window(
+    external_repository,
+    tmp_path,
+    monkeypatch,
+):
+    """신선도 창(24시간) 밖·만료(72시간) 전 SDK 승인은 값은 내되 meta·stale을 붙잡지 않는다.
+
+    2026-11-07 운영: 응답에서 빠진 산악기상 세 곳의 11-04 승인이 current·daily meta를 57시간
+    붙잡았다(소유자 결정: 값은 72시간까지, 신선도는 24시간 안 승인만).
+    """
+    from datetime import timedelta
+
+    from kortravelweather.export_inventory_selection import FRESHNESS_WINDOW, source_expiry
+
+    repo = external_repository
+    client = TestClient(create_app(WeatherSettings(
+        admin_token="freshness-window-fixture",
+        enabled_providers=sorted(KNOWN),
+        service_exports_enabled=True,
+        service_export_artifact_root=tmp_path,
+    ), repo))
+    url, headers = "/v1/service/exports/current", {"x-admin-token": "freshness-window-fixture"}
+    _collect(repo, tmp_path)
+    for adapter in (OpenMeteoProvider, WeatherApiProvider, OpenWeatherMapProvider):
+        _http_adapter(repo, tmp_path, adapter)
+    for kind in ("air", "mountain", "dust", "krex"):
+        _sdk(repo, tmp_path, kind, monkeypatch)
+    assert client.get(url, headers=headers).json()["meta"]["source_status"] == "ok"
+    slow = FRESHNESS_WINDOW + timedelta(hours=6)
+    assert slow < source_expiry("krex_restarea_weather")
+    _age_source(repo, "python-krex-api", slow)
+    page = client.get(url, headers=headers)
+    assert page.status_code == 200
+    assert "python-krex-api" in {item["provider"] for item in page.json()["items"]}  # 값은 낸다
+    collected = datetime.fromisoformat(page.json()["meta"]["source_collected_at"])
+    # 오래된 승인이 meta를 끌어내리지 않는다
+    assert datetime.now(UTC) - collected < timedelta(hours=1)
+    assert page.json()["meta"]["source_status"] == "ok"
+
+
 def test_khoa_external_forecast_is_public_and_current_is_not_fabricated(
     external_repository,
     tmp_path,

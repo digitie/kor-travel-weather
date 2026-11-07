@@ -30,6 +30,17 @@ from .export_snapshots import (
 )
 
 
+def _freshness(heads, now):
+    """snapshot meta의 수집·revision 시각. 신선도 창 안 승인만 센다(없으면 전체)."""
+    from .export_inventory_selection import counts_for_freshness
+
+    heads = list(heads)
+    fresh = [h for h in heads if counts_for_freshness(h.source_collected_at, now)] or heads
+    return {
+        "source_collected_at": min(h.source_collected_at for h in fresh),
+        "data_revision_at": min(h.data_revision_at for h in fresh),
+    }
+
 class FrozenForecastExports(FrozenCurrentExports):
     STYLE_DATASETS = {
         "ultra_short": "kma_ultra_short_forecast",
@@ -257,8 +268,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": min(h.source_collected_at for h in heads.values()),
-                "data_revision_at": min(h.data_revision_at for h in heads.values()),
+                **_freshness(heads.values(), now),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
             }
@@ -569,12 +579,13 @@ class FrozenForecastExports(FrozenCurrentExports):
 
     def _inventory_forecast_health(self, manifest, frozen, now):
         from .export_artifacts import ExportArtifactError
-        from .export_inventory_selection import source_max_age
+        from .export_inventory_selection import counts_for_freshness, source_max_age
 
         stale = bool(manifest.get("unconfirmed_sources"))
         stale |= any(
             now - datetime.fromisoformat(scope[key]) > source_max_age(scope["dataset_key"])
             for scope in manifest["scopes"]
+            if counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
             for key in ("source_collected_at", "data_revision_at")
         )
         with (
