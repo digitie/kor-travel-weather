@@ -8,7 +8,9 @@
 이 모듈은 그 원천 응답을 수집 때와 같은 정규화(``ultra_short_nowcast_to_weather_values``)로
 다시 읽고, 같은 reducer(``merge_observations``/``summarize``)로 기존 요약에 합친다.
 
-- 성공한 수집 run에 묶인 원천만 쓴다(실패·부분 run 자료는 섞지 않는다).
+- 성공한 수집 run에 묶인 원천만 쓴다(실패·부분 run 자료는 섞지 않는다). 정상 경로는 export
+  증명까지 통과한 승인만 쓰므로 이 복구는 그보다 넓다(수집은 성공했으나 증명 전 퇴역한 응답
+  포함 — 그것이 복구 대상이다).
 - KMA 실황만 쓴다. 요약 winner 우선순위에서 KMA가 첫째라 다른 제공처를 더해도 같은 시간의
   winner는 바뀌지 않는다. KMA가 비운 시간만 다른 제공처가 채웠을 것이고, 그것은 복구하지
   않는다(원천별 정규화가 제각각이라 이 일회성 범위 밖이다).
@@ -87,8 +89,9 @@ def backfill_daily_from_kma_nowcast(
     """[first_day, last_day](KST) 요약을 원천 응답으로 채운다. ``after``부터 이어 간다."""
     now = now or datetime.now(UTC)
     today = now.astimezone(KST).date()
-    if not (today - timedelta(days=MAX_DAYS) <= first_day <= last_day <= today):
-        raise ValueError("backfill 날짜는 최근 31일 안의 과거·오늘이어야 합니다.")
+    # 오늘은 정상 reducer가 쓰는 중이다(없던 행을 덮어쓸 수 있다). 지난 날만 채운다.
+    if not (today - timedelta(days=MAX_DAYS) <= first_day <= last_day < today):
+        raise ValueError("backfill 날짜는 최근 31일 안의 지난 날이어야 합니다.")
     if not 1 <= batch <= 1000:
         raise ValueError("backfill 묶음은 1~1000입니다.")
     heads = ExportHeads(repository)
@@ -109,40 +112,52 @@ def backfill_daily_from_kma_nowcast(
     # 하루를 더 읽고 point의 KST 날짜로 다시 거른다.
     start = datetime.combine(first_day, datetime.min.time(), KST) - timedelta(hours=2)
     end = datetime.combine(last_day + timedelta(days=2), datetime.min.time(), KST)
-    succeeded = (
-        select(run_sources.c.source_record_key)
-        .join(runs, runs.c.run_id == run_sources.c.run_id)
-        .where(runs.c.status == "success")
-    )
     deadline = None if max_seconds is None else time.monotonic() + max_seconds
-    stats = {"records": 0, "keys": 0, "updated": 0, "days": defaultdict(int), "cursor": after}
-    while deadline is None or time.monotonic() < deadline:
-        with repository.engine.connect() as connection:
-            connection.exec_driver_sql("SET statement_timeout = '30s'")
+    stats = {"records": 0, "keys": 0, "updated": 0, "skipped": 0, "days": defaultdict(int),
+             "cursor": after}
+    # 대상 원천 key를 (dataset, fetched_at) index로 한 번만 고른다. 성공 run 연결은 key마다
+    # EXISTS다.
+    with repository.engine.connect() as connection, connection.begin():
+        connection.exec_driver_sql("SET LOCAL statement_timeout = '120s'")
+        wanted = list(connection.scalars(
+            select(sources.c.source_record_key).where(
+                sources.c.provider == PROVIDER, sources.c.dataset_key == DATASET,
+                sources.c.fetched_at >= start, sources.c.fetched_at < end,
+                sources.c.source_record_key > after,
+                select(run_sources.c.run_id).join(runs, runs.c.run_id == run_sources.c.run_id)
+                .where(run_sources.c.source_record_key == sources.c.source_record_key,
+                       runs.c.status == "success").exists(),
+            ).order_by(sources.c.source_record_key)
+        ))
+    stats["candidates"] = len(wanted)
+    position = 0
+    while position < len(wanted) and (deadline is None or time.monotonic() < deadline):
+        chunk = wanted[position:position + batch]
+        with repository.engine.connect() as connection, connection.begin():
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '30s'")
             records = list(connection.execute(
                 select(
                     sources.c.source_record_key, sources.c.source_entity_id,
                     sources.c.payload, sources.c.fetched_at,
-                ).where(
-                    sources.c.provider == PROVIDER, sources.c.dataset_key == DATASET,
-                    sources.c.fetched_at >= start, sources.c.fetched_at < end,
-                    sources.c.source_record_key > stats["cursor"],
-                    sources.c.source_record_key.in_(succeeded),
-                ).order_by(sources.c.source_record_key).limit(batch)
+                ).where(sources.c.source_record_key.in_(chunk))
+                .order_by(sources.c.source_record_key)
             ).mappings())
-        if not records:
-            stats["done"] = True
-            break
         grouped = defaultdict(list)
         for record in records:
             payload = record["payload"]
-            if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
-                continue
-            grid = _grid(record["source_entity_id"], payload["rows"])
+            grid = (
+                _grid(record["source_entity_id"], payload["rows"])
+                if isinstance(payload, dict) and isinstance(payload.get("rows"), list) else None
+            )
             if grid is None:
+                stats["skipped"] += 1
                 continue
-            locations = grids.get(grid, [])
-            for point in _points(record, locations):
+            try:
+                points = list(_points(record, grids.get(grid, [])))
+            except (ValueError, TypeError, KeyError):
+                stats["skipped"] += 1  # 한 응답의 형식 오류가 전체 복구를 멈추지 않는다
+                continue
+            for point in points:
                 parsed = observation(point)
                 if parsed is not None and first_day <= date.fromisoformat(parsed[0][1]) <= last_day:
                     grouped[parsed[0]].append(point)
@@ -161,6 +176,8 @@ def backfill_daily_from_kma_nowcast(
                             summaries.c.hourly_winners,
                         ).where(tuple_(summaries.c.location_id, summaries.c.date, summaries.c.slot)
                                 .in_([(k[0], date.fromisoformat(k[1]), k[2]) for k in keys]))
+                        # 정상 reducer와 같은 키 순서로 잠근다(교착 회피).
+                        .order_by(summaries.c.location_id, summaries.c.date, summaries.c.slot)
                         .with_for_update()
                     )
                 }
@@ -187,9 +204,10 @@ def backfill_daily_from_kma_nowcast(
                     )
                     stats["updated"] += 1
                     stats["days"][key[1]] += 1
-        stats["cursor"] = records[-1]["source_record_key"]
+        position += len(chunk)
+        stats["cursor"] = chunk[-1]
         if pause_seconds:
             time.sleep(pause_seconds)
     stats["days"] = dict(sorted(stats["days"].items()))
-    stats.setdefault("done", False)
+    stats["done"] = position >= len(wanted)
     return stats
