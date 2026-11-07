@@ -12,7 +12,6 @@ from .export_heads import _digest
 from .export_inventory_selection import (
     MAX_SELECTED_ROWS,
     SDK_NETWORKS,
-    approved_source_selection,
     catalog_source_projection,
     counts_for_freshness,
     freshness_min,
@@ -138,14 +137,14 @@ class DailySummaryExports(FrozenCurrentExports):
             # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
             keys = [row["location_id"] for row in locations]
         keys = set(keys)
-        from .export_artifacts import ExportArtifactError
+        from .export_artifacts import ExportArtifactError, ExportGuardTimeout
 
         try:
-            selection = approved_source_selection(
-                connection, self.heads.metadata, locations,
-                expected=self.expected_sources, optional=self.optional_sources,
-                health_location_ids=keys if self.location_id else None,
+            selection = self._approved_selection(
+                connection, locations, health_location_ids=keys if self.location_id else None,
             )
+        except ExportGuardTimeout:
+            raise
         except (ExportArtifactError, KeyError, TypeError, ValueError) as exc:
             raise ExportSnapshotUnavailable("관측 source 승인 집합이 준비되지 않았습니다.") from exc
         expected = {

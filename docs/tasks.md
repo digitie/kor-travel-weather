@@ -268,3 +268,5 @@ collector/head·정상0·비용/frozen·W3/W5·운영 수용을 완료 처리하
 - 3B 내부KMA실황성공head는PR143 main476c9f11로수용(전체PG812·정확CI·2리뷰·격리API/UI).
 - 실제nonempty collector opt-in/별도정확성공publisher는PR144 main089bdc32로수용(정확CI전체·집중33·2리뷰·격리API/UI). 기본OFF다.
 - W-MAP-02 전체는계속미완이다. strict8category/실제KMA W1/W2 frozen reader는PR145 진행중이며, 모든provider/current·forecast W3·상태W4·사전요약W5·GC/비용gate·Map소비/운영수용은남는다. 위초기진행이력의3B미착수표현은이정산으로갱신한다.
+
+- READ-NEXT-20261107 후속: 소유자 승인 최대60초 API 상태 캐시·묶음 조회 WSL/Docker PG18각134·경계8 통과. 기존 Root 자연 종료와 새 API 실제 배포/수용은 남아 있다.

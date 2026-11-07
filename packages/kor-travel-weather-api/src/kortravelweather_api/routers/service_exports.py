@@ -365,6 +365,8 @@ async def _frozen_response(
                 reader_guard_seconds=settings.service_export_reader_guard_seconds,
             ),
             signing_key=settings.admin_token.get_secret_value(),
+            **({"selection_cache": request.app.state.export_selection_cache}
+               if resource in {"current", "daily-summaries"} else {}),
             **(
                 {"providers": selection.providers, "source_inventory": True,
                  "expected_sources": selection.expected, "optional_sources": selection.optional}
@@ -390,6 +392,7 @@ async def _frozen_response(
             ),
             limiter=request.app.state.service_export_limiter,
         )
+        reader.require_current_selection()
     except ExportCursorInvalid as exc:
         _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
@@ -421,7 +424,8 @@ async def export_current(
 
     해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은
     보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다. export 경로가
-    없는 provider가 활성이면 축소 성공 대신503이다.
+    없는 provider가 활성이면 축소 성공 대신503이다. 승인·실패 상태 반영은 최대60초 지연될 수
+    있으며 실제 수집 시각은 유지한다. 60초를 넘긴 상태는 정상 응답에 쓰지 않는다.
     """
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
@@ -496,6 +500,7 @@ async def export_daily_summaries(
     전체 목록에서 한 번도 승인되지 않은 관측 anchor는 stale로 표시하고, 단일 위치 최초
     조회의 필수 원천 미승인만503이다. AirKorea는 요약 지표가 없어 필수 원천이 아니다.
     강수 합계와 강수 없음(false)은 구간6시간 RN1이 모두 있을 때만 확정한다.
+    승인·실패 상태 반영은 최대60초 지연될 수 있으며 실제 수집 시각은 유지한다.
     """
     return await _frozen_response(
         request, "daily-summaries", limit, cursor, days=days, location_id=location_id

@@ -151,6 +151,16 @@ def _http_adapter(repo, root, adapter):
     assert heads.promote(ExportAttempt(*identity), ExportArtifactStore(root)) == "PUBLISHED"
 
 
+def _selection_clock(client, monkeypatch):
+    from time import monotonic
+    from kortravelweather import export_snapshots
+
+    clock = [monotonic()]
+    monkeypatch.setattr(export_snapshots, "monotonic", lambda: clock[0])
+    client.app.state.export_selection_cache.clock = lambda: clock[0]
+    return clock
+
+
 def test_default_current_exports_every_enabled_observation_source_and_keeps_failure_stale(
     external_repository,
     tmp_path,
@@ -164,6 +174,7 @@ def test_default_current_exports_every_enabled_observation_source_and_keeps_fail
         service_export_artifact_root=tmp_path,
     )
     client = TestClient(create_app(settings, repo))
+    clock = _selection_clock(client, monkeypatch)
     url, headers = "/v1/service/exports/current", {"x-admin-token": "all-sources-fixture"}
     assert client.get(url).status_code == 401
     assert client.get(url, headers=headers).status_code == 503
@@ -188,6 +199,12 @@ def test_default_current_exports_every_enabled_observation_source_and_keeps_fail
         export_cohort_required=True,
     )
     repo.finish_sync_run(failed.run_id, status="failed")
+    clock[0] += 59
+    # 소유자 승인 범위 안에서는 같은 기준 상태/ETag를 재사용하고 인증은 매번 확인한다.
+    assert client.get(url, headers={"if-none-match": healthy.headers["etag"]}).status_code == 401
+    within = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
+    assert within.status_code == 304
+    clock[0] += 1  # 정확히 60초에는 새 실패를 읽고 ETag/stale을 갱신한다.
     stale = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
     assert stale.status_code == 200 and stale.json()["meta"]["source_status"] == "stale"
     assert stale.json()["items"] == healthy.json()["items"]
@@ -224,6 +241,7 @@ def test_expired_source_is_left_out_of_current_and_kma_rotation_age_is_not(
         service_exports_enabled=True,
         service_export_artifact_root=tmp_path,
     ), repo))
+    clock = _selection_clock(client, monkeypatch)
     url, headers = "/v1/service/exports/current", {"x-admin-token": "expired-source-fixture"}
     _collect(repo, tmp_path)
     for adapter in (OpenMeteoProvider, WeatherApiProvider, OpenWeatherMapProvider):
@@ -235,6 +253,7 @@ def test_expired_source_is_left_out_of_current_and_kma_rotation_age_is_not(
     # KMA 회전 slot은 다음 sweep까지 수 시간(운영 약 6시간) 묵는다. 신선도 상한(3시간)은 넘어
     # stale이지만 만료되지는 않는다 — 값은 그대로 나간다.
     _age_source(repo, "python-kma-api", timedelta(hours=6, minutes=30))
+    clock[0] += 60
     rotating = client.get(url, headers=headers)
     assert rotating.status_code == 200 and rotating.json()["meta"]["source_status"] == "stale"
     assert "python-kma-api" in {item["provider"] for item in rotating.json()["items"]}
@@ -242,6 +261,7 @@ def test_expired_source_is_left_out_of_current_and_kma_rotation_age_is_not(
     # 응답에서 계속 빠지는 원천: 만료를 넘으면 그 원천 없이 200 stale, meta는 살아 있는 원천 기준.
     dead = source_expiry("krex_restarea_weather") + timedelta(hours=1)
     _age_source(repo, "python-krex-api", dead)
+    clock[0] += 60
     expired = client.get(url, headers=headers)
     assert expired.status_code == 200 and expired.json()["meta"]["source_status"] == "stale"
     providers = {item["provider"] for item in expired.json()["items"]}
@@ -271,6 +291,7 @@ def test_slow_sdk_source_keeps_serving_but_leaves_freshness_after_the_window(
         service_exports_enabled=True,
         service_export_artifact_root=tmp_path,
     ), repo))
+    clock = _selection_clock(client, monkeypatch)
     url, headers = "/v1/service/exports/current", {"x-admin-token": "freshness-window-fixture"}
     _collect(repo, tmp_path)
     for adapter in (OpenMeteoProvider, WeatherApiProvider, OpenWeatherMapProvider):
@@ -281,6 +302,7 @@ def test_slow_sdk_source_keeps_serving_but_leaves_freshness_after_the_window(
     slow = FRESHNESS_WINDOW + timedelta(hours=6)
     assert slow < source_expiry("krex_restarea_weather")
     _age_source(repo, "python-krex-api", slow)
+    clock[0] += 60
     page = client.get(url, headers=headers)
     assert page.status_code == 200
     assert "python-krex-api" in {item["provider"] for item in page.json()["items"]}  # 값은 낸다
