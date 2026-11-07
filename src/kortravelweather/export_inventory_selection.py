@@ -94,6 +94,26 @@ SOURCE_EXPIRY_FLOOR = timedelta(hours=24)
 SOURCE_EXPIRY_FACTOR = 2
 
 
+#: 신선도(meta.source_collected_at·stale)에 세는 승인 나이 상한. 이보다 오래됐지만 만료 전인 승인은
+#: 값은 내되 신선도·미확인 판정에서 뺀다(소유자 2026-11-07: 응답에서 빠진 산악기상 몇 곳이 SDK 만료
+#: 72시간 동안 current·daily meta를 붙잡았다). 만료 하한과 같은 값에서 파생한다.
+FRESHNESS_WINDOW = SOURCE_EXPIRY_FLOOR
+#: 그래서 신선도 창 안 승인이 하나도 없는 원천은 stale이다 — SDK(신선도 상한 36시간)도 통째로 24시간
+#: 침묵하면 stale이 된다(실효 상한 = min(source_max_age, FRESHNESS_WINDOW)).
+
+
+def counts_for_freshness(collected_at, now):
+    """이 승인이 신선도(meta·stale)에 들어가는가. 값 제공 여부(만료)와는 별개다."""
+    return now - collected_at <= FRESHNESS_WINDOW
+
+
+def freshness_min(values, now):
+    """신선도에 드는 값의 최솟값. 하나도 없으면 전체 최솟값(그때는 나이 검사가 stale로 만든다)."""
+    values = [value for value in values if value is not None]
+    fresh = [value for value in values if counts_for_freshness(value, now)]
+    return min(fresh or values, default=None)
+
+
 def source_expiry(dataset):
     """이 나이를 넘은 위치별 승인은 값·meta·건강도 어디에도 쓰지 않는다(coverage 공백).
 
@@ -321,10 +341,21 @@ def approved_source_selection(
         sources.add(key[:2])
     if expected - optional - ever:
         raise ExportArtifactError("필수 provider/dataset의 최초 승인 위치가 없습니다.")
+    # 신선도 창 밖(만료 전) 승인은 값으로는 내지만 건강도·미확인 판정에서는 뺀다.
     health_rows = [
-        r for r in valid.values() if health_keys is None or r["location_id"] in health_keys
+        r for r in valid.values()
+        if (health_keys is None or r["location_id"] in health_keys)
+        and counts_for_freshness(r["source_collected_at"], now)
     ]
-    unconfirmed = (bool(expected - sources) if health_keys is None else False) or any(
+    # 승인은 있지만 신선도 창 안 승인이 하나도 없는 원천(통째로 침묵)은 미확인이다.
+    fresh_sources = {(row["provider"], row["dataset_key"]) for row in health_rows}
+    unconfirmed = (
+        bool(expected - fresh_sources) if health_keys is None
+        else bool({
+            (r["provider"], r["dataset_key"]) for r in valid.values()
+            if r["location_id"] in health_keys
+        } - fresh_sources)
+    ) or any(
         now - row["source_collected_at"] > source_max_age(row["dataset_key"])
         or now - row["data_revision_at"] > source_max_age(row["dataset_key"])
         for row in health_rows
@@ -415,6 +446,10 @@ def approved_source_selection(
                 approved = valid.get((*source, key, part))
                 if approved is None and (*source, key, part) in expired_parts:
                     continue  # 만료 = 이 원천이 내지 않는 위치(공백). 이번 실패의 미확인이 아니다.
+                if approved is not None and not counts_for_freshness(
+                    approved["source_collected_at"], now,
+                ):
+                    continue  # 신선도 창 밖 승인은 값만 낸다(미확인 판정에서 뺀다)
                 if approved is None or (
                     approved["namespace"] != descriptor_namespace
                     or run_ids.get(approved["plan_attempt_id"]) is None

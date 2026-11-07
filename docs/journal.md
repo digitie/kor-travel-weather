@@ -1,3 +1,11 @@
+## 2026-11-07 — 신선도 창 24시간(값은 만료까지), 일간 요약 backfill 실행
+
+- 소유자 결정(b): SDK 승인 값은 만료(72시간)까지 내되, meta.source_collected_at·stale·미확인은 24시간 안 승인만 센다
+  (`FRESHNESS_WINDOW` = 만료 하한에서 파생). 원인은 응답에서 빠진 산림청 산악기상 3곳(krforest-6912·6903·3037)의
+  11-04 21:04 승인이었다.
+- #206 backfill을 odroid에서 실행(03:44~04:33Z, systemd nice 10, 100건·0.5초 쉼): KMA 실황 원천 62,322건, 요약 행
+  약 63,500건 갱신, 건너뜀 0. Map 확인은 #1440 댓글.
+
 ## 2026-11-07 — 일간 요약 공백(10-25~11-01) backfill, current·daily freshness stale 원인
 
 - Map #1440: W5 표본이 10-25·26·28~11-01 0, 10-27 대부분 0. publisher 일시중지(~11-02 03:13Z) 동안 attempt

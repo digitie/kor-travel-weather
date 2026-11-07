@@ -1,3 +1,7 @@
+## 2026-11-07 — 신선도 창 PR·backfill 완료
+
+- meta·stale은 24시간 안 승인만(값은 만료까지). backfill 10-25~11-01 완료(요약 행 약 63,500건).
+
 ## 2026-11-07 — 일간 요약 backfill PR·freshness 원인
 
 - 10-25~11-01 W5 공백을 KMA 실황 원천 응답으로 다시 채우는 일회성 backfill(성공 run만, head 불변).

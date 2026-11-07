@@ -442,6 +442,37 @@ def test_expiry_horizon_derives_from_freshness_and_spares_kma_rotation():
     assert all(source_expiry(dataset) >= 2 * rotation_refresh for dataset in kma)
 
 
+def test_out_of_window_approval_is_served_but_not_counted_for_freshness(
+    external_repository, tmp_path, monkeypatch,
+):
+    """신선도 창 밖·만료 전 승인은 값으로 내되 미확인·meta에서 뺀다(2026-11-07 소유자 결정).
+
+    open_meteo current의 만료는 창과 같은 24시간이라 창을 1시간으로 좁혀 창과 만료 사이를 만든다.
+    """
+    from kortravelweather import export_inventory_selection as selection_module
+    from kortravelweather.export_inventory_selection import freshness_min
+
+    monkeypatch.setattr(selection_module, "FRESHNESS_WINDOW", timedelta(hours=1))
+    repo = external_repository
+    targets = [ProviderLocation("window-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(2)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="창", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    slow = targets[1].location_id
+    _age(repo, slow, timedelta(hours=4))  # 신선도 상한 3시간·창 1시간 밖, 만료 24시간 안
+    selection = _selection(repo)
+    assert slow in {key for scope in selection.scopes for key in scope.location_ids}  # 값은 낸다
+    assert not selection.unconfirmed  # 다른 위치가 창 안이라 원천은 살아 있다
+    now = datetime.now(UTC)
+    fresh, old = now - timedelta(minutes=5), now - timedelta(hours=4)
+    assert freshness_min([old, fresh], now) == fresh
+    assert freshness_min([old], now) == old  # 창 안이 없으면 전체(나이 검사가 stale로 만든다)
+    _age(repo, targets[0].location_id, timedelta(hours=4))
+    assert _selection(repo).unconfirmed  # 원천 통째로 창 밖이면 미확인
+
+
 def test_inventory_generation_is_a_live_root_even_after_head_replacement(
     external_repository, tmp_path,
 ):
