@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, create_engine, event
 
 from kortravelweather import export_capacity as capacity
+from kortravelweather.export_heads import _digest
 
 
 def test_budget_matches_digest_json_utf8_and_exact_boundary():
@@ -19,6 +20,9 @@ def test_budget_matches_digest_json_utf8_and_exact_boundary():
     ).encode("utf-8"))
     assert capacity.MetadataBudget(expected).add(value) == expected
     assert capacity.MetadataBudget(expected).add_bounded_record(value, expected) == expected
+    assert capacity.bounded_manifest_digest(value, expected) == _digest(value)
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.bounded_manifest_digest(value, expected - 1)
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.MetadataBudget().add_bounded_record(value, expected - 1)
     with pytest.raises(capacity.ExportCapacityExceeded):
@@ -47,6 +51,8 @@ def test_invalid_json_is_a_capacity_error(invalid):
         capacity.MetadataBudget().add(invalid)
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.MetadataBudget().add_bounded_record(invalid, capacity.MAX_SCOPE_PLAN_BYTES)
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.bounded_manifest_digest(invalid, capacity.MAX_MANIFEST_BYTES)
 
 
 @pytest.fixture
@@ -146,4 +152,5 @@ def test_manifest_state_reserve_fits_fallback_marker_at_exact_limit():
     normal_maximum = capacity.MAX_MANIFEST_BYTES - capacity.MANIFEST_STATE_RESERVE
     value["padding"] = "x" * (normal_maximum - overhead)
     assert capacity.MetadataBudget(normal_maximum).add(value) == normal_maximum
+    assert capacity.bounded_manifest_digest(value, normal_maximum) == _digest(value)
     capacity.MetadataBudget().add(dict(value, capacity_limited=True))

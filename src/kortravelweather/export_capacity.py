@@ -3,6 +3,7 @@
 파일 크기·페이지 크기를 늘리지 않는다. DB cursor도 작은 묶음만 읽고 닫는다.
 """
 
+import hashlib
 import json
 from collections import defaultdict
 
@@ -55,6 +56,21 @@ class MetadataBudget:
         if size > maximum or self.used > self.maximum:
             raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
         return self.used
+
+
+def bounded_manifest_digest(value, maximum):
+    """단건·누적 예산을 검사한 manifest를 C encoder 한 번으로 제한·해시한다.
+
+    SQL에서 단건을 제한하고 호출자가 누적 예산을 검사한 트리만 받는다. 최종 구조의
+    괄호·키까지 UTF-8 byte 상한에 포함하며 기존 정규 JSON digest와 같은 값을 낸다.
+    """
+    try:
+        payload = MetadataBudget().encoder.encode(value).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, OverflowError) as exc:
+        raise ExportCapacityExceeded("승인 manifest JSON이 올바르지 않습니다.") from exc
+    if len(payload) > maximum:
+        raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def read_generation_refs(connection, table, generation_ids):

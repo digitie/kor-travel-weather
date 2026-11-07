@@ -14,6 +14,7 @@ from .export_capacity import (
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
+    bounded_manifest_digest,
     read_generation_refs,
 )
 from .export_heads import ScopeDescriptor, _digest
@@ -229,7 +230,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "data_revision_at": head.data_revision_at.isoformat(),
                     }
                 )
-                budget.add(scopes[-1])
+                budget.add_bounded_record(scopes[-1], MAX_MANIFEST_BYTES)
             manifest = {
                 "selection": self.selection,
                 "as_of": anchor.isoformat(),
@@ -238,8 +239,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "unconfirmed_sources": unconfirmed,
             }
             manifest = self._prepare_manifest(manifest)
-            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
-            digest = _digest(manifest)
+            digest = bounded_manifest_digest(
+                manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
+            )
             # 재사용 조건은 그대로다(같은 digest의 유효 handle이 그 selection의 가장 최근 발급).
             # digest를 먼저 index로 찾고 그보다 새 행만 selection 조건으로 해석한다. 예전처럼
             # selection 조건으로 표 전체를 먼저 훑으면 행마다 큰 manifest json을 조건 수만큼 해석해
