@@ -27,6 +27,7 @@ from .export_snapshots import (
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    ensure_snapshot_files,
 )
 
 
@@ -333,9 +334,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             return frozen
 
     def page(self, *, limit, cursor):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(limit=limit, cursor=cursor)
+        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
+        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        return self._page_guarded(limit=limit, cursor=cursor)
 
     def _page_guarded(self, *, limit, cursor):
         if cursor:
@@ -354,12 +355,15 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("예보 cursor가 만료됐습니다.")
             frozen = dict(row)
         else:
-            try:
-                frozen = self._freeze_forecasts()
-            except ExportCapacityExceeded:
-                frozen = self._capacity_fallback(self._previous_forecasts())
-            except ExportSnapshotUnavailable:
-                frozen = self._previous_forecasts()
+            def issue():
+                try:
+                    return self._freeze_forecasts()
+                except ExportCapacityExceeded:
+                    return self._capacity_fallback(self._previous_forecasts())
+                except ExportSnapshotUnavailable:
+                    return self._previous_forecasts()
+
+            frozen = ensure_snapshot_files(self.artifacts, issue)
             frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
@@ -429,7 +433,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 ref = refs[0]
                 if cached_ref != ref["artifact_digest"]:
                     cached = defaultdict(list)
-                    for point in self.artifacts.read(
+                    for point in self.artifacts.read_shared(
                         ref["artifact_digest"],
                         byte_count=ref["byte_count"],
                         point_count=ref["point_count"],

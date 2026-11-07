@@ -99,6 +99,14 @@ class _Files:
     def read(self, digest, **_):
         return iter(self.points[digest])
 
+    def read_shared(self, digest, **kwargs):
+        # 실제 store처럼 파일 하나를 공유 guard 안에서 끝까지 읽는다.
+        with self.guard(shared=True):
+            return list(self.read(digest, **kwargs))
+
+    def all_present(self, refs):
+        return all(ref["artifact_digest"] in self.points for ref in refs)
+
 
 def test_location_with_only_past_targets_is_omitted_and_page_is_stale():
     """한 위치의 최신 승인 예보가 모두 지나도 style 전체를503으로 막지 않는다."""

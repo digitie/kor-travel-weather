@@ -135,7 +135,7 @@ class FrozenMidForecastExports(FrozenForecastExports):
         identity = (scope["generation_id"], ref["artifact_digest"])
         if cache.get("identity") != identity:
             points = defaultdict(list)
-            for point in self.artifacts.read(
+            for point in self.artifacts.read_shared(
                 ref["artifact_digest"], byte_count=ref["byte_count"],
                 point_count=ref["point_count"],
             ):
