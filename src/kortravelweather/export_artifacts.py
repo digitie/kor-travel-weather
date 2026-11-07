@@ -11,8 +11,10 @@ import stat
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -32,6 +34,16 @@ READER_GUARD_SECONDS_RANGE = (0.5, 10.0)
 SLOW_EXCLUSIVE_HOLD_SECONDS = 2.0
 _HOLDERS = frozenset({"publish", "gc", "promotion_cas", "other"})
 _DIGEST = re.compile(r"[0-9a-f]{64}")
+# JSON 해석 결과만 기억한다. 파일 존재·동일 fd의 hash/count 검증은 계속 요청마다 실행한다.
+_decoded_artifacts = OrderedDict()
+_decoded_artifact_bytes = 0
+_decoded_artifact_lock = threading.Lock()
+_DECODED_ARTIFACT_BYTES = 8 * 1024 * 1024
+_DECODED_ARTIFACT_ENTRIES = 2048
+
+
+def _file_identity(value):
+    return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
 
 def _observe_exclusive_hold(holder: str, seconds: float) -> None:
@@ -309,17 +321,22 @@ class ExportArtifactStore:
         # 검증한 동일 fd의 bounded 내용을 파싱한다. symlink를 따라가지 않는다.
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(descriptor, "rb") as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode):
                 raise ExportArtifactError("export artifact는 일반 파일이어야 합니다.")
             payload = stream.read(MAX_CHUNK_BYTES + 1)
+            after = os.fstat(stream.fileno())
+        if _file_identity(before) != _file_identity(after):
+            raise ExportArtifactError("검증 중 export artifact가 바뀌었습니다.")
+        verified_key = (digest, *_file_identity(after))
         verified = getattr(self._scope, "verified", None)
         if len(payload) != byte_count or (
-            (verified is None or digest not in verified)
+            (verified is None or verified_key not in verified)
             and hashlib.sha256(payload).hexdigest() != digest
         ):
             raise ExportArtifactError("export artifact가 없거나 손상됐습니다.")
         if verified is not None:
-            verified.add(digest)
+            verified.add(verified_key)
         lines = payload.splitlines()
         if len(lines) != point_count:
             raise ExportArtifactError("export artifact point 수가 receipt와 다릅니다.")
@@ -335,8 +352,32 @@ class ExportArtifactStore:
         self._lines(digest, byte_count=byte_count, point_count=point_count)
 
     def read(self, digest: str, *, byte_count: int, point_count: int) -> Iterator[dict[str, Any]]:
-        for line in self._lines(digest, byte_count=byte_count, point_count=point_count):
-            item = json.loads(line)
-            if not isinstance(item, dict):
+        global _decoded_artifact_bytes
+        lines = self._lines(digest, byte_count=byte_count, point_count=point_count)
+        key = (digest, byte_count, point_count)
+        with _decoded_artifact_lock:
+            remembered = _decoded_artifacts.get(key)
+            if remembered is not None:
+                _decoded_artifacts.move_to_end(key)
+        if remembered is None:
+            items = tuple(json.loads(line) for line in lines)
+            if any(not isinstance(item, dict) for item in items):
                 raise ExportArtifactError("export artifact point 형식이 다릅니다.")
-            yield item
+            # canonical point는 scalar뿐이다. 중첩 값이 있는 legacy/검증 자료만 깊게 복사한다.
+            flat = all(type(value) in (str, int, float, bool, type(None))
+                       for item in items for value in item.values())
+            with _decoded_artifact_lock:
+                if key not in _decoded_artifacts:
+                    _decoded_artifacts[key] = (items, flat)
+                    _decoded_artifact_bytes += byte_count
+                while _decoded_artifacts and (
+                    len(_decoded_artifacts) > _DECODED_ARTIFACT_ENTRIES
+                    or _decoded_artifact_bytes > _DECODED_ARTIFACT_BYTES
+                ):
+                    old, _ = _decoded_artifacts.popitem(last=False)
+                    _decoded_artifact_bytes -= old[1]
+        else:
+            items, flat = remembered
+        # 호출자가 중첩 dict/list를 수정해도 다음 응답이나 다른 reader에는 전파하지 않는다.
+        for item in items:
+            yield dict(item) if flat else deepcopy(item)

@@ -43,7 +43,7 @@ def _paused_public_page(root, kind, entered, release, fail):
             raise
 
 
-@pytest.mark.parametrize("kind", READERS)
+@pytest.mark.parametrize("kind", ["current", "forecast", "mid"])
 @pytest.mark.parametrize("finish", ["return", "error", "kill"])
 def test_public_page_protects_metadata_and_releases_after_return_error_or_kill(
     tmp_path, kind, finish,
@@ -108,6 +108,27 @@ def test_two_public_pages_do_not_nest_reader_slots(tmp_path):
             if process.is_alive():
                 process.terminate()
                 process.join(5)
+
+
+@pytest.mark.parametrize("kind", ["reference", "daily"])
+def test_db_only_page_does_not_wait_for_file_writer_or_take_reader_slot(tmp_path, kind):
+    context = multiprocessing.get_context("spawn")
+    entered, release = context.Event(), context.Event()
+    process = context.Process(
+        target=_paused_public_page, args=(str(tmp_path), kind, entered, release, False),
+    )
+    store = ExportArtifactStore(tmp_path)
+    try:
+        with store.guard(timeout_seconds=1):
+            process.start()
+            assert entered.wait(10), "파일 writer가 DB-only page의 metadata 진입을 막았습니다."
+            release.set()
+            process.join(10)
+            assert process.exitcode == 0
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
 
 
 def test_public_page_admission_timeout_precedes_metadata(tmp_path):

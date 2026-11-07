@@ -1274,6 +1274,40 @@ def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypat
     assert first.status_code == 200 and first.json()["meta"]["has_more"]
     snapshot_id = first.json()["meta"]["snapshot_id"]
     table, _ = export_snapshot_tables(Base.metadata)
+    # 분 단위 여유를 둔 새 handle은 같은 시각의 조건부 요청마다 UPDATE하지 않는다.
+    from sqlalchemy import event
+
+    from kortravelweather import export_locations
+
+    fixed = datetime.now(UTC)
+
+    class Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz or UTC)
+
+    for reader_module in (export_snapshots, export_forecasts, export_locations):
+        monkeypatch.setattr(reader_module, "datetime", Fixed)
+    with repository.engine.begin() as c:
+        c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
+            expires_at=fixed + SNAPSHOT_TTL + timedelta(minutes=1),
+        ))
+    writes = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("UPDATE WEATHER_EXPORT_SNAPSHOTS"):
+            writes.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", record)
+    try:
+        for _ in range(2):
+            unchanged = client.get(
+                url, params=params, headers={**HEADERS, "If-None-Match": first.headers["etag"]},
+            )
+            assert unchanged.status_code == 304
+        assert writes == []
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", record)
     with repository.engine.begin() as c:
         c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
             expires_at=datetime.now(UTC) + timedelta(seconds=5),
