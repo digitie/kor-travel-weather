@@ -269,16 +269,30 @@ def approved_source_selection(
     # 위치마다 attempt·plan을 PK로 두 번 더 찾던 join은 부하 때 5s 상한을 넘었다.
     # plan은 attempt마다 한 번(read_scope_plans), run_id는 cohort 대조에 필요한 것만 읽는다.
     # generation은 attempt 이력 정리와 독립인 공개 성공 증거다(FK 없음).
-    rows = connection.execute(select(
-        table, generations.c.attempt_id.label("plan_attempt_id"),
-        generations.c.data_revision_at, generations.c.created_at.label("generation_published_at"),
-    ).select_from(
-        table.join(generations, table.c.generation_id == generations.c.generation_id)
-    ).where(tuple_(table.c.provider, table.c.dataset_key).in_(expected)).order_by(
+    # inventory→generation JOIN은 수천 위치에서 동일 세대를 다시 찾아 운영5초 상한을 넘었다.
+    # 작은 inventory를 먼저 제한하고 서로 다른 generation만 배열 한 번으로 읽는다.
+    # 두 조회는 caller의 같은 RR 안에 있으며 generation의 승인 clock/plan을 그대로 사용한다.
+    rows = [dict(row) for row in connection.execute(select(table).where(
+        tuple_(table.c.provider, table.c.dataset_key).in_(expected),
+    ).order_by(
         table.c.provider, table.c.dataset_key, table.c.location_id,
-    ).limit(MAX_SELECTED_ROWS + 1)).mappings().all()
+    ).limit(MAX_SELECTED_ROWS + 1)).mappings()]
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
+    generation_ids = sorted({row["generation_id"] for row in rows})
+    approved = {
+        row["generation_id"]: row
+        for row in connection.execute(select(
+            generations.c.generation_id,
+            generations.c.attempt_id.label("plan_attempt_id"),
+            generations.c.data_revision_at,
+            generations.c.created_at.label("generation_published_at"),
+        ).where(any_of(generations.c.generation_id, generation_ids))).mappings()
+    } if generation_ids else {}
+    if len(approved) != len(generation_ids):
+        raise ExportArtifactError("승인 inventory의 generation이 유실됐습니다.")
+    for row in rows:
+        row.update(approved[row["generation_id"]])
     catalog = {row["location_id"]: row for row in locations}
     now = datetime.now(UTC)
     # 만료한 승인은 값을 내지 않으므로 plan·좌표·건강도 검증 대상도 아니다. 최초 승인 여부만 센다.
@@ -372,15 +386,39 @@ def approved_source_selection(
     # scope마다 attempt 행을 찾는 join에 run 행까지 붙이면 scope 수만큼 run을 다시 찾는다(실제 run은
     # 수십 개). run 상태는 distinct run_id로 따로 읽고, 여기서 읽은 attempt의 run_id는 아래 cohort
     # 대조에 다시 쓴다(승인 attempt의 약 2/3가 지금의 소유 attempt다).
-    active = list(connection.execute(select(
-        owners.c.source_scope, attempts.c.attempt_id, attempts.c.run_id, attempts.c.status,
-        generations.c.generation_id, owners.c.owner_epoch,
-        func.left(attempts.c.owner_epochs[owners.c.source_scope].as_string(), 32),
-    ).select_from(owners.join(
-        attempts, owners.c.active_attempt_id == attempts.c.attempt_id,
-    ).outerjoin(
-        generations, generations.c.attempt_id == attempts.c.attempt_id,
-    )).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    # owner의 다중 JOIN도 운영5초 상한을 넘었다. 서로 다른 attempt만 읽고,
+    # 위에서 읽은 승인 generation을 재사용한다. 같은 RR의 epoch 대조는 생략하지 않는다.
+    ownership = list(connection.execute(select(
+        owners.c.source_scope, owners.c.active_attempt_id, owners.c.owner_epoch,
+    ).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    attempt_ids = sorted({row.active_attempt_id for row in ownership})
+    active_attempts = {
+        row.attempt_id: row for row in connection.execute(select(
+            attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
+        ).where(any_of(attempts.c.attempt_id, attempt_ids)))
+    } if attempt_ids else {}
+    published_attempts = {
+        row["plan_attempt_id"]: row["generation_id"] for row in approved.values()
+    }
+    missing = sorted(set(attempt_ids) - published_attempts.keys())
+    if missing:
+        published_attempts.update(connection.execute(select(
+            generations.c.attempt_id, generations.c.generation_id,
+        ).where(any_of(generations.c.attempt_id, missing))).tuples().all())
+    active = []
+    for source_scope, attempt_id, epoch in ownership:
+        attempt = active_attempts.get(attempt_id)
+        if attempt is None:
+            continue  # 기존 INNER JOIN과 같이 유실은 아래 개수·cohort 검사에서 미확인이다.
+        claimed = (
+            attempt.owner_epochs.get(source_scope)
+            if isinstance(attempt.owner_epochs, dict) else None
+        )
+        active.append((
+            source_scope, attempt_id, attempt.run_id, attempt.status,
+            published_attempts.get(attempt_id), epoch,
+            str(claimed)[:32] if claimed is not None else None,
+        ))
     active_run_ids = sorted({row[2] for row in active})
     native_status = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
         any_of(runs.c.run_id, active_run_ids),
