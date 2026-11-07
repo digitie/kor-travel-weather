@@ -1,3 +1,11 @@
+## 2026-11-07 — reader guard 범위 축소 PR
+
+- 공유 guard는 파일 읽기만, writer는 짧은 재시도. 배포 뒤 artifact_write_failed·guard 보유 분포를 다시 잰다.
+
+## 2026-11-07 — 신선도 창 PR·backfill 완료
+
+- meta·stale은 24시간 안 승인만(값은 만료까지). backfill 10-25~11-01 완료(요약 행 약 63,500건).
+
 ## 2026-11-07 — PR206 최신 API·수집기 이미지 배포 완료
 
 제품87a0b50에 PR206 일간 요약 복구 기능을 통합해 API·수집기를 반영했다. 웹·DB0037·사용자 설정과 다른 서비스를 유지했고 원27개 상태 복원·Manager healthy·부모 실제 종료·API200/304·PC/모바일을 확인했다. 실제 backfill·백업/복원은 실행하지 않았다. [배포 원문과 검증 범위](reports/2026-11-07-weather-pr206-release.md).

@@ -1,3 +1,20 @@
+## 2026-11-07 — reader 공유 guard를 파일 읽기로 좁힌다(collector 쓰기 굶주림)
+
+- #205 보유 계측: 배포 뒤 45분에 publish 153·승격 CAS 17건이 2초 넘게 대기했고 138건이 5초 상한(실패)이었다.
+  reader가 첫 페이지 freeze(현재 49초·초단기 70초) 내내 공유 guard를 쥔 탓이다. `artifact_write_failed`→
+  `PLAN_SEAL_FAILED`가 6시간마다 450~700건(배포 전후 같음)이라 그 위치 승인이 버려져 지연이 쌓였다.
+- 이제 공유 guard는 artifact 파일 하나 읽는 동안만(`read_shared`). freeze·health는 DB만 보고, 읽을 파일은 commit된
+  snapshot ref·head·보존 창이 GC에서 지킨다(GC 경합 시험). 요약 reducer도 같다. collector publish·승격 CAS는 guard
+  대기 상한에 걸리면 짧게 쉬고 두 번 더 시도한다(`ExportArtifactStore.exclusive`).
+
+## 2026-11-07 — 신선도 창 24시간(값은 만료까지), 일간 요약 backfill 실행
+
+- 소유자 결정(b): SDK 승인 값은 만료(72시간)까지 내되, meta.source_collected_at·stale·미확인은 24시간 안 승인만 센다
+  (`FRESHNESS_WINDOW` = 만료 하한에서 파생). 원인은 응답에서 빠진 산림청 산악기상 3곳(krforest-6912·6903·3037)의
+  11-04 21:04 승인이었다.
+- #206 backfill을 odroid에서 실행(03:44~04:33Z, systemd nice 10, 100건·0.5초 쉼): KMA 실황 원천 62,322건, 요약 행
+  약 63,500건 갱신, 건너뜀 0. Map 확인은 #1440 댓글.
+
 ## 2026-11-07 — PR206 최신 API·수집기 이미지 배포 완료
 
 제품87a0b50에 PR206 일간 요약 복구 기능을 통합해 API·수집기를 반영했다. 웹·DB0037·사용자 설정과 다른 서비스를 유지했고 원27개 상태 복원·Manager healthy·부모 실제 종료·API200/304·PC/모바일을 확인했다. 실제 backfill·백업/복원은 실행하지 않았다. [배포 원문과 검증 범위](reports/2026-11-07-weather-pr206-release.md).

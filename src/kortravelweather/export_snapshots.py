@@ -36,7 +36,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from .export_artifacts import ExportArtifactError, ExportArtifactStore
+from .export_artifacts import ExportArtifactError, ExportArtifactStore, ExportGuardTimeout
 from .export_capacity import (
     MANIFEST_STATE_RESERVE,
     MAX_MANIFEST_BYTES,
@@ -145,6 +145,35 @@ def prune_export_snapshots(
             delete(snapshots).where(snapshots.c.snapshot_id.in_(victims))
         ).rowcount
 
+
+
+def _freshness(heads, now):
+    """snapshot meta의 수집·revision 시각. 신선도 창 안 승인만 센다(없으면 전체)."""
+    from .export_inventory_selection import counts_for_freshness
+
+    heads = list(heads)
+    fresh = [h for h in heads if counts_for_freshness(h["source_collected_at"], now)] or heads
+    return {
+        "source_collected_at": min(h["source_collected_at"] for h in fresh),
+        "data_revision_at": min(h["data_revision_at"] for h in fresh),
+    }
+
+
+def ensure_snapshot_files(artifacts, issue):
+    """새로 발급(또는 재사용)한 snapshot의 파일이 모두 남아 있는지 공유 guard 안에서 확인한다.
+
+    reader는 freeze transaction 동안 guard를 쥐지 않는다. freeze가 commit하기 전에 head가 바뀌고
+    GC가 이전 generation 파일을 지울 수 있다(24시간 넘게 승격되지 않은 scope + 최근 snapshot에도
+    없는 드문 경우). 그러면 한 번 다시 발급하고(이제 새 head를 본다), 그래도 없으면 일시 경합
+    503으로 돌려 같은 요청을 다시 받게 한다.
+    """
+    frozen = issue()
+    for _ in range(2):
+        refs = [ref for scope in frozen["manifest"].get("scopes", []) for ref in scope["refs"]]
+        if artifacts.all_present(refs):
+            return frozen
+        frozen = issue()
+    raise ExportGuardTimeout("snapshot 발급과 artifact 정리가 겹쳤습니다. 다시 요청하세요.")
 
 class FrozenCurrentExports:
     def __init__(
@@ -456,8 +485,7 @@ class FrozenCurrentExports:
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": min(h["source_collected_at"] for h in heads.values()),
-                "data_revision_at": min(h["data_revision_at"] for h in heads.values()),
+                **_freshness(heads.values(), now),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
             }
@@ -526,9 +554,9 @@ class FrozenCurrentExports:
             return frozen
 
     def page(self, resource: str, *, limit: int, cursor: str | None):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(resource, limit=limit, cursor=cursor)
+        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
+        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        return self._page_guarded(resource, limit=limit, cursor=cursor)
 
     def _renew_reused(self, frozen):
         """첫 페이지가 재사용한 기존 handle의 TTL을 연장한다(best-effort).
@@ -607,12 +635,15 @@ class FrozenCurrentExports:
                     )
                 frozen = dict(frozen)
         else:
-            try:
-                frozen = self._freeze()
-            except ExportCapacityExceeded:
-                frozen = self._capacity_fallback(self._previous_success())
-            except ExportSnapshotUnavailable:
-                frozen = self._previous_success()
+            def issue():
+                try:
+                    return self._freeze()
+                except ExportCapacityExceeded:
+                    return self._capacity_fallback(self._previous_success())
+                except ExportSnapshotUnavailable:
+                    return self._previous_success()
+
+            frozen = ensure_snapshot_files(self.artifacts, issue)
             frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
@@ -654,7 +685,7 @@ class FrozenCurrentExports:
                 selected = set(scope["location_ids"])
                 approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
                 for ref in scope["refs"]:
-                    for point in self.artifacts.read(
+                    for point in self.artifacts.read_shared(
                         ref["artifact_digest"],
                         byte_count=ref["byte_count"],
                         point_count=ref["point_count"],
@@ -714,10 +745,16 @@ class FrozenCurrentExports:
             from .export_inventory_selection import source_max_age
 
             stale = frozen.get("_source_unconfirmed", False) or manifest["unconfirmed_sources"]
+            from .export_inventory_selection import counts_for_freshness
+
             stale |= any(
                 now - datetime.fromisoformat(scope[key]) > source_max_age(scope["dataset_key"])
                 for scope in manifest["scopes"]
+                if counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
                 for key in ("source_collected_at", "data_revision_at")
+            ) or not any(
+                counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
+                for scope in manifest["scopes"]
             )
         stale |= bool(manifest.get("capacity_limited"))
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts

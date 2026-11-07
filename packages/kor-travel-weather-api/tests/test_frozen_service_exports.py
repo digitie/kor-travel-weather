@@ -612,6 +612,153 @@ def test_exclusive_guard_hold_is_measured_per_holder_and_slow_holds_are_logged(
     assert "weather_export_guard_hold holder=gc" in caplog.text
 
 
+@pytest.fixture
+def restore_daily_progress(repository):
+    """daily checkpoint 표는 fixture TRUNCATE 밖이다. 미래로 옮긴 checkpoint가 뒤 테스트로 새면
+    reducer가 새 generation을 영영 건너뛴다(CI 전체 실행 순서에서 실제로 깨졌다)."""
+    from kortravelweather.export_daily_store import daily_summary_tables
+    from kortravelweather.export_heads import ExportHeads
+
+    _, progress = daily_summary_tables(ExportHeads(repository).metadata)
+    with repository.engine.begin() as connection:
+        saved = [dict(row) for row in connection.execute(progress.select()).mappings()]
+    yield
+    with repository.engine.begin() as connection:
+        connection.execute(progress.delete())
+        if saved:
+            connection.execute(progress.insert(), saved)
+
+
+def _make_old_generations_collectable(repository, root):
+    """retention·일별 checkpoint·유예가 지키지 않게 만든다(snapshot ref·head만 남는다)."""
+    import os
+    import time as clock
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_daily_store import daily_summary_tables
+    from kortravelweather.export_heads import ExportHeads
+
+    heads = ExportHeads(repository)
+    _, progress = daily_summary_tables(heads.metadata)
+    with repository.engine.begin() as connection:
+        connection.execute(update(heads.generations).values(
+            created_at=datetime.now(UTC) - timedelta(hours=30),
+        ))
+        connection.execute(progress.delete())
+        connection.execute(progress.insert().values(
+            progress_id=1, published_at=datetime.now(UTC) + timedelta(days=1),
+            generation_id="f" * 36, updated_at=datetime.now(UTC),
+        ))
+    past = clock.time() - 10 * 3600
+    for path in root.glob("*.jsonl"):
+        os.utime(path, (past, past))
+    export_gc.LATEST_SNAPSHOTS = 0
+
+
+def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
+    repository, tmp_path, monkeypatch, restore_daily_progress,
+):
+    """commit된 snapshot ref가 파일을 지킨다 — guard 없이 GC가 파일 읽기 앞에 끼어들어도 읽는다.
+
+    retention·일별 checkpoint·최근 snapshot 규칙을 모두 꺼서 유효 snapshot ref만 남긴다. 새 수집이
+    head를 옮겨 이전 generation은 head도 아니다. GC는 그 사이 고아 파일은 실제로 지운다.
+    """
+    from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_gc import collect_export_artifacts
+
+    monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
+    _collect(repository, tmp_path, hours=2, value="11")
+    client = _client(repository, tmp_path)
+    orphan = tmp_path / ("e" * 64 + ".jsonl")
+    orphan.write_bytes(b"{}\n")
+    original = ExportArtifactStore.read_shared
+    raced = {}
+
+    def gc_then_read(self, *args, **kwargs):
+        if not raced:
+            _collect(repository, tmp_path, hours=0, value="22")  # head를 새 generation으로
+            _make_old_generations_collectable(repository, tmp_path)
+            raced["report"] = collect_export_artifacts(
+                repository, tmp_path, mode="delete", deadline=float("inf"),
+                retention=timedelta(hours=1),
+            )
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ExportArtifactStore, "read_shared", gc_then_read)
+    response = client.get("/v1/service/exports/current", headers=HEADERS)
+    assert raced["report"]["deleted"] >= 1 and not orphan.exists()  # GC는 실제로 지웠다
+    assert response.status_code == 200, response.text
+    values = {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"}
+    assert values == {11.0}  # freeze한 이전 generation 그대로
+
+
+def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
+    repository, tmp_path, monkeypatch, restore_daily_progress,
+):
+    """freeze가 commit하기 전(GC가 ref를 못 보는 때)에 head가 바뀌고 GC가 지우면 다시 발급한다."""
+    from sqlalchemy import event
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_gc import collect_export_artifacts
+
+    monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
+    _collect(repository, tmp_path, hours=2, value="11")
+    client = _client(repository, tmp_path)
+    raced = {}
+
+    def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
+        insert = statement.lstrip().upper().startswith("INSERT INTO WEATHER_EXPORT_SNAPSHOTS")
+        if raced or not insert:
+            return
+        raced["hit"] = True
+        _collect(repository, tmp_path, hours=0, value="22")
+        _make_old_generations_collectable(repository, tmp_path)
+        raced["report"] = collect_export_artifacts(
+            repository, tmp_path, mode="delete", deadline=float("inf"),
+            retention=timedelta(hours=1),
+        )
+
+    event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    try:
+        response = client.get("/v1/service/exports/current", headers=HEADERS)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    assert raced["report"]["deleted"] >= 1  # 이전 generation 파일이 실제로 지워졌다
+    assert response.status_code in {200, 503}, response.text
+    if response.status_code == 200:
+        values = {i["value"] for i in response.json()["items"] if i["metric_key"] == "T1H"}
+        assert values == {22.0}  # 다시 발급해 새 head를 읽었다
+    else:
+        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+
+
+def test_writer_retries_a_short_guard_contention_instead_of_failing(tmp_path):
+    """collector publish·승격 CAS는 guard 대기 상한에 한 번 걸려도 짧게 쉬고 다시 시도한다."""
+    import threading
+    import time as clock
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    store = ExportArtifactStore(tmp_path)
+    held, release = threading.Event(), threading.Event()
+
+    def other_writer():
+        with store.guard(timeout_seconds=5):
+            held.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=other_writer)
+    thread.start()
+    assert held.wait(10)
+    threading.Timer(0.8, release.set).start()
+    started = clock.monotonic()
+    with store.exclusive(holder="publish", attempts=5, timeout_seconds=0.3):
+        pass
+    thread.join(10)
+    assert clock.monotonic() - started >= 0.6  # 첫 시도는 상한에 걸렸다
+
+
 class _Orig(Exception):
     def __init__(self, sqlstate):
         super().__init__("canceling statement")

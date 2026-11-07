@@ -978,7 +978,7 @@ class ExportHeads:
                 # 재사용하면서 실제 파일에서 index만 복구해 재수집 후 공개가 재개된다.
                 r["location_ids"] = sorted(parent_locations)
         with (
-            artifacts.guard(timeout_seconds=5, holder="promotion_cas"),
+            artifacts.exclusive(holder="promotion_cas"),
             self._transaction() as session,
         ):
             committed = (

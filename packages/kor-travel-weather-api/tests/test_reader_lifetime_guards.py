@@ -81,9 +81,15 @@ class AuditedFiles(ExportArtifactStore):
 
 
 @pytest.mark.parametrize("kind", ["current", "forecast", "mid", "reference", "daily"])
-def test_actual_public_page_guards_before_sql_through_health_and_releases_pg_for_files(
+def test_actual_public_page_holds_the_guard_only_for_file_reads_and_releases_pg_for_files(
     external_repository, tmp_path, kind,
 ):
+    """새 계약(2026-11-07): freeze·health SQL은 guard 밖, 파일 읽기만 공유 guard 안.
+
+    예전 계약(page 전체를 공유 guard로)은 운영에서 freeze가 50~150초 걸리는 동안 writer를 5초
+    상한에서 실패시켰다. 읽을 파일은 commit된 snapshot ref·head·보존 창이 GC에서 지킨다.
+    SQL 중에는 writer가 배타 guard를 얻을 수 있어야 하고, 파일 IO 중에는 PG 연결을 쥐지 않는다.
+    """
     repo = external_repository
     if kind == "mid":
         collect_mid(repo, tmp_path)
@@ -106,12 +112,12 @@ def test_actual_public_page_guards_before_sql_through_health_and_releases_pg_for
         observed = {"metadata": False, "after_file": False}
 
         def before_sql(_connection, _cursor, statement, _parameters, _context, _many):
-            assert files.depth == 1, "snapshot/health SQL이 reader 수명 밖에서 실행됐습니다."
+            assert files.depth == 0, "snapshot/health SQL 동안 artifact guard를 쥐었습니다."
             if not observed["metadata"]:
-                assert not probe(), "metadata SELECT 전에 EX writer가 진입했습니다."
+                assert probe(), "metadata SQL 동안 EX writer가 들어오지 못했습니다."
                 observed["metadata"] = True
             if files.reads and not observed["after_file"]:
-                assert not probe(), "파일 읽기 후 health SQL 전에 EX writer가 진입했습니다."
+                assert probe(), "파일 읽기 뒤 health SQL 동안 EX writer가 들어오지 못했습니다."
                 observed["after_file"] = True
 
         event.listen(repo.engine, "before_cursor_execute", before_sql)
@@ -130,9 +136,11 @@ def test_actual_public_page_guards_before_sql_through_health_and_releases_pg_for
         assert files.depth == 0 and probe()
 
 
-def test_actual_daily_reducer_retains_guard_through_checkpoint_cas_and_returns_pool_for_io(
+def test_actual_daily_reducer_reads_files_under_guard_and_cas_without_it(
     external_repository, tmp_path,
 ):
+    """요약 reducer도 파일 읽기만 공유 guard 안이다. checkpoint 뒤 generation은 GC가 지우지 않고
+    요약 CAS는 checkpoint 행 잠금이 직렬화한다(2026-11-07 계약 변경)."""
     repo = external_repository
     collect_current(repo, tmp_path)
     with writer_probe(tmp_path) as probe:
@@ -140,12 +148,12 @@ def test_actual_daily_reducer_retains_guard_through_checkpoint_cas_and_returns_p
         observed = {"metadata": False, "cas": False}
 
         def before_sql(_connection, _cursor, statement, _parameters, _context, _many):
-            assert files.depth == 1
+            assert files.depth == 0
             if not observed["metadata"]:
-                assert not probe()
+                assert probe()
                 observed["metadata"] = True
             if statement.lstrip().upper().startswith("UPDATE WEATHER_DAILY_SUMMARY_PROGRESS"):
-                assert files.reads and not probe(), "최종 checkpoint CAS 전에 guard를 해제했습니다."
+                assert files.reads and probe(), "checkpoint CAS가 writer를 막았습니다."
                 observed["cas"] = True
 
         event.listen(repo.engine, "before_cursor_execute", before_sql)

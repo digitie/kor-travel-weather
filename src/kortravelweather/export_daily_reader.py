@@ -14,6 +14,8 @@ from .export_inventory_selection import (
     SDK_NETWORKS,
     approved_source_selection,
     catalog_source_projection,
+    counts_for_freshness,
+    freshness_min,
     source_max_age,
 )
 from .export_snapshots import (
@@ -203,6 +205,9 @@ class DailySummaryExports(FrozenCurrentExports):
             or now - coverage[key]["source_collected_at"]
             > source_max_age(scope.descriptor.dataset_key)
             for key, scope in expected.items()
+            if counts_for_freshness(scope.source_collected_at, now)
+        ) or not any(
+            counts_for_freshness(scope.source_collected_at, now) for scope in expected.values()
         )
         # 관측 dataset 대상이 아닌 위치는 null/sample_count=0을 제공할 수 있다.
         # 원천 clock을 다른 위치에서 빌리지 않고 메타는 unknown/stale로 둔다.
@@ -302,11 +307,14 @@ class DailySummaryExports(FrozenCurrentExports):
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": min(
-                    (r["source_collected_at"] for r in coverage), default=None,
+                "source_collected_at": freshness_min(
+                    (r["source_collected_at"] for r in coverage), now,
                 ),
                 "data_revision_at": min(
-                    (r["published_at"] for r in coverage), default=ready["published_at"],
+                    [r["published_at"] for r in coverage
+                     if counts_for_freshness(r["source_collected_at"], now)]
+                    or [r["published_at"] for r in coverage],
+                    default=ready["published_at"],
                 ),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
@@ -315,9 +323,9 @@ class DailySummaryExports(FrozenCurrentExports):
             return row
 
     def page(self, *, limit, cursor):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(limit=limit, cursor=cursor)
+        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
+        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        return self._page_guarded(limit=limit, cursor=cursor)
 
     def _page_guarded(self, *, limit, cursor):
         if cursor:
@@ -420,7 +428,7 @@ class DailySummaryExports(FrozenCurrentExports):
             raise ExportSnapshotUnavailable("사전 계산 요약 checkpoint가 없습니다.")
         # roster/날짜 범위를 고정하고 각 페이지의 최신 사전계산 값을 반환한다.
         source = (
-            min((r["source_collected_at"] for r in coverage), default=None)
+            freshness_min((r["source_collected_at"] for r in coverage), datetime.now(UTC))
             if coverage is not None else frozen["source_collected_at"]
         )
         status = "stale" if (

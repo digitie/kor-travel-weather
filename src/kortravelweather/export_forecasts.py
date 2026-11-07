@@ -27,8 +27,20 @@ from .export_snapshots import (
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    ensure_snapshot_files,
 )
 
+
+def _freshness(heads, now):
+    """snapshot meta의 수집·revision 시각. 신선도 창 안 승인만 센다(없으면 전체)."""
+    from .export_inventory_selection import counts_for_freshness
+
+    heads = list(heads)
+    fresh = [h for h in heads if counts_for_freshness(h.source_collected_at, now)] or heads
+    return {
+        "source_collected_at": min(h.source_collected_at for h in fresh),
+        "data_revision_at": min(h.data_revision_at for h in fresh),
+    }
 
 class FrozenForecastExports(FrozenCurrentExports):
     STYLE_DATASETS = {
@@ -257,8 +269,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                "source_collected_at": min(h.source_collected_at for h in heads.values()),
-                "data_revision_at": min(h.data_revision_at for h in heads.values()),
+                **_freshness(heads.values(), now),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
             }
@@ -324,9 +335,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             return frozen
 
     def page(self, *, limit, cursor):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(limit=limit, cursor=cursor)
+        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
+        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        return self._page_guarded(limit=limit, cursor=cursor)
 
     def _page_guarded(self, *, limit, cursor):
         if cursor:
@@ -345,12 +356,15 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("예보 cursor가 만료됐습니다.")
             frozen = dict(row)
         else:
-            try:
-                frozen = self._freeze_forecasts()
-            except ExportCapacityExceeded:
-                frozen = self._capacity_fallback(self._previous_forecasts())
-            except ExportSnapshotUnavailable:
-                frozen = self._previous_forecasts()
+            def issue():
+                try:
+                    return self._freeze_forecasts()
+                except ExportCapacityExceeded:
+                    return self._capacity_fallback(self._previous_forecasts())
+                except ExportSnapshotUnavailable:
+                    return self._previous_forecasts()
+
+            frozen = ensure_snapshot_files(self.artifacts, issue)
             frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
@@ -420,7 +434,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 ref = refs[0]
                 if cached_ref != ref["artifact_digest"]:
                     cached = defaultdict(list)
-                    for point in self.artifacts.read(
+                    for point in self.artifacts.read_shared(
                         ref["artifact_digest"],
                         byte_count=ref["byte_count"],
                         point_count=ref["point_count"],
@@ -567,13 +581,17 @@ class FrozenForecastExports(FrozenCurrentExports):
 
     def _inventory_forecast_health(self, manifest, frozen, now):
         from .export_artifacts import ExportArtifactError
-        from .export_inventory_selection import source_max_age
+        from .export_inventory_selection import counts_for_freshness, source_max_age
 
         stale = bool(manifest.get("unconfirmed_sources"))
         stale |= any(
             now - datetime.fromisoformat(scope[key]) > source_max_age(scope["dataset_key"])
             for scope in manifest["scopes"]
+            if counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
             for key in ("source_collected_at", "data_revision_at")
+        ) or not any(
+            counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
+            for scope in manifest["scopes"]
         )
         with (
             self.repository.engine.connect().execution_options(
