@@ -102,12 +102,10 @@ def backfill_daily_from_kma_nowcast(
             )
         ):
             grids[(row.nx, row.ny)].append(row.location_id)
-    # 실황 응답의 base 시각은 fetch 직전 정시다. 날짜 경계 앞뒤로 두 시간을 더 읽고 point의
-    # KST 날짜로 다시 거른다.
+    # 실황 응답의 base 시각은 보통 fetch 직전 정시지만 늦은 재수집도 있다. 앞은 두 시간, 뒤는
+    # 하루를 더 읽고 point의 KST 날짜로 다시 거른다.
     start = datetime.combine(first_day, datetime.min.time(), KST) - timedelta(hours=2)
-    end = datetime.combine(last_day + timedelta(days=1), datetime.min.time(), KST) + timedelta(
-        hours=2
-    )
+    end = datetime.combine(last_day + timedelta(days=2), datetime.min.time(), KST)
     succeeded = (
         select(run_sources.c.source_record_key)
         .join(runs, runs.c.run_id == run_sources.c.run_id)
