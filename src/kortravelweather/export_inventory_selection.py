@@ -98,6 +98,8 @@ SOURCE_EXPIRY_FACTOR = 2
 #: 값은 내되 신선도·미확인 판정에서 뺀다(소유자 2026-11-07: 응답에서 빠진 산악기상 몇 곳이 SDK 만료
 #: 72시간 동안 current·daily meta를 붙잡았다). 만료 하한과 같은 값에서 파생한다.
 FRESHNESS_WINDOW = SOURCE_EXPIRY_FLOOR
+#: 그래서 신선도 창 안 승인이 하나도 없는 원천은 stale이다 — SDK(신선도 상한 36시간)도 통째로 24시간
+#: 침묵하면 stale이 된다(실효 상한 = min(source_max_age, FRESHNESS_WINDOW)).
 
 
 def counts_for_freshness(collected_at, now):
@@ -349,7 +351,10 @@ def approved_source_selection(
     fresh_sources = {(row["provider"], row["dataset_key"]) for row in health_rows}
     unconfirmed = (
         bool(expected - fresh_sources) if health_keys is None
-        else not fresh_sources and any(r["location_id"] in health_keys for r in valid.values())
+        else bool({
+            (r["provider"], r["dataset_key"]) for r in valid.values()
+            if r["location_id"] in health_keys
+        } - fresh_sources)
     ) or any(
         now - row["source_collected_at"] > source_max_age(row["dataset_key"])
         or now - row["data_revision_at"] > source_max_age(row["dataset_key"])

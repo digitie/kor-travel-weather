@@ -310,7 +310,10 @@ class DailySummaryExports(FrozenCurrentExports):
                     (r["source_collected_at"] for r in coverage), now,
                 ),
                 "data_revision_at": min(
-                    (r["published_at"] for r in coverage), default=ready["published_at"],
+                    [r["published_at"] for r in coverage
+                     if counts_for_freshness(r["source_collected_at"], now)]
+                    or [r["published_at"] for r in coverage],
+                    default=ready["published_at"],
                 ),
                 "created_at": now,
                 "expires_at": now + SNAPSHOT_TTL,
