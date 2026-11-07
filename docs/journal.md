@@ -1,3 +1,15 @@
+## 2026-11-07 — 일간 요약 공백(10-25~11-01) backfill, current·daily freshness stale 원인
+
+- Map #1440: W5 표본이 10-25·26·28~11-01 0, 10-27 대부분 0. publisher 일시중지(~11-02 03:13Z) 동안 attempt
+  19만 8천 건이 SUPERSEDED로 퇴역해 그 날짜 승인 generation이 없다. 정규화 fact는 보존 7일로 10-31 이전이
+  사라졌지만 원천 응답(`weather_source_records`)은 10-15부터 남아 있다(KMA 실황 10-25~11-01 55,664건, 성공 run 연결).
+- `export_daily_backfill.backfill_daily_from_kma_nowcast`: 성공 run의 KMA 실황 원천을 수집 때와 같은 정규화·reducer로
+  기존 요약에 합친다(head·generation 불변, 같은 값이면 쓰지 않음, 묶음마다 짧은 TX와 쉼). KMA가 winner 첫째라
+  다른 제공처는 KMA가 비운 시간만 채웠을 것이고 그것은 복구하지 않는다.
+- freshness: Map current·daily `source_collected_at` 11-04 21:04는 산림청 산악기상 3곳(krforest-6912·6903·3037)이
+  cohort에 남아 있으나 응답에서 빠져(`not_in_response` 24시간 45건) SDK 만료 72시간까지 가장 오래된 승인으로 남은
+  것이다. 수집 schedule은 정상이다.
+
 ## 2026-11-06 — PR205 API·수집기 배포와 실제 동작 확인 완료
 
 제품ba66543의 API4e59e13·CS7cabfec을 반영하고 실제 reader guard5초·API200/304·PC/모바일 상세/시간별/지도를 확인했다. 웹508a438·DB0037·사용자 설정은 보존했다. 원27상태 복원·Manager healthy·배포 부모 최초 Invocation done/종료까지 정산했다. [실제 이미지와 수용 범위](reports/2026-11-06-weather-reader205-release.md).

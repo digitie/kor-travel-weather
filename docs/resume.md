@@ -1,3 +1,8 @@
+## 2026-11-07 — 일간 요약 backfill PR·freshness 원인
+
+- 10-25~11-01 W5 공백을 KMA 실황 원천 응답으로 다시 채우는 일회성 backfill(성공 run만, head 불변).
+- current·daily stale은 산림청 산악기상 3곳이 응답에서 빠져 SDK 만료(72시간)까지 남은 것 — 제안은 PR 본문.
+
 ## 2026-11-06 — PR205 API·수집기 배포와 실제 동작 확인 완료
 
 제품ba66543의 API4e59e13·CS7cabfec을 반영하고 실제 reader guard5초·API200/304·PC/모바일 상세/시간별/지도를 확인했다. 웹508a438·DB0037·사용자 설정은 보존했다. 원27상태 복원·Manager healthy·배포 부모 최초 Invocation done/종료까지 정산했다. [실제 이미지와 수용 범위](reports/2026-11-06-weather-reader205-release.md).
