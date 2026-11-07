@@ -1,0 +1,191 @@
+"""승인 공백 날짜의 일간 요약을 KMA 실황 원천 응답으로 다시 채우는 일회성 backfill.
+
+2026-10-25~11-01에 export publisher가 멈춰 있었고(11-02 03:13Z 재개), 그동안 쌓인 attempt
+약 19만 8천 건은 SUPERSEDED로 퇴역했다. 그 날짜들의 승인 generation이 없어 W5 요약 표본이
+0이다. 정규화된 fact는 보존 7일이 지나 사라졌지만 원천 응답(``weather_source_records``)은
+남아 있다.
+
+이 모듈은 그 원천 응답을 수집 때와 같은 정규화(``ultra_short_nowcast_to_weather_values``)로
+다시 읽고, 같은 reducer(``merge_observations``/``summarize``)로 기존 요약에 합친다.
+
+- 성공한 수집 run에 묶인 원천만 쓴다(실패·부분 run 자료는 섞지 않는다).
+- KMA 실황만 쓴다. 요약 winner 우선순위에서 KMA가 첫째라 다른 제공처를 더해도 같은 시간의
+  winner는 바뀌지 않는다. KMA가 비운 시간만 다른 제공처가 채웠을 것이고, 그것은 복구하지
+  않는다(원천별 정규화가 제각각이라 이 일회성 범위 밖이다).
+- 위치는 지금 catalog의 활성 위치 중 같은 격자(nx, ny)다. 그 사이 격자가 바뀐 위치는 새 격자의
+  값을 받는다(해당 기간 catalog 이력은 없다).
+- head·generation·inventory는 건드리지 않는다. 요약 행만 합친다(같은 키는 행 잠금, 같은 값이면
+  쓰지 않는다). 다시 돌려도 결과가 같다.
+- 묶음마다 짧은 transaction(statement 5초·lock 1초)과 쉼을 두고, 시간 상한에서 cursor를 돌려준다.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from collections import defaultdict
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import select, text, tuple_
+from sqlalchemy.dialects.postgresql import insert
+
+from .export_artifacts import canonical_export_number
+from .export_daily import KST, merge_observations, observation, summarize
+from .export_daily_store import daily_summary_tables
+from .export_heads import ExportHeads
+from .providers.kma import ultra_short_nowcast_to_weather_values
+
+PROVIDER = "python-kma-api"
+DATASET = "kma_ultra_short_nowcast"
+MAX_DAYS = 31
+_GRID = re.compile(r"grid:(\d{1,3}):(\d{1,3})")
+
+
+def _grid(entity_id, rows):
+    """원천 응답의 격자. entity id(``grid:nx:ny``)를 먼저, 없으면 응답 행이 한 격자일 때만."""
+    match = _GRID.fullmatch(str(entity_id))
+    if match is not None:
+        return int(match[1]), int(match[2])
+    cells = {(row.get("nx"), row.get("ny")) for row in rows if isinstance(row, dict)}
+    if len(cells) == 1:
+        nx, ny = next(iter(cells))
+        if isinstance(nx, int) and isinstance(ny, int):
+            return nx, ny
+    return None
+
+
+def _points(record, locations):
+    for location_id in locations:
+        for value in ultra_short_nowcast_to_weather_values(
+            record["payload"]["rows"],
+            location_id=location_id,
+            source_record_key=record["source_record_key"],
+            known_at=record["fetched_at"],
+        ):
+            point = value.model_dump(mode="json", exclude={"payload"})
+            if value.value_number is not None:
+                point["value_number"] = canonical_export_number(value.value_number)
+            yield point
+
+
+def backfill_daily_from_kma_nowcast(
+    repository,
+    *,
+    first_day: date,
+    last_day: date,
+    after: str = "",
+    batch: int = 100,
+    pause_seconds: float = 0.5,
+    max_seconds: float | None = None,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """[first_day, last_day](KST) 요약을 원천 응답으로 채운다. ``after``부터 이어 간다."""
+    now = now or datetime.now(UTC)
+    today = now.astimezone(KST).date()
+    if not (today - timedelta(days=MAX_DAYS) <= first_day <= last_day <= today):
+        raise ValueError("backfill 날짜는 최근 31일 안의 과거·오늘이어야 합니다.")
+    if not 1 <= batch <= 1000:
+        raise ValueError("backfill 묶음은 1~1000입니다.")
+    heads = ExportHeads(repository)
+    summaries, _ = daily_summary_tables(heads.metadata)
+    catalog = heads.metadata.tables["weather_locations"]
+    sources = heads.metadata.tables["weather_source_records"]
+    run_sources = heads.metadata.tables["weather_sync_run_sources"]
+    runs = heads.metadata.tables["weather_sync_runs"]
+    with repository.engine.connect() as connection:
+        grids = defaultdict(list)
+        for row in connection.execute(
+            select(catalog.c.location_id, catalog.c.nx, catalog.c.ny).where(
+                catalog.c.enabled.is_(True), catalog.c.nx.is_not(None), catalog.c.ny.is_not(None),
+            )
+        ):
+            grids[(row.nx, row.ny)].append(row.location_id)
+    # 실황 응답의 base 시각은 fetch 직전 정시다. 날짜 경계 앞뒤로 두 시간을 더 읽고 point의
+    # KST 날짜로 다시 거른다.
+    start = datetime.combine(first_day, datetime.min.time(), KST) - timedelta(hours=2)
+    end = datetime.combine(last_day + timedelta(days=1), datetime.min.time(), KST) + timedelta(
+        hours=2
+    )
+    succeeded = (
+        select(run_sources.c.source_record_key)
+        .join(runs, runs.c.run_id == run_sources.c.run_id)
+        .where(runs.c.status == "success")
+    )
+    deadline = None if max_seconds is None else time.monotonic() + max_seconds
+    stats = {"records": 0, "keys": 0, "updated": 0, "days": defaultdict(int), "cursor": after}
+    while deadline is None or time.monotonic() < deadline:
+        with repository.engine.connect() as connection:
+            connection.exec_driver_sql("SET statement_timeout = '30s'")
+            records = list(connection.execute(
+                select(
+                    sources.c.source_record_key, sources.c.source_entity_id,
+                    sources.c.payload, sources.c.fetched_at,
+                ).where(
+                    sources.c.provider == PROVIDER, sources.c.dataset_key == DATASET,
+                    sources.c.fetched_at >= start, sources.c.fetched_at < end,
+                    sources.c.source_record_key > stats["cursor"],
+                    sources.c.source_record_key.in_(succeeded),
+                ).order_by(sources.c.source_record_key).limit(batch)
+            ).mappings())
+        if not records:
+            stats["done"] = True
+            break
+        grouped = defaultdict(list)
+        for record in records:
+            payload = record["payload"]
+            if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
+                continue
+            grid = _grid(record["source_entity_id"], payload["rows"])
+            if grid is None:
+                continue
+            locations = grids.get(grid, [])
+            for point in _points(record, locations):
+                parsed = observation(point)
+                if parsed is not None and first_day <= date.fromisoformat(parsed[0][1]) <= last_day:
+                    grouped[parsed[0]].append(point)
+        stats["records"] += len(records)
+        stats["keys"] += len(grouped)
+        if grouped and not dry_run:
+            with heads._transaction() as session:
+                session.execute(text("SET LOCAL statement_timeout = '5s'"))
+                session.execute(text("SET LOCAL lock_timeout = '1s'"))
+                keys = sorted(grouped)
+                existing = {
+                    (row.location_id, row.date.isoformat(), row.slot): row.hourly_winners
+                    for row in session.execute(
+                        select(
+                            summaries.c.location_id, summaries.c.date, summaries.c.slot,
+                            summaries.c.hourly_winners,
+                        ).where(tuple_(summaries.c.location_id, summaries.c.date, summaries.c.slot)
+                                .in_([(k[0], date.fromisoformat(k[1]), k[2]) for k in keys]))
+                        .with_for_update()
+                    )
+                }
+                for key in keys:
+                    previous = existing.get(key)
+                    state = merge_observations(previous or {}, grouped[key], key=key, now=now)
+                    if previous is not None and state == previous:
+                        continue
+                    values = {
+                        "summary": summarize(*key, state, now=now),
+                        "hourly_winners": state,
+                        "updated_at": now,
+                    }
+                    session.execute(
+                        insert(summaries)
+                        .values(location_id=key[0], date=date.fromisoformat(key[1]), slot=key[2],
+                                **values)
+                        .on_conflict_do_update(
+                            index_elements=["location_id", "date", "slot"], set_=values,
+                        )
+                    )
+                    stats["updated"] += 1
+                    stats["days"][key[1]] += 1
+        stats["cursor"] = records[-1]["source_record_key"]
+        if pause_seconds:
+            time.sleep(pause_seconds)
+    stats["days"] = dict(sorted(stats["days"].items()))
+    stats.setdefault("done", False)
+    return stats
