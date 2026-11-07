@@ -323,8 +323,10 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
     _publish(repo, tmp_path, targets)
     selection, seen = _captured(repo, lambda: _selection(repo))
     assert not selection.unconfirmed
-    owners = [s for s, _ in seen if "FROM weather_export_scope_owners JOIN" in s]
+    owners = [s for s, _ in seen if "FROM weather_export_scope_owners" in s]
     assert len(owners) == 1 and "weather_sync_runs" not in owners[0]
+    # 각 scope에서 generation/attempt를 다시 JOIN하지 않고 각 key 집합을 한 번 읽는다.
+    assert " JOIN " not in owners[0]
     runs = [s for s, _ in seen if s.startswith(
         "SELECT weather_sync_runs.run_id, weather_sync_runs.status",
     )]
