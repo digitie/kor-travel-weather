@@ -1,3 +1,9 @@
+## 2026-11-07 — 1회차 배포 종료·원 일정 복원, 최종 이미지 빌드 시작
+
+기존 KMA·Open-Meteo·WeatherAPI 수집과 worker가 자연 종료한 뒤 API481f5478·수집기14a8764c의 제품674d6f8 반영을 마쳤다. 원 Weather27개 상태 복원·Manager healthy·설정/키·웹/다른 서비스 보존과 최초 Invocation07ab4b4의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 실제 수용 원문은 Git 밖 release-cycle1/deployment-r2에 보존했다. 최초 배포의 실패 원문과 current45초 초과·daily22~30초는 여전히 별도 한계다.
+
+최신 실제 CID·schema0038을 확인하고 제품7ccf88a의 최소 API/수집기 빌드를 단 한 번 시작했다. 첫 Invocation18c1f460/Root7b91d8807c는 정상 G/R 획득을 기다리고 있으며, 아직 빌드·최종 배포 성공이 아니다. 웹·의존성·Alembic은 같으므로 웹 빌드·migration을 반복하지 않는다. 최종 Weather 이미지의 실제 수용 뒤 Transport 세 회차를 진행한다.
+
 ## 2026-11-07 — 자연 종료 진척과 최종 세 회차 배포 묶음 고정
 
 ‘진행’ 지시 뒤 기존 KMA 단기예보 b7add516의 공식 SUCCESS 종료를 확인했다. 실행 중인 Open-Meteo 예보와 기존 대기는 그대로 보존하며 Root07ab4b4를 중복·중단하지 않는다. 최종7ccf88a 소스 묶음과 W1 실제 이미지 기반의 최소API/CS 빌드 입력을 Git 밖 release-final에 고정했다. 의존성·웹·Alembic은674와 같고 migration은 없다. 기존 부모의 실제 종료·원27복원·Manager healthy 전에는 dispatch하지 않는 가드를 확인했으며 intent·새Root는 생성되지 않았다. 준비된 묶음을 이미지 빌드 완료로 표현하지 않는다. 자동 후속에 해당 경로와 실제 선행 조건을 갱신했다.
