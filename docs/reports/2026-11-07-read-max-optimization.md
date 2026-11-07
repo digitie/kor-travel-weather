@@ -166,3 +166,9 @@ SQL은 oversized 단건을 JSON 대신 null/거부 표식으로 반환하고, �
 ### 다음 실제 반영 입력 고정
 
 최신 ‘진행’ 뒤 KMA 단기예보의 공식 SUCCESS 종료를 확인했다. 최종7ccf88a archive SHA는`b12ae5961c6d0761e16acbaa32770f3ccb9d125c5f27f1f1cd1996a9a7e54340`이며 기존 W1 이미지481f5478/14a8764c를 실제 builder base로 검산했다. 의존성·웹·Alembic 동일성을 유지하고0038 migration/index repair를 반복하지 않는다. 새 빌드 dispatch 가드는 기존 Root의 실제 종료·원27복원·Manager healthy를 검사하며 현재는WAITING/새Root0/intent0이다. 이 준비를 최종 이미지 또는 전체 배포 완료로 세지 않는다.
+
+## 1회차 실제 배포 완료와 최종 이미지 빌드 연결
+
+2026-11-07 11:46UTC 최초 Invocation07ab4b4b942147648724a209866ea293의 실제 done·Main0·cgroup 부재를 확인했다. API32877b4a/image481f5478와 수집기dc3790a6/image14a8764c는 제품674d6f8이며 schema0038·원Weather27상태 복원·native 설정/키·Manager healthy·웹/다른 서비스 보존·모든 소유 자식 종료를 확인했다. 기존 장기 수집과 대기는 자연 종료했으며 취소하지 않았다. 원문은 release-cycle1/deployment-r2/last-status.json과 terminal-observation.json이다.
+
+최종 제품7ccf88a의 source SHA b12ae5961c6d0761e16acbaa32770f3ccb9d125c5f27f1f1cd1996a9a7e54340과 fresh 실제 역할을 연결했다. 최소 API/수집기 빌드7b91d8807c/최초 Invocation18c1f46002cf40f280983eaba8fc9fb0를 한 번 시작했으며 정상 G/R 대기 중이다. 아직 최종 이미지·배포 성공으로 판정하지 않는다. 기존 웹·의존성·Alembic을 유지하므로 웹 빌드·migration은 없다. 빌드 실제 종료 뒤 fresh 입력으로 최종 배포·API·PC/모바일을 수용하고 Transport 세 회차로 이어간다.

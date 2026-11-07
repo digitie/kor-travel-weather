@@ -1,5 +1,4 @@
-- [ ] **W-READ-MAX-01** — 1회차 전체 확정 항목 구현·WSL/Docker·전후 검산 뒤 새 이미지·DB0038 반영. [근거](reports/2026-11-07-read-max-optimization.md).
-- [ ] **W-READ-MAX-02/03** — JSON 예산 계산·fetch 왕복의2·3회차 코드와 WSL/Docker 검증은 완료했다. 기존 Root 자연 drain/수집기 반영 뒤2·3회차 새 이미지·실제 수용을 완료하고 Transport 세 회차를 진행한다.
+- [ ] **W-READ-MAX-02/03** — JSON 예산 계산·fetch 왕복의2·3회차 코드와 WSL/Docker 검증은 완료했다. 1회차 실제 배포·원27복원·부모 종료는 완료했다. 실행 중인 최종 최소API/수집기 빌드를 관측하고2·3회차 이미지·실제 수용을 완료한 뒤 Transport 세 회차를 진행한다.
 
 # Weather 남은 작업
 
