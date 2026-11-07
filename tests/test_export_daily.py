@@ -633,12 +633,12 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
     now = datetime.now(KST)
     day = (now - timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
     table, _ = daily_summary_tables(Base.metadata)
-    published = []
     for hour, value in [(0, "10"), (1, "20")]:
         heads, identity, capture, _, _, _ = _candidate(
             repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value,
         )
-        published.append((heads, identity, capture))
+        # 같은 scope의 다음 수집이 소유권을 가져가기 전에 승격한다(요약 reducer는 아직 안 돌린다).
+        assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     stats = backfill_daily_from_kma_nowcast(
         repository, first_day=day.date(), last_day=day.date(), batch=1, pause_seconds=0,
     )
@@ -654,8 +654,6 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
     # 같은 응답을 정상 경로(승격→요약)로 낸 결과와 같다.
     with repository.engine.begin() as c:
         c.execute(table.delete())
-    for heads, identity, capture in published:
-        assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
     with repository.engine.connect() as c:
         live = {(r.slot, r.date): r.summary for r in c.execute(select(table))}
