@@ -63,6 +63,9 @@ def _points(record, locations):
             source_record_key=record["source_record_key"],
             known_at=record["fetched_at"],
         ):
+            # 수집 시각은 원천 fetch 시각으로 고정한다(기본값 now면 재실행마다 tie-break hash가
+            # 달라진다).
+            value = value.model_copy(update={"collected_at": record["fetched_at"]})
             point = value.model_dump(mode="json", exclude={"payload"})
             if value.value_number is not None:
                 point["value_number"] = canonical_export_number(value.value_number)
