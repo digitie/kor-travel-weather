@@ -587,6 +587,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             for scope in manifest["scopes"]
             if counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
             for key in ("source_collected_at", "data_revision_at")
+        ) or not any(
+            counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
+            for scope in manifest["scopes"]
         )
         with (
             self.repository.engine.connect().execution_options(

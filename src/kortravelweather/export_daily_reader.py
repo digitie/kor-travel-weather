@@ -206,6 +206,8 @@ class DailySummaryExports(FrozenCurrentExports):
             > source_max_age(scope.descriptor.dataset_key)
             for key, scope in expected.items()
             if counts_for_freshness(scope.source_collected_at, now)
+        ) or not any(
+            counts_for_freshness(scope.source_collected_at, now) for scope in expected.values()
         )
         # 관측 dataset 대상이 아닌 위치는 null/sample_count=0을 제공할 수 있다.
         # 원천 clock을 다른 위치에서 빌리지 않고 메타는 unknown/stale로 둔다.

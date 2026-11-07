@@ -720,6 +720,9 @@ class FrozenCurrentExports:
                 for scope in manifest["scopes"]
                 if counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
                 for key in ("source_collected_at", "data_revision_at")
+            ) or not any(
+                counts_for_freshness(datetime.fromisoformat(scope["source_collected_at"]), now)
+                for scope in manifest["scopes"]
             )
         stale |= bool(manifest.get("capacity_limited"))
         owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts

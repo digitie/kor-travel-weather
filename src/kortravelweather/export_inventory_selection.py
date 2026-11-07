@@ -345,7 +345,12 @@ def approved_source_selection(
         if (health_keys is None or r["location_id"] in health_keys)
         and counts_for_freshness(r["source_collected_at"], now)
     ]
-    unconfirmed = (bool(expected - sources) if health_keys is None else False) or any(
+    # 승인은 있지만 신선도 창 안 승인이 하나도 없는 원천(통째로 침묵)은 미확인이다.
+    fresh_sources = {(row["provider"], row["dataset_key"]) for row in health_rows}
+    unconfirmed = (
+        bool(expected - fresh_sources) if health_keys is None
+        else not fresh_sources and any(r["location_id"] in health_keys for r in valid.values())
+    ) or any(
         now - row["source_collected_at"] > source_max_age(row["dataset_key"])
         or now - row["data_revision_at"] > source_max_age(row["dataset_key"])
         for row in health_rows
