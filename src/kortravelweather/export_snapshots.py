@@ -34,7 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from .export_artifacts import ExportArtifactError, ExportArtifactStore
+from .export_artifacts import ExportArtifactError, ExportArtifactStore, ExportGuardTimeout
 from .export_capacity import (
     MANIFEST_STATE_RESERVE,
     MAX_MANIFEST_BYTES,
@@ -146,6 +146,23 @@ def _freshness(heads, now):
         "source_collected_at": min(h["source_collected_at"] for h in fresh),
         "data_revision_at": min(h["data_revision_at"] for h in fresh),
     }
+
+
+def ensure_snapshot_files(artifacts, issue):
+    """새로 발급(또는 재사용)한 snapshot의 파일이 모두 남아 있는지 공유 guard 안에서 확인한다.
+
+    reader는 freeze transaction 동안 guard를 쥐지 않는다. freeze가 commit하기 전에 head가 바뀌고
+    GC가 이전 generation 파일을 지울 수 있다(24시간 넘게 승격되지 않은 scope + 최근 snapshot에도
+    없는 드문 경우). 그러면 한 번 다시 발급하고(이제 새 head를 본다), 그래도 없으면 일시 경합
+    503으로 돌려 같은 요청을 다시 받게 한다.
+    """
+    frozen = issue()
+    for _ in range(2):
+        refs = [ref for scope in frozen["manifest"].get("scopes", []) for ref in scope["refs"]]
+        if artifacts.all_present(refs):
+            return frozen
+        frozen = issue()
+    raise ExportGuardTimeout("snapshot 발급과 artifact 정리가 겹쳤습니다. 다시 요청하세요.")
 
 class FrozenCurrentExports:
     def __init__(
@@ -606,12 +623,15 @@ class FrozenCurrentExports:
                     )
                 frozen = dict(frozen)
         else:
-            try:
-                frozen = self._freeze()
-            except ExportCapacityExceeded:
-                frozen = self._capacity_fallback(self._previous_success())
-            except ExportSnapshotUnavailable:
-                frozen = self._previous_success()
+            def issue():
+                try:
+                    return self._freeze()
+                except ExportCapacityExceeded:
+                    return self._capacity_fallback(self._previous_success())
+                except ExportSnapshotUnavailable:
+                    return self._previous_success()
+
+            frozen = ensure_snapshot_files(self.artifacts, issue)
             frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,

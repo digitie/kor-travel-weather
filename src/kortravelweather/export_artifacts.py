@@ -295,6 +295,20 @@ class ExportArtifactStore:
                 yield
             return
 
+    def all_present(self, refs) -> bool:
+        """공유 guard 안에서 ref 파일이 모두 남아 있는지 본다(내용은 읽지 않는다).
+
+        GC는 참조 재확인과 unlink를 한 배타 구간에서 하므로, 이 확인이 통과하면 그 뒤 GC는
+        이미 commit된 snapshot ref를 보고 그 파일을 지키거나, 이미 지운 것이 여기서 보인다.
+        """
+        with self.guard(shared=True):
+            for ref in refs:
+                try:
+                    self.present(ref["artifact_digest"], byte_count=ref["byte_count"])
+                except ExportArtifactError:
+                    return False
+        return True
+
     def present(self, digest: str, *, byte_count: int) -> None:
         """내용을 읽지 않고 파일이 같은 크기의 일반 파일로 남아 있는지만 본다(최종 CAS 직전)."""
         try:

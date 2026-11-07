@@ -11,11 +11,12 @@ artifact 파일 이름은 내용 sha256이다. 아래 참조 중 하나라도 �
 - 일별 집계 checkpoint 뒤의 generation(아직 읽지 않은 세대)
 
 참조가 없고 mtime이 유예(기본 1시간)보다 오래된 파일만 지운다. 지우기 직전에 배타
-guard를 잡고 그 묶음의 digest만 참조를 다시 확인하고 mtime도 다시 본다. reader·승격·
-collector는 같은 guard 안에서 snapshot·receipt를 commit하거나 파일을 다시 쓰므로 그 사이
-새로 참조된 파일은 남는다. ``dry_run``은 지울 대상과 byte만 센다. 이전 승인 fallback이
-보존 창보다 오래됐고 최근 snapshot에도 없으면 그 fallback 응답은 파일 누락으로 실패할 수
-있다(stale 대신 오류).
+guard를 잡고 그 묶음의 digest만 참조를 다시 확인하고 mtime도 다시 본다. 승격·collector는
+같은 guard 안에서 commit하거나 파일을 다시 쓴다. reader는 freeze를 guard 없이 commit한 뒤
+공유 guard 안에서 ref 파일 존재를 확인하고(없으면 다시 발급), 그 뒤의 GC 재확인은
+commit된 snapshot ref를 본다(export_snapshots.ensure_snapshot_files). ``dry_run``은 지울
+대상과 byte만 센다. 이전 승인 fallback이 보존 창보다 오래됐고 최근 snapshot에도 없으면 그
+fallback 응답은 파일 누락으로 실패할 수 있다(stale 대신 오류).
 """
 
 from __future__ import annotations
@@ -205,7 +206,8 @@ def collect_export_artifacts(
         ]
         try:
             with store.guard(timeout_seconds=GC_GUARD_TIMEOUT_SECONDS, holder="gc"):
-                # reader의 freeze·승격·collector 쓰기는 같은 guard 안에서 commit한다.
+                # 승격·collector 쓰기는 같은 guard 안에서 commit한다. reader는 commit 뒤 공유
+                # guard 안에서 ref 파일 존재를 확인한다(ensure_snapshot_files).
                 # 배타 guard를 잡은 뒤 이 묶음의 digest만 참조를 다시 읽는다.
                 rechecked = live_artifact_digests(
                     repository, now=clock, retention=retention, digests=batch_digests,

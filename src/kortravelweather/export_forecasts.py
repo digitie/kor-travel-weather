@@ -27,6 +27,7 @@ from .export_snapshots import (
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    ensure_snapshot_files,
 )
 
 
@@ -354,12 +355,15 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("예보 cursor가 만료됐습니다.")
             frozen = dict(row)
         else:
-            try:
-                frozen = self._freeze_forecasts()
-            except ExportCapacityExceeded:
-                frozen = self._capacity_fallback(self._previous_forecasts())
-            except ExportSnapshotUnavailable:
-                frozen = self._previous_forecasts()
+            def issue():
+                try:
+                    return self._freeze_forecasts()
+                except ExportCapacityExceeded:
+                    return self._capacity_fallback(self._previous_forecasts())
+                except ExportSnapshotUnavailable:
+                    return self._previous_forecasts()
+
+            frozen = ensure_snapshot_files(self.artifacts, issue)
             frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
