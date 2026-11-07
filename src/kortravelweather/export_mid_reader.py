@@ -12,6 +12,7 @@ from .export_heads import _digest
 from .export_inventory_selection import (
     approved_source_selection,
     catalog_source_projection,
+    counts_for_freshness,
     source_max_age,
 )
 from .export_snapshots import (
@@ -220,7 +221,11 @@ class FrozenMidForecastExports(FrozenForecastExports):
         ) or any(
             now - _at(scope[key]) > source_max_age(scope["dataset_key"])
             for scope in manifest["scopes"]
+            if counts_for_freshness(_at(scope["source_collected_at"]), now)
             for key in ("source_collected_at", "data_revision_at")
+        ) or not any(
+            counts_for_freshness(_at(scope["source_collected_at"]), now)
+            for scope in manifest["scopes"]
         )
         with self.repository.engine.connect().execution_options(
             isolation_level="REPEATABLE READ"
