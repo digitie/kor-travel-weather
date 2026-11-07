@@ -42,6 +42,7 @@ from .export_capacity import (
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
+    bounded_manifest_digest,
     read_generation_refs,
 )
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
@@ -419,7 +420,7 @@ class FrozenCurrentExports:
                         } if self.source_inventory else {}),
                     }
                 )
-                budget.add(scopes[-1])
+                budget.add_bounded_record(scopes[-1], MAX_MANIFEST_BYTES)
             entries = self.heads.metadata.tables["reverse_address_entries"]
             addresses = {
                 row["target_key"]: row
@@ -466,14 +467,15 @@ class FrozenCurrentExports:
                         "sigungu_name": entry["sigungu_name"] if entry else None,
                     }
                 )
-                budget.add(items[-1])
+                budget.add_bounded_record(items[-1], MAX_MANIFEST_BYTES)
             manifest = {"schema": 1, "scopes": scopes, "locations": items}
             if self.source_inventory:
                 manifest["unconfirmed_sources"] = unconfirmed
             if self.current_selection is not None:
                 manifest["selection"] = self.current_selection
-            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
-            digest = _digest(manifest)
+            digest = bounded_manifest_digest(
+                manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
+            )
             now = datetime.now(UTC)
             # 재사용 조건은 그대로다: 같은 digest의 유효한 handle이 그 selection의 **가장 최근**
             # 발급이어야 한다. 같은 digest면 manifest(안의 selection 포함)가 같으므로, 그 handle보다

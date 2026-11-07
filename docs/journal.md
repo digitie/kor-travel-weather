@@ -1,3 +1,9 @@
+## 2026-11-07 — 1회차 API·DB 반영, 2회차 JSON 계산 개선 검증
+
+제품674d6f8 API481f5478/DB0038을 반영하고 Firefox PC1440·모바일375의 상세/시간별 화면과 위치 export200/304를 확인했다. 첫 migration 실패·자기 invalid index 복구·41행 지문 보존은 원문으로 분리했다. 수집기는 실행·대기 중 작업의 자연 종료를 기다리며 원 일정은 일시중지 상태다. 아직 전체 배포 부모 종료·수집기 반영 완료가 아니다.
+
+실제 current45초 초과·daily22~30초를 남은 병목으로 기록했다. 읽기 전용 native freeze profile에서4757번 JSON 예산 해석이 cProfile 포함30.16초를 차지했다. 같은 크기 상한·정규 hash를 유지하는 C encoder 경로로 바꿨고 WSL/Docker 집중95개씩 통과했다. 합성3306scope/1451위치 계산116.64→28.12ms와 native 후보 freeze34.80초는 각각의 측정 범위이며 전체 HTTP p95가 아니다. 2회차 코드는 아직 운영 이미지에 없다. [근거](reports/2026-11-07-read-max-optimization.md).
+
 ## 2026-11-07 — 조회 성능 1회차 전체 확정 항목 반영 중
 
 사용자 지시로 첫 검토의 확정 병목 전체를 구현한다. inventory/generation·owner/attempt 배치 조회, 최소15분을 보장하는 분 단위 TTL 연장, DB-only 위치/일별 조회의 파일 guard 분리, snapshot 선택 조건의 저장 projection(0038), 내용 기반 불변 descriptor·artifact 해석 캐시와 export 경로별 계측이다. 원천 상태·파일 유실/변조·cursor 검증은 유지한다. WSL 격리 PG18 집중189개·후속58개, Docker 집중243개가 통과했다. 캐시 보완·전체 migration 경로의 최종 집중20개도 WSL/Docker 각각 통과했다. 합성5000point 재검증은12.89→4.54ms였다(운영 p95가 아님). 운영은 아직 제품3a4ae3f/DB0037이며 개선 제품 배포 완료가 아니다. [측정과 남은 회차](reports/2026-11-07-read-max-optimization.md), Draft PR208.

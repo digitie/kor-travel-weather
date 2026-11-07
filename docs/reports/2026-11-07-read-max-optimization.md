@@ -134,3 +134,21 @@ TTL은 새 요청 뒤 최소15분을 유지하는 분 경계 값으로 만들고
 배치는 SQL 문장 수를 줄이는 변경이 아니라 큰 JOIN timeout을 없애기 위한 변경이다. source 건강도는 아직 요청당 두 번 대조하므로 current304의 전면 재계산은 남아 있다. 파일 읽기 생략을 캐시 성공으로 꾸미지 않는다. 다음 회차는 이 남은 비용을 실제 갱신·실패 감지와 함께 줄이는 구조를 조사한다.
 
 WSL 집중189개, 후속58개, 계측3개는 각각 통과했다. 겹치는 시험을 합산하지 않는다. Docker 집중243개와 최종 캐시·전체 migration 경로20개가 통과했다. 마지막20개는 WSL에서도 통과했으며 앞선 묶음과 중복된다. Ruff·diff 검사·Alembic 단일 head0038 확인도 통과했다. 운영 반영은 진행 중이다. 현재 운영은 기존 제품3a4ae3f/DB0037이다. Weather2·3 및 Transport1·2·3은 미착수다.
+
+
+### 1회차 운영 반영의 실제 중간 상태
+
+제품674d6f8의 ARM64 API481f5478·수집기14a8764c를 실제 빌드하고 native 계약을 확인했다. 첫 배포 d2569852는 migration 자식1/부모1·Main0·cgroup 부재·최초 Invocation failed로 종료했다. API/수집기 교체 전에 멈췄다. 실제 DB에는5개 생성 열과 첫 signature 인덱스의 invalid/ready 상태가 남았고 revision은0037이었다. 첫 SQLSTATE는 수집되지 않아 원인을 단정하지 않는다.
+
+격리 PG18에서 실제55P03로 같은 invalid 상태를 만들고, 기존 RR reader를 유지한 채 해당 인덱스만 일반 REINDEX하고 나머지2개를 같은 bounded SHARE transaction에서 생성하는 경로를 확인했다. forward Root07ab4b4는 정상G/R에서 새 실제 index/table OID·정의·owner·진행 builder0·별도 ccnew/ccold 부재를 확인하고 적용했다. 실제41행의 원문·ID·발급순·clock 지문은 전후 같았으며 DROP/전체 DB 복원은 없었다. 같은 이미지로 공식 Alembic upgrade 자식0을 확인했다. 이 중간 결과는 최종 앱·일정 복원·부모 종료 수용과 구분한다.
+
+
+### Weather 2회차 — 새 병목 발굴과 개선 후보 검증
+
+1회차 실제 HTTP에서는 위치500행200/조건부304를 확인했지만 current는45초 `TimeoutError`였고 daily10행은29.81초·후속22.03초였다. 이 요청의 UNKNOWN과 stale를 보존한다. Firefox157 PC1440/모바일375의 현재 상세·내일·시간별 그래프·오버플로0·logout200·소유 브라우저 종료는 별도로 확인했다.
+
+새 실제674d6f8에서 READ ONLY와 쓰기 차단을 적용한 cold freeze profile은80.93초 중 `MetadataBudget.add`4757호출에30.16초를 썼다(cProfile 오버헤드 포함). 앞선 별도 profile의35.61초 OperationalError도 보존하며 세부 SQLSTATE는 미확인이다. 이 비용을 확인한 뒤 scope/위치 단건은 기존 C encoder 예산 검사로 바꾸고, 누적 예산을 검증한 최종 manifest는 한 번만 정규 직렬화해 UTF-8 상한과 hash를 함께 계산한다. 8MiB 상한·상태 예약128byte·파일/페이지/원천 상한·NaN/잘못된 Unicode/경계 거부는 유지한다.
+
+합성3306scope+1451위치에서 기존116.64ms·후보28.12ms이고 digest가 같았다. 실제 데이터의 읽기 전용 후보는3305scope의 기존 handle을34.80초에 재사용했다. 두 native 관측의 SQL 대기와 공용 호스트 부하도 달랐으므로80.93→34.80을 제품 지연 개선율로 사용하지 않는다. 후보 profile에서 큰 Python 스트리밍 예산 순회가 사라졌다는 구조적 결과와 WSL/Docker95개씩 통과를 수용한다. 이 코드는 아직 운영 이미지에 없다.
+
+세 번째 측정 대상은 이 변경 뒤에도 남은 server cursor108회의 왕복이다. 파일·행·누적 상한을 늘리는 대신 ref/plan의 고정 버퍼를 각각16/32MiB 이내로 유지하며 작은 묶음을 합치는 후보를 평가한다. 운영 수집·공용 daemon·다른 서비스 설정은 변경하지 않는다.
