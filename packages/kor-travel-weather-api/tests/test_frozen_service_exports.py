@@ -855,9 +855,12 @@ def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository,
         )
 
 
-def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path):
+def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path, monkeypatch):
     _collect(repository, tmp_path, hours=1)
+    from test_all_source_exports import _selection_clock
+
     client = _client(repository, tmp_path)
+    clock = _selection_clock(client, monkeypatch)
     url = "/v1/service/exports/current?limit=1"
     first = client.get(url, headers=HEADERS).json()
     cursor = first["meta"]["next_cursor"]
@@ -872,6 +875,10 @@ def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(reposi
     assert len(values) == 24 and all(
         row["value"] == 18.4 for row in values if row["metric_key"] == "T1H"
     )
+    clock[0] += 59
+    within = client.get("/v1/service/exports/current", headers=HEADERS).json()
+    assert within["meta"]["snapshot_id"] == first["meta"]["snapshot_id"]
+    clock[0] += 1
     latest = client.get("/v1/service/exports/current", headers=HEADERS).json()
     assert latest["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
     assert all(row["value"] == 20.4 for row in latest["items"] if row["metric_key"] == "T1H")
@@ -1274,6 +1281,40 @@ def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypat
     assert first.status_code == 200 and first.json()["meta"]["has_more"]
     snapshot_id = first.json()["meta"]["snapshot_id"]
     table, _ = export_snapshot_tables(Base.metadata)
+    # 분 단위 여유를 둔 새 handle은 같은 시각의 조건부 요청마다 UPDATE하지 않는다.
+    from sqlalchemy import event
+
+    from kortravelweather import export_locations
+
+    fixed = datetime.now(UTC)
+
+    class Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz or UTC)
+
+    for reader_module in (export_snapshots, export_forecasts, export_locations):
+        monkeypatch.setattr(reader_module, "datetime", Fixed)
+    with repository.engine.begin() as c:
+        c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
+            expires_at=fixed + SNAPSHOT_TTL + timedelta(minutes=1),
+        ))
+    writes = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("UPDATE WEATHER_EXPORT_SNAPSHOTS"):
+            writes.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", record)
+    try:
+        for _ in range(2):
+            unchanged = client.get(
+                url, params=params, headers={**HEADERS, "If-None-Match": first.headers["etag"]},
+            )
+            assert unchanged.status_code == 304
+        assert writes == []
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", record)
     with repository.engine.begin() as c:
         c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
             expires_at=datetime.now(UTC) + timedelta(seconds=5),

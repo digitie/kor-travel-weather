@@ -14,6 +14,7 @@ from .export_capacity import (
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
+    bounded_manifest_digest,
     read_generation_refs,
 )
 from .export_heads import ScopeDescriptor, _digest
@@ -22,11 +23,11 @@ from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
-    SNAPSHOT_TTL,
     ExportCursorInvalid,
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    snapshot_expires_at,
 )
 
 
@@ -229,7 +230,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "data_revision_at": head.data_revision_at.isoformat(),
                     }
                 )
-                budget.add(scopes[-1])
+                budget.add_bounded_record(scopes[-1], MAX_MANIFEST_BYTES)
             manifest = {
                 "selection": self.selection,
                 "as_of": anchor.isoformat(),
@@ -238,8 +239,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "unconfirmed_sources": unconfirmed,
             }
             manifest = self._prepare_manifest(manifest)
-            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
-            digest = _digest(manifest)
+            digest = bounded_manifest_digest(
+                manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
+            )
             # 재사용 조건은 그대로다(같은 digest의 유효 handle이 그 selection의 가장 최근 발급).
             # digest를 먼저 index로 찾고 그보다 새 행만 selection 조건으로 해석한다. 예전처럼
             # selection 조건으로 표 전체를 먼저 훑으면 행마다 큰 manifest json을 조건 수만큼 해석해
@@ -270,7 +272,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "manifest": manifest,
                 **_freshness(heads.values(), now),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**row))
             c.execute(
@@ -288,12 +290,13 @@ class FrozenForecastExports(FrozenCurrentExports):
 
     def _same_selection(self):
         """이 reader와 같은 forecasts selection(style·since·provider 서명)인 snapshot 행 조건."""
-        selection = self.snapshots.c.manifest["selection"]
         return (
-            selection["kind"].as_string() == "forecasts",
-            selection["style"].as_string() == self.style,
-            selection["since"].as_string() == self.selection["since"],
-            selection["provider_signature"].as_string() == self.selection.get("provider_signature"),
+            self.snapshots.c.selection_kind == "forecasts",
+            self.snapshots.c.forecast_style == self.style,
+            self.snapshots.c.forecast_since == self.selection["since"],
+            self.snapshots.c.forecast_provider_signature == self.selection.get(
+                "provider_signature",
+            ),
         )
 
     def _previous_forecasts(self):
@@ -315,9 +318,11 @@ class FrozenForecastExports(FrozenCurrentExports):
                 frozen["_reused"] = True
             else:
                 frozen.pop("issue_order", None)
-                frozen.pop("selection_kind", None)
+                for column in self.snapshots.c:
+                    if column.computed is not None:
+                        frozen.pop(column.name, None)
                 frozen.update(
-                    snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
+                    snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now)
                 )
                 s.execute(self.snapshots.insert().values(**frozen))
                 s.execute(

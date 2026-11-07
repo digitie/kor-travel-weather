@@ -1563,7 +1563,7 @@
           "service exports"
         ],
         "summary": "Export Current",
-        "description": "활성 관측 제공처의 실제 승인 합집합. 필수 source 최초 미승인은503이다.\n\n해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은\n보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다. export 경로가\n없는 provider가 활성이면 축소 성공 대신503이다.",
+        "description": "활성 관측 제공처의 실제 승인 합집합. 필수 source 최초 미승인은503이다.\n\n해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은\n보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다. export 경로가\n없는 provider가 활성이면 축소 성공 대신503이다. 승인·실패 상태 반영은 최대60초 지연될 수\n있으며 실제 수집 시각은 유지한다. 60초를 넘긴 상태는 정상 응답에 쓰지 않는다.",
         "operationId": "export_current_v1_service_exports_current_get",
         "parameters": [
           {
@@ -1931,7 +1931,7 @@
           "service exports"
         ],
         "summary": "Export Daily Summaries",
-        "description": "승인 관측의 사전 요약. 미계산은 이전 완전 집합stale/이전 집합이 없으면503.\n\n전체 목록에서 한 번도 승인되지 않은 관측 anchor는 stale로 표시하고, 단일 위치 최초\n조회의 필수 원천 미승인만503이다. AirKorea는 요약 지표가 없어 필수 원천이 아니다.\n강수 합계와 강수 없음(false)은 구간6시간 RN1이 모두 있을 때만 확정한다.",
+        "description": "승인 관측의 사전 요약. 미계산은 이전 완전 집합stale/이전 집합이 없으면503.\n\n전체 목록에서 한 번도 승인되지 않은 관측 anchor는 stale로 표시하고, 단일 위치 최초\n조회의 필수 원천 미승인만503이다. AirKorea는 요약 지표가 없어 필수 원천이 아니다.\n강수 합계와 강수 없음(false)은 구간6시간 RN1이 모두 있을 때만 확정한다.\n승인·실패 상태 반영은 최대60초 지연될 수 있으며 실제 수집 시각은 유지한다.",
         "operationId": "export_daily_summaries_v1_service_exports_daily_summaries_get",
         "parameters": [
           {

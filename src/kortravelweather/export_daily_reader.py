@@ -12,7 +12,6 @@ from .export_heads import _digest
 from .export_inventory_selection import (
     MAX_SELECTED_ROWS,
     SDK_NETWORKS,
-    approved_source_selection,
     catalog_source_projection,
     counts_for_freshness,
     freshness_min,
@@ -22,11 +21,11 @@ from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
-    SNAPSHOT_TTL,
     ExportCursorInvalid,
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    snapshot_expires_at,
 )
 
 
@@ -138,14 +137,14 @@ class DailySummaryExports(FrozenCurrentExports):
             # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
             keys = [row["location_id"] for row in locations]
         keys = set(keys)
-        from .export_artifacts import ExportArtifactError
+        from .export_artifacts import ExportArtifactError, ExportGuardTimeout
 
         try:
-            selection = approved_source_selection(
-                connection, self.heads.metadata, locations,
-                expected=self.expected_sources, optional=self.optional_sources,
-                health_location_ids=keys if self.location_id else None,
+            selection = self._approved_selection(
+                connection, locations, health_location_ids=keys if self.location_id else None,
             )
+        except ExportGuardTimeout:
+            raise
         except (ExportArtifactError, KeyError, TypeError, ValueError) as exc:
             raise ExportSnapshotUnavailable("관측 source 승인 집합이 준비되지 않았습니다.") from exc
         expected = {
@@ -233,7 +232,7 @@ class DailySummaryExports(FrozenCurrentExports):
         }
         with self.heads._transaction() as connection:
             previous = connection.execute(select(self.snapshots).where(
-                self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+                self.snapshots.c.daily_resource == self.resource,
             ).order_by(self.snapshots.c.issue_order.desc()).limit(1)).mappings().one_or_none()
             if previous is None:
                 return None
@@ -245,10 +244,12 @@ class DailySummaryExports(FrozenCurrentExports):
                 return {**previous, "_reused": True}
             row = dict(previous)
             row.pop("issue_order", None)
-            row.pop("selection_kind", None)
+            for column in self.snapshots.c:
+                if column.computed is not None:
+                    row.pop(column.name, None)
             row["manifest"] = {**row["manifest"], **window, "fallback_unconfirmed": True}
             row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
-                       created_at=now, expires_at=now + SNAPSHOT_TTL)
+                       created_at=now, expires_at=snapshot_expires_at(now))
             connection.execute(self.snapshots.insert().values(**row))
             return row
 
@@ -290,7 +291,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 c.execute(
                     select(self.snapshots)
                     .where(
-                        self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+                        self.snapshots.c.daily_resource == self.resource,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
@@ -317,15 +318,14 @@ class DailySummaryExports(FrozenCurrentExports):
                     default=ready["published_at"],
                 ),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**row))
             return row
 
     def page(self, *, limit, cursor):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(limit=limit, cursor=cursor)
+        # 파일을 읽지 않는 DB page다. 각 RR 조회가 값을 복사하므로 GC의 파일 잠금은 불필요하다.
+        return self._page_guarded(limit=limit, cursor=cursor)
 
     def _page_guarded(self, *, limit, cursor):
         if cursor:

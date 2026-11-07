@@ -1,3 +1,7 @@
+- [x] **W-READ-MAX-02/03** — 세 회차 제품7ccf88a의 최종 API/수집기 반영·원27복원·Manager healthy·최초 실제 done/자식 종료와 실제 HTTP200/304·PC/모바일 수용을 마쳤다. Transport 세 회차·잔여 stale/지연은 별도다. [근거](reports/2026-11-07-read-max-optimization.md).
+- [x] **W-READ-MAX-01** — 1회차 전체 확정 항목 구현·WSL/Docker·전후 검산과 API/수집기/DB0038 반영, 원27복원·Manager healthy·최초 실제 done/자식 종료를 확인했다. 남은 HTTP 지연과2·3회차 배포는 별도다. [근거](reports/2026-11-07-read-max-optimization.md).
+- [x] **W-READ-MAX-CODE-02/03** — 2회차 JSON 계산·3회차 fetch 왕복 개선 및 WSL/Docker95개씩 검증. 운영 배포 완료와 구분한다. [근거](reports/2026-11-07-read-max-optimization.md).
+
 - [x] 2026-11-07 Weather PR207 최신 제품3a4ae3f API·수집기 배포, 자연 drain·원27상태 복원·Manager·실제 종료·PC/모바일/API 검증. 웹·DB 유지, backfill 미실행. [기록](reports/2026-11-07-weather-pr207-release.md).
 
 - [x] 2026-11-07 Weather PR206 최신 제품87a0b50 API·수집기 배포, 자연 drain·원27상태 복원·Manager·실제 종료·PC/모바일/API 검증. 웹·DB 유지, backfill 미실행. [기록](reports/2026-11-07-weather-pr206-release.md).

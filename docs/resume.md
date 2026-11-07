@@ -1,3 +1,45 @@
+## 2026-11-08 — 소유자 승인 최대60초 상태 캐시·묶음 조회 구현
+
+현재·일별 export의45초 초과를 보존하고 추가 병목을 줄였다. 소유자는 최신 수집·실패 상태 반영 지연 최대1분을 명시 선택했다. API current/daily에만 최대60초·상한16MiB의 승인 상태 캐시를 적용하고 원천 기준 시각·파일/참조 검증·cursor/ETag·5초 SQL 제한을 유지한다. 조회 전부터 시간을 재며 직렬화 후 만료에도200/304 대신503을 낸다. 소유·시도·세대·run 조회는 시도별 묶음 CTE로 줄이되 JSON 원본 epoch 판정을 보존한다. WSL/Docker PG18 각각134개와 용량 보완 뒤 경계8개가 통과했다(겹침 합산 없음). 실제3306개 선택 부분의 첫17.60초/재사용9~19ms는 HTTP 수치가 아니다. 기존 배포 Root b6a5 자연 종료 뒤 이 reader 변경은 API만 새 이미지로 반영하며 아직 운영 수용 전이다. [원문·한계](reports/2026-11-07-read-next.md).
+
+## 2026-11-07 — 추가 조회 개선 구현·집중 검증, 새 배포 진행
+
+사용자 추가 요청으로 Transport의 부모/장소 좌표 이중 검증 구성과 Weather의 JSON UTF-8 크기 중복 계산을 줄였다. 값·검증·상태/신선도·예산을 보존한 국소 전후 검산과 Transport WSL/Docker PG18각26개·Weather각40개를 통과했다. 겹침은 합산하지 않는다. Weather5초 초과 원 관측과 wall이 좋아지지 않은 cohort batch 후보를 보존했고 timeout 확대/추정 index 변경은 하지 않았다. 새 이미지·실제 배포는 아직 완료 전이며 기존 수집 자연 종료 정책을 유지한다. [근거와 남은 실제 단계](reports/2026-11-07-read-next.md).
+
+## 2026-11-07 — Weather 세 회차 최종 이미지·실제 수용 완료
+
+제품7ccf88a를 API034cfebc·수집기93d11ca7에 반영했다. 원27일정 복원·Manager healthy·설정/키5초·schema0038·웹/다른 서비스 보존과 최초 Invocation1f98e72c의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 기존 수집과 worker는 자연 종료했으며 최종 배포 migration은 없었다.
+
+실제 HTTP10요청은200/304였다. 단일 관측 current100행19.73초/조건부12.12초, daily10행12.13초/조건부9.74초, 위치500행0.79초/조건부0.59초였다. 이전 current45초 초과·daily22~30초는 원문으로 보존하며, 서로 다른 부하·재사용 상태의 단일 관측을 p95·전국/cold 보장으로 바꾸지 않는다. stale·일부 날씨/미세먼지 미제공은 남아 있다. Firefox157 PC1440/모바일375 상세·내일·시간별24열 그래프·overflow0·logout200·브라우저 종료와 실제 캡처를 확인했다. 정본은 Git 밖 release-final/final-acceptance.json(SHA306ef3b49c7308fd9d6af52c250d8c6ae15f5590612d3c8ee8b2ee4f277fb479)이다.
+
+다음은 Transport의 같은 관점 세 회차다. Weather 완료분을 재배포·반복 검증하거나 문서 변경으로 이미지를 재빌드하지 않는다. Draft PR208·백업/복원 생략·새 리뷰/머지 없음은 유지한다.
+
+## 2026-11-07 — 1회차 배포 종료·원 일정 복원, 최종 이미지 빌드 시작
+
+기존 KMA·Open-Meteo·WeatherAPI 수집과 worker가 자연 종료한 뒤 API481f5478·수집기14a8764c의 제품674d6f8 반영을 마쳤다. 원 Weather27개 상태 복원·Manager healthy·설정/키·웹/다른 서비스 보존과 최초 Invocation07ab4b4의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 실제 수용 원문은 Git 밖 release-cycle1/deployment-r2에 보존했다. 최초 배포의 실패 원문과 current45초 초과·daily22~30초는 여전히 별도 한계다.
+
+최신 실제 CID·schema0038을 확인하고 제품7ccf88a의 최소 API/수집기 빌드를 단 한 번 시작했다. 첫 Invocation18c1f460/Root7b91d8807c는 정상 G/R 획득을 기다리고 있으며, 아직 빌드·최종 배포 성공이 아니다. 웹·의존성·Alembic은 같으므로 웹 빌드·migration을 반복하지 않는다. 최종 Weather 이미지의 실제 수용 뒤 Transport 세 회차를 진행한다.
+
+## 2026-11-07 — 자연 종료 진척과 최종 세 회차 배포 묶음 고정
+
+‘진행’ 지시 뒤 기존 KMA 단기예보 b7add516의 공식 SUCCESS 종료를 확인했다. 실행 중인 Open-Meteo 예보와 기존 대기는 그대로 보존하며 Root07ab4b4를 중복·중단하지 않는다. 최종7ccf88a 소스 묶음과 W1 실제 이미지 기반의 최소API/CS 빌드 입력을 Git 밖 release-final에 고정했다. 의존성·웹·Alembic은674와 같고 migration은 없다. 기존 부모의 실제 종료·원27복원·Manager healthy 전에는 dispatch하지 않는 가드를 확인했으며 intent·새Root는 생성되지 않았다. 준비된 묶음을 이미지 빌드 완료로 표현하지 않는다. 자동 후속에 해당 경로와 실제 선행 조건을 갱신했다.
+
+## 2026-11-07 — 3회차 fetch 왕복 축소 구현·검증
+
+JSON 개선 뒤 남은 server cursor108회를 측정하고 ref256행·plan128행의 고정 묶음으로 줄였다. 격리 PG18 교대 실험의3306개 plan/ref 결과는 같았고108→43회·중앙값124.26→92.34ms였다. 투영 JSON의 묶음별 최대는16/32MiB이며 Python 객체까지 포함한 RSS 상한은 아니다. 단건·전체8MiB·행·파일 상한과 오류 때 cursor 닫기는 유지했고 WSL/Docker 집중95개씩 통과했다.
+
+Weather 세 회차의 코드 개선·집중 검증은 완료했으나2·3회차의 새 이미지 반영은 아직이다. 1회차 API674d6f8/DB0038은 운영 중이고 기존 수집기의 자연 종료를 기다리는 Root07ab4b4를 중복하지 않는다. 모든 Weather 반영과 실제 수용 뒤 Transport 세 회차를 진행한다. [근거와 한계](reports/2026-11-07-read-max-optimization.md).
+
+## 2026-11-07 — 1회차 API·DB 반영, 2회차 JSON 계산 개선 검증
+
+제품674d6f8 API481f5478/DB0038을 반영하고 Firefox PC1440·모바일375의 상세/시간별 화면과 위치 export200/304를 확인했다. 첫 migration 실패·자기 invalid index 복구·41행 지문 보존은 원문으로 분리했다. 수집기는 실행·대기 중 작업의 자연 종료를 기다리며 원 일정은 일시중지 상태다. 아직 전체 배포 부모 종료·수집기 반영 완료가 아니다.
+
+실제 current45초 초과·daily22~30초를 남은 병목으로 기록했다. 읽기 전용 native freeze profile에서4757번 JSON 예산 해석이 cProfile 포함30.16초를 차지했다. 같은 크기 상한·정규 hash를 유지하는 C encoder 경로로 바꿨고 WSL/Docker 집중95개씩 통과했다. 합성3306scope/1451위치 계산116.64→28.12ms와 native 후보 freeze34.80초는 각각의 측정 범위이며 전체 HTTP p95가 아니다. 2회차 코드는 아직 운영 이미지에 없다. [근거](reports/2026-11-07-read-max-optimization.md).
+
+## 2026-11-07 — 조회 성능 1회차 전체 확정 항목 반영 중
+
+사용자 지시로 첫 검토의 확정 병목 전체를 구현한다. inventory/generation·owner/attempt 배치 조회, 최소15분을 보장하는 분 단위 TTL 연장, DB-only 위치/일별 조회의 파일 guard 분리, snapshot 선택 조건의 저장 projection(0038), 내용 기반 불변 descriptor·artifact 해석 캐시와 export 경로별 계측이다. 원천 상태·파일 유실/변조·cursor 검증은 유지한다. WSL 격리 PG18 집중189개·후속58개, Docker 집중243개가 통과했다. 캐시 보완·전체 migration 경로의 최종 집중20개도 WSL/Docker 각각 통과했다. 합성5000point 재검증은12.89→4.54ms였다(운영 p95가 아님). 운영은 아직 제품3a4ae3f/DB0037이며 개선 제품 배포 완료가 아니다. [측정과 남은 회차](reports/2026-11-07-read-max-optimization.md), Draft PR208.
+
 ## 2026-11-07 — PR207 최신 API·수집기 이미지 배포 완료
 
 제품3a4ae3f에 PR207 24시간 신선도 창 개선을 통합해 API·수집기를 반영했다. 웹·DB0037·사용자 설정과 다른 서비스를 유지했고 원27개 상태 복원·Manager healthy·부모 실제 종료·API200/304·PC/모바일을 확인했다. 실제 backfill·백업/복원은 실행하지 않았다. [배포 원문과 검증 범위](reports/2026-11-07-weather-pr207-release.md).

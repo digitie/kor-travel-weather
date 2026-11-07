@@ -14,11 +14,11 @@ from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
-    SNAPSHOT_TTL,
     ExportCursorInvalid,
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    snapshot_expires_at,
 )
 
 
@@ -42,12 +42,14 @@ class FrozenLocationExports(FrozenCurrentExports):
             # 재사용 handle은 page가 freeze transaction 밖에서 TTL을 연장한다.
             return {**frozen, "_reused": True}
         frozen.pop("issue_order", None)
-        frozen.pop("selection_kind", None)
+        for column in self.snapshots.c:
+            if column.computed is not None:
+                frozen.pop(column.name, None)
         frozen = {
             **frozen,
             "snapshot_id": str(uuid4()),
             "created_at": now,
-            "expires_at": now + SNAPSHOT_TTL,
+            "expires_at": snapshot_expires_at(now),
         }
         connection.execute(self.snapshots.insert().values(**frozen))
         return frozen
@@ -162,15 +164,14 @@ class FrozenLocationExports(FrozenCurrentExports):
                 "source_collected_at": None,
                 "data_revision_at": max(r["updated_at"] for r in rows),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**frozen))
             return frozen
 
     def page(self, resource, *, limit, cursor):
-        # metadata 조회부터 응답/health 확정까지 같은 읽기 수명을 유지한다.
-        with self.artifacts.guard(shared=True):
-            return self._page_guarded(resource, limit=limit, cursor=cursor)
+        # 파일을 읽지 않는 DB page다. 각 RR 조회가 값을 복사하므로 GC의 파일 잠금은 불필요하다.
+        return self._page_guarded(resource, limit=limit, cursor=cursor)
 
     def _page_guarded(self, resource, *, limit, cursor):
         if resource != "locations" or not 1 <= limit <= 5000:

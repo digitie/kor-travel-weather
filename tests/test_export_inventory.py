@@ -323,19 +323,22 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
     _publish(repo, tmp_path, targets)
     selection, seen = _captured(repo, lambda: _selection(repo))
     assert not selection.unconfirmed
-    owners = [s for s, _ in seen if "FROM weather_export_scope_owners JOIN" in s]
-    assert len(owners) == 1 and "weather_sync_runs" not in owners[0]
-    runs = [s for s, _ in seen if s.startswith(
-        "SELECT weather_sync_runs.run_id, weather_sync_runs.status",
-    )]
-    assert len(runs) == 1
+    owners = [s for s, _ in seen if "FROM weather_export_scope_owners" in s]
+    assert len(owners) == 1
+    # scope별 재조회가 아니라 시도별 집계 후 서로 다른 run만 읽는다.
+    assert "GROUP BY weather_export_scope_owners.active_attempt_id" in owners[0]
+    assert "selected_owners AS MATERIALIZED" in owners[0]
+    assert "selected_run_states AS MATERIALIZED" in owners[0]
+    assert "SELECT DISTINCT selected_attempts.run_id" in owners[0]
+    assert owners[0].count("FROM weather_sync_runs") == 1
+    assert "JOIN weather_sync_runs" not in owners[0]
     big = [(s, p) for s, p in seen if any(
         name in s for name in ("weather_export_scope_plans", "weather_export_heads.namespace",
                                "weather_export_scope_owners")
     )]
     # 목록 하나가 배열 파라미터 하나다(위치 3곳이라 개수로는 IN 목록과 구별되지 않는다).
     assert big and all(
-        re.search(r"= ANY ?\(", s) and " IN (" not in s for s, _ in big
+        re.search(r"= ANY ?\(", s) and not re.search(r" IN \(%.+?\)", s) for s, _ in big
     ), [s[:160] for s, _ in big]
     heads = ExportHeads(repo)
     runs_table = heads.metadata.tables["weather_sync_runs"]
@@ -346,7 +349,7 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
             heads.generations.c.attempt_id,
         ).where(heads.generations.c.generation_id == selection.scopes[0].generation_id)
             .scalar_subquery()).scalar_subquery()).values(status="failed"))
-    assert _selection(repo).unconfirmed  # 따로 읽은 run 상태도 건강도에 들어간다
+    assert _selection(repo).unconfirmed  # 같은 묶음의 run 상태도 건강도에 들어간다
 
 
 def _age(repo, location_id, age):

@@ -13,6 +13,7 @@ import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from time import monotonic
 
 from kortravelcommon.address_providers import VworldKakaoAddressResolver
 from kortravelcommon.reverse_address import AddressTarget
@@ -30,19 +31,19 @@ from sqlalchemy import (
     String,
     Table,
     delete,
-    func,
     select,
     update,
 )
 from sqlalchemy.exc import SQLAlchemyError
 
-from .export_artifacts import ExportArtifactError, ExportArtifactStore
+from .export_artifacts import ExportArtifactError, ExportArtifactStore, ExportGuardTimeout
 from .export_capacity import (
     MANIFEST_STATE_RESERVE,
     MAX_MANIFEST_BYTES,
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
+    bounded_manifest_digest,
     read_generation_refs,
 )
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
@@ -51,6 +52,13 @@ MAX_SNAPSHOT_LOCATIONS = 5000
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 PAGE_META_RESERVE = 8192
 SNAPSHOT_TTL = timedelta(minutes=15)
+
+
+def snapshot_expires_at(now):
+    """첫 요청 뒤 최소15분을 보장하며 같은 분의 재사용 UPDATE를 합친다."""
+    return now.replace(second=0, microsecond=0) + timedelta(minutes=1) + SNAPSHOT_TTL
+
+
 SOURCE_MAX_AGE = timedelta(hours=3)
 # 만료 뒤 이만큼 지난 handle만 publisher tick이 지운다. 유효 cursor(만료 전)는 대상이 아니다.
 SNAPSHOT_PRUNE_RETAIN = timedelta(hours=6)
@@ -90,6 +98,13 @@ def export_snapshot_tables(metadata: MetaData):
         Column("selection_kind", String, Computed(
             "(manifest -> 'selection') ->> 'kind'", persisted=True,
         )),
+        *[Column(name, String, Computed(expression, persisted=True)) for name, expression in (
+            ("selection_signature", "(manifest -> 'selection') ->> 'signature'"),
+            ("forecast_style", "(manifest -> 'selection') ->> 'style'"),
+            ("forecast_since", "(manifest -> 'selection') ->> 'since'"),
+            ("forecast_provider_signature", "(manifest -> 'selection') ->> 'provider_signature'"),
+            ("daily_resource", "manifest ->> 'daily_resource'"),
+        )],
         Column("source_collected_at", DateTime(timezone=True)),
         Column("data_revision_at", DateTime(timezone=True), nullable=False),
         Column("created_at", DateTime(timezone=True), nullable=False),
@@ -99,6 +114,13 @@ def export_snapshot_tables(metadata: MetaData):
         "ix_weather_export_snapshots_kind_issue",
         snapshots.c.selection_kind, snapshots.c.issue_order.desc(),
     )
+    Index("ix_weather_export_snapshots_signature_issue",
+          snapshots.c.selection_signature, snapshots.c.issue_order.desc())
+    Index("ix_weather_export_snapshots_forecast_issue", snapshots.c.selection_kind,
+          snapshots.c.forecast_style, snapshots.c.forecast_since,
+          snapshots.c.forecast_provider_signature, snapshots.c.issue_order.desc())
+    Index("ix_weather_export_snapshots_daily_issue",
+          snapshots.c.daily_resource, snapshots.c.issue_order.desc())
     refs = Table(
         "weather_export_snapshot_refs",
         metadata,
@@ -161,10 +183,13 @@ def _freshness(heads, now):
 class FrozenCurrentExports:
     def __init__(
         self, repository, artifacts: ExportArtifactStore, *, signing_key: str, providers=None,
-        source_inventory=False, expected_sources=(), optional_sources=(),
+        source_inventory=False, expected_sources=(), optional_sources=(), selection_cache=None,
     ):
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
+        self.selection_cache = selection_cache
+        self.selection_checked_after = monotonic()
+        self.selection_deadline = None
         self.repository = repository
         self.heads = ExportHeads(repository)
         self.snapshots, self.refs = export_snapshot_tables(self.heads.metadata)
@@ -237,15 +262,38 @@ class FrozenCurrentExports:
         except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise ExportCursorInvalid("cursor 형식/서명이 올바르지 않습니다.") from exc
 
+    def _approved_selection(self, connection, locations, *, health_location_ids=None):
+        from .export_inventory_selection import approved_source_selection
+
+        def read():
+            return approved_source_selection(
+                connection, self.heads.metadata, locations,
+                expected=self.expected_sources, optional=self.optional_sources,
+                health_location_ids=health_location_ids,
+            )
+
+        if self.selection_cache is None:
+            return read()
+        key = self.selection_cache.key(
+            connection, locations, self.expected_sources, self.optional_sources, health_location_ids,
+        )
+        result, deadline = self.selection_cache.read(
+            key, read, checked_after=self.selection_checked_after,
+        )
+        self.selection_deadline = min(self.selection_deadline or deadline, deadline)
+        return result
+
+    def require_current_selection(self):
+        # 파일 검사·페이지 DB 조회·직렬화가 길어져도 만료 캐시로 200/304를 만들지 않는다.
+        if self.selection_cache is not None and self.selection_deadline is not None:
+            self.selection_cache.require_current(self.selection_deadline)
+
     def _select_current_scopes(self, connection, locations):
         if self.source_inventory:
-            from .export_inventory_selection import approved_source_selection
-
             try:
-                selection = approved_source_selection(
-                    connection, self.heads.metadata, locations,
-                    expected=self.expected_sources, optional=self.optional_sources,
-                )
+                selection = self._approved_selection(connection, locations)
+            except ExportGuardTimeout:
+                raise
             except (ExportArtifactError, KeyError, ValueError, TypeError) as exc:
                 raise ExportSnapshotUnavailable(
                     "실제 승인 source 집합이 준비되지 않았습니다."
@@ -382,7 +430,7 @@ class FrozenCurrentExports:
                         } if self.source_inventory else {}),
                     }
                 )
-                budget.add(scopes[-1])
+                budget.add_bounded_record(scopes[-1], MAX_MANIFEST_BYTES)
             entries = self.heads.metadata.tables["reverse_address_entries"]
             addresses = {
                 row["target_key"]: row
@@ -429,14 +477,15 @@ class FrozenCurrentExports:
                         "sigungu_name": entry["sigungu_name"] if entry else None,
                     }
                 )
-                budget.add(items[-1])
+                budget.add_bounded_record(items[-1], MAX_MANIFEST_BYTES)
             manifest = {"schema": 1, "scopes": scopes, "locations": items}
             if self.source_inventory:
                 manifest["unconfirmed_sources"] = unconfirmed
             if self.current_selection is not None:
                 manifest["selection"] = self.current_selection
-            MetadataBudget(MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE).add(manifest)
-            digest = _digest(manifest)
+            digest = bounded_manifest_digest(
+                manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
+            )
             now = datetime.now(UTC)
             # 재사용 조건은 그대로다: 같은 digest의 유효한 handle이 그 selection의 **가장 최근**
             # 발급이어야 한다. 같은 digest면 manifest(안의 selection 포함)가 같으므로, 그 handle보다
@@ -470,7 +519,7 @@ class FrozenCurrentExports:
                 "manifest": manifest,
                 **_freshness(heads.values(), now),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             connection.execute(self.snapshots.insert().values(**row))
             connection.execute(
@@ -491,10 +540,9 @@ class FrozenCurrentExports:
 
         하위 reader(예보)도 같은 모양(조건 tuple)을 돌려준다. 호출부는 풀어서 쓴다.
         """
-        selection = self.snapshots.c.manifest["selection"]
         if self.current_selection is None:
-            return (selection["kind"].as_string().is_(None),)
-        return (selection["signature"].as_string() == self.current_selection["signature"],)
+            return (self.snapshots.c.selection_kind.is_(None),)
+        return (self.snapshots.c.selection_signature == self.current_selection["signature"],)
 
     def _previous_success(self):
         # reader TTL와 마지막 승인 data manifest의 수명은 다르다. 새 handle만 만든다.
@@ -517,9 +565,11 @@ class FrozenCurrentExports:
                 frozen["_reused"] = True
             else:
                 frozen.pop("issue_order", None)
-                frozen.pop("selection_kind", None)
+                for column in self.snapshots.c:
+                    if column.computed is not None:
+                        frozen.pop(column.name, None)
                 frozen.update(
-                    snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL
+                    snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now)
                 )
                 session.execute(self.snapshots.insert().values(**frozen))
                 session.execute(
@@ -552,6 +602,9 @@ class FrozenCurrentExports:
         if not frozen.pop("_reused", False):
             return frozen
         now = datetime.now(UTC)
+        # 새 handle은 분 경계까지 여유를 둔다. 충분한 수명이 남았으면 DB 쓰기·잠금이 없다.
+        if frozen["expires_at"] >= now + SNAPSHOT_TTL:
+            return frozen
         table = self.snapshots
         try:
             with self.repository.engine.connect() as connection, connection.begin():
@@ -559,8 +612,12 @@ class FrozenCurrentExports:
                 connection.exec_driver_sql("SET LOCAL lock_timeout = '1s'")
                 renewed = connection.execute(
                     update(table)
-                    .where(table.c.snapshot_id == frozen["snapshot_id"], table.c.expires_at > now)
-                    .values(expires_at=func.greatest(table.c.expires_at, now + SNAPSHOT_TTL))
+                    .where(
+                        table.c.snapshot_id == frozen["snapshot_id"],
+                        table.c.expires_at > now,
+                        table.c.expires_at < snapshot_expires_at(now),
+                    )
+                    .values(expires_at=snapshot_expires_at(now))
                     .returning(table.c.expires_at)
                 ).scalar_one_or_none()
         except SQLAlchemyError as exc:
@@ -578,8 +635,9 @@ class FrozenCurrentExports:
             return frozen
         now = datetime.now(UTC)
         row = {key: value for key, value in frozen.items()
-               if key in self.snapshots.c and key not in {"issue_order", "selection_kind"}}
-        row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=now + SNAPSHOT_TTL,
+               if key in self.snapshots.c and key != "issue_order"
+               and self.snapshots.c[key].computed is None}
+        row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now),
                    manifest=dict(frozen["manifest"], capacity_limited=True))
         MetadataBudget().add(row["manifest"])
         row["manifest_digest"] = _digest(row["manifest"])
@@ -768,12 +826,9 @@ class FrozenCurrentExports:
             ).all()
             stale |= len(roster) > MAX_SNAPSHOT_LOCATIONS
             if self.source_inventory:
-                from .export_inventory_selection import approved_source_selection
-
                 try:
-                    latest = approved_source_selection(
-                        session, self.heads.metadata, [row._mapping for row in roster],
-                        expected=self.expected_sources, optional=self.optional_sources,
+                    latest = self._approved_selection(
+                        session, [row._mapping for row in roster],
                     )
                     stale |= latest.unconfirmed or {
                         (item.descriptor.namespace, item.location_ids) for item in latest.scopes
@@ -781,6 +836,8 @@ class FrozenCurrentExports:
                         (scope["namespace"], tuple(scope["location_ids"]))
                         for scope in manifest["scopes"]
                     }
+                except ExportGuardTimeout:
+                    raise
                 except (ExportArtifactError, KeyError, ValueError, TypeError):
                     stale = True
             else:

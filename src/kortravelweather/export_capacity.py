@@ -3,6 +3,7 @@
 파일 크기·페이지 크기를 늘리지 않는다. DB cursor도 작은 묶음만 읽고 닫는다.
 """
 
+import hashlib
 import json
 from collections import defaultdict
 
@@ -13,7 +14,11 @@ from .export_artifacts import ExportArtifactError
 
 MAX_SOURCE_SCOPES = 8192
 MAX_GENERATION_REFS = 65536
-REF_FETCH_ROWS = 64
+# 작은64행 fetch는 실제3305개 plan/ref에서108회 왕복했다. 별도 고정 묶음으로 줄이되
+# SQL이 반환하는 JSON의 단건·누적 거부 상한은 그대로다(투영 JSON 최대16/32MiB/묶음).
+# Python 객체·드라이버 overhead까지 포함한 RSS 상한을 뜻하지 않는다.
+REF_FETCH_ROWS = 256
+PLAN_FETCH_ROWS = 128
 MAX_REF_LOCATION_BYTES = 64 * 1024
 MAX_SCOPE_PLAN_BYTES = 256 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -55,6 +60,21 @@ class MetadataBudget:
         if size > maximum or self.used > self.maximum:
             raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
         return self.used
+
+
+def bounded_manifest_digest(value, maximum):
+    """단건·누적 예산을 검사한 manifest를 C encoder 한 번으로 제한·해시한다.
+
+    SQL에서 단건을 제한하고 호출자가 누적 예산을 검사한 트리만 받는다. 최종 구조의
+    괄호·키까지 UTF-8 byte 상한에 포함하며 기존 정규 JSON digest와 같은 값을 낸다.
+    """
+    try:
+        payload = MetadataBudget().encoder.encode(value).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, OverflowError) as exc:
+        raise ExportCapacityExceeded("승인 manifest JSON이 올바르지 않습니다.") from exc
+    if len(payload) > maximum:
+        raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def read_generation_refs(connection, table, generation_ids):
@@ -100,8 +120,8 @@ def any_of(column, values):
     return column == any_(bindparam(None, list(values), type_=ARRAY(String()), unique=True))
 
 
-def read_scope_plans(connection, table, attempt_ids):
-    """위치별 inventory에 반복된 descriptor를 attempt마다 한 번만 읽는다."""
+def read_scope_plans(connection, table, attempt_ids, *, byte_sizes=None):
+    """descriptor를 attempt마다 한 번 읽고 선택적으로 같은 검산의 UTF-8 바이트 수도 돌려준다."""
     attempt_ids = tuple(dict.fromkeys(attempt_ids))
     if len(attempt_ids) > MAX_SOURCE_SCOPES:
         raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
@@ -115,7 +135,7 @@ def read_scope_plans(connection, table, attempt_ids):
     ).where(any_of(table.c.attempt_id, attempt_ids)).order_by(table.c.attempt_id).limit(
         MAX_SOURCE_SCOPES + 1,
     ).execution_options(
-        stream_results=True, yield_per=REF_FETCH_ROWS, max_row_buffer=REF_FETCH_ROWS,
+        stream_results=True, yield_per=PLAN_FETCH_ROWS, max_row_buffer=PLAN_FETCH_ROWS,
     )
     budget, plans = MetadataBudget(), {}
     result = connection.execute(statement)
@@ -123,7 +143,10 @@ def read_scope_plans(connection, table, attempt_ids):
         for row in result.mappings():
             if row["oversized_descriptor"] or row["descriptor"] is None:
                 raise ExportCapacityExceeded("승인 source plan 메타데이터 상한을 넘었습니다.")
+            before = budget.used
             budget.add_bounded_record(row["descriptor"], MAX_SCOPE_PLAN_BYTES)
+            if byte_sizes is not None:
+                byte_sizes[row["attempt_id"]] = budget.used - before
             plans[row["attempt_id"]] = row["descriptor"]
     finally:
         result.close()

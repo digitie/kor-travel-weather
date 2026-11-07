@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, create_engine, event
 
 from kortravelweather import export_capacity as capacity
+from kortravelweather.export_heads import _digest
 
 
 def test_budget_matches_digest_json_utf8_and_exact_boundary():
@@ -19,6 +20,9 @@ def test_budget_matches_digest_json_utf8_and_exact_boundary():
     ).encode("utf-8"))
     assert capacity.MetadataBudget(expected).add(value) == expected
     assert capacity.MetadataBudget(expected).add_bounded_record(value, expected) == expected
+    assert capacity.bounded_manifest_digest(value, expected) == _digest(value)
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.bounded_manifest_digest(value, expected - 1)
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.MetadataBudget().add_bounded_record(value, expected - 1)
     with pytest.raises(capacity.ExportCapacityExceeded):
@@ -47,6 +51,8 @@ def test_invalid_json_is_a_capacity_error(invalid):
         capacity.MetadataBudget().add(invalid)
     with pytest.raises(capacity.ExportCapacityExceeded):
         capacity.MetadataBudget().add_bounded_record(invalid, capacity.MAX_SCOPE_PLAN_BYTES)
+    with pytest.raises(capacity.ExportCapacityExceeded):
+        capacity.bounded_manifest_digest(invalid, capacity.MAX_MANIFEST_BYTES)
 
 
 @pytest.fixture
@@ -73,7 +79,7 @@ def ref_row(generation="generation", ordinal=0, locations=None):
                 byte_count=1024, point_count=1, location_ids=locations)
 
 
-def test_pg_server_cursor_fetch64_and_legacy_null_projection(refs_connection):
+def test_pg_server_cursor_uses_bounded_ref_buffer_and_legacy_null_projection(refs_connection):
     connection, table = refs_connection
     rows = [ref_row(ordinal=n, locations=[f"장소-{n}"]) for n in range(130)]
     rows.append(ref_row("legacy", locations=None))
@@ -89,7 +95,8 @@ def test_pg_server_cursor_fetch64_and_legacy_null_projection(refs_connection):
         result = capacity.read_generation_refs(connection, table, ["generation", "legacy"])
     finally:
         event.remove(connection.engine, "before_cursor_execute", inspect_cursor)
-    assert observed == [(True, 64)]
+    assert observed == [(True, 256)]
+    assert capacity.REF_FETCH_ROWS * capacity.MAX_REF_LOCATION_BYTES <= 16 * 1024 * 1024
     assert result["generation"] == rows[:-1]
     assert result["legacy"][0]["location_ids"] is None
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
@@ -119,24 +126,40 @@ def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, f
         prefixes=["TEMPORARY"],
     )
     plans.create(connection)
-    value = {"location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)]}
+    value = {"location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)], "한글": ["서울", '"\\\n']}
     if failure == "oversized":
         value["oversized"] = "x" * (capacity.MAX_SCOPE_PLAN_BYTES + 1)
     connection.execute(plans.insert(), [{"attempt_id": part, "descriptor": value}
                                        for part in ["land", "temperature"]])
     wanted = ["land", "temperature"] * 1000
+    observed = []
+
+    def inspect_cursor(_connection, cursor, _statement, _parameters, context, _many):
+        if context.execution_options.get("stream_results"):
+            observed.append((bool(cursor.name), context.execution_options["yield_per"]))
+
+    event.listen(connection.engine, "before_cursor_execute", inspect_cursor)
     if failure == "missing":
         wanted.append("absent")
     elif failure == "total_budget":
         original = capacity.MetadataBudget
         monkeypatch.setattr(capacity, "MetadataBudget", lambda: original(1))
-    if failure:
-        with pytest.raises(capacity.ExportCapacityExceeded):
-            capacity.read_scope_plans(connection, plans, wanted)
-    else:
-        assert capacity.read_scope_plans(connection, plans, wanted) == {
-            "land": value, "temperature": value,
-        }
+    try:
+        if failure:
+            with pytest.raises(capacity.ExportCapacityExceeded):
+                capacity.read_scope_plans(connection, plans, wanted)
+        else:
+            byte_sizes = {}
+            assert capacity.read_scope_plans(connection, plans, wanted, byte_sizes=byte_sizes) == {
+                "land": value, "temperature": value,
+            }
+            size = len(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":"), allow_nan=False).encode("utf-8"))
+            assert byte_sizes == {"land": size, "temperature": size}
+    finally:
+        event.remove(connection.engine, "before_cursor_execute", inspect_cursor)
+    assert observed == [(True, 128)]
+    assert capacity.PLAN_FETCH_ROWS * capacity.MAX_SCOPE_PLAN_BYTES <= 32 * 1024 * 1024
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
 
 
@@ -146,4 +169,5 @@ def test_manifest_state_reserve_fits_fallback_marker_at_exact_limit():
     normal_maximum = capacity.MAX_MANIFEST_BYTES - capacity.MANIFEST_STATE_RESERVE
     value["padding"] = "x" * (normal_maximum - overhead)
     assert capacity.MetadataBudget(normal_maximum).add(value) == normal_maximum
+    assert capacity.bounded_manifest_digest(value, normal_maximum) == _digest(value)
     capacity.MetadataBudget().add(dict(value, capacity_limited=True))
