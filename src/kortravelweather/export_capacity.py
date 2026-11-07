@@ -14,7 +14,11 @@ from .export_artifacts import ExportArtifactError
 
 MAX_SOURCE_SCOPES = 8192
 MAX_GENERATION_REFS = 65536
-REF_FETCH_ROWS = 64
+# 작은64행 fetch는 실제3305개 plan/ref에서108회 왕복했다. 별도 고정 묶음으로 줄이되
+# SQL이 반환하는 JSON의 단건·누적 거부 상한은 그대로다(투영 JSON 최대16/32MiB/묶음).
+# Python 객체·드라이버 overhead까지 포함한 RSS 상한을 뜻하지 않는다.
+REF_FETCH_ROWS = 256
+PLAN_FETCH_ROWS = 128
 MAX_REF_LOCATION_BYTES = 64 * 1024
 MAX_SCOPE_PLAN_BYTES = 256 * 1024
 MAX_MANIFEST_BYTES = 8 * 1024 * 1024
@@ -131,7 +135,7 @@ def read_scope_plans(connection, table, attempt_ids):
     ).where(any_of(table.c.attempt_id, attempt_ids)).order_by(table.c.attempt_id).limit(
         MAX_SOURCE_SCOPES + 1,
     ).execution_options(
-        stream_results=True, yield_per=REF_FETCH_ROWS, max_row_buffer=REF_FETCH_ROWS,
+        stream_results=True, yield_per=PLAN_FETCH_ROWS, max_row_buffer=PLAN_FETCH_ROWS,
     )
     budget, plans = MetadataBudget(), {}
     result = connection.execute(statement)

@@ -1,3 +1,5 @@
+- [x] **W-READ-MAX-CODE-02/03** — 2회차 JSON 계산·3회차 fetch 왕복 개선 및 WSL/Docker95개씩 검증. 운영 배포 완료와 구분한다. [근거](reports/2026-11-07-read-max-optimization.md).
+
 - [x] 2026-11-07 Weather PR207 최신 제품3a4ae3f API·수집기 배포, 자연 drain·원27상태 복원·Manager·실제 종료·PC/모바일/API 검증. 웹·DB 유지, backfill 미실행. [기록](reports/2026-11-07-weather-pr207-release.md).
 
 - [x] 2026-11-07 Weather PR206 최신 제품87a0b50 API·수집기 배포, 자연 drain·원27상태 복원·Manager·실제 종료·PC/모바일/API 검증. 웹·DB 유지, backfill 미실행. [기록](reports/2026-11-07-weather-pr206-release.md).
