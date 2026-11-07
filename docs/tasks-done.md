@@ -1,3 +1,7 @@
+## 2026-11-08 — READ-NEXT-20261107 실제 반영 정산
+
+- [x] **READ-NEXT-20261107** — 추가 조회 개선/60초 상태 캐시0180e523의 API 실제 반영·n150 지도/상세 PC모바일·27일정/Manager·최초 부모 종료를 수용했다. first current503과 긴 조회는 별도 미완이다. [원장](reports/2026-11-08-selection-cache-release.md).
+
 - [x] **W-READ-MAX-02/03** — 세 회차 제품7ccf88a의 최종 API/수집기 반영·원27복원·Manager healthy·최초 실제 done/자식 종료와 실제 HTTP200/304·PC/모바일 수용을 마쳤다. Transport 세 회차·잔여 stale/지연은 별도다. [근거](reports/2026-11-07-read-max-optimization.md).
 - [x] **W-READ-MAX-01** — 1회차 전체 확정 항목 구현·WSL/Docker·전후 검산과 API/수집기/DB0038 반영, 원27복원·Manager healthy·최초 실제 done/자식 종료를 확인했다. 남은 HTTP 지연과2·3회차 배포는 별도다. [근거](reports/2026-11-07-read-max-optimization.md).
 - [x] **W-READ-MAX-CODE-02/03** — 2회차 JSON 계산·3회차 fetch 왕복 개선 및 WSL/Docker95개씩 검증. 운영 배포 완료와 구분한다. [근거](reports/2026-11-07-read-max-optimization.md).
