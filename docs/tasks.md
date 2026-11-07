@@ -1,3 +1,5 @@
+- [ ] **READ-NEXT-20261107** — 추가 조회 개선의 최소 새 이미지·실제 API/PC모바일·원 일정 복원/Manager·첫 부모 종료를 수용한다. [원장](reports/2026-11-07-read-next.md).
+
 
 # Weather 남은 작업
 
