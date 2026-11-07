@@ -172,3 +172,11 @@ SQL은 oversized 단건을 JSON 대신 null/거부 표식으로 반환하고, �
 2026-11-07 11:46UTC 최초 Invocation07ab4b4b942147648724a209866ea293의 실제 done·Main0·cgroup 부재를 확인했다. API32877b4a/image481f5478와 수집기dc3790a6/image14a8764c는 제품674d6f8이며 schema0038·원Weather27상태 복원·native 설정/키·Manager healthy·웹/다른 서비스 보존·모든 소유 자식 종료를 확인했다. 기존 장기 수집과 대기는 자연 종료했으며 취소하지 않았다. 원문은 release-cycle1/deployment-r2/last-status.json과 terminal-observation.json이다.
 
 최종 제품7ccf88a의 source SHA b12ae5961c6d0761e16acbaa32770f3ccb9d125c5f27f1f1cd1996a9a7e54340과 fresh 실제 역할을 연결했다. 최소 API/수집기 빌드7b91d8807c/최초 Invocation18c1f46002cf40f280983eaba8fc9fb0를 한 번 시작했으며 정상 G/R 대기 중이다. 아직 최종 이미지·배포 성공으로 판정하지 않는다. 기존 웹·의존성·Alembic을 유지하므로 웹 빌드·migration은 없다. 빌드 실제 종료 뒤 fresh 입력으로 최종 배포·API·PC/모바일을 수용하고 Transport 세 회차로 이어간다.
+
+## 세 회차 최종 배포와 실제 응답 수용
+
+2026-11-07 11:57UTC 배포90641cd117/첫 Invocation1f98e72c9f6e44cbbae92afe0bfea853의 실제 done·Main0·cgroup 부재·모든 자식 종료를 확인했다. 제품7ccf88a API CID53c61bff3aa8d7b8978fa5bd4fff89cff3f0b1f65f34549e8d2ca206249e38f9/image034cfebc, 수집기 CIDd35fc69cad619cd25f00a06065c62c0a6d1000c641b864dfd81d84042427da64/image93d11ca7이며 원27일정·Settings5초/키·schema0038·웹508a438·다른 서비스/환경을 보존했다. 최종 migration은 없었다. Manager adopt/verify/show healthy와 동일 release directory를 확인했다.
+
+한 번의 실제 HTTP 관측은 위치500행200 790.42ms/304 591.41ms, current100행200 19733.34ms/304 12117.86ms, 일별10행200 12128.98ms/304 9739.32ms였다. health/version/특보/status까지10요청은 모두200/304이며 재시도하지 않았다. 이전 current45044ms 초과 UNKNOWN·daily29812/22029ms도 보존한다. 부하·snapshot 재사용 상태가 다른 단일 관측이므로 p95나 cold/전국 보장·코드 단독 개선율은 산출하지 않는다. stale·일부 날씨/미세먼지 미제공·여전히 남은 수초 이상의 응답은 한계다.
+
+Firefox157 PC1440/모바일375의 상세·내일 최저2/최고8·시간별24열 그래프·작은 보조 정보·빈 특보 설명0·overflow0·logout200·브라우저 자식 종료를 확인했고 캡처를 직접 검토했다. 원문 live-api-final.json/live-ui/results.json과 전체 final-acceptance.json은 Git 밖 release-final에 보존했다. 최종 수용 SHA306ef3b49c7308fd9d6af52c250d8c6ae15f5590612d3c8ee8b2ee4f277fb479. 다음은 Transport 원인 발굴→개선→전후 검증 세 회차이며 Weather 완료분은 반복하지 않는다.
