@@ -25,3 +25,9 @@ Transport 실제 차단 노드는 투명한 kt-map-stage-summary 전체 폭이�
 Transport n150 PC15대표/모바일12대표(지도5·나머지목록7)는 픽셀 겹침0·중심 입력·요약 유종 실제 클릭·목록/마커 zoom8→12·오류/문서 넘침0으로 통과했다. Weather PC는 통과했으나 모바일은 목록을 접은 뒤 버튼이 이동하며 아래 pill1개를 가렸다. map Libre root의 Observer는 형제 access section 높이 변경을 보지 못했다. 기존 ResizeObserver에 해당 section만 추가해 같은 effect/latch 안에서 재배치한다. deps/clip CSS/API/Transport를 바꾸지 않는다.
 
 이전61adb9 코드에 새 회귀시험1FAIL을 재현하고 후속 WSL/Docker34개씩·타입/린트0, Firefox375 실제 형제 section의 접기 이동/중심 클릭·키보드·effect1회/접힘 유지로 검산했다. 이 마지막 변경은 Weather web만 새로 빌드·재생성한다. API61adb9/이미지29112909와 Transport 전체는 그대로이며, 실제 완료는 다음 원장으로 정산한다.
+
+## 지도 전환 중 빈 마커의 크기 측정 오류
+
+Weather 웹 f4d11a43의 실제 PC/모바일 지도 카드 배치·목록 접기·중심 입력과 상세 예보는 정상으로 관측했지만 지도→목록→서울 상세 전환에서 offsetWidth의 null 참조 오류가 발생했다. 원 FAIL과 별도375px stack 관측을 보존했고 두 관측 모두 logout200·소유 브라우저 종료·자격 삭제를 확인했다.
+
+MutationObserver가 React portal 자식이 제거된 빈 MapLibre host를 보는 경합을 회귀로 재현했다. 유효한 host/button 쌍을 한 번만 확보해 측정과 배치에 같은 쌍을 사용한다. 정상 두 번째 마커의 배치·목록·접힘·키보드 계약은 유지하며 map.remove/resize·API/CS·Transport·의존성은 변경하지 않는다. 집중 WSL/Docker 결과는 원장에 기록하고 Weather 웹만 새 최소 이미지로 반영한다. 실제 배포·화면 성공은 다음 최종 원장으로 구분한다.

@@ -437,9 +437,12 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
       frame = 0;
       const bounds = root.getBoundingClientRect();
       if (!bounds.width || !bounds.height) return;
-      const hosts = [...root.querySelectorAll<HTMLElement>(".weather-region-marker")];
-      const cards = hosts.map(host => {
-        const button = host.querySelector<HTMLElement>(".vworld-weather-marker-button")!;
+      // portal 자식이 사라진 뒤 MapLibre host가 정리되기 전의 빈 마커는 측정하지 않는다.
+      const entries = [...root.querySelectorAll<HTMLElement>(".weather-region-marker")].flatMap(host => {
+        const button = host.querySelector<HTMLElement>(".vworld-weather-marker-button");
+        return button ? [{ host, button }] : [];
+      });
+      const cards = entries.map(({ host, button }) => {
         const anchor = host.getBoundingClientRect();
         return { left: anchor.left - bounds.left, top: anchor.top - bounds.top,
           width: button.offsetWidth, height: button.offsetHeight };
@@ -452,11 +455,10 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
       }).filter(rect => rect.width && rect.height);
       const offsets = layoutWeatherRegionCards(cards, bounds.width, bounds.height, reserved);
       offsets.forEach((offset, index) => {
-        const host = hosts[index];
+        const { host, button } = entries[index];
         host.style.setProperty("--weather-region-x", `${offset.x}px`);
         host.style.setProperty("--weather-region-y", `${offset.y}px`);
         host.dataset.regionOverflow = String(!offset.placed);
-        const button = host.querySelector<HTMLElement>(".vworld-weather-marker-button")!;
         button.tabIndex = offset.placed ? 0 : -1;
         if (offset.placed) host.removeAttribute("aria-hidden");
         else {

@@ -110,6 +110,38 @@ describe("지역 대표 카드의 화면 충돌", () => {
       expect(setOpen).not.toHaveBeenCalled();
     } finally { cleanup(); }
   });
+  it("portal 자식이 제거된 빈 marker host를 건너뛰고 남은 정상 카드의 측정과 배치를 유지한다", () => {
+    let effect: ts.Expression | undefined;
+    function find(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect" && node.arguments[0]?.getText(tree).includes("const offsets = layoutWeatherRegionCards")) effect = node.arguments[0];
+      ts.forEachChild(node, find);
+    }
+    find(tree);
+    if (!effect) throw new Error("실제 지역 배치 effect가 필요합니다.");
+    const frames: (() => void)[] = [];
+    class Observer { observe() {} disconnect() {} }
+    const staleWrite = vi.fn(), validWrite = vi.fn();
+    const button = { offsetWidth: 120, offsetHeight: 48, tabIndex: 0 };
+    let portalRemoved = false;
+    const stale = { getBoundingClientRect: () => ({ left: 0, top: 0 }), querySelector: () => portalRemoved ? null : button,
+      style: { setProperty: staleWrite }, dataset: {}, setAttribute() {}, removeAttribute() {}, contains: () => false };
+    const valid = { ...stale, getBoundingClientRect: () => ({ left: 80, top: 120 }), querySelector: (selector: string) => selector.includes("button") ? button : null,
+      style: { setProperty: validWrite } };
+    const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 351, height: 400 }), querySelectorAll: () => [stale, valid], closest: () => null };
+    const code = ts.transpileModule(`const effect = ${effect.getText(tree)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "setRegionListOpen", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
+      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1, 2], vi.fn(), layout,
+      (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Observer, Observer, { activeElement: null },
+    ) as () => void;
+    try {
+      // React가 portal 자식을 정리하고 MapLibre host는 아직 남아 있는 RAF 사이의 상태다.
+      portalRemoved = true;
+      expect(() => frames.shift()!()).not.toThrow();
+      expect(staleWrite).not.toHaveBeenCalled();
+      expect(validWrite).toHaveBeenCalledWith("--weather-region-x", expect.any(String));
+      expect(validWrite).toHaveBeenCalledWith("--weather-region-y", expect.any(String));
+    } finally { cleanup(); }
+  });
 });
 
 describe("지도와 대체 목록의 같은 날씨 표시", () => {

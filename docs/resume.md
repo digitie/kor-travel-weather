@@ -1,5 +1,7 @@
 ## 2026-11-08 — 남은 조회 지연·대표 카드 겹침 수정
 
+2026-11-08 실제 카드 접근은 수정됐으며 지도 전환 중 빈 마커 자식의 크기 측정 오류를 추가 재현했다. 유효한 host/button 쌍을 같은 배치에 사용하도록 수정·집중 검산하고 Weather 웹만 반영한다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).
+
 2026-11-08 후속 HTTP200/304와 Transport PC/모바일을 수용했고 Weather 접기 뒤 버튼 이동의 마지막 모바일 가림을 재현했다. 형제 access 높이를 관측하는1줄·회귀1개를 WSL/Docker34개씩으로 검산했으며 Weather web만 추가 반영한다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).
 
 2026-11-08 첫3역할 배포는 실제0으로 완료했으나 HTTP current503/일부 카드 입력·복합 모바일 수용 실패를 보존했다. 실제 재현에 따른4키집합 조회/배열 목록·summary 입력/명시 접기 후속을 검증했으며 새 이미지 반영이 남았다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).
