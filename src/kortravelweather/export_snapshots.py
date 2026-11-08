@@ -204,7 +204,7 @@ class FrozenCurrentExports:
     def __init__(
         self, repository, artifacts: ExportArtifactStore, *, signing_key: str, providers=None,
         source_inventory=False, expected_sources=(), optional_sources=(), selection_cache=None,
-        immutable_reads=False,
+        immutable_reads=False, page_liveness=False,
     ):
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
@@ -217,6 +217,8 @@ class FrozenCurrentExports:
         self.reuse_artifacts = set()
         self.reuse_snapshot = None
         self.immutable_reads = immutable_reads
+        self.page_liveness = page_liveness
+        self.reuse_liveness = None
         self.repository = repository
         self.heads = ExportHeads(repository)
         self.snapshots, self.refs = export_snapshot_tables(self.heads.metadata)
@@ -292,6 +294,13 @@ class FrozenCurrentExports:
     def _approved_selection(self, connection, locations, *, health_location_ids=None):
         from .export_inventory_selection import approved_source_selection
 
+        if self.page_liveness and self.reuse_liveness is None:
+            from .export_page_liveness import capture_liveness
+
+            # 전체 승인 검산과 같은 RR의 삭제 변경 번호다. 수집 INSERT/UPDATE는
+            # 번호를 바꾸지 않으며, 아직 전체를 검산하지 않은 결과의 수명은 늘리지 않는다.
+            self.reuse_liveness = capture_liveness(connection, self.heads.metadata)
+
         def read():
             return approved_source_selection(
                 connection, self.heads.metadata, locations,
@@ -317,6 +326,13 @@ class FrozenCurrentExports:
         return (len(self.reuse_generations) * 96 + len(self.reuse_artifacts) * 128
                 + sum(len(value.encode()) for value in self.reuse_namespaces) + 512)
 
+    def begin_page_reuse(self):
+        """API worker가 실제 miss 읽기를 시작할 때만 호출한다. 기존 lease는 연장하지 않는다."""
+        if self.selection_deadline is not None or self.reuse_snapshot is not None:
+            raise RuntimeError("이미 읽은 페이지의 승인 수명을 다시 시작할 수 없습니다.")
+        self.selection_checked_after = monotonic()
+        self.reuse_wall_started = datetime.now(UTC)
+
     def validate_reusable_page(self):
         """검증한 결과의 작은 DB proof와 실제 사용 파일만 검사한다. 전체 freeze는 하지 않는다."""
         from .export_page_cache import PageReuseExpired
@@ -338,19 +354,28 @@ class FrozenCurrentExports:
                     raise PageReuseExpired()
                 if row["manifest_digest"] != self.reuse_snapshot[1]:
                     raise ExportArtifactError("고정 export manifest의 무결성이 바뀌었습니다.")
-                if self.reuse_namespaces and set(connection.scalars(select(
-                    self.heads.heads.c.namespace,
-                ).where(any_of(self.heads.heads.c.namespace, sorted(self.reuse_namespaces))))) != self.reuse_namespaces:
-                    raise PageReuseExpired()  # 현재 head 유실은 재구성 경로에서 즉시 stale로 판정한다.
-                generations, plans = self.heads.generations, self.heads.plans
-                present = dict(connection.execute(select(
-                    generations.c.generation_id, generations.c.attempt_id,
-                ).where(any_of(generations.c.generation_id, sorted(self.reuse_generations)))).all())
-                attempts = set(present.values())
-                if present.keys() != self.reuse_generations or set(connection.scalars(select(
-                    plans.c.attempt_id,
-                ).where(any_of(plans.c.attempt_id, sorted(attempts))))) != attempts:
-                    raise ExportArtifactError("검증한 export의 세대 또는 불변 plan이 유실됐습니다.")
+                if self.reuse_liveness is not None:
+                    from .export_page_liveness import capture_liveness
+
+                    live = capture_liveness(connection, self.heads.metadata)
+                    if live[:2] != self.reuse_liveness[:2]:
+                        raise ExportArtifactError("검증 뒤 공개 세대 또는 불변 plan의 삭제가 발생했습니다.")
+                    if live[2] != self.reuse_liveness[2]:
+                        raise PageReuseExpired()
+                else:
+                    if self.reuse_namespaces and set(connection.scalars(select(
+                        self.heads.heads.c.namespace,
+                    ).where(any_of(self.heads.heads.c.namespace, sorted(self.reuse_namespaces))))) != self.reuse_namespaces:
+                        raise PageReuseExpired()  # 현재 head 유실은 재구성 경로에서 즉시 stale로 판정한다.
+                    generations, plans = self.heads.generations, self.heads.plans
+                    present = dict(connection.execute(select(
+                        generations.c.generation_id, generations.c.attempt_id,
+                    ).where(any_of(generations.c.generation_id, sorted(self.reuse_generations)))).all())
+                    attempts = set(present.values())
+                    if present.keys() != self.reuse_generations or set(connection.scalars(select(
+                        plans.c.attempt_id,
+                    ).where(any_of(plans.c.attempt_id, sorted(attempts))))) != attempts:
+                        raise ExportArtifactError("검증한 export의 세대 또는 불변 plan이 유실됐습니다.")
             # payload는 이미 검증됐어도 동일 fd의 hash/count·파일 존재는 매 요청 확인한다.
             for digest, byte_count, point_count in self.reuse_artifacts:
                 self.artifacts.verify(digest, byte_count=byte_count, point_count=point_count)

@@ -331,7 +331,9 @@ def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
     return Response(payload, media_type="application/json", headers=headers)
 
 
-def _validated_read(read, model):
+def _validated_read(read, model, reader):
+    # limiter/worker 대기는 승인 조회 전이다. hit나 이미 읽은 상태의 수명을 늘리지 않는다.
+    reader.begin_page_reuse()
     result = read()
     model.model_validate(result[0])  # 검증 완료한 페이지만 재사용한다.
     return result
@@ -390,6 +392,7 @@ async def _frozen_response(
                 ),
                 signing_key=settings.admin_token.get_secret_value(),
                 immutable_reads=resource == "current",
+                page_liveness=resource in {"current", "daily-summaries"},
                 **({"selection_cache": ExportSelectionCache(clock=lambda: selection_cache.clock())
                     if fresh else selection_cache}
                    if resource in {"current", "daily-summaries"} else {}),
@@ -422,7 +425,7 @@ async def _frozen_response(
             )
             read = partial(
                 request.app.state.export_page_cache.read, key, reader,
-                partial(_validated_read, read, _PAGE_MODELS[resource]),
+                partial(_validated_read, read, _PAGE_MODELS[resource], reader),
             )
         payload, headers = await to_thread.run_sync(
             partial(

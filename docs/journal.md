@@ -1,3 +1,7 @@
+## 2026-11-08 — 완료 페이지 무결성의 작은 DB proof
+
+삭제/epoch를같은TX에기록하는0039와snapshot·3행catalog proof로반복3305키조회를제거했다. 정상발행INSERT/UPDATE는counter잠금없음, DROP/DISABLE/유실failclosed와파일검산·상태60초·SQL5초를보존했다. WSL/Docker PG18각126PASS. 앞선d249실제503/35~57초는보존하고새이미지·실제HTTP수용을진행한다. [원장](reports/2026-11-08-aggressive-export-read.md).
+
 ## 2026-11-08 — 남은 조회 지연·대표 카드 겹침 수정
 
 2026-11-08 Weather 추가 공격적 조회 개선: 검증 완료 페이지의 제한된 재사용·요청 기반 생성(주기적 재생성 폐기)·metadata 구성 밖으로 파일 guard 이동과 짧은 snapshot pin commit을 구현했다. WSL/Docker PG18각85개 통과, nativeR2의 current503/daily1.94~40.80초와 원 실패를 보존한다. 아직 새 이미지/네트워크 수용 전이다. [원장](reports/2026-11-08-aggressive-export-read.md).

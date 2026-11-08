@@ -9,6 +9,26 @@ from kortravelweather import export_inventory_selection, export_snapshots
 from kortravelweather.export_artifacts import ExportGuardTimeout
 
 
+def test_worker_queue_before_read_does_not_spend_state_lease(repository, tmp_path, monkeypatch):
+    from kortravelweather_api.routers import service_exports
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    clock = [monotonic()]
+    monkeypatch.setattr(export_snapshots, "monotonic", lambda: clock[0])
+    client.app.state.export_selection_cache.clock = lambda: clock[0]
+    original = service_exports._render_page
+
+    def before_read(*args, **kwargs):
+        # worker 시작 전 대기와 같은 시간 차이다. 아직 승인/상태 조회는 실행하지 않았다.
+        clock[0] += 61
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service_exports, "_render_page", before_read)
+    response = client.get("/v1/service/exports/current?limit=1", headers=HEADERS)
+    assert response.status_code == 200 and response.headers["x-export-read"] == "generated"
+
+
 def test_expiring_during_render_never_returns_200_or_304(repository, tmp_path, monkeypatch):
     from kortravelweather_api.routers import service_exports
 

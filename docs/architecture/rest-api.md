@@ -50,3 +50,6 @@ all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 
 API만 승인 상태 조회 시작 뒤 최대60초의 완성 페이지를 재사용한다. 인증은 매 요청 수행하며 provider/limit/cursor/days/location와 설정·서명키 범위를 구분한다. x-export-read는 generated/reused다. generated_at은 wire 생성 시각이고 source_collected_at·snapshot_generated_at·as_of는 실제 검증한 데이터의 시각을 유지한다. 승인/실패·derived summary 반영은 이60초 한도 안에 지연될 수 있다.
 
 cache hit는 snapshot TTL·manifest fingerprint·세대/plan/head와 실제 사용 파일 hash/count를 확인한다. 만료/재검산/갱신 실패를 이전 정상200/304로 연장하지 않는다. 주기적 전체 재생성은 없으며 요청이 있는 miss만 생성하고 같은 키는 합친다. 최초 미준비나 상한 밖 요청은 원 경로다. current의 긴 metadata 구성은 파일 guard 밖이고 새 pin의 파일 존재 검사와 DB commit만 GC와 직렬화한다. 참조 INSERT는512개 묶음으로 같은 TX에서 처리한다. SDK 기본 경로·SQL5초·파일 FD 검산은 유지한다. [근거와 실제 수용 단계](../reports/2026-11-08-aggressive-export-read.md).
+
+
+0039의 API 완료 페이지 모드는 같은 RR의 삭제 epoch3행으로 불변 plan/세대/head 삭제 유무를 대조한다. 최초 전체 검산과 실제 사용 파일 hash/count는 유지한다. DELETE/TRUNCATE와 epoch 변경은 원자적이며 일반 수집 INSERT/UPDATE는 epoch를 쓰지 않는다. plan/세대 삭제는503·폐기, head 삭제는 재구성/stale, PG proof 미설치는503이다. 새로운 FK·원본 삭제·자동 backfill은 없다. worker 대기는 승인 조회 전이며60초는 실제 miss 읽기 시작부터 센다. 기존 캐시 hit나 이미 읽은 페이지의 시점은 다시 시작하지 않는다.

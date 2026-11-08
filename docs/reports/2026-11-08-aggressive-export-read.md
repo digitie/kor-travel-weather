@@ -27,3 +27,16 @@
 격리 native R3는 새 pin admission guard 대기 timeout과 오래된 선택 lease 문제를 구분했다. 첫 페이지 miss는 새 승인 시점에서 시작하도록 고쳤다. R4는 current 첫46.199초503(참조 INSERT의5초 statement timeout), 이후 생성45.644초200, 재사용4.355초304, 두 seed 뒤75초 관측33.483초200이었다. daily는 첫17.166초/재사용2.746초200·1.842초304/만료 뒤23.410초200이다. R4 결과는 성능 수용이 아니며 모두 이전 API와 같은 DB를 쓰는 격리 과정이다. 운영 네트워크/cold/p95/코드 단독 개선율로 해석하지 않는다.
 
 주기적 전체 재생성은 새 snapshot 전체 저장을 반복하며 CPU·DB 비용을 옮길 뿐이어서 제거했다. 공유 read-model·MV·비정규화는 커서 고정·공개 세대와 GC pin의 원자성까지 바꿔야 한다. 이번에는 그 계약을 우회하지 않고 요청별 반복 제거와 작은 FK 문장·짧은 파일 guard를 실제 반영하며 남은 최초 구성 병목을 수치로 공개한다.
+
+## 완료 페이지의 삭제 무결성 조회 추가 개선
+
+API d24908dc/이미지2a07628b를 실제 반영하고 Manager/원47일정·다른서비스·첫 부모 종료를 확인했다. 그러나 실제 HTTP는 current 첫35.524초/재사용14.139초/조건부11.749초503/만료 뒤46.665초, daily53.288·47.498·57.021·42.137초였다. 완료 페이지 재사용만으로 목표를 충족하지 못했고1분 수명 경계를 넘은 실패도 보존했다. 측정 중 별도 MCP 이미지 작업과 수집이 진행됐으므로 코드 단독 비율/p95/cold로 과장하지 않는다.
+
+후속은 세대/불변plan/head의 존재3,305개를 매번 읽는 대신 같은 RR의 작은 삭제 변경 번호를 확인한다. 0039는 해당3표의 DELETE/TRUNCATE statement trigger와 파생 counter3행만 추가한다. 정상 발행 INSERT/UPDATE에는 trigger나 공용 counter 잠금이 없으며 원본 전체 MV refresh나 신규 FK를 추가하지 않는다. 삭제와 counter 갱신은 같은 TX이며 rollback도 함께다. DELETE0행도 보수적으로 무효화할 수 있다. 기존 삭제/정리의 허용 여부는 바꾸지 않고 prune도 켜지 않는다.
+
+전체 승인/파일을 검산한 실제 읽기 시점의 변경 번호를 기억한다. hit는 snapshot ID/digest/TTL과3행 counter를 읽고 사용 파일의 동일FD hash/count는 계속 검산한다. plan/세대 삭제 변화는503·폐기, head 삭제 변화는 기존 재구성/stale 경로다. PG counter 유실·미설치를 벡터 생략 성공으로 처리하지 않으며 SQLite만 기존 벡터 조회로 fallback한다. 최초 생성 중 삭제도 확인한다. 승인 조회 이전의 limiter/worker 대기는1분 수명을 소비하지 않으며 이미 읽은 상태/캐시 hit의 수명은 연장하지 않는다.
+
+최초·만료 뒤 전체 구성 비용은 여전히 별도다. 새0039/API 이미지는 집중 회귀와 공식 migration·실제 HTTP 뒤에만 수용 결과로 기록한다.
+
+
+최종0039 후보는 WSL PG18·Docker PG18 각각126개 PASS다. 이전112·90·독립32개와 겹치므로 합산하지 않는다. 실제metadata설치/0039 up·down 원행보존·1초locktimeout 원자rollback·일반발행중counter잠금비영향·삭제/rollback·DROP/재생성/DISABLE/다른trigger·작업대기이전lease·원cursor/파일/GC/다중source를 함께 검사했다. 전용PG는정확CID/label로정산했다. Ruff F/I·diff 검사와키부재검산을수행하며 feature/Draft를유지한다.

@@ -33,6 +33,85 @@ def test_completed_current_page_skips_freeze_but_keeps_auth_gzip_etag(
     assert again.headers["etag"] == first.headers["etag"]
 
 
+def test_pg_completed_page_checks_delete_epochs_without_full_vector(
+    repository, tmp_path,
+):
+    import pytest
+    from sqlalchemy import event
+
+    if repository.engine.dialect.name != "postgresql":
+        pytest.skip("삭제 변경 번호는 PostgreSQL 전용이다.")
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/current?limit=1"
+    first = client.get(url, headers=HEADERS)
+    assert first.status_code == 200
+    observed = []
+
+    def before(connection, cursor, statement, parameters, context, many):
+        observed.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", before)
+    try:
+        again = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", before)
+    assert again.status_code == 304 and again.headers["x-export-read"] == "reused"
+    assert any("weather_page_liveness_epochs" in sql for sql in observed)
+    assert not any("FROM " + name in sql for sql in observed for name in (
+        "weather_export_generations", "weather_export_scope_plans", "weather_export_heads",
+    ))
+
+
+def test_pg_rolled_back_delete_keeps_reusable_page(repository, tmp_path, monkeypatch):
+    import pytest
+    from sqlalchemy import delete, select
+
+    from kortravelweather.export_heads import ExportHeads
+
+    if repository.engine.dialect.name != "postgresql":
+        pytest.skip("삭제 변경 번호는 PostgreSQL 전용이다.")
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/current?limit=1"
+    first = client.get(url, headers=HEADERS)
+    assert first.status_code == 200
+    heads = ExportHeads(repository)
+    with repository.engine.connect() as connection:
+        transaction = connection.begin()
+        attempt = connection.scalar(select(heads.plans.c.attempt_id).limit(1))
+        connection.execute(delete(heads.plans).where(heads.plans.c.attempt_id == attempt))
+        transaction.rollback()
+
+    def no_freeze(*args, **kwargs):
+        raise AssertionError("rollback된 삭제가 페이지를 무효화했습니다.")
+
+    monkeypatch.setattr(FrozenCurrentExports, "_freeze", no_freeze)
+    again = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    assert again.status_code == 304 and again.headers["x-export-read"] == "reused"
+
+
+def test_pg_head_delete_rebuilds_status_instead_of_reusing_old_etag(repository, tmp_path):
+    import pytest
+    from sqlalchemy import delete
+
+    from kortravelweather.export_heads import ExportHeads
+
+    if repository.engine.dialect.name != "postgresql":
+        pytest.skip("삭제 변경 번호는 PostgreSQL 전용이다.")
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/current?limit=1"
+    first = client.get(url, headers=HEADERS)
+    assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
+    heads = ExportHeads(repository)
+    with repository.engine.begin() as connection:
+        connection.execute(delete(heads.heads))
+    response = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    assert response.status_code == 200 and response.json()["meta"]["source_status"] == "stale"
+    assert response.headers["x-export-read"] == "generated"
+
+
 def test_reused_page_rehashes_real_artifact(repository, tmp_path):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)

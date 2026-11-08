@@ -37,3 +37,8 @@ collected_at/issued_at/valid_at/payload/lineage는 불변이다. 정상 DEFAULT 
 `provider_id`·`target_key` 복합 식별자로 현재 좌표의 주소·행정구역·확인일·다음 갱신일과 오류/backoff를 분리 보관하고,
 제어 행은 수동 cycle·커서·만료 lease를 보관한다. 원천 주소·좌표·관리자 설정과 과거 관측은 변경하지 않는다.
 달력 6개월 갱신, VWorld 우선·Kakao fallback, 수동 실행과 복구 계약은 [구현 가이드](../reverse-address-refresh.md)를 따른다.
+
+
+## 0039 완료 페이지의 삭제 변경 번호
+
+`weather_page_liveness_epochs`는 불변 plan·공개 generation·현재 head용3행(target_name/epoch)의 파생 검산 표다. 각 대상의 DELETE/TRUNCATE statement trigger와 같은 TX에서 갱신한다. 일반 publication INSERT/UPDATE에는 counter쓰기/잠금이 없으며 원본 행·참조 FK·보존 정책은 바꾸지 않는다. API는 전체 승인 검산 시의 epoch와 재사용 시 epoch/활성 trigger 존재를 비교한다. DROP·DISABLE·불완전 counter는 정상 cache hit로 내보내지 않는다. source 데이터 캐시나 분석 집계 표가 아니며 기간별 원본/영구 통계를 대체하지 않는다. 0039 downgrade는 이 파생 counter/trigger/function만 제거한다.
