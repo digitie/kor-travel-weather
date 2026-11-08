@@ -132,7 +132,14 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0038_snapshot_selection"
+            assert version == "0039_page_liveness"
+            epochs = connection.execute(text(
+                "SELECT target_name,epoch FROM weather_page_liveness_epochs"
+            )).all()
+            assert {name for name, _ in epochs} == {
+                "weather_export_scope_plans", "weather_export_generations", "weather_export_heads",
+            }
+            assert all(type(value) is int and value >= 0 for _, value in epochs)
             snapshot_order = next(column for column in inspector.get_columns(
                 "weather_export_snapshots"
             ) if column["name"] == "issue_order")

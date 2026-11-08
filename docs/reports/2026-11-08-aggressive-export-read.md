@@ -43,3 +43,6 @@ API d24908dc/이미지2a07628b를 실제 반영하고 Manager/원47일정·다�
 
 
 0039/API44e2558b는 제한DDL·native3행·원47/환경/다른서비스·Manager와최초부모done으로반영됐다. 마지막생성중업무날짜/수명경계변화의예외가plain Exception이어서500이될수있는경로를보완했다. 같은경계를주입한격리PG18에서원44e2558b cache소스HTTP500/보정소스HTTP503을대조했다(자연운영500관측이아님). 내부예외를기존GuardTimeout계층으로바꾼1줄제품보정이며cache hit의재구성동작은유지한다. WSL/Docker초점19개씩PASS,SQL/DDL·SDK/웹변경0. 최초외부재현helper의conftest미적용/개발env누락은시험수집전실패로보존하고R2명시환경에서1PASS했다. 최종보정이미지는0039를재실행하지않고API만앞으로교체한다.
+
+
+전체Alembic기존계약시험의최종head기대값을0039로갱신하고counter3행을대조했다. 빈DB부터전체migration/backfill/안전계약을WSLPG18·DockerPG18에서각1PASS로확인했다. 이는시험/문서만의보정이며운영제품b369d35d의src/API/CS/Alembic/의존성/웹트리는같다. 시험때문에이미지를재빌드하지않는다.
