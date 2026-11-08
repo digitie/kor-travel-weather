@@ -1,3 +1,7 @@
+## 2026-11-08 — REMAINS-20261108
+
+- [x] 실제 첫 배포 수용 실패를 재현하고 승인 상태4키집합/목록 배열·지역 대표 입력/명시 접기·빈 portal 마커 측정 오류를 후속 수정했다. WSL/Docker·최소3이미지 후속 및 Weather 웹 전용 실제 배포·n150 PC/모바일·원47상태/Manager/실부모 종료를 정산했다. 전체1초/원천 stale·미제공은 별도 한계다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).
+
 ## 2026-11-08 — READ-NEXT-20261107 실제 반영 정산
 
 - [x] **READ-NEXT-20261107** — 추가 조회 개선/60초 상태 캐시0180e523의 API 실제 반영·n150 지도/상세 PC모바일·27일정/Manager·최초 부모 종료를 수용했다. first current503과 긴 조회는 별도 미완이다. [원장](reports/2026-11-08-selection-cache-release.md).

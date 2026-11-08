@@ -1,5 +1,7 @@
 ## 2026-11-08 — 남은 조회 지연·대표 카드 겹침 수정
 
+2026-11-08 남은 조회·대표 카드 후속3이미지와 마지막 Weather 웹 전용 수정을 실제 배포하고 n150 PC/모바일·Manager/원47상태/첫 부모 종료로 수용했다. [보고서](reports/2026-11-08-remaining-read-and-overlap.md)에 실제 HTTP/이전 실패·한계를 정산했다. 정본 SHA 04a0622ca18995913794218d73ed0591040c532e1978fe8bd6a46ddb71502786. 전체1초/원천 stale는 남는다.
+
 2026-11-08 실제 카드 접근은 수정됐으며 지도 전환 중 빈 마커 자식의 크기 측정 오류를 추가 재현했다. 유효한 host/button 쌍을 같은 배치에 사용하도록 수정·집중 검산하고 Weather 웹만 반영한다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).
 
 2026-11-08 후속 HTTP200/304와 Transport PC/모바일을 수용했고 Weather 접기 뒤 버튼 이동의 마지막 모바일 가림을 재현했다. 형제 access 높이를 관측하는1줄·회귀1개를 WSL/Docker34개씩으로 검산했으며 Weather web만 추가 반영한다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).

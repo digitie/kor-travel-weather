@@ -31,3 +31,35 @@ Transport n150 PC15대표/모바일12대표(지도5·나머지목록7)는 픽셀
 Weather 웹 f4d11a43의 실제 PC/모바일 지도 카드 배치·목록 접기·중심 입력과 상세 예보는 정상으로 관측했지만 지도→목록→서울 상세 전환에서 offsetWidth의 null 참조 오류가 발생했다. 원 FAIL과 별도375px stack 관측을 보존했고 두 관측 모두 logout200·소유 브라우저 종료·자격 삭제를 확인했다.
 
 MutationObserver가 React portal 자식이 제거된 빈 MapLibre host를 보는 경합을 회귀로 재현했다. 유효한 host/button 쌍을 한 번만 확보해 측정과 배치에 같은 쌍을 사용한다. 정상 두 번째 마커의 배치·목록·접힘·키보드 계약은 유지하며 map.remove/resize·API/CS·Transport·의존성은 변경하지 않는다. 집중 WSL/Docker 결과는 원장에 기록하고 Weather 웹만 새 최소 이미지로 반영한다. 실제 배포·화면 성공은 다음 최종 원장으로 구분한다.
+
+## 후속 실제 배포·최종 화면 수용
+
+Weather API61adb9e0·Transport UI6bd594e6의 후속3역할을 반영한 뒤 목록 높이와 빈 마커 전환 오류까지 수정한 Weather web d59e7083으로 교체했다. 첫 실제 배포·후속3역할·두 차례 Weather web 전용 build/배포의 첫 Invocation 모두 done/Main0/cgroup부재·모든 자식 종료0이다. 정상G/R·Manager 양 앱 healthy·원Weather27/Transport20 상태·보호 환경4파일·CS/DB/공용daemon/다른 역할·Cmd12201/12205/12305를 보존했다. migration/수집 취소/백업복원은 없다.
+
+- 1440px: 대표10개/지도 배치10개, 실제 카드 교차0·접은 뒤 중심 입력 모두 가능·목록 전체값 일치·마지막 항목 자연 클릭, logout200
+- 375px: 대표9개/지도 배치9개, 실제 카드 교차0·접은 뒤 중심 입력 모두 가능·목록 전체값 일치·마지막 항목 자연 클릭, logout200
+
+n150 Firefox157 PC1440/모바일375의 실제 타일/지도와 모든 카드 값, 공간 부족 시 한정 스크롤 목록 및 명시 접기, 오류/가로 넘침0을 확인했다. Transport 요약 유종 컨트롤의 실제 클릭도 확인했다. Weather 현재/내일/부가 정보·시간별 예보표와 원천 미제공은 그대로다. 캡처를 실제 열어 검토했고 소유 브라우저 자식 종료·자격 파일 삭제를 확인했다. 이전 R2의 복합 모바일 assert는 좁은 별도 흐름에서 재현되지 않았으므로 원인을 해결했다고 소급 주장하지 않고 원문을 보존한다.
+
+후속 실제 HTTP(재시도0·SQL5초/승인상태60초 유지·최소62초 뒤 확인):
+
+- health: 200, 0.23643초
+- version: 200, 0.02078초
+- current_unauthorized: 401, 1.1770699999999998초
+- current_first_owned_request: 200, 39.286199999999994초
+- current_conditional: 304, 16.18795초
+- daily_first_owned_request: 200, 16.944200000000002초
+- daily_conditional: 200, 9.0935초
+- current_after_at_least_62_seconds: 200, 21.53455초
+- daily_after_at_least_62_seconds: 200, 15.316840000000001초
+
+최초13.394초503/그 뒤33.180초와 과거75.74초503/48.02초는 그대로 보존한다. 실패 위치 로그는 비공개 문자열을 출력하지 않으며 이번 분류/위치는 failure-sites.json에 있다. 실제 HTTP와 native34.286초를 섞지 않는다.
+
+후속3역할의 Weather 모바일 목록 접기 뒤 pill1개 입력 가림은 실제 FAIL로 보존했다. 형제 access section의 ResizeObserver 관찰을 추가해 버튼 높이가 바뀔 때 재배치하고, 마지막 Weather 웹 전용 이미지에서 PC/모바일을 다시 수용했다. 이어 실제 PC/모바일 전환에서 빈 마커 자식의 offsetWidth/null 오류를 재현했고 유효한 host/button 쌍만 같은 배치에 사용하도록 수정했다. 원 회귀1FAIL과 후속 WSL/Docker35개씩·실제 effect Firefox 검산, 두 차례 원 브라우저 오류 관측을 보존한다. 최종 웹에서 같은 PC/모바일 전환·상세를 오류0으로 다시 수용했다. 원 API·CS·Transport는 두 웹 전용 교체에서 유지했다.
+
+순차 소유 관측 표본이며 cold/p95·부하 통제·코드 단독 개선율이 아니다.
+전체1초 목표와 원천 stale/미제공은 별도 한계다.
+
+정본 weather-transport-remains-20261108/final-acceptance.json SHA 04a0622ca18995913794218d73ed0591040c532e1978fe8bd6a46ddb71502786. 후속 UI 원장은 fuel-region-overlap-20261108/followup-manifest.json(SHA719109ff224922c37ae6c8ad85aef6fdf789b87ba945dd75d6863d9fb994cdfb)이다. WSL/Docker backend86개씩, Transport UI33개씩·Weather 최종 UI35개씩·타입/린트0이며 겹친 시험은 합산하지 않는다. 문서 HEAD로 제품을 재빌드하거나 DraftPR174/208을 main에 머지하지 않는다.
+
+Weather 저배율 캡처의 지역 카드 온도·상태는 정보 없음이었다. 이번 수용은 배치·입력·전환과 선택 서울 상세의 렌더링에 한정하며, 전국 지역 대표 기온의 완비나 초기 요청 대기와 원천 미제공의 구분을 증명하지 않는다. 선택 서울은 현재5.3도·내일4/12도·시간별 머리칸25개를 실제 확인했다.

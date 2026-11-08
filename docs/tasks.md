@@ -1,6 +1,5 @@
-- [ ] **REMAINS-20261108** — 남은 지연/카드 겹침 수정의 실제 최소 이미지·HTTP·n150 PC모바일·원상태/Manager·첫 부모 종료를 수용한다. [근거](reports/2026-11-08-remaining-read-and-overlap.md).
 
-- [ ] **W-EXPORT-SLOW-20261108** — 최초 current75.74초503와 이후48.02초를 실제 profile로 분해해 개선한다. daily stale/원 실패·60초 승인/5초 SQL 제한을 보존하며 timeout 확대나 수동 수집으로 성공을 만들지 않는다. [실측](reports/2026-11-08-selection-cache-release.md).
+- [ ] **W-EXPORT-SLOW-20261108** — 실제 profile의 CTE5초 실패·반복 구성은 수정 배포했고 후속 HTTP는 current39.29초200/조건부16.19초304/만료 뒤21.53초200, daily9.09~16.94초200이었다. 전체1초 목표와 stale 원천을 후속 개선한다. 최초75.74초503·그 뒤48.02초·후속 첫13.394초503와60초 승인/5초 SQL 제한은 보존한다. [최신 실측](reports/2026-11-08-remaining-read-and-overlap.md).
 
 
 
@@ -14,7 +13,7 @@ PR198의 API 새 이미지 반영·읽기 경합 재시도 분류는 [완료 목
 
 ## 2026-11-03 — 전체 PR 새 이미지 반영 정산
 
-새 이미지 반영·원 일정 복원·Manager 표식·PC/모바일 실제 검사는 [완료 목록](tasks-done.md)과 [배포 기록](reports/2026-11-02-all-pr-images-release.md)에 기록했다. 아래 미제공 자료·라벨 겹침·주차 보존 등의 별도 기능 과제를 이번 배포 성공으로 완료 처리하지 않는다.
+새 이미지 반영·원 일정 복원·Manager 표식·PC/모바일 실제 검사는 [완료 목록](tasks-done.md)과 [배포 기록](reports/2026-11-02-all-pr-images-release.md)에 기록했다. 아래 미제공 자료·주차 보존 등의 별도 기능 과제를 이번 배포 성공으로 완료 처리하지 않는다.
 
 
 ## 2026-10-31 — 특보의 실제 구역 자료 연결
