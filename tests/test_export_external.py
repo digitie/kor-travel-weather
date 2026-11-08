@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from export_clock import install_api_clock
 from test_external_providers import FakeResponse, FixtureTransport
 
 from kortravelweather.export_heads import semantic_point_digest
@@ -253,7 +254,7 @@ def test_actual_external_capture_native_success_promotes_without_changing_fact_i
 
 
 def test_actual_external_job_declares_whole_selection_before_http_and_publishes_each_source(
-    external_repository, tmp_path
+    external_repository, tmp_path, monkeypatch
 ):
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
@@ -335,6 +336,7 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
             repo,
         )
     )
+    clock = install_api_clock(monkeypatch, client)
     url, headers = "/v1/service/exports/current", {"x-admin-token": "external-current"}
     assert client.get(url).status_code == 401
     healthy = client.get(url, headers=headers)
@@ -370,6 +372,10 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
             dataset_key="open_meteo_current",
             export_artifact_root=tmp_path,
         )
+    assert client.get(url, headers={
+        **headers, "if-none-match": healthy.headers["etag"],
+    }).status_code == 304
+    clock[0] += 60
     stale = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
     assert stale.status_code == 200 and stale.json()["meta"]["source_status"] == "stale"
     assert stale.json()["items"] == healthy.json()["items"]
@@ -534,6 +540,7 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
         environment="development", admin_token="cohort-failure", enabled_providers=["open_meteo"],
         service_exports_enabled=True, service_export_artifact_root=tmp_path,
     ), repo))
+    clock = install_api_clock(monkeypatch, client)
     url = "/v1/service/exports/forecasts" if forecast else "/v1/service/exports/current"
     params = {"style": "external", "limit": 1} if forecast else {"limit": 1}
     headers = {"x-admin-token": "cohort-failure"}
@@ -567,6 +574,11 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
             heads.lifecycle.owners.c.active_attempt_id.in_(old_attempt_ids)
         )).all()
         assert set(owners) == old_attempt_ids  # 새 owner/attempt 없이 실패한 경계
+    if not forecast:
+        assert client.get(url, params=params, headers={
+            **headers, "if-none-match": healthy.headers["etag"],
+        }).status_code == 304
+        clock[0] += 60
     stale = client.get(url, params=params, headers={
         **headers, "if-none-match": healthy.headers["etag"],
     })

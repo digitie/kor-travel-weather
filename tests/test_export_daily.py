@@ -4,6 +4,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
+from export_clock import install_api_clock
 from sqlalchemy import select, text
 
 from kortravelweather.export_artifacts import ExportArtifactStore
@@ -234,7 +235,7 @@ def test_missing_approved_artifact_keeps_checkpoint_and_summary_until_repair(
 
 
 def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
-    daily_repository, tmp_path
+    daily_repository, tmp_path, monkeypatch
 ):
     from datetime import timedelta
 
@@ -267,6 +268,7 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
             repository,
         )
     )
+    clock = install_api_clock(monkeypatch, client)
     headers = {"x-admin-token": "daily-test-token"}
     url, params = "/v1/service/exports/daily-summaries", {"days": 2, "limit": 2}
     assert client.get(url, params=params).status_code == 401
@@ -321,6 +323,10 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
     )
     _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", finish="failed",
                cohort=True)
+    assert client.get(url, params=params, headers={
+        **headers, "if-none-match": first.headers["etag"],
+    }).status_code == 304  # 승인 상태의 최대 60초 지연은 허용된다.
+    clock[0] += 60
     stale = client.get(
         url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
     )
@@ -577,7 +583,7 @@ def test_daily_page_uses_one_rr_snapshot_across_locations_and_progress(daily_rep
 
 @pytest.mark.parametrize("terminal", ["cancelled", "abandoned", "unknown_terminal"])
 def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invalidates_304(
-    daily_repository, tmp_path, terminal
+    daily_repository, tmp_path, terminal, monkeypatch
 ):
     from fastapi.testclient import TestClient
     from kortravelweather_api.app import create_app
@@ -602,11 +608,16 @@ def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invali
             repo,
         )
     )
+    clock = install_api_clock(monkeypatch, client)
     headers = {"x-admin-token": "daily-terminal"}
     url = "/v1/service/exports/daily-summaries"
     healthy = client.get(url, headers=headers)
     assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
     _candidate(repo, tmp_path, descriptor, finish=terminal, cohort=True)
+    assert client.get(url, headers={
+        **headers, "if-none-match": healthy.headers["etag"],
+    }).status_code == 304
+    clock[0] += 60
     changed = client.get(url, headers={**headers, "if-none-match": healthy.headers["etag"]})
     assert changed.status_code == 200
     assert changed.json()["meta"]["source_status"] == "stale"

@@ -308,8 +308,10 @@ def _render_page(
     """
     page, etag = read()
     # wire 응답 생성 시각만 새로 쓴다. 원천 수집·snapshot·as_of는 재사용한 실제 시각 그대로다.
-    page = {**page, "meta": {**page["meta"], "generated_at": datetime.now(UTC).isoformat()}}
     body = model.model_validate(page)
+    body = body.model_copy(update={
+        "meta": body.meta.model_copy(update={"generated_at": datetime.now(UTC)}),
+    })
     headers = {
         "etag": etag,
         "vary": "Accept-Encoding",

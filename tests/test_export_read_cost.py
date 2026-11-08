@@ -125,7 +125,7 @@ def test_forecast_single_pass_keeps_sorted_sparse_metrics_and_last_duplicate():
     ]
     reader = object.__new__(FrozenForecastExports)
     reader.style, reader.since = "short", None
-    reader.artifacts = SimpleNamespace(read=lambda *args, **kwargs: iter(points))
+    reader.artifacts = SimpleNamespace(read_shared=lambda *args, **kwargs: iter(points))
     manifest = {"scopes": [{"published_at": now.isoformat(), "location_ids": ["a"],
                             "refs": [{"location_ids": ["a"], "artifact_digest": "d",
                                       "point_count": len(points), "byte_count": 1}]}]}
@@ -143,7 +143,10 @@ def test_render_preserves_payload_headers_and_skips_serialization_for_304(
     monkeypatch, conditional, value,
 ):
     import gzip
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
 
+    from kortravelweather_api.routers import service_exports
     from kortravelweather_api.routers.service_exports import (
         ExportCurrentValue,
         ExportPage,
@@ -156,8 +159,11 @@ def test_render_preserves_payload_headers_and_skips_serialization_for_304(
         "known_at": "2026-11-03T00:00:00+00:00", "forecast_style": "observed",
     }], "meta": {"generated_at": "2026-11-03T00:00:00+00:00",
                   "source_status": "stale", "source_collected_at": None, "item_count": 1}}
+    wire_now = datetime(2026, 11, 9, 3, tzinfo=UTC)
+    monkeypatch.setattr(service_exports, "datetime", SimpleNamespace(now=lambda tz: wire_now))
     model = ExportPage[ExportCurrentValue]
-    expected = json.dumps(model.model_validate(page).model_dump(mode="json"),
+    wire_page = {**page, "meta": {**page["meta"], "generated_at": wire_now}}
+    expected = json.dumps(model.model_validate(wire_page).model_dump(mode="json"),
                           ensure_ascii=False, separators=(",", ":")).encode()
     if conditional:
         def forbidden(*args, **kwargs):
@@ -167,6 +173,7 @@ def test_render_preserves_payload_headers_and_skips_serialization_for_304(
                                     '"same"' if conditional else "", "gzip", gzip_minimum=0)
     assert headers["x-source-status"] == "stale" and headers["etag"] == 'W/"same"'
     assert headers["vary"] == "Accept-Encoding"
+    assert page["meta"]["generated_at"] == "2026-11-03T00:00:00+00:00"
     if conditional:
         assert payload is None and "content-encoding" not in headers
         # ETag가 같아도 잘못된 DTO를 정상 304로 숨기지 않는다.
