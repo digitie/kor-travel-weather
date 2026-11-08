@@ -1,3 +1,7 @@
+## 2026-11-08 — 완료 페이지 재사용 최종 API 실제 수용
+
+- [x] **W-AGGRESSIVE-READ-20261108** — 0039 삭제 epoch·완료 페이지 재사용·짧은 pin·PG16/18 호환 검증, 최신 API 이미지/Manager/원47상태/실부모 종료와 HTTP200/304·인증401을 수용했다. 전체 재구성 지연은 W-EXPORT-SLOW-20261108로 유지한다. [근거와 한계](reports/2026-11-08-aggressive-export-read.md).
+
 ## 2026-11-08 — REMAINS-20261108
 
 - [x] 실제 첫 배포 수용 실패를 재현하고 승인 상태4키집합/목록 배열·지역 대표 입력/명시 접기·빈 portal 마커 측정 오류를 후속 수정했다. WSL/Docker·최소3이미지 후속 및 Weather 웹 전용 실제 배포·n150 PC/모바일·원47상태/Manager/실부모 종료를 정산했다. 전체1초/원천 stale·미제공은 별도 한계다. [원장](reports/2026-11-08-remaining-read-and-overlap.md).

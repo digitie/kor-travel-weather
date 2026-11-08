@@ -55,3 +55,16 @@ b369d35d/이미지7b4b5949의 실제 HTTP13개는 인증401·나머지200/304로
 HTTP Root 첫 Invocation15b26a3d53734aa8850b14770ceff51e는 실제done·Main0·cgroup부재·소유자식 종료를 확인했다. SQL5초/최신 상태60초와 실제 원천 시각·stale를 유지한다. 정본 원문은 Git 밖 liveness-release/expiry-forward/live-http.json이다.
 
 추가 CI42460952945/Python128669935280은 PG16의0039 설치 validator에서 실패했다. PG16은 NOT NULL을 attnotnull에만 기록하고 PG18은 pg_constraint에도 n행을 기록한다. 정규화는 n행 표현만 제외하고 attnotnull·정확열/PK/CHECK/FK/추가제약 검사 전체를 유지한다. 원 실패를 PG18의 운영 장애로 바꾸지 않는다. PG16/18 각각 WSL39개·Docker40개(전체 migration 체인 포함), PG16 별도 WSL 체인1개와 Ruff를 통과했다. 겹친 시험은 합산하지 않는다. capture_liveness·트리거 본문·install/remove/register AST·0039 SHA가 같으므로 매 hit/DDL 계약은 변하지 않는다. 운영0039는 재실행하지 않는다.
+
+
+## 최종 배포 정산
+
+PG16/18 호환 제품 `2bda70e37606fd52c37bfc1f88d2d8a934234a1f`를 API 이미지 `sha256:cbb036c153d2fae7cd2453246139266c9394f4e6586a40d8dac8914f31c7fe4d`·CID `71e996cd451bdc538a43787e1f174e7fe7930f43ba0a3b839d0549731c9f3b7d`·실제Cmd12201에 반영했다. 운영 PG18.6/schema0039와 epoch0/0/0·reader5초·상태60초를 native 읽기로 확인했고 공식 Manager adopt/verify/show는 healthy다. 빌드 첫 Invocation3bf1af2ba3e343e0ae7c7c15bf92b770·배포 bdbbfb015eb04cb0815f90274e7fc81c·짧은 후속 HTTP ce1ffc61eb87444986d2fdd6886c3957는 실제done/Main0/cgroup부재·소유자식 종료다. 마지막 보정의 migration/환경 변경/일정 변경은0이다. Weather 웹·CS·Transport MCP 등 다른7역할과 전체Compose runtime은 그대로다.
+
+최신 이미지의 health167.09ms200·version13.28ms200·미인증401, current100행44.203초200·바로 다음 조건부340.44ms304를 관측했다. 같은 API/router/cache/capture/trigger/DDL의 불변을 Git/AST로 확인하고 앞선13응답은 측정 소스b369d35d로 별도 보존한다. 변경은 설치 시 `_counter`의 NOT NULL 표현 정규화뿐이다. 원천 자료·시각이 달라 새 이미지 payload SHA를 이전 표본과 같다고 쓰지 않는다. 합친 재사용 관측은66.73~340.44ms이며 최초/만료 전체 재구성19.70~54.41초는 미해결이다.
+
+최종 정본은 Git 밖 `weather-aggressive-read-20261108/final-acceptance.json`, SHA `4a1b12f80eef446a02feee6765bddd409fba49047b9f6f4bc67131aa9bdf3a37`다. 기존 UI는 웹 소스d59e7083/이미지46decb61 그대로여서 이전 Firefox PC/모바일 실제 수용을 참조하며 새 캡처로 꾸미지 않는다. 원 실패/UNKNOWN·원503·PG16 원CI 실패와 소유 시험 보조의 경로 오류는 각각 원문으로 남긴다. 백업/복원은 사용자 지시로 생략했고 원본·영구 통계·공용daemon·다른 서비스를 유지했다. Draft PR208/main 머지 없음 정책을 유지한다.
+
+병행한 유가 MCP는 Transport API 동일 프로세스12302의 `/mcp`에서 별도 수용됐다. 반경 내 전5유종 최저가/평균·전국/현재시군구 통계·독립 거리/산술·실제 MCP 양 프로토콜을 검산했다. 운영 수용 정본은 `transport-fuel-mcp-release-20261108/final-acceptance.json` SHA `5ae25e420f2e850d0495604fab09f065fcf19152b8c509f03cfd14a3c703deb9`이며 [Draft PR175](https://github.com/digitie/kor-travel-transport/pull/175)에 분리했다. 기존 인증 토큰·peer CIDR 내부 접근이며 공개 gateway/HAProxy는 열지 않았다.
+
+제품2bda70e3의 CI42462180386은 최종 문서 정산 시 frontend SUCCESS·Python 진행 중으로 관측했다. 이것을 전체CI 통과로 쓰지 않는다. 원42460952945의PG16 설치 실패는 별도로 보존하며 집중PG16/18 체인 검산과 실제 운영 수용은 위 근거에 한정한다.

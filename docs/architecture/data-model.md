@@ -42,3 +42,5 @@ collected_at/issued_at/valid_at/payload/lineage는 불변이다. 정상 DEFAULT 
 ## 0039 완료 페이지의 삭제 변경 번호
 
 `weather_page_liveness_epochs`는 불변 plan·공개 generation·현재 head용3행(target_name/epoch)의 파생 검산 표다. 각 대상의 DELETE/TRUNCATE statement trigger와 같은 TX에서 갱신한다. 일반 publication INSERT/UPDATE에는 counter쓰기/잠금이 없으며 원본 행·참조 FK·보존 정책은 바꾸지 않는다. API는 전체 승인 검산 시의 epoch와 재사용 시 epoch/활성 trigger 존재를 비교한다. DROP·DISABLE·불완전 counter는 정상 cache hit로 내보내지 않는다. source 데이터 캐시나 분석 집계 표가 아니며 기간별 원본/영구 통계를 대체하지 않는다. 0039 downgrade는 이 파생 counter/trigger/function만 제거한다.
+
+0039 설치 검산은 PG16/18의 NOT NULL 카탈로그 표현을 정규화한다. 양쪽 모두 attnotnull을 필수로 확인하고 열·PK/CHECK/FK·추가제약의 exact 검산은 유지한다. 매 요청 읽기 proof와 trigger 본문/DDL은 이 호환 보정에서 바뀌지 않는다.
