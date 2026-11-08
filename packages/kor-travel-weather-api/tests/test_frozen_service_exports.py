@@ -828,7 +828,13 @@ def test_dense_forecast_grid_is_unavailable_or_previous_stale_not_500(
     repository, tmp_path, previous
 ):
     if previous:
-        _collect_forecast(repository, tmp_path)
+        # 거절되는60격자만 고정한다. 무관한61격자가 정상 갱신되면 첫 scope 순서에 따라
+        # 그 지점의 새 known_at을 이전 값과 비교하던 비결정적 시험이 됐다.
+        _collect_forecast(repository, tmp_path, targets=[
+            WeatherTarget(WeatherLocation(
+                location_id=key, name=key, latitude=37.5, longitude=127, nx=60, ny=127,
+            )) for key in ("a", "b")
+        ])
     client = _client(repository, tmp_path)
     url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 1}
     first = client.get(url, params=params, headers=HEADERS) if previous else None
@@ -1024,7 +1030,12 @@ def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(reposi
     )
     clock[0] += 59
     within = client.get("/v1/service/exports/current", headers=HEADERS).json()
-    assert within["meta"]["snapshot_id"] == first["meta"]["snapshot_id"]
+    # 새 limit의 첫 페이지는 별도 key이며 60초보다 일찍 새 승인을 반영할 수 있다.
+    # 기존 cursor는 위에서24개 모두 옛 snapshot/값으로 끝까지 확인했다.
+    assert len(within["items"]) == 24
+    assert {row["value"] for row in within["items"] if row["metric_key"] == "T1H"} in (
+        {18.4}, {20.4},
+    )
     clock[0] += 1
     latest = client.get("/v1/service/exports/current", headers=HEADERS).json()
     assert latest["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
@@ -1035,12 +1046,25 @@ def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(reposi
     assert client.get(url, params={"cursor": initial + "x"}, headers=HEADERS).status_code == 422
 
 
-def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp_path):
+def _expire_export_state(client, monkeypatch):
+    """승인된 최대60초 상태 반영 한도를 지나 실제 갱신을 확인한다. 캐시는 지우지 않는다."""
+    from kortravelweather import export_snapshots
+
+    now = client.app.state.export_selection_cache.clock() + 60
+    monkeypatch.setattr(export_snapshots, "monotonic", lambda: now)
+    client.app.state.export_selection_cache.clock = lambda: now
+
+
+def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp_path, monkeypatch):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
     first = client.get("/v1/service/exports/current", headers=HEADERS)
     with pytest.raises(KmaError):
         _collect(repository, tmp_path, failed=True)
+    assert client.get("/v1/service/exports/current", headers={
+        **HEADERS, "if-none-match": first.headers["etag"],
+    }).status_code == 304
+    _expire_export_state(client, monkeypatch)
     stale = client.get(
         "/v1/service/exports/current", headers={**HEADERS, "if-none-match": first.headers["etag"]}
     )

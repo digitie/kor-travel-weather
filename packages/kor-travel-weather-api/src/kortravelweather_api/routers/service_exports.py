@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import logging
 import traceback
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from functools import partial
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
@@ -25,6 +26,7 @@ from kortravelweather.export_artifacts import (
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
+from kortravelweather.export_selection_cache import ExportSelectionCache
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
@@ -305,6 +307,8 @@ def _render_page(
     막지 않게 한다. 304이면 payload는 None이다.
     """
     page, etag = read()
+    # wire 응답 생성 시각만 새로 쓴다. 원천 수집·snapshot·as_of는 재사용한 실제 시각 그대로다.
+    page = {**page, "meta": {**page["meta"], "generated_at": datetime.now(UTC).isoformat()}}
     body = model.model_validate(page)
     headers = {
         "etag": etag,
@@ -325,6 +329,12 @@ def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
     if payload is None:
         return Response(status_code=304, headers=headers)
     return Response(payload, media_type="application/json", headers=headers)
+
+
+def _validated_read(read, model):
+    result = read()
+    model.model_validate(result[0])  # 검증 완료한 페이지만 재사용한다.
+    return result
 
 
 async def _frozen_response(
@@ -368,33 +378,56 @@ async def _frozen_response(
             from kortravelweather.export_mid_reader import FrozenMidForecastExports
 
             reader_class = FrozenMidForecastExports
-        reader = reader_class(
-            request.app.state.repository,
-            ExportArtifactStore(
-                settings.service_export_artifact_root,
-                reader_guard_seconds=settings.service_export_reader_guard_seconds,
-            ),
-            signing_key=settings.admin_token.get_secret_value(),
-            **({"selection_cache": request.app.state.export_selection_cache}
-               if resource in {"current", "daily-summaries"} else {}),
-            **(
-                {"providers": selection.providers, "source_inventory": True,
-                 "expected_sources": selection.expected, "optional_sources": selection.optional}
-                if selection is not None
-                else {}
-            ),
-            **({"style": style, "since": since} if resource == "forecasts" else {}),
-            **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
-        )
+        repository = request.app.state.repository
+        selection_cache = request.app.state.export_selection_cache
+
+        def make_reader(*, fresh=False):
+            return reader_class(
+                repository,
+                ExportArtifactStore(
+                    settings.service_export_artifact_root,
+                    reader_guard_seconds=settings.service_export_reader_guard_seconds,
+                ),
+                signing_key=settings.admin_token.get_secret_value(),
+                immutable_reads=resource == "current",
+                **({"selection_cache": ExportSelectionCache(clock=lambda: selection_cache.clock())
+                    if fresh else selection_cache}
+                   if resource in {"current", "daily-summaries"} else {}),
+                **(
+                    {"providers": selection.providers, "source_inventory": True,
+                     "expected_sources": selection.expected, "optional_sources": selection.optional}
+                    if selection is not None else {}
+                ),
+                **({"style": style, "since": since} if resource == "forecasts" else {}),
+                **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
+            )
+
+        def page_read(reader):
+            return partial(
+                reader.page,
+                *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
+                limit=limit, cursor=cursor,
+            )
+
+        # 완성 페이지의 miss는 새 승인 수명으로 시작한다. 이전 key의 60초가 거의 끝난
+        # 중간 선택 캐시를 이어받아 긴 재구성 도중 수명이 만료되는 일을 막는다.
+        reader = make_reader(fresh=resource in {"current", "daily-summaries"})
+        read = page_read(reader)
+        if resource in {"current", "daily-summaries"}:
+            key = (
+                id(request.app.state.repository.engine), resource, limit, cursor,
+                provider, style, since, days, location_id, tuple(settings.enabled_providers),
+                str(settings.service_export_artifact_root),
+                hashlib.sha256(settings.admin_token.get_secret_value().encode()).digest(),
+            )
+            read = partial(
+                request.app.state.export_page_cache.read, key, reader,
+                partial(_validated_read, read, _PAGE_MODELS[resource]),
+            )
         payload, headers = await to_thread.run_sync(
             partial(
                 _render_page,
-                partial(
-                    reader.page,
-                    *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
-                    limit=limit,
-                    cursor=cursor,
-                ),
+                read,
                 _PAGE_MODELS[resource],
                 request.headers.get("if-none-match", ""),
                 request.headers.get("accept-encoding", ""),
@@ -403,6 +436,8 @@ async def _frozen_response(
             limiter=request.app.state.service_export_limiter,
         )
         reader.require_current_selection()
+        if resource in {"current", "daily-summaries"}:
+            headers["x-export-read"] = reader.page_reuse_status
     except ExportCursorInvalid as exc:
         _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")

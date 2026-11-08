@@ -122,6 +122,15 @@ class DailySummaryExports(FrozenCurrentExports):
         )
         return rows, unconfirmed
 
+    def validate_reusable_page(self):
+        from .export_page_cache import PageReuseExpired
+
+        now = datetime.now(UTC).astimezone(KST)
+        before = self.reuse_wall_started.astimezone(KST)
+        if (now.date(), now.hour // 6) != (before.date(), before.hour // 6):
+            raise PageReuseExpired()
+        return super().validate_reusable_page()
+
     def _inventory_coverage(self, connection, keys, rows):
         """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
         catalog = self.heads.metadata.tables["weather_locations"]
@@ -359,6 +368,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 "p": 0,
             }
         manifest, now = frozen["manifest"], datetime.now(UTC)
+        self.reuse_snapshot = (frozen["snapshot_id"], frozen["manifest_digest"])
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("요약 cursor selection이 다릅니다.")
         first, last = (

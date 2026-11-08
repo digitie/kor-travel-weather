@@ -73,7 +73,7 @@ def test_fast_stream_keeps_missing_and_total_budget_rejection(connection, monkey
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
 
 
-def test_snapshot_refs_one_insert_preserves_duplicates_ordinals_and_fk_atomicity(connection):
+def test_snapshot_refs_bounded_inserts_preserve_duplicates_ordinals_and_fk_atomicity(connection):
     m = MetaData()
     prefix = "refs_" + uuid4().hex
     snapshots = Table(prefix + "_snapshots", m, Column("id", String, primary_key=True),
@@ -102,11 +102,12 @@ def test_snapshot_refs_one_insert_preserves_duplicates_ordinals_and_fk_atomicity
         insert_snapshot_refs(connection, refs, sid, wanted)
     finally:
         event.remove(connection.engine, "before_cursor_execute", inspect)
-    assert len(observed) == 1 and not observed[0][0] and observed[0][1] <= 3
+    assert len(observed) == (len(wanted) + 511) // 512
+    assert all(not many and parameters <= 4 for many, parameters in observed)
     assert list(connection.scalars(select(refs.c.generation_id).order_by(refs.c.ordinal))) == wanted
     bad = str(uuid4())
     with pytest.raises(IntegrityError), connection.begin_nested():
         connection.execute(snapshots.insert(), {"id": bad})
-        insert_snapshot_refs(connection, refs, bad, [ids[0], str(uuid4()), ids[1]])
+        insert_snapshot_refs(connection, refs, bad, [ids[0]] * 600 + [str(uuid4()), ids[1]])
     assert connection.scalar(select(snapshots.c.id).where(snapshots.c.id == bad)) is None
     assert connection.scalar(select(refs.c.snapshot_id).where(refs.c.snapshot_id == bad)) is None

@@ -44,3 +44,9 @@ feature identity와 좌표를 유지하고, `/resolve`로 가장 가까운 AirKo
 all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 전용
 `/v1/features/*` 경로는 이 source가 소유하지 않지만, KMA 특보는 `alerts`와
 지도 marker 상태로 제공한다.
+
+## current·daily export의 검증 완료 결과 재사용
+
+API만 승인 상태 조회 시작 뒤 최대60초의 완성 페이지를 재사용한다. 인증은 매 요청 수행하며 provider/limit/cursor/days/location와 설정·서명키 범위를 구분한다. x-export-read는 generated/reused다. generated_at은 wire 생성 시각이고 source_collected_at·snapshot_generated_at·as_of는 실제 검증한 데이터의 시각을 유지한다. 승인/실패·derived summary 반영은 이60초 한도 안에 지연될 수 있다.
+
+cache hit는 snapshot TTL·manifest fingerprint·세대/plan/head와 실제 사용 파일 hash/count를 확인한다. 만료/재검산/갱신 실패를 이전 정상200/304로 연장하지 않는다. 주기적 전체 재생성은 없으며 요청이 있는 miss만 생성하고 같은 키는 합친다. 최초 미준비나 상한 밖 요청은 원 경로다. current의 긴 metadata 구성은 파일 guard 밖이고 새 pin의 파일 존재 검사와 DB commit만 GC와 직렬화한다. 참조 INSERT는512개 묶음으로 같은 TX에서 처리한다. SDK 기본 경로·SQL5초·파일 FD 검산은 유지한다. [근거와 실제 수용 단계](../reports/2026-11-08-aggressive-export-read.md).

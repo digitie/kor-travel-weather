@@ -74,7 +74,7 @@ def test_warm_selection_does_not_hide_lost_immutable_plan(repository, tmp_path):
     url = "/v1/service/exports/current"
     first = client.get(url, headers=HEADERS)
     assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
-    assert client.app.state.export_selection_cache.entries
+    assert client.app.state.export_page_cache.entries
     heads = ExportHeads(repository)
     with repository.engine.begin() as c:
         attempt_id = c.scalar(select(heads.generations.c.attempt_id).limit(1))

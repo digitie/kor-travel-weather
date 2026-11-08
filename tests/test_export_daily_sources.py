@@ -71,6 +71,9 @@ def test_daily_inventory_requires_reducer_for_each_source_and_allows_forecast_on
         connection.execute(update(table).where(table.c.provider == "python-krex-api").values(
             generation_id="previous-approved-generation",
         ))
+    from test_frozen_service_exports import _expire_export_state
+
+    _expire_export_state(client, monkeypatch)
     lagging = client.get(path, params={"days": 1}, headers={
         **headers, "if-none-match": healthy.headers["etag"],
     })
@@ -126,7 +129,7 @@ def test_predeclared_unapproved_observation_is_not_forecast_only_zero(
 
 
 def test_new_approved_location_waits_for_reducer_without_losing_previous_full_roster(
-    external_repository, tmp_path,
+    external_repository, tmp_path, monkeypatch,
 ):
     from datetime import UTC, datetime, timedelta
 
@@ -175,6 +178,9 @@ def test_new_approved_location_waits_for_reducer_without_losing_previous_full_ro
     })
     heads, identity, capture, *_ = _candidate(repo, tmp_path, descriptor, cohort=True)
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    from test_frozen_service_exports import _expire_export_state
+
+    _expire_export_state(client, monkeypatch)
     pending = client.get(path, params=params, headers={
         **headers, "if-none-match": healthy.headers["etag"],
     })
@@ -194,6 +200,7 @@ def test_new_approved_location_waits_for_reducer_without_losing_previous_full_ro
     assert refreshed.status_code == 200 and refreshed.json()["items"] == healthy.json()["items"]
     assert refreshed.json()["meta"]["snapshot_id"] != pending.json()["meta"]["snapshot_id"]
     _drain(repo, tmp_path)
+    _expire_export_state(client, monkeypatch)
     ready = client.get(path, params=params, headers=headers)
     assert ready.status_code == 200 and ready.json()["meta"]["source_status"] == "ok"
     assert len(ready.json()["items"]) == 12

@@ -1,3 +1,5 @@
+- [ ] **W-AGGRESSIVE-READ-20261108** — 검증 완료 결과/짧은pin의 최소API 이미지·실제 HTTP200/304/60초 갱신·부모 종료/Manager를 수용한다. 최초/지속 지연과 원 실패는 구분한다. [설계·검산](reports/2026-11-08-aggressive-export-read.md).
+
 
 - [ ] **W-EXPORT-SLOW-20261108** — 실제 profile의 CTE5초 실패·반복 구성은 수정 배포했고 후속 HTTP는 current39.29초200/조건부16.19초304/만료 뒤21.53초200, daily9.09~16.94초200이었다. 전체1초 목표와 stale 원천을 후속 개선한다. 최초75.74초503·그 뒤48.02초·후속 첫13.394초503와60초 승인/5초 SQL 제한은 보존한다. [최신 실측](reports/2026-11-08-remaining-read-and-overlap.md).
 
