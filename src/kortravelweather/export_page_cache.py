@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from .export_artifacts import ExportGuardTimeout
 
 
-class PageReuseExpired(Exception):
-    """고정 handle/업무 날짜가 바뀌어 정상 reader에서 다시 구성해야 한다."""
+class PageReuseExpired(ExportGuardTimeout):
+    """hit는 다시 구성하고, 최초 생성 중 경계 변화도 500 대신 503으로 닫는다."""
 
 
 @dataclass(frozen=True)

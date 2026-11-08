@@ -40,3 +40,6 @@ API d24908dc/이미지2a07628b를 실제 반영하고 Manager/원47일정·다�
 
 
 최종0039 후보는 WSL PG18·Docker PG18 각각126개 PASS다. 이전112·90·독립32개와 겹치므로 합산하지 않는다. 실제metadata설치/0039 up·down 원행보존·1초locktimeout 원자rollback·일반발행중counter잠금비영향·삭제/rollback·DROP/재생성/DISABLE/다른trigger·작업대기이전lease·원cursor/파일/GC/다중source를 함께 검사했다. 전용PG는정확CID/label로정산했다. Ruff F/I·diff 검사와키부재검산을수행하며 feature/Draft를유지한다.
+
+
+0039/API44e2558b는 제한DDL·native3행·원47/환경/다른서비스·Manager와최초부모done으로반영됐다. 마지막생성중업무날짜/수명경계변화의예외가plain Exception이어서500이될수있는경로를보완했다. 같은경계를주입한격리PG18에서원44e2558b cache소스HTTP500/보정소스HTTP503을대조했다(자연운영500관측이아님). 내부예외를기존GuardTimeout계층으로바꾼1줄제품보정이며cache hit의재구성동작은유지한다. WSL/Docker초점19개씩PASS,SQL/DDL·SDK/웹변경0. 최초외부재현helper의conftest미적용/개발env누락은시험수집전실패로보존하고R2명시환경에서1PASS했다. 최종보정이미지는0039를재실행하지않고API만앞으로교체한다.

@@ -6,6 +6,23 @@ from test_frozen_service_exports import repository as repository
 from kortravelweather.export_snapshots import FrozenCurrentExports
 
 
+def test_initial_page_proof_expiry_is_503_instead_of_500(repository, tmp_path, monkeypatch):
+    from kortravelweather.export_page_cache import PageReuseExpired
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+
+    def changed_boundary(*args, **kwargs):
+        raise PageReuseExpired()
+
+    monkeypatch.setattr(FrozenCurrentExports, "validate_reusable_page", changed_boundary)
+    for extra in ({}, {"if-none-match": 'W/"previous"'}):
+        response = client.get("/v1/service/exports/current?limit=1", headers={**HEADERS, **extra})
+        assert response.status_code == 503
+        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+        assert response.headers["retry-after"] == "5" and "etag" not in response.headers
+
+
 def test_completed_current_page_skips_freeze_but_keeps_auth_gzip_etag(
     repository, tmp_path, monkeypatch,
 ):
