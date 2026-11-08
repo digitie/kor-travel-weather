@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, text, tuple_
 
+from .export_capacity import any_of
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
@@ -107,7 +108,9 @@ class DailySummaryExports(FrozenCurrentExports):
                         self.heads.generations.c.attempt_id == attempts.c.attempt_id,
                     )
                 )
-                .where(owners.c.source_scope.in_(scopes))
+                .where(any_of(owners.c.source_scope, sorted(scopes))
+                       if connection.dialect.name == "postgresql" else
+                       owners.c.source_scope.in_(scopes))
             )
         )
         self.daily_health_digest = _digest(sorted([list(row) for row in statuses], key=str))

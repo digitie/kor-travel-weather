@@ -1386,6 +1386,9 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     def fail(self, *args, **kwargs):
         raise SQLAlchemyError("postgresql://user:secret@db/weather")
 
+    # 예외가 실제 reader에서 올라온 경우에도 위치만 남기고 자격 메시지는 버린다.
+    fail.__code__ = fail.__code__.replace(co_filename="/app/src/kortravelweather/test_reader.py")
+
     from kortravelweather_api.routers import service_exports
 
     monkeypatch.setattr(FrozenCurrentExports, "page", fail)
@@ -1402,6 +1405,7 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     assert failed.json()["code"] == unsupported.json()["code"] == "EXPORT_NOT_READY"
     assert "resource=current reason=SQLAlchemyError request_id=trace-503" in caplog.text
     assert "resource=current reason=source_selection" in caplog.text
+    assert "weather_service_export_failure_site resource=current site=test_reader.py:fail:" in caplog.text
     assert "secret" not in caplog.text and "postgresql" not in caplog.text
 
 

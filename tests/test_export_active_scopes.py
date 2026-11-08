@@ -154,7 +154,7 @@ def test_active_scopes_raw_json_claims_and_missing_states_match_reference(scope_
         connection.execute(
             attempts.insert().values(
                 attempt_id=attempt_id,
-                run_id=f"run-{i}",
+                run_id=None if i == 8 else f"run-{i}",
                 status="failed" if i == 6 else "success",
                 owner_epochs={scope: claim} if i != 7 else [claim],
             )
@@ -197,9 +197,9 @@ def test_active_scopes_raw_json_claims_and_missing_states_match_reference(scope_
     try:
         actual = sorted(_active_scope_states(connection, metadata, scopes))
         assert actual == expected
-        assert len(statements) == 1
+        assert len(statements) == 4
         assert _active_scope_states(connection, metadata, set()) == []
-        assert len(statements) == 1
+        assert len(statements) == 4
     finally:
         event.remove(connection, "before_cursor_execute", count_sql)
     assert {row[0] for row in actual if row[-1]} == {

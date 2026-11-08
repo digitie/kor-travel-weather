@@ -909,9 +909,11 @@ class FrozenCurrentExports:
                         self.heads.generations.c.generation_id == self.heads.heads.c.generation_id,
                     )
                     .where(
+                        any_of(self.heads.heads.c.namespace,
+                               [scope["namespace"] for scope in manifest["scopes"]])
+                        if session.dialect.name == "postgresql" else
                         self.heads.heads.c.namespace.in_(
-                            [scope["namespace"] for scope in manifest["scopes"]]
-                        )
+                            [scope["namespace"] for scope in manifest["scopes"]])
                     )
                 )
             )
@@ -927,9 +929,11 @@ class FrozenCurrentExports:
                     )
                 )
                 .where(
+                    any_of(owners.c.source_scope,
+                           [scope["source_scope"] for scope in manifest["scopes"]])
+                    if session.dialect.name == "postgresql" else
                     owners.c.source_scope.in_(
-                        [scope["source_scope"] for scope in manifest["scopes"]]
-                    )
+                        [scope["source_scope"] for scope in manifest["scopes"]])
                 )
             ).all()
         stale |= len(statuses) != len({s["source_scope"] for s in manifest["scopes"]}) or any(

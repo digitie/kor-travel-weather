@@ -432,6 +432,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
     const root = instance.getContainer();
     let frame = 0;
     let focusFrame = 0;
+    let overflowOpened = false;
     const position = () => {
       frame = 0;
       const bounds = root.getBoundingClientRect();
@@ -470,7 +471,10 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
         const line = host.querySelector(".weather-region-link line");
         line?.setAttribute("x2", String(offset.x)); line?.setAttribute("y2", String(offset.y));
       });
-      if (offsets.some(offset => !offset.placed)) setRegionListOpen(true);
+      if (!overflowOpened && offsets.some(offset => !offset.placed)) {
+        overflowOpened = true;
+        setRegionListOpen(true);
+      }
     };
     const schedule = () => { if (!frame) frame = requestAnimationFrame(position); };
     const observer = new MutationObserver(schedule);

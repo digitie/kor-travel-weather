@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import logging
+import traceback
 from collections.abc import Callable
 from datetime import date
 from functools import partial
@@ -241,6 +242,15 @@ def _transient(exc: Exception) -> bool:
 
 def _failed(request: Request, resource: str, exc: Exception) -> JSONResponse:
     _log_unavailable(request, resource, _cause(exc))
+    # 원인 위치만 남긴다. 메시지·SQL·파라미터·자격 값은 기록하지 않는다.
+    frames = [frame for frame in traceback.extract_tb(exc.__traceback__)
+              if "/kortravelweather/" in frame.filename.replace("\\", "/")
+              or "/kortravelweather_api/" in frame.filename.replace("\\", "/")]
+    if frames:
+        frame = frames[-1]
+        logger.warning("weather_service_export_failure_site resource=%s site=%s:%s:%s",
+                       resource, frame.filename.replace("\\", "/").rsplit("/", 1)[-1],
+                       frame.name, frame.lineno)
     if _transient(exc):
         return _unavailable(request, code=TEMPORARILY_UNAVAILABLE)
     return _unavailable(request)

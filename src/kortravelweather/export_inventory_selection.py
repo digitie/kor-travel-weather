@@ -297,7 +297,8 @@ def _active_scope_states(connection, metadata, source_scopes):
 
     owner_epochs 원본 JSON은 PostgreSQL jsonb로 강제 변환하지 않는다. 예를 들어 1e0은
     Python에서 1.0이며 epoch 1과 다르다. 기존 str/32자 판정을 그대로 적용한다.
-    MATERIALIZED는 여러 scope가 공유하는 시도·run을 scope마다 다시 찾는 것을 막는다.
+    복합 CTE가 운영 5초 상한에 걸려, 같은 RR에서 한정된 키 집합을 각각 한 번 읽는다.
+    공유 시도의 큰 epoch JSON은 시도마다 한 번만 해석한다.
     """
     if not source_scopes:
         return []
@@ -305,43 +306,36 @@ def _active_scope_states(connection, metadata, source_scopes):
     attempts = metadata.tables["weather_export_attempts"]
     runs = metadata.tables["weather_sync_runs"]
     generations = metadata.tables["weather_export_generations"]
-    selected_owners = select(
-        owners.c.active_attempt_id,
-        func.json_agg(func.json_build_array(
-            owners.c.source_scope, owners.c.owner_epoch,
-        )).label("owner_rows"),
-    ).where(any_of(owners.c.source_scope, sorted(source_scopes))).group_by(
-        owners.c.active_attempt_id,
-    ).cte("selected_owners").prefix_with("MATERIALIZED")
-    selected_attempts = select(
+    claims = list(connection.execute(select(
+        owners.c.active_attempt_id, owners.c.source_scope, owners.c.owner_epoch,
+    ).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    attempt_ids = sorted({row.active_attempt_id for row in claims
+                          if row.active_attempt_id is not None})
+    if not attempt_ids:
+        return []
+    selected_attempts = {row.attempt_id: row for row in connection.execute(select(
         attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
-    ).where(attempts.c.attempt_id.in_(
-        select(selected_owners.c.active_attempt_id),
-    )).cte("selected_attempts").prefix_with("MATERIALIZED")
-    selected_runs = select(runs.c.run_id, runs.c.status).where(runs.c.run_id.in_(
-        select(selected_attempts.c.run_id).distinct(),
-    )).cte("selected_run_states").prefix_with("MATERIALIZED")
-    publications = select(generations.c.attempt_id, generations.c.generation_id).where(
-        generations.c.attempt_id.in_(select(selected_attempts.c.attempt_id)),
-    ).cte("selected_publications").prefix_with("MATERIALIZED")
-    statement = select(
-        selected_attempts.c.attempt_id, selected_attempts.c.run_id,
-        selected_attempts.c.status, publications.c.generation_id,
-        selected_runs.c.status.label("native_status"), selected_attempts.c.owner_epochs,
-        selected_owners.c.owner_rows,
-    ).select_from(selected_owners.join(
-        selected_attempts, selected_attempts.c.attempt_id == selected_owners.c.active_attempt_id,
-    ).outerjoin(
-        publications, publications.c.attempt_id == selected_attempts.c.attempt_id,
-    ).outerjoin(selected_runs, selected_runs.c.run_id == selected_attempts.c.run_id))
+    ).where(any_of(attempts.c.attempt_id, attempt_ids)))}
+    publications = defaultdict(list)
+    for row in connection.execute(select(
+        generations.c.attempt_id, generations.c.generation_id,
+    ).where(any_of(generations.c.attempt_id, sorted(selected_attempts)))):
+        publications[row.attempt_id].append(row.generation_id)
+    run_ids = sorted({row.run_id for row in selected_attempts.values() if row.run_id is not None})
+    selected_runs = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
+        any_of(runs.c.run_id, run_ids),
+    )).all())
     active = []
-    for attempt_id, run_id, status, generation, native_status, epochs, claims in (
-        connection.execute(statement)
-    ):
-        for scope, epoch in claims:
-            claimed = epochs.get(scope) if isinstance(epochs, dict) else None
+    for attempt_id, scope, epoch in claims:
+        attempt = selected_attempts.get(attempt_id)
+        if attempt is None:
+            continue  # 원 INNER JOIN과 같이 누락된 시도는 미확인 개수에 반영한다.
+        epochs = attempt.owner_epochs
+        claimed = epochs.get(scope) if isinstance(epochs, dict) else None
+        for generation in publications.get(attempt_id, [None]):
             active.append((
-                scope, attempt_id, run_id, status, generation, native_status,
+                scope, attempt_id, attempt.run_id, attempt.status, generation,
+                selected_runs.get(attempt.run_id),
                 (str(claimed)[:32] if claimed is not None else None) == str(epoch),
             ))
     return active

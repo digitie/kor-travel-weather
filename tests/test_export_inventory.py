@@ -325,13 +325,12 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
     assert not selection.unconfirmed
     owners = [s for s, _ in seen if "FROM weather_export_scope_owners" in s]
     assert len(owners) == 1
-    # scope별 재조회가 아니라 시도별 집계 후 서로 다른 run만 읽는다.
-    assert "GROUP BY weather_export_scope_owners.active_attempt_id" in owners[0]
-    assert "selected_owners AS MATERIALIZED" in owners[0]
-    assert "selected_run_states AS MATERIALIZED" in owners[0]
-    assert "SELECT DISTINCT selected_attempts.run_id" in owners[0]
-    assert owners[0].count("FROM weather_sync_runs") == 1
-    assert "JOIN weather_sync_runs" not in owners[0]
+    # 복합 CTE 대신 같은 MVCC의 키 집합 네 개를 읽으며 scope 수에 비례한 SQL은 없다.
+    assert "MATERIALIZED" not in owners[0]
+    assert "JOIN" not in owners[0]
+    run_queries = [s for s, _ in seen if "FROM weather_sync_runs" in s
+                   and "weather_sync_runs.run_id = ANY" in s]
+    assert len(run_queries) == 1 and " = ANY (" in run_queries[0]
     big = [(s, p) for s, p in seen if any(
         name in s for name in ("weather_export_scope_plans", "weather_export_heads.namespace",
                                "weather_export_scope_owners")

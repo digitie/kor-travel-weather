@@ -41,6 +41,36 @@ describe("지역 대표 카드의 화면 충돌", () => {
     else expect(placed).toHaveLength(cards.length);
     expect(cards.every(card => card.left === 200 && card.top === 240)).toBe(true);
   });
+  it("같은 effect에서 목록을 접으면 mutation/resize가 다시 열지 않고 새 화면에서는 다시 자동 연다", () => {
+    let effect: ts.Expression | undefined;
+    function find(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect" && node.arguments[0]?.getText(tree).includes("const offsets = layoutWeatherRegionCards")) effect = node.arguments[0];
+      ts.forEachChild(node, find);
+    }
+    find(tree);
+    if (!effect) throw new Error("실제 지역 배치 effect가 필요합니다.");
+    const frames: (() => void)[] = [];
+    const mutations: (() => void)[] = [];
+    class Observer { constructor(callback: () => void) { mutations.push(callback); } observe() {} disconnect() {} }
+    const setOpen = vi.fn();
+    const button = { offsetWidth: 130, offsetHeight: 130, tabIndex: 0 };
+    const host = { getBoundingClientRect: () => ({ left: 0, top: 0 }), querySelector: (selector: string) => selector.includes("button") ? button : null,
+      style: { setProperty() {} }, dataset: {}, setAttribute() {}, removeAttribute() {}, contains: () => false };
+    const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }), querySelectorAll: () => [host], closest: () => null };
+    const code = ts.transpileModule(`const effect = ${effect.getText(tree)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const run = () => new Function("map", "mapReady", "mode", "regionLevel", "markers", "setRegionListOpen", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
+      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1], setOpen, layout,
+      (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Observer, Observer, { activeElement: null },
+    ) as () => void;
+    const cleanup = run(); frames.shift()!();
+    expect(setOpen.mock.calls).toEqual([[true]]);
+    setOpen(false);
+    mutations[0](); frames.shift()!();
+    mutations[1](); frames.shift()!();
+    expect(setOpen.mock.calls).toEqual([[true], [false]]);
+    cleanup(); const cleanupNext = run(); frames.shift()!();
+    expect(setOpen.mock.calls.at(-1)).toEqual([true]); cleanupNext();
+  });
 });
 
 describe("지도와 대체 목록의 같은 날씨 표시", () => {
