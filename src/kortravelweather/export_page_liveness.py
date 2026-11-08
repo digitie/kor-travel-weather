@@ -105,7 +105,9 @@ def _counter(connection: Connection, schema: str, owner: int):
         "WHERE a.attrelid=:oid AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum"
     ), {"oid": row["oid"]}).all()
     constraints = connection.execute(text(
-        "SELECT contype,pg_get_constraintdef(oid,false) FROM pg_constraint WHERE conrelid=:oid"
+        # PG18은 NOT NULL도 별도 'n'으로 등록한다. 양 버전 모두 위 attnotnull로 검산한다.
+        "SELECT contype,pg_get_constraintdef(oid,false) FROM pg_constraint "
+        "WHERE conrelid=:oid AND contype<>'n'"
     ), {"oid": row["oid"]}).all()
     target_expression = "CHECK ((target_name = ANY (ARRAY[" + ", ".join(
         repr(name) + "::text" for name in TARGETS
@@ -113,7 +115,7 @@ def _counter(connection: Connection, schema: str, owner: int):
     if columns != [("target_name", "text", True, "", "", None),
                    ("epoch", "bigint", True, "", "", "0")] or set(constraints) != {
         ("p", "PRIMARY KEY (target_name)"), ("c", "CHECK ((epoch >= 0))"),
-        ("c", target_expression), ("n", "NOT NULL target_name"), ("n", "NOT NULL epoch"),
+        ("c", target_expression),
     }:
         raise RuntimeError("page liveness counter의 열·제약이 다릅니다.")
     return row

@@ -176,6 +176,12 @@ def test_sqlite_none_and_pg_missing_or_incomplete_refuses(owned):
     f'ALTER FUNCTION {FUNCTION_NAME}() SET search_path=public',
     f'GRANT EXECUTE ON FUNCTION {FUNCTION_NAME}() TO PUBLIC',
     f'ALTER TABLE {TABLE_NAME} ALTER COLUMN epoch DROP NOT NULL',
+    f'ALTER TABLE {TABLE_NAME} DROP CONSTRAINT {TABLE_NAME}_pkey',
+    f'ALTER TABLE {TABLE_NAME} DROP CONSTRAINT ck_weather_page_liveness_epoch',
+    f'ALTER TABLE {TABLE_NAME} ADD FOREIGN KEY (target_name) REFERENCES {TABLE_NAME}(target_name)',
+    f'ALTER TABLE {TABLE_NAME} ADD COLUMN unexpected text',
+    f'ALTER TABLE {TABLE_NAME} ADD CHECK (epoch <= 1)',
+    f'ALTER TABLE {TABLE_NAME} ADD UNIQUE (target_name)',
 ])
 def test_existing_changed_objects_refused_without_repair(owned, tamper):
     _, connection, _ = owned
@@ -187,6 +193,25 @@ def test_existing_changed_objects_refused_without_repair(owned, tamper):
         savepoint.rollback()
     assert capture_liveness(connection, metadata) == (0, 0, 0)
     install_page_liveness(connection)
+
+
+def test_not_null_logical_contract_across_pg_catalog_versions(owned):
+    _, connection, schema = owned
+    metadata, _ = minimal(connection)
+    oid = connection.scalar(text("SELECT to_regclass(:name)::oid"),
+                            {"name": f'"{schema}".{TABLE_NAME}'})
+    not_null = connection.execute(text(
+        "SELECT attname,attnotnull FROM pg_attribute WHERE attrelid=:oid "
+        "AND attnum>0 AND NOT attisdropped ORDER BY attnum"
+    ), {"oid": oid}).all()
+    assert not_null == [("target_name", True), ("epoch", True)]
+    count = connection.scalar(text(
+        "SELECT count(*) FROM pg_constraint WHERE conrelid=:oid AND contype='n'"
+    ), {"oid": oid})
+    version = int(connection.scalar(text("SHOW server_version_num")))
+    assert count == (2 if version >= 180000 else 0)
+    install_page_liveness(connection)
+    assert capture_liveness(connection, metadata) == (0, 0, 0)
 
 
 def test_ownership_mismatch_is_refused_and_not_changed(owned):

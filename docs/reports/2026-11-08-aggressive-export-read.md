@@ -46,3 +46,12 @@ API d24908dc/이미지2a07628b를 실제 반영하고 Manager/원47일정·다�
 
 
 전체Alembic기존계약시험의최종head기대값을0039로갱신하고counter3행을대조했다. 빈DB부터전체migration/backfill/안전계약을WSLPG18·DockerPG18에서각1PASS로확인했다. 이는시험/문서만의보정이며운영제품b369d35d의src/API/CS/Alembic/의존성/웹트리는같다. 시험때문에이미지를재빌드하지않는다.
+
+
+## 최종 실제 HTTP와 PG16 호환
+
+b369d35d/이미지7b4b5949의 실제 HTTP13개는 인증401·나머지200/304로 끝났다. current 최초54.413초, 조건부 재사용143.59ms·일반 재사용161.48ms, daily 최초29.640초·조건부160.29ms·일반221.56ms였다. 각62초 이상 대기 뒤 current는 재생성304에29.364초·그 다음 재사용66.73ms, daily는 재생성200에19.699초·그 다음 재사용91.68ms였다. 완료 페이지가 실제 재사용됐지만 최초·만료의 전체 구성 비용은 남는다. 이것은 부하/자료가 변하는 단일 표본이며 OS cold·p95·코드 단독 개선율이 아니다. 원 d249의503과 긴 관측은 보존한다.
+
+HTTP Root 첫 Invocation15b26a3d53734aa8850b14770ceff51e는 실제done·Main0·cgroup부재·소유자식 종료를 확인했다. SQL5초/최신 상태60초와 실제 원천 시각·stale를 유지한다. 정본 원문은 Git 밖 liveness-release/expiry-forward/live-http.json이다.
+
+추가 CI42460952945/Python128669935280은 PG16의0039 설치 validator에서 실패했다. PG16은 NOT NULL을 attnotnull에만 기록하고 PG18은 pg_constraint에도 n행을 기록한다. 정규화는 n행 표현만 제외하고 attnotnull·정확열/PK/CHECK/FK/추가제약 검사 전체를 유지한다. 원 실패를 PG18의 운영 장애로 바꾸지 않는다. PG16/18 각각 WSL39개·Docker40개(전체 migration 체인 포함), PG16 별도 WSL 체인1개와 Ruff를 통과했다. 겹친 시험은 합산하지 않는다. capture_liveness·트리거 본문·install/remove/register AST·0039 SHA가 같으므로 매 hit/DDL 계약은 변하지 않는다. 운영0039는 재실행하지 않는다.

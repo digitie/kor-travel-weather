@@ -1,3 +1,9 @@
+## 2026-11-08 — 완료 페이지 재사용 실측과 PG16 호환 보완
+
+API b369d35d의 실제 13응답을 관측했다. 현재·일별 재사용은 66.73~221.56ms이며 최초·60초 만료 뒤 재구성은 19.70~54.41초다. 인증401·health200·조건부304와 실제 source clock/stale를 보존했고, 전체1초·cold/p95 달성으로 확대하지 않는다. 실제 최초 HTTP 부모는 done/Main0/cgroup부재다.
+
+CI PG16은 NOT NULL의 pg_constraint 표현 차이로 0039 설치 검증에 실패했다. attnotnull 필수 검산과 PK/CHECK/FK/추가열·제약 거부는 유지하고 표현만 정규화했다. PG16/18 WSL 각39개, Docker 각40개(전체 Alembic 체인 포함)가 통과했다. 읽기 proof·트리거·DDL·0039 본문은 그대로이며 원 CI 실패는 보존한다. schema0039를 다시 실행하지 않고 API만 최신 이미지로 보정한다. [실측과 한계](reports/2026-11-08-aggressive-export-read.md).
+
 ## 2026-11-08 — 완료 페이지 무결성의 작은 DB proof
 
 삭제/epoch를같은TX에기록하는0039와snapshot·3행catalog proof로반복3305키조회를제거했다. 정상발행INSERT/UPDATE는counter잠금없음, DROP/DISABLE/유실failclosed와파일검산·상태60초·SQL5초를보존했다. WSL/Docker PG18각126PASS. 앞선d249실제503/35~57초는보존하고새이미지·실제HTTP수용을진행한다. [원장](reports/2026-11-08-aggressive-export-read.md).
