@@ -481,7 +481,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
     observer.observe(root, { childList: true, subtree: true });
     const resize = new ResizeObserver(schedule);
     resize.observe(root);
-    root.closest(".weather-region-stage")?.querySelectorAll<HTMLElement>(".kt-map-detail, .kt-map-stage-summary").forEach(control => resize.observe(control));
+    root.closest(".weather-region-stage")?.querySelectorAll<HTMLElement>(".kt-map-detail, .kt-map-stage-summary, .weather-region-access").forEach(control => resize.observe(control));
     instance.on("resize", schedule);
     schedule();
     return () => { observer.disconnect(); resize.disconnect(); instance.off("resize", schedule); cancelAnimationFrame(frame); cancelAnimationFrame(focusFrame); };

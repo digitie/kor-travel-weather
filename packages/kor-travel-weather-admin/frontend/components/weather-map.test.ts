@@ -71,6 +71,45 @@ describe("지역 대표 카드의 화면 충돌", () => {
     cleanup(); const cleanupNext = run(); frames.shift()!();
     expect(setOpen.mock.calls.at(-1)).toEqual([true]); cleanupNext();
   });
+  it("형제인 지역 목록 높이가 바뀌면 같은 effect에서 이동한 접기 버튼을 피해 다시 배치한다", () => {
+    let effect: ts.Expression | undefined;
+    function find(node: ts.Node) {
+      if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect" && node.arguments[0]?.getText(tree).includes("const offsets = layoutWeatherRegionCards")) effect = node.arguments[0];
+      ts.forEachChild(node, find);
+    }
+    find(tree);
+    if (!effect) throw new Error("실제 지역 배치 effect가 필요합니다.");
+    const frames: (() => void)[] = [];
+    const observed = new Set<unknown>();
+    let resized: () => void = () => {};
+    class Mutation { observe() {} disconnect() {} }
+    class Resize { constructor(callback: () => void) { resized = callback; } observe(target: unknown) { observed.add(target); } disconnect() {} }
+    const offsets = new Map<string, string>();
+    const access = {};
+    let controlTop = 100;
+    const control = { getBoundingClientRect: () => ({ left: 8, top: controlTop, width: 180, height: 44 }) };
+    const stage = { querySelectorAll: (selector: string) => selector.includes(".weather-region-access > button") ? [control]
+      : selector.includes(".weather-region-access") ? [access] : [] };
+    const button = { offsetWidth: 120, offsetHeight: 48, tabIndex: 0 };
+    const host = { getBoundingClientRect: () => ({ left: 10, top: 300 }), querySelector: (selector: string) => selector.includes("button") ? button : null,
+      style: { setProperty: (key: string, value: string) => offsets.set(key, value) }, dataset: {}, setAttribute() {}, removeAttribute() {}, contains: () => false };
+    const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 351, height: 400 }), querySelectorAll: () => [host], closest: () => stage };
+    const setOpen = vi.fn();
+    const code = ts.transpileModule(`const effect = ${effect.getText(tree)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "setRegionListOpen", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
+      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1], setOpen, layout,
+      (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Mutation, Resize, { activeElement: null },
+    ) as () => void;
+    try {
+      frames.shift()!(); expect(offsets.get("--weather-region-y")).toBe("0px");
+      // 목록은 map container의 형제이므로 높이 변경은 관찰 대상에 포함됐을 때만 콜백을 보낸다.
+      controlTop = 300;
+      if (observed.has(access)) resized();
+      expect(frames).toHaveLength(1); frames.shift()!();
+      expect(Number.parseFloat(offsets.get("--weather-region-y")!)).toBeLessThan(0);
+      expect(setOpen).not.toHaveBeenCalled();
+    } finally { cleanup(); }
+  });
 });
 
 describe("지도와 대체 목록의 같은 날씨 표시", () => {

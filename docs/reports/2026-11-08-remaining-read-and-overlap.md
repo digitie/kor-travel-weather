@@ -17,3 +17,11 @@
 후속 WSL/Docker PG18은 각각86개 통과했다. 먼저 실행한70개/85개와 겹침은 합산하지 않는다. run 조회 대상 계수 시험의 원1실패는 보존하고 관련 대상만 세도록 고쳤다. NULL run·epoch 형식·유실/실패·캐시 만료·개별 예산·cursor/ETag/API도 대조했다. 후속 native 후보는34.286초에 같은 current100행 응답 생성을 완료했으나 이는 운영HTTP/p95나 코드 단독 개선율이 아니다.
 
 Transport 실제 차단 노드는 투명한 kt-map-stage-summary 전체 폭이었다. 기존 SDK marker host는 이미 pointer-events:none이므로 그 가설의1줄은 버렸다. summary wrapper의 빈 영역 입력을 통과시키고 실제 내용은 입력 가능하게 유지한다. 두 앱은 화면 용량 초과 목록의 자동 열기를 data/viewport effect당 최초1회로 제한해 명시 접기가 유지되게 한다. 원 좌표·원점 연결·전체 값/5유종/키보드·미제공·특보는 보존한다. 이 후속 소스는 아직 새 이미지 반영 전이며 다음 실제 원장으로 정산한다.
+
+## Weather 목록 높이 관측의 마지막 회귀
+
+후속 최소3역할도 첫 부모0926dd4d 실제done·70자식0/Manager healthy·원47상태 보존으로 반영했다. HTTP는 실제 재시도0으로 current39.286초200/조건부16.188초304/최소62초뒤21.535초200, daily16.944초200/조건부9.094초200/만료뒤15.317초200이었다. 승인 벡터·부하가 달라 이전과 코드 단독 비율로 비교하지 않는다. 실패 분류 로그는0개이며 초기503/원천 stale/전체1초 미달은 보존한다.
+
+Transport n150 PC15대표/모바일12대표(지도5·나머지목록7)는 픽셀 겹침0·중심 입력·요약 유종 실제 클릭·목록/마커 zoom8→12·오류/문서 넘침0으로 통과했다. Weather PC는 통과했으나 모바일은 목록을 접은 뒤 버튼이 이동하며 아래 pill1개를 가렸다. map Libre root의 Observer는 형제 access section 높이 변경을 보지 못했다. 기존 ResizeObserver에 해당 section만 추가해 같은 effect/latch 안에서 재배치한다. deps/clip CSS/API/Transport를 바꾸지 않는다.
+
+이전61adb9 코드에 새 회귀시험1FAIL을 재현하고 후속 WSL/Docker34개씩·타입/린트0, Firefox375 실제 형제 section의 접기 이동/중심 클릭·키보드·effect1회/접힘 유지로 검산했다. 이 마지막 변경은 Weather web만 새로 빌드·재생성한다. API61adb9/이미지29112909와 Transport 전체는 그대로이며, 실제 완료는 다음 원장으로 정산한다.
