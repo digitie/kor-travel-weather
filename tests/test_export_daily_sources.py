@@ -300,7 +300,10 @@ def test_expired_observation_source_is_a_coverage_gap_not_a_503(
             - source_expiry("krex_restarea_weather") - timedelta(hours=1),
         ))
     clock[0] += 59
-    assert client.get(path, params={"days": 1}, headers=headers).json()["meta"]["source_status"] == "ok"
+    assert (
+        client.get(path, params={"days": 1}, headers=headers).json()["meta"]["source_status"]
+        == "ok"
+    )
     clock[0] += 1
     full = client.get(path, params={"days": 1}, headers=headers)
     assert full.status_code == 200 and full.json()["meta"]["source_status"] == "stale"

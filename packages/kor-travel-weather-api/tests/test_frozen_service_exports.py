@@ -1088,7 +1088,9 @@ def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository,
         )
 
 
-def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path, monkeypatch):
+def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(
+    repository, tmp_path, monkeypatch,
+):
     _collect(repository, tmp_path, hours=1)
     from test_all_source_exports import _selection_clock
 
@@ -1509,7 +1511,10 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     assert failed.json()["code"] == unsupported.json()["code"] == "EXPORT_NOT_READY"
     assert "resource=current reason=SQLAlchemyError request_id=trace-503" in caplog.text
     assert "resource=current reason=source_selection" in caplog.text
-    assert "weather_service_export_failure_site resource=current site=test_reader.py:fail:" in caplog.text
+    assert (
+        "weather_service_export_failure_site resource=current site=test_reader.py:fail:"
+        in caplog.text
+    )
     assert "secret" not in caplog.text and "postgresql" not in caplog.text
 
 

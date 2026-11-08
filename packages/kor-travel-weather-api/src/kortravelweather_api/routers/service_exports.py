@@ -404,7 +404,8 @@ async def _frozen_response(
                     if selection is not None else {}
                 ),
                 **({"style": style, "since": since} if resource == "forecasts" else {}),
-                **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
+                **({"days": days, "location_id": location_id}
+                   if resource == "daily-summaries" else {}),
             )
 
         def page_read(reader):

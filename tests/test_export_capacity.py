@@ -126,7 +126,9 @@ def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, f
         prefixes=["TEMPORARY"],
     )
     plans.create(connection)
-    value = {"location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)], "한글": ["서울", '"\\\n']}
+    value = {
+        "location_ids": [str(uuid.UUID(int=n+1)) for n in range(1000)], "한글": ["서울", '"\\\n']
+    }
     if failure == "oversized":
         value["oversized"] = "x" * (capacity.MAX_SCOPE_PLAN_BYTES + 1)
     connection.execute(plans.insert(), [{"attempt_id": part, "descriptor": value}

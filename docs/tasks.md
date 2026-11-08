@@ -1,4 +1,4 @@
-- [ ] **W-COLD-REBASE-DEPLOY-20261109** — main PR209 통합·CI 회귀 수정·최초 조회 비용 축소 소스를 API/CS 새 이미지에 반영하고 원 일정·Manager·실제 HTTP/부모 종료로 정산한다. WSL/Docker 각127PASS, GC 경계 후속 진행. [보고서](reports/2026-11-09-cold-export-read.md).
+- [ ] **W-COLD-REBASE-DEPLOY-20261109** — main PR209 통합·CI 회귀 수정·최초 조회 비용 축소 소스를 API/CS 새 이미지에 반영하고 원 일정·Manager·실제 HTTP/부모 종료로 정산한다. WSL/Docker 각127PASS·후속GC58PASS, 새API/실제HTTP 완료·CS 자연 종료 대기. [보고서](reports/2026-11-09-cold-export-read.md).
 
 
 

@@ -1,3 +1,7 @@
+### 2026-11-09 실제 API 반영·수집기 자연 종료 대기
+
+제품8723afc/API f3f7a4a8·CID810b4885·실제12201이 healthy이며 source SHA·Settings5초/키·DB0039를 확인했다. serving HTTP current52.435초200/조건부172.79ms304, daily13.114초200/99.70ms304, 상태 만료 뒤 current23.840초200이다. 별도 ASGI 표본29.262/6.222초와 구분하고 최초 지연·stale 한계를 보존한다. 후속 GC58개는 WSL/Docker 모두 통과했고 전체 Ruff13개는 AST 동일 서식 보정 뒤 통과했다. 두 최소 이미지와 원 build 부모 done은 확인했으나 배포 Root49e389/첫Invb3db는 기존 수집/큐 자연 종료 중이다. CS·원27복원·Manager·첫 배포 부모 종료는 아직 미완이다. [정본](reports/2026-11-09-cold-export-read.md).
+
 ## 2026-11-09 — 최신 main 리베이스·최초 export 구성 후속
 
 main PR209의 파일 단위 잠금·writer 재시도를 보존하여 리베이스했다. CI 회귀 보정 `554dafc`와 최신 cohort 조회 배치·일별 같은 RR의 coverage 중복 검산 제거를 구현했고 WSL/Docker PG18 각127개가 통과했다. 계측 없는 별도 실제 ASGI 프로세스에서 current100개29.262초200/30445.50ms·daily10개6.222초200/30462.77ms를 관측했다. current 항목 SHA·원천 시각·stale는 보존했다. 프로파일 current97.897초503·원 CI 실패·최초1초 목표 미달을 그대로 남긴다. 원자적 pin/GC 경계 시험 후속과 최소 API/CS 이미지 실제 배포가 남았다. [원문과 한계](reports/2026-11-09-cold-export-read.md).

@@ -354,7 +354,9 @@ class FrozenCurrentExports:
                 row = connection.execute(select(
                     self.snapshots.c.snapshot_id, self.snapshots.c.manifest_digest,
                     self.snapshots.c.expires_at,
-                ).where(self.snapshots.c.snapshot_id == self.reuse_snapshot[0])).mappings().one_or_none()
+                ).where(
+                    self.snapshots.c.snapshot_id == self.reuse_snapshot[0]
+                )).mappings().one_or_none()
                 if row is None or row["expires_at"] <= now:
                     raise PageReuseExpired()
                 if row["manifest_digest"] != self.reuse_snapshot[1]:
@@ -364,23 +366,32 @@ class FrozenCurrentExports:
 
                     live = capture_liveness(connection, self.heads.metadata)
                     if live[:2] != self.reuse_liveness[:2]:
-                        raise ExportArtifactError("검증 뒤 공개 세대 또는 불변 plan의 삭제가 발생했습니다.")
+                        raise ExportArtifactError(
+                            "검증 뒤 공개 세대 또는 불변 plan의 삭제가 발생했습니다."
+                        )
                     if live[2] != self.reuse_liveness[2]:
                         raise PageReuseExpired()
                 else:
                     if self.reuse_namespaces and set(connection.scalars(select(
                         self.heads.heads.c.namespace,
-                    ).where(any_of(self.heads.heads.c.namespace, sorted(self.reuse_namespaces))))) != self.reuse_namespaces:
-                        raise PageReuseExpired()  # 현재 head 유실은 재구성 경로에서 즉시 stale로 판정한다.
+                    ).where(any_of(
+                        self.heads.heads.c.namespace, sorted(self.reuse_namespaces),
+                    )))) != self.reuse_namespaces:
+                        # 현재 head 유실은 재구성 경로에서 즉시 stale로 판정한다.
+                        raise PageReuseExpired()
                     generations, plans = self.heads.generations, self.heads.plans
                     present = dict(connection.execute(select(
                         generations.c.generation_id, generations.c.attempt_id,
-                    ).where(any_of(generations.c.generation_id, sorted(self.reuse_generations)))).all())
+                    ).where(any_of(
+                        generations.c.generation_id, sorted(self.reuse_generations),
+                    ))).all())
                     attempts = set(present.values())
                     if present.keys() != self.reuse_generations or set(connection.scalars(select(
                         plans.c.attempt_id,
                     ).where(any_of(plans.c.attempt_id, sorted(attempts))))) != attempts:
-                        raise ExportArtifactError("검증한 export의 세대 또는 불변 plan이 유실됐습니다.")
+                        raise ExportArtifactError(
+                            "검증한 export의 세대 또는 불변 plan이 유실됐습니다."
+                        )
             # payload는 이미 검증됐어도 동일 fd의 hash/count·파일 존재는 매 요청 확인한다.
             for digest, byte_count, point_count in self.reuse_artifacts:
                 self.artifacts.verify(digest, byte_count=byte_count, point_count=point_count)
@@ -849,7 +860,9 @@ class FrozenCurrentExports:
                 selected = set(scope["location_ids"])
                 approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
                 for ref in scope["refs"]:
-                    self.reuse_artifacts.add((ref["artifact_digest"], ref["byte_count"], ref["point_count"]))
+                    self.reuse_artifacts.add((
+                        ref["artifact_digest"], ref["byte_count"], ref["point_count"],
+                    ))
                     for point in self.artifacts.read_shared(
                         ref["artifact_digest"],
                         byte_count=ref["byte_count"],

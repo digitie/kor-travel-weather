@@ -153,6 +153,7 @@ def _http_adapter(repo, root, adapter):
 
 def _selection_clock(client, monkeypatch):
     from time import monotonic
+
     from kortravelweather import export_snapshots
 
     clock = [monotonic()]
