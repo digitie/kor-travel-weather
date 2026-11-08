@@ -194,6 +194,11 @@ def ensure_snapshot_files(artifacts, issue):
     """
     frozen = issue()
     for _ in range(2):
+        # API freeze는 전체 파일의 존재/크기를 GC guard 안에서 검사하고 ref와 함께
+        # commit한다. 같은 발급의 DB pin이 이미 파일을 지키므로 다시 stat하지 않는다.
+        # 재사용 handle·이전 성공 fallback·SDK 발급은 기존 all_present/재시도를 유지한다.
+        if frozen.pop("_atomic_files_pinned", False):
+            return frozen
         refs = [ref for scope in frozen["manifest"].get("scopes", []) for ref in scope["refs"]]
         if artifacts.all_present(refs):
             return frozen
@@ -655,6 +660,7 @@ class FrozenCurrentExports:
                 )
                 if self.immutable_reads:
                     connection.commit()
+                    row["_atomic_files_pinned"] = True
             return row
 
     def _same_selection(self):

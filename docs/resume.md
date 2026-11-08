@@ -1,3 +1,7 @@
+## 2026-11-09 — 최신 main 리베이스·최초 export 구성 후속
+
+main PR209의 파일 단위 잠금·writer 재시도를 보존하여 리베이스했다. CI 회귀 보정 `554dafc`와 최신 cohort 조회 배치·일별 같은 RR의 coverage 중복 검산 제거를 구현했고 WSL/Docker PG18 각127개가 통과했다. 계측 없는 별도 실제 ASGI 프로세스에서 current100개29.262초200/30445.50ms·daily10개6.222초200/30462.77ms를 관측했다. current 항목 SHA·원천 시각·stale는 보존했다. 프로파일 current97.897초503·원 CI 실패·최초1초 목표 미달을 그대로 남긴다. 원자적 pin/GC 경계 시험 후속과 최소 API/CS 이미지 실제 배포가 남았다. [원문과 한계](reports/2026-11-09-cold-export-read.md).
+
 ## 2026-11-08 — 완료 페이지 재사용·PG16/18 최종 API 실제 수용
 
 제품2bda70e3/API cbb036c1·CID71e996cd·실제12201을 반영했다. PG18.6/schema0039·상태60초·SQL5초·원 Weather27/Transport20 상태·웹/수집기/다른 서비스·설정/키를 보존했고 Manager healthy·최초 빌드/배포/HTTP 부모 done/Main0/cgroup부재·소유자식 종료를 확인했다. 0039는 최초 한 번만 적용했으며 마지막 API 보정에서는 migration0이다.

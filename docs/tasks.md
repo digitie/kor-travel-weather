@@ -1,3 +1,5 @@
+- [ ] **W-COLD-REBASE-DEPLOY-20261109** — main PR209 통합·CI 회귀 수정·최초 조회 비용 축소 소스를 API/CS 새 이미지에 반영하고 원 일정·Manager·실제 HTTP/부모 종료로 정산한다. WSL/Docker 각127PASS, GC 경계 후속 진행. [보고서](reports/2026-11-09-cold-export-read.md).
+
 
 
 - [ ] **W-EXPORT-SLOW-20261108** — 완료 페이지 재사용은66.73~340.44ms이지만 최초·60초 만료 뒤 전체 구성19.70~54.41초로1초 목표는 미달이다. 원천 신선도·GC pin·불변 plan/세대 검증을 유지한 공유 읽기 모델의 비용을 다음 단계에서 검산한다. 반복 전체 재구성 worker는 폐기했고 SQL5초·상태60초와 원503/UNKNOWN을 보존한다. [최신 실측](reports/2026-11-08-aggressive-export-read.md), [이전 표본](reports/2026-11-08-remaining-read-and-overlap.md).

@@ -341,6 +341,34 @@ def _active_scope_states(connection, metadata, source_scopes):
     return active
 
 
+def _latest_cohort_runs(connection, runs, sources):
+    """원천마다 index top-1은 유지하고 DB 왕복은 한 번으로 묶는다.
+
+    scalar subquery는 이전과 같은 started_at/run_id 정렬과 cohort 조건을 쓴다.
+    전체 이력을 window 정렬하거나 최신이 아닌 성공 run으로 대체하지 않는다.
+    """
+    from sqlalchemy import literal, union_all
+
+    sources = sorted(sources)
+    if not sources:
+        return {}
+    requested = union_all(*[
+        select(literal(provider).label("provider"), literal(dataset).label("dataset_key"))
+        for provider, dataset in sources
+    ]).subquery("requested_cohort_sources")
+    latest = select(runs.c.run_id).where(
+        runs.c.provider == requested.c.provider,
+        runs.c.dataset_key == requested.c.dataset_key,
+        runs.c.export_cohort_required.is_(True),
+    ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1).scalar_subquery()
+    return {
+        (provider, dataset): run_id
+        for provider, dataset, run_id in connection.execute(select(
+            requested.c.provider, requested.c.dataset_key, latest,
+        ))
+    }
+
+
 def approved_source_selection(
     connection, metadata, locations, *, expected, optional=(), health_location_ids=None,
 ):
@@ -500,6 +528,7 @@ def approved_source_selection(
         run_ids.update(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
             any_of(attempts.c.attempt_id, needed),
         )).tuples().all())
+    latest_runs = _latest_cohort_runs(connection, runs, declarations)
     for source in expected:
         row = declarations.get(source)
         if row is None:
@@ -513,10 +542,7 @@ def approved_source_selection(
             or any((r["provider"], r["dataset_key"]) == source for r in health_rows)
         ):
             continue
-        latest = connection.scalar(select(runs.c.run_id).where(
-            runs.c.provider == source[0], runs.c.dataset_key == source[1],
-            runs.c.export_cohort_required.is_(True),
-        ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1))
+        latest = latest_runs.get(source)
         unconfirmed |= latest != row["run_id"] or row["native_status"] != "success"
         selected, selected_parts = set(), set()
         for descriptor in descriptors:

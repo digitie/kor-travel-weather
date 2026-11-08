@@ -50,8 +50,9 @@ class ExportSelectionCache:
             tuple(
                 sorted(
                     tuple(
-                        (type(row.get(field)).__name__, str(row.get(field)))
-                        for field in _CATALOG_FIELDS
+                        (type(value).__name__, value if type(value) in (str, int, type(None))
+                         else str(value))
+                        for field in _CATALOG_FIELDS for value in (row.get(field),)
                     )
                     for row in locations
                 )

@@ -696,15 +696,93 @@ def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
 def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
-    """freeze가 commit하기 전(GC가 ref를 못 보는 때)에 head가 바뀌고 GC가 지우면 다시 발급한다."""
+    """API pin의 짧은 공유 guard는 writer를 commit 뒤로 보내고 옛 파일을 실제 지킨다."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
     from sqlalchemy import event
 
     from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
     from kortravelweather.export_gc import collect_export_artifacts
 
     monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
     _collect(repository, tmp_path, hours=2, value="11")
+    old_files = set(tmp_path.glob("*.jsonl"))
+    assert old_files
+    orphan = tmp_path / ("e" * 64 + ".jsonl")
+    orphan.write_bytes(b"{}\n")
     client = _client(repository, tmp_path)
+    snapshots, refs = export_snapshot_tables(Base.metadata)
+    blocked = Event()
+    raced, futures = {}, []
+
+    def writer():
+        store = ExportArtifactStore(tmp_path)
+        # SQL hook가 pin guard를 쥔 채 writer를 시작한다. 실제 flock 경합을 확인한 후에만
+        # hook를 풀어 INSERT/ref/commit이 진행되게 한다(동기 _collect 자기 경합 금지).
+        with pytest.raises(ExportGuardTimeout), store.guard(timeout_seconds=0.05):
+            pytest.fail("snapshot INSERT 전에 API의 pin guard가 writer를 막지 못했습니다.")
+        blocked.set()
+        with store.guard(timeout_seconds=5), repository.engine.connect() as connection:
+            frozen = connection.execute(select(snapshots)).mappings().one()
+            pinned = set(connection.scalars(select(refs.c.generation_id).where(
+                refs.c.snapshot_id == frozen["snapshot_id"],
+            )))
+            assert pinned == {scope["generation_id"] for scope in frozen["manifest"]["scopes"]}
+            digests = {ref["artifact_digest"] for scope in frozen["manifest"]["scopes"]
+                       for ref in scope["refs"]}
+            assert digests == {path.stem for path in old_files}
+            raced["pin_visible"] = True  # 별도 연결이 본 commit된 원래 generation ref
+        _collect(repository, tmp_path, hours=0, value="22")
+        _make_old_generations_collectable(repository, tmp_path)
+        raced["report"] = collect_export_artifacts(
+            repository, tmp_path, mode="delete", deadline=float("inf"),
+            retention=timedelta(hours=1),
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
+            insert = statement.lstrip().upper().startswith("INSERT INTO WEATHER_EXPORT_SNAPSHOTS")
+            if raced or not insert:
+                return
+            raced["hit"] = True
+            futures.append(executor.submit(writer))
+            assert blocked.wait(5), "별도 writer가 실제 pin guard 경합을 확인하지 못했습니다."
+
+        event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
+        try:
+            response = client.get("/v1/service/exports/current", headers=HEADERS)
+        finally:
+            event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
+        assert len(futures) == 1
+        futures[0].result(timeout=30)  # writer 실패를 주 시험에 전달하고 종료도 회수한다.
+    assert raced["pin_visible"]
+    assert raced["report"]["deleted"] >= 1 and not orphan.exists()
+    assert all(path.is_file() for path in old_files)  # head/retention이 아닌 실제 pin이 보존했다.
+    assert response.status_code == 200, response.text
+    values = {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"}
+    assert values == {11.0}
+
+
+def test_sdk_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
+    repository, tmp_path, monkeypatch, restore_daily_progress,
+):
+    """SDK 기본 발급은 commit 전 GC를 재검산해 새 head로 재발급하거나 일시503 사유로 닫는다."""
+    from sqlalchemy import event
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
+    from kortravelweather.export_gc import collect_export_artifacts
+    from kortravelweather.export_snapshots import FrozenCurrentExports
+
+    monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
+    _collect(repository, tmp_path, hours=2, value="11")
+    old_files = set(tmp_path.glob("*.jsonl"))
+    assert old_files
+    reader = FrozenCurrentExports(
+        repository, ExportArtifactStore(tmp_path), signing_key=TOKEN, immutable_reads=False,
+    )
     raced = {}
 
     def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
@@ -721,16 +799,18 @@ def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
 
     event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
     try:
-        response = client.get("/v1/service/exports/current", headers=HEADERS)
+        try:
+            page, _ = reader.page("current", limit=5000, cursor=None)
+        except ExportGuardTimeout:
+            # HTTP adapter가 EXPORT_TEMPORARILY_UNAVAILABLE/503으로 분류하는 SDK 예외다.
+            page = None
     finally:
         event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
-    assert raced["report"]["deleted"] >= 1  # 이전 generation 파일이 실제로 지워졌다
-    assert response.status_code in {200, 503}, response.text
-    if response.status_code == 200:
-        values = {i["value"] for i in response.json()["items"] if i["metric_key"] == "T1H"}
-        assert values == {22.0}  # 다시 발급해 새 head를 읽었다
-    else:
-        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+    assert raced["report"]["deleted"] >= 1
+    assert all(not path.exists() for path in old_files)  # commit 전 옛 파일이 실제 삭제됐다.
+    if page is not None:
+        values = {item["value"] for item in page["items"] if item["metric_key"] == "T1H"}
+        assert values == {22.0}
 
 
 def test_writer_retries_a_short_guard_contention_instead_of_failing(tmp_path):
