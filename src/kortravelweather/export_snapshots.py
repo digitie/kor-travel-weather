@@ -12,8 +12,8 @@ import logging
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
 from time import monotonic
+from uuid import uuid4
 
 from kortravelcommon.address_providers import VworldKakaoAddressResolver
 from kortravelcommon.reverse_address import AddressTarget
@@ -43,11 +43,12 @@ from .export_capacity import (
     MAX_SOURCE_SCOPES,
     ExportCapacityExceeded,
     MetadataBudget,
-    bounded_manifest_digest,
     any_of,
+    bounded_manifest_digest,
     read_generation_refs,
 )
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
+from .export_snapshot_refs import insert_snapshot_refs
 
 MAX_SNAPSHOT_LOCATIONS = 5000
 MAX_PAGE_BYTES = 4 * 1024 * 1024
@@ -293,7 +294,8 @@ class FrozenCurrentExports:
         if self.selection_cache is None:
             return read()
         key = self.selection_cache.key(
-            connection, locations, self.expected_sources, self.optional_sources, health_location_ids,
+            connection, locations, self.expected_sources, self.optional_sources,
+            health_location_ids,
         )
         result, deadline = self.selection_cache.read(
             key, read, checked_after=self.selection_checked_after,
@@ -309,10 +311,14 @@ class FrozenCurrentExports:
         if not wanted:
             return
         generations, plans = self.heads.generations, self.heads.plans
-        present = set(connection.scalars(select(generations.c.generation_id).select_from(
-            generations.join(plans, plans.c.attempt_id == generations.c.attempt_id),
-        ).where(any_of(generations.c.generation_id, sorted(wanted)))))
-        if present != wanted:
+        # 큰 JOIN은 부하 중 5초 상한을 넘었다. 같은 RR의 두 PK 집합으로 같은 존재를 검산한다.
+        present = dict(connection.execute(select(
+            generations.c.generation_id, generations.c.attempt_id,
+        ).where(any_of(generations.c.generation_id, sorted(wanted)))).all())
+        attempts = set(present.values())
+        if present.keys() != wanted or set(connection.scalars(select(plans.c.attempt_id).where(
+            any_of(plans.c.attempt_id, sorted(attempts)),
+        ))) != attempts:
             raise ExportArtifactError("승인 source의 불변 plan 또는 공개 세대가 유실됐습니다.")
 
     def require_current_selection(self):
@@ -554,16 +560,9 @@ class FrozenCurrentExports:
                 "expires_at": snapshot_expires_at(now),
             }
             connection.execute(self.snapshots.insert().values(**row))
-            connection.execute(
-                self.refs.insert(),
-                [
-                    {
-                        "snapshot_id": row["snapshot_id"],
-                        "ordinal": i,
-                        "generation_id": scope["generation_id"],
-                    }
-                    for i, scope in enumerate(scopes)
-                ],
+            insert_snapshot_refs(
+                connection, self.refs, row["snapshot_id"],
+                (scope["generation_id"] for scope in scopes),
             )
             return row
 
@@ -604,16 +603,9 @@ class FrozenCurrentExports:
                     snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now)
                 )
                 session.execute(self.snapshots.insert().values(**frozen))
-                session.execute(
-                    self.refs.insert(),
-                    [
-                        {
-                            "snapshot_id": frozen["snapshot_id"],
-                            "ordinal": i,
-                            "generation_id": scope["generation_id"],
-                        }
-                        for i, scope in enumerate(frozen["manifest"]["scopes"])
-                    ],
+                insert_snapshot_refs(
+                    session, self.refs, frozen["snapshot_id"],
+                    (scope["generation_id"] for scope in frozen["manifest"]["scopes"]),
                 )
             frozen["_source_unconfirmed"] = True
             return frozen
@@ -675,11 +667,10 @@ class FrozenCurrentExports:
         row["manifest_digest"] = _digest(row["manifest"])
         with self.heads._transaction() as s:
             s.execute(self.snapshots.insert().values(**row))
-            s.execute(self.refs.insert(), [
-                {"snapshot_id": row["snapshot_id"], "ordinal": i,
-                 "generation_id": scope["generation_id"]}
-                for i, scope in enumerate(row["manifest"]["scopes"])
-            ])
+            insert_snapshot_refs(
+                s, self.refs, row["snapshot_id"],
+                (scope["generation_id"] for scope in row["manifest"]["scopes"]),
+            )
         return row
 
     def _page_guarded(self, resource: str, *, limit: int, cursor: str | None):

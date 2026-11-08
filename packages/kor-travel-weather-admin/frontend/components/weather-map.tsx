@@ -2,7 +2,7 @@
 
 import { Bell, CalendarDays, Cloud, Crosshair, Eye, RefreshCw, Timer } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { MapDetailOverlay, MapFilterBar, MapFilterField, MapFilterPanel, MapKindFilter, MapStage, MapTabs, MapTabPanel, MapViewTabs, MapWorkspace, type MapViewportReadout } from "@kor-travel/ui/map-controls";
 
 import {
@@ -21,6 +21,7 @@ import {
   VWorldMapView,
   VWorldWeatherClusters,
   VWorldWeatherMarker,
+  WeatherMarkerLabel,
 } from "@/components/vworld-map-view";
 import { weatherRepresentatives, weatherRegionLevel } from "@/lib/weather-regions";
 import { WeatherDetails } from "./weather-details";
@@ -35,6 +36,31 @@ type WeatherMapProps = {
   catalogError?: string | null;
   onRetryCatalog?: () => void;
 };
+
+type RegionCardRect = { left: number; top: number; width: number; height: number };
+// 원좌표는 유지한다. 대표 pill마다 최대 129곳만 검사하고 공간 부족은 스크롤 목록에서 제공한다.
+export function layoutWeatherRegionCards(cards: RegionCardRect[], width: number, height: number, reserved: RegionCardRect[] = []) {
+  const gap = 8;
+  const occupied = [...reserved];
+  const overlaps = (a: RegionCardRect, b: RegionCardRect) => a.left < b.left + b.width + gap
+    && a.left + a.width + gap > b.left && a.top < b.top + b.height + gap && a.top + a.height + gap > b.top;
+  return cards.map(card => {
+    const candidates: RegionCardRect[] = [];
+    if (card.width <= width - gap * 2 && card.height <= height - gap * 2) {
+      candidates.push({ ...card,
+        left: Math.max(gap, Math.min(width - card.width - gap, card.left)),
+        top: Math.max(gap, Math.min(height - card.height - gap, card.top)),
+      });
+      for (let top = gap; top <= height - card.height - gap && candidates.length < 129; top += card.height + gap)
+        for (let left = gap; left <= width - card.width - gap && candidates.length < 129; left += card.width + gap)
+          candidates.push({ ...card, left, top });
+      candidates.sort((a, b) => Math.hypot(a.left - card.left, a.top - card.top) - Math.hypot(b.left - card.left, b.top - card.top));
+    }
+    const placed = candidates.find(candidate => !occupied.some(other => overlaps(candidate, other)));
+    if (placed) occupied.push(placed);
+    return { x: placed ? placed.left - card.left : 0, y: placed ? placed.top - card.top : 0, placed: Boolean(placed) };
+  });
+}
 
 function metricDisplayUnit(unit: string | null) {
   return unit === "deg_c" || unit === "°C" || unit === "℃" ? "℃" : unit ?? "";
@@ -278,6 +304,8 @@ function resolveSelection<T extends { location_id: string }>(
 export function WeatherMap({ locations, catalogLoading = false, catalogError, onRetryCatalog }: WeatherMapProps) {
   const map = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [regionListOpen, setRegionListOpen] = useState(false);
+  const regionListId = useId();
   const [selectedId, setSelectedId] = useState(locations[0]?.location_id ?? "");
   const [values, setValues] = useState<WeatherValue[]>([]);
   const [forecast, setForecast] = useState<WeatherValue[]>([]);
@@ -398,6 +426,62 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
       onClick: () => { setSelectedId(location.location_id); setDetailOpen(true); requestAnimationFrame(() => detailRef.current?.focus()); },
     };
   }), [mapLocations, selectedId, summaries, providerFilter, kindFilter, refreshToken, regionLevel, regional]);
+  useEffect(() => {
+    const instance = map.current;
+    if (!mapReady || !instance || mode !== "map" || !regionLevel || !markers.length) return;
+    const root = instance.getContainer();
+    let frame = 0;
+    let focusFrame = 0;
+    const position = () => {
+      frame = 0;
+      const bounds = root.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+      const hosts = [...root.querySelectorAll<HTMLElement>(".weather-region-marker")];
+      const cards = hosts.map(host => {
+        const button = host.querySelector<HTMLElement>(".vworld-weather-marker-button")!;
+        const anchor = host.getBoundingClientRect();
+        return { left: anchor.left - bounds.left, top: anchor.top - bounds.top,
+          width: button.offsetWidth, height: button.offsetHeight };
+      });
+      if (cards.some(card => !card.width || !card.height)) return;
+      const controls = root.closest(".weather-region-stage")?.querySelectorAll<HTMLElement>(".kt-map-detail, .kt-map-stage-summary, .weather-region-access > button, .maplibregl-ctrl-top-right, .maplibregl-ctrl-bottom-right") ?? [];
+      const reserved = [...controls].map(control => {
+        const rect = control.getBoundingClientRect();
+        return { left: rect.left - bounds.left, top: rect.top - bounds.top, width: rect.width, height: rect.height };
+      }).filter(rect => rect.width && rect.height);
+      const offsets = layoutWeatherRegionCards(cards, bounds.width, bounds.height, reserved);
+      offsets.forEach((offset, index) => {
+        const host = hosts[index];
+        host.style.setProperty("--weather-region-x", `${offset.x}px`);
+        host.style.setProperty("--weather-region-y", `${offset.y}px`);
+        host.dataset.regionOverflow = String(!offset.placed);
+        const button = host.querySelector<HTMLElement>(".vworld-weather-marker-button")!;
+        button.tabIndex = offset.placed ? 0 : -1;
+        if (offset.placed) host.removeAttribute("aria-hidden");
+        else {
+          host.setAttribute("aria-hidden", "true");
+          if (host.contains(document.activeElement)) {
+            cancelAnimationFrame(focusFrame);
+            focusFrame = requestAnimationFrame(() => {
+              if (host.contains(document.activeElement)) root.closest(".weather-region-stage")?.querySelector<HTMLElement>(".weather-region-access-list")?.focus();
+            });
+          }
+        }
+        const line = host.querySelector(".weather-region-link line");
+        line?.setAttribute("x2", String(offset.x)); line?.setAttribute("y2", String(offset.y));
+      });
+      if (offsets.some(offset => !offset.placed)) setRegionListOpen(true);
+    };
+    const schedule = () => { if (!frame) frame = requestAnimationFrame(position); };
+    const observer = new MutationObserver(schedule);
+    observer.observe(root, { childList: true, subtree: true });
+    const resize = new ResizeObserver(schedule);
+    resize.observe(root);
+    root.closest(".weather-region-stage")?.querySelectorAll<HTMLElement>(".kt-map-detail, .kt-map-stage-summary").forEach(control => resize.observe(control));
+    instance.on("resize", schedule);
+    schedule();
+    return () => { observer.disconnect(); resize.disconnect(); instance.off("resize", schedule); cancelAnimationFrame(frame); cancelAnimationFrame(focusFrame); };
+  }, [mapReady, mode, regionLevel, markers, mapViewport, detailOpen]);
   const selectedSummary = markerRefreshRef.current === JSON.stringify([refreshToken, providerFilter, kindFilter]) && selected
     ? summaries[selected.location_id] : undefined;
   const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
@@ -672,7 +756,7 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
       <MapTabs value={mode} onValueChange={(value) => setMode(value as "map" | "list")}>
         <MapViewTabs ariaLabel="조회 방식" viewport={mapViewport} count={mode === "map" ? mapLocations.length : visibleLocations.length} />
         <MapTabPanel value="map" className="map-panel" keepMounted>
-          <MapStage view="map" summary={mode === "map" ? mapNotice : null} detail={mode === "map" ? detailPanel : null}>
+          <MapStage className="weather-region-stage" view="map" summary={mode === "map" ? mapNotice : null} detail={mode === "map" ? detailPanel : null}>
             <VWorldMapView
               apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
               center={initialCamera.center}
@@ -692,8 +776,14 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
                 markers={regionLevel ? [] : markers}
               />
               {regionLevel && !regional.length && visibleLocations.length ? <p role="status">행정구역 주소가 확인된 지점이 없습니다. 확대하면 개별 지점을 확인할 수 있습니다.</p> : null}
-              {regionLevel ? markers.map(marker => <VWorldWeatherMarker key={marker.id} {...marker} />) : null}
+              {regionLevel ? markers.map(marker => <VWorldWeatherMarker key={marker.id} regionKey={marker.id} {...marker} />) : null}
             </VWorldMapView>
+            {regionLevel && markers.length ? <section className="weather-region-access" aria-label="지역별 대표 날씨">
+              <button type="button" aria-expanded={regionListOpen} aria-controls={regionListId} onClick={() => setRegionListOpen(open => !open)}>{regionListOpen ? "지역 날씨 접기" : `지역 날씨 모두 보기 (${markers.length})`}</button>
+              {regionListOpen ? <div id={regionListId} className="weather-region-access-list" role="region" aria-label="모든 지역 대표 날씨" tabIndex={0}>
+                {markers.map(marker => <button key={marker.id} type="button" className={`vworld-weather-marker-button vworld-weather-marker weather-marker-${marker.condition}`} aria-pressed={marker.selected} onClick={marker.onClick}><WeatherMarkerLabel {...marker} /><span className="sr-only">{marker.title} 날씨 보기</span></button>)}
+              </div> : null}
+            </section> : null}
           </MapStage>
         </MapTabPanel>
         <MapTabPanel value="list" className="list-panel" keepMounted>

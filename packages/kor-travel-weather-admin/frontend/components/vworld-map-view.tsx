@@ -350,7 +350,19 @@ export type VWorldWeatherMarkerProps = Omit<VWorldMarkerProps, "children"> & {
   regionLabel?: string;
   condition: WeatherCondition;
   alertCount?: number;
+  regionKey?: string;
 };
+
+export function WeatherMarkerLabel({ temperature, condition, alertCount = 0, regionLabel }: Pick<VWorldWeatherMarkerProps, "temperature" | "condition" | "alertCount" | "regionLabel">) {
+  return <>
+    <span aria-hidden="true" className="vworld-weather-marker-icon">{weatherConditionIcon(condition)}</span>
+    <span className="vworld-weather-marker-copy">{regionLabel ? <small>{regionLabel}</small> : null}
+      <strong>{temperature === null ? "—" : `${Math.round(temperature)}°`}</strong>
+      <small>{weatherConditionLabel(condition)}</small>
+    </span>
+    {alertCount > 0 ? <span aria-label={`특보 ${alertCount}건`} className="weather-marker-badge">{alertCount}</span> : null}
+  </>;
+}
 
 /**
  * Weather marker from maplibre-vworld-react's WeatherMarker model, adapted to
@@ -362,6 +374,7 @@ export function VWorldWeatherMarker({
   condition,
   alertCount = 0,
   regionLabel,
+  regionKey,
   ...markerProps
 }: VWorldWeatherMarkerProps) {
   return (
@@ -372,8 +385,9 @@ export function VWorldWeatherMarker({
       // can still opt into `anchor="bottom"` when providing a pointed
       // marker shape.
       anchor={markerProps.anchor ?? "center"}
-      className={`weather-marker vworld-weather-marker weather-marker-${condition}${markerProps.selected ? " selected" : ""}`}
+      className={`weather-marker vworld-weather-marker weather-marker-${condition}${regionKey ? " weather-region-marker" : ""}${markerProps.selected ? " selected" : ""}`}
     >
+      {regionKey ? <><svg className="weather-region-link" aria-hidden="true" width="1" height="1"><line x1="0" y1="0" x2="0" y2="0" /></svg><span className="weather-region-origin" aria-hidden="true" /></> : null}
       <button
         aria-label={markerProps.ariaLabel}
         aria-pressed={markerProps.selected}
@@ -381,12 +395,7 @@ export function VWorldWeatherMarker({
         title={markerProps.title}
         type="button"
       >
-        <span aria-hidden="true" className="vworld-weather-marker-icon">{weatherConditionIcon(condition)}</span>
-        <span className="vworld-weather-marker-copy">{regionLabel ? <small>{regionLabel}</small> : null}
-          <strong>{temperature === null ? "—" : `${Math.round(temperature)}°`}</strong>
-          <small>{weatherConditionLabel(condition)}</small>
-        </span>
-        {alertCount > 0 ? <span aria-label={`특보 ${alertCount}건`} className="weather-marker-badge">{alertCount}</span> : null}
+        <WeatherMarkerLabel temperature={temperature} condition={condition} alertCount={alertCount} regionLabel={regionLabel} />
       </button>
     </VWorldMarker>
   );

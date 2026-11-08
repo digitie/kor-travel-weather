@@ -1,3 +1,5 @@
+- [ ] **REMAINS-20261108** — 남은 지연/카드 겹침 수정의 실제 최소 이미지·HTTP·n150 PC모바일·원상태/Manager·첫 부모 종료를 수용한다. [근거](reports/2026-11-08-remaining-read-and-overlap.md).
+
 - [ ] **W-EXPORT-SLOW-20261108** — 최초 current75.74초503와 이후48.02초를 실제 profile로 분해해 개선한다. daily stale/원 실패·60초 승인/5초 SQL 제한을 보존하며 timeout 확대나 수동 수집으로 성공을 만들지 않는다. [실측](reports/2026-11-08-selection-cache-release.md).
 
 

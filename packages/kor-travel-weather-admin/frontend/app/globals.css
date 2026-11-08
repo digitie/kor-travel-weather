@@ -2420,6 +2420,20 @@ tbody tr:hover {
   opacity: 0.88;
 }
 
+.weather-region-marker { pointer-events:none; }
+.weather-region-marker .vworld-weather-marker-button { translate:var(--weather-region-x, 0px) var(--weather-region-y, 0px); pointer-events:auto; }
+.weather-region-marker[data-region-overflow="true"] .vworld-weather-marker-button { visibility:hidden; pointer-events:none; }
+.weather-region-link, .weather-region-origin { position:absolute; left:50%; top:50%; pointer-events:none; }
+.weather-region-link { overflow:visible; color:var(--text-secondary); }
+.weather-region-link line { stroke:currentColor; stroke-width:1; }
+.weather-region-origin { width:var(--space-xs); height:var(--space-xs); border-radius:50%; background:var(--text-primary); translate:-50% -50%; }
+.weather-region-access { position:absolute; left:var(--space-sm); right:var(--space-sm); bottom:var(--space-xl); z-index:5; width:fit-content; max-width:calc(100% - 2 * var(--space-sm)); display:grid; gap:var(--space-xs); }
+.weather-region-access > button { min-height:var(--control-h-sm); padding:var(--space-xs) var(--space-sm); border:1px solid var(--border); border-radius:var(--radius-control); background:var(--card); color:var(--text-primary); }
+.weather-region-access-list { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--space-sm); max-height:min(50dvh, 24rem); overflow:auto; overscroll-behavior:contain; padding:var(--space-sm); border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); box-shadow:var(--shadow-map); }
+.weather-region-access-list > button { min-width:0; height:100%; white-space:normal; }
+.weather-region-access-list .vworld-weather-marker-copy { min-width:0; overflow-wrap:anywhere; }
+@media (pointer:coarse) { .weather-region-access > button { min-height:44px; } }
+
 .measurement-point,
 .alert-panel {
   display: grid;

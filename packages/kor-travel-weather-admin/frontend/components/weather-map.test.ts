@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 
 import ts from "typescript";
+import * as jsxRuntime from "react/jsx-runtime";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 
@@ -13,6 +15,49 @@ function visit(node: ts.Node) {
   ts.forEachChild(node, visit);
 }
 visit(tree);
+
+describe("지역 대표 카드의 화면 충돌", () => {
+  const node = tree.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "layoutWeatherRegionCards");
+  if (!node) throw new Error("대표 카드 배치 함수가 필요합니다.");
+  type Rect = { left: number; top: number; width: number; height: number };
+  const layout = new Function(`${ts.transpileModule(node.getText(tree).replace("export ", ""), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return layoutWeatherRegionCards;`)() as
+    (cards: Rect[], width: number, height: number, reserved: Rect[]) => { x: number; y: number; placed: boolean }[];
+  it.each([[1120, 832], [351, 787]])("%sx%s에서도 상세/통계를 피하고 공간 부족을 목록에 알린다", (width, height) => {
+    const cards = Array.from({ length: 29 }, () => ({ left: 200, top: 240, width: 132, height: 48 }));
+    const obstacle = width > 400 ? { left: width - 360, top: 8, width: 350, height: height - 16 }
+      : { left: 8, top: 8, width: width - 16, height: 100 };
+    const offsets = layout(cards, width, height, [obstacle]);
+    const placed = offsets.flatMap((offset, index) => offset.placed ? [{ ...cards[index], left: cards[index].left + offset.x, top: cards[index].top + offset.y }] : []);
+    const overlap = (a: Rect, b: Rect) => a.left < b.left + b.width && a.left + a.width > b.left && a.top < b.top + b.height && a.top + a.height > b.top;
+    expect(placed.length).toBeGreaterThan(1);
+    for (const [index, rect] of placed.entries()) {
+      expect(rect.left).toBeGreaterThanOrEqual(8); expect(rect.top).toBeGreaterThanOrEqual(8);
+      expect(rect.left + rect.width).toBeLessThanOrEqual(width - 8);
+      expect(rect.top + rect.height).toBeLessThanOrEqual(height - 8);
+      expect(overlap(rect, obstacle)).toBe(false);
+      for (const other of placed.slice(index + 1)) expect(overlap(rect, other)).toBe(false);
+    }
+    if (width < 400) expect(offsets.some(offset => !offset.placed)).toBe(true);
+    else expect(placed).toHaveLength(cards.length);
+    expect(cards.every(card => card.left === 200 && card.top === 240)).toBe(true);
+  });
+});
+
+describe("지도와 대체 목록의 같은 날씨 표시", () => {
+  const source = readFileSync(new URL("./vworld-map-view.tsx", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("map.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const node = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "WeatherMarkerLabel");
+  if (!node) throw new Error("지도와 목록에서 공유할 표시 컴포넌트가 필요합니다.");
+  const code = ts.transpileModule(node.getText(ast), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const label = new Function("require", "weatherConditionIcon", "weatherConditionLabel", `const exports = {}; ${code}; return exports.WeatherMarkerLabel;`)(
+    () => jsxRuntime, () => "?", () => "정보 없음",
+  ) as (props: { temperature: number | null; condition: string; alertCount: number; regionLabel: string }) => React.ReactElement;
+  it.each([null, 21.7])("온도%s의 결측/반올림·대표 지역명·미확인 상태·특보 수를 보존한다", temperature => {
+    const html = renderToStaticMarkup(label({ temperature, condition: "unknown", alertCount: 2, regionLabel: "서울특별시 중구" }));
+    expect(html).toContain(temperature === null ? "—" : "22°");
+    expect(html).toContain("서울특별시 중구"); expect(html).toContain("정보 없음"); expect(html).toContain("특보 2건");
+  });
+});
 describe("마커 모델 참조 보존", () => {
   function renderer() {
     if (!markerMemo) throw new Error("marker 모델의 useMemo가 필요합니다.");
