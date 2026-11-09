@@ -29,6 +29,15 @@
 
 새 API는 CID `810b488581aae44d123013198b851b30c9531c4c2e402673c61c3dc808f403ec`/실제12201로 교체되어 healthy·실행 소스 SHA·Settings5초·키일치·DB0039를 확인했다. 실제 serving API HTTP는 health/version200·미인증401, current 최초52.435초200/조건부172.79ms304, daily13.114초200/조건부99.70ms304, 60초 상태 만료 뒤 current23.840초200이었다. current100개 item SHA·원천 시각·stale는 같다. 최초1초·전체 속도 목표를 달성한 것으로 쓰지 않으며 별도 ASGI 프로세스의29.262/6.222초와 구분한다. HTTP 보조의 실제 자식0·종료도 확인했다.
 
-배포 Root `weather-cold-deploy-20261109-49e389d085`/첫 Invocation `b3db555a582c4b4b8d8b3e690fc69d36`은 원27일정을 pause하고 기존 수집과 큐의 자연 종료를 기다린다. CS는 아직 이전 이미지다. API 수용을 CS/원27복원/Manager/부모 종료 완료로 바꾸지 않는다. 웹·의존성·DB0039는 그대로 유지하고 migration을 다시 하지 않는다. 수집기 교체는 원 Weather27 일정을 보존·일시중지하고 기존 작업이 자연 종료한 뒤 수행한다. Transport20·MCP 외부 HTTPS·공용 daemon·다른 서비스·키/환경은 보존한다. 백업·복원은 사용자 지시로 생략한다.
+자연 대기 배포 Root49e389는 사용자의 강제 중지 지시에 따라 정산했다. 첫 Invocation b3db의 실제1/Cancelled·원27복원·Main0/cgroup부재를 보존한다. 첫 강제 후속 ca2a77/첫Invf61e도 STARTING 작업의 SAFE_TERMINATE 거부로 실제1이며, 원27복원·Main0/cgroup부재를 확인했다.
 
-정본: Git 밖 `weather-cold-read-20261109/plan.json`, 원 프로파일·후보 원문·실제 최초 Invocation 종료·소유 자식 정산을 연결한다. 배포 뒤 실제 CID/image/source·Manager·일정 복원·첫 부모 종료·HTTP 결과를 추가한다.
+최종 단일 Root `weather-forced-r2-deploy-20261109-c42411c886`은 정상 G→R/FD9에서 공식 `MARK_AS_CANCELED_IMMEDIATELY` 정책을 사용했다. Weather4건의 요청은 모두 TerminateRunSuccess였고 실제 최종 상태는3CANCELED/1FAILURE다. native terminal과 실제 old worker0을 확인한 뒤 수집기만 교체했다. app 실행 이력은 이미failed/499,968건이었고 canonical 회수는0으로 그 값을 유지했다. 다른 실행을 임의로 실패 처리하거나 원자료를 삭제하지 않았다.
+
+최종 API f3f7a4a8/CID810b4885·포트12201과 수집기68c093c9/CIDb1626cea·포트12206은 제품8723afc/healthy다. 실제 source SHA·실효 키/Settings5초·DB0039·원27복원·Manager healthy를 확인했다. 첫 Invocation `8a75bb1f2b2949898fde4003ecc087a5`의 실제0/done·Main0·cgroup부재·모든 소유 자식 종료를 검산했다. 반영 뒤 health/version200과 `python -I -m kortravelcommon.grpc_health 12206 --check live` 실제0도 확인했다. Healthcheck 설정 자체는 이 작업에서 바꾸지 않았다. API·웹·Transport·외부MCP·공용daemon·다른 서비스·환경/키는 배포 경계에서 보존했다.
+
+정본: Git 밖 `weather-cold-read-20261109/plan.json`, 원 프로파일·후보 원문·실제 최초 Invocation 종료·소유 자식 정산을 연결한다. 최종 정본 `weather-cold-read-20261109/final-acceptance.json`의 SHA는 `5596c9bc70fa11f02977c32e663224c2df7371baea07a1c00ce075c5c84afefe`다. 사용자 강제 지시·공식 취소 결과·각 실패/성공 최초 Invocation을 별도로 결박했다.
+
+
+## 오래된 PR 정산
+
+#193·#197·#199는 PR208과 운영 API 제품의 원본 조상이고, #204의 리베이스 통합은 원본과 최신main의 자동3-way merge와 모든 실행 경로가 같다. 보고서·journal/resume/tasks-done·0037도 보존돼 있다. 각 PR에 근거를 남겨 PR208로 대체하여 닫았으며 원본4 branch/ref·커밋은 유지했다. 별도 main 머지는 하지 않았다.

@@ -1,3 +1,13 @@
+## 2026-11-09 — 강제 중지 승인 후 최신 API·수집기 배포 완료
+
+- [x] **W-COLD-REBASE-DEPLOY-20261109** — PR209 통합·최신 API/수집기 이미지·원 일정 복원·Manager·실제 부모 종료 수용 완료. 최초 조회 성능 미달은 W-EXPORT-SLOW-20261108로 유지한다.
+
+사용자의 “강제 중지하고 올려” 지시에 따라 Weather 실행·큐4건을 공식 강제 취소했고, 실제 terminal3CANCELED/1FAILURE·old worker0을 확인했다. app 실패 이력과 이미 저장된499,968건은 그대로이며 canonical 회수 변경도0이었다. 수집기를 제품8723afc/이미지68c093c9·CIDb1626cea로 교체했다. 같은 API f3f7a4a8/CID810b4885와 웹·다른 서비스·설정/키는 보존했다.
+
+API·수집기 healthy, source SHA·실효 설정/키·DB0039, 원 Weather27 일정 복원, Manager healthy, 최초 Invocation8a75bb1f2b2949898fde4003ecc087a5 실제0/done·Main0·cgroup부재·소유 자식 종료까지 확인했다. 반영 뒤 HTTP health/version200과 새 수집기의 CommonCLI-I live gRPC0도 확인했다. 자연 대기 부모의 사용자 취소1·첫 SAFE 정책 거부1은 각각 원문으로 보존했다. 반복 빌드·migration·백업/복원·원본 삭제는 없었다.
+
+제품은 최신2d5282f와 실행 AST가 같고, 해당 head의 Python/frontend CI42529909792는 모두 SUCCESS다. WSL/Docker PG18각127개 및 GC후속각58개 통과를 보존한다(겹침 합산 없음). serving current 최초52.435초·daily13.114초·상태 만료 뒤current23.840초이므로 최초1초·cold/p95 달성으로 쓰지 않는다. [최종 근거·한계](reports/2026-11-09-cold-export-read.md).
+
 ## 2026-11-08 — 완료 페이지 재사용 최종 API 실제 수용
 
 - [x] **W-AGGRESSIVE-READ-20261108** — 0039 삭제 epoch·완료 페이지 재사용·짧은 pin·PG16/18 호환 검증, 최신 API 이미지/Manager/원47상태/실부모 종료와 HTTP200/304·인증401을 수용했다. 전체 재구성 지연은 W-EXPORT-SLOW-20261108로 유지한다. [근거와 한계](reports/2026-11-08-aggressive-export-read.md).

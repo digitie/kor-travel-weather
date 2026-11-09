@@ -1,3 +1,11 @@
+## 2026-11-09 — 강제 중지 승인 후 최신 API·수집기 배포 완료
+
+사용자의 “강제 중지하고 올려” 지시에 따라 Weather 실행·큐4건을 공식 강제 취소했고, 실제 terminal3CANCELED/1FAILURE·old worker0을 확인했다. app 실패 이력과 이미 저장된499,968건은 그대로이며 canonical 회수 변경도0이었다. 수집기를 제품8723afc/이미지68c093c9·CIDb1626cea로 교체했다. 같은 API f3f7a4a8/CID810b4885와 웹·다른 서비스·설정/키는 보존했다.
+
+API·수집기 healthy, source SHA·실효 설정/키·DB0039, 원 Weather27 일정 복원, Manager healthy, 최초 Invocation8a75bb1f2b2949898fde4003ecc087a5 실제0/done·Main0·cgroup부재·소유 자식 종료까지 확인했다. 반영 뒤 HTTP health/version200과 새 수집기의 CommonCLI-I live gRPC0도 확인했다. 자연 대기 부모의 사용자 취소1·첫 SAFE 정책 거부1은 각각 원문으로 보존했다. 반복 빌드·migration·백업/복원·원본 삭제는 없었다.
+
+제품은 최신2d5282f와 실행 AST가 같고, 해당 head의 Python/frontend CI42529909792는 모두 SUCCESS다. WSL/Docker PG18각127개 및 GC후속각58개 통과를 보존한다(겹침 합산 없음). serving current 최초52.435초·daily13.114초·상태 만료 뒤current23.840초이므로 최초1초·cold/p95 달성으로 쓰지 않는다. [최종 근거·한계](reports/2026-11-09-cold-export-read.md).
+
 ### 2026-11-09 실제 API 반영·수집기 자연 종료 대기
 
 제품8723afc/API f3f7a4a8·CID810b4885·실제12201이 healthy이며 source SHA·Settings5초/키·DB0039를 확인했다. serving HTTP current52.435초200/조건부172.79ms304, daily13.114초200/99.70ms304, 상태 만료 뒤 current23.840초200이다. 별도 ASGI 표본29.262/6.222초와 구분하고 최초 지연·stale 한계를 보존한다. 후속 GC58개는 WSL/Docker 모두 통과했고 전체 Ruff13개는 AST 동일 서식 보정 뒤 통과했다. 두 최소 이미지와 원 build 부모 done은 확인했으나 배포 Root49e389/첫Invb3db는 기존 수집/큐 자연 종료 중이다. CS·원27복원·Manager·첫 배포 부모 종료는 아직 미완이다. [정본](reports/2026-11-09-cold-export-read.md).
