@@ -20,7 +20,7 @@
 | 구분 | 고정 기준 | 해석 |
 | --- | --- | --- |
 | 문서 PR의 base | Weather main `f337b6ff50e97cf7573b49404c70589b24ae3104` | PR209 포함. 문서만 추가한다. |
-| 실제 API·수집기 제품 | `8723afcf54997d3c449edc7d0558ab36f092cb54` | 통합 Draft [PR208](https://github.com/digitie/kor-travel-weather/pull/208)에 있다. main과 같다고 쓰지 않는다. |
+| 실제 API·수집기 제품 | `8723afcf54997d3c449edc7d0558ab36f092cb54` | 통합 Draft [PR208](https://github.com/digitie/kor-travel-weather/pull/208)에 있다. main과 같다고 쓰지 않는다. 2026-11-10 기준 PR208 head는 그 뒤 lint 정리·배포 정산 2커밋을 더한 `04edc424`다(8723은 그 조상). 본문 링크는 운영 제품8723에 고정한다. |
 | API / 수집기 이미지 | `f3f7a4a8…` / `68c093c9…` | API12201·CS12206, PG18.6·schema0039_page_liveness. |
 | 실제 웹 | `d59e7083c74908403d05f7aef2c1a4f3cef024cf` | 조사 제품8723과 frontend 트리의 Git diff가 없다. API 변경을 웹 재배포로 표현하지 않는다. |
 | 상태 점검 후 관측 | 2026-11-09 09:31:56 KST | API·CS healthy, Workspace LOADED, 예약·센서27개 중26RUNNING/1STOPPED. 중지1개는 native_incarnation_recovery다. |
@@ -36,15 +36,15 @@
 | U1. PC/모바일 첫 지도 진입 | 카탈로그를1000개씩 순차 수집하고 제공처 목록을 별도로 읽는다. 지도는 대표 지역/화면 안 지점으로 좁혀60개씩 동시2배치를 요청한다. [W:UI] [W:CLIENT] | 화면에 안 보이는 전체 위치 목록 준비가 선행한다. 최신 운영의 첫 마커·전체 파도 완료 시간은 별도 측정이 필요하다. |
 | U2. 지도 이동·확대·필터 전환 | 같은 필터에서는 진행 batch를 이어받고 다음 배정만 현재 범위로 좁힌다. 필터/모드 변경은 AbortController로 취소한다. 저배율은 이미 시도·시군구 대표 지점만 고른다. [W:UI] | 대표값·viewport 제한·배치·취소는 이미 구현되어 있다. 새 기능처럼 제안하지 않는다. 현재 viewport에서 벗어난 진행 요청의 서버 잔여 비용과 재방문 비용을 측정한다. |
 | U3. 위치 상세 열기·연속 선택 | 현재200행과 예보 최대1000행을 독립 요청한다. 예보는 현재 UTC 정시부터 읽으며 상한 `to`는 보내지 않는다. 위치 변경 때 이전 요청·표시를 격리한다. [W:UI] [W:CLIENT] | 현재/내일/시간별 화면에 필요한 구간보다 많은 예보·lineage 전송 가능성. 종류·제공처별 실제 건수/bytes가 미측정이다. |
-| U4. Map 최초 전체 동기화 | W1 위치, W2 현재, W3 style별 예보, W5 일별 요약의 모든 cursor 페이지를 받은 뒤 Valkey 세대를 교체한다. [M:LOAD] [M:STORE] | 첫 페이지가 늦으면 소비 전체가 시작되지 않는다. 100행 실측을 Map 기본2000행의 실측으로 바꾸지 않는다. |
+| U4. Map 최초 전체 동기화 | W1 위치, W2 현재, W3 style별 예보, W5 일별 요약의 모든 cursor 페이지를 받은 뒤 Valkey 세대를 교체한다. 503 페이지는 Map이 이미 같은 cursor로 재시도한다(5·10·20초, `Retry-After` 우선, 한 번 대기 최대60초, run deadline 안). [M:LOAD] [M:STORE] [M:RETRY] | 첫 페이지가 늦으면 소비 전체가 시작되지 않는다. 100행 실측을 Map 기본2000행의 실측으로 바꾸지 않는다. Map 쪽 실패를 Weather 지연으로만 읽지 않는다: 2026-11-07 Map current run2건이 482·491초로 run 상한480초를 넘겨 실패했고, short run의 두 시도는 Weather 페이지가 모두200/재시도 회복인데도 n150 디스크 I/O 대기 중 Map Valkey 세대 쓰기/포인터 교체 timeout으로 실패했다. 수용 측정은 Weather 페이지 시간·Map 재시도 대기·Valkey swap을 나눠 기록한다. |
 | U5. Map 반복 동기화 | 첫 페이지에 저장한 ETag를 보내고304면 기존 세대의 확인 시각을 갱신한다. W3는 `since` 증분이 아닌 전체 snapshot 소비다. [M:LOAD] | ETag/304가 이미 있다. 요청 기반 완료 캐시가 만료되면 데이터가 같아도 비싼 재구성을 거칠 수 있다. |
 | U6. 관리 홈·수집 이력·원문 클릭 | 홈은 위치 개수 두 요청·최근 run10개·health를 Promise.all로 기다린 뒤 한 번에 표시한다. run 원문은 키 목록 이후 키마다 `get_source_record`를 호출한다. [W:HOME] [W:ADMIN] | 느린 한 요청/실패 하나가 홈 전체 표시를 지연시킬 수 있다. 원문 목록에는 행수에 비례한 왕복과 전체 payload 전송이 있다. 현재 병목 기여도는 계측 대상이다. |
-| U7. 수집과 조회 동시 실행 | 과거4시간 publish 뒤 다른 KMA가2시간 이상 대기한 사례와 긴 export guard로 writer가5초 상한에 실패한 사례가 코드에 기록돼 있다. PR209는 파일 읽는 동안만 공유 guard를 유지한다. [W:INGEST] [W:FILES] | 과거 실패를 현재 재현으로 쓰지 않는다. 현재 CPU/I/O/DB pool/행 잠금/파일 guard/큐 대기를 따로 확인해야 한다. |
+| U7. 수집과 조회 동시 실행 | 과거4시간 publish 뒤 다른 KMA가2시간 이상 대기한 사례와 긴 export guard로 writer가5초 상한에 실패한 사례가 코드에 기록돼 있다. PR209는 파일 읽는 동안만 공유 guard를 유지한다. [W:INGEST] [W:FILES] | 과거 실패를 현재 재현으로 쓰지 않는다. 현재 CPU/I/O/DB pool/행 잠금/파일 guard/큐 대기를 따로 확인해야 한다. 파일 guard는 PR205의 holder별 보유 시간 계측·느린 배타 보유 로그를 그대로 기준선으로 쓴다(새 계측을 중복하지 않는다). PR209 이전 2026-11-07 기준선: publish153·promotion_cas17회 보유 중138회가5초 상한, `artifact_write_failed`→`PLAN_SEAL_FAILED` 6시간당 약450~700건. PR209 배포 뒤 같은 지표로 다시 잰다. |
 | U8. 중지·실패·이전 성공 데이터 | 이번 배포 때 공식 강제 종료4건의 최종 상태는3CANCELED/1FAILURE였고 이미 저장된499,968건을 보존했다. [W:DEPLOY] | 부분 commit을 terminal 성공으로 바꾸거나, 수집 중인 데이터를 성공 export로 승격해 빠르게 보이게 해서는 안 된다. |
 
 ### 3.1 실제 serving API와 별도 프로파일을 구분한다
 
-제품8723, 실제 serving API의 단일 요청 표본이다. current는100개, daily는10개 항목이며 원천은 `stale`였다. current 항목 SHA는 `3085291e5fe2b8a6258d7ea6c11785e0979e26f153c8d7e50d6cc4350324724f`, 원천 시각은2026-11-08 18:03:26.448664 KST로 동일했다. 응답 생성 시각을 원천 시각으로 덮어쓰지 않았다. [W:DEPLOY]
+제품8723, 실제 serving API의 단일 요청 표본이다. current는100개, daily는10개 항목이며 원천은 `stale`였다. `stale`은 PR207 이후 최근24시간(승인 만료 하한과 같은 신선도 창) 안의 승인만으로 판정한 값이며 응답 지연과 별개다. current 항목 SHA는 `3085291e5fe2b8a6258d7ea6c11785e0979e26f153c8d7e50d6cc4350324724f`, 원천 시각은2026-11-08 18:03:26.448664 KST로 동일했다. 응답 생성 시각을 원천 시각으로 덮어쓰지 않았다. [W:DEPLOY]
 
 | 요청 | 상태 | 전체 경과 |
 | --- | --- | --- |
@@ -99,9 +99,9 @@
 - 새 페이지는 검증·hash·행수·완결성을 확인하고 기존 head/manifest와 CAS로 공개한다. 늦게 끝난 builder가 새 세대를 덮지 못하게 한다. 실패하면 이전 검증된 payload를 보존하고 실패/신선도 metadata로 나타낸다.
 - 상태는 데이터가 안 바뀌어도 마지막 실패·다음 예정·정책 변경을 반영해야 한다. 승인 최대60초는 **최신 상태 반영 지연**의 상한이며 데이터 나이를 정상으로 바꾸는 허용치가 아니다. 만료된 상태로200/304를 내지 않는다. stale 원천은 stale로 표시하고 초도 실패/유실은 기존503 계약을 유지한다.
 - 요청은 인증 후 작은 상태 proof와 페이지 존재/무결성을 검산한다. 같은 상태·표현의 ETag일 때만304. `generated_at`은 응답 시각, `source_collected_at`·`as_of`·snapshot 시각은 원래 의미를 유지한다.
-- DB metadata 구성에 파일 guard를 장시간 잡지 않는다. 새 pin은 현재와 같이 최종 파일 존재 확인·ref 삽입·commit을 같은 짧은 guard로 묶는다. 파일 검산의 생략·mtime만 신뢰·GC 참조 생략으로 속도를 만들지 않는다.
+- DB metadata 구성에 파일 guard를 장시간 잡지 않는다. 새 pin은 운영 제품8723처럼 최종 파일 존재 확인·ref 삽입·commit을 같은 짧은 guard로 묶는다(`_atomic_files_pinned`, PR208). main의 PR209만으로는 freeze commit **뒤** 공유 guard 안에서 ref 파일 존재를 확인(`all_present`)하고 없으면 한 번 재발급, 그래도 없으면 일시503이다. 두 방식의 차이를 구현 PR에서 혼동하지 않는다. 파일 검산의 생략·mtime만 신뢰·GC 참조 생략으로 속도를 만들지 않는다.
 - 기존 캐시로 직접 재사용 가능한지 먼저 비교한다. 새 표가 필요하면 `weather_export_materializations`(제안명)에는 작은 manifest 위치·checksum·선택 vector·완료 상태만 저장한다. 큰 wire body는 NVMe 불변 파일에 둔다. 파일/DB 순서·orphan·누락·재시작 복구는 기존 artifact 계약을 따른다.
-- 무한 prewarm 대신 실제 소비 프로필만 준비한다. builder는 namespace별 중복을 합치고 단일 작업의 CPU/RSS/입출력·전체 deadline을 제한한다. 미준비 시 동기 전체 재구성을 폭증시키지 않고 기존 bounded fallback 또는 명시적 일시503을 사용한다.
+- 무한 prewarm 대신 실제 소비 프로필만 준비한다. builder는 namespace별 중복을 합치고 단일 작업의 CPU/RSS/입출력·전체 deadline을 제한한다. 미준비 시 동기 전체 재구성을 폭증시키지 않고 기존 bounded fallback 또는 명시적 일시503을 사용한다. 일시503은 Map의 페이지 재시도 예산과 run 상한을 소비하므로 `Retry-After`를 실제 준비 예상 시간에 맞추고, 반복503이 Map run 실패로 바뀌는 비율을 수용 기준에 넣는다.
 
 **완료 기준:** 같은 실제 Map 프로필의 첫 페이지뿐 아니라 모든 cursor 페이지·완료까지의 wall/bytes/CPU와 stale/실패·세대 교체 중 결과를 비교한다. 우선 목표 첫 페이지 p95≤1초·304 p95≤300ms, 문장 SQL≤기존5초. 아직 보장된 수치가 아니다.
 
@@ -159,7 +159,7 @@ public marker/latest의 현재 투영과 service export의 **terminal 성공 전
 | DB pool | 저장소 생성당 size10·overflow10·timeout15초 | 프로세스/worker 수만큼 늘 수 있다. 읽기/쓰기 pool 분리 후보는 전체 connection 예산 안에서만 검증한다. pool 확대를 기본 해결책으로 삼지 않는다. |
 | 일반 SELECT의 MVCC | 보통 INSERT/UPDATE와 행 잠금으로 서로 막는 경로가 아님 | 느린 SELECT를 곧바로 writer block으로 부르지 않는다. DDL·행/CAS·advisory·I/O·pool 대기를 구분한다. [PG:LOCK] |
 | run 행·location advisory/KEY SHARE | terminal 이후 저장 금지·catalog 변경/retention과 정합성 | 고정 순서·짧은 chunk. 단일 logical writer 불변조건을 먼저 입증한 뒤 세분화한다. |
-| 파일 guard/GC | PR209 파일 한 개의 공유 읽기와 짧은 pin commit, writer turnstile | 두 OS reader slot·동일 FD 검산·짧은 writer 재시도 유지. lock 파일 unlink/우회·강제 해제 금지. [W:FILES] |
+| 파일 guard/GC | PR209 파일 한 개의 공유 읽기·commit 뒤 존재 확인/재발급·writer 짧은 재시도(3회, 0.2~1초), PR208 API freeze의 원자적 pin commit, writer turnstile | 두 OS reader slot·동일 FD 검산·짧은 writer 재시도 유지. lock 파일 unlink/우회·강제 해제 금지. [W:FILES] |
 | cache lock·inflight Event | 같은 프로세스/같은 키의 중복 구성 합치기 | 다른 프로세스에는 별도 캐시다. metadata lock 밖에서 비싼 load/검산. 예외·취소·owner 종료 뒤 대기자 해제와 메모리 상한 검증. |
 | 성공 공개 clock | 기존 한 행의 작은 metadata 직렬화 | 새 global per-fact counter를 더하지 않는다. scope별 outbox와 기존 전역 순서의 정합성은 별도 검증하며 clock 삭제는 하지 않는다. [W:HEAD] |
 
@@ -260,6 +260,7 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 [W:DEPLOY]: https://github.com/digitie/kor-travel-weather/blob/04edc424af5f681051a1b451e4ca93d9e49fa3aa/docs/reports/2026-11-09-cold-export-read.md
 [M:LOAD]: https://github.com/digitie/kor-travel-map/blob/9ed72f040f18ae37e463a798f63ceaf119a07e5f/packages/kor-travel-map-dagster/src/kortravelmap/dagster/weather_state.py#L464
 [M:STORE]: https://github.com/digitie/kor-travel-map/blob/9ed72f040f18ae37e463a798f63ceaf119a07e5f/src/kortravelmap/infra/valkey_state.py#L829
+[M:RETRY]: https://github.com/digitie/kor-travel-map/blob/9ed72f040f18ae37e463a798f63ceaf119a07e5f/packages/kor-travel-map-dagster/src/kortravelmap/dagster/weather_state.py#L199
 [PG:LOCK]: https://www.postgresql.org/docs/18/explicit-locking.html
 [PG:MV]: https://www.postgresql.org/docs/18/sql-refreshmaterializedview.html
 [PG:EXPLAIN]: https://www.postgresql.org/docs/18/using-explain.html
