@@ -61,7 +61,7 @@
 - 관측 TX를 제외한 blocked session0, active I/O 대기1, idle8이었다. 이는 해당 순간의 관측이며 지속적인 잠금 경합이 없다는 증거가 아니다.
 - `pg_stat_statements`가 없어 쿼리별 운영 p95·누적 상위 쿼리를 이 자료로 판정할 수 없다.
 - `weather_current_values`의 통계 추정치는 live 약876만·dead 약137만이다. `weather_sync_runs`의 누적 update 약176만, DB 누적 temp_bytes 약40.0GB를 보았다. 모두 통계값이며 정확한 row count·현재 bloat 크기·이번 요청 spill·현재 쓰기 속도가 아니다.
-- table/partition별 통계가 서로 다른 범위를 가질 수 있다. 부모의 n_live_tup를 전체 위치/원본 개수로 쓰지 않는다. 누적 통계만으로 인덱스 삭제·VACUUM FULL·prune를 실행하지 않는다.
+- table/partition별 통계가 서로 다른 범위를 가질 수 있다. 부모의 n_live_tup를 전체 위치/원본 개수로 쓰지 않는다. [PG:STATS] 누적 통계만으로 인덱스 삭제·VACUUM FULL·prune를 실행하지 않는다.
 
 ## 4. 비용 구조와 이미 반영된 개선
 
@@ -69,7 +69,7 @@
 
 현재 요청은 인증 → 서비스 limiter → 상태/선택 확인 → roster·scope/head·ref·manifest 및 snapshot pin → 페이지 구성 → DTO 검증 → ETag 비교 → 직렬화/gzip으로 이어진다. ETag가 같아도 `read()`와 DTO 검증 뒤에 비교한다. 같은 키의 완료 페이지는 재사용하지만 만료·프로세스 재시작·서로 다른 query에서는 최초 비용이 발생한다. [W:HTTP] [W:SNAPSHOT] [W:CACHE]
 
-이미 있는 것: 선택 캐시의 최대60초·16MiB 상한, 페이지 캐시의 총64MiB·단건8MiB 상한, 같은 프로세스/같은 키의 Event 기반 단일 생성, metadata 선택 투영0038, page liveness0039, 고정 batch 조회, 짧은 원자적 pin commit. 이것을 미구현으로 쓰거나 같은 것을 새 레이어로 중복 구현하지 않는다.
+이미 있는 것: 선택 캐시의 최대60초·16MiB 상한, 페이지 캐시의 총64MiB·단건8MiB 상한(직렬화 기준이며 RSS 보장이 아님), 같은 프로세스/같은 키의 Event 기반 단일 생성, metadata 선택 투영0038, page liveness0039, 고정 batch 조회, 짧은 원자적 pin commit. 이것을 미구현으로 쓰거나 같은 것을 새 레이어로 중복 구현하지 않는다.
 
 남은 후보 비용: 다수 scope 해석·전체 선택 manifest·불변 파일 읽기/해석·페이지 DTO 재검증·gzip, 캐시 만료 때의 재구성이다. SQL 한 문장5초가 전체 요청5초라는 뜻은 아니다. 페이지 cache의 대기 상한60초도 별도 예산이다. 우선 각 단계의 배타 시간을 측정한다.
 
@@ -89,10 +89,13 @@
 
 **U4/U5를 해결한다.** 선택된 성공 head vector·catalog revision·정책 revision에 대응하는 불변 manifest와 표준 페이지를 publisher 후속의 별도 유한 작업으로 만든다. 기존 receipt·head·daily summary를 입력으로 하며 provider 재호출·전체 raw 이력 재스캔은 하지 않는다. 원본 ingest의 성공과 페이지 준비 성공은 분리한다.
 
-- 처음에는 실제 Map 조건을 확인한 W2/W5 표준 프로필만 지원한다. Map 코드 기본값은 page_size2000·daily14일이지만 실제 운영 값이라고 단정하지 않는다. W1·W3 및 임의 limit/필터는 기존 경로로 호환한다.
+- 처음에는 실제 Map 조건을 확인한 W2 표준 프로필을 우선 지원하고, W5는 아래 집계 checkpoint 검산을 통과한 뒤 확대한다. Map 코드 기본값은 page_size2000·daily14일이지만 실제 운영 값이라고 단정하지 않는다. W1·W3 및 임의 limit/필터는 기존 경로로 호환한다.
 - 키: 리소스·style·정렬된 제공처/종류/범위·선택 vector·catalog revision·정책 revision·페이지 limit·cursor 위치. `Accept-Encoding`은 wire 표현 키에 포함한다. 데이터 페이지와 상태 envelope를 분리한다.
 - **본문 재사용과 cursor 수명은 별개다.** 불변 data payload만 사전 구성하고 snapshot/cursor envelope는 요청의 짧은 단계에서 결합한다. 현재 최소15분(다음 분 경계+15분)의 handle 유효기간을 보장한다. 유효한 handle은 기존 조건부 갱신을 재사용하고 이미 만료된 handle은 연장하지 않는다. 새 handle을 발급해 그 ID와 ref/pin에 묶인 cursor를 구조적으로 재구성하며, 만료 handle이 박힌 예전 wire body를 그대로 내지 않는다. 모든 유효 cursor가 참조하는 세대·파일은 만료/기존 보존 창까지 GC에서 보호한다. Map의410/순회 중422 재시작이 새 유효 handle로 수렴하는지 검증한다. [W:TTL]
-- **W5는 wall clock만 바뀌어도 결과가 달라진다.** `days`와 KST first_date/last_date·slot 정의 revision을 key에 넣고 자정의 날짜 창 변경을 재구성한다. 실제 slot은 morning05~11/noon11~17/evening17~23시이며 partial은 각 종료11/17/23시에 바뀐다. head/catalog가 같아도 이 경계에서 재생성/무효화한다. 기존 `date/hour//6` 재사용 guard도 별도로 보존·검증하며 이를 실제 partial 경계로 혼동하지 않는다. 준비/재사용의 유효시간은 상태60초·KST 날짜/slot 경계·관련 예보/특보 시각 가운데 먼저 도달하는 조건으로 제한한다. [W:DAILY-CLOCK]
+- **W5는 wall clock만 바뀌어도 결과가 달라진다.** `days`와 KST first_date/last_date·slot 정의 revision을 key에 넣고 자정의 날짜 창 변경을 재구성한다. 실제 slot은 morning05~11/noon11~17/evening17~23시이며 partial은 각 종료11/17/23시에 바뀐다. head/catalog가 같아도 이 경계에서 재생성/무효화한다. 기존 `date/hour//6` 재사용 guard도 별도로 보존·검증하며 이를 실제 partial 경계로 혼동하지 않는다. 상태 proof만 최대60초 후 authoritative 재검증한다. 같은 데이터 revision의 불변 본문은 그 검증이 성공하면 유지하며, 상태 cache 만료만으로 폐기·전체 재구성하지 않는다. KST 날짜/partial·관련 예보/특보처럼 실제 결과가 바뀌는 경계만 해당 payload를 무효화한다. cursor/handle 수명과 파일 pin은 앞 항목의 별도 계약을 따른다. [W:DAILY-CLOCK]
+- **W5 입력의 불변성은 따로 만들어야 한다.** 현재 summary는 같은 `(location_id,date,slot)`에 덮어쓰고 별도 progress를 전진시키며, 기존 W5는 페이지별 RR에서 최신 집계를 읽는다. head가G7인 동안 summary progress가G5→G7로 따라잡으면 head CAS만으로 페이지 혼합을 막을 수 없다. 사전 구성 key/proof에는 `summary progress watermark + coverage digest + 선택 날짜창 + 관련 삭제/liveness revision`을 포함한다. [W:DAILY] [W:DAILY-READ]
+- W5 builder는 한 **bounded RR**에서 필요한 scalar와 집계 watermark를 복사해 불변 입력을 만들거나, 묶음마다 같은 RR로 progress/coverage/삭제 proof를 읽고 모든 묶음의 tuple이 같은지·마지막 CAS에서도 그대로인지 검산한다. 어느 writer 경로든 집계 변경이 proof에 반영된다는 전제가 입증되지 않으면 후자는 채택하지 않는다. 시간·rows·bytes 상한을 넘거나 watermark가 바뀌면 준비물을 폐기하고 유한 재시도/기존 경로로 돌아간다. 큰 원문 JSON 전체를 메모리나 장시간 TX에 붙잡지 않는다.
+- 기존 W5의 페이지별 최신 집계 계약·`as_of`를 전체 불변 집계 시점으로 소급 해석하지 않는다. 새 불변 프로필은 가산 opt-in/계약 revision으로 구분하고 `summary_watermark/summary_as_of`와 전체 count/hash를 명시한다. `summary_as_of`는 읽기 시각으로 꾸민 원천 시각이 아니라 고정한 집계 checkpoint의 시각이며 `source_collected_at`·기존 `as_of`·`generated_at`과 분리한다. Map 소비자의 해당 프로필 검증·전체 순회 시험까지 함께 바꾸며, default 경로 의미는 유지한다.
 - 새 페이지는 검증·hash·행수·완결성을 확인하고 기존 head/manifest와 CAS로 공개한다. 늦게 끝난 builder가 새 세대를 덮지 못하게 한다. 실패하면 이전 검증된 payload를 보존하고 실패/신선도 metadata로 나타낸다.
 - 상태는 데이터가 안 바뀌어도 마지막 실패·다음 예정·정책 변경을 반영해야 한다. 승인 최대60초는 **최신 상태 반영 지연**의 상한이며 데이터 나이를 정상으로 바꾸는 허용치가 아니다. 만료된 상태로200/304를 내지 않는다. stale 원천은 stale로 표시하고 초도 실패/유실은 기존503 계약을 유지한다.
 - 요청은 인증 후 작은 상태 proof와 페이지 존재/무결성을 검산한다. 같은 상태·표현의 ETag일 때만304. `generated_at`은 응답 시각, `source_collected_at`·`as_of`·snapshot 시각은 원래 의미를 유지한다.
@@ -185,8 +188,8 @@ public marker/latest의 현재 투영과 service export의 **terminal 성공 전
 | U1 첫 화면 | 실제 PC1440/모바일375·동일 viewport/필터·대표 지점 | 위치 목록/첫 유효 마커/현재 viewport 완료/타일을 각각 측정. 요청수·행수·bytes·JS long task | 유효 대표 날씨 표시 p95≤2초 제안. 타일/DB/source 상태가 같은 비교가 필요. |
 | U2 이동·확대 | 같은 위치 이동 경로·저배율/시군구/고배율·종류/제공처 전환 | 이전 응답 역전0·불필요 요청/DB 시작수·취소 후 잔여 시간 | 화면 밖 추가 파도0, 같은 revision 재방문 중복 구성0. 특보/대표값/접근성 보존. |
 | U3 상세 | 실제 확인했던 감일·강릉·가평과 실제 마커 선택 | 현재·내일·시간별을 별도 측정; DTO·원천시각·발표판/결측·필터 비교 | 현재 먼저 표시, 나머지 실패 격리. 첫 핵심 정보 p95≤2초 제안, 더 보기 완결성 유지. |
-| U4 최초 동기화 | 실제 Map 실행 설정·모든 endpoint/style·실제 page_size/days | 첫 페이지와 전체 페이지 순회, 최종 row hash/count·순서·snapshot vector·Valkey swap까지 | 표준 첫 페이지 p95≤1초 제안, 전체 wall은 동일 데이터량/페이지수로 개선. |
-| U5 반복/만료/재시작 | 같은 ETag·실패/상태 만료·15분 handle 갱신/만료410·API 재시작·수집 없는 KST 자정/11·17·23시 | 동일 결과는304; 상태가 바뀌면 metadata 반영. 만료된 proof로200/304 없음 |304 p95≤300ms 제안. 상태 확인 최대60초·기존 파일/DB 삭제 검산 유지. |
+| U4 최초 동기화 | 실제 Map 실행 설정·모든 endpoint/style·실제 page_size/days | 첫 페이지와 전체 순회, row hash/count·순서·snapshot vector·Valkey swap까지. W5는 head고정/집계progress변경을 주입해 같은 checkpoint인지 검산 | 표준 첫 페이지 p95≤1초 제안, 전체 wall은 동일 데이터량/페이지수로 개선. |
+| U5 반복/만료/재시작 | 같은 ETag·무수집61초·실패/상태 만료·15분 handle 갱신/만료410·API 재시작·수집 없는 KST 자정/11·17·23시 | 동일 결과는304; 상태가 바뀌면 metadata 반영. 만료된 proof로200/304 없음 |304 p95≤300ms 제안. 무수집61초에 상태만 재검증·전체 본문 재구성0. 상태 확인 최대60초·기존 파일/DB 삭제 검산 유지. |
 | U6 관리 화면 | 홈4요청·최근10run·대량 원문을 가진 기존 run | 카드별 first paint·쿼리수·원문 선택 페이지/bytes·권한/마스킹 | 빠른 카드가 느린 카드에 막히지 않음. 원문 목록 SQL이 행수 비례 왕복하지 않음. |
 | U7 동시 처리 | marker/상세/export·수집·publisher·GC의 같은 혼합 비율 | queue/worker/pool/SQL/row/advisory/file guard의 대기·보유 시간을 구분; CPU/RSS/I/O/WAL | writer starvation·deadlock·누락0. 기존 timeout/예산을 늘리지 않은 처리량 개선. |
 | U8 실패·복구 | 부분 commit·cancel/epoch loss·파일 유실·늦은 builder·source empty | 마지막 성공/원본 보존·멱등 replay·generation/cursor 경계 | 실패를 성공으로 위장하지 않음, partial을 완결 집합으로 공개하지 않음. |
@@ -223,12 +226,14 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 | 리뷰 | 초점 | 상태 |
 | --- | --- | --- |
 | 1차 | 실사용→원인→변경→검증의 연결, 현행/제안·main/운영·실측/추론 구분 | 완료·지적2건 보완: handle/pin TTL, W5 날짜·partial 경계 |
-| 2차 | 원본/신선도/부분 실패·잠금/GC/재시작·Map 계약의 모순 | 대기 |
+| 2차 | 원본/신선도/부분 실패·잠금/GC/재시작·Map 계약의 모순 | 완료·지적2건 보완: W5 checkpoint 일관성, 상태/본문 수명 분리 |
 | 3차 | 반영 후 전체 재검토, 링크·수치·소스·우선순위·남은 미확인 | 대기 |
 
 리뷰에서 발견한 내용·보완 위치·잔여 제약은 이 표 아래에 기록한다. 검토 전에 완료/PASS를 만들지 않는다.
 
 1차 지적: P0-A에서 사전 구성 본문과 snapshot 최소15분/pin 수명을 분리하지 않으면 만료 첫 페이지 재사용으로 Map이410 재시작을 반복할 수 있었다. 같은 절에 유효 handle만 갱신·만료 시 재발급·envelope 재구성·GC 보호를 명시했다. W5 key에는 KST 날짜창·실제 slot 종료11/17/23시의 partial 전환과 기존6시간 reuse guard를 별도로 추가했다. 이 변경은 설계 누락 보완이며 제품 수정/새 성능 실적이 아니다.
+
+2차 지적: W5 summary가 mutable인 점을 반영해 head만 같아도 생기는 집계 checkpoint 혼합을 차단하도록 key/proof·bounded RR/동등 검산·CAS·가산 불변 프로필·수용 시험을 추가했다. 상태60초와 본문 수명을 다시 결합하던 문장을 고쳐 상태만 재확인하고 데이터가 같으면 본문은 유지하도록 했으며, 무수집61초의 전체 재구성0을 수용 조건으로 넣었다. P0는 없었으며 두 지적은 미래 설계의 누락으로, 현 제품 결함으로 단정하지 않는다.
 
 ## 10. 고정 소스와 기술 근거
 
@@ -245,6 +250,7 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 [W:INGEST]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/repository.py#L1995
 [W:FILES]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_artifacts.py#L278
 [W:TTL]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_snapshots.py#L57
+[W:DAILY-READ]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_daily_reader.py#L348
 [W:DAILY-CLOCK]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_daily_reader.py#L136
 [W:DAILY]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_daily_store.py#L28
 [W:HEAD]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_heads.py#L1036
@@ -255,3 +261,5 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 [PG:LOCK]: https://www.postgresql.org/docs/18/explicit-locking.html
 [PG:MV]: https://www.postgresql.org/docs/18/sql-refreshmaterializedview.html
 [PG:EXPLAIN]: https://www.postgresql.org/docs/18/using-explain.html
+
+[PG:STATS]: https://www.postgresql.org/docs/18/monitoring-stats.html
