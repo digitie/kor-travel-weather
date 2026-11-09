@@ -91,7 +91,7 @@
 
 - 처음에는 실제 Map 조건을 확인한 W2 표준 프로필을 우선 지원하고, W5는 아래 집계 checkpoint 검산을 통과한 뒤 확대한다. Map 코드 기본값은 page_size2000·daily14일이지만 실제 운영 값이라고 단정하지 않는다. W1·W3 및 임의 limit/필터는 기존 경로로 호환한다.
 - 키: 리소스·style·정렬된 제공처/종류/범위·선택 vector·catalog revision·정책 revision·페이지 limit·cursor 위치. `Accept-Encoding`은 wire 표현 키에 포함한다. 데이터 페이지와 상태 envelope를 분리한다.
-- **본문 재사용과 cursor 수명은 별개다.** 불변 data payload만 사전 구성하고 snapshot/cursor envelope는 요청의 짧은 단계에서 결합한다. 현재 최소15분(다음 분 경계+15분)의 handle 유효기간을 보장한다. 유효한 handle은 기존 조건부 갱신을 재사용하고 이미 만료된 handle은 연장하지 않는다. 새 handle을 발급해 그 ID와 ref/pin에 묶인 cursor를 구조적으로 재구성하며, 만료 handle이 박힌 예전 wire body를 그대로 내지 않는다. 모든 유효 cursor가 참조하는 세대·파일은 만료/기존 보존 창까지 GC에서 보호한다. Map의410/순회 중422 재시작이 새 유효 handle로 수렴하는지 검증한다. [W:TTL]
+- **본문 재사용과 cursor 수명은 별개다.** 불변 data payload만 사전 구성하고 snapshot/cursor envelope는 요청의 짧은 단계에서 결합한다. 현행 **새 handle 발급**은 다음 분 경계+15분으로 최소15분을 준다. 기존 handle 갱신은 SQL 오류 시 기존 유효 row로 돌아가는 best-effort이므로 모든 재사용 응답의 잔여 TTL15분까지 보장하는 것은 아니다. 새 사전 구성 프로필은 잔여15분 확보를 별도 수용 정책으로 제안한다. 유효 handle의 조건부 갱신을 먼저 시도하되 갱신 실패/잔여 수명 부족이면 새 handle을 발급하고, 그것도 불가능하면 명시적 일시503으로 실패한다. legacy의 기존 잔여 TTL 사용 정책은 그대로 두며 새 정책 시험과 혼동하지 않는다. 이미 만료된 handle은 연장하지 않는다. 새 handle을 발급해 그 ID와 ref/pin에 묶인 cursor를 구조적으로 재구성하며, 만료 handle이 박힌 예전 wire body를 그대로 내지 않는다. 모든 유효 cursor가 참조하는 세대·파일은 만료/기존 보존 창까지 GC에서 보호한다. Map의410/순회 중422 재시작이 새 유효 handle로 수렴하는지 검증한다. [W:TTL]
 - **W5는 wall clock만 바뀌어도 결과가 달라진다.** `days`와 KST first_date/last_date·slot 정의 revision을 key에 넣고 자정의 날짜 창 변경을 재구성한다. 실제 slot은 morning05~11/noon11~17/evening17~23시이며 partial은 각 종료11/17/23시에 바뀐다. head/catalog가 같아도 이 경계에서 재생성/무효화한다. 기존 `date/hour//6` 재사용 guard도 별도로 보존·검증하며 이를 실제 partial 경계로 혼동하지 않는다. 상태 proof만 최대60초 후 authoritative 재검증한다. 같은 데이터 revision의 불변 본문은 그 검증이 성공하면 유지하며, 상태 cache 만료만으로 폐기·전체 재구성하지 않는다. KST 날짜/partial·관련 예보/특보처럼 실제 결과가 바뀌는 경계만 해당 payload를 무효화한다. cursor/handle 수명과 파일 pin은 앞 항목의 별도 계약을 따른다. [W:DAILY-CLOCK]
 - **W5 입력의 불변성은 따로 만들어야 한다.** 현재 summary는 같은 `(location_id,date,slot)`에 덮어쓰고 별도 progress를 전진시키며, 기존 W5는 페이지별 RR에서 최신 집계를 읽는다. head가G7인 동안 summary progress가G5→G7로 따라잡으면 head CAS만으로 페이지 혼합을 막을 수 없다. 사전 구성 key/proof에는 `summary progress watermark + coverage digest + 선택 날짜창 + 관련 삭제/liveness revision`을 포함한다. [W:DAILY] [W:DAILY-READ]
 - W5 builder는 한 **bounded RR**에서 필요한 scalar와 집계 watermark를 복사해 불변 입력을 만들거나, 묶음마다 같은 RR로 progress/coverage/삭제 proof를 읽고 모든 묶음의 tuple이 같은지·마지막 CAS에서도 그대로인지 검산한다. 어느 writer 경로든 집계 변경이 proof에 반영된다는 전제가 입증되지 않으면 후자는 채택하지 않는다. 시간·rows·bytes 상한을 넘거나 watermark가 바뀌면 준비물을 폐기하고 유한 재시도/기존 경로로 돌아간다. 큰 원문 JSON 전체를 메모리나 장시간 TX에 붙잡지 않는다.
@@ -208,7 +208,7 @@ public marker/latest의 현재 투영과 service export의 **terminal 성공 전
 | 3 | 확인된 수집 SQL/TX·heartbeat/공개 큐 비용 | 같은 provider quota·범위·예산에서 terminal 성공→공개까지의 처리량 개선. |
 | 4 | 위 결과에도 남는 index/자원 격리/공유 캐시 | EXPLAIN·총 메모리/연결/WAL/운영 복구 비용이 개선을 입증할 때만 선택. |
 
-구현은 작은 feature PR로 나누고 실제 새 이미지 검증까지 범위를 명시한다. 문서가 머지돼도 제안된 새 endpoint·테이블·cache policy가 이미 구현·배포됐다는 뜻은 아니다. 이 문서 PR에서는 source 수정·migration·새 수집·운영 취소·키 회전·백업/복원·prune를 하지 않는다. 후속 배포는 최신 실제 CID·Common 격리 live health·원 예약 상태를 읽어 보존한다. 과거 global G/R 상태나 old CID를 그대로 재사용하지 않는다.
+구현은 작은 feature PR로 나누고 실제 새 이미지 검증까지 범위를 명시한다. 후속 제품 PR은 먼저 운영8723/PR208의 기능 통합 여부와 runtime tree를 확인·보존한다. 문서 base가 main이라는 이유로 기존 최적화를 누락하거나 재구현하지 않는다. 문서가 머지돼도 제안된 새 endpoint·테이블·cache policy가 이미 구현·배포됐다는 뜻은 아니다. 이 문서 PR에서는 source 수정·migration·새 수집·운영 취소·키 회전·백업/복원·prune를 하지 않는다. 후속 배포는 최신 실제 CID·Common 격리 live health·원 예약 상태를 읽어 보존한다. 과거 global G/R 상태나 old CID를 그대로 재사용하지 않는다.
 
 ## 9. 증거 보존과 세 차례 리뷰
 
@@ -225,15 +225,17 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 
 | 리뷰 | 초점 | 상태 |
 | --- | --- | --- |
-| 1차 | 실사용→원인→변경→검증의 연결, 현행/제안·main/운영·실측/추론 구분 | 완료·지적2건 보완: handle/pin TTL, W5 날짜·partial 경계 |
-| 2차 | 원본/신선도/부분 실패·잠금/GC/재시작·Map 계약의 모순 | 완료·지적2건 보완: W5 checkpoint 일관성, 상태/본문 수명 분리 |
-| 3차 | 반영 후 전체 재검토, 링크·수치·소스·우선순위·남은 미확인 | 대기 |
+| 1차 · James · f831523 | 실사용→원인→변경→검증의 연결, 현행/제안·main/운영·실측/추론 구분 | 완료·지적2건 보완: handle/pin TTL, W5 날짜·partial 경계 |
+| 2차 · Popper · 2c4e988 | 원본/신선도/부분 실패·잠금/GC/재시작·Map 계약의 모순 | 완료·지적2건 보완: W5 checkpoint 일관성, 상태/본문 수명 분리 |
+| 3차 · James · ae1c3ea | 반영 후 전체 재검토, 링크·수치·소스·우선순위·남은 미확인 | 완료·P2 문구1건 보완: 새 handle TTL과 재사용 best-effort 구분 |
 
-리뷰에서 발견한 내용·보완 위치·잔여 제약은 이 표 아래에 기록한다. 검토 전에 완료/PASS를 만들지 않는다.
+두 검토자가 순차 세 차례 검토했다. 1차2건·2차2건·3차1건, 총5건을 같은 문서에서 보완했다. 이는 제안 설계·표현의 누락 보완이며 제품 성능 수용이나 운영 변경을 뜻하지 않는다.
 
 1차 지적: P0-A에서 사전 구성 본문과 snapshot 최소15분/pin 수명을 분리하지 않으면 만료 첫 페이지 재사용으로 Map이410 재시작을 반복할 수 있었다. 같은 절에 유효 handle만 갱신·만료 시 재발급·envelope 재구성·GC 보호를 명시했다. W5 key에는 KST 날짜창·실제 slot 종료11/17/23시의 partial 전환과 기존6시간 reuse guard를 별도로 추가했다. 이 변경은 설계 누락 보완이며 제품 수정/새 성능 실적이 아니다.
 
 2차 지적: W5 summary가 mutable인 점을 반영해 head만 같아도 생기는 집계 checkpoint 혼합을 차단하도록 key/proof·bounded RR/동등 검산·CAS·가산 불변 프로필·수용 시험을 추가했다. 상태60초와 본문 수명을 다시 결합하던 문장을 고쳐 상태만 재확인하고 데이터가 같으면 본문은 유지하도록 했으며, 무수집61초의 전체 재구성0을 수용 조건으로 넣었다. P0는 없었으며 두 지적은 미래 설계의 누락으로, 현 제품 결함으로 단정하지 않는다.
+
+3차 지적: 현행 `_renew_reused`의 best-effort를 모든 응답의 잔여15분 보장으로 과장한 문구를 수정했다. 새 handle 발급식과 기존 재사용을 구분하고 새 사전 구성 프로필의 갱신 실패→재발급→일시503 정책을 별도로 제안했다. 갱신 SQL 실패·짧은 잔여 TTL·만료 뒤 발급/실패·Map 전체 순회 시험을 수용 조건으로 보완한다. 새 P0/P1 지적은 없었으며 원장 SHA6개와 고정 소스19개의 파일/앵커가 일치했다. 실제 Map 운영 설정·새 UI p95·후속 PR208 통합은 여전히 다음 단계의 확인 사항이다.
 
 ## 10. 고정 소스와 기술 근거
 
