@@ -91,6 +91,8 @@
 
 - 처음에는 실제 Map 조건을 확인한 W2/W5 표준 프로필만 지원한다. Map 코드 기본값은 page_size2000·daily14일이지만 실제 운영 값이라고 단정하지 않는다. W1·W3 및 임의 limit/필터는 기존 경로로 호환한다.
 - 키: 리소스·style·정렬된 제공처/종류/범위·선택 vector·catalog revision·정책 revision·페이지 limit·cursor 위치. `Accept-Encoding`은 wire 표현 키에 포함한다. 데이터 페이지와 상태 envelope를 분리한다.
+- **본문 재사용과 cursor 수명은 별개다.** 불변 data payload만 사전 구성하고 snapshot/cursor envelope는 요청의 짧은 단계에서 결합한다. 현재 최소15분(다음 분 경계+15분)의 handle 유효기간을 보장한다. 유효한 handle은 기존 조건부 갱신을 재사용하고 이미 만료된 handle은 연장하지 않는다. 새 handle을 발급해 그 ID와 ref/pin에 묶인 cursor를 구조적으로 재구성하며, 만료 handle이 박힌 예전 wire body를 그대로 내지 않는다. 모든 유효 cursor가 참조하는 세대·파일은 만료/기존 보존 창까지 GC에서 보호한다. Map의410/순회 중422 재시작이 새 유효 handle로 수렴하는지 검증한다. [W:TTL]
+- **W5는 wall clock만 바뀌어도 결과가 달라진다.** `days`와 KST first_date/last_date·slot 정의 revision을 key에 넣고 자정의 날짜 창 변경을 재구성한다. 실제 slot은 morning05~11/noon11~17/evening17~23시이며 partial은 각 종료11/17/23시에 바뀐다. head/catalog가 같아도 이 경계에서 재생성/무효화한다. 기존 `date/hour//6` 재사용 guard도 별도로 보존·검증하며 이를 실제 partial 경계로 혼동하지 않는다. 준비/재사용의 유효시간은 상태60초·KST 날짜/slot 경계·관련 예보/특보 시각 가운데 먼저 도달하는 조건으로 제한한다. [W:DAILY-CLOCK]
 - 새 페이지는 검증·hash·행수·완결성을 확인하고 기존 head/manifest와 CAS로 공개한다. 늦게 끝난 builder가 새 세대를 덮지 못하게 한다. 실패하면 이전 검증된 payload를 보존하고 실패/신선도 metadata로 나타낸다.
 - 상태는 데이터가 안 바뀌어도 마지막 실패·다음 예정·정책 변경을 반영해야 한다. 승인 최대60초는 **최신 상태 반영 지연**의 상한이며 데이터 나이를 정상으로 바꾸는 허용치가 아니다. 만료된 상태로200/304를 내지 않는다. stale 원천은 stale로 표시하고 초도 실패/유실은 기존503 계약을 유지한다.
 - 요청은 인증 후 작은 상태 proof와 페이지 존재/무결성을 검산한다. 같은 상태·표현의 ETag일 때만304. `generated_at`은 응답 시각, `source_collected_at`·`as_of`·snapshot 시각은 원래 의미를 유지한다.
@@ -184,7 +186,7 @@ public marker/latest의 현재 투영과 service export의 **terminal 성공 전
 | U2 이동·확대 | 같은 위치 이동 경로·저배율/시군구/고배율·종류/제공처 전환 | 이전 응답 역전0·불필요 요청/DB 시작수·취소 후 잔여 시간 | 화면 밖 추가 파도0, 같은 revision 재방문 중복 구성0. 특보/대표값/접근성 보존. |
 | U3 상세 | 실제 확인했던 감일·강릉·가평과 실제 마커 선택 | 현재·내일·시간별을 별도 측정; DTO·원천시각·발표판/결측·필터 비교 | 현재 먼저 표시, 나머지 실패 격리. 첫 핵심 정보 p95≤2초 제안, 더 보기 완결성 유지. |
 | U4 최초 동기화 | 실제 Map 실행 설정·모든 endpoint/style·실제 page_size/days | 첫 페이지와 전체 페이지 순회, 최종 row hash/count·순서·snapshot vector·Valkey swap까지 | 표준 첫 페이지 p95≤1초 제안, 전체 wall은 동일 데이터량/페이지수로 개선. |
-| U5 반복/만료/재시작 | 같은 ETag와 상태 변경 없음/실패/시각 만료·API 재시작 | 동일 결과는304; 상태가 바뀌면 metadata 반영. 만료된 proof로200/304 없음 |304 p95≤300ms 제안. 상태 확인 최대60초·기존 파일/DB 삭제 검산 유지. |
+| U5 반복/만료/재시작 | 같은 ETag·실패/상태 만료·15분 handle 갱신/만료410·API 재시작·수집 없는 KST 자정/11·17·23시 | 동일 결과는304; 상태가 바뀌면 metadata 반영. 만료된 proof로200/304 없음 |304 p95≤300ms 제안. 상태 확인 최대60초·기존 파일/DB 삭제 검산 유지. |
 | U6 관리 화면 | 홈4요청·최근10run·대량 원문을 가진 기존 run | 카드별 first paint·쿼리수·원문 선택 페이지/bytes·권한/마스킹 | 빠른 카드가 느린 카드에 막히지 않음. 원문 목록 SQL이 행수 비례 왕복하지 않음. |
 | U7 동시 처리 | marker/상세/export·수집·publisher·GC의 같은 혼합 비율 | queue/worker/pool/SQL/row/advisory/file guard의 대기·보유 시간을 구분; CPU/RSS/I/O/WAL | writer starvation·deadlock·누락0. 기존 timeout/예산을 늘리지 않은 처리량 개선. |
 | U8 실패·복구 | 부분 commit·cancel/epoch loss·파일 유실·늦은 builder·source empty | 마지막 성공/원본 보존·멱등 replay·generation/cursor 경계 | 실패를 성공으로 위장하지 않음, partial을 완결 집합으로 공개하지 않음. |
@@ -220,11 +222,13 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 
 | 리뷰 | 초점 | 상태 |
 | --- | --- | --- |
-| 1차 | 실사용→원인→변경→검증의 연결, 현행/제안·main/운영·실측/추론 구분 | 대기 |
+| 1차 | 실사용→원인→변경→검증의 연결, 현행/제안·main/운영·실측/추론 구분 | 완료·지적2건 보완: handle/pin TTL, W5 날짜·partial 경계 |
 | 2차 | 원본/신선도/부분 실패·잠금/GC/재시작·Map 계약의 모순 | 대기 |
 | 3차 | 반영 후 전체 재검토, 링크·수치·소스·우선순위·남은 미확인 | 대기 |
 
 리뷰에서 발견한 내용·보완 위치·잔여 제약은 이 표 아래에 기록한다. 검토 전에 완료/PASS를 만들지 않는다.
+
+1차 지적: P0-A에서 사전 구성 본문과 snapshot 최소15분/pin 수명을 분리하지 않으면 만료 첫 페이지 재사용으로 Map이410 재시작을 반복할 수 있었다. 같은 절에 유효 handle만 갱신·만료 시 재발급·envelope 재구성·GC 보호를 명시했다. W5 key에는 KST 날짜창·실제 slot 종료11/17/23시의 partial 전환과 기존6시간 reuse guard를 별도로 추가했다. 이 변경은 설계 누락 보완이며 제품 수정/새 성능 실적이 아니다.
 
 ## 10. 고정 소스와 기술 근거
 
@@ -240,6 +244,8 @@ Git 밖의 원장은 비밀·원문 query를 싣지 않고 다음 digest로 식�
 [W:CACHE]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_page_cache.py
 [W:INGEST]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/repository.py#L1995
 [W:FILES]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_artifacts.py#L278
+[W:TTL]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_snapshots.py#L57
+[W:DAILY-CLOCK]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_daily_reader.py#L136
 [W:DAILY]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_daily_store.py#L28
 [W:HEAD]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_heads.py#L1036
 [W:PUBLISHER]: https://github.com/digitie/kor-travel-weather/blob/8723afcf54997d3c449edc7d0558ab36f092cb54/src/kortravelweather/export_collector.py
