@@ -34,16 +34,50 @@ READER_GUARD_SECONDS_RANGE = (0.5, 10.0)
 SLOW_EXCLUSIVE_HOLD_SECONDS = 2.0
 _HOLDERS = frozenset({"publish", "gc", "promotion_cas", "other"})
 _DIGEST = re.compile(r"[0-9a-f]{64}")
-# JSON 해석 결과만 기억한다. 파일 존재·동일 fd의 hash/count 검증은 계속 요청마다 실행한다.
+# hash로 검증해 복호한 내용을 파일 identity(inode·크기·mtime·ctime)와 함께 기억한다. 같은
+# identity면 다시 읽거나 hash하지 않는다(``_cached_points``). 다르면 다시 읽고 hash한다.
 _decoded_artifacts = OrderedDict()
 _decoded_artifact_bytes = 0
 _decoded_artifact_lock = threading.Lock()
-_DECODED_ARTIFACT_BYTES = 8 * 1024 * 1024
-_DECODED_ARTIFACT_ENTRIES = 2048
+# 파일 byte 기준 상한이다(복호한 flat dict는 약 1.6~2.2배, 단편화 포함 약 2~3배 메모리).
+# odroid 운영 current snapshot 하나가 3,302개 파일·24.7MB여서 예전 8MB/2048개로는 Map 한 번의
+# 순회도 담지 못했다. LRU가 순환 순회보다 작으면 hit가 거의 없으므로 snapshot의 약 2배인
+# 64MB(약 130~200MB RSS)로 둔다. API는 uvicorn 1 프로세스(2026-11-10 RSS 368MB, 호스트 가용
+# 2.9GB)다. hit가 드문 Dagster code-server·run worker는 env로 4~8MB나 0으로 줄인다.
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+    except ValueError:
+        return default
+    return min(max(value, low), high)
+
+
+# 프로세스별 상한이다. Dagster code-server처럼 hit가 드문 프로세스는 env로 줄인다.
+_DECODED_ARTIFACT_BYTES = _env_int(
+    "KOR_TRAVEL_WEATHER_EXPORT_DECODE_CACHE_BYTES", 64 * 1024 * 1024, 0, 256 * 1024 * 1024,
+)
+_DECODED_ARTIFACT_ENTRIES = _env_int(
+    "KOR_TRAVEL_WEATHER_EXPORT_DECODE_CACHE_ENTRIES", 8192, 0, 65536,
+)
+#: 파일 ctime이 이보다 최근이면 identity를 믿지 않는다(git의 racy-index 규칙). 커널 timestamp가
+#: tick 단위라 같은 tick 안의 같은 길이 덮어쓰기는 mtime/ctime이 같을 수 있다.
+_RACY_IDENTITY_NS = 2_000_000_000
+#: 검증한 지 이만큼 지난 hit는 다시 읽고 hash한다(metadata를 바꾸지 않는 손상의 늦은 발견).
+_REVERIFY_AFTER_SECONDS = 600.0
 
 
 def _file_identity(value):
     return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
+
+
+def observe_export_artifact_cache(outcome: str, count: int = 1) -> None:
+    """복호 캐시 hit/miss/evict를 센다(예외 없음)."""
+    try:
+        from .metrics import observe_export_artifact_cache as observe
+
+        observe(outcome, count)
+    except Exception:  # noqa: BLE001 - 계측 실패가 읽기를 바꾸지 않는다
+        pass
 
 
 def _observe_exclusive_hold(holder: str, seconds: float) -> None:
@@ -285,6 +319,15 @@ class ExportArtifactStore:
         commit된 snapshot ref·head·보존 창이 GC에서 지킨다(export_gc); guard는 관리되는
         replace/unlink와 한 파일 읽기를 겹치지 않게 할 뿐이다.
         """
+        # 검증해 복호한 같은 파일이면 파일을 읽지 않으므로 guard도 필요 없다(교체·삭제는
+        # _cached_points의 lstat이 본다).
+        if 0 <= byte_count <= MAX_CHUNK_BYTES and 0 <= point_count <= MAX_CHUNK_POINTS:
+            remembered = self._cached_points(
+                (digest, byte_count, point_count), self._path(digest),
+            )
+            if remembered is not None:
+                # 같은 공개 경로(read)로 돌려준다. read도 같은 판정으로 파일 없이 캐시를 쓴다.
+                return list(self.read(digest, byte_count=byte_count, point_count=point_count))
         with self.guard(shared=True):
             return list(self.read(digest, byte_count=byte_count, point_count=point_count))
 
@@ -360,7 +403,13 @@ class ExportArtifactStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _lines(self, digest: str, *, byte_count: int, point_count: int) -> list[bytes]:
+    def _lines(
+        self, digest: str, *, byte_count: int, point_count: int, with_identity: bool = False,
+    ) -> Any:
+        """검증한 동일 fd의 줄들. ``with_identity``면 (줄들, 그 fd의 identity)를 돌려준다.
+
+        모든 실제 파일 읽기·hash가 이 한 경로를 지난다(검증·승격·reader 모두).
+        """
         if not 0 <= byte_count <= MAX_CHUNK_BYTES or not 0 <= point_count <= MAX_CHUNK_POINTS:
             raise ExportArtifactError("export receipt 상한이 올바르지 않습니다.")
         path = self._path(digest)
@@ -386,7 +435,46 @@ class ExportArtifactStore:
         lines = payload.splitlines()
         if len(lines) != point_count:
             raise ExportArtifactError("export artifact point 수가 receipt와 다릅니다.")
-        return lines
+        return (lines, _file_identity(after)) if with_identity else lines
+
+    def _cached_points(self, key, path) -> tuple[Any, ...] | None:
+        """같은 파일(inode·크기·mtime·ctime 동일)이면 이미 hash로 검증해 복호한 내용을 쓴다.
+
+        파일 이름이 내용 hash다. 내용을 바꾸는 쓰기는 ctime을 바꾸고(utime으로 mtime을 되돌려도
+        ctime은 되돌릴 수 없다) 교체는 inode를 바꾼다. 그러면 다시 읽고 hash한다. 단,
+        - 커널 timestamp는 tick 단위라 방금(2초 이내) 바뀐 파일의 identity는 믿지 않는다.
+        - metadata를 바꾸지 않는 손상(eMMC 비트 손상 등)을 늦게라도 잡도록 검증 뒤 10분이
+          지나면 다시 hash한다.
+        - guard·verifying scope 안(승격 검산 등)은 캐시를 쓰지 않고 실제 파일을 hash한다.
+        삭제는 lstat에서 바로 실패한다.
+        """
+        if getattr(self._scope, "verified", None) is not None:
+            # guard·verifying 안(승격 검산 등)은 기존처럼 실제 파일을 hash한다. 같은 scope의
+            # 중복 hash는 verified 집합이 막는다.
+            return None
+        with _decoded_artifact_lock:
+            remembered = _decoded_artifacts.get(key)
+        if remembered is None:
+            return None
+        if remembered[2] is None or time.monotonic() - remembered[3] > _REVERIFY_AFTER_SECONDS:
+            return None
+        try:
+            info = os.stat(path, follow_symlinks=False)  # 삭제는 FileNotFoundError로 올린다
+        except FileNotFoundError:
+            self._forget(key, remembered)
+            raise
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_size != key[1]
+            or remembered[2] != _file_identity(info)
+        ):
+            # symlink·크기·내용 변화는 전체 검증 경로(O_NOFOLLOW·hash)가 실패로 판정한다.
+            self._forget(key, remembered)
+            return None
+        with _decoded_artifact_lock:
+            if key in _decoded_artifacts:
+                _decoded_artifacts.move_to_end(key)
+        return remembered
 
     def verify(self, digest: str, *, byte_count: int, point_count: int) -> None:
         """내용 hash·크기·줄 수만 확인한다. JSON은 해석하지 않는다.
@@ -398,32 +486,64 @@ class ExportArtifactStore:
         self._lines(digest, byte_count=byte_count, point_count=point_count)
 
     def read(self, digest: str, *, byte_count: int, point_count: int) -> Iterator[dict[str, Any]]:
-        global _decoded_artifact_bytes
-        lines = self._lines(digest, byte_count=byte_count, point_count=point_count)
+        if not 0 <= byte_count <= MAX_CHUNK_BYTES or not 0 <= point_count <= MAX_CHUNK_POINTS:
+            raise ExportArtifactError("export receipt 상한이 올바르지 않습니다.")
         key = (digest, byte_count, point_count)
-        with _decoded_artifact_lock:
-            remembered = _decoded_artifacts.get(key)
-            if remembered is not None:
-                _decoded_artifacts.move_to_end(key)
+        remembered = self._cached_points(key, self._path(digest))
         if remembered is None:
+            items, flat = self._decode_and_remember(key)
+        else:
+            observe_export_artifact_cache("hit")
+            items, flat, _identity, _verified_at = remembered
+        # 호출자가 중첩 dict/list를 수정해도 다음 응답이나 다른 reader에는 전파하지 않는다.
+        for item in items:
+            yield dict(item) if flat else deepcopy(item)
+
+    @staticmethod
+    def _forget(key, remembered) -> None:
+        global _decoded_artifact_bytes
+        with _decoded_artifact_lock:
+            if _decoded_artifacts.get(key) is remembered:
+                del _decoded_artifacts[key]
+                _decoded_artifact_bytes -= key[1]
+
+    def _decode_and_remember(self, key) -> tuple[tuple[dict[str, Any], ...], bool]:
+        global _decoded_artifact_bytes
+        digest, byte_count, point_count = key
+        lines, identity = self._lines(
+            digest, byte_count=byte_count, point_count=point_count, with_identity=True,
+        )
+        observe_export_artifact_cache("miss")
+        with _decoded_artifact_lock:
+            earlier = _decoded_artifacts.get(key)
+        if earlier is not None:
+            # 방금 같은 digest의 bytes를 hash로 다시 확인했다. 내용 주소라 복호 결과도 같다.
+            items, flat = earlier[0], earlier[1]
+        else:
             items = tuple(json.loads(line) for line in lines)
             if any(not isinstance(item, dict) for item in items):
                 raise ExportArtifactError("export artifact point 형식이 다릅니다.")
             # canonical point는 scalar뿐이다. 중첩 값이 있는 legacy/검증 자료만 깊게 복사한다.
             flat = all(type(value) in (str, int, float, bool, type(None))
                        for item in items for value in item.values())
-            with _decoded_artifact_lock:
-                if key not in _decoded_artifacts:
-                    _decoded_artifacts[key] = (items, flat)
-                    _decoded_artifact_bytes += byte_count
-                while _decoded_artifacts and (
-                    len(_decoded_artifacts) > _DECODED_ARTIFACT_ENTRIES
-                    or _decoded_artifact_bytes > _DECODED_ARTIFACT_BYTES
-                ):
-                    old, _ = _decoded_artifacts.popitem(last=False)
-                    _decoded_artifact_bytes -= old[1]
-        else:
-            items, flat = remembered
-        # 호출자가 중첩 dict/list를 수정해도 다음 응답이나 다른 reader에는 전파하지 않는다.
-        for item in items:
-            yield dict(item) if flat else deepcopy(item)
+        # 방금 쓴 파일은 같은 tick의 변조와 identity가 같을 수 있어 hit로 믿지 않는다.
+        trusted = time.time_ns() - identity[4] >= _RACY_IDENTITY_NS
+        evicted = 0
+        with _decoded_artifact_lock:
+            previous = _decoded_artifacts.pop(key, None)
+            if previous is not None:
+                _decoded_artifact_bytes -= byte_count
+            _decoded_artifacts[key] = (
+                items, flat, identity if trusted else None, time.monotonic(),
+            )
+            _decoded_artifact_bytes += byte_count
+            while _decoded_artifacts and (
+                len(_decoded_artifacts) > _DECODED_ARTIFACT_ENTRIES
+                or _decoded_artifact_bytes > _DECODED_ARTIFACT_BYTES
+            ):
+                old, _ = _decoded_artifacts.popitem(last=False)
+                _decoded_artifact_bytes -= old[1]
+                evicted += 1
+        if evicted:
+            observe_export_artifact_cache("evict", evicted)
+        return items, flat

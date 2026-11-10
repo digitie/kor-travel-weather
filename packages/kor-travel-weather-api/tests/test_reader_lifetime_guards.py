@@ -57,6 +57,15 @@ def writer_probe(root):
         assert process.exitcode == 0
 
 
+@pytest.fixture(autouse=True)
+def audit_real_file_reads(monkeypatch):
+    """이 파일은 실제 파일 IO의 guard·PG 연결 계약을 검사한다. 복호 캐시 hit(파일 IO 없음)는
+    이 계약의 대상이 아니므로, 같은 테스트 안의 재읽기도 매번 실제 파일을 읽게 한다."""
+    from kortravelweather import export_artifacts
+
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 10**30)
+
+
 class AuditedFiles(ExportArtifactStore):
     def __init__(self, root, repo, probe):
         super().__init__(root)

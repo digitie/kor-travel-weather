@@ -419,7 +419,9 @@ def test_promotion_hashes_each_chunk_once_and_parses_each_point_once(
     monkeypatch.setattr(export_artifacts, "json", SimpleNamespace(loads=loads, dumps=json.dumps))
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     assert counts == {"sha": 1, "loads": chunk["point_count"]}
-    # guard 밖 read는 매번 hash를 확인한다.
+    # guard 밖 read는 아직 믿을 수 없는(방금 쓴) 파일이면 hash를 다시 확인한다. 검증한 같은
+    # 파일의 복호 캐시 hit는 tests/test_export_repeated_work.py가 따로 검사한다.
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 10**30, raising=False)
     list(capture.artifacts.read(chunk["artifact_digest"], byte_count=chunk["byte_count"],
                                 point_count=chunk["point_count"]))
     assert counts["sha"] == 2
