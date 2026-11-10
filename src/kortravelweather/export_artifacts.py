@@ -403,12 +403,13 @@ class ExportArtifactStore:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _lines(self, digest: str, *, byte_count: int, point_count: int) -> list[bytes]:
-        return self._read_lines(digest, byte_count=byte_count, point_count=point_count)[0]
+    def _lines(
+        self, digest: str, *, byte_count: int, point_count: int, with_identity: bool = False,
+    ) -> Any:
+        """검증한 동일 fd의 줄들. ``with_identity``면 (줄들, 그 fd의 identity)를 돌려준다.
 
-    def _read_lines(
-        self, digest: str, *, byte_count: int, point_count: int,
-    ) -> tuple[list[bytes], tuple[int, ...]]:
+        모든 실제 파일 읽기·hash가 이 한 경로를 지난다(검증·승격·reader 모두).
+        """
         if not 0 <= byte_count <= MAX_CHUNK_BYTES or not 0 <= point_count <= MAX_CHUNK_POINTS:
             raise ExportArtifactError("export receipt 상한이 올바르지 않습니다.")
         path = self._path(digest)
@@ -434,7 +435,7 @@ class ExportArtifactStore:
         lines = payload.splitlines()
         if len(lines) != point_count:
             raise ExportArtifactError("export artifact point 수가 receipt와 다릅니다.")
-        return lines, _file_identity(after)
+        return (lines, _file_identity(after)) if with_identity else lines
 
     def _cached_points(self, key, path) -> tuple[Any, ...] | None:
         """같은 파일(inode·크기·mtime·ctime 동일)이면 이미 hash로 검증해 복호한 내용을 쓴다.
@@ -509,8 +510,8 @@ class ExportArtifactStore:
     def _decode_and_remember(self, key) -> tuple[tuple[dict[str, Any], ...], bool]:
         global _decoded_artifact_bytes
         digest, byte_count, point_count = key
-        lines, identity = self._read_lines(
-            digest, byte_count=byte_count, point_count=point_count,
+        lines, identity = self._lines(
+            digest, byte_count=byte_count, point_count=point_count, with_identity=True,
         )
         observe_export_artifact_cache("miss")
         with _decoded_artifact_lock:
