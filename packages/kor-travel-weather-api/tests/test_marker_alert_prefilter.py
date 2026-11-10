@@ -119,3 +119,34 @@ def test_mixed_and_ordering_cases_keep_matched_alerts_and_flag(api_client: TestC
     texts = sorted(alert["value_text"] for alert in item["alerts"])
     assert texts == ["강풍주의보 발표", "폭염경보"]
     assert item["alert_scope_unverified"] is True
+
+
+def test_own_area_alert_is_not_crowded_out_by_newer_fanned_alerts(api_client: TestClient) -> None:
+    """위치별 특보 예산은 구역을 거른 뒤에 적용한다(2026-11-10, 안전성 수정).
+
+    예전에는 다른 구역의 더 최근 복제 특보 26건이 후보 예산(80 // 3종류 그룹)을 채워,
+    그보다 오래된 이 구역의 활성 특보가 마커에서 사라졌다.
+    """
+    repo = api_client.app.state.repository
+    now = datetime.now(UTC).replace(microsecond=0)
+    repo.upsert_location(WeatherLocation(
+        location_id="crowded", name="밀린 위치", latitude=37.5, longitude=127,
+        metadata={"kma_alert_area_codes": ["land-a"]},
+    ))
+    repo.record_source(
+        source_record_key="alert-src-crowded", provider="python-kma-api",
+        dataset_key="kma_weather_alerts", source_entity_type="weather_response",
+        source_entity_id="crowded", payload={"rows": []},
+    )
+    repo.upsert_values([
+        *(_alert("crowded", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(40)),
+        # 복제 특보 40건보다 오래됐지만 아직 활성인 이 구역 특보
+        _alert("crowded", 60, "land-a", now, "한파주의보 발표"),
+    ])
+    six = "&".join(f"kind={kind}" for kind in (
+        "observed", "nowcast", "ultra_short", "short", "mid", "alert",
+    ))
+    response = api_client.get(f"/v1/weather/markers?location_id=crowded&{six}")
+    assert response.status_code == 200, response.text
+    alerts = response.json()["data"][0]["alerts"]
+    assert [alert["value_text"] for alert in alerts] == ["한파주의보 발표"]
