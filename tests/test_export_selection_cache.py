@@ -51,6 +51,10 @@ def test_selection_cache_slow_first_read_is_not_saved_or_returned_as_fresh():
 
 
 def test_selection_cache_does_not_hold_lock_during_read_or_duplicate_same_key():
+    """같은 키의 두 번째 요청은 즉시 503 대신 첫 읽기를 기다려 그 결과를 쓴다(2026-11-10).
+
+    앱 공용 캐시를 실제로 쓰게 되면서 동시 요청이 같은 키를 만난다. 중복 DB 작업은 여전히 하나다.
+    """
     cache = ExportSelectionCache()
     entered, release = Event(), Event()
 
@@ -59,19 +63,82 @@ def test_selection_cache_does_not_hold_lock_during_read_or_duplicate_same_key():
         assert release.wait(5)
         return ApprovedSelection((), False)
 
-    with ThreadPoolExecutor(1) as executor:
+    with ThreadPoolExecutor(2) as executor:
         job = executor.submit(cache.read, "key", load, checked_after=cache.clock())
         assert entered.wait(5)
+        waiter = executor.submit(
+            cache.read, "key", lambda: pytest.fail("중복"), checked_after=cache.clock()
+        )
         try:
-            with pytest.raises(ExportGuardTimeout):
-                cache.read("key", lambda: pytest.fail("중복"), checked_after=cache.clock())
+            # 다른 키는 잠금에 막히지 않는다.
             assert cache.read(
                 "other", lambda: ApprovedSelection((), True), checked_after=cache.clock()
             )[0].unconfirmed
+            assert not waiter.done()
         finally:
             release.set()
         assert not job.result(timeout=5)[0].unconfirmed
+        assert waiter.result(timeout=5) == job.result(timeout=5)
     assert not cache.inflight
+
+
+def test_selection_cache_min_deadline_skips_short_lived_entries_without_evicting():
+    clock = [0.0]
+    cache = ExportSelectionCache(clock=lambda: clock[0])
+    first, second = ApprovedSelection((), False), ApprovedSelection((), True)
+    assert cache.read("key", lambda: first, checked_after=0) == (first, 60)
+    clock[0] = 25.0  # 35초 남음
+    assert cache.read("key", lambda: pytest.fail("hit"), checked_after=25,
+                      min_deadline=55) == (first, 60)
+    # 이 요청은 더 긴 수명이 필요하다: 새로 읽고 교체한다(다른 요청용 항목을 먼저 지우지 않는다).
+    assert cache.read("key", lambda: second, checked_after=25, min_deadline=85) == (second, 85)
+    assert cache.read("key", lambda: pytest.fail("hit"), checked_after=26) == (second, 85)
+
+
+def test_selection_cache_token_mismatch_reloads():
+    cache = ExportSelectionCache(clock=lambda: 0)
+    first, second = ApprovedSelection((), False), ApprovedSelection((), True)
+    assert cache.read("key", lambda: first, checked_after=0, token=(1, 1, 1))[0] == first
+    assert cache.read("key", lambda: pytest.fail("hit"), checked_after=0,
+                      token=(1, 1, 1))[0] == first
+    # 사이에 head 삭제(epoch 변화)가 있었다면 그 선택을 잇지 않는다.
+    assert cache.read("key", lambda: second, checked_after=0, token=(1, 1, 2))[0] == second
+
+
+def test_selection_cache_failed_hit_validation_reloads_in_own_transaction():
+    """다른 요청의 더 새 snapshot에서 읽힌 선택은 오래된 RR에서 유실처럼 보일 수 있다."""
+    cache = ExportSelectionCache(clock=lambda: 0)
+    first, second = ApprovedSelection((), False), ApprovedSelection((), True)
+    cache.read("key", lambda: first, checked_after=0)
+
+    def newer_than_my_snapshot(selection):
+        raise ValueError("이 RR에는 아직 보이지 않는 세대")
+
+    assert cache.read("key", lambda: second, checked_after=0,
+                      validate=newer_than_my_snapshot)[0] == second
+    assert not cache.inflight
+
+
+def test_selection_cache_waiter_with_min_deadline_uses_the_owners_fresh_load():
+    clock = [10.0]
+    cache = ExportSelectionCache(clock=lambda: clock[0])
+    entered, release = Event(), Event()
+    value = ApprovedSelection((), False)
+
+    def load():
+        entered.set()
+        assert release.wait(5)
+        return value
+
+    with ThreadPoolExecutor(2) as executor:
+        owner = executor.submit(cache.read, "key", load, checked_after=10)
+        assert entered.wait(5)
+        # 대기자는 소유자보다 먼저 시작했다(시작 9). 소유자 결과는 그 뒤 것이므로 쓴다.
+        waiter = executor.submit(cache.read, "key", lambda: pytest.fail("중복"),
+                                 checked_after=9, min_deadline=69)
+        release.set()
+        assert owner.result(timeout=5) == (value, 70)
+        assert waiter.result(timeout=5) == (value, 70)
 
 
 def test_selection_cache_key_separates_engine_sources_catalog_and_local_health():
@@ -115,16 +182,29 @@ def test_selection_cache_budget_includes_expired_coverage_keys(monkeypatch):
     assert not cache.entries and cache.bytes == 0
 
 
-def test_selection_cache_checks_integrity_outside_lock_and_evicts_failed_hit():
+def test_selection_cache_checks_integrity_outside_lock_and_replaces_failed_hit():
+    """hit 검산은 LRU 잠금 밖에서 한다. 실패하면 그 항목을 버리고 이 요청에서 다시 읽는다.
+
+    2026-11-10: 앱 공용 캐시를 실제로 쓰면서 다른 요청의 더 새 snapshot에서 읽힌 선택이
+    이 요청의 RR에서 유실처럼 보일 수 있다. 실제 유실이면 다시 읽기(load)가 실패한다.
+    """
     cache = ExportSelectionCache(clock=lambda: 0)
-    value = ApprovedSelection((), False)
+    value, reloaded = ApprovedSelection((), False), ApprovedSelection((), True)
     cache.read("key", lambda: value, checked_after=0)
 
     def lost_plan(selection):
-        assert selection is value and cache.lock.acquire(blocking=False)
+        assert cache.lock.acquire(blocking=False)  # 검산은 LRU 잠금 밖이다
         cache.lock.release()
         raise ValueError("불변 plan 유실")
 
+    assert cache.read("key", lambda: reloaded, checked_after=0, validate=lost_plan) == (
+        reloaded, 60,
+    )
+    assert cache.entries["key"][0] is reloaded and not cache.inflight
+
+    def really_lost():
+        raise ValueError("불변 plan 유실")
+
     with pytest.raises(ValueError, match="plan 유실"):
-        cache.read("key", lambda: pytest.fail("hit"), checked_after=0, validate=lost_plan)
+        cache.read("key", really_lost, checked_after=0, validate=lost_plan)
     assert not cache.entries and not cache.inflight and cache.bytes == 0

@@ -220,6 +220,9 @@ class FrozenCurrentExports:
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
         self.selection_cache = selection_cache
+        # 앱 공용 선택은 지금부터 이 초 이상 남은 것만 이어받는다(route가 요청 종류별로 정한다).
+        # None이면 이 요청이 시작한 뒤 읽힌 선택만 쓴다(긴 첫 페이지가 60초 전체를 쓰도록).
+        self.selection_min_remaining: float | None = 0.0
         self.selection_checked_after = monotonic()
         self.selection_deadline = None
         self.reuse_wall_started = datetime.now(UTC)
@@ -328,7 +331,17 @@ class FrozenCurrentExports:
         result, deadline = self.selection_cache.read(
             key, read, checked_after=self.selection_checked_after,
             validate=lambda selection: self._validate_cached_selection(connection, selection),
+            min_deadline=(
+                self.selection_checked_after + 60
+                if self.selection_min_remaining is None
+                else self.selection_cache.clock() + self.selection_min_remaining
+            ),
+            # 같은 삭제 변경 번호(page liveness)에서 읽힌 선택만 잇는다. 사이에 head·plan 삭제가
+            # 있었다면 다시 읽어 stale/유실 판정을 이 요청의 transaction에서 한다.
+            token=None if self.reuse_liveness is None else tuple(self.reuse_liveness[:3]),
         )
+        # 이 요청의 다음 호출(health 재확인 등)은 방금 읽은 선택을 그대로 쓴다.
+        self.selection_min_remaining = 0.0
         self.selection_deadline = min(self.selection_deadline or deadline, deadline)
         self.reuse_generations.update(scope.generation_id for scope in result.scopes)
         return result
@@ -398,9 +411,11 @@ class FrozenCurrentExports:
                         raise ExportArtifactError(
                             "검증한 export의 세대 또는 불변 plan이 유실됐습니다."
                         )
-            # payload는 이미 검증됐어도 동일 fd의 hash/count·파일 존재는 매 요청 확인한다.
-            for digest, byte_count, point_count in self.reuse_artifacts:
-                self.artifacts.verify(digest, byte_count=byte_count, point_count=point_count)
+            # 재사용 응답은 이미 검증한 메모리 페이지다. 파일 유실(GC·삭제)은 숨기지 않도록 매 hit
+            # 존재·크기를 확인하지만, 파일 전체를 다시 읽어 hash하지는 않는다(odroid eMMC IO).
+            # 내용 손상은 다음 miss의 재구성이 동일 fd hash로 잡는다.
+            for digest, byte_count, _point_count in self.reuse_artifacts:
+                self.artifacts.present(digest, byte_count=byte_count)
         self.require_current_selection()
         if datetime.now(UTC) >= row["expires_at"]:
             raise PageReuseExpired()

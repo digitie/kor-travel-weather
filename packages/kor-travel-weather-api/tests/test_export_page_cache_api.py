@@ -129,18 +129,45 @@ def test_pg_head_delete_rebuilds_status_instead_of_reusing_old_etag(repository, 
     assert response.headers["x-export-read"] == "generated"
 
 
-def test_reused_page_rehashes_real_artifact(repository, tmp_path):
+def test_reused_page_checks_files_by_stat_and_rebuild_still_rehashes(
+    repository, tmp_path, monkeypatch,
+):
+    """2026-11-10 계약: hit는 이미 검증한 메모리 페이지를 낸다. 파일은 존재·크기만 본다.
+
+    예전에는 hit마다 사용한 파일 전체를 다시 읽어 hash했다(odroid eMMC IO, #208 리뷰).
+    유실(삭제·크기 변화)은 여전히 hit에서 503이고, 내용 변조는 다음 miss 재구성이 잡는다.
+    """
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
     url = "/v1/service/exports/current"
     first = client.get(url, headers=HEADERS)
     assert first.status_code == 200
+    reads = []
+    original_lines = ExportArtifactStore._lines
+
+    def counted_lines(store, *args, **kwargs):
+        reads.append("hash")  # 파일 내용을 읽어 hash하는 유일한 경로
+        return original_lines(store, *args, **kwargs)
+
+    monkeypatch.setattr(ExportArtifactStore, "_lines", counted_lines)
+    hit = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    assert hit.status_code == 304 and hit.headers["x-export-read"] == "reused"
+    assert reads == []  # hit는 파일 내용을 다시 읽지 않는다
+    # 같은 크기의 내용 변조: 메모리 페이지는 이미 검증한 원래 값이다. 새 페이지 구성은 잡는다.
     for path in tmp_path.glob("*.jsonl"):
         path.chmod(0o600)
-        original = path.read_bytes()
-        path.write_bytes(original.replace(b"18.4", b"28.4"))
-    broken = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
-    assert broken.status_code == 503 and "etag" not in broken.headers
+        path.write_bytes(path.read_bytes().replace(b"18.4", b"28.4"))
+    assert client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+                      ).status_code == 304
+    rebuilt = client.get(url + "?limit=1", headers=HEADERS)
+    assert rebuilt.status_code == 503 and "etag" not in rebuilt.headers
+    # 유실은 hit에서도 숨기지 않는다.
+    for path in tmp_path.glob("*.jsonl"):
+        path.unlink()
+    lost = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
+    assert lost.status_code == 503 and "etag" not in lost.headers
 
 
 def test_completed_page_does_not_hold_global_gc_lock(repository, tmp_path):
@@ -234,14 +261,56 @@ def test_cache_never_returns_old_response_past_selection_deadline(
 def test_page_miss_does_not_inherit_another_pages_expiring_selection(
     repository, tmp_path, monkeypatch,
 ):
+    """첫 페이지 miss는 승인 선택을 항상 새로 읽는다(다른 페이지의 만료 직전 수명을 잇지 않는다)."""
+    from kortravelweather import export_inventory_selection
+
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
+    loads = []
+    original = export_inventory_selection.approved_source_selection
 
-    def old_selection(*args, **kwargs):
-        raise AssertionError("다른 페이지의 만료 직전 승인 수명을 이어받았습니다.")
+    def counted(*args, **kwargs):
+        loads.append(1)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(client.app.state.export_selection_cache, "read", old_selection)
+    monkeypatch.setattr(export_inventory_selection, "approved_source_selection", counted)
     first = client.get("/v1/service/exports/current?limit=1", headers=HEADERS)
     assert first.status_code == 200 and first.headers["x-export-read"] == "generated"
+    assert len(loads) == 1  # 같은 요청의 재확인은 방금 읽은 선택을 쓴다
     second = client.get("/v1/service/exports/current?limit=2", headers=HEADERS)
     assert second.status_code == 200 and second.headers["x-export-read"] == "generated"
+    assert len(loads) == 2
+
+
+def test_cursor_pages_reuse_the_app_selection_read_by_the_first_page(
+    repository, tmp_path, monkeypatch,
+):
+    """Map의 cursor 순회는 첫 페이지가 읽은 앱 공용 승인 선택을 다시 쓴다.
+
+    예전에는 요청마다 빈 선택 캐시를 만들어 앱 공용 캐시가 한 번도 쓰이지 않았고, cursor
+    페이지마다 전체 승인 선택을 다시 계산했다(#208 리뷰).
+    """
+    from kortravelweather import export_inventory_selection
+
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    loads = []
+    original = export_inventory_selection.approved_source_selection
+
+    def counted(*args, **kwargs):
+        loads.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(export_inventory_selection, "approved_source_selection", counted)
+    page = client.get("/v1/service/exports/current?limit=1", headers=HEADERS)
+    assert page.status_code == 200
+    pages = 1
+    while page.json()["meta"]["next_cursor"] and pages < 4:
+        page = client.get(
+            "/v1/service/exports/current?limit=1&cursor=" + page.json()["meta"]["next_cursor"],
+            headers=HEADERS,
+        )
+        assert page.status_code == 200, page.text
+        pages += 1
+    assert pages >= 3
+    assert len(loads) == 1, loads  # 첫 페이지 한 번뿐
