@@ -3202,6 +3202,35 @@ class WeatherRepository:
         return result
 
     @staticmethod
+    def _classify_alert_rows(rows, locations, *, budget):
+        """구역 판정·위치별 상한(이 위치 특보에 적용)·미확인 표식 1건. 행은 순위 순서다.
+
+        각 행은 location_id·value_id·known_at·provider·payload를 갖는다. 순위는 위치별로
+        나뉘므로 fact의 위치는 location_id와 같다. 위치 정보가 없으면 matched로 센다.
+        """
+        kept: list[tuple[str, str, datetime]] = []
+        matched: Counter[str] = Counter()
+        raw: Counter[str] = Counter()
+        unverified: set[tuple[str, str, datetime]] = set()
+        unverified_seen: set[str] = set()
+        for row in rows:
+            pair = (row.location_id, row.value_id, row.known_at)
+            raw[row.location_id] += 1
+            location = locations.get(row.location_id)
+            scope = "matched" if location is None else alert_scope_of(
+                row.provider, row.location_id, row.payload, location,
+            )
+            if scope == "matched":
+                if matched[row.location_id] < budget:
+                    matched[row.location_id] += 1
+                    kept.append(pair)
+            elif scope == "unverified" and row.location_id not in unverified_seen:
+                unverified_seen.add(row.location_id)
+                unverified.add(pair)
+                kept.append(pair)
+        return kept, matched, unverified, raw
+
+    @staticmethod
     def _scope_alert_pairs(
         session: Session,
         pairs: list[tuple[str, str, datetime]],
@@ -3411,6 +3440,10 @@ class WeatherRepository:
         # one recent row per location/metric without ranking all append-only
         # revisions.  Keep the generic window-query fallback for SQLite and
         # other test dialects.
+        alert_locations = dict(locations) if locations is not None else {
+            location.location_id: location
+            for location in self.get_locations_by_ids(location_ids)
+        }
         with self._session_factory() as session:
             if session.get_bind().dialect.name != "postgresql":
                 return self.latest_values_many(
@@ -3685,6 +3718,9 @@ class WeatherRepository:
                     WeatherValueRow.location_id.label("location_id"),
                     WeatherValueRow.target_at.label("target_at"),
                     WeatherValueRow.known_at.label("known_at"),
+                    # 구역 판정용(같은 행에서 station/seq를 이미 읽는다). 두 번째 fact 왕복이 없다.
+                    WeatherValueRow.provider.label("provider"),
+                    WeatherValueRow.payload.label("payload"),
                     func.row_number()
                     .over(
                         partition_by=(
@@ -3733,6 +3769,8 @@ class WeatherRepository:
                     alert_ranked.c.location_id,
                     alert_ranked.c.value_id,
                     alert_ranked.c.known_at,
+                    alert_ranked.c.provider,
+                    alert_ranked.c.payload,
                     func.row_number()
                     .over(
                         partition_by=alert_ranked.c.location_id,
@@ -3752,24 +3790,41 @@ class WeatherRepository:
             }
             for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
-            alert_values_by_location: dict[str, list[WeatherValue]] = {}
-            # 다른 구역 복제 특보가 위치별 상한을 채워 이 구역 특보를 밀어내지 않도록, 순위는
-            # 전체 후보(최대 _ALERT_SCAN_MAX)로 받은 뒤 구역을 거르고 상한을 적용한다
-            # (kind 지정 경로와 같은 의미, #216·#219). 행 전체는 남은 key만 읽는다.
-            alert_locations = dict(locations) if locations is not None else {
-                location.location_id: location
-                for location in self.get_locations_by_ids(location_ids)
-            }
-            ranked_keys = session.execute(select(
-                alert_limited.c.location_id, alert_limited.c.value_id, alert_limited.c.known_at,
-            ).where(alert_limited.c.location_rank <= _ALERT_SCAN_MAX).order_by(
-                alert_limited.c.location_id, alert_limited.c.location_rank,
-            )).all()
-            kept, _matched, _unverified = self._scope_alert_pairs(
-                session,
-                [(key.location_id, key.value_id, key.known_at) for key in ranked_keys],
-                alert_locations, budget=min(limit_per_location, 100),
+            # 다른 구역 복제 특보가 위치별 상한을 채워 이 구역 특보를 밀어내지 않도록, 순위 행을
+            # 받아 구역을 먼저 판정하고 상한은 이 위치 특보에 적용한다(kind 지정 경로와 같은 의미,
+            # #216·#219). 첫 조회는 상한의 4배, 모자란 위치만 _ALERT_SCAN_MAX까지 넓힌다.
+            alert_budget = min(limit_per_location, 100)
+
+            def ranked_alerts(cap, only=None):
+                query = select(
+                    alert_limited.c.location_id, alert_limited.c.value_id,
+                    alert_limited.c.known_at, alert_limited.c.provider,
+                    alert_limited.c.payload,
+                ).where(alert_limited.c.location_rank <= cap)
+                if only is not None:
+                    query = query.where(alert_limited.c.location_id.in_(only))
+                rows = session.execute(query.order_by(
+                    alert_limited.c.location_id, alert_limited.c.location_rank,
+                )).all()
+                return self._classify_alert_rows(rows, alert_locations, budget=alert_budget)
+
+            first_cap = alert_budget * _ALERT_FIRST_SCAN_FACTOR
+            kept, matched, unverified, raw = ranked_alerts(first_cap)
+            crowded = sorted(
+                location_id for location_id in raw
+                if raw[location_id] >= first_cap and matched[location_id] < alert_budget
             )
+            if crowded:
+                wide = ranked_alerts(_ALERT_SCAN_MAX, crowded)
+                crowded_set = set(crowded)
+                kept = [pair for pair in kept if pair[0] not in crowded_set] + wide[0]
+                unverified = {pair for pair in unverified if pair[0] not in crowded_set} | wide[2]
+                if any(wide[3][location_id] >= _ALERT_SCAN_MAX
+                       and wide[1][location_id] < alert_budget for location_id in crowded):
+                    logger.warning(
+                        "weather_marker_alert_scan_cap locations=%d limit=%d",
+                        len(crowded), _ALERT_SCAN_MAX,
+                    )
             alert_rows = []
             if kept:
                 keys = (
@@ -3795,12 +3850,18 @@ class WeatherRepository:
                     keys.join(fact, true()),
                 ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
 
+            scoped: dict[str, list[WeatherValue]] = {}
+            markers: dict[str, list[WeatherValue]] = {}
             for row in alert_rows:
-                alert_values_by_location.setdefault(row.location_id, []).append(
-                    self._value_model(row)
-                )
-            for location_id, alert_values in alert_values_by_location.items():
+                # 미확인 표식 행은 활성 판정(같은 관서·이름 축약)에 섞지 않는다. 섞이면 이 구역
+                # 특보를 지우거나 표식이 사라진다(kind 지정 경로와 같다).
+                key = (row.location_id, row.value_id, row.known_at)
+                target = markers if key in unverified else scoped
+                target.setdefault(row.location_id, []).append(self._value_model(row))
+            for location_id, alert_values in scoped.items():
                 result.setdefault(location_id, []).extend(active_alert_values(alert_values))
+            for location_id, alert_values in markers.items():
+                result.setdefault(location_id, []).extend(alert_values)
             return result
 
     def timeline_many(

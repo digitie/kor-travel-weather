@@ -272,3 +272,32 @@ def test_kindless_markers_keep_unverified_flag_for_uncoded_locations(
     assert response.status_code == 200, response.text
     item = response.json()["data"][0]
     assert item["alerts"] == [] and item["alert_scope_unverified"] is True
+
+
+def test_kindless_unverified_flag_survives_a_newer_unverified_release(
+    api_client: TestClient,
+) -> None:
+    """미확인 표식 행은 활성 판정에 섞지 않는다. 더 새 미확인 해제가 표식을 지우지 않는다."""
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless-release", coded=False)
+    repo.upsert_values([
+        _alert("kindless-release", 0, None, now, "호우주의보 해제"),
+        _alert("kindless-release", 5, None, now, "강풍주의보 발표"),
+    ])
+    response = api_client.get("/v1/weather/markers?location_id=kindless-release")
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    assert item["alerts"] == [] and item["alert_scope_unverified"] is True
+
+
+def test_kindless_other_area_release_does_not_cancel_own_alert(api_client: TestClient) -> None:
+    """같은 관서·이름의 다른 구역 해제가 이 구역 발표를 지우지 않는다(구역을 먼저 거른다)."""
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless-cross", coded=True)
+    repo.upsert_values([
+        _alert("kindless-cross", 0, "sea-9", now, "강풍주의보 해제"),
+        _alert("kindless-cross", 5, "land-a", now, "강풍주의보 발표"),
+    ])
+    response = api_client.get("/v1/weather/markers?location_id=kindless-cross")
+    assert response.status_code == 200, response.text
+    assert [a["value_text"] for a in response.json()["data"][0]["alerts"]] == ["강풍주의보 발표"]

@@ -6,14 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select
-from sqlalchemy.sql.elements import BinaryExpression
-from sqlalchemy.sql.selectable import Join
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue, kst_now
 from kortravelweather.repository import WeatherRepository, WeatherValueRow
 
 
-def _marker_statements(location_ids):
+def _marker_statements(location_ids, alert_keys=()):
     statements = []
 
     class Result:
@@ -32,6 +30,8 @@ def _marker_statements(location_ids):
 
         def execute(self, stmt):
             statements.append(stmt)
+            if list(stmt.selected_columns.keys())[-2:] == ["provider", "payload"]:
+                return SimpleNamespace(all=lambda: list(alert_keys))
             return SimpleNamespace(all=lambda: [])
 
         def scalars(self, stmt):
@@ -45,16 +45,18 @@ def _marker_statements(location_ids):
 
 
 def test_marker_alert_fact_rejoin_preserves_composite_partition_key():
-    statements, _ = _marker_statements(["marker-fixture"])
-    assert len(statements) == 3
-    joins = [item for item in statements[2].get_final_froms() if isinstance(item, Join)]
-    assert len(joins) == 1, "선택 후보를 fact의 정확한 복합 키로 JOIN해야 한다."
-    pairs = {
-        (part.left.key, part.right.key)
-        for part in joins[0].onclause.get_children()
-        if isinstance(part, BinaryExpression)
-    }
-    assert pairs == {("value_id", "value_id"), ("known_at", "known_at")}
+    key = SimpleNamespace(
+        location_id="marker-fixture", value_id="v1", known_at=datetime(2026, 10, 15, tzinfo=UTC),
+        provider="fixture", payload={},
+    )
+    statements, _ = _marker_statements(["marker-fixture"], alert_keys=[key])
+    # 위치 조회, 관측 후보, 대체 후보, 특보 순위 key, 남은 key의 fact 조회.
+    assert len(statements) == 5
+    hydration = str(statements[4])
+    assert "provider_alert_keys" in hydration
+    # 정확한 복합 키(value_id, known_at)로만 fact를 다시 읽는다(partition key 보존).
+    assert "weather_values.value_id = provider_alert_keys.value_id" in hydration
+    assert "weather_values.known_at = provider_alert_keys.known_at" in hydration
 
 
 def test_marker_empty_batch_never_opens_a_session():

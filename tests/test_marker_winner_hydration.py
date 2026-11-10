@@ -46,8 +46,16 @@ def _run(observed, *, fallback=(), facts=(), alerts=(), locations=("one",)):
             return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
         def execute(self, stmt):
+            columns = list(stmt.selected_columns.keys())
+            if columns == ["location_id", "value_id", "known_at", "provider", "payload"]:
+                # 2026-11-10: 특보는 순위 key와 구역 판정 필드만 먼저 받는다(구역 뒤 상한).
+                captured.append(("alert_keys", stmt))
+                return SimpleNamespace(all=lambda: [SimpleNamespace(
+                    location_id=row.location_id, value_id=row.value_id, known_at=row.known_at,
+                    provider=row.provider, payload=row.payload,
+                ) for row in alerts])
             # 이 단계에서 payload/전체 ORM을 선택하면 실제 반환 행 수와 별개로 실패한다.
-            assert list(stmt.selected_columns.keys()) == [
+            assert columns == [
                 "location_id", "metric_key", "known_at", "source_record_key", "value_id",
             ]
             captured.append(("candidate", stmt))
@@ -67,6 +75,12 @@ def _run(observed, *, fallback=(), facts=(), alerts=(), locations=("one",)):
                     row for row in reversed(facts)
                     if (row.value_id, row.known_at) in pairs
                 ]
+            elif "weather_locations" in str(stmt):
+                captured.append(("locations", stmt))
+                rows = []
+            elif "provider_alert_keys" in str(stmt):
+                captured.append(("alerts", stmt))
+                rows = list(alerts)
             elif any(
                 getattr(value.right, "name", "") == "marker_fact_keys"
                 for value in joins
@@ -110,7 +124,9 @@ def test_marker_only_winners_hydrate_and_raw_lineage_is_preserved():
     assert [row.metric_key for row in result["one"]] == ["TEMP", "SKY"]
     assert result["one"][0].payload == candidates[-1].payload
     assert result["one"][0].source_record_key == candidates[-1].source_record_key
-    assert [kind for kind, _ in queries] == ["candidate", "candidate", "winner", "alerts"]
+    assert [kind for kind, _ in queries] == [
+        "locations", "candidate", "candidate", "winner", "alert_keys",
+    ]
 
 
 def test_marker_winner_keeps_python_tie_order_and_current_preference():
@@ -166,7 +182,9 @@ def test_marker_alerts_keep_full_payload_and_existing_reducer():
     result, queries, converted = _run([], alerts=[alert])
     assert result["one"][0].payload == alert.payload
     assert converted == [("alert", NOW)]
-    assert [kind for kind, _ in queries] == ["candidate", "candidate", "alerts"]
+    assert [kind for kind, _ in queries] == [
+        "locations", "candidate", "candidate", "alert_keys", "alerts",
+    ]
 
 
 def test_marker_winner_query_structure_cache_reused_for_different_pair_counts():

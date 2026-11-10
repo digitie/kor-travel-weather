@@ -41,7 +41,8 @@ def _statements(ids):
     return statements
 
 
-@pytest.mark.parametrize("index", [0, 1, 2], ids=["observed", "fallback", "alerts"])
+# 2026-11-10: 첫 문장은 특보 구역 판정용 위치 조회다(kind 없는 경로도 구역 뒤 상한).
+@pytest.mark.parametrize("index", [0, 1, 2, 3], ids=["locations", "observed", "fallback", "alerts"])
 def test_marker_query_cache_is_reused_across_location_batches(index):
     first = _statements(["one"])[index]
     second = _statements(["two", "three"])[index]
