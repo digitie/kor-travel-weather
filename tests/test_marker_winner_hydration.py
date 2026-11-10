@@ -124,9 +124,8 @@ def test_marker_only_winners_hydrate_and_raw_lineage_is_preserved():
     assert [row.metric_key for row in result["one"]] == ["TEMP", "SKY"]
     assert result["one"][0].payload == candidates[-1].payload
     assert result["one"][0].source_record_key == candidates[-1].source_record_key
-    assert [kind for kind, _ in queries] == [
-        "locations", "candidate", "candidate", "winner", "alert_keys",
-    ]
+    # 특보 행이 없으면 위치 조회도 없다.
+    assert [kind for kind, _ in queries] == ["candidate", "candidate", "winner", "alert_keys"]
 
 
 def test_marker_winner_keeps_python_tie_order_and_current_preference():
@@ -135,7 +134,7 @@ def test_marker_winner_keeps_python_tie_order_and_current_preference():
     result, queries, converted = _run(rows, facts=rows)
     assert converted == [("other", NOW)]
     assert result["one"][0].source_record_key == "a"
-    fallback = queries[2][1].compile(dialect=PGDialect_psycopg()).params
+    fallback = queries[1][1].compile(dialect=PGDialect_psycopg()).params
     assert ("one", "TEMP") not in set(zip(
         fallback["marker_missing_locations"], fallback["marker_missing_metrics"], strict=True,
     ))
@@ -183,7 +182,7 @@ def test_marker_alerts_keep_full_payload_and_existing_reducer():
     assert result["one"][0].payload == alert.payload
     assert converted == [("alert", NOW)]
     assert [kind for kind, _ in queries] == [
-        "locations", "candidate", "candidate", "alert_keys", "alerts",
+        "candidate", "candidate", "alert_keys", "locations", "alerts",
     ]
 
 

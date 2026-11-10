@@ -3440,10 +3440,11 @@ class WeatherRepository:
         # one recent row per location/metric without ranking all append-only
         # revisions.  Keep the generic window-query fallback for SQLite and
         # other test dialects.
-        alert_locations = dict(locations) if locations is not None else {
-            location.location_id: location
-            for location in self.get_locations_by_ids(location_ids)
-        }
+        # 호출자가 준 위치(API는 같은 catalog를 넘긴다)가 없으면 특보 행이 있을 때만 같은
+        # 세션에서 읽는다(연결 하나·특보 없는 묶음은 조회 없음).
+        alert_locations: dict[str, WeatherLocation] | None = (
+            dict(locations) if locations is not None else None
+        )
         with self._session_factory() as session:
             if session.get_bind().dialect.name != "postgresql":
                 return self.latest_values_many(
@@ -3806,7 +3807,20 @@ class WeatherRepository:
                 rows = session.execute(query.order_by(
                     alert_limited.c.location_id, alert_limited.c.location_rank,
                 )).all()
-                return self._classify_alert_rows(rows, alert_locations, budget=alert_budget)
+                return self._classify_alert_rows(rows, alert_catalog(rows), budget=alert_budget)
+
+            def alert_catalog(rows):
+                nonlocal alert_locations
+                if alert_locations is None:
+                    if not rows:
+                        return {}
+                    alert_locations = {
+                        row.location_id: self._location_model(row)
+                        for row in session.scalars(select(WeatherLocationRow).where(
+                            WeatherLocationRow.location_id.in_(sorted(set(location_ids))),
+                        )).all()
+                    }
+                return alert_locations
 
             first_cap = alert_budget * _ALERT_FIRST_SCAN_FACTOR
             kept, matched, unverified, raw = ranked_alerts(first_cap)

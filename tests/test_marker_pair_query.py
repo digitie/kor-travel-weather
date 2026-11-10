@@ -50,7 +50,7 @@ def test_marker_alert_fact_rejoin_preserves_composite_partition_key():
         provider="fixture", payload={},
     )
     statements, _ = _marker_statements(["marker-fixture"], alert_keys=[key])
-    # 위치 조회, 관측 후보, 대체 후보, 특보 순위 key, 남은 key의 fact 조회.
+    # 관측 후보, 대체 후보, 특보 순위 key, 위치(특보 행이 있을 때만), 남은 key의 fact 조회.
     assert len(statements) == 5
     hydration = str(statements[4])
     assert "provider_alert_keys" in hydration
