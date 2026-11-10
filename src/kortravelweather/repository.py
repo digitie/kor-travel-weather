@@ -1116,6 +1116,8 @@ def install_immutability_triggers(engine: Engine) -> None:
 
 #: 특보 후보를 다른 구역 복제가 채웠을 때 넓혀 읽는 위치당 후보 상한.
 _ALERT_SCAN_MAX = 2048
+#: 마커 특보 후보의 첫 조회 배수(예산 × 이 값). 운영 KMA 복제는 위치당 약 27행이었다.
+_ALERT_FIRST_SCAN_FACTOR = 4
 
 #: 배치 prefetch의 IN 목록 단위(파일의 다른 묶음 조회와 같은 1000).
 _IN_CHUNK = 1000
@@ -3387,7 +3389,11 @@ class WeatherRepository:
                     is_forecast = group[0] in ("ultra_short", "short", "mid")
                     is_alert = group[0] == "alert"
                     rows = self._current_value_models_many(
-                        session, location_ids, limit_per_location=budget if is_alert else 1,
+                        # 특보는 구역을 거른 뒤 예산을 적용한다. 다른 구역 복제가 흔하므로 처음부터
+                        # 후보를 예산의 4배까지 읽어 대개 한 번에 끝낸다(모자랄 때만 더 넓힌다).
+                        session, location_ids,
+                        limit_per_location=budget * _ALERT_FIRST_SCAN_FACTOR if is_alert else 1,
+                        alert_budget=budget if is_alert else None,
                         prefer_current=not is_forecast and not is_alert,
                         newest_first=not is_forecast, now=marker_instant,
                         from_at=marker_instant.replace(minute=0, second=0, microsecond=0)
