@@ -616,8 +616,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if len(locations) > MAX_SNAPSHOT_LOCATIONS:
                 return True
             try:
-                # 앱 공용 승인 선택(최대 60초, #215)을 쓴다. 예전에는 cursor 페이지마다 전체 선택을
-                # 다시 계산했다(odroid 2026-11-10 측정 6~16초/페이지).
+                # cursor 페이지는 앱 공용 승인 선택(최대 60초, #215)을 쓴다.
+                # 예전에는 페이지마다 전체 선택을 다시 계산했다
+                # (odroid 2026-11-10 6~16초/페이지).
                 selected = self._approved_selection(c, locations)
                 stale |= selected.unconfirmed
                 actual = {(scope.descriptor.namespace, scope.location_ids)
@@ -626,7 +627,8 @@ class FrozenForecastExports(FrozenCurrentExports):
                           for scope in manifest["scopes"]}
                 stale |= actual != wanted
             except ExportGuardTimeout:
-                # 공용 캐시의 대기·수명 초과는 현재 export와 같이 503으로 올린다(stale로 숨기지 않는다).
+                # 공용 캐시의 대기·수명 초과는 current와 같이 503이다
+                # (stale로 숨기지 않는다).
                 raise
             except (ExportArtifactError, KeyError, ValueError, TypeError):
                 stale = True

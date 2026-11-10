@@ -386,6 +386,12 @@ async def _frozen_response(
             reader_class = FrozenMidForecastExports
         repository = request.app.state.repository
         selection_cache = request.app.state.export_selection_cache
+        # 예보는 cursor 페이지만 공용 승인 선택을 쓴다
+        # (소유자 결정 2026-11-11: 최대 60초 반영 지연 허용).
+        # 첫 페이지는 예전처럼 매번 새로 읽어 승인/실패를 바로 반영하고
+        # 긴 freeze에 60초 상한(503)을 새로 걸지 않는다. 중기는 쓰지 않는다.
+        forecast_reuse = resource == "forecasts" and style != "mid" and cursor is not None
+        shares_selection = resource in {"current", "daily-summaries"} or forecast_reuse
 
         def make_reader():
             return reader_class(
@@ -396,10 +402,9 @@ async def _frozen_response(
                 ),
                 signing_key=settings.admin_token.get_secret_value(),
                 immutable_reads=resource == "current",
-                page_liveness=resource in {"current", "daily-summaries"},
-                **({"selection_cache": selection_cache}
-                   if resource in {"current", "daily-summaries", "forecasts"}
-                   and not (resource == "forecasts" and style == "mid") else {}),
+                # 삭제 epoch token: head·plan 삭제 뒤 공용 선택을 다시 읽는다.
+                page_liveness=shares_selection,
+                **({"selection_cache": selection_cache} if shares_selection else {}),
                 **(
                     {"providers": selection.providers, "source_inventory": True,
                      "expected_sources": selection.expected, "optional_sources": selection.optional}
@@ -434,7 +439,7 @@ async def _frozen_response(
                 request.app.state.export_page_cache.read, key, reader,
                 partial(_validated_read, read, _PAGE_MODELS[resource], reader),
             )
-        elif resource == "forecasts" and style != "mid":
+        elif forecast_reuse:
             # 승인 선택의 60초 수명은 limiter 대기 뒤 실제 읽기부터 센다(현재·일별과 같다).
             def read(inner=read):
                 reader.begin_page_reuse()
@@ -540,8 +545,9 @@ async def export_forecasts(
     known_at은 원천 시각이며 since에는 모든 페이지 반영 뒤 meta.next_since를 사용한다.
     ultra_short·short·mid는 KMA만 공급하므로 다른 활성 provider와 무관하고, external은
     export 경로가 없는 provider가 활성이면503이다. 최신 승인 예보에 미래 시각이 없는
-    위치는 빼고 stale로 표시한다. mid 밖의 승인·실패 상태 반영은
-    최대60초 지연될 수 있다(소유자 결정 2026-11-11, current·daily와 같다).
+    위치는 빼고 stale로 표시한다. mid 밖 cursor 페이지의 승인·실패 반영은
+    최대60초 지연될 수 있다(소유자 결정 2026-11-11).
+    첫 페이지는 바로 반영한다.
     """
     return await _frozen_response(
         request, "forecasts", limit, cursor, provider=provider, style=style, since=since

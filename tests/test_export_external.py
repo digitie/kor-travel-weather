@@ -574,13 +574,11 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
             heads.lifecycle.owners.c.active_attempt_id.in_(old_attempt_ids)
         )).all()
         assert set(owners) == old_attempt_ids  # 새 owner/attempt 없이 실패한 경계
-    # current·daily와 같이 forecasts도 승인/실패 반영은 최대 60초
-    # 늦을 수 있다(소유자 결정 2026-11-11). 창 안에서는 옛 정상
-    # 응답(304)이고, 60초가 지나면 반드시 stale로 바뀐다.
-    assert client.get(url, params=params, headers={
-        **headers, "if-none-match": healthy.headers["etag"],
-    }).status_code == 304
-    clock[0] += 60
+    if not forecast:
+        assert client.get(url, params=params, headers={
+            **headers, "if-none-match": healthy.headers["etag"],
+        }).status_code == 304
+        clock[0] += 60
     stale = client.get(url, params=params, headers={
         **headers, "if-none-match": healthy.headers["etag"],
     })
