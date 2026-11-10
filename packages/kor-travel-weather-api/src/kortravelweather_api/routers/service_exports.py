@@ -26,7 +26,7 @@ from kortravelweather.export_artifacts import (
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
-from kortravelweather.export_selection_cache import ExportSelectionCache
+from kortravelweather.export_selection_cache import SELECTION_MAX_AGE_SECONDS
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
@@ -40,6 +40,9 @@ from ..auth import require_admin
 from ..response import Problem, request_id
 
 logger = logging.getLogger(__name__)
+
+#: 이어지는 cursor 페이지가 앱 공용 승인 선택을 이어받는 최소 남은 수명(초).
+_CURSOR_SELECTION_MIN_REMAINING = 30.0
 
 #: 일시 경합 503의 재시도 간격(초). DB statement/lock 상한(5s/1s)과 reader guard(기본 5s)를
 #: 넘긴 요청이 같은 요청(같은 cursor)을 다시 보낼 때까지의 최소 대기다.
@@ -385,7 +388,7 @@ async def _frozen_response(
         repository = request.app.state.repository
         selection_cache = request.app.state.export_selection_cache
 
-        def make_reader(*, fresh=False):
+        def make_reader():
             return reader_class(
                 repository,
                 ExportArtifactStore(
@@ -395,8 +398,7 @@ async def _frozen_response(
                 signing_key=settings.admin_token.get_secret_value(),
                 immutable_reads=resource == "current",
                 page_liveness=resource in {"current", "daily-summaries"},
-                **({"selection_cache": ExportSelectionCache(clock=lambda: selection_cache.clock())
-                    if fresh else selection_cache}
+                **({"selection_cache": selection_cache}
                    if resource in {"current", "daily-summaries"} else {}),
                 **(
                     {"providers": selection.providers, "source_inventory": True,
@@ -415,9 +417,13 @@ async def _frozen_response(
                 limit=limit, cursor=cursor,
             )
 
-        # 완성 페이지의 miss는 새 승인 수명으로 시작한다. 이전 key의 60초가 거의 끝난
-        # 중간 선택 캐시를 이어받아 긴 재구성 도중 수명이 만료되는 일을 막는다.
-        reader = make_reader(fresh=resource in {"current", "daily-summaries"})
+        # 첫 페이지 miss(긴 freeze)는 승인 선택을 항상 새로 읽어 60초 전체를 쓴다. 그 결과는
+        # 앱 공용 캐시에 남아, 이어지는 cursor 페이지는 30초 이상 남았으면 다시 읽지 않는다.
+        # (예전에는 요청마다 빈 캐시를 만들어 공용 캐시가 한 번도 쓰이지 않았다.)
+        reader = make_reader()
+        reader.selection_min_remaining = (
+            float(SELECTION_MAX_AGE_SECONDS) if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
+        )
         read = page_read(reader)
         if resource in {"current", "daily-summaries"}:
             key = (

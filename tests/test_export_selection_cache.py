@@ -51,6 +51,10 @@ def test_selection_cache_slow_first_read_is_not_saved_or_returned_as_fresh():
 
 
 def test_selection_cache_does_not_hold_lock_during_read_or_duplicate_same_key():
+    """같은 키의 두 번째 요청은 즉시 503 대신 첫 읽기를 기다려 그 결과를 쓴다(2026-11-10).
+
+    앱 공용 캐시를 실제로 쓰게 되면서 동시 요청이 같은 키를 만난다. 중복 DB 작업은 여전히 하나다.
+    """
     cache = ExportSelectionCache()
     entered, release = Event(), Event()
 
@@ -59,19 +63,38 @@ def test_selection_cache_does_not_hold_lock_during_read_or_duplicate_same_key():
         assert release.wait(5)
         return ApprovedSelection((), False)
 
-    with ThreadPoolExecutor(1) as executor:
+    with ThreadPoolExecutor(2) as executor:
         job = executor.submit(cache.read, "key", load, checked_after=cache.clock())
         assert entered.wait(5)
+        waiter = executor.submit(
+            cache.read, "key", lambda: pytest.fail("중복"), checked_after=cache.clock()
+        )
         try:
-            with pytest.raises(ExportGuardTimeout):
-                cache.read("key", lambda: pytest.fail("중복"), checked_after=cache.clock())
+            # 다른 키는 잠금에 막히지 않는다.
             assert cache.read(
                 "other", lambda: ApprovedSelection((), True), checked_after=cache.clock()
             )[0].unconfirmed
+            assert not waiter.done()
         finally:
             release.set()
         assert not job.result(timeout=5)[0].unconfirmed
+        assert waiter.result(timeout=5) == job.result(timeout=5)
     assert not cache.inflight
+
+
+def test_selection_cache_min_remaining_refreshes_short_lived_entries():
+    clock = [0.0]
+    cache = ExportSelectionCache(clock=lambda: clock[0])
+    first, second = ApprovedSelection((), False), ApprovedSelection((), True)
+    assert cache.read("key", lambda: first, checked_after=0) == (first, 60)
+    clock[0] = 25.0  # 35초 남음
+    assert cache.read("key", lambda: pytest.fail("hit"), checked_after=25,
+                      min_remaining=30) == (first, 60)
+    clock[0] = 31.0  # 29초 남음: 새로 읽는다
+    assert cache.read("key", lambda: second, checked_after=31, min_remaining=30) == (second, 91)
+    # 60이면 시간이 조금이라도 지난 항목은 새로 읽는다(긴 첫 페이지 생성).
+    clock[0] = 31.5
+    assert cache.read("key", lambda: first, checked_after=31.5, min_remaining=60) == (first, 91.5)
 
 
 def test_selection_cache_key_separates_engine_sources_catalog_and_local_health():

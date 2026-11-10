@@ -27,7 +27,7 @@ _CATALOG_FIELDS = (
 
 
 class ExportSelectionCache:
-    """잠금 안에서는 작은 LRU만 만진다. 같은 키의 중복 DB 작업은 즉시 경합으로 돌린다.
+    """잠금 안에서는 작은 LRU만 만진다. 같은 키의 중복 DB 작업은 하나만 하고 나머지는 기다린다.
 
     용량은 descriptor·위치 ID·키의 직렬화 크기로 제한하며 Python RSS 상한은 아니다.
     실패는 기억하지 않는다. 캐시 만료/갱신 실패 때 이전 정상 상태로 연장하지 않는다.
@@ -37,7 +37,7 @@ class ExportSelectionCache:
         self.clock = clock
         self.entries = OrderedDict()
         self.bytes = 0
-        self.inflight = set()
+        self.inflight = {}
         self.lock = threading.Lock()
 
     @staticmethod
@@ -59,20 +59,37 @@ class ExportSelectionCache:
             ),
         )
 
-    def read(self, key, load, *, checked_after, validate=None):
+    def read(self, key, load, *, checked_after, validate=None, min_remaining=0.0):
+        """``min_remaining``초보다 수명이 덜 남은 항목은 쓰지 않고 새로 읽는다.
+
+        긴 페이지 생성은 남은 수명이 짧은 선택을 이어받으면 도중에 60초를 넘겨 실패한다.
+        그런 요청은 ``min_remaining``을 크게(60이면 항상 새로) 주고, 그 결과를 같은 앱의 다음
+        요청(이어지는 cursor 페이지)이 재사용한다.
+        """
         now = self.clock()
         with self.lock:
             for old_key, (_, deadline, size) in list(self.entries.items()):
-                if now >= deadline:
+                if now >= deadline or (old_key == key and deadline - now < min_remaining):
                     self.entries.pop(old_key)
                     self.bytes -= size
             found = self.entries.get(key)
+            waiting = None
             if found is not None:
                 self.entries.move_to_end(key)
+            elif key in self.inflight:
+                waiting = self.inflight[key]
             else:
-                if key in self.inflight or len(self.inflight) >= _MAX_ENTRIES:
+                if len(self.inflight) >= _MAX_ENTRIES:
                     raise ExportGuardTimeout("승인 상태 갱신이 이미 진행 중입니다.")
-                self.inflight.add(key)
+                self.inflight[key] = threading.Event()
+        if waiting is not None:
+            # 같은 키를 다른 요청이 읽는 중이면 끝나기를 기다렸다가 그 결과를 쓴다(즉시 503 대신).
+            if not waiting.wait(SELECTION_MAX_AGE_SECONDS):
+                raise ExportGuardTimeout("승인 상태 갱신 대기 상한을 넘었습니다.")
+            return self.read(
+                key, load, checked_after=checked_after, validate=validate,
+                min_remaining=min_remaining,
+            )
         if found is not None:
             try:
                 if validate is not None:
@@ -103,7 +120,7 @@ class ExportSelectionCache:
             return result, deadline
         finally:
             with self.lock:
-                self.inflight.remove(key)
+                self.inflight.pop(key).set()
 
     def require_current(self, deadline):
         if self.clock() >= deadline:
