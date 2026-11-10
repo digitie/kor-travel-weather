@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from datetime import datetime
 from time import perf_counter
@@ -903,9 +904,15 @@ async def _marker_summaries(
         # repository boundary.  It avoids a second full current-row scan for
         # alerts while retaining the weather-code/temperature rows needed by
         # the map.
+        # 같은 위치 정보로 특보 구역을 거르고 판정한다(두 번 읽으면 그 사이 catalog
+        # 수정이 끼어들 수 있다). 이 인자를 모르는 repository double은 그대로 둔다.
+        same_catalog = (
+            {"locations": by_id}
+            if "locations" in inspect.signature(marker_many).parameters else {}
+        )
         marker_by_location = await run_in_threadpool(
             marker_many, valid_ids, limit_per_location=80,
-            **_provider_kwargs(providers), **_kind_kwargs(kinds)
+            **_provider_kwargs(providers), **_kind_kwargs(kinds), **same_catalog,
         )
         latest_by_location = marker_by_location
         alert_by_location = marker_by_location

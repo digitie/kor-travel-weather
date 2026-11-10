@@ -68,7 +68,7 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.types import TypeDecorator
 
-from .alerts import ALERT_MAX_AGE, active_alert_values
+from .alerts import ALERT_MAX_AGE, active_alert_values, alert_scope_of
 from .export_artifacts import (
     MAX_CHUNK_POINTS,
     ExportArtifactError,
@@ -2843,8 +2843,13 @@ class WeatherRepository:
         exclude_alerts: bool = False,
         alerts_only: bool = False,
         alert_active_at: datetime | None = None,
+        alert_locations: Mapping[str, WeatherLocation] | None = None,
     ) -> dict[str, list[WeatherValue]]:
-        """Read bounded per-location rows from the current-value projection."""
+        """Read bounded per-location rows from the current-value projection.
+
+        ``alert_locations`` (alert reads only) drops candidates whose warning area
+        is another location's before they are hydrated; see ``_scope_alert_pairs``.
+        """
         if exclude_alerts and alerts_only:
             # Otherwise the branch below silently answers the opposite of what
             # ``exclude_alerts`` asked for.
@@ -3070,6 +3075,8 @@ class WeatherRepository:
                     winners[key] = choices[:limit_per_location]
             pairs = [(p.location_id, p.value_id, p.known_at)
                      for choices in winners.values() for p in choices]
+            if alert_locations is not None:
+                pairs = self._scope_alert_pairs(session, pairs, alert_locations)
         else:
             if per_metric and providers is not None and len(set(providers)) > 1:
                 # 다중 제공처도 각각의 정렬된 prefix에서 대표만 읽은 뒤 병합한다.
@@ -3120,6 +3127,66 @@ class WeatherRepository:
             if row is not None:
                 result[location_id].append(self._value_model(row))
         return result
+
+    @staticmethod
+    def _scope_alert_pairs(
+        session: Session,
+        pairs: list[tuple[str, str, datetime]],
+        locations: Mapping[str, WeatherLocation],
+    ) -> list[tuple[str, str, datetime]]:
+        """다른 특보구역의 후보를 전체 모델로 만들기 전에 거른다.
+
+        KMA 특보 목록은 발표 관서 단위로 여러 위치에 복제돼, 60개 위치 마커 한 묶음이
+        1,620행을 모델로 만든 뒤 구역 판정에서 전부 버렸다(odroid 2026-11-10: 9~16초,
+        대부분 ORM·Pydantic 수화). 같은 판정(``alert_scope_of``)을 provider·payload만
+        읽어 먼저 한다.
+
+        - matched: 그대로 둔다. 해제(tombstone)도 같은 구역이므로 함께 남는다.
+        - unverified: 위치마다 하나만 남긴다. 응답에 쓰이지 않고 ``alert_scope_unverified``
+          ("미확인 행이 하나라도 있는가")에만 쓰이므로 결과가 같다.
+        - different: 응답·표식 어디에도 쓰이지 않으므로 버린다.
+        위치 정보가 없으면(요청 밖 ID) 거르지 않는다.
+        """
+        if not pairs:
+            return pairs
+        keys = func.unnest(
+            bindparam("scope_value_ids", [value_id for _, value_id, _ in pairs],
+                      type_=ARRAY(String)),
+            bindparam("scope_known_ats", [known_at for _, _, known_at in pairs],
+                      type_=ARRAY(AwareDateTime())),
+        ).table_valued("value_id", "known_at").render_derived(name="scope_fact_keys")
+        clocks = [known_at for _, _, known_at in pairs]
+        facts = {
+            (row.value_id, row.known_at): row
+            for row in session.execute(
+                select(
+                    WeatherValueRow.value_id, WeatherValueRow.known_at,
+                    WeatherValueRow.provider, WeatherValueRow.location_id,
+                    WeatherValueRow.payload,
+                ).join(keys, and_(
+                    WeatherValueRow.value_id == keys.c.value_id,
+                    WeatherValueRow.known_at == keys.c.known_at,
+                )).where(
+                    WeatherValueRow.known_at >= min(clocks),
+                    WeatherValueRow.known_at <= max(clocks),
+                )
+            )
+        }
+        kept: list[tuple[str, str, datetime]] = []
+        unverified_kept: set[str] = set()
+        for location_id, value_id, known_at in pairs:
+            location = locations.get(location_id)
+            fact = facts.get((value_id, known_at))
+            if location is None or fact is None:
+                kept.append((location_id, value_id, known_at))
+                continue
+            scope = alert_scope_of(fact.provider, fact.location_id, fact.payload, location)
+            if scope == "matched":
+                kept.append((location_id, value_id, known_at))
+            elif scope == "unverified" and location_id not in unverified_kept:
+                unverified_kept.add(location_id)
+                kept.append((location_id, value_id, known_at))
+        return kept
 
     @staticmethod
     def _ranked_current_ids(session: Session, stmt: Any) -> Any:
@@ -3197,8 +3264,12 @@ class WeatherRepository:
         now: datetime | None = None,
         providers: Sequence[str] | None = None,
         kinds: Sequence[WeatherKind] | None = None,
+        locations: Mapping[str, WeatherLocation] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the small current projection needed to render map markers.
+
+        ``locations``: the caller's already-loaded anchors. The alert prefilter uses
+        them so its area check sees the same catalog the caller will apply.
 
         A marker only needs a weather condition/temperature and advisories;
         loading every air-quality and forecast metric makes a nationwide map
@@ -3224,6 +3295,12 @@ class WeatherRepository:
             if not groups:
                 return result
             budget = max(1, limit_per_location // len(groups))
+            alert_locations = None
+            if any(group[0] == "alert" for group in groups):
+                alert_locations = dict(locations) if locations is not None else {
+                    location.location_id: location
+                    for location in self.get_locations_by_ids(location_ids)
+                }
             with self._session_factory() as session:
                 for group in groups:
                     is_forecast = group[0] in ("ultra_short", "short", "mid")
@@ -3238,6 +3315,7 @@ class WeatherRepository:
                         metric_keys=None if is_alert else _MARKER_METRIC_KEYS[:budget],
                         per_metric=not is_alert,
                         alert_active_at=marker_instant if is_alert else None,
+                        alert_locations=alert_locations if is_alert else None,
                     )
                     for key, values in rows.items():
                         result[key].extend(values)
