@@ -145,18 +145,13 @@ def test_reused_page_checks_files_by_stat_and_rebuild_still_rehashes(
     first = client.get(url, headers=HEADERS)
     assert first.status_code == 200
     reads = []
-    original_read, original_verify = ExportArtifactStore.read, ExportArtifactStore.verify
+    original_lines = ExportArtifactStore._lines
 
-    def counted_read(store, *args, **kwargs):
-        reads.append("read")
-        return original_read(store, *args, **kwargs)
+    def counted_lines(store, *args, **kwargs):
+        reads.append("hash")  # 파일 내용을 읽어 hash하는 유일한 경로
+        return original_lines(store, *args, **kwargs)
 
-    def counted_verify(store, *args, **kwargs):
-        reads.append("verify")
-        return original_verify(store, *args, **kwargs)
-
-    monkeypatch.setattr(ExportArtifactStore, "read", counted_read)
-    monkeypatch.setattr(ExportArtifactStore, "verify", counted_verify)
+    monkeypatch.setattr(ExportArtifactStore, "_lines", counted_lines)
     hit = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
     assert hit.status_code == 304 and hit.headers["x-export-read"] == "reused"
     assert reads == []  # hit는 파일 내용을 다시 읽지 않는다

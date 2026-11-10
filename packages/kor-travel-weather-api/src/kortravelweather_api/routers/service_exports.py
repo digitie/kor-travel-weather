@@ -26,7 +26,6 @@ from kortravelweather.export_artifacts import (
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
-from kortravelweather.export_selection_cache import SELECTION_MAX_AGE_SECONDS
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
@@ -421,9 +420,7 @@ async def _frozen_response(
         # 앱 공용 캐시에 남아, 이어지는 cursor 페이지는 30초 이상 남았으면 다시 읽지 않는다.
         # (예전에는 요청마다 빈 캐시를 만들어 공용 캐시가 한 번도 쓰이지 않았다.)
         reader = make_reader()
-        reader.selection_min_remaining = (
-            float(SELECTION_MAX_AGE_SECONDS) if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
-        )
+        reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
         read = page_read(reader)
         if resource in {"current", "daily-summaries"}:
             key = (

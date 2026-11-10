@@ -220,8 +220,9 @@ class FrozenCurrentExports:
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
         self.selection_cache = selection_cache
-        # 남은 수명이 이보다 짧은 앱 공용 선택은 이어받지 않는다(route가 요청 종류별로 정한다).
-        self.selection_min_remaining = 0.0
+        # 앱 공용 선택은 지금부터 이 초 이상 남은 것만 이어받는다(route가 요청 종류별로 정한다).
+        # None이면 이 요청이 시작한 뒤 읽힌 선택만 쓴다(긴 첫 페이지가 60초 전체를 쓰도록).
+        self.selection_min_remaining: float | None = 0.0
         self.selection_checked_after = monotonic()
         self.selection_deadline = None
         self.reuse_wall_started = datetime.now(UTC)
@@ -330,7 +331,14 @@ class FrozenCurrentExports:
         result, deadline = self.selection_cache.read(
             key, read, checked_after=self.selection_checked_after,
             validate=lambda selection: self._validate_cached_selection(connection, selection),
-            min_remaining=self.selection_min_remaining,
+            min_deadline=(
+                self.selection_checked_after + 60
+                if self.selection_min_remaining is None
+                else self.selection_cache.clock() + self.selection_min_remaining
+            ),
+            # 같은 삭제 변경 번호(page liveness)에서 읽힌 선택만 잇는다. 사이에 head·plan 삭제가
+            # 있었다면 다시 읽어 stale/유실 판정을 이 요청의 transaction에서 한다.
+            token=None if self.reuse_liveness is None else tuple(self.reuse_liveness[:3]),
         )
         # 이 요청의 다음 호출(health 재확인 등)은 방금 읽은 선택을 그대로 쓴다.
         self.selection_min_remaining = 0.0

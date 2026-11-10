@@ -82,19 +82,63 @@ def test_selection_cache_does_not_hold_lock_during_read_or_duplicate_same_key():
     assert not cache.inflight
 
 
-def test_selection_cache_min_remaining_refreshes_short_lived_entries():
+def test_selection_cache_min_deadline_skips_short_lived_entries_without_evicting():
     clock = [0.0]
     cache = ExportSelectionCache(clock=lambda: clock[0])
     first, second = ApprovedSelection((), False), ApprovedSelection((), True)
     assert cache.read("key", lambda: first, checked_after=0) == (first, 60)
     clock[0] = 25.0  # 35초 남음
     assert cache.read("key", lambda: pytest.fail("hit"), checked_after=25,
-                      min_remaining=30) == (first, 60)
-    clock[0] = 31.0  # 29초 남음: 새로 읽는다
-    assert cache.read("key", lambda: second, checked_after=31, min_remaining=30) == (second, 91)
-    # 60이면 시간이 조금이라도 지난 항목은 새로 읽는다(긴 첫 페이지 생성).
-    clock[0] = 31.5
-    assert cache.read("key", lambda: first, checked_after=31.5, min_remaining=60) == (first, 91.5)
+                      min_deadline=55) == (first, 60)
+    # 이 요청은 더 긴 수명이 필요하다: 새로 읽고 교체한다(다른 요청용 항목을 먼저 지우지 않는다).
+    assert cache.read("key", lambda: second, checked_after=25, min_deadline=85) == (second, 85)
+    assert cache.read("key", lambda: pytest.fail("hit"), checked_after=26) == (second, 85)
+
+
+def test_selection_cache_token_mismatch_reloads():
+    cache = ExportSelectionCache(clock=lambda: 0)
+    first, second = ApprovedSelection((), False), ApprovedSelection((), True)
+    assert cache.read("key", lambda: first, checked_after=0, token=(1, 1, 1))[0] == first
+    assert cache.read("key", lambda: pytest.fail("hit"), checked_after=0,
+                      token=(1, 1, 1))[0] == first
+    # 사이에 head 삭제(epoch 변화)가 있었다면 그 선택을 잇지 않는다.
+    assert cache.read("key", lambda: second, checked_after=0, token=(1, 1, 2))[0] == second
+
+
+def test_selection_cache_failed_hit_validation_reloads_in_own_transaction():
+    """다른 요청의 더 새 snapshot에서 읽힌 선택은 오래된 RR에서 유실처럼 보일 수 있다."""
+    cache = ExportSelectionCache(clock=lambda: 0)
+    first, second = ApprovedSelection((), False), ApprovedSelection((), True)
+    cache.read("key", lambda: first, checked_after=0)
+
+    def newer_than_my_snapshot(selection):
+        raise ValueError("이 RR에는 아직 보이지 않는 세대")
+
+    assert cache.read("key", lambda: second, checked_after=0,
+                      validate=newer_than_my_snapshot)[0] == second
+    assert not cache.inflight
+
+
+def test_selection_cache_waiter_with_min_deadline_uses_the_owners_fresh_load():
+    clock = [10.0]
+    cache = ExportSelectionCache(clock=lambda: clock[0])
+    entered, release = Event(), Event()
+    value = ApprovedSelection((), False)
+
+    def load():
+        entered.set()
+        assert release.wait(5)
+        return value
+
+    with ThreadPoolExecutor(2) as executor:
+        owner = executor.submit(cache.read, "key", load, checked_after=10)
+        assert entered.wait(5)
+        # 대기자는 소유자보다 먼저 시작했다(시작 9). 소유자 결과는 그 뒤 것이므로 쓴다.
+        waiter = executor.submit(cache.read, "key", lambda: pytest.fail("중복"),
+                                 checked_after=9, min_deadline=69)
+        release.set()
+        assert owner.result(timeout=5) == (value, 70)
+        assert waiter.result(timeout=5) == (value, 70)
 
 
 def test_selection_cache_key_separates_engine_sources_catalog_and_local_health():
