@@ -314,3 +314,71 @@ def test_cursor_pages_reuse_the_app_selection_read_by_the_first_page(
         pages += 1
     assert pages >= 3
     assert len(loads) == 1, loads  # 첫 페이지 한 번뿐
+
+
+def test_forecast_cursor_pages_reuse_the_app_selection(repository, tmp_path, monkeypatch):
+    """예보 cursor 페이지 상태 검사는 앱 공용 승인 선택을 쓴다(2026-11-11 결정).
+
+    예전에는 cursor 페이지마다 전체 승인 선택을 다시 계산했다(odroid 측정 6~16초/페이지).
+    첫 페이지는 예전처럼 새로 읽고, 첫 cursor 페이지가 한 번 읽어
+    공용 선택에 둔다.
+    """
+    from test_frozen_service_exports import _collect_forecast
+
+    from kortravelweather import export_inventory_selection
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    loads = []
+    original = export_inventory_selection.approved_source_selection
+
+    def counted(*args, **kwargs):
+        loads.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(export_inventory_selection, "approved_source_selection", counted)
+    # main의 상태 검사는 모듈에 묶인 이름으로 불렀다. 그 경로도 세어야 실패가 드러난다.
+    from kortravelweather import export_forecasts
+
+    monkeypatch.setattr(export_forecasts, "approved_source_selection", counted, raising=False)
+    url = "/v1/service/exports/forecasts?style=ultra_short&limit=1"
+    page = client.get(url, headers=HEADERS)
+    assert page.status_code == 200, page.text
+    assert len(loads) >= 1
+    page = client.get(url + "&cursor=" + page.json()["meta"]["next_cursor"], headers=HEADERS)
+    assert page.status_code == 200, page.text
+    shared = len(loads)
+    pages = 2
+    while page.json()["meta"]["next_cursor"] and pages < 4:
+        page = client.get(url + "&cursor=" + page.json()["meta"]["next_cursor"], headers=HEADERS)
+        assert page.status_code == 200, page.text
+        pages += 1
+    assert pages >= 3
+    assert len(loads) == shared, loads  # 다음 cursor 페이지는 다시 계산하지 않는다
+
+
+def test_forecast_cursor_page_rereads_after_head_deletion(repository, tmp_path):
+    """공용 선택은 삭제 epoch token에 묶인다. head 삭제 뒤 cursor는 바로 stale이다.
+
+    첫 cursor 페이지가 공용 선택을 채운 뒤 head를 지우고, 다른 첫 페이지
+    없이 다음 cursor 페이지를 읽는다(token이 없으면 60초 동안 "ok"가 된다).
+    """
+    from test_frozen_service_exports import _collect_forecast
+
+    from kortravelweather.export_heads import ExportHeads
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/forecasts"
+    params = {"style": "ultra_short", "limit": 1}
+    first = client.get(url, params=params, headers=HEADERS)
+    second = client.get(
+        url, params={**params, "cursor": first.json()["meta"]["next_cursor"]}, headers=HEADERS,
+    )
+    assert second.status_code == 200 and second.json()["meta"]["source_status"] == "ok"
+    cursor = second.json()["meta"]["next_cursor"]
+    assert cursor
+    with repository.engine.begin() as connection:
+        connection.execute(ExportHeads(repository).heads.delete())
+    third = client.get(url, params={**params, "cursor": cursor}, headers=HEADERS)
+    assert third.status_code == 200 and third.json()["meta"]["source_status"] == "stale"
