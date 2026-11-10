@@ -45,6 +45,7 @@ from sqlalchemy import (
     false,
     func,
     literal,
+    literal_column,
     not_,
     nullslast,
     or_,
@@ -3202,7 +3203,15 @@ class WeatherRepository:
         return result
 
     @staticmethod
-    def _classify_alert_rows(rows, locations, *, budget):
+    def _classify_alert_rows(
+        rows: Sequence[Any],
+        locations: Mapping[str, WeatherLocation],
+        *,
+        budget: int,
+    ) -> tuple[
+        list[tuple[str, str, datetime]], Counter[str],
+        set[tuple[str, str, datetime]], Counter[str],
+    ]:
         """구역 판정·위치별 상한(이 위치 특보에 적용)·미확인 표식 1건. 행은 순위 순서다.
 
         각 행은 location_id·value_id·known_at·provider·payload를 갖는다. 순위는 위치별로
@@ -3713,15 +3722,35 @@ class WeatherRepository:
                 WeatherValueRow.payload["tmSeq"].as_string(),
                 WeatherValueRow.value_id,
             )
-            alert_ranked = (
+            # 구역 판정(alert_scope_of)이 읽는 필드만 순위 행에 싣는다. payload 전체를
+            # 두 window 정렬에 싣지 않는다(큰 묶음에서 정렬이 디스크로 넘친다).
+            # 없는 키·객체가 아닌 payload/raw의 -> 는 null이라 판정은 전체 payload와 같다.
+            area_keys = ("reg_id", "regId", "area_code", "areaCode", "zone_code", "zoneCode")
+
+            def area_object(source: Any) -> Any:
+                return func.json_build_object(*(
+                    part for key in area_keys
+                    for part in (literal_column(f"'{key}'"), source[key])
+                ))
+
+            alert_area_payload = func.json_build_object(
+                *(part for key in area_keys
+                  for part in (literal_column(f"'{key}'"), WeatherValueRow.payload[key])),
+                literal_column("'raw'"), area_object(WeatherValueRow.payload["raw"]),
+            )
+
+            def build_alert_limited(*, exclude_kma: bool = False) -> Any:
+                return _limited(_ranked(exclude_kma))
+
+            def _ranked(exclude_kma: bool) -> Any:
+                return (
                 select(
                     WeatherValueRow.value_id.label("value_id"),
                     WeatherValueRow.location_id.label("location_id"),
                     WeatherValueRow.target_at.label("target_at"),
                     WeatherValueRow.known_at.label("known_at"),
-                    # 구역 판정용(같은 행에서 station/seq를 이미 읽는다). 두 번째 fact 왕복이 없다.
                     WeatherValueRow.provider.label("provider"),
-                    WeatherValueRow.payload.label("payload"),
+                    alert_area_payload.label("payload"),
                     func.row_number()
                     .over(
                         partition_by=(
@@ -3748,6 +3777,8 @@ class WeatherRepository:
                     true() if providers is None else WeatherValueRow.provider.in_(
                         tuple(dict.fromkeys(providers)),
                     ),
+                    WeatherValueRow.provider.not_in(tuple(sorted(KMA_ALERT_PROVIDERS)))
+                    if exclude_kma else true(),
                     or_(
                         WeatherValueRow.weather_domain
                         == literal("weather_alert", literal_execute=True),
@@ -3764,8 +3795,10 @@ class WeatherRepository:
                     ),
                 )
                 .subquery("marker_alert_values")
-            )
-            alert_limited = (
+                )
+
+            def _limited(alert_ranked: Any) -> Any:
+                return (
                 select(
                     alert_ranked.c.location_id,
                     alert_ranked.c.value_id,
@@ -3785,7 +3818,9 @@ class WeatherRepository:
                 )
                 .where(alert_ranked.c.revision_rank == 1)
                 .subquery("limited_marker_alert_values")
-            )
+                )
+
+            alert_limited = build_alert_limited()
             result: dict[str, list[WeatherValue]] = {
                 location_id: [] for location_id in location_ids
             }
@@ -3796,20 +3831,26 @@ class WeatherRepository:
             # #216·#219). 첫 조회는 상한의 4배, 모자란 위치만 _ALERT_SCAN_MAX까지 넓힌다.
             alert_budget = min(limit_per_location, 100)
 
-            def ranked_alerts(cap, only=None):
+            def ranked_alerts(
+                cap: int, only: Sequence[str] | None = None, limited: Any = None,
+            ) -> tuple[
+                list[tuple[str, str, datetime]], Counter[str],
+                set[tuple[str, str, datetime]], Counter[str],
+            ]:
+                source = alert_limited if limited is None else limited
                 query = select(
-                    alert_limited.c.location_id, alert_limited.c.value_id,
-                    alert_limited.c.known_at, alert_limited.c.provider,
-                    alert_limited.c.payload,
-                ).where(alert_limited.c.location_rank <= cap)
+                    source.c.location_id, source.c.value_id,
+                    source.c.known_at, source.c.provider,
+                    source.c.payload,
+                ).where(source.c.location_rank <= cap)
                 if only is not None:
-                    query = query.where(alert_limited.c.location_id.in_(only))
+                    query = query.where(source.c.location_id.in_(only))
                 rows = session.execute(query.order_by(
-                    alert_limited.c.location_id, alert_limited.c.location_rank,
+                    source.c.location_id, source.c.location_rank,
                 )).all()
                 return self._classify_alert_rows(rows, alert_catalog(rows), budget=alert_budget)
 
-            def alert_catalog(rows):
+            def alert_catalog(rows: Sequence[Any]) -> dict[str, WeatherLocation]:
                 nonlocal alert_locations
                 if alert_locations is None:
                     if not rows:
@@ -3828,17 +3869,38 @@ class WeatherRepository:
                 location_id for location_id in raw
                 if raw[location_id] >= first_cap and matched[location_id] < alert_budget
             )
-            if crowded:
-                wide = ranked_alerts(_ALERT_SCAN_MAX, crowded)
-                crowded_set = set(crowded)
-                kept = [pair for pair in kept if pair[0] not in crowded_set] + wide[0]
-                unverified = {pair for pair in unverified if pair[0] not in crowded_set} | wide[2]
-                if any(wide[3][location_id] >= _ALERT_SCAN_MAX
-                       and wide[1][location_id] < alert_budget for location_id in crowded):
-                    logger.warning(
-                        "weather_marker_alert_scan_cap locations=%d limit=%d",
-                        len(crowded), _ALERT_SCAN_MAX,
-                    )
+            catalog = alert_locations or {}
+            # 구역 정보가 없는 위치의 KMA 행은 모두 미확인이라 넓혀도 matched가 될 수
+            # 없다. 그 위치는 KMA 밖 제공처만 넓혀 읽고 첫 조회의 미확인 표식은 둔다
+            # (kind 지정 경로와 같다).
+            uncoded = [
+                location_id for location_id in crowded
+                if location_id in catalog and not has_alert_area_codes(catalog[location_id])
+            ]
+            uncoded_set = set(uncoded)
+            coded = [location_id for location_id in crowded if location_id not in uncoded_set]
+            capped = False
+            if coded:
+                wide = ranked_alerts(_ALERT_SCAN_MAX, coded)
+                coded_set = set(coded)
+                kept = [pair for pair in kept if pair[0] not in coded_set] + wide[0]
+                unverified = {pair for pair in unverified if pair[0] not in coded_set} | wide[2]
+                capped |= any(wide[3][location_id] >= _ALERT_SCAN_MAX
+                              and wide[1][location_id] < alert_budget for location_id in coded)
+            if uncoded:
+                wide = ranked_alerts(
+                    _ALERT_SCAN_MAX, uncoded, build_alert_limited(exclude_kma=True),
+                )
+                kept = [
+                    pair for pair in kept if pair[0] not in uncoded_set or pair in unverified
+                ] + wide[0]
+                capped |= any(wide[3][location_id] >= _ALERT_SCAN_MAX
+                              and wide[1][location_id] < alert_budget for location_id in uncoded)
+            if capped:
+                logger.warning(
+                    "weather_marker_alert_scan_cap locations=%d limit=%d",
+                    len(crowded), _ALERT_SCAN_MAX,
+                )
             alert_rows = []
             if kept:
                 keys = (

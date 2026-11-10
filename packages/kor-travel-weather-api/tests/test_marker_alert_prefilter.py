@@ -301,3 +301,76 @@ def test_kindless_other_area_release_does_not_cancel_own_alert(api_client: TestC
     response = api_client.get("/v1/weather/markers?location_id=kindless-cross")
     assert response.status_code == 200, response.text
     assert [a["value_text"] for a in response.json()["data"][0]["alerts"]] == ["강풍주의보 발표"]
+
+
+def test_kindless_own_alert_behind_the_first_scan_is_found(api_client: TestClient) -> None:
+    """첫 조회(상한 80 × 4 = 320)보다 뒤의 이 구역 특보는 넓힌 조회로 찾는다."""
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless-deep", coded=True)
+    repo.upsert_values([
+        *(_alert("kindless-deep", i, f"sea-{i}", now, f"풍랑주의보{i} 발표")
+          for i in range(400)),
+        _alert("kindless-deep", 450, "land-a", now, "한파주의보 발표"),
+    ])
+    response = api_client.get("/v1/weather/markers?location_id=kindless-deep")
+    assert response.status_code == 200, response.text
+    alerts = response.json()["data"][0]["alerts"]
+    assert [a["value_text"] for a in alerts] == ["한파주의보 발표"]
+
+
+def test_kindless_budget_applies_to_own_alerts_newest_first(api_client: TestClient) -> None:
+    """상한(80)은 구역을 거른 뒤 이 위치 특보에 적용하고 최신부터 남긴다."""
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless-many", coded=True)
+    repo.upsert_values([
+        *(_alert("kindless-many", 2 * i, f"sea-{i}", now, f"풍랑주의보{i} 발표")
+          for i in range(90)),
+        *(_alert("kindless-many", 2 * i + 1, "land-a", now, f"강풍주의보{i} 발표")
+          for i in range(90)),
+    ])
+    rows = repo.marker_values_many(["kindless-many"], limit_per_location=80)
+    own = [row for row in rows["kindless-many"] if row.metric_key == "ALERT"]
+    assert {row.payload["raw"]["areaCode"] for row in own} == {"land-a"}
+    expected = sorted(f"강풍주의보{i} 발표" for i in range(80))
+    assert sorted(row.value_text for row in own) == expected
+
+
+def test_kindless_uncoded_location_widens_only_other_providers(api_client: TestClient) -> None:
+    """구역 없는 위치는 KMA 행을 넓혀 읽지 않는다. KMA 밖 특보는 넓혀서 찾는다."""
+    from sqlalchemy import event
+
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless-uncoded", coded=False)
+    repo.record_source(
+        source_record_key="other-src-kindless-uncoded", provider="other-provider",
+        dataset_key="other_weather_alerts", source_entity_type="weather_response",
+        source_entity_id="kindless-uncoded", payload={"rows": []},
+    )
+    repo.upsert_values([
+        *(_alert("kindless-uncoded", i, f"sea-{i}", now, f"풍랑주의보{i} 발표")
+          for i in range(330)),
+        WeatherValue(
+            location_id="kindless-uncoded", provider="other-provider",
+            dataset_key="other_weather_alerts", weather_domain="weather_alert",
+            forecast_style=ForecastStyle.OBSERVED, metric_key="ALERT",
+            target_at=now - timedelta(minutes=400), value_text="폭염경보",
+            payload={"stn_id": "x"}, source_record_key="other-src-kindless-uncoded",
+        ),
+    ])
+    statements: list[str] = []
+
+    def before(_conn, _cursor, statement, _parameters, _context, _many):  # noqa: ANN001
+        statements.append(statement)
+
+    event.listen(repo.engine, "before_cursor_execute", before)
+    try:
+        response = api_client.get("/v1/weather/markers?location_id=kindless-uncoded")
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", before)
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    assert [a["value_text"] for a in item["alerts"]] == ["폭염경보"]
+    assert item["alert_scope_unverified"] is True
+    ranked = [s for s in statements if "limited_marker_alert_values" in s]
+    assert len(ranked) == 2
+    assert "NOT IN" not in ranked[0].upper() and "NOT IN" in ranked[1].upper()
