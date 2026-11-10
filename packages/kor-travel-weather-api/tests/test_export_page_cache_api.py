@@ -314,3 +314,35 @@ def test_cursor_pages_reuse_the_app_selection_read_by_the_first_page(
         pages += 1
     assert pages >= 3
     assert len(loads) == 1, loads  # 첫 페이지 한 번뿐
+
+
+def test_forecast_cursor_pages_reuse_the_app_selection(repository, tmp_path, monkeypatch):
+    """예보 페이지의 상태 검사도 앱 공용 승인 선택을 쓴다(2026-11-10).
+
+    예전에는 cursor 페이지마다 전체 승인 선택을 다시 계산했다(odroid 측정 6~16초/페이지).
+    """
+    from test_frozen_service_exports import _collect_forecast
+
+    from kortravelweather import export_inventory_selection
+
+    _collect_forecast(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    loads = []
+    original = export_inventory_selection.approved_source_selection
+
+    def counted(*args, **kwargs):
+        loads.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(export_inventory_selection, "approved_source_selection", counted)
+    url = "/v1/service/exports/forecasts?style=ultra_short&limit=1"
+    page = client.get(url, headers=HEADERS)
+    assert page.status_code == 200, page.text
+    first_page_loads = len(loads)
+    pages = 1
+    while page.json()["meta"]["next_cursor"] and pages < 4:
+        page = client.get(url + "&cursor=" + page.json()["meta"]["next_cursor"], headers=HEADERS)
+        assert page.status_code == 200, page.text
+        pages += 1
+    assert pages >= 3
+    assert len(loads) == first_page_loads, loads  # cursor 페이지는 다시 계산하지 않는다

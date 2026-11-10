@@ -398,7 +398,8 @@ async def _frozen_response(
                 immutable_reads=resource == "current",
                 page_liveness=resource in {"current", "daily-summaries"},
                 **({"selection_cache": selection_cache}
-                   if resource in {"current", "daily-summaries"} else {}),
+                   if resource in {"current", "daily-summaries", "forecasts"}
+                   and not (resource == "forecasts" and style == "mid") else {}),
                 **(
                     {"providers": selection.providers, "source_inventory": True,
                      "expected_sources": selection.expected, "optional_sources": selection.optional}

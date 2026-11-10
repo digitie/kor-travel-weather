@@ -18,7 +18,7 @@ from .export_capacity import (
     read_generation_refs,
 )
 from .export_heads import ScopeDescriptor, _digest
-from .export_inventory_selection import approved_source_selection, catalog_source_projection
+from .export_inventory_selection import catalog_source_projection
 from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
@@ -616,10 +616,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if len(locations) > MAX_SNAPSHOT_LOCATIONS:
                 return True
             try:
-                selected = approved_source_selection(
-                    c, self.heads.metadata, locations,
-                    expected=self.expected_sources, optional=self.optional_sources,
-                )
+                # 앱 공용 승인 선택(최대 60초, #215)을 쓴다. 예전에는 cursor 페이지마다 전체 선택을
+                # 다시 계산했다(odroid 2026-11-10 측정 6~16초/페이지).
+                selected = self._approved_selection(c, locations)
                 stale |= selected.unconfirmed
                 actual = {(scope.descriptor.namespace, scope.location_ids)
                           for scope in selected.scopes}
