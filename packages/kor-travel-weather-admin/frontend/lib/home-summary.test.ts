@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SyncRun } from "./api";
-import { type HomeFetchers, type HomeSummary, loadingSummary, startHomeSummary } from "./home-summary";
+import { type CardState, type HomeFetchers, type HomeSummary, type HomeValues, loadingSummary, startHomeSummary } from "./home-summary";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -68,7 +68,7 @@ describe("home summary cards", () => {
 
   it("keeps only the latest refresh when an older one resolves late", async () => {
     let summary: HomeSummary = loadingSummary();
-    const record = <K extends keyof HomeSummary>(card: K, state: HomeSummary[K]) => {
+    const record = <K extends keyof HomeValues>(card: K, state: CardState<HomeValues[K]>) => {
       summary = { ...summary, [card]: state };
     };
     const older = deferred<number>();

@@ -6,7 +6,7 @@ export type CardState<T> =
   | { status: "ready"; value: T }
   | { status: "error"; message: string };
 
-type HomeValues = { active: number; catalog: number; runs: SyncRun[]; health: string };
+export type HomeValues = { active: number; catalog: number; runs: SyncRun[]; health: string };
 
 export type HomeCard = keyof HomeValues;
 export type HomeSummary = { [K in HomeCard]: CardState<HomeValues[K]> };
@@ -25,7 +25,7 @@ function failure(reason: unknown): string {
 function startCard<K extends HomeCard>(
   card: K,
   fetchers: HomeFetchers,
-  settle: (card: K, state: HomeSummary[K]) => void,
+  settle: (card: K, state: CardState<HomeValues[K]>) => void,
 ): void {
   let pending: Promise<HomeValues[K]>;
   try {
@@ -48,7 +48,7 @@ function startCard<K extends HomeCard>(
  */
 export function startHomeSummary(
   fetchers: HomeFetchers,
-  onChange: <K extends HomeCard>(card: K, state: HomeSummary[K]) => void,
+  onChange: <K extends HomeCard>(card: K, state: CardState<HomeValues[K]>) => void,
 ): () => void {
   let cancelled = false;
   for (const card of HOME_CARDS) {
