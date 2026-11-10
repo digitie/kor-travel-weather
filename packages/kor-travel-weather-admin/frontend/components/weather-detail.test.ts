@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { forecastWindowStart, getForecast, getLatest } from "../lib/api";
+import { FORECAST_DETAIL_LIMIT, forecastWindowEnd, forecastWindowStart, getForecast, getLatest } from "../lib/api";
 
 // 실제 상세 effect를 실행해 지연·실패·cleanup 응답 순서 역전을 검증한다.
 const source = readFileSync(new URL("./weather-map.tsx", import.meta.url), "utf8");
@@ -25,6 +25,7 @@ if (!callback || helpers.length !== 2) throw new Error("상세 effect를 찾지 
 const setters = ["setValues", "setForecast", "setMessage", "setForecastMessage",
   "setLastRefreshedAt", "setLoading", "setForecastLoading"];
 const effect = new Function("selectedLocationId", "providerFilter", "detailOpen", ...setters, "getLatest", "getForecast", "forecastWindowStart", "kindFilter",
+  "forecastWindowEnd", "FORECAST_DETAIL_LIMIT",
   ts.transpileModule(helpers.join("\n") + "\nreturn (" + callback.getText(tree) + ")();", {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText,
@@ -39,7 +40,7 @@ function setup() {
   const state: Record<string, unknown> = {};
   const mount = (id: string | undefined, open = true) => effect(id, undefined, open,
     ...setters.map((key) => (value: unknown) => { state[key] = value; }),
-    getLatest, getForecast, forecastWindowStart);
+    getLatest, getForecast, forecastWindowStart, undefined, forecastWindowEnd, FORECAST_DETAIL_LIMIT);
   return { requests, state, mount };
 }
 function respond(request: Pending, data: unknown[], status = 200, scopeUnverified = false) {
@@ -51,6 +52,22 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => vi.unstubAllGlobals());
 
 describe("선택 위치의 독립 상세 로딩", () => {
+  it("상세 예보는 화면이 그리는 구간(지금 정시~모레 0시 KST)만 상한 2000으로 요청한다", () => {
+    // 열린 구간+limit 1000은 밀집 위치에서 33~43시간 뒤에 잘려 내일 밤을 잃었다(odroid 2026-11-10).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-10T03:37:00Z")); // KST 11-10 12:37
+    try {
+      const { requests, mount } = setup();
+      mount("one");
+      const forecast = new URL(requests.find((request) => request.url.includes("/forecast"))!.url, "http://x");
+      expect(forecast.searchParams.get("from")).toBe("2026-11-10T03:00:00.000Z");
+      expect(forecast.searchParams.get("to")).toBe("2026-11-11T15:00:00.000Z"); // KST 11-12 00:00
+      expect(forecast.searchParams.get("limit")).toBe("2000");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("적용 특보가 없는 응답의 구역 미확인 메타를 사용자 설명으로 만들지 않는다", async () => {
     const { requests, state, mount } = setup();
     mount("one");
