@@ -65,12 +65,14 @@ def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy
                 dagster_status=dagster_status_lookup(instance)).results == {"REJECTED": 1}
         finally:
             repository.orchestrator_run_id = None
-    if resource == "current":
-        for (url, params), healthy in zip(checks, before, strict=True):
-            assert client.get(url, params=params, headers={
-                **HEADERS, "if-none-match": healthy.headers["etag"],
-            }).status_code == 304
-        clock[0] += 60
+    # forecasts도 current·daily와 같은 최대 60초 창이다
+    # (소유자 결정 2026-11-11). 창 안은 옛 정상 응답(304),
+    # 60초 뒤에는 실패가 반드시 보인다.
+    for (url, params), healthy in zip(checks, before, strict=True):
+        assert client.get(url, params=params, headers={
+            **HEADERS, "if-none-match": healthy.headers["etag"],
+        }).status_code == 304
+    clock[0] += 60
     for (url, params), healthy in zip(checks, before, strict=True):
         changed = client.get(url, params=params,
                              headers={**HEADERS, "if-none-match": healthy.headers["etag"]})

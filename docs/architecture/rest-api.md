@@ -45,7 +45,12 @@ all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 
 `/v1/features/*` 경로는 이 source가 소유하지 않지만, KMA 특보는 `alerts`와
 지도 marker 상태로 제공한다.
 
-## current·daily export의 검증 완료 결과 재사용
+## current·daily·forecasts export의 검증 완료 결과 재사용
+
+forecasts(중기 제외)도 페이지 상태 검사에 같은 앱 공용 승인 선택(최대60초)을 쓴다. 승인/실패
+반영이 최대60초 늦을 수 있다는 점은 current·daily와 같다(소유자 결정 2026-11-11). forecasts는
+완성 페이지 재사용은 하지 않고 승인 선택만 재사용한다. 60초는 limiter 대기 뒤 실제 읽기 시작부터
+센다.
 
 API만 승인 상태 조회 시작 뒤 최대60초의 완성 페이지를 재사용한다. 인증은 매 요청 수행하며 provider/limit/cursor/days/location와 설정·서명키 범위를 구분한다. x-export-read는 generated/reused다. generated_at은 wire 생성 시각이고 source_collected_at·snapshot_generated_at·as_of는 실제 검증한 데이터의 시각을 유지한다. 승인/실패·derived summary 반영은 이60초 한도 안에 지연될 수 있다.
 

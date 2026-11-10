@@ -540,7 +540,8 @@ async def export_forecasts(
     known_at은 원천 시각이며 since에는 모든 페이지 반영 뒤 meta.next_since를 사용한다.
     ultra_short·short·mid는 KMA만 공급하므로 다른 활성 provider와 무관하고, external은
     export 경로가 없는 provider가 활성이면503이다. 최신 승인 예보에 미래 시각이 없는
-    위치는 빼고 stale로 표시한다.
+    위치는 빼고 stale로 표시한다. mid 밖의 승인·실패 상태 반영은
+    최대60초 지연될 수 있다(소유자 결정 2026-11-11, current·daily와 같다).
     """
     return await _frozen_response(
         request, "forecasts", limit, cursor, provider=provider, style=style, since=since
