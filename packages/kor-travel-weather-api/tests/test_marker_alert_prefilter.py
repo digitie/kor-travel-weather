@@ -174,7 +174,8 @@ _SIX = "&".join(f"kind={kind}" for kind in (
 def test_old_but_valid_own_alert_behind_two_levels_of_fanned_alerts(api_client: TestClient) -> None:
     """3일보다 오래됐지만 valid_until이 남은 이 구역 특보가 복제 특보 120건 뒤에 있어도 보인다.
 
-    후보 예산(26)을 두 번 넓혀야(26→104→416) 닿고, 오래된 행은 활성 fact 검산 경로로 들어온다.
+    첫 후보 조회(예산 26 × 4 = 104)로는 닿지 않아 한 번 넓혀야(416) 하고, 오래된 행은 활성
+    fact 검산 경로로 들어온다.
     """
     repo = api_client.app.state.repository
     now = _crowd_location(repo, "deep", coded=True)
@@ -216,7 +217,7 @@ def test_uncoded_location_does_not_widen_kma_reads(api_client: TestClient) -> No
     repo = api_client.app.state.repository
     now = _crowd_location(repo, "nocode", coded=False)
     repo.upsert_values([
-        _alert("nocode", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(60)
+        _alert("nocode", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(130)
     ])
     statements: list[tuple[str, dict]] = []
 
