@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -1031,8 +1032,8 @@ def test_admin_run_sources_reads_metadata_in_one_statement_without_raw_rows(
     assert response.status_code == 200, response.text
     assert len(statements) == 1, statements  # 원천 수(6)와 무관하게 한 문장
     # payload 열 전체를 SELECT하지 않고 rows 길이·metadata만 DB에서 뽑는다.
-    selected = statements[0].split("FROM")[0]
-    assert "payload," not in selected and not selected.rstrip().endswith("payload")
+    assert "weather_source_records.payload ->" in statements[0]
+    assert not re.search(r"weather_source_records\.payload\s*(,|\bAS\b|$)", statements[0], re.M)
     data = {item["source_record_key"]: item for item in response.json()["data"]}
     assert list(data) == sorted(payloads)  # 기존 키 순서 유지
     assert {key: item["row_count"] for key, item in data.items()} == {
