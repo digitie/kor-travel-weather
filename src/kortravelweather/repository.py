@@ -3264,8 +3264,12 @@ class WeatherRepository:
         now: datetime | None = None,
         providers: Sequence[str] | None = None,
         kinds: Sequence[WeatherKind] | None = None,
+        locations: Mapping[str, WeatherLocation] | None = None,
     ) -> dict[str, list[WeatherValue]]:
         """Return the small current projection needed to render map markers.
+
+        ``locations``: the caller's already-loaded anchors. The alert prefilter uses
+        them so its area check sees the same catalog the caller will apply.
 
         A marker only needs a weather condition/temperature and advisories;
         loading every air-quality and forecast metric makes a nationwide map
@@ -3291,11 +3295,12 @@ class WeatherRepository:
             if not groups:
                 return result
             budget = max(1, limit_per_location // len(groups))
-            alert_locations = (
-                {location.location_id: location
-                 for location in self.get_locations_by_ids(location_ids)}
-                if any(group[0] == "alert" for group in groups) else None
-            )
+            alert_locations = None
+            if any(group[0] == "alert" for group in groups):
+                alert_locations = dict(locations) if locations is not None else {
+                    location.location_id: location
+                    for location in self.get_locations_by_ids(location_ids)
+                }
             with self._session_factory() as session:
                 for group in groups:
                     is_forecast = group[0] in ("ultra_short", "short", "mid")

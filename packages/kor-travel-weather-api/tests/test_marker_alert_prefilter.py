@@ -78,3 +78,44 @@ def test_marker_alerts_and_unverified_flag_are_unchanged(api_client: TestClient)
     assert data["coded"]["alert_scope_unverified"] is False
     assert data["uncoded"]["alerts"] == []
     assert data["uncoded"]["alert_scope_unverified"] is True
+
+
+def test_mixed_and_ordering_cases_keep_matched_alerts_and_flag(api_client: TestClient) -> None:
+    """구역이 있는 위치에 구역 없는 행이 섞여도 matched는 남고 표식은 참이다.
+
+    미확인 행이 matched보다 먼저 정렬돼도(더 최근) matched를 버리지 않는다.
+    다른 제공처의 특보는 위치 일치로 matched다.
+    """
+    repo = api_client.app.state.repository
+    now = datetime.now(UTC).replace(microsecond=0)
+    repo.upsert_location(WeatherLocation(
+        location_id="mixed", name="혼합", latitude=37.5, longitude=127,
+        metadata={"kma_alert_area_codes": ["land-a"]},
+    ))
+    repo.record_source(
+        source_record_key="alert-src-mixed", provider="python-kma-api",
+        dataset_key="kma_weather_alerts", source_entity_type="weather_response",
+        source_entity_id="mixed", payload={"rows": []},
+    )
+    repo.record_source(
+        source_record_key="other-alert-src", provider="other-provider",
+        dataset_key="other_weather_alerts", source_entity_type="weather_response",
+        source_entity_id="mixed", payload={"rows": []},
+    )
+    repo.upsert_values([
+        _alert("mixed", 0, None, now, "건조주의보 발표"),  # 가장 최근, 구역 없음
+        _alert("mixed", 5, "land-a", now, "강풍주의보 발표"),
+        *(_alert("mixed", 10 + i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(3)),
+        WeatherValue(
+            location_id="mixed", provider="other-provider", dataset_key="other_weather_alerts",
+            weather_domain="weather_alert", forecast_style=ForecastStyle.OBSERVED,
+            metric_key="ALERT", target_at=now - timedelta(minutes=2), value_text="폭염경보",
+            payload={"stn_id": "x"}, source_record_key="other-alert-src",
+        ),
+    ])
+    response = api_client.get("/v1/weather/markers?location_id=mixed&kind=alert")
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    texts = sorted(alert["value_text"] for alert in item["alerts"])
+    assert texts == ["강풍주의보 발표", "폭염경보"]
+    assert item["alert_scope_unverified"] is True
