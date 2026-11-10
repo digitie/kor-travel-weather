@@ -110,6 +110,7 @@ def test_export_metric_routes_are_distinct_and_query_values_are_not_labels():
         assert route_label(route + "?cursor=private") == "unmatched"
 
 
+
 def _artifact(tmp_path, body: bytes):
     digest = hashlib.sha256(body).hexdigest()
     path = tmp_path / (digest + ".jsonl")
@@ -118,48 +119,72 @@ def _artifact(tmp_path, body: bytes):
 
 
 def _cache_counts():
-    from kortravelweather.metrics import EXPORT_ARTIFACT_CACHE
+    from kortravelweather import metrics
 
+    counter = getattr(metrics, "EXPORT_ARTIFACT_CACHE", None)
+    if counter is None:
+        return {}
     return {
         sample.labels["outcome"]: sample.value
-        for metric in EXPORT_ARTIFACT_CACHE.collect() for sample in metric.samples
+        for metric in counter.collect() for sample in metric.samples
         if sample.name.endswith("_total")
     }
 
 
-def test_warm_hit_does_not_read_or_hash_and_is_counted(tmp_path, monkeypatch):
-    """같은 파일(identity 동일)의 두 번째 읽기는 파일을 열지도 hash하지도 않는다(2026-11-10).
+class _Counted:
+    """export_artifacts 모듈의 os.open·hashlib.sha256 호출을 센다(기존 코드에도 있는 경로)."""
+
+    def __init__(self, monkeypatch):
+        self.opens, self.hashes = 0, 0
+        real_open, real_sha = export_artifacts.os.open, export_artifacts.hashlib.sha256
+
+        def opened(*args, **kwargs):
+            self.opens += 1
+            return real_open(*args, **kwargs)
+
+        def hashed(*args, **kwargs):
+            self.hashes += 1
+            return real_sha(*args, **kwargs)
+
+        monkeypatch.setattr(export_artifacts.os, "open", opened)
+        monkeypatch.setattr(export_artifacts.hashlib, "sha256", hashed)
+
+
+def test_warm_hit_does_not_open_hash_or_guard_and_is_counted(tmp_path, monkeypatch):
+    """검증한 같은 파일의 두 번째 읽기는 열지도, hash하지도, 공유 guard를 잡지도 않는다.
 
     odroid current snapshot은 3,302개 파일이고 전체를 cold로 읽고 hash하는 데 149초였다.
     """
-    digest, _path = _artifact(tmp_path, b'{"fixture":"warm-hit","value":1}\n')
+    body = b'{"fixture":"warm-hit","value":1}
+'
+    digest, _path = _artifact(tmp_path, body)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)  # 방금 쓴 파일도 믿는다
     store = ExportArtifactStore(tmp_path)
-    reads = []
-    original = ExportArtifactStore._read_lines
-
-    def counted(self, *args, **kwargs):
-        reads.append(1)
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(ExportArtifactStore, "_read_lines", counted)
     before = _cache_counts()
-    size = len(b'{"fixture":"warm-hit","value":1}\n')
-    assert store.read_shared(digest, byte_count=size, point_count=1)[0]["value"] == 1
-    # 공유 guard 없이도 hit는 성립한다(파일을 읽지 않으므로).
-    monkeypatch.setattr(ExportArtifactStore, "guard", lambda *a, **k: pytest.fail("guard"))
-    assert store.read_shared(digest, byte_count=size, point_count=1)[0]["value"] == 1
-    assert list(store.read(digest, byte_count=size, point_count=1))[0]["value"] == 1
-    assert reads == [1]
+    assert store.read_shared(digest, byte_count=len(body), point_count=1)[0]["value"] == 1
+    counted = _Counted(monkeypatch)
+    guards = []
+    original_guard = ExportArtifactStore.guard
+
+    def counted_guard(self, *args, **kwargs):
+        guards.append(kwargs)
+        return original_guard(self, *args, **kwargs)
+
+    monkeypatch.setattr(ExportArtifactStore, "guard", counted_guard)
+    assert store.read_shared(digest, byte_count=len(body), point_count=1)[0]["value"] == 1
+    assert list(store.read(digest, byte_count=len(body), point_count=1))[0]["value"] == 1
+    assert (counted.opens, counted.hashes, guards) == (0, 0, [])
     after = _cache_counts()
     assert after.get("miss", 0) - before.get("miss", 0) == 1
     assert after.get("hit", 0) - before.get("hit", 0) == 2
 
 
-def test_corruption_after_warm_hit_is_detected_even_if_mtime_is_restored(tmp_path):
-    """같은 길이 변조 뒤 mtime을 되돌려도 ctime이 바뀌므로 다시 hash해 실패한다."""
+def test_recently_written_file_is_never_trusted_so_corruption_is_caught(tmp_path):
+    """방금(2초 이내) 바뀐 파일은 identity를 믿지 않는다. 같은 tick의 같은 길이 변조도 잡는다."""
     import os
 
-    body = b'{"fixture":"restored-mtime","value":1}\n'
+    body = b'{"fixture":"racy","value":1}
+'
     digest, path = _artifact(tmp_path, body)
     store = ExportArtifactStore(tmp_path)
     assert list(store.read(digest, byte_count=len(body), point_count=1))
@@ -174,27 +199,56 @@ def test_corruption_after_warm_hit_is_detected_even_if_mtime_is_restored(tmp_pat
         store.read_shared(digest, byte_count=len(body), point_count=1)
 
 
+def test_old_hit_is_rehashed_so_metadata_preserving_corruption_is_found(tmp_path, monkeypatch):
+    """metadata를 바꾸지 않는 손상(비트 손상)은 identity로 못 본다. 10분 뒤 다시 hash한다."""
+    body = b'{"fixture":"aged","value":1}
+'
+    digest, _path = _artifact(tmp_path, body)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
+    clock = [1000.0]
+    monkeypatch.setattr(export_artifacts.time, "monotonic", lambda: clock[0])
+    store = ExportArtifactStore(tmp_path)
+    assert store.read_shared(digest, byte_count=len(body), point_count=1)
+    counted = _Counted(monkeypatch)
+    clock[0] += 599
+    assert store.read_shared(digest, byte_count=len(body), point_count=1)
+    assert counted.hashes == 0
+    clock[0] += 2
+    assert store.read_shared(digest, byte_count=len(body), point_count=1)
+    assert counted.hashes == 1
+
+
+def test_verification_scope_always_hashes_the_real_file(tmp_path, monkeypatch):
+    """승격 검산처럼 verifying/guard 안의 읽기는 캐시를 쓰지 않고 실제 파일을 hash한다."""
+    body = b'{"fixture":"verifying","value":1}
+'
+    digest, _path = _artifact(tmp_path, body)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
+    store = ExportArtifactStore(tmp_path)
+    assert store.read_shared(digest, byte_count=len(body), point_count=1)
+    counted = _Counted(monkeypatch)
+    with store.verifying():
+        assert list(store.read(digest, byte_count=len(body), point_count=1))
+        assert list(store.read(digest, byte_count=len(body), point_count=1))
+    assert counted.hashes == 1  # scope 안에서는 실제로 한 번 hash(두 번째는 scope 중복 제거)
+
+
 def test_replaced_file_with_same_content_is_reverified_not_trusted(tmp_path, monkeypatch):
     """교체(새 inode)는 hit가 아니다. 같은 내용이면 다시 hash해 통과한다."""
     import os
 
-    body = b'{"fixture":"replaced","value":1}\n'
+    body = b'{"fixture":"replaced","value":1}
+'
     digest, path = _artifact(tmp_path, body)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
     store = ExportArtifactStore(tmp_path)
     assert list(store.read(digest, byte_count=len(body), point_count=1))
     fresh = tmp_path / "fresh"
     fresh.write_bytes(body)
     os.replace(fresh, path)
-    reads = []
-    original = ExportArtifactStore._read_lines
-
-    def counted(self, *args, **kwargs):
-        reads.append(1)
-        return original(self, *args, **kwargs)
-
-    monkeypatch.setattr(ExportArtifactStore, "_read_lines", counted)
+    counted = _Counted(monkeypatch)
     assert store.read_shared(digest, byte_count=len(body), point_count=1)[0]["value"] == 1
-    assert reads == [1]
+    assert counted.hashes == 1
 
 
 def test_cache_eviction_is_bounded_and_counted(tmp_path, monkeypatch):
@@ -202,7 +256,8 @@ def test_cache_eviction_is_bounded_and_counted(tmp_path, monkeypatch):
     before = _cache_counts()
     store = ExportArtifactStore(tmp_path)
     for index in range(4):
-        body = f'{{"fixture":"evict","value":{index}}}\n'.encode()
+        body = f'{{"fixture":"evict","value":{index}}}
+'.encode()
         digest, _path = _artifact(tmp_path, body)
         assert list(store.read(digest, byte_count=len(body), point_count=1))
     assert len(export_artifacts._decoded_artifacts) <= 2

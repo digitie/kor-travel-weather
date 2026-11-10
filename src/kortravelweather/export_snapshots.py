@@ -879,7 +879,8 @@ class FrozenCurrentExports:
             more = False
             # artifact GC(export_gc)는 유효하거나 보존 창 안의 snapshot과 최근 snapshot이
             # 가리키는 세대의 파일을 지우지 않는다. snapshot_refs가 generation 행 삭제도 막는다.
-            # 파일은 매 페이지 동일fd hash/count를 재검증하고 누락은 성공으로 반환하지 않는다.
+            # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
+            # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
             while state["g"] < len(scopes):
                 scope = scopes[state["g"]]
                 points = []
