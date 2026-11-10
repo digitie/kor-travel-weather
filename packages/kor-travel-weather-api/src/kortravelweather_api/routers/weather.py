@@ -1318,8 +1318,7 @@ async def sync_runs(
 
 
 def source_out(record: dict[str, Any]) -> dict[str, Any]:
-    payload = record.get("payload") or {}
-    rows = payload.get("rows") if isinstance(payload, dict) else None
+    """원천 메타 요약을 관리 응답으로. 비밀 이름의 키·값은 가린다."""
 
     def redact(value: Any) -> Any:
         def normalized_key(key: Any) -> str:
@@ -1360,7 +1359,9 @@ def source_out(record: dict[str, Any]) -> dict[str, Any]:
             )
         return value
 
-    response_metadata = payload.get("response_metadata", {}) if isinstance(payload, dict) else {}
+    response_metadata = record.get("response_metadata")
+    if not isinstance(response_metadata, dict):
+        response_metadata = {}
     return {
         "source_record_key": record["source_record_key"],
         "provider": record["provider"],
@@ -1370,7 +1371,7 @@ def source_out(record: dict[str, Any]) -> dict[str, Any]:
         "raw_payload_hash": record["raw_payload_hash"],
         "fetched_at": record["fetched_at"],
         "imported_at": record["imported_at"],
-        "row_count": len(rows) if isinstance(rows, list) else None,
+        "row_count": record.get("row_count"),
         "response_metadata": redact(response_metadata),
     }
 
@@ -1389,12 +1390,9 @@ async def sync_run_sources(
     run = await run_in_threadpool(repo.get_sync_run, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="sync run을 찾을 수 없습니다.")
-    keys = await run_in_threadpool(repo.list_sync_run_sources, run_id)
-    records = []
-    for key in keys:
-        record = await run_in_threadpool(repo.get_source_record, key)
-        if record is not None:
-            records.append(source_out(record))
+    # 키마다 threadpool·세션·원문 전체 JSON을 왕복하던 N+1을 한 문장으로 줄였다.
+    summaries = await run_in_threadpool(repo.list_sync_run_source_summaries, run_id)
+    records = [source_out(summary) for summary in summaries]
     return envelope(request, started, records, limit=len(records), returned=len(records))
 
 

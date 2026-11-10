@@ -4986,6 +4986,40 @@ class WeatherRepository:
             )
             return list(session.scalars(stmt).all())
 
+    def list_sync_run_source_summaries(self, run_id: str) -> list[dict[str, Any]]:
+        """run의 원천 응답 메타를 한 문장으로 읽는다(관리 화면 목록용).
+
+        원문 ``rows``는 보내지 않는다. 행 수와 ``response_metadata``만 DB에서 뽑아
+        큰 원문 JSON을 키마다 왕복·전송하지 않는다. 순서는 기존 키 순서와 같다.
+        """
+        payload = SourceRecordRow.payload
+        rows = payload.op("->")("rows")
+        with self._session_factory() as session:
+            stmt = (
+                select(
+                    SourceRecordRow.source_record_key,
+                    SourceRecordRow.provider,
+                    SourceRecordRow.dataset_key,
+                    SourceRecordRow.source_entity_type,
+                    SourceRecordRow.source_entity_id,
+                    SourceRecordRow.raw_payload_hash,
+                    SourceRecordRow.fetched_at,
+                    SourceRecordRow.imported_at,
+                    case(
+                        (func.json_typeof(rows) == "array", func.json_array_length(rows)),
+                        else_=None,
+                    ).label("row_count"),
+                    payload.op("->")("response_metadata").label("response_metadata"),
+                )
+                .join(
+                    SyncRunSourceRow,
+                    SyncRunSourceRow.source_record_key == SourceRecordRow.source_record_key,
+                )
+                .where(SyncRunSourceRow.run_id == run_id)
+                .order_by(SourceRecordRow.source_record_key)
+            )
+            return [dict(row) for row in session.execute(stmt).mappings()]
+
     def get_source_record(self, source_record_key: str) -> dict[str, Any] | None:
         """관리자/재처리 경계에서 immutable 원천 응답을 읽는다."""
         with self._session_factory() as session:

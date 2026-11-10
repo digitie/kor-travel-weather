@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -981,6 +982,68 @@ def test_admin_run_sources_exposes_redacted_lineage(api_client: TestClient) -> N
     assert source["response_metadata"]["request_url"] == (
         "https://example.test?serviceKey=[REDACTED]"
     )
+
+
+def test_admin_run_sources_reads_metadata_in_one_statement_without_raw_rows(
+    api_client: TestClient,
+) -> None:
+    """원천이 많은 run도 원천 표를 한 번만 읽고, 원문 rows 전체를 가져오지 않는다.
+
+    예전에는 키마다 threadpool·세션·원문 JSON 전체를 따로 읽었다(원천 수만큼 왕복).
+    """
+    from sqlalchemy import event
+
+    repo = api_client.app.state.repository
+    run = repo.start_sync_run(provider="p", dataset_key="d", locations_total=6)
+    big_rows = [{"TMP": str(index), "pad": "x" * 200} for index in range(2000)]
+    payloads = {
+        "src-0": {"rows": big_rows, "response_metadata": {"endpoint": "/a", "token": "S0"}},
+        "src-1": {"rows": [], "response_metadata": {"endpoint": "/b"}},
+        "src-2": {"rows": {"not": "a list"}, "response_metadata": {"endpoint": "/c"}},
+        "src-3": {"rows": [1, 2, 3]},
+        "src-4": {"rows": [1], "response_metadata": None},
+        "src-5": {"response_metadata": {"request_params": {"apiKey": "S5"}}},
+    }
+    repo.ingest_batch(
+        source_records=[
+            {
+                "source_record_key": key,
+                "provider": "p",
+                "dataset_key": "d",
+                "source_entity_type": "weather_response",
+                "source_entity_id": key,
+                "payload": payload,
+                "run_id": run.run_id,
+            }
+            for key, payload in payloads.items()
+        ]
+    )
+    statements: list[str] = []
+
+    def before(_conn, _cursor, statement, _params, _context, _many):  # noqa: ANN001
+        if "weather_source_records" in statement:
+            statements.append(statement)
+
+    event.listen(repo.engine, "before_cursor_execute", before)
+    try:
+        response = api_client.get(f"/v1/admin/sync-runs/{run.run_id}/sources")
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", before)
+    assert response.status_code == 200, response.text
+    assert len(statements) == 1, statements  # 원천 수(6)와 무관하게 한 문장
+    # payload 열 전체를 SELECT하지 않고 rows 길이·metadata만 DB에서 뽑는다.
+    assert "weather_source_records.payload ->" in statements[0]
+    assert not re.search(r"weather_source_records\.payload\s*(,|\bAS\b|$)", statements[0], re.M)
+    data = {item["source_record_key"]: item for item in response.json()["data"]}
+    assert list(data) == sorted(payloads)  # 기존 키 순서 유지
+    assert {key: item["row_count"] for key, item in data.items()} == {
+        "src-0": 2000, "src-1": 0, "src-2": None, "src-3": 3, "src-4": 1, "src-5": None,
+    }
+    assert data["src-0"]["response_metadata"] == {"endpoint": "/a", "token": "[REDACTED]"}
+    assert data["src-3"]["response_metadata"] == {}
+    assert data["src-4"]["response_metadata"] == {}  # JSON null도 빈 메타(예전엔 500)
+    assert data["src-5"]["response_metadata"] == {"request_params": {"apiKey": "[REDACTED]"}}
+    assert all("rows" not in item for item in data.values())
 
 
 def test_location_list_reports_total_for_pagination(api_client: TestClient) -> None:
