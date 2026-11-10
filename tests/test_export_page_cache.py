@@ -1,5 +1,6 @@
 """검증 완료 결과의 상한·동일 키 경합·갱신 실패 격리."""
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 from types import SimpleNamespace
@@ -101,3 +102,26 @@ def test_unused_keys_have_no_refresh_worker_and_key_budget_is_bounded():
     assert len(calls) == 20
     assert len(cache.entries) == 16
     assert not hasattr(cache, "refresh_one")
+
+
+def test_waiter_reads_itself_when_owner_fails_instead_of_masking_it_as_busy():
+    """소유자가 실패하면 대기자는 자기 읽기의 실제 결과를 받는다(일시 503으로 바꾸지 않는다)."""
+    cache = ExportPageCache(clock=lambda: 0)
+    entered, release = Event(), Event()
+
+    def failing_owner():
+        entered.set()
+        assert release.wait(5)
+        raise ExportArtifactError("소유자 실패")
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(cache.read, "a", reader(), failing_owner)
+        assert entered.wait(5)
+        second = pool.submit(cache.read, "a", reader(), lambda: ({"own": 1}, "etag"))
+        time.sleep(0.3)  # 두 번째 요청이 소유자의 inflight를 기다리는 상태로 들어간다.
+        assert not second.done()
+        release.set()
+        with pytest.raises(ExportArtifactError):
+            first.result()
+        assert second.result() == ({"own": 1}, "etag")
+    assert not cache.inflight

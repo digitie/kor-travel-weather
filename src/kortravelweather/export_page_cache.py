@@ -101,10 +101,8 @@ class ExportPageCache:
         if not owner:
             if not event.wait(60):
                 raise ExportGuardTimeout("동일 export 페이지 생성 대기 상한을 넘었습니다.")
-            with self.lock:
-                completed = key in self.entries
-            if not completed:
-                raise ExportGuardTimeout("동일 export 페이지가 완료되지 않았습니다.")
+            # 소유자가 실패(410/422/503)했거나 캐시하지 않은 결과면 이 요청이 직접 읽는다.
+            # 소유자의 오류를 일시 경합 503으로 바꿔 숨기지 않는다.
             return self.read(key, reader, load)
         try:
             reader.page_reuse_status = "generated"

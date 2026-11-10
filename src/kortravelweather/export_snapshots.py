@@ -80,6 +80,10 @@ class ExportCursorInvalid(ExportArtifactError):
     pass
 
 
+class AtomicPinMissing(ExportGuardTimeout):
+    """원자 pin 직전 ref 파일이 없다. 일시 경합(503 재시도)이며 ensure_snapshot_files가 재발급한다."""
+
+
 class ExportSnapshotExpired(ExportArtifactError):
     pass
 
@@ -192,8 +196,11 @@ def ensure_snapshot_files(artifacts, issue):
     없는 드문 경우). 그러면 한 번 다시 발급하고(이제 새 head를 본다), 그래도 없으면 일시 경합
     503으로 돌려 같은 요청을 다시 받게 한다.
     """
-    frozen = issue()
-    for _ in range(2):
+    for _ in range(3):
+        try:
+            frozen = issue()
+        except AtomicPinMissing:
+            continue  # pin 직전 GC가 이전 generation 파일을 지웠다. 새 head로 다시 발급한다.
         # API freeze는 전체 파일의 존재/크기를 GC guard 안에서 검사하고 ref와 함께
         # commit한다. 같은 발급의 DB pin이 이미 파일을 지키므로 다시 stat하지 않는다.
         # 재사용 handle·이전 성공 fallback·SDK 발급은 기존 all_present/재시도를 유지한다.
@@ -202,7 +209,6 @@ def ensure_snapshot_files(artifacts, issue):
         refs = [ref for scope in frozen["manifest"].get("scopes", []) for ref in scope["refs"]]
         if artifacts.all_present(refs):
             return frozen
-        frozen = issue()
     raise ExportGuardTimeout("snapshot 발급과 artifact 정리가 겹쳤습니다. 다시 요청하세요.")
 
 class FrozenCurrentExports:
@@ -655,23 +661,28 @@ class FrozenCurrentExports:
                 "created_at": now,
                 "expires_at": snapshot_expires_at(now),
             }
-            # 긴 승인 선택/manifest 구성은 guard 밖이다. 새 pin의 최종 존재 검사와 commit만
-            # GC와 직렬화해, GC가 pin을 보기 전에 파일을 지우는 틈을 만들지 않는다.
-            with self.artifacts.guard(shared=True) if self.immutable_reads else nullcontext():
-                if self.immutable_reads:
-                    for digest, size in {
-                        (ref["artifact_digest"], ref["byte_count"])
-                        for scope in scopes for ref in scope["refs"]
-                    }:
-                        self.artifacts.present(digest, byte_count=size)
-                connection.execute(self.snapshots.insert().values(**row))
-                insert_snapshot_refs(
-                    connection, self.refs, row["snapshot_id"],
-                    (scope["generation_id"] for scope in scopes),
-                )
-                if self.immutable_reads:
+            # INSERT(큰 manifest의 generated column 계산·ref 묶음)는 guard 밖에서 끝낸다.
+            # 공유 guard는 파일 존재 stat와 commit만 감싼다(#209: reader가 DB 작업 동안
+            # guard를 쥐면 writer가 5초 상한에 걸린다). GC는 배타 guard 안에서 commit된 ref만
+            # 보므로, 여기 stat가 통과한 뒤의 GC는 commit된 pin을 보고 파일을 지킨다.
+            connection.execute(self.snapshots.insert().values(**row))
+            insert_snapshot_refs(
+                connection, self.refs, row["snapshot_id"],
+                (scope["generation_id"] for scope in scopes),
+            )
+            if self.immutable_reads:
+                with self.artifacts.guard(shared=True):
+                    try:
+                        for digest, size in {
+                            (ref["artifact_digest"], ref["byte_count"])
+                            for scope in scopes for ref in scope["refs"]
+                        }:
+                            self.artifacts.present(digest, byte_count=size)
+                    except ExportArtifactError as exc:
+                        # 발급 TX를 되돌리고 ensure_snapshot_files가 새 head로 다시 발급한다.
+                        raise AtomicPinMissing() from exc
                     connection.commit()
-                    row["_atomic_files_pinned"] = True
+                row["_atomic_files_pinned"] = True
             return row
 
     def _same_selection(self):

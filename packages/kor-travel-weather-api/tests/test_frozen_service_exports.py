@@ -741,20 +741,22 @@ def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
             retention=timedelta(hours=1),
         )
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
-            insert = statement.lstrip().upper().startswith("INSERT INTO WEATHER_EXPORT_SNAPSHOTS")
-            if raced or not insert:
-                return
-            raced["hit"] = True
-            futures.append(executor.submit(writer))
-            assert blocked.wait(5), "별도 writer가 실제 pin guard 경합을 확인하지 못했습니다."
+    original_present = ExportArtifactStore.present
 
-        event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def present_under_pin_guard(self, *args, **kwargs):
+            # pin의 공유 guard는 INSERT 뒤 파일 stat·commit만 감싼다. 첫 stat에서 writer를 띄운다.
+            if not raced:
+                raced["hit"] = True
+                futures.append(executor.submit(writer))
+                assert blocked.wait(5), "별도 writer가 실제 pin guard 경합을 확인하지 못했습니다."
+            return original_present(self, *args, **kwargs)
+
+        monkeypatch.setattr(ExportArtifactStore, "present", present_under_pin_guard)
         try:
             response = client.get("/v1/service/exports/current", headers=HEADERS)
         finally:
-            event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
+            monkeypatch.setattr(ExportArtifactStore, "present", original_present)
         assert len(futures) == 1
         futures[0].result(timeout=30)  # writer 실패를 주 시험에 전달하고 종료도 회수한다.
     assert raced["pin_visible"]
@@ -763,6 +765,58 @@ def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     assert response.status_code == 200, response.text
     values = {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"}
     assert values == {11.0}
+
+
+def test_api_pin_insert_runs_outside_the_guard_and_reissues_when_gc_wins(
+    repository, tmp_path, monkeypatch, restore_daily_progress,
+):
+    """API 원자 pin의 snapshot INSERT는 guard 밖이다(#209: DB 작업 동안 writer를 막지 않는다).
+
+    INSERT와 commit 사이에 GC가 이긴 경우 pin의 stat가 유실을 보고 발급을 되돌린 뒤 새 head로
+    재발급한다(일시 503도 허용). 없는 파일을 가리키는 snapshot을 내지 않는다.
+    """
+    from sqlalchemy import event
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_gc import collect_export_artifacts
+
+    monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
+    _collect(repository, tmp_path, hours=2, value="11")
+    old_files = set(tmp_path.glob("*.jsonl"))
+    assert old_files
+    client = _client(repository, tmp_path)
+    raced = {}
+
+    def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
+        insert = statement.lstrip().upper().startswith("INSERT INTO WEATHER_EXPORT_SNAPSHOTS")
+        if raced or not insert:
+            return
+        raced["hit"] = True
+        # 별도 fd의 writer가 즉시 배타 guard를 얻는다(reader가 INSERT 동안 쥐고 있지 않다).
+        with ExportArtifactStore(tmp_path).guard(timeout_seconds=0.05):
+            raced["writer_free"] = True
+        _collect(repository, tmp_path, hours=0, value="22")
+        _make_old_generations_collectable(repository, tmp_path)
+        raced["report"] = collect_export_artifacts(
+            repository, tmp_path, mode="delete", deadline=float("inf"),
+            retention=timedelta(hours=1),
+        )
+
+    event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    try:
+        response = client.get("/v1/service/exports/current", headers=HEADERS)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    assert raced["writer_free"]
+    assert raced["report"]["deleted"] >= 1
+    assert all(not path.exists() for path in old_files)  # GC가 pin commit 전에 실제로 지웠다.
+    if response.status_code == 503:
+        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+        return
+    assert response.status_code == 200, response.text
+    values = {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"}
+    assert values == {22.0}  # 되돌린 발급 대신 새 head로 재발급했다.
 
 
 def test_sdk_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
