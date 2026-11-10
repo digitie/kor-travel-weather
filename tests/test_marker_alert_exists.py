@@ -109,7 +109,11 @@ def test_six_kind_alert_candidates_keep_order_without_batch_rechecks(
                 ids, kinds=["alert", "observed", "nowcast", "ultra_short", "short", "mid"],
                 providers=providers, limit_per_location=80, now=now,
             )
-            counts = len(statements)
+            # 2026-11-10: 특보 구역 사전 거르기는 위치 1회 + 후보 구역 1회를 더한다(묶음당 고정).
+            prefilter = [st for st, _ in statements
+                         if "scope_fact_keys" in st or "FROM weather_locations" in st]
+            assert len(prefilter) <= 2
+            counts = len(statements) - len(prefilter)
             rechecks = sum(isinstance(p, dict) and "alert_value_ids" in p
                            for _, p in statements)
             for key, rows in actual.items():
