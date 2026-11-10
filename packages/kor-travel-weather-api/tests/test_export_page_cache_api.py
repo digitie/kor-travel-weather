@@ -158,7 +158,7 @@ def test_completed_page_does_not_hold_global_gc_lock(repository, tmp_path):
     assert response.status_code == 304 and response.headers["x-export-read"] == "reused"
 
 
-def test_manifest_selection_is_outside_lock_but_new_pin_commit_is_inside(
+def test_selection_and_pin_insert_are_outside_lock_but_pin_commit_is_inside(
     repository, tmp_path, monkeypatch,
 ):
     from contextlib import contextmanager
@@ -171,6 +171,7 @@ def test_manifest_selection_is_outside_lock_but_new_pin_commit_is_inside(
     original = ExportArtifactStore.guard
     held = []
     commits = []
+    inserted = []
 
     @contextmanager
     def observe(store, **kwargs):
@@ -185,7 +186,9 @@ def test_manifest_selection_is_outside_lock_but_new_pin_commit_is_inside(
         if statement.lstrip().upper().startswith("SELECT") and "weather_locations" in statement:
             assert not held, "전체 승인/카탈로그 조회 동안 파일 guard를 잡았습니다."
         if statement.lstrip().upper().startswith("INSERT INTO WEATHER_EXPORT_SNAPSHOTS"):
-            assert held
+            # #209: reader는 DB 작업 동안 guard를 쥐지 않는다. stat·commit만 guard 안이다.
+            assert not held, "snapshot INSERT 동안 파일 guard를 잡았습니다."
+            inserted.append(True)
 
     def committed(connection):
         if held:
@@ -199,7 +202,7 @@ def test_manifest_selection_is_outside_lock_but_new_pin_commit_is_inside(
     finally:
         event.remove(repository.engine, "before_cursor_execute", before)
         event.remove(repository.engine, "commit", committed)
-    assert response.status_code == 200 and commits
+    assert response.status_code == 200 and inserted and commits
 
 
 def test_cache_never_returns_old_response_past_selection_deadline(
