@@ -391,6 +391,13 @@ HISTORY_PURGED_SOURCES = Counter(
     "Source records deleted by the retention purge.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
+EXPORT_ARTIFACT_CACHE = Counter(
+    "ktw_export_artifact_decode_cache_total",
+    "Decoded export artifact cache lookups (hit: same file identity, no read/hash; "
+    "miss: read+hash+decode; evict: entries dropped for the size bound).",
+    ("outcome",),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 EXPORT_GC_DELETED_FILES = Counter(
     "ktw_export_artifact_gc_deleted_files_total",
     "Unreferenced export artifact files deleted by the publisher GC.",
@@ -580,6 +587,12 @@ def observe_http_request(
         )
 
     _safe("http", observe)
+
+
+def observe_export_artifact_cache(outcome: str, count: int = 1) -> None:
+    safe = outcome if outcome in {"hit", "miss", "evict"} else "other"
+    _safe("export_artifact_cache",
+          lambda: EXPORT_ARTIFACT_CACHE.labels(outcome=safe).inc(max(0, count)))
 
 
 def observe_export_guard_hold(holder: str, seconds: float) -> None:
