@@ -700,8 +700,6 @@ def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
 
-    from sqlalchemy import event
-
     from kortravelweather import export_gc
     from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
     from kortravelweather.export_gc import collect_export_artifacts

@@ -81,7 +81,7 @@ class ExportCursorInvalid(ExportArtifactError):
 
 
 class AtomicPinMissing(ExportGuardTimeout):
-    """원자 pin 직전 ref 파일이 없다. 일시 경합(503 재시도)이며 ensure_snapshot_files가 재발급한다."""
+    """원자 pin 직전 ref 파일이 없다. 일시 경합(503 재시도)이며 재발급 대상이다."""
 
 
 class ExportSnapshotExpired(ExportArtifactError):
