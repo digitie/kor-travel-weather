@@ -171,7 +171,9 @@ def test_alert_prefix_preserves_complete_order_and_reducer(
 
 
 def test_recent_prefix_avoids_losing_old_fact_checks(weather_test_database_url, tmp_path):
-    repo, values, ids = _seed(weather_test_database_url)
+    # 마커 특보 첫 후보 조회는 예산(26)의 4배(104)를 읽는다(구역 필터 뒤 예산 적용, 2026-11-10).
+    # 최근 행이 그 104를 채우면 오래된 행의 fact 검산을 건너뛰는 최적화는 그대로다.
+    repo, values, ids = _seed(weather_test_database_url, recent=110)
     # 분포 통계가 있는 own PG18에서 실제 실행 횟수를 확인한다.
     with repo.engine.begin() as connection:
         connection.exec_driver_sql("ANALYZE weather_current_values")
