@@ -48,6 +48,17 @@ def alert_location_scope(row: WeatherValue, location: WeatherLocation) -> str:
     return alert_scope_of(row.provider, row.location_id, row.payload, location)
 
 
+KMA_ALERT_PROVIDERS = frozenset({"python-kma-api", "kma"})
+
+
+def has_alert_area_codes(location: WeatherLocation) -> bool:
+    """위치에 확인된 KMA 특보구역이 있는가. 없으면 모든 KMA 특보 행은 ``unverified``다."""
+    expected = location.metadata.get("kma_alert_area_codes")
+    return isinstance(expected, list) and bool(expected) and all(
+        isinstance(code, str) and code.strip() for code in expected
+    )
+
+
 def alert_scope_of(
     provider: str, row_location_id: str, payload: Any, location: WeatherLocation,
 ) -> str:
@@ -55,13 +66,11 @@ def alert_scope_of(
 
     마커 조회는 이 판정으로 다른 구역 특보를 모델로 만들기 전에 거른다.
     """
-    if provider not in {"python-kma-api", "kma"}:
+    if provider not in KMA_ALERT_PROVIDERS:
         return "matched" if row_location_id == location.location_id else "different"
-    expected = location.metadata.get("kma_alert_area_codes")
-    if not isinstance(expected, list) or not expected or not all(
-        isinstance(code, str) and code.strip() for code in expected
-    ):
+    if not has_alert_area_codes(location):
         return "unverified"
+    expected = location.metadata["kma_alert_area_codes"]
     if not isinstance(payload, dict):
         payload = {}
     raw = payload.get("raw")
