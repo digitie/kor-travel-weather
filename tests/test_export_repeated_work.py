@@ -157,7 +157,8 @@ def test_warm_hit_does_not_open_hash_or_guard_and_is_counted(tmp_path, monkeypat
     """
     body = b'{"fixture":"warm-hit","value":1}\n'
     digest, _path = _artifact(tmp_path, body)
-    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)  # 방금 쓴 파일도 믿는다
+    # 방금 쓴 파일도 믿는다.
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0, raising=False)
     store = ExportArtifactStore(tmp_path)
     before = _cache_counts()
     assert store.read_shared(digest, byte_count=len(body), point_count=1)[0]["value"] == 1
@@ -201,7 +202,7 @@ def test_old_hit_is_rehashed_so_metadata_preserving_corruption_is_found(tmp_path
     """metadata를 바꾸지 않는 손상(비트 손상)은 identity로 못 본다. 10분 뒤 다시 hash한다."""
     body = b'{"fixture":"aged","value":1}\n'
     digest, _path = _artifact(tmp_path, body)
-    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0, raising=False)
     clock = [1000.0]
     monkeypatch.setattr(export_artifacts.time, "monotonic", lambda: clock[0])
     store = ExportArtifactStore(tmp_path)
@@ -219,7 +220,7 @@ def test_verification_scope_always_hashes_the_real_file(tmp_path, monkeypatch):
     """승격 검산처럼 verifying/guard 안의 읽기는 캐시를 쓰지 않고 실제 파일을 hash한다."""
     body = b'{"fixture":"verifying","value":1}\n'
     digest, _path = _artifact(tmp_path, body)
-    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0, raising=False)
     store = ExportArtifactStore(tmp_path)
     assert store.read_shared(digest, byte_count=len(body), point_count=1)
     counted = _Counted(monkeypatch)
@@ -235,7 +236,7 @@ def test_replaced_file_with_same_content_is_reverified_not_trusted(tmp_path, mon
 
     body = b'{"fixture":"replaced","value":1}\n'
     digest, path = _artifact(tmp_path, body)
-    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
+    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0, raising=False)
     store = ExportArtifactStore(tmp_path)
     assert list(store.read(digest, byte_count=len(body), point_count=1))
     fresh = tmp_path / "fresh"
