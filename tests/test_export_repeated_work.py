@@ -155,8 +155,7 @@ def test_warm_hit_does_not_open_hash_or_guard_and_is_counted(tmp_path, monkeypat
 
     odroid current snapshot은 3,302개 파일이고 전체를 cold로 읽고 hash하는 데 149초였다.
     """
-    body = b'{"fixture":"warm-hit","value":1}
-'
+    body = b'{"fixture":"warm-hit","value":1}\n'
     digest, _path = _artifact(tmp_path, body)
     monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)  # 방금 쓴 파일도 믿는다
     store = ExportArtifactStore(tmp_path)
@@ -183,8 +182,7 @@ def test_recently_written_file_is_never_trusted_so_corruption_is_caught(tmp_path
     """방금(2초 이내) 바뀐 파일은 identity를 믿지 않는다. 같은 tick의 같은 길이 변조도 잡는다."""
     import os
 
-    body = b'{"fixture":"racy","value":1}
-'
+    body = b'{"fixture":"racy","value":1}\n'
     digest, path = _artifact(tmp_path, body)
     store = ExportArtifactStore(tmp_path)
     assert list(store.read(digest, byte_count=len(body), point_count=1))
@@ -201,8 +199,7 @@ def test_recently_written_file_is_never_trusted_so_corruption_is_caught(tmp_path
 
 def test_old_hit_is_rehashed_so_metadata_preserving_corruption_is_found(tmp_path, monkeypatch):
     """metadata를 바꾸지 않는 손상(비트 손상)은 identity로 못 본다. 10분 뒤 다시 hash한다."""
-    body = b'{"fixture":"aged","value":1}
-'
+    body = b'{"fixture":"aged","value":1}\n'
     digest, _path = _artifact(tmp_path, body)
     monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
     clock = [1000.0]
@@ -220,8 +217,7 @@ def test_old_hit_is_rehashed_so_metadata_preserving_corruption_is_found(tmp_path
 
 def test_verification_scope_always_hashes_the_real_file(tmp_path, monkeypatch):
     """승격 검산처럼 verifying/guard 안의 읽기는 캐시를 쓰지 않고 실제 파일을 hash한다."""
-    body = b'{"fixture":"verifying","value":1}
-'
+    body = b'{"fixture":"verifying","value":1}\n'
     digest, _path = _artifact(tmp_path, body)
     monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
     store = ExportArtifactStore(tmp_path)
@@ -237,8 +233,7 @@ def test_replaced_file_with_same_content_is_reverified_not_trusted(tmp_path, mon
     """교체(새 inode)는 hit가 아니다. 같은 내용이면 다시 hash해 통과한다."""
     import os
 
-    body = b'{"fixture":"replaced","value":1}
-'
+    body = b'{"fixture":"replaced","value":1}\n'
     digest, path = _artifact(tmp_path, body)
     monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 0)
     store = ExportArtifactStore(tmp_path)
@@ -256,8 +251,7 @@ def test_cache_eviction_is_bounded_and_counted(tmp_path, monkeypatch):
     before = _cache_counts()
     store = ExportArtifactStore(tmp_path)
     for index in range(4):
-        body = f'{{"fixture":"evict","value":{index}}}
-'.encode()
+        body = f'{{"fixture":"evict","value":{index}}}\n'.encode()
         digest, _path = _artifact(tmp_path, body)
         assert list(store.read(digest, byte_count=len(body), point_count=1))
     assert len(export_artifacts._decoded_artifacts) <= 2
