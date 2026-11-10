@@ -182,16 +182,29 @@ def test_selection_cache_budget_includes_expired_coverage_keys(monkeypatch):
     assert not cache.entries and cache.bytes == 0
 
 
-def test_selection_cache_checks_integrity_outside_lock_and_evicts_failed_hit():
+def test_selection_cache_checks_integrity_outside_lock_and_replaces_failed_hit():
+    """hit 검산은 LRU 잠금 밖에서 한다. 실패하면 그 항목을 버리고 이 요청에서 다시 읽는다.
+
+    2026-11-10: 앱 공용 캐시를 실제로 쓰면서 다른 요청의 더 새 snapshot에서 읽힌 선택이
+    이 요청의 RR에서 유실처럼 보일 수 있다. 실제 유실이면 다시 읽기(load)가 실패한다.
+    """
     cache = ExportSelectionCache(clock=lambda: 0)
-    value = ApprovedSelection((), False)
+    value, reloaded = ApprovedSelection((), False), ApprovedSelection((), True)
     cache.read("key", lambda: value, checked_after=0)
 
     def lost_plan(selection):
-        assert selection is value and cache.lock.acquire(blocking=False)
+        assert cache.lock.acquire(blocking=False)  # 검산은 LRU 잠금 밖이다
         cache.lock.release()
         raise ValueError("불변 plan 유실")
 
+    assert cache.read("key", lambda: reloaded, checked_after=0, validate=lost_plan) == (
+        reloaded, 60,
+    )
+    assert cache.entries["key"][0] is reloaded and not cache.inflight
+
+    def really_lost():
+        raise ValueError("불변 plan 유실")
+
     with pytest.raises(ValueError, match="plan 유실"):
-        cache.read("key", lambda: pytest.fail("hit"), checked_after=0, validate=lost_plan)
+        cache.read("key", really_lost, checked_after=0, validate=lost_plan)
     assert not cache.entries and not cache.inflight and cache.bytes == 0
