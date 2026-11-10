@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from kortravelweather import repository as repository_module
@@ -151,6 +151,30 @@ def test_duplicate_fact_in_one_batch_is_still_a_replay(repo):
         "source_entity_id", "payload", "fetched_at",
     )})
     assert repo.ingest_batch(values=[values[0], values[0]]) == 1
+
+
+def test_changed_fact_after_a_new_one_in_the_same_batch_is_a_conflict(repo):
+    """배치 안에서 방금 넣을 fact(_NewFactRow)와 값이 다른 같은 fact는 충돌이다."""
+    record, values = _batch(repo, count=1)
+    repo.record_source(**{k: record[k] for k in (
+        "source_record_key", "provider", "dataset_key", "source_entity_type",
+        "source_entity_id", "payload", "fetched_at",
+    )})
     changed = values[0].model_copy(update={"value_number": Decimal("9")})
     with pytest.raises(ValueError, match="immutable weather fact"):
         repo.ingest_batch(values=[values[0], changed])
+    with repo.engine.connect() as connection:
+        assert connection.scalar(select(WeatherValueRow.value_id).where(
+            WeatherValueRow.location_id == values[0].location_id,
+        )) is None  # 충돌한 배치는 아무것도 남기지 않는다
+
+
+def test_fallback_source_is_flushed_before_the_fact_insert(repo):
+    """원천 키 없는 fact는 같은 배치에서 원천 행을 만든 뒤 fact를 넣는다(FK 순서)."""
+    _, values = _batch(repo, count=2)
+    loose = [value.model_copy(update={"source_record_key": None}) for value in values]
+    assert repo.ingest_batch(values=loose) == 2
+    with repo.engine.connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(WeatherValueRow).where(
+            WeatherValueRow.location_id == values[0].location_id,
+        )) == 2

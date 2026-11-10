@@ -2057,7 +2057,7 @@ class WeatherRepository:
             return None if short_cutoff is not None and expired_short_forecast(
                 value, short_cutoff
             ) else False
-        fields = {
+        fields: dict[str, Any] = {
             "value_id": value_id,
             "location_id": value.location_id,
             "provider": value.provider,
