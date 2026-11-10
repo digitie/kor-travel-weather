@@ -585,7 +585,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         )
 
     def _inventory_forecast_health(self, manifest, frozen, now):
-        from .export_artifacts import ExportArtifactError
+        from .export_artifacts import ExportArtifactError, ExportGuardTimeout
         from .export_inventory_selection import counts_for_freshness, source_max_age
 
         stale = bool(manifest.get("unconfirmed_sources"))
@@ -625,6 +625,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                 wanted = {(scope["namespace"], tuple(scope["location_ids"]))
                           for scope in manifest["scopes"]}
                 stale |= actual != wanted
+            except ExportGuardTimeout:
+                # 공용 캐시의 대기·수명 초과는 현재 export와 같이 503으로 올린다(stale로 숨기지 않는다).
+                raise
             except (ExportArtifactError, KeyError, ValueError, TypeError):
                 stale = True
         return stale

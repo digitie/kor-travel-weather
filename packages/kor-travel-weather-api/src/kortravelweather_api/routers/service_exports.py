@@ -434,6 +434,11 @@ async def _frozen_response(
                 request.app.state.export_page_cache.read, key, reader,
                 partial(_validated_read, read, _PAGE_MODELS[resource], reader),
             )
+        elif resource == "forecasts" and style != "mid":
+            # 승인 선택의 60초 수명은 limiter 대기 뒤 실제 읽기부터 센다(현재·일별과 같다).
+            def read(inner=read):
+                reader.begin_page_reuse()
+                return inner()
         payload, headers = await to_thread.run_sync(
             partial(
                 _render_page,

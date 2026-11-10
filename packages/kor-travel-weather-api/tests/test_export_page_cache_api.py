@@ -335,6 +335,10 @@ def test_forecast_cursor_pages_reuse_the_app_selection(repository, tmp_path, mon
         return original(*args, **kwargs)
 
     monkeypatch.setattr(export_inventory_selection, "approved_source_selection", counted)
+    # main의 상태 검사는 모듈에 묶인 이름으로 불렀다. 그 경로도 세어야 실패가 드러난다.
+    from kortravelweather import export_forecasts
+
+    monkeypatch.setattr(export_forecasts, "approved_source_selection", counted, raising=False)
     url = "/v1/service/exports/forecasts?style=ultra_short&limit=1"
     page = client.get(url, headers=HEADERS)
     assert page.status_code == 200, page.text
