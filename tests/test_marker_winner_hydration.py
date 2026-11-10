@@ -135,7 +135,7 @@ def test_marker_winner_keeps_python_tie_order_and_current_preference():
     result, queries, converted = _run(rows, facts=rows)
     assert converted == [("other", NOW)]
     assert result["one"][0].source_record_key == "a"
-    fallback = queries[1][1].compile(dialect=PGDialect_psycopg()).params
+    fallback = queries[2][1].compile(dialect=PGDialect_psycopg()).params
     assert ("one", "TEMP") not in set(zip(
         fallback["marker_missing_locations"], fallback["marker_missing_metrics"], strict=True,
     ))
