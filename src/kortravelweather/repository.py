@@ -44,6 +44,7 @@ from sqlalchemy import (
     desc,
     false,
     func,
+    insert,
     literal,
     literal_column,
     not_,
@@ -902,6 +903,8 @@ INGEST_LOCK_RETRY_SECONDS = 3.0
 
 #: Rows per set-based projection upsert statement (10 array parameters each).
 PROJECTION_UPSERT_ROWS = 1000
+#: 새 fact bulk INSERT 한 문장의 행 수(executemany, 26열).
+_FACT_INSERT_ROWS = 1000
 
 _T = TypeVar("_T")
 
@@ -974,6 +977,51 @@ class SyncRunAlreadyActive(RuntimeError):
             f"{active_run_id or '(concurrent insert)'}"
         )
 
+
+
+def _digest_or_raise(value: str | Exception | None, facts: Sequence[WeatherValue]) -> str:
+    if value is None:
+        return normalization_input_digest(facts)
+    if isinstance(value, Exception):
+        raise value
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class _NewFactRow:
+    """이번 배치가 새로 넣는 fact의 열 값(``WeatherValueRow``와 같은 속성 이름).
+
+    배치 안 재수집 비교(``_insert_value_session``)와 export point
+    (``_value_model``)는 속성만 읽으므로 ORM 계측 객체 대신 이것을 쓴다.
+    저장은 bulk Core INSERT 한 번이다.
+    """
+
+    value_id: str
+    location_id: str
+    provider: str
+    dataset_key: str
+    weather_domain: str
+    forecast_style: str
+    timeline_bucket: str | None
+    metric_key: str
+    metric_name: str | None
+    source_metric_key: str | None
+    source_metric_name: str | None
+    value_number: Any
+    value_text: str | None
+    unit: str | None
+    severity: str | None
+    issued_at: datetime | None
+    valid_at: datetime | None
+    valid_from: datetime | None
+    valid_until: datetime | None
+    observed_at: datetime | None
+    target_at: datetime | None
+    known_at: datetime | None
+    normalization_version: str
+    payload: dict[str, Any]
+    collected_at: datetime | None
+    source_record_key: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1920,11 +1968,14 @@ class WeatherRepository:
         allow_replay_payload_mismatch: bool = False,
         expired_window: tuple[datetime, datetime] | None = None,
         short_cutoff: datetime | None = None,
+        pending: list[dict[str, Any]] | None = None,
     ) -> bool | None:
         """Insert one fact: ``True`` inserted, ``False`` replayed, ``None`` expired.
 
         ``existing`` is the batch's preloaded rows.  A row this call inserts is
         added to it, so a duplicate later in the same batch replays against it.
+        With ``pending`` the new row's columns are appended there for one bulk
+        Core INSERT (``_insert_pending_facts_session``) instead of an ORM add.
         """
         value = fact.value
         value_id = fact.value_id
@@ -2006,37 +2057,44 @@ class WeatherRepository:
             return None if short_cutoff is not None and expired_short_forecast(
                 value, short_cutoff
             ) else False
-        row = WeatherValueRow(value_id=value_id)
-        row.location_id = value.location_id
-        row.provider = value.provider
-        row.dataset_key = value.dataset_key
-        row.weather_domain = value.weather_domain
-        row.forecast_style = value.forecast_style.value
-        row.timeline_bucket = value.timeline_bucket.value if value.timeline_bucket else None
-        row.metric_key = value.metric_key
-        row.metric_name = value.metric_name
-        row.source_metric_key = value.source_metric_key
-        row.source_metric_name = value.source_metric_name
-        row.value_number = value.value_number
-        row.value_text = value.value_text
-        row.unit = value.unit
-        row.severity = value.severity
-        row.issued_at = _canonical_datetime(value.issued_at)
-        row.valid_at = _canonical_datetime(value.valid_at)
-        row.valid_from = _canonical_datetime(value.valid_from)
-        row.valid_until = _canonical_datetime(value.valid_until)
-        row.observed_at = _canonical_datetime(value.observed_at)
-        row.target_at = canonical_target
-        row.known_at = canonical_known
-        row.normalization_version = value.normalization_version
-        row.payload = value.payload
-        row.collected_at = canonical_collected
-        row.source_record_key = source_key
-        existing[(value_id, canonical_known)] = row
+        fields: dict[str, Any] = {
+            "value_id": value_id,
+            "location_id": value.location_id,
+            "provider": value.provider,
+            "dataset_key": value.dataset_key,
+            "weather_domain": value.weather_domain,
+            "forecast_style": value.forecast_style.value,
+            "timeline_bucket": value.timeline_bucket.value if value.timeline_bucket else None,
+            "metric_key": value.metric_key,
+            "metric_name": value.metric_name,
+            "source_metric_key": value.source_metric_key,
+            "source_metric_name": value.source_metric_name,
+            "value_number": value.value_number,
+            "value_text": value.value_text,
+            "unit": value.unit,
+            "severity": value.severity,
+            "issued_at": _canonical_datetime(value.issued_at),
+            "valid_at": _canonical_datetime(value.valid_at),
+            "valid_from": _canonical_datetime(value.valid_from),
+            "valid_until": _canonical_datetime(value.valid_until),
+            "observed_at": _canonical_datetime(value.observed_at),
+            "target_at": canonical_target,
+            "known_at": canonical_known,
+            "normalization_version": value.normalization_version,
+            "payload": value.payload,
+            "collected_at": canonical_collected,
+            "source_record_key": source_key,
+        }
+        # 배치 안 재수집 비교와 export point는 속성만 읽는다. ORM 계측 객체를
+        # 만들지 않는다(2026-11-11: 격자 ingest Python 시간의 큰 몫이 ORM이었다).
+        existing[(value_id, canonical_known)] = _NewFactRow(**fields)  # type: ignore[assignment]
         # 만료 fact도 배치 내 충돌 검증용 transient row만 보관하고 DB에는 추가하지 않는다.
         if short_cutoff is not None and expired_short_forecast(value, short_cutoff):
             return None
-        session.add(row)
+        if pending is None:
+            session.add(WeatherValueRow(**fields))
+        else:
+            pending.append(fields)
         return True
 
     def _ingest_batch_session(
@@ -2048,8 +2106,12 @@ class WeatherRepository:
         skipped: set[str] | None = None,
         export_capture: ExportCapture | None = None,
         prepared: list[PreparedExportChunk] | None = None,
+        input_digest: str | Exception | None = None,
     ) -> int:
         """Publish ``records`` and ``facts``; see ``ingest_batch``.
+
+        ``input_digest``: ``normalization_input_digest(facts)``를 transaction 밖에서 미리
+        계산한 값(또는 그 계산이 낸 예외). 없으면 여기서 계산한다.
 
         With ``skipped`` the location locks are only tried: a location whose
         lock another transaction holds is added to ``skipped`` and its facts
@@ -2239,6 +2301,7 @@ class WeatherRepository:
             )
         loaded = 0
         candidates: list[_ResolvedFact] = []
+        pending: list[dict[str, Any]] = []
         for fact in resolved:
             outcome = self._insert_value_session(
                 session,
@@ -2247,11 +2310,13 @@ class WeatherRepository:
                 allow_replay_payload_mismatch=fact.source_key in replay_source_keys,
                 expired_window=expired_window,
                 short_cutoff=short_cutoff,
+                pending=pending,
             )
             if outcome is None:
                 continue
             loaded += int(outcome)
             candidates.append(fact)
+        self._insert_pending_facts_session(session, pending)
         # Keep the mutable current projection in the same transaction as the
         # append-only facts.  A batch may contain several revisions of one
         # logical point, so refresh after all inserts and keep only its newest
@@ -2321,7 +2386,7 @@ class WeatherRepository:
                     record_export_chunk(session, metadata=Base.metadata, capture=export_capture,
                                         run_id=run_id, covered_sources=covered, chunk=chunk,
                                         input_point_count=len(facts),
-                                        input_digest=normalization_input_digest(facts),
+                                        input_digest=_digest_or_raise(input_digest, facts),
                                         source_point_counts={
                                             key: len(keys) for key, keys in source_points.items()
                                         })
@@ -2351,6 +2416,23 @@ class WeatherRepository:
             (run,) = run_rows.values()
             run.values_loaded = (run.values_loaded or 0) + loaded
         return loaded
+
+    @staticmethod
+    def _insert_pending_facts_session(session: Session, rows: list[dict[str, Any]]) -> None:
+        """새 fact를 Core INSERT(executemany)로 저장한다.
+
+        ORM ``session.add``와 같은 행·같은 transaction이다. 원천 FK가 보이도록
+        pending 원천/link 행을 먼저 flush한다. 같은 배치의 같은 키는
+        ``existing``이 이미 재수집으로 걸러 중복 행은 없다.
+        """
+        if not rows:
+            return
+        session.flush()
+        for offset in range(0, len(rows), _FACT_INSERT_ROWS):
+            session.execute(
+                insert(WeatherValueRow.__table__),  # type: ignore[arg-type]
+                rows[offset : offset + _FACT_INSERT_ROWS],
+            )
 
     @staticmethod
     def _set_ingest_lock_timeout(session: Session) -> None:
@@ -2419,12 +2501,21 @@ class WeatherRepository:
                     return self._ingest_batch_session(session, records, facts)
             return self._retry_lock_race(ordinary_step)
 
+        # 입력 증거 digest는 입력 fact만으로 정해진다(payload·source key 제외).
+        # 잠금을 쥔 transaction 밖에서 한 번 계산하고 실패도 capture에 넘긴다.
+        input_digest: str | Exception
+        try:
+            input_digest = normalization_input_digest(facts)
+        except Exception as exc:
+            input_digest = exc
+
         def step() -> tuple[int, PreparedExportChunk | None]:
             prepared: list[PreparedExportChunk] = []
             with self._session_factory.begin() as session:
                 self._set_ingest_lock_timeout(session)
                 loaded = self._ingest_batch_session(
                     session, records, facts, export_capture=export_capture, prepared=prepared,
+                    input_digest=input_digest,
                 )
             return loaded, prepared[0] if prepared else None
 
