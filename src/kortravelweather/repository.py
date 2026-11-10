@@ -57,7 +57,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    aliased,
+    defer,
+    mapped_column,
+    sessionmaker,
+)
 from sqlalchemy.types import TypeDecorator
 
 from .alerts import ALERT_MAX_AGE, active_alert_values
@@ -1099,6 +1107,10 @@ def install_immutability_triggers(engine: Engine) -> None:
             )
 
 
+#: 배치 prefetch의 IN 목록 단위(파일의 다른 묶음 조회와 같은 1000).
+_IN_CHUNK = 1000
+
+
 class WeatherRepository:
     """동기 SQLAlchemy repository.
 
@@ -1303,6 +1315,28 @@ class WeatherRepository:
             .where(WeatherLocationRow.location_id == location_id)
             .with_for_update(read=shared, key_share=shared)
         ).scalar_one_or_none()
+
+    def _lock_locations_shared_session(self, session: Session, location_ids: list[str]) -> None:
+        """여러 anchor의 공유 잠금. 공유 advisory를 정렬 순서대로 모두 잡은 뒤 row KEY SHARE를
+        한 문장(1000개 단위)으로 잡는다.
+
+        ``_lock_location_session(shared=True)``를 위치마다 부르던 것과 같은 잠금 집합이다(예전에는
+        위치마다 advisory·row를 번갈아 잡았다). location row를 배타로 잠그는 경로는 모두 배타
+        advisory를 먼저 잡으므로, 공유 advisory를 쥔 동안에는 충돌하는 row 잠금이 없어 순환
+        대기가 생기지 않는다.
+        """
+        fresh = [
+            location_id
+            for location_id in sorted(location_ids)
+            if self._advisory_xact_lock_once(session, f"location:{location_id}", shared=True)
+        ]
+        for offset in range(0, len(fresh), _IN_CHUNK):
+            session.execute(
+                select(WeatherLocationRow.location_id)
+                .where(WeatherLocationRow.location_id.in_(fresh[offset : offset + _IN_CHUNK]))
+                .order_by(WeatherLocationRow.location_id)
+                .with_for_update(read=True, key_share=True)
+            ).all()
 
     def upsert_location(self, location: WeatherLocation) -> WeatherLocation:
         now = kst_now()
@@ -2091,6 +2125,29 @@ class WeatherRepository:
         # no_autoflush 중 session.get은 pending row를 찾지 못하므로 같은 배치의
         # canonical 복합 키를 별도로 기록한다. ORM identity map을 캐시로 쓰지 않는다.
         linked_sources: set[tuple[str, str]] = set()
+        # run 행은 위에서 FOR UPDATE로 잠갔으므로 같은 run의 link를 다른 transaction이 더할 수
+        # 없다. 기존 link를 한 문장으로 읽어 레코드마다 왕복하지 않는다.
+        wanted_links = {
+            (str(record["run_id"]), str(record["source_record_key"]))
+            for record in records
+            if record.get("run_id") is not None
+        }
+        existing_links: set[tuple[str, str]] = set()
+        link_runs = sorted({run for run, _ in wanted_links})
+        link_keys = sorted({key for _, key in wanted_links})
+        with session.no_autoflush:
+            for offset in range(0, len(link_keys), _IN_CHUNK):
+                existing_links.update(
+                    (str(run_id), str(source_key))
+                    for run_id, source_key in session.execute(
+                        select(SyncRunSourceRow.run_id, SyncRunSourceRow.source_record_key).where(
+                            SyncRunSourceRow.run_id.in_(link_runs),
+                            SyncRunSourceRow.source_record_key.in_(
+                                link_keys[offset : offset + _IN_CHUNK]
+                            ),
+                        )
+                    )
+                )
         for record in records:
             run_id = record.get("run_id")
             if run_id is not None:
@@ -2108,12 +2165,8 @@ class WeatherRepository:
                 link = (str(run_id), source_key)
                 if link in linked_sources:
                     continue
-                with session.no_autoflush:
-                    existing = session.get(
-                        SyncRunSourceRow, {"run_id": link[0], "source_record_key": link[1]}
-                    )
                 linked_sources.add(link)
-                if existing is None:
+                if link not in existing_links:
                     session.add(
                         SyncRunSourceRow(
                             run_id=str(run_id),
@@ -2126,11 +2179,13 @@ class WeatherRepository:
         # taking the same advisory/row locks in opposite orders.  Each lock is
         # taken once per transaction (``_advisory_xact_lock_once``), not once
         # per fact.
-        for location_id in sorted({value.location_id for value in facts}):
-            if skipped is None:
-                self._lock_location_session(session, location_id, shared=True)
-            elif not self._try_lock_location_session(session, location_id, shared=True):
-                skipped.add(location_id)
+        locations = sorted({value.location_id for value in facts})
+        if skipped is None:
+            self._lock_locations_shared_session(session, locations)
+        else:
+            for location_id in locations:
+                if not self._try_lock_location_session(session, location_id, shared=True):
+                    skipped.add(location_id)
         if skipped:
             facts = [value for value in facts if value.location_id not in skipped]
         catalog = self._retention_catalog(session) if facts else (None, [])
@@ -2138,6 +2193,19 @@ class WeatherRepository:
         admitted_at = kst_now()
         short_cutoff = short_forecast_cutoff(admitted_at)
         source_rows: dict[str, SourceRecordRow] = {}
+        cited = sorted({value.source_record_key for value in facts if value.source_record_key})
+        # 원천 행은 commit 뒤 바뀌지 않는다. 있는 것만 미리 읽고(검증에 쓰지 않는 원문
+        # payload는 빼고), 없는 키는 기존처럼 fact 단계에서 advisory 잠금 뒤 다시 찾는다.
+        with session.no_autoflush:
+            for offset in range(0, len(cited), _IN_CHUNK):
+                for row in session.scalars(
+                    select(SourceRecordRow)
+                    .options(defer(SourceRecordRow.payload))
+                    .where(
+                        SourceRecordRow.source_record_key.in_(cited[offset : offset + _IN_CHUNK])
+                    )
+                ):
+                    source_rows[row.source_record_key] = row
         # 위치 잠금으로 보호된 배치 안에서만 격자 두 값을 재사용한다. ORM row나
         # session/global 캐시를 보관하지 않아 메모리와 다음 배치의 정합성을 지킨다.
         location_grids: dict[str, tuple[int | None, int | None] | None] = {}
