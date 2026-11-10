@@ -14,6 +14,7 @@ import logging
 import math
 import time
 import uuid
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
@@ -68,7 +69,13 @@ from sqlalchemy.orm import (
 )
 from sqlalchemy.types import TypeDecorator
 
-from .alerts import ALERT_MAX_AGE, active_alert_values, alert_scope_of
+from .alerts import (
+    ALERT_MAX_AGE,
+    KMA_ALERT_PROVIDERS,
+    active_alert_values,
+    alert_scope_of,
+    has_alert_area_codes,
+)
 from .export_artifacts import (
     MAX_CHUNK_POINTS,
     ExportArtifactError,
@@ -1106,6 +1113,11 @@ def install_immutability_triggers(engine: Engine) -> None:
                 "FOR EACH ROW EXECUTE FUNCTION weather_immutable_row()"
             )
 
+
+#: 특보 후보를 다른 구역 복제가 채웠을 때 넓혀 읽는 위치당 후보 상한.
+_ALERT_SCAN_MAX = 2048
+#: 마커 특보 후보의 첫 조회 배수(예산 × 이 값). 운영 KMA 복제는 위치당 약 27행이었다.
+_ALERT_FIRST_SCAN_FACTOR = 4
 
 #: 배치 prefetch의 IN 목록 단위(파일의 다른 묶음 조회와 같은 1000).
 _IN_CHUNK = 1000
@@ -2844,11 +2856,15 @@ class WeatherRepository:
         alerts_only: bool = False,
         alert_active_at: datetime | None = None,
         alert_locations: Mapping[str, WeatherLocation] | None = None,
+        alert_budget: int | None = None,
+        excluded_providers: frozenset[str] = frozenset(),
     ) -> dict[str, list[WeatherValue]]:
         """Read bounded per-location rows from the current-value projection.
 
         ``alert_locations`` (alert reads only) drops candidates whose warning area
-        is another location's before they are hydrated; see ``_scope_alert_pairs``.
+        is another location's before they are hydrated, and applies the per-location
+        budget to the location's own alerts; see ``_scope_alert_pairs``.
+        ``alert_budget`` is internal: the original budget while a widened read runs.
         """
         if exclude_alerts and alerts_only:
             # Otherwise the branch below silently answers the opposite of what
@@ -2970,6 +2986,10 @@ class WeatherRepository:
             candidate = candidate.where(
                 WeatherCurrentValueRow.provider.in_(tuple(dict.fromkeys(providers)))
             )
+        if excluded_providers:
+            candidate = candidate.where(
+                WeatherCurrentValueRow.provider.not_in(tuple(sorted(excluded_providers)))
+            )
         if kinds is not None:
             candidate = candidate.where(self._kind_predicate(WeatherCurrentValueRow, kinds))
         if from_at is not None:
@@ -3076,7 +3096,60 @@ class WeatherRepository:
             pairs = [(p.location_id, p.value_id, p.known_at)
                      for choices in winners.values() for p in choices]
             if alert_locations is not None:
-                pairs = self._scope_alert_pairs(session, pairs, alert_locations)
+                budget = alert_budget or limit_per_location
+                raw = Counter(location_id for location_id, _, _ in pairs)
+                pairs, matched, unverified = self._scope_alert_pairs(
+                    session, pairs, alert_locations, budget=budget,
+                )
+                # 다른 구역의 복제 특보가 후보 예산을 채웠다면 이 위치의 특보가 그 뒤에 있을
+                # 수 있다. 후보가 예산만큼 꽉 찼는데 자기 구역 특보가 예산보다 적으면 더 넓게
+                # 다시 읽는다(구역을 거른 뒤 예산을 적용하는 것과 같다).
+                crowded = sorted(
+                    location_id for location_id in unique_ids
+                    if raw[location_id] >= limit_per_location
+                    and matched[location_id] < budget
+                )
+                if crowded and limit_per_location >= _ALERT_SCAN_MAX:
+                    logger.warning(
+                        "weather_marker_alert_scan_cap locations=%d limit=%d",
+                        len(crowded), limit_per_location,
+                    )
+                elif crowded:
+                    # 구역 정보가 없는 위치의 KMA 행은 모두 unverified라 matched가 될 수 없다.
+                    # 그 표식 행은 이미 이번 prefix에 있으므로 남기고, 넓게 읽기는 KMA 밖
+                    # 제공처만 한다.
+                    uncoded = {
+                        location_id for location_id in crowded
+                        if location_id in alert_locations
+                        and not has_alert_area_codes(alert_locations[location_id])
+                    }
+                    for group, excluded in (
+                        ([key for key in crowded if key not in uncoded], excluded_providers),
+                        (sorted(uncoded), excluded_providers | KMA_ALERT_PROVIDERS),
+                    ):
+                        if not group:
+                            continue
+                        widened = self._current_value_models_many(
+                            session, group,
+                            limit_per_location=min(limit_per_location * 4, _ALERT_SCAN_MAX),
+                            prefer_current=prefer_current, newest_first=newest_first, now=now,
+                            from_at=from_at, to_at=to_at, providers=providers, kinds=kinds,
+                            dataset_key=dataset_key, metric_key=metric_key,
+                            weather_domain=weather_domain, metric_keys=metric_keys,
+                            per_metric=per_metric, exclude_alerts=exclude_alerts,
+                            alerts_only=alerts_only, alert_active_at=alert_active_at,
+                            alert_locations=alert_locations, alert_budget=budget,
+                            excluded_providers=excluded,
+                        )
+                        result.update(widened)
+                    crowded_set = set(crowded)
+                    # 넓혀 읽은 위치의 matched는 넓힌 결과가 대신한다. 구역 정보가 없는 위치는
+                    # KMA 표식(unverified) 행을 그대로 둔다.
+                    pairs = [
+                        pair for pair in pairs
+                        if pair[0] not in crowded_set
+                        or (pair[0] in uncoded and pair in unverified)
+                    ]
         else:
             if per_metric and providers is not None and len(set(providers)) > 1:
                 # 다중 제공처도 각각의 정렬된 prefix에서 대표만 읽은 뒤 병합한다.
@@ -3133,7 +3206,11 @@ class WeatherRepository:
         session: Session,
         pairs: list[tuple[str, str, datetime]],
         locations: Mapping[str, WeatherLocation],
-    ) -> list[tuple[str, str, datetime]]:
+        *,
+        budget: int,
+    ) -> tuple[
+        list[tuple[str, str, datetime]], Counter[str], set[tuple[str, str, datetime]],
+    ]:
         """다른 특보구역의 후보를 전체 모델로 만들기 전에 거른다.
 
         KMA 특보 목록은 발표 관서 단위로 여러 위치에 복제돼, 60개 위치 마커 한 묶음이
@@ -3146,9 +3223,13 @@ class WeatherRepository:
           ("미확인 행이 하나라도 있는가")에만 쓰이므로 결과가 같다.
         - different: 응답·표식 어디에도 쓰이지 않으므로 버린다.
         위치 정보가 없으면(요청 밖 ID) 거르지 않는다.
+        위치별 예산(``budget``)은 남은(이 위치에 해당하는) 행에 적용한다. 반환하는
+        Counter는 위치별로 남긴 matched(·미확인 위치 정보 없음) 행 수다.
         """
+        matched: Counter[str] = Counter()
+        unverified: set[tuple[str, str, datetime]] = set()
         if not pairs:
-            return pairs
+            return pairs, matched, unverified
         keys = func.unnest(
             bindparam("scope_value_ids", [value_id for _, value_id, _ in pairs],
                       type_=ARRAY(String)),
@@ -3177,16 +3258,18 @@ class WeatherRepository:
         for location_id, value_id, known_at in pairs:
             location = locations.get(location_id)
             fact = facts.get((value_id, known_at))
-            if location is None or fact is None:
-                kept.append((location_id, value_id, known_at))
-                continue
-            scope = alert_scope_of(fact.provider, fact.location_id, fact.payload, location)
+            scope = "matched" if location is None or fact is None else alert_scope_of(
+                fact.provider, fact.location_id, fact.payload, location,
+            )
             if scope == "matched":
-                kept.append((location_id, value_id, known_at))
+                if matched[location_id] < budget:
+                    matched[location_id] += 1
+                    kept.append((location_id, value_id, known_at))
             elif scope == "unverified" and location_id not in unverified_kept:
                 unverified_kept.add(location_id)
+                unverified.add((location_id, value_id, known_at))
                 kept.append((location_id, value_id, known_at))
-        return kept
+        return kept, matched, unverified
 
     @staticmethod
     def _ranked_current_ids(session: Session, stmt: Any) -> Any:
@@ -3306,7 +3389,11 @@ class WeatherRepository:
                     is_forecast = group[0] in ("ultra_short", "short", "mid")
                     is_alert = group[0] == "alert"
                     rows = self._current_value_models_many(
-                        session, location_ids, limit_per_location=budget if is_alert else 1,
+                        # 특보는 구역을 거른 뒤 예산을 적용한다. 다른 구역 복제가 흔하므로 처음부터
+                        # 후보를 예산의 4배까지 읽어 대개 한 번에 끝낸다(모자랄 때만 더 넓힌다).
+                        session, location_ids,
+                        limit_per_location=budget * _ALERT_FIRST_SCAN_FACTOR if is_alert else 1,
+                        alert_budget=budget if is_alert else None,
                         prefer_current=not is_forecast and not is_alert,
                         newest_first=not is_forecast, now=marker_instant,
                         from_at=marker_instant.replace(minute=0, second=0, microsecond=0)

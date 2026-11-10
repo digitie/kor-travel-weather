@@ -119,3 +119,121 @@ def test_mixed_and_ordering_cases_keep_matched_alerts_and_flag(api_client: TestC
     texts = sorted(alert["value_text"] for alert in item["alerts"])
     assert texts == ["강풍주의보 발표", "폭염경보"]
     assert item["alert_scope_unverified"] is True
+
+
+def test_own_area_alert_is_not_crowded_out_by_newer_fanned_alerts(api_client: TestClient) -> None:
+    """위치별 특보 예산은 구역을 거른 뒤에 적용한다(2026-11-10, 안전성 수정).
+
+    예전에는 다른 구역의 더 최근 복제 특보 26건이 후보 예산(80 // 3종류 그룹)을 채워,
+    그보다 오래된 이 구역의 활성 특보가 마커에서 사라졌다.
+    """
+    repo = api_client.app.state.repository
+    now = datetime.now(UTC).replace(microsecond=0)
+    repo.upsert_location(WeatherLocation(
+        location_id="crowded", name="밀린 위치", latitude=37.5, longitude=127,
+        metadata={"kma_alert_area_codes": ["land-a"]},
+    ))
+    repo.record_source(
+        source_record_key="alert-src-crowded", provider="python-kma-api",
+        dataset_key="kma_weather_alerts", source_entity_type="weather_response",
+        source_entity_id="crowded", payload={"rows": []},
+    )
+    repo.upsert_values([
+        *(_alert("crowded", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(40)),
+        # 복제 특보 40건보다 오래됐지만 아직 활성인 이 구역 특보
+        _alert("crowded", 60, "land-a", now, "한파주의보 발표"),
+    ])
+    six = "&".join(f"kind={kind}" for kind in (
+        "observed", "nowcast", "ultra_short", "short", "mid", "alert",
+    ))
+    response = api_client.get(f"/v1/weather/markers?location_id=crowded&{six}")
+    assert response.status_code == 200, response.text
+    alerts = response.json()["data"][0]["alerts"]
+    assert [alert["value_text"] for alert in alerts] == ["한파주의보 발표"]
+
+
+def _crowd_location(repo, key: str, *, coded: bool) -> datetime:
+    now = datetime.now(UTC).replace(microsecond=0)
+    repo.upsert_location(WeatherLocation(
+        location_id=key, name=key, latitude=37.5, longitude=127,
+        metadata={"kma_alert_area_codes": ["land-a"]} if coded else {},
+    ))
+    repo.record_source(
+        source_record_key=f"alert-src-{key}", provider="python-kma-api",
+        dataset_key="kma_weather_alerts", source_entity_type="weather_response",
+        source_entity_id=key, payload={"rows": []},
+    )
+    return now
+
+
+_SIX = "&".join(f"kind={kind}" for kind in (
+    "observed", "nowcast", "ultra_short", "short", "mid", "alert",
+))
+
+
+def test_old_but_valid_own_alert_behind_two_levels_of_fanned_alerts(api_client: TestClient) -> None:
+    """3일보다 오래됐지만 valid_until이 남은 이 구역 특보가 복제 특보 120건 뒤에 있어도 보인다.
+
+    첫 후보 조회(예산 26 × 4 = 104)로는 닿지 않아 한 번 넓혀야(416) 하고, 오래된 행은 활성
+    fact 검산 경로로 들어온다.
+    """
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "deep", coded=True)
+    old = _alert("deep", 0, "land-a", now - timedelta(days=4), "대설경보 발표")
+    repo.upsert_values([
+        *(_alert("deep", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(120)),
+        old.model_copy(update={"valid_until": now + timedelta(days=1)}),
+    ])
+    response = api_client.get(f"/v1/weather/markers?location_id=deep&{_SIX}")
+    assert response.status_code == 200, response.text
+    assert [a["value_text"] for a in response.json()["data"][0]["alerts"]] == ["대설경보 발표"]
+
+
+def test_own_alerts_are_capped_at_the_budget_after_filtering(api_client: TestClient) -> None:
+    """예산은 이 위치 특보에 적용된다: 이 구역 특보 30건 중 최신 26건만 후보가 된다."""
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "many", coded=True)
+    repo.upsert_values([
+        *(_alert("many", 2 * i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(30)),
+        *(_alert("many", 2 * i + 1, "land-a", now, f"강풍주의보{i} 발표") for i in range(30)),
+    ])
+    rows = repo.marker_values_many(
+        ["many"], limit_per_location=80,
+        kinds=["observed", "nowcast", "ultra_short", "short", "mid", "alert"],
+    )
+    own = [r for r in rows["many"] if r.metric_key == "ALERT"]
+    assert len(own) == 26
+    assert all(r.payload["raw"]["areaCode"] == "land-a" for r in own)
+    assert [r.value_text for r in own] == [f"강풍주의보{i} 발표" for i in range(26)]
+
+
+def test_uncoded_location_does_not_widen_kma_reads(api_client: TestClient) -> None:
+    """구역 정보가 없는 위치의 KMA 행은 모두 미확인이라 넓혀 읽어도 matched가 될 수 없다.
+
+    넓게 읽기는 KMA 밖 제공처만 하고(여기서는 없음) 미확인 표식은 그대로다.
+    """
+    from sqlalchemy import event
+
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "nocode", coded=False)
+    repo.upsert_values([
+        _alert("nocode", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(130)
+    ])
+    statements: list[tuple[str, dict]] = []
+
+    def before(_conn, _cursor, statement, parameters, _context, _many):  # noqa: ANN001
+        statements.append((statement, parameters))
+
+    event.listen(repo.engine, "before_cursor_execute", before)
+    try:
+        response = api_client.get(f"/v1/weather/markers?location_id=nocode&{_SIX}")
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", before)
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    assert item["alerts"] == [] and item["alert_scope_unverified"] is True
+    kma_widen = [
+        statement for statement, parameters in statements
+        if "active_alert_candidates" in statement and "NOT IN" not in statement.upper()
+    ]
+    assert len(kma_widen) == 1  # 첫 후보 조회뿐, KMA를 포함한 넓은 재조회는 없다
