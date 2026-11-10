@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { forecastWindowStart, getAllPublicLocations, getPublicLocations, getLatest, getForecast, getMarkerSummaries } from "./api";
+import { forecastWindowEnd, forecastWindowStart, getAllPublicLocations, getPublicLocations, getLatest, getForecast, getMarkerSummaries } from "./api";
 
 function respond(body: string, init: ResponseInit) {
   const fetchMock = vi.fn(async () => new Response(body, init));
@@ -77,6 +77,18 @@ describe("request error handling", () => {
   it("does not silently succeed on an empty 200 body", async () => {
     respond("", { status: 200, headers: { "content-type": "application/json" } });
     await expect(getPublicLocations()).rejects.toThrow("응답을 해석하지 못했습니다 (200)");
+  });
+});
+
+describe("forecastWindowEnd", () => {
+  it("is the start of the KST day after tomorrow, in UTC", () => {
+    expect(forecastWindowEnd(new Date("2026-11-10T03:37:00Z"))).toBe("2026-11-11T15:00:00.000Z");
+    // 15:00Z is already the next KST day: the window moves with the KST date, not UTC.
+    expect(forecastWindowEnd(new Date("2026-11-10T15:30:00Z"))).toBe("2026-11-12T15:00:00.000Z");
+    expect(forecastWindowEnd(new Date("2026-12-31T14:59:59Z"))).toBe("2027-01-01T15:00:00.000Z");
+    // exact KST midnight edge
+    expect(forecastWindowEnd(new Date("2026-11-10T14:59:59.999Z"))).toBe("2026-11-11T15:00:00.000Z");
+    expect(forecastWindowEnd(new Date("2026-11-10T15:00:00.000Z"))).toBe("2026-11-12T15:00:00.000Z");
   });
 });
 

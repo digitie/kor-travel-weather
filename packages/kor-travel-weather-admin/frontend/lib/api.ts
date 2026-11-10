@@ -283,6 +283,31 @@ export function forecastWindowStart(now: Date = new Date()): string {
   return start.toISOString();
 }
 
+/**
+ * End of the forecast window the location detail shows: the start of the KST day
+ * after tomorrow. The API bound is inclusive; rows at exactly this instant belong
+ * to the day after tomorrow and the tomorrow panel ignores them.
+ *
+ * The detail renders the next 24 forecast slots and tomorrow's day/night. Asking
+ * for an open-ended range with a row cap returned 1000 rows that, for dense
+ * locations, ended 33-43 hours out -- before tomorrow night -- while sparse
+ * locations got three days nobody displays (odroid, 2026-11-10). Bound the range
+ * by what is rendered and let the cap be a safety net, not the window.
+ * KST has no daylight saving, so a fixed +09:00 offset is exact.
+ */
+export function forecastWindowEnd(now: Date = new Date()): string {
+  const kstMidnight = new Date(now.getTime() + 9 * 3600_000);
+  kstMidnight.setUTCHours(0, 0, 0, 0);
+  return new Date(kstMidnight.getTime() - 9 * 3600_000 + 2 * 86_400_000).toISOString();
+}
+
+/**
+ * Row cap for the detail window above. With a bounded window the cap is only a
+ * safety net, so use the API maximum (the densest sampled location had about
+ * 1,100 rows in a 35-hour window, so roughly 1,500 in a full 48 hours).
+ */
+export const FORECAST_DETAIL_LIMIT = 5000;
+
 export function getForecast(
   locationId: string,
   from?: string,

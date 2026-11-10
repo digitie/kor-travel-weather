@@ -6,6 +6,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { MapDetailOverlay, MapFilterBar, MapFilterField, MapFilterPanel, MapKindFilter, MapStage, MapTabs, MapTabPanel, MapViewTabs, MapWorkspace, type MapViewportReadout } from "@kor-travel/ui/map-controls";
 
 import {
+  FORECAST_DETAIL_LIMIT,
+  forecastWindowEnd,
   forecastWindowStart,
   getAllPublicLocations,
   getForecast,
@@ -591,9 +593,17 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
         });
     }
     // 예보가 늦거나 실패해도 먼저 도착한 현재 날씨는 즉시 표시한다.
-    void getForecast(selectedLocationId, forecastWindowStart(), undefined, 1000, signal, providerFilter, kindFilter)
+    // 화면이 그리는 구간(다음 24칸·내일 낮/밤)만 받는다. 열린 구간+1000행 상한은 밀집 위치에서
+    // 내일 밤 전에 잘리고, 희소 위치에서는 쓰지 않는 사흘치를 보냈다.
+    void getForecast(selectedLocationId, forecastWindowStart(), forecastWindowEnd(), FORECAST_DETAIL_LIMIT,
+      signal, providerFilter, kindFilter)
       .then((next) => {
-        if (!signal.aborted) setForecast(next.data);
+        if (signal.aborted) return;
+        setForecast(next.data);
+        // 상한에 닿으면 구간 끝(내일 밤)이 잘린다. 화면을 바꾸지 않고 진단만 남긴다.
+        if (next.data.length >= FORECAST_DETAIL_LIMIT) {
+          console.warn("forecast detail truncated", FORECAST_DETAIL_LIMIT, selectedLocationId);
+        }
       })
       .catch((reason: unknown) => {
         if (!signal.aborted) setForecastMessage(reason instanceof Error ? reason.message : "예보를 불러오지 못했습니다.");

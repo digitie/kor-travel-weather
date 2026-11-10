@@ -399,6 +399,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
       "setValues", "setForecast", "setMessage", "setForecastMessage", "setLastRefreshedAt",
       "setLoading", "setForecastLoading", "selectedLocationId", "getLatest", "getForecast",
       "forecastWindowStart", "providerFilter", "kindFilter", "detailOpen",
+      "forecastWindowEnd", "FORECAST_DETAIL_LIMIT",
     ], ["CURRENT_KINDS", "includesCurrentKind"]);
     const mount = (kindFilter: string[] | undefined) => {
       const view = {
@@ -407,7 +408,8 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
         getForecast: vi.fn(() => Promise.resolve({ data: [] })),
       };
       const cleanup = detail(vi.fn(), vi.fn(), view.setMessage, vi.fn(), vi.fn(), view.setLoading, vi.fn(),
-        "a", view.getLatest, view.getForecast, () => "2026-10-27T00:00:00+09:00", undefined, kindFilter, true);
+        "a", view.getLatest, view.getForecast, () => "2026-10-27T00:00:00+09:00", undefined, kindFilter, true,
+        () => "2026-10-28T15:00:00.000Z", 5000);
       return { ...view, cleanup };
     };
     const forecastOnly = mount(["short", "mid"]);
