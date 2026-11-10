@@ -45,6 +45,7 @@ from sqlalchemy import (
     false,
     func,
     literal,
+    literal_column,
     not_,
     nullslast,
     or_,
@@ -3202,6 +3203,43 @@ class WeatherRepository:
         return result
 
     @staticmethod
+    def _classify_alert_rows(
+        rows: Sequence[Any],
+        locations: Mapping[str, WeatherLocation],
+        *,
+        budget: int,
+    ) -> tuple[
+        list[tuple[str, str, datetime]], Counter[str],
+        set[tuple[str, str, datetime]], Counter[str],
+    ]:
+        """구역 판정·위치별 상한(이 위치 특보에 적용)·미확인 표식 1건. 행은 순위 순서다.
+
+        각 행은 location_id·value_id·known_at·provider·payload를 갖는다. 순위는 위치별로
+        나뉘므로 fact의 위치는 location_id와 같다. 위치 정보가 없으면 matched로 센다.
+        """
+        kept: list[tuple[str, str, datetime]] = []
+        matched: Counter[str] = Counter()
+        raw: Counter[str] = Counter()
+        unverified: set[tuple[str, str, datetime]] = set()
+        unverified_seen: set[str] = set()
+        for row in rows:
+            pair = (row.location_id, row.value_id, row.known_at)
+            raw[row.location_id] += 1
+            location = locations.get(row.location_id)
+            scope = "matched" if location is None else alert_scope_of(
+                row.provider, row.location_id, row.payload, location,
+            )
+            if scope == "matched":
+                if matched[row.location_id] < budget:
+                    matched[row.location_id] += 1
+                    kept.append(pair)
+            elif scope == "unverified" and row.location_id not in unverified_seen:
+                unverified_seen.add(row.location_id)
+                unverified.add(pair)
+                kept.append(pair)
+        return kept, matched, unverified, raw
+
+    @staticmethod
     def _scope_alert_pairs(
         session: Session,
         pairs: list[tuple[str, str, datetime]],
@@ -3411,6 +3449,11 @@ class WeatherRepository:
         # one recent row per location/metric without ranking all append-only
         # revisions.  Keep the generic window-query fallback for SQLite and
         # other test dialects.
+        # 호출자가 준 위치(API는 같은 catalog를 넘긴다)가 없으면 특보 행이 있을 때만 같은
+        # 세션에서 읽는다(연결 하나·특보 없는 묶음은 조회 없음).
+        alert_locations: dict[str, WeatherLocation] | None = (
+            dict(locations) if locations is not None else None
+        )
         with self._session_factory() as session:
             if session.get_bind().dialect.name != "postgresql":
                 return self.latest_values_many(
@@ -3679,12 +3722,35 @@ class WeatherRepository:
                 WeatherValueRow.payload["tmSeq"].as_string(),
                 WeatherValueRow.value_id,
             )
-            alert_ranked = (
+            # 구역 판정(alert_scope_of)이 읽는 필드만 순위 행에 싣는다. payload 전체를
+            # 두 window 정렬에 싣지 않는다(큰 묶음에서 정렬이 디스크로 넘친다).
+            # 없는 키·객체가 아닌 payload/raw의 -> 는 null이라 판정은 전체 payload와 같다.
+            area_keys = ("reg_id", "regId", "area_code", "areaCode", "zone_code", "zoneCode")
+
+            def area_object(source: Any) -> Any:
+                return func.json_build_object(*(
+                    part for key in area_keys
+                    for part in (literal_column(f"'{key}'"), source[key])
+                ))
+
+            alert_area_payload = func.json_build_object(
+                *(part for key in area_keys
+                  for part in (literal_column(f"'{key}'"), WeatherValueRow.payload[key])),
+                literal_column("'raw'"), area_object(WeatherValueRow.payload["raw"]),
+            )
+
+            def build_alert_limited(*, exclude_kma: bool = False) -> Any:
+                return _limited(_ranked(exclude_kma))
+
+            def _ranked(exclude_kma: bool) -> Any:
+                return (
                 select(
                     WeatherValueRow.value_id.label("value_id"),
                     WeatherValueRow.location_id.label("location_id"),
                     WeatherValueRow.target_at.label("target_at"),
                     WeatherValueRow.known_at.label("known_at"),
+                    WeatherValueRow.provider.label("provider"),
+                    alert_area_payload.label("payload"),
                     func.row_number()
                     .over(
                         partition_by=(
@@ -3711,6 +3777,8 @@ class WeatherRepository:
                     true() if providers is None else WeatherValueRow.provider.in_(
                         tuple(dict.fromkeys(providers)),
                     ),
+                    WeatherValueRow.provider.not_in(tuple(sorted(KMA_ALERT_PROVIDERS)))
+                    if exclude_kma else true(),
                     or_(
                         WeatherValueRow.weather_domain
                         == literal("weather_alert", literal_execute=True),
@@ -3727,11 +3795,16 @@ class WeatherRepository:
                     ),
                 )
                 .subquery("marker_alert_values")
-            )
-            alert_limited = (
+                )
+
+            def _limited(alert_ranked: Any) -> Any:
+                return (
                 select(
+                    alert_ranked.c.location_id,
                     alert_ranked.c.value_id,
                     alert_ranked.c.known_at,
+                    alert_ranked.c.provider,
+                    alert_ranked.c.payload,
                     func.row_number()
                     .over(
                         partition_by=alert_ranked.c.location_id,
@@ -3745,66 +3818,126 @@ class WeatherRepository:
                 )
                 .where(alert_ranked.c.revision_rank == 1)
                 .subquery("limited_marker_alert_values")
-            )
-            alerts = (
-                select(WeatherValueRow)
-                .join(
-                    alert_limited,
-                    and_(
-                        WeatherValueRow.value_id == alert_limited.c.value_id,
-                        WeatherValueRow.known_at == alert_limited.c.known_at,
-                    ),
                 )
-                .where(
-                    alert_limited.c.location_rank <= min(limit_per_location, 100),
-                )
-                .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
-            )
+
+            alert_limited = build_alert_limited()
             result: dict[str, list[WeatherValue]] = {
                 location_id: [] for location_id in location_ids
             }
             for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
-            alert_values_by_location: dict[str, list[WeatherValue]] = {}
-            if providers is None:
-                alert_rows = session.scalars(alerts).all()
-            else:
-                # 이벤트별 revision과 기존 상한은 그대로 고른 뒤 key만 먼저
-                # 확정한다. 큰 fact JOIN이 ranking 앞에서 실행되는 것을 막는다.
-                alert_keys = session.execute(select(
-                    alert_limited.c.value_id, alert_limited.c.known_at,
-                ).where(alert_limited.c.location_rank <= min(limit_per_location, 100))).all()
-                alert_rows = []
-                if alert_keys:
-                    keys = (
-                        func.unnest(
-                            bindparam("provider_alert_value_ids",
-                                      [key.value_id for key in alert_keys],
-                                      type_=ARRAY(String)),
-                            bindparam("provider_alert_known_ats",
-                                      [key.known_at for key in alert_keys],
-                                      type_=ARRAY(AwareDateTime())),
-                        ).table_valued("value_id", "known_at")
-                        .render_derived(name="provider_alert_keys")
-                    )
-                    fact = select(WeatherValueRow).where(
-                        WeatherValueRow.value_id == keys.c.value_id,
-                        WeatherValueRow.known_at == keys.c.known_at,
-                        WeatherValueRow.known_at >= min(key.known_at for key in alert_keys),
-                        WeatherValueRow.known_at <= max(key.known_at for key in alert_keys),
-                    ).limit(1).lateral("provider_alert_fact")
-                    fact_row = aliased(WeatherValueRow, fact)
-                    # key당 PK lookup을 강제해 큰 fact 전체와 hash JOIN하지 않는다.
-                    alert_rows = session.scalars(select(fact_row).select_from(
-                        keys.join(fact, true()),
-                    ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
+            # 다른 구역 복제 특보가 위치별 상한을 채워 이 구역 특보를 밀어내지 않도록, 순위 행을
+            # 받아 구역을 먼저 판정하고 상한은 이 위치 특보에 적용한다(kind 지정 경로와 같은 의미,
+            # #216·#219). 첫 조회는 상한의 4배, 모자란 위치만 _ALERT_SCAN_MAX까지 넓힌다.
+            alert_budget = min(limit_per_location, 100)
 
-            for row in alert_rows:
-                alert_values_by_location.setdefault(row.location_id, []).append(
-                    self._value_model(row)
+            def ranked_alerts(
+                cap: int, only: Sequence[str] | None = None, limited: Any = None,
+            ) -> tuple[
+                list[tuple[str, str, datetime]], Counter[str],
+                set[tuple[str, str, datetime]], Counter[str],
+            ]:
+                source = alert_limited if limited is None else limited
+                query = select(
+                    source.c.location_id, source.c.value_id,
+                    source.c.known_at, source.c.provider,
+                    source.c.payload,
+                ).where(source.c.location_rank <= cap)
+                if only is not None:
+                    query = query.where(source.c.location_id.in_(only))
+                rows = session.execute(query.order_by(
+                    source.c.location_id, source.c.location_rank,
+                )).all()
+                return self._classify_alert_rows(rows, alert_catalog(rows), budget=alert_budget)
+
+            def alert_catalog(rows: Sequence[Any]) -> dict[str, WeatherLocation]:
+                nonlocal alert_locations
+                if alert_locations is None:
+                    if not rows:
+                        return {}
+                    alert_locations = {
+                        row.location_id: self._location_model(row)
+                        for row in session.scalars(select(WeatherLocationRow).where(
+                            WeatherLocationRow.location_id.in_(sorted(set(location_ids))),
+                        )).all()
+                    }
+                return alert_locations
+
+            first_cap = alert_budget * _ALERT_FIRST_SCAN_FACTOR
+            kept, matched, unverified, raw = ranked_alerts(first_cap)
+            crowded = sorted(
+                location_id for location_id in raw
+                if raw[location_id] >= first_cap and matched[location_id] < alert_budget
+            )
+            catalog = alert_locations or {}
+            # 구역 정보가 없는 위치의 KMA 행은 모두 미확인이라 넓혀도 matched가 될 수
+            # 없다. 그 위치는 KMA 밖 제공처만 넓혀 읽고 첫 조회의 미확인 표식은 둔다
+            # (kind 지정 경로와 같다).
+            uncoded = [
+                location_id for location_id in crowded
+                if location_id in catalog and not has_alert_area_codes(catalog[location_id])
+            ]
+            uncoded_set = set(uncoded)
+            coded = [location_id for location_id in crowded if location_id not in uncoded_set]
+            capped = False
+            if coded:
+                wide = ranked_alerts(_ALERT_SCAN_MAX, coded)
+                coded_set = set(coded)
+                kept = [pair for pair in kept if pair[0] not in coded_set] + wide[0]
+                unverified = {pair for pair in unverified if pair[0] not in coded_set} | wide[2]
+                capped |= any(wide[3][location_id] >= _ALERT_SCAN_MAX
+                              and wide[1][location_id] < alert_budget for location_id in coded)
+            if uncoded:
+                wide = ranked_alerts(
+                    _ALERT_SCAN_MAX, uncoded, build_alert_limited(exclude_kma=True),
                 )
-            for location_id, alert_values in alert_values_by_location.items():
+                kept = [
+                    pair for pair in kept if pair[0] not in uncoded_set or pair in unverified
+                ] + wide[0]
+                capped |= any(wide[3][location_id] >= _ALERT_SCAN_MAX
+                              and wide[1][location_id] < alert_budget for location_id in uncoded)
+            if capped:
+                logger.warning(
+                    "weather_marker_alert_scan_cap locations=%d limit=%d",
+                    len(crowded), _ALERT_SCAN_MAX,
+                )
+            alert_rows = []
+            if kept:
+                keys = (
+                    func.unnest(
+                        bindparam("provider_alert_value_ids",
+                                  [value_id for _, value_id, _ in kept],
+                                  type_=ARRAY(String)),
+                        bindparam("provider_alert_known_ats",
+                                  [known_at for _, _, known_at in kept],
+                                  type_=ARRAY(AwareDateTime())),
+                    ).table_valued("value_id", "known_at")
+                    .render_derived(name="provider_alert_keys")
+                )
+                fact = select(WeatherValueRow).where(
+                    WeatherValueRow.value_id == keys.c.value_id,
+                    WeatherValueRow.known_at == keys.c.known_at,
+                    WeatherValueRow.known_at >= min(known_at for _, _, known_at in kept),
+                    WeatherValueRow.known_at <= max(known_at for _, _, known_at in kept),
+                ).limit(1).lateral("provider_alert_fact")
+                fact_row = aliased(WeatherValueRow, fact)
+                # key당 PK lookup을 강제해 큰 fact 전체와 hash JOIN하지 않는다.
+                alert_rows = session.scalars(select(fact_row).select_from(
+                    keys.join(fact, true()),
+                ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
+
+            scoped: dict[str, list[WeatherValue]] = {}
+            markers: dict[str, list[WeatherValue]] = {}
+            for row in alert_rows:
+                # 미확인 표식 행은 활성 판정(같은 관서·이름 축약)에 섞지 않는다. 섞이면 이 구역
+                # 특보를 지우거나 표식이 사라진다(kind 지정 경로와 같다).
+                key = (row.location_id, row.value_id, row.known_at)
+                target = markers if key in unverified else scoped
+                target.setdefault(row.location_id, []).append(self._value_model(row))
+            for location_id, alert_values in scoped.items():
                 result.setdefault(location_id, []).extend(active_alert_values(alert_values))
+            for location_id, alert_values in markers.items():
+                result.setdefault(location_id, []).extend(alert_values)
             return result
 
     def timeline_many(
