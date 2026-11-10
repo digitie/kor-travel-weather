@@ -82,7 +82,7 @@ def test_ingest_batch_round_trips_do_not_grow_per_record() -> None:
         assert len(repo.list_sync_run_sources(run.run_id)) == len(locations)
         # 레코드 12개·위치 12개·fact 72개여도 각각 한 문장.
         assert counts[("SELECT", "weather_sync_run_sources")] == 1, counts
-        assert counts[("SELECT", "weather_locations")] <= 1, counts
+        assert counts[("SELECT", "weather_locations")] == 1, counts  # row 잠금은 남아 있다
         # 원천 행: 레코드마다 키/identity 확인(2) + 배치 전체 한 번. fact마다 다시 읽지 않는다.
         assert counts[("SELECT", "weather_source_records")] <= 2 * len(records) + 1, counts
 

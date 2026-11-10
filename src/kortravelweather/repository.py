@@ -57,7 +57,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError, SQLAlchemyError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, aliased, mapped_column, sessionmaker
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    Session,
+    aliased,
+    defer,
+    mapped_column,
+    sessionmaker,
+)
 from sqlalchemy.types import TypeDecorator
 
 from .alerts import ALERT_MAX_AGE, active_alert_values
@@ -1099,6 +1107,10 @@ def install_immutability_triggers(engine: Engine) -> None:
             )
 
 
+#: 배치 prefetch의 IN 목록 단위(파일의 다른 묶음 조회와 같은 1000).
+_IN_CHUNK = 1000
+
+
 class WeatherRepository:
     """동기 SQLAlchemy repository.
 
@@ -1305,21 +1317,23 @@ class WeatherRepository:
         ).scalar_one_or_none()
 
     def _lock_locations_shared_session(self, session: Session, location_ids: list[str]) -> None:
-        """여러 anchor의 공유 잠금. advisory는 정렬 순서대로, row KEY SHARE는 한 문장으로 잡는다.
+        """여러 anchor의 공유 잠금. 공유 advisory를 정렬 순서대로 모두 잡은 뒤 row KEY SHARE를
+        한 문장(1000개 단위)으로 잡는다.
 
-        ``_lock_location_session(shared=True)``를 위치마다 부르던 것과 같은 잠금을 같은 순서로
-        얻는다. catalog 변경은 배타 advisory를 먼저 잡으므로, 공유 advisory를 모두 쥔 뒤
-        row 잠금을 한꺼번에 얻어도 순환 대기가 생기지 않는다.
+        ``_lock_location_session(shared=True)``를 위치마다 부르던 것과 같은 잠금 집합이다(예전에는
+        위치마다 advisory·row를 번갈아 잡았다). location row를 배타로 잠그는 경로는 모두 배타
+        advisory를 먼저 잡으므로, 공유 advisory를 쥔 동안에는 충돌하는 row 잠금이 없어 순환
+        대기가 생기지 않는다.
         """
         fresh = [
             location_id
             for location_id in sorted(location_ids)
             if self._advisory_xact_lock_once(session, f"location:{location_id}", shared=True)
         ]
-        if fresh:
+        for offset in range(0, len(fresh), _IN_CHUNK):
             session.execute(
                 select(WeatherLocationRow.location_id)
-                .where(WeatherLocationRow.location_id.in_(fresh))
+                .where(WeatherLocationRow.location_id.in_(fresh[offset : offset + _IN_CHUNK]))
                 .order_by(WeatherLocationRow.location_id)
                 .with_for_update(read=True, key_share=True)
             ).all()
@@ -2119,19 +2133,21 @@ class WeatherRepository:
             if record.get("run_id") is not None
         }
         existing_links: set[tuple[str, str]] = set()
-        if wanted_links:
-            with session.no_autoflush:
-                existing_links = {
+        link_runs = sorted({run for run, _ in wanted_links})
+        link_keys = sorted({key for _, key in wanted_links})
+        with session.no_autoflush:
+            for offset in range(0, len(link_keys), _IN_CHUNK):
+                existing_links.update(
                     (str(run_id), str(source_key))
                     for run_id, source_key in session.execute(
                         select(SyncRunSourceRow.run_id, SyncRunSourceRow.source_record_key).where(
-                            SyncRunSourceRow.run_id.in_({run for run, _ in wanted_links}),
+                            SyncRunSourceRow.run_id.in_(link_runs),
                             SyncRunSourceRow.source_record_key.in_(
-                                {key for _, key in wanted_links}
+                                link_keys[offset : offset + _IN_CHUNK]
                             ),
                         )
                     )
-                }
+                )
         for record in records:
             run_id = record.get("run_id")
             if run_id is not None:
@@ -2178,12 +2194,16 @@ class WeatherRepository:
         short_cutoff = short_forecast_cutoff(admitted_at)
         source_rows: dict[str, SourceRecordRow] = {}
         cited = sorted({value.source_record_key for value in facts if value.source_record_key})
-        if cited:
-            # 원천 행은 commit 뒤 바뀌지 않는다. 있는 것만 미리 한 문장으로 읽고, 없는 키는
-            # 기존처럼 fact 단계에서 advisory 잠금 뒤 다시 찾는다(동시 삽입 경로 보존).
-            with session.no_autoflush:
+        # 원천 행은 commit 뒤 바뀌지 않는다. 있는 것만 미리 읽고(검증에 쓰지 않는 원문
+        # payload는 빼고), 없는 키는 기존처럼 fact 단계에서 advisory 잠금 뒤 다시 찾는다.
+        with session.no_autoflush:
+            for offset in range(0, len(cited), _IN_CHUNK):
                 for row in session.scalars(
-                    select(SourceRecordRow).where(SourceRecordRow.source_record_key.in_(cited))
+                    select(SourceRecordRow)
+                    .options(defer(SourceRecordRow.payload))
+                    .where(
+                        SourceRecordRow.source_record_key.in_(cited[offset : offset + _IN_CHUNK])
+                    )
                 ):
                     source_rows[row.source_record_key] = row
         # 위치 잠금으로 보호된 배치 안에서만 격자 두 값을 재사용한다. ORM row나
