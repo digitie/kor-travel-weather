@@ -237,3 +237,38 @@ def test_uncoded_location_does_not_widen_kma_reads(api_client: TestClient) -> No
         if "active_alert_candidates" in statement and "NOT IN" not in statement.upper()
     ]
     assert len(kma_widen) == 1  # 첫 후보 조회뿐, KMA를 포함한 넓은 재조회는 없다
+
+
+def test_kindless_markers_scope_alerts_before_the_budget(api_client: TestClient) -> None:
+    """kind 없는 마커(PinVi가 쓰는 경로)도 다른 구역 특보를 먼저 거르고 상한을 적용한다.
+
+    예전에는 위치별 최신 80건(다른 구역 복제 포함)을 먼저 자르고 모델로 만든 뒤 API가 구역을
+    걸러, 더 오래된 이 구역 활성 특보가 사라지고 다른 구역 행을 모두 수화했다.
+    """
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless", coded=True)
+    repo.upsert_values([
+        *(_alert("kindless", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(90)),
+        _alert("kindless", 120, "land-a", now, "한파주의보 발표"),
+    ])
+    rows = repo.marker_values_many(["kindless"], limit_per_location=80)
+    alerts = [row for row in rows["kindless"] if row.metric_key == "ALERT"]
+    assert [row.payload["raw"]["areaCode"] for row in alerts] == ["land-a"]
+    response = api_client.get("/v1/weather/markers?location_id=kindless")
+    assert response.status_code == 200, response.text
+    assert [a["value_text"] for a in response.json()["data"][0]["alerts"]] == ["한파주의보 발표"]
+    assert response.json()["data"][0]["alert_scope_unverified"] is False
+
+
+def test_kindless_markers_keep_unverified_flag_for_uncoded_locations(
+    api_client: TestClient,
+) -> None:
+    repo = api_client.app.state.repository
+    now = _crowd_location(repo, "kindless-nocode", coded=False)
+    repo.upsert_values([
+        _alert("kindless-nocode", i, f"sea-{i}", now, f"풍랑주의보{i} 발표") for i in range(5)
+    ])
+    response = api_client.get("/v1/weather/markers?location_id=kindless-nocode")
+    assert response.status_code == 200, response.text
+    item = response.json()["data"][0]
+    assert item["alerts"] == [] and item["alert_scope_unverified"] is True

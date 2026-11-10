@@ -3730,6 +3730,7 @@ class WeatherRepository:
             )
             alert_limited = (
                 select(
+                    alert_ranked.c.location_id,
                     alert_ranked.c.value_id,
                     alert_ranked.c.known_at,
                     func.row_number()
@@ -3746,58 +3747,53 @@ class WeatherRepository:
                 .where(alert_ranked.c.revision_rank == 1)
                 .subquery("limited_marker_alert_values")
             )
-            alerts = (
-                select(WeatherValueRow)
-                .join(
-                    alert_limited,
-                    and_(
-                        WeatherValueRow.value_id == alert_limited.c.value_id,
-                        WeatherValueRow.known_at == alert_limited.c.known_at,
-                    ),
-                )
-                .where(
-                    alert_limited.c.location_rank <= min(limit_per_location, 100),
-                )
-                .order_by(WeatherValueRow.location_id, desc(WeatherValueRow.target_at))
-            )
             result: dict[str, list[WeatherValue]] = {
                 location_id: [] for location_id in location_ids
             }
             for row in current_rows:
                 result.setdefault(row.location_id, []).append(self._value_model(row))
             alert_values_by_location: dict[str, list[WeatherValue]] = {}
-            if providers is None:
-                alert_rows = session.scalars(alerts).all()
-            else:
-                # 이벤트별 revision과 기존 상한은 그대로 고른 뒤 key만 먼저
-                # 확정한다. 큰 fact JOIN이 ranking 앞에서 실행되는 것을 막는다.
-                alert_keys = session.execute(select(
-                    alert_limited.c.value_id, alert_limited.c.known_at,
-                ).where(alert_limited.c.location_rank <= min(limit_per_location, 100))).all()
-                alert_rows = []
-                if alert_keys:
-                    keys = (
-                        func.unnest(
-                            bindparam("provider_alert_value_ids",
-                                      [key.value_id for key in alert_keys],
-                                      type_=ARRAY(String)),
-                            bindparam("provider_alert_known_ats",
-                                      [key.known_at for key in alert_keys],
-                                      type_=ARRAY(AwareDateTime())),
-                        ).table_valued("value_id", "known_at")
-                        .render_derived(name="provider_alert_keys")
-                    )
-                    fact = select(WeatherValueRow).where(
-                        WeatherValueRow.value_id == keys.c.value_id,
-                        WeatherValueRow.known_at == keys.c.known_at,
-                        WeatherValueRow.known_at >= min(key.known_at for key in alert_keys),
-                        WeatherValueRow.known_at <= max(key.known_at for key in alert_keys),
-                    ).limit(1).lateral("provider_alert_fact")
-                    fact_row = aliased(WeatherValueRow, fact)
-                    # key당 PK lookup을 강제해 큰 fact 전체와 hash JOIN하지 않는다.
-                    alert_rows = session.scalars(select(fact_row).select_from(
-                        keys.join(fact, true()),
-                    ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
+            # 다른 구역 복제 특보가 위치별 상한을 채워 이 구역 특보를 밀어내지 않도록, 순위는
+            # 전체 후보(최대 _ALERT_SCAN_MAX)로 받은 뒤 구역을 거르고 상한을 적용한다
+            # (kind 지정 경로와 같은 의미, #216·#219). 행 전체는 남은 key만 읽는다.
+            alert_locations = dict(locations) if locations is not None else {
+                location.location_id: location
+                for location in self.get_locations_by_ids(location_ids)
+            }
+            ranked_keys = session.execute(select(
+                alert_limited.c.location_id, alert_limited.c.value_id, alert_limited.c.known_at,
+            ).where(alert_limited.c.location_rank <= _ALERT_SCAN_MAX).order_by(
+                alert_limited.c.location_id, alert_limited.c.location_rank,
+            )).all()
+            kept, _matched, _unverified = self._scope_alert_pairs(
+                session,
+                [(key.location_id, key.value_id, key.known_at) for key in ranked_keys],
+                alert_locations, budget=min(limit_per_location, 100),
+            )
+            alert_rows = []
+            if kept:
+                keys = (
+                    func.unnest(
+                        bindparam("provider_alert_value_ids",
+                                  [value_id for _, value_id, _ in kept],
+                                  type_=ARRAY(String)),
+                        bindparam("provider_alert_known_ats",
+                                  [known_at for _, _, known_at in kept],
+                                  type_=ARRAY(AwareDateTime())),
+                    ).table_valued("value_id", "known_at")
+                    .render_derived(name="provider_alert_keys")
+                )
+                fact = select(WeatherValueRow).where(
+                    WeatherValueRow.value_id == keys.c.value_id,
+                    WeatherValueRow.known_at == keys.c.known_at,
+                    WeatherValueRow.known_at >= min(known_at for _, _, known_at in kept),
+                    WeatherValueRow.known_at <= max(known_at for _, _, known_at in kept),
+                ).limit(1).lateral("provider_alert_fact")
+                fact_row = aliased(WeatherValueRow, fact)
+                # key당 PK lookup을 강제해 큰 fact 전체와 hash JOIN하지 않는다.
+                alert_rows = session.scalars(select(fact_row).select_from(
+                    keys.join(fact, true()),
+                ).order_by(fact_row.location_id, desc(fact_row.target_at))).all()
 
             for row in alert_rows:
                 alert_values_by_location.setdefault(row.location_id, []).append(
