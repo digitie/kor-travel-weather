@@ -86,6 +86,9 @@ describe("forecastWindowEnd", () => {
     // 15:00Z is already the next KST day: the window moves with the KST date, not UTC.
     expect(forecastWindowEnd(new Date("2026-11-10T15:30:00Z"))).toBe("2026-11-12T15:00:00.000Z");
     expect(forecastWindowEnd(new Date("2026-12-31T14:59:59Z"))).toBe("2027-01-01T15:00:00.000Z");
+    // exact KST midnight edge
+    expect(forecastWindowEnd(new Date("2026-11-10T14:59:59.999Z"))).toBe("2026-11-11T15:00:00.000Z");
+    expect(forecastWindowEnd(new Date("2026-11-10T15:00:00.000Z"))).toBe("2026-11-12T15:00:00.000Z");
   });
 });
 

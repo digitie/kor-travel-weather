@@ -409,7 +409,7 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
       };
       const cleanup = detail(vi.fn(), vi.fn(), view.setMessage, vi.fn(), vi.fn(), view.setLoading, vi.fn(),
         "a", view.getLatest, view.getForecast, () => "2026-10-27T00:00:00+09:00", undefined, kindFilter, true,
-        () => "2026-10-28T15:00:00.000Z", 2000);
+        () => "2026-10-28T15:00:00.000Z", 5000);
       return { ...view, cleanup };
     };
     const forecastOnly = mount(["short", "mid"]);

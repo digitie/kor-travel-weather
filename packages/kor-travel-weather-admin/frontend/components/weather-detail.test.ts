@@ -52,17 +52,18 @@ const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 afterEach(() => vi.unstubAllGlobals());
 
 describe("선택 위치의 독립 상세 로딩", () => {
-  it("상세 예보는 화면이 그리는 구간(지금 정시~모레 0시 KST)만 상한 2000으로 요청한다", () => {
+  it("상세 예보는 화면이 그리는 구간(지금 정시~모레 0시 KST)만 상한 5000으로 요청한다", () => {
     // 열린 구간+limit 1000은 밀집 위치에서 33~43시간 뒤에 잘려 내일 밤을 잃었다(odroid 2026-11-10).
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-10T03:37:00Z")); // KST 11-10 12:37
     try {
       const { requests, mount } = setup();
-      mount("one");
+      const cleanup = mount("one");
       const forecast = new URL(requests.find((request) => request.url.includes("/forecast"))!.url, "http://x");
       expect(forecast.searchParams.get("from")).toBe("2026-11-10T03:00:00.000Z");
       expect(forecast.searchParams.get("to")).toBe("2026-11-11T15:00:00.000Z"); // KST 11-12 00:00
-      expect(forecast.searchParams.get("limit")).toBe("2000");
+      expect(forecast.searchParams.get("limit")).toBe("5000");
+      cleanup?.();
     } finally {
       vi.useRealTimers();
     }

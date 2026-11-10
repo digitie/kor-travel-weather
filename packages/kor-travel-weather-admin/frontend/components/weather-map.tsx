@@ -598,7 +598,12 @@ export function WeatherMap({ locations, catalogLoading = false, catalogError, on
     void getForecast(selectedLocationId, forecastWindowStart(), forecastWindowEnd(), FORECAST_DETAIL_LIMIT,
       signal, providerFilter, kindFilter)
       .then((next) => {
-        if (!signal.aborted) setForecast(next.data);
+        if (signal.aborted) return;
+        setForecast(next.data);
+        // 상한에 닿으면 구간 끝(내일 밤)이 잘린다. 화면을 바꾸지 않고 진단만 남긴다.
+        if (next.data.length >= FORECAST_DETAIL_LIMIT) {
+          console.warn("forecast detail truncated", FORECAST_DETAIL_LIMIT, selectedLocationId);
+        }
       })
       .catch((reason: unknown) => {
         if (!signal.aborted) setForecastMessage(reason instanceof Error ? reason.message : "예보를 불러오지 못했습니다.");
