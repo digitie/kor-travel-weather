@@ -326,8 +326,8 @@ class ExportArtifactStore:
                 (digest, byte_count, point_count), self._path(digest),
             )
             if remembered is not None:
-                items, flat, _identity, _verified_at = remembered
-                return [dict(item) if flat else deepcopy(item) for item in items]
+                # 같은 공개 경로(read)로 돌려준다. read도 같은 판정으로 파일 없이 캐시를 쓴다.
+                return list(self.read(digest, byte_count=byte_count, point_count=point_count))
         with self.guard(shared=True):
             return list(self.read(digest, byte_count=byte_count, point_count=point_count))
 
@@ -473,7 +473,6 @@ class ExportArtifactStore:
         with _decoded_artifact_lock:
             if key in _decoded_artifacts:
                 _decoded_artifacts.move_to_end(key)
-        observe_export_artifact_cache("hit")
         return remembered
 
     def verify(self, digest: str, *, byte_count: int, point_count: int) -> None:
@@ -493,6 +492,7 @@ class ExportArtifactStore:
         if remembered is None:
             items, flat = self._decode_and_remember(key)
         else:
+            observe_export_artifact_cache("hit")
             items, flat, _identity, _verified_at = remembered
         # 호출자가 중첩 dict/list를 수정해도 다음 응답이나 다른 reader에는 전파하지 않는다.
         for item in items:
