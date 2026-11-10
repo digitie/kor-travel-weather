@@ -2,6 +2,7 @@
 
 import pytest
 from dagster import DagsterInstance, DagsterRunStatus, job
+from export_clock import install_api_clock
 from sqlalchemy import select
 from test_frozen_service_exports import HEADERS, _client, _collect, _collect_forecast, repository
 
@@ -22,7 +23,7 @@ def publisher_servability_metadata():
 @pytest.mark.parametrize("resource", ["current", "forecasts"])
 @pytest.mark.parametrize("policy", ["same", "different-namespace"])
 def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy_etag(
-    repository, tmp_path, resource, policy,
+    repository, tmp_path, resource, policy, monkeypatch,
 ):
     collect = _collect if resource == "current" else _collect_forecast
     collect(repository, tmp_path)
@@ -36,6 +37,7 @@ def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy
         descriptor = descriptor.model_copy(update={"normalizer_revision": "other-policy-v2"})
         assert descriptor.namespace != original_namespace
     client = _client(repository, tmp_path)
+    clock = install_api_clock(monkeypatch, client)
     checks = [(f"/v1/service/exports/{resource}",
                {"limit": 1, **({"style": "ultra_short"} if resource == "forecasts" else {})})]
     if resource == "current":
@@ -63,6 +65,12 @@ def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy
                 dagster_status=dagster_status_lookup(instance)).results == {"REJECTED": 1}
         finally:
             repository.orchestrator_run_id = None
+    if resource == "current":
+        for (url, params), healthy in zip(checks, before, strict=True):
+            assert client.get(url, params=params, headers={
+                **HEADERS, "if-none-match": healthy.headers["etag"],
+            }).status_code == 304
+        clock[0] += 60
     for (url, params), healthy in zip(checks, before, strict=True):
         changed = client.get(url, params=params,
                              headers={**HEADERS, "if-none-match": healthy.headers["etag"]})

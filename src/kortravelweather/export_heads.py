@@ -44,6 +44,7 @@ from .export_artifacts import (
     canonical_export_number,
 )
 from .export_lifecycle import ExportLifecycle, _current_owners
+from .export_page_liveness import register_page_liveness
 from .export_receipts import ExportAttempt, source_scope_key
 from .models import KST
 
@@ -187,6 +188,7 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         "weather_export_pending_refs",
     )
     if names[0] in metadata.tables:
+        register_page_liveness(metadata, [metadata.tables[name] for name in names[:3]])
         return tuple(metadata.tables[name] for name in names)
     plans = Table(
         names[0],
@@ -263,6 +265,7 @@ def export_head_tables(metadata: MetaData) -> tuple[Table, Table, Table, Table, 
         Column("clock_id", Integer, primary_key=True),
         Column("published_at", DateTime(timezone=True), nullable=False),
     )
+    register_page_liveness(metadata, [plans, generations, heads])
     return plans, generations, heads, chunks, pins
 
 

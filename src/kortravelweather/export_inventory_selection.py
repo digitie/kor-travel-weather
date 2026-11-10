@@ -1,5 +1,6 @@
 """실제 승인 위치와 최신 HTTP 전 선택 집합을 같은 MVCC에서 함께 읽는다."""
 
+import hashlib
 import threading
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
@@ -226,10 +227,14 @@ def parsed_scope_plans(connection, plans, attempt_ids):
         if present != remembered.keys():
             raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
     missing = [key for key in attempt_ids if key not in remembered]
-    encoder = MetadataBudget().encoder
+    # 개별/누적 거부 검사에서 이미 계산한 정규 UTF-8 크기를 cache 예산에도 쓴다.
+    # 같은 descriptor를 다시 JSON으로 만들지 않으며 cache hit/miss의 전체 상한은 같다.
+    byte_sizes = {}
     fresh = {
-        key: (parse_scope_descriptor(value), len(encoder.encode(value).encode("utf-8")))
-        for key, value in read_scope_plans(connection, plans, missing).items()
+        key: (parse_scope_descriptor(value), byte_sizes[key])
+        for key, value in read_scope_plans(
+            connection, plans, missing, byte_sizes=byte_sizes,
+        ).items()
     }
     if sum(size for _, size in (*remembered.values(), *fresh.values())) > MAX_MANIFEST_BYTES:
         raise ExportCapacityExceeded("승인 manifest 메타데이터 예산을 넘었습니다.")
@@ -237,7 +242,43 @@ def parsed_scope_plans(connection, plans, attempt_ids):
     return {key: value[0] for key, value in {**remembered, **fresh}.items()}
 
 
+_cohort_cache = OrderedDict()
+_cohort_cache_bytes = 0
+_cohort_cache_lock = threading.Lock()
+_COHORT_CACHE_BYTES = 16 * 1024 * 1024
+_COHORT_CACHE_ENTRIES = 256
+
+
 def _cohort_descriptors(row):
+    """불변 descriptor 해석만 기억한다. roster 내용·존재·run 상태는 매번 실제로 읽는다."""
+    global _cohort_cache_bytes
+    payload = MetadataBudget().encoder.encode([
+        row["provider"], row["dataset_key"], row["descriptors"], row["targets"],
+    ]).encode("utf-8")
+    if len(payload) > MAX_MANIFEST_BYTES:
+        raise ExportCapacityExceeded("실제 source roster 메타데이터 예산을 넘었습니다.")
+    key = hashlib.sha256(payload).digest()
+    with _cohort_cache_lock:
+        remembered = _cohort_cache.get(key)
+        if remembered is not None:
+            _cohort_cache.move_to_end(key)
+            return list(remembered[0])
+    descriptors = _parse_cohort_descriptors(row)
+    with _cohort_cache_lock:
+        previous = _cohort_cache.pop(key, None)
+        if previous is not None:
+            _cohort_cache_bytes -= previous[1]
+        _cohort_cache[key] = (tuple(descriptors), len(payload))
+        _cohort_cache_bytes += len(payload)
+        while _cohort_cache and (
+            len(_cohort_cache) > _COHORT_CACHE_ENTRIES
+            or _cohort_cache_bytes > _COHORT_CACHE_BYTES
+        ):
+            _cohort_cache_bytes -= _cohort_cache.popitem(last=False)[1][1]
+    return descriptors
+
+
+def _parse_cohort_descriptors(row):
     if row["descriptors"] is not None:
         if not isinstance(row["descriptors"], list) or not 1 <= len(row["descriptors"]) <= 5000:
             raise ExportArtifactError("실제 source roster 상한이 올바르지 않습니다.")
@@ -249,6 +290,83 @@ def _cohort_descriptors(row):
         forecast_style="short" if row["dataset_key"].endswith("forecast") else "observed",
         normalizer_revision=f"{row['provider']}-v1",
     ) for item in row["targets"]]
+
+
+def _active_scope_states(connection, metadata, source_scopes):
+    """같은 MVCC의 소유·시도·공개 증거·run 상태를 시도별 한 행으로 읽는다.
+
+    owner_epochs 원본 JSON은 PostgreSQL jsonb로 강제 변환하지 않는다. 예를 들어 1e0은
+    Python에서 1.0이며 epoch 1과 다르다. 기존 str/32자 판정을 그대로 적용한다.
+    복합 CTE가 운영 5초 상한에 걸려, 같은 RR에서 한정된 키 집합을 각각 한 번 읽는다.
+    공유 시도의 큰 epoch JSON은 시도마다 한 번만 해석한다.
+    """
+    if not source_scopes:
+        return []
+    owners = metadata.tables["weather_export_scope_owners"]
+    attempts = metadata.tables["weather_export_attempts"]
+    runs = metadata.tables["weather_sync_runs"]
+    generations = metadata.tables["weather_export_generations"]
+    claims = list(connection.execute(select(
+        owners.c.active_attempt_id, owners.c.source_scope, owners.c.owner_epoch,
+    ).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    attempt_ids = sorted({row.active_attempt_id for row in claims
+                          if row.active_attempt_id is not None})
+    if not attempt_ids:
+        return []
+    selected_attempts = {row.attempt_id: row for row in connection.execute(select(
+        attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
+    ).where(any_of(attempts.c.attempt_id, attempt_ids)))}
+    publications = defaultdict(list)
+    for row in connection.execute(select(
+        generations.c.attempt_id, generations.c.generation_id,
+    ).where(any_of(generations.c.attempt_id, sorted(selected_attempts)))):
+        publications[row.attempt_id].append(row.generation_id)
+    run_ids = sorted({row.run_id for row in selected_attempts.values() if row.run_id is not None})
+    selected_runs = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
+        any_of(runs.c.run_id, run_ids),
+    )).all())
+    active = []
+    for attempt_id, scope, epoch in claims:
+        attempt = selected_attempts.get(attempt_id)
+        if attempt is None:
+            continue  # 원 INNER JOIN과 같이 누락된 시도는 미확인 개수에 반영한다.
+        epochs = attempt.owner_epochs
+        claimed = epochs.get(scope) if isinstance(epochs, dict) else None
+        for generation in publications.get(attempt_id, [None]):
+            active.append((
+                scope, attempt_id, attempt.run_id, attempt.status, generation,
+                selected_runs.get(attempt.run_id),
+                (str(claimed)[:32] if claimed is not None else None) == str(epoch),
+            ))
+    return active
+
+
+def _latest_cohort_runs(connection, runs, sources):
+    """원천마다 index top-1은 유지하고 DB 왕복은 한 번으로 묶는다.
+
+    scalar subquery는 이전과 같은 started_at/run_id 정렬과 cohort 조건을 쓴다.
+    전체 이력을 window 정렬하거나 최신이 아닌 성공 run으로 대체하지 않는다.
+    """
+    from sqlalchemy import literal, union_all
+
+    sources = sorted(sources)
+    if not sources:
+        return {}
+    requested = union_all(*[
+        select(literal(provider).label("provider"), literal(dataset).label("dataset_key"))
+        for provider, dataset in sources
+    ]).subquery("requested_cohort_sources")
+    latest = select(runs.c.run_id).where(
+        runs.c.provider == requested.c.provider,
+        runs.c.dataset_key == requested.c.dataset_key,
+        runs.c.export_cohort_required.is_(True),
+    ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1).scalar_subquery()
+    return {
+        (provider, dataset): run_id
+        for provider, dataset, run_id in connection.execute(select(
+            requested.c.provider, requested.c.dataset_key, latest,
+        ))
+    }
 
 
 def approved_source_selection(
@@ -269,16 +387,30 @@ def approved_source_selection(
     # 위치마다 attempt·plan을 PK로 두 번 더 찾던 join은 부하 때 5s 상한을 넘었다.
     # plan은 attempt마다 한 번(read_scope_plans), run_id는 cohort 대조에 필요한 것만 읽는다.
     # generation은 attempt 이력 정리와 독립인 공개 성공 증거다(FK 없음).
-    rows = connection.execute(select(
-        table, generations.c.attempt_id.label("plan_attempt_id"),
-        generations.c.data_revision_at, generations.c.created_at.label("generation_published_at"),
-    ).select_from(
-        table.join(generations, table.c.generation_id == generations.c.generation_id)
-    ).where(tuple_(table.c.provider, table.c.dataset_key).in_(expected)).order_by(
+    # inventory→generation JOIN은 수천 위치에서 동일 세대를 다시 찾아 운영5초 상한을 넘었다.
+    # 작은 inventory를 먼저 제한하고 서로 다른 generation만 배열 한 번으로 읽는다.
+    # 두 조회는 caller의 같은 RR 안에 있으며 generation의 승인 clock/plan을 그대로 사용한다.
+    rows = [dict(row) for row in connection.execute(select(table).where(
+        tuple_(table.c.provider, table.c.dataset_key).in_(expected),
+    ).order_by(
         table.c.provider, table.c.dataset_key, table.c.location_id,
-    ).limit(MAX_SELECTED_ROWS + 1)).mappings().all()
+    ).limit(MAX_SELECTED_ROWS + 1)).mappings()]
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
+    generation_ids = sorted({row["generation_id"] for row in rows})
+    approved = {
+        row["generation_id"]: row
+        for row in connection.execute(select(
+            generations.c.generation_id,
+            generations.c.attempt_id.label("plan_attempt_id"),
+            generations.c.data_revision_at,
+            generations.c.created_at.label("generation_published_at"),
+        ).where(any_of(generations.c.generation_id, generation_ids))).mappings()
+    } if generation_ids else {}
+    if len(approved) != len(generation_ids):
+        raise ExportArtifactError("승인 inventory의 generation이 유실됐습니다.")
+    for row in rows:
+        row.update(approved[row["generation_id"]])
     catalog = {row["location_id"]: row for row in locations}
     now = datetime.now(UTC)
     # 만료한 승인은 값을 내지 않으므로 plan·좌표·건강도 검증 대상도 아니다. 최초 승인 여부만 센다.
@@ -367,31 +499,15 @@ def approved_source_selection(
     )))
     # inventory는 파일 live root이지만 현재 head의 유실까지 정상으로 꾸미지는 않는다.
     unconfirmed |= live_heads != namespaces
-    owners = metadata.tables["weather_export_scope_owners"]
     source_scopes = {row["source_scope"] for row in health_rows}
-    # scope마다 attempt 행을 찾는 join에 run 행까지 붙이면 scope 수만큼 run을 다시 찾는다(실제 run은
-    # 수십 개). run 상태는 distinct run_id로 따로 읽고, 여기서 읽은 attempt의 run_id는 아래 cohort
-    # 대조에 다시 쓴다(승인 attempt의 약 2/3가 지금의 소유 attempt다).
-    active = list(connection.execute(select(
-        owners.c.source_scope, attempts.c.attempt_id, attempts.c.run_id, attempts.c.status,
-        generations.c.generation_id, owners.c.owner_epoch,
-        func.left(attempts.c.owner_epochs[owners.c.source_scope].as_string(), 32),
-    ).select_from(owners.join(
-        attempts, owners.c.active_attempt_id == attempts.c.attempt_id,
-    ).outerjoin(
-        generations, generations.c.attempt_id == attempts.c.attempt_id,
-    )).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
-    active_run_ids = sorted({row[2] for row in active})
-    native_status = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
-        any_of(runs.c.run_id, active_run_ids),
-    )).tuples().all()) if active_run_ids else {}
-    # native terminal뿐 아니라 확정된 Dagster 실패를 publisher가 기록한 attempt도
-    # 현재 승인 집합의 건강도에 반영한다. 이전 파일과 inventory는 그대로 보존한다.
+    # 시도 유실은 INNER JOIN 누락 → 개수/cohort 대조에서 미확인이다. 공개 세대는
+    # attempt 이력과 독립인 성공 증거이며, 같은 RR에서 원본 epoch·native 상태를 대조한다.
+    active = _active_scope_states(connection, metadata, source_scopes)
     unconfirmed |= len(active) != len(source_scopes) or any(
-        attempt == "failed" or native_status.get(run_id) not in {"running", "success"}
-        or native_status.get(run_id) == "success" and generation is None
-        or claimed_epoch != str(epoch)
-        for _, _, run_id, attempt, generation, epoch, claimed_epoch in active
+        attempt == "failed" or native_status not in {"running", "success"}
+        or native_status == "success" and generation is None
+        or not epoch_matches
+        for _, _, _, attempt, generation, native_status, epoch_matches in active
     )
     cohorts = external_cohort_table(metadata)
     declarations = {
@@ -412,6 +528,7 @@ def approved_source_selection(
         run_ids.update(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
             any_of(attempts.c.attempt_id, needed),
         )).tuples().all())
+    latest_runs = _latest_cohort_runs(connection, runs, declarations)
     for source in expected:
         row = declarations.get(source)
         if row is None:
@@ -425,10 +542,7 @@ def approved_source_selection(
             or any((r["provider"], r["dataset_key"]) == source for r in health_rows)
         ):
             continue
-        latest = connection.scalar(select(runs.c.run_id).where(
-            runs.c.provider == source[0], runs.c.dataset_key == source[1],
-            runs.c.export_cohort_required.is_(True),
-        ).order_by(runs.c.started_at.desc(), runs.c.run_id.desc()).limit(1))
+        latest = latest_runs.get(source)
         unconfirmed |= latest != row["run_id"] or row["native_status"] != "success"
         selected, selected_parts = set(), set()
         for descriptor in descriptors:

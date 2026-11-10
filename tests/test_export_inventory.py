@@ -323,19 +323,21 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
     _publish(repo, tmp_path, targets)
     selection, seen = _captured(repo, lambda: _selection(repo))
     assert not selection.unconfirmed
-    owners = [s for s, _ in seen if "FROM weather_export_scope_owners JOIN" in s]
-    assert len(owners) == 1 and "weather_sync_runs" not in owners[0]
-    runs = [s for s, _ in seen if s.startswith(
-        "SELECT weather_sync_runs.run_id, weather_sync_runs.status",
-    )]
-    assert len(runs) == 1
+    owners = [s for s, _ in seen if "FROM weather_export_scope_owners" in s]
+    assert len(owners) == 1
+    # 복합 CTE 대신 같은 MVCC의 키 집합 네 개를 읽으며 scope 수에 비례한 SQL은 없다.
+    assert "MATERIALIZED" not in owners[0]
+    assert "JOIN" not in owners[0]
+    run_queries = [s for s, _ in seen if "FROM weather_sync_runs" in s
+                   and "weather_sync_runs.run_id = ANY" in s]
+    assert len(run_queries) == 1 and " = ANY (" in run_queries[0]
     big = [(s, p) for s, p in seen if any(
         name in s for name in ("weather_export_scope_plans", "weather_export_heads.namespace",
                                "weather_export_scope_owners")
     )]
     # 목록 하나가 배열 파라미터 하나다(위치 3곳이라 개수로는 IN 목록과 구별되지 않는다).
     assert big and all(
-        re.search(r"= ANY ?\(", s) and " IN (" not in s for s, _ in big
+        re.search(r"= ANY ?\(", s) and not re.search(r" IN \(%.+?\)", s) for s, _ in big
     ), [s[:160] for s, _ in big]
     heads = ExportHeads(repo)
     runs_table = heads.metadata.tables["weather_sync_runs"]
@@ -346,7 +348,7 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
             heads.generations.c.attempt_id,
         ).where(heads.generations.c.generation_id == selection.scopes[0].generation_id)
             .scalar_subquery()).scalar_subquery()).values(status="failed"))
-    assert _selection(repo).unconfirmed  # 따로 읽은 run 상태도 건강도에 들어간다
+    assert _selection(repo).unconfirmed  # 같은 묶음의 run 상태도 건강도에 들어간다
 
 
 def _age(repo, location_id, age):

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import gzip
-import json
+import hashlib
 import logging
+import traceback
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from functools import partial
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
@@ -25,6 +26,7 @@ from kortravelweather.export_artifacts import (
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
+from kortravelweather.export_selection_cache import ExportSelectionCache
 from kortravelweather.export_snapshots import (
     ExportCursorInvalid,
     ExportSnapshotExpired,
@@ -242,6 +244,15 @@ def _transient(exc: Exception) -> bool:
 
 def _failed(request: Request, resource: str, exc: Exception) -> JSONResponse:
     _log_unavailable(request, resource, _cause(exc))
+    # 원인 위치만 남긴다. 메시지·SQL·파라미터·자격 값은 기록하지 않는다.
+    frames = [frame for frame in traceback.extract_tb(exc.__traceback__)
+              if "/kortravelweather/" in frame.filename.replace("\\", "/")
+              or "/kortravelweather_api/" in frame.filename.replace("\\", "/")]
+    if frames:
+        frame = frames[-1]
+        logger.warning("weather_service_export_failure_site resource=%s site=%s:%s:%s",
+                       resource, frame.filename.replace("\\", "/").rsplit("/", 1)[-1],
+                       frame.name, frame.lineno)
     if _transient(exc):
         return _unavailable(request, code=TEMPORARILY_UNAVAILABLE)
     return _unavailable(request)
@@ -296,16 +307,20 @@ def _render_page(
     막지 않게 한다. 304이면 payload는 None이다.
     """
     page, etag = read()
-    body = model.model_validate(page).model_dump(mode="json")
+    # wire 응답 생성 시각만 새로 쓴다. 원천 수집·snapshot·as_of는 재사용한 실제 시각 그대로다.
+    body = model.model_validate(page)
+    body = body.model_copy(update={
+        "meta": body.meta.model_copy(update={"generated_at": datetime.now(UTC)}),
+    })
     headers = {
         "etag": etag,
         "vary": "Accept-Encoding",
         "cache-control": "private, max-age=0, must-revalidate",
-        "x-source-status": body["meta"]["source_status"],
+        "x-source-status": body.meta.source_status,
     }
     if _matches_etag(if_none_match, etag):
         return None, headers
-    payload = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode()
+    payload = body.model_dump_json().encode()
     if len(payload) >= gzip_minimum and _accepts_gzip(accept_encoding):
         payload = gzip.compress(payload, compresslevel=4, mtime=0)
         headers["content-encoding"] = "gzip"
@@ -316,6 +331,14 @@ def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
     if payload is None:
         return Response(status_code=304, headers=headers)
     return Response(payload, media_type="application/json", headers=headers)
+
+
+def _validated_read(read, model, reader):
+    # limiter/worker 대기는 승인 조회 전이다. hit나 이미 읽은 상태의 수명을 늘리지 않는다.
+    reader.begin_page_reuse()
+    result = read()
+    model.model_validate(result[0])  # 검증 완료한 페이지만 재사용한다.
+    return result
 
 
 async def _frozen_response(
@@ -359,31 +382,58 @@ async def _frozen_response(
             from kortravelweather.export_mid_reader import FrozenMidForecastExports
 
             reader_class = FrozenMidForecastExports
-        reader = reader_class(
-            request.app.state.repository,
-            ExportArtifactStore(
-                settings.service_export_artifact_root,
-                reader_guard_seconds=settings.service_export_reader_guard_seconds,
-            ),
-            signing_key=settings.admin_token.get_secret_value(),
-            **(
-                {"providers": selection.providers, "source_inventory": True,
-                 "expected_sources": selection.expected, "optional_sources": selection.optional}
-                if selection is not None
-                else {}
-            ),
-            **({"style": style, "since": since} if resource == "forecasts" else {}),
-            **({"days": days, "location_id": location_id} if resource == "daily-summaries" else {}),
-        )
+        repository = request.app.state.repository
+        selection_cache = request.app.state.export_selection_cache
+
+        def make_reader(*, fresh=False):
+            return reader_class(
+                repository,
+                ExportArtifactStore(
+                    settings.service_export_artifact_root,
+                    reader_guard_seconds=settings.service_export_reader_guard_seconds,
+                ),
+                signing_key=settings.admin_token.get_secret_value(),
+                immutable_reads=resource == "current",
+                page_liveness=resource in {"current", "daily-summaries"},
+                **({"selection_cache": ExportSelectionCache(clock=lambda: selection_cache.clock())
+                    if fresh else selection_cache}
+                   if resource in {"current", "daily-summaries"} else {}),
+                **(
+                    {"providers": selection.providers, "source_inventory": True,
+                     "expected_sources": selection.expected, "optional_sources": selection.optional}
+                    if selection is not None else {}
+                ),
+                **({"style": style, "since": since} if resource == "forecasts" else {}),
+                **({"days": days, "location_id": location_id}
+                   if resource == "daily-summaries" else {}),
+            )
+
+        def page_read(reader):
+            return partial(
+                reader.page,
+                *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
+                limit=limit, cursor=cursor,
+            )
+
+        # 완성 페이지의 miss는 새 승인 수명으로 시작한다. 이전 key의 60초가 거의 끝난
+        # 중간 선택 캐시를 이어받아 긴 재구성 도중 수명이 만료되는 일을 막는다.
+        reader = make_reader(fresh=resource in {"current", "daily-summaries"})
+        read = page_read(reader)
+        if resource in {"current", "daily-summaries"}:
+            key = (
+                id(request.app.state.repository.engine), resource, limit, cursor,
+                provider, style, since, days, location_id, tuple(settings.enabled_providers),
+                str(settings.service_export_artifact_root),
+                hashlib.sha256(settings.admin_token.get_secret_value().encode()).digest(),
+            )
+            read = partial(
+                request.app.state.export_page_cache.read, key, reader,
+                partial(_validated_read, read, _PAGE_MODELS[resource], reader),
+            )
         payload, headers = await to_thread.run_sync(
             partial(
                 _render_page,
-                partial(
-                    reader.page,
-                    *([] if resource in {"forecasts", "daily-summaries"} else [resource]),
-                    limit=limit,
-                    cursor=cursor,
-                ),
+                read,
                 _PAGE_MODELS[resource],
                 request.headers.get("if-none-match", ""),
                 request.headers.get("accept-encoding", ""),
@@ -391,6 +441,9 @@ async def _frozen_response(
             ),
             limiter=request.app.state.service_export_limiter,
         )
+        reader.require_current_selection()
+        if resource in {"current", "daily-summaries"}:
+            headers["x-export-read"] = reader.page_reuse_status
     except ExportCursorInvalid as exc:
         _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
@@ -422,7 +475,8 @@ async def export_current(
 
     해양처럼 예보만 있는 제공처와 catalog dataset은 제외한다. quota 밖 이전 승인은
     보존하고 실패·부분 응답·미확인 청정넷 coverage는 stale로 표시한다. export 경로가
-    없는 provider가 활성이면 축소 성공 대신503이다.
+    없는 provider가 활성이면 축소 성공 대신503이다. 승인·실패 상태 반영은 최대60초 지연될 수
+    있으며 실제 수집 시각은 유지한다. 60초를 넘긴 상태는 정상 응답에 쓰지 않는다.
     """
     return await _frozen_response(request, "current", limit, cursor, provider=provider)
 
@@ -497,6 +551,7 @@ async def export_daily_summaries(
     전체 목록에서 한 번도 승인되지 않은 관측 anchor는 stale로 표시하고, 단일 위치 최초
     조회의 필수 원천 미승인만503이다. AirKorea는 요약 지표가 없어 필수 원천이 아니다.
     강수 합계와 강수 없음(false)은 구간6시간 RN1이 모두 있을 때만 확정한다.
+    승인·실패 상태 반영은 최대60초 지연될 수 있으며 실제 수집 시각은 유지한다.
     """
     return await _frozen_response(
         request, "daily-summaries", limit, cursor, days=days, location_id=location_id

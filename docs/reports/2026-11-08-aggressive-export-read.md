@@ -1,0 +1,70 @@
+# Weather 검증 완료 결과의 사전 구성과 읽기 분리
+
+## 문제와 선택
+
+직전 실제 네트워크 HTTP는 current39.286초/조건부16.188초/만료 뒤21.535초, daily9.094~16.944초였다. native profile의 current freeze31.514초·전체34.286초는 응답마다 승인 약3,300범위와 manifest를 재구성하는 비용을 보였다. 기존 승인 상태 캐시만으로는 이 구성을 제거하지 못했다.
+
+완성된 current·daily 페이지와 무결성 proof를 API 메모리에 재사용한다. 요청별 인증과 provider 선택은 앞에서 유지하고, 동일 키 동시 생성은 합친다. 매 hit에도 snapshot ID/manifest digest/TTL, 세대·plan·현재 head 존재와 실제 사용 파일의 동일fd hash·크기·행 수를 검사한다. 원천 수집·snapshot·as_of는 유지하며 generated_at만 실제 wire 응답 생성 시각을 쓴다. gzip·ETag·cursor·DTO 검증을 유지하고 x-export-read로 generated/reused를 구분한다.
+
+최대 수명은 승인 조회 시작으로부터60초이며 hit가 늘리지 않는다. 64MiB/16항목·개별8MiB의 직렬화 예산이고 RSS 보장은 아니다. 요청이 있는 cache miss만 새 결과를 생성하고 같은 키의 동시 요청은 하나로 합친다. 주기적 전체 재생성 worker는 실제 R4에서 만료 뒤33.48초 대기와 새 snapshot 참조 저장 timeout을 보였으므로 폐기했다. 요청이 없는 API가 전체 승인 집합을 계속 재구성하지 않는다. 최초·만료 뒤 요청의 지연은 남아 있으며1초 달성을 의미하지 않는다.
+
+## 잠금과 불변 파일
+
+기존 current는 긴 metadata 선택 전체 동안 공용 파일 reader guard를 잡았다. API의 불변 읽기는 metadata/manifest 구성을 이 guard 밖으로 옮긴다. 새 snapshot을 발급할 때만 guard 안에서 모든 파일의 일반파일/크기 존재를 재확인하고 snapshot·세대 참조를 함께 commit한다. 세대 참조는512개씩 INSERT하며 전체 순서와 중복·FK를 지킨다. SQL문만 나누고 TX·guard는 나누지 않으며 뒤 묶음의 FK 실패도 앞 묶음과 snapshot을 함께 rollback한다. 따라서 GC가 새 pin을 보기 전에 파일을 지우는 틈을 만들지 않는다. 기존 유효 snapshot 참조는 GC root로 유지되며, 실제 페이지는 열린 동일fd의 hash/count를 매번 확인한다. 현재 head 유실은 즉시 원래 재구성 경로로 보내 stale로 판정하고 세대/plan/파일 유실은 정상200/304로 숨기지 않는다. SDK 기본 reader의 guard는 바꾸지 않는다.
+
+원본 전체 MV refresh·TTL의 무근거 연장·추정 index 삭제는 선택하지 않았다. 새 외부 캐시 서비스 없이 API 내 작은 준비 결과를 쓰며, 향후 공유 read-model이 필요하면 실제 재구성 CPU와 key별 수명 자료로 판단한다. API 원천/서비스 인증·schema0038·SDK/의존성·SQL5초·실제 UI/API 포트/키/env/CS/Transport는 변경하지 않는다.
+
+## 검증과 원 실패
+
+초기 WSL PG18과 Docker PG18 집중검증 각각85개와 후속86개가 통과했다. 최종 요청 기반 후보는 별도 원문으로 정산한다. 겹친72개·이전85개와 합산하지 않는다. 새 cache의 인증·gzip/ETag·60초 경계·동일 키 동시성·용량·refresh 실패·실파일 변조·GC 배타 보유 중 이미 pin된 페이지·새 pin commit의 짧은 guard·기존 GC 보존·다중 source/daily fallback을 포함한다. 원5FAIL/후속1FAIL과 Docker의 무관한 예보 fixture1FAIL을 보존했다. 즉시 반영 기대는 승인60초 뒤 실제 판정으로 검사하며 cache를 지우지 않는다. dense forecast 시험은 거절되는60격자만 구성해 정상 갱신되는 무관61격자의 known_at/첫 scope 순서에 좌우되던 입력을 분리했고 원 값·시각 비교는 유지했다. 예보 제품 로직은 변경하지 않았다.
+
+최초 테스트 보조는 정본 테스트 DB 미지정으로 연결 timeout 뒤 실제 시험 전 종료했다. 첫 native 보조는 inspect0 뒤 후보 프로세스 시작 전에 부모1로 종료해 보존했다. 큰 프로그램 인자 대신 별도R2는 stdin으로 전달했다. R2는 실제 API와 같은 DB/파일의 격리된 ASGI 후보 과정이며 네트워크 HTTP/cold/p95가 아니다: current는5~7초 일시 경합503, daily 첫40.797초200·재사용3.927초200/2.241초304·두 seed 뒤75초 관측1.941초200이었다. source clock·항목 SHA는 같고 background 결과의 as_of만 실제 새 읽기 시각으로 바뀌었다. 아직 목표1초 미달이며 기존 긴 guard를 줄인 R3와 실제 새 이미지 수용은 별도 기록한다.
+
+정본은 weather-aggressive-read-20261108/plan.json과 각 QA/native 원문이다. 현재 단계는 구현·집중검증 완료이며 새 이미지 배포/실제 네트워크 수용 전이다. 백업/복원은 사용자 지시로 생략했고 원 실패/UNKNOWN·원본·영구 통계·환경/키·다른 서비스를 보존한다.
+
+## 실제 후보에서 폐기한 방법
+
+격리 native R3는 새 pin admission guard 대기 timeout과 오래된 선택 lease 문제를 구분했다. 첫 페이지 miss는 새 승인 시점에서 시작하도록 고쳤다. R4는 current 첫46.199초503(참조 INSERT의5초 statement timeout), 이후 생성45.644초200, 재사용4.355초304, 두 seed 뒤75초 관측33.483초200이었다. daily는 첫17.166초/재사용2.746초200·1.842초304/만료 뒤23.410초200이다. R4 결과는 성능 수용이 아니며 모두 이전 API와 같은 DB를 쓰는 격리 과정이다. 운영 네트워크/cold/p95/코드 단독 개선율로 해석하지 않는다.
+
+주기적 전체 재생성은 새 snapshot 전체 저장을 반복하며 CPU·DB 비용을 옮길 뿐이어서 제거했다. 공유 read-model·MV·비정규화는 커서 고정·공개 세대와 GC pin의 원자성까지 바꿔야 한다. 이번에는 그 계약을 우회하지 않고 요청별 반복 제거와 작은 FK 문장·짧은 파일 guard를 실제 반영하며 남은 최초 구성 병목을 수치로 공개한다.
+
+## 완료 페이지의 삭제 무결성 조회 추가 개선
+
+API d24908dc/이미지2a07628b를 실제 반영하고 Manager/원47일정·다른서비스·첫 부모 종료를 확인했다. 그러나 실제 HTTP는 current 첫35.524초/재사용14.139초/조건부11.749초503/만료 뒤46.665초, daily53.288·47.498·57.021·42.137초였다. 완료 페이지 재사용만으로 목표를 충족하지 못했고1분 수명 경계를 넘은 실패도 보존했다. 측정 중 별도 MCP 이미지 작업과 수집이 진행됐으므로 코드 단독 비율/p95/cold로 과장하지 않는다.
+
+후속은 세대/불변plan/head의 존재3,305개를 매번 읽는 대신 같은 RR의 작은 삭제 변경 번호를 확인한다. 0039는 해당3표의 DELETE/TRUNCATE statement trigger와 파생 counter3행만 추가한다. 정상 발행 INSERT/UPDATE에는 trigger나 공용 counter 잠금이 없으며 원본 전체 MV refresh나 신규 FK를 추가하지 않는다. 삭제와 counter 갱신은 같은 TX이며 rollback도 함께다. DELETE0행도 보수적으로 무효화할 수 있다. 기존 삭제/정리의 허용 여부는 바꾸지 않고 prune도 켜지 않는다.
+
+전체 승인/파일을 검산한 실제 읽기 시점의 변경 번호를 기억한다. hit는 snapshot ID/digest/TTL과3행 counter를 읽고 사용 파일의 동일FD hash/count는 계속 검산한다. plan/세대 삭제 변화는503·폐기, head 삭제 변화는 기존 재구성/stale 경로다. PG counter 유실·미설치를 벡터 생략 성공으로 처리하지 않으며 SQLite만 기존 벡터 조회로 fallback한다. 최초 생성 중 삭제도 확인한다. 승인 조회 이전의 limiter/worker 대기는1분 수명을 소비하지 않으며 이미 읽은 상태/캐시 hit의 수명은 연장하지 않는다.
+
+최초·만료 뒤 전체 구성 비용은 여전히 별도다. 새0039/API 이미지는 집중 회귀와 공식 migration·실제 HTTP 뒤에만 수용 결과로 기록한다.
+
+
+최종0039 후보는 WSL PG18·Docker PG18 각각126개 PASS다. 이전112·90·독립32개와 겹치므로 합산하지 않는다. 실제metadata설치/0039 up·down 원행보존·1초locktimeout 원자rollback·일반발행중counter잠금비영향·삭제/rollback·DROP/재생성/DISABLE/다른trigger·작업대기이전lease·원cursor/파일/GC/다중source를 함께 검사했다. 전용PG는정확CID/label로정산했다. Ruff F/I·diff 검사와키부재검산을수행하며 feature/Draft를유지한다.
+
+
+0039/API44e2558b는 제한DDL·native3행·원47/환경/다른서비스·Manager와최초부모done으로반영됐다. 마지막생성중업무날짜/수명경계변화의예외가plain Exception이어서500이될수있는경로를보완했다. 같은경계를주입한격리PG18에서원44e2558b cache소스HTTP500/보정소스HTTP503을대조했다(자연운영500관측이아님). 내부예외를기존GuardTimeout계층으로바꾼1줄제품보정이며cache hit의재구성동작은유지한다. WSL/Docker초점19개씩PASS,SQL/DDL·SDK/웹변경0. 최초외부재현helper의conftest미적용/개발env누락은시험수집전실패로보존하고R2명시환경에서1PASS했다. 최종보정이미지는0039를재실행하지않고API만앞으로교체한다.
+
+
+전체Alembic기존계약시험의최종head기대값을0039로갱신하고counter3행을대조했다. 빈DB부터전체migration/backfill/안전계약을WSLPG18·DockerPG18에서각1PASS로확인했다. 이는시험/문서만의보정이며운영제품b369d35d의src/API/CS/Alembic/의존성/웹트리는같다. 시험때문에이미지를재빌드하지않는다.
+
+
+## 최종 실제 HTTP와 PG16 호환
+
+b369d35d/이미지7b4b5949의 실제 HTTP13개는 인증401·나머지200/304로 끝났다. current 최초54.413초, 조건부 재사용143.59ms·일반 재사용161.48ms, daily 최초29.640초·조건부160.29ms·일반221.56ms였다. 각62초 이상 대기 뒤 current는 재생성304에29.364초·그 다음 재사용66.73ms, daily는 재생성200에19.699초·그 다음 재사용91.68ms였다. 완료 페이지가 실제 재사용됐지만 최초·만료의 전체 구성 비용은 남는다. 이것은 부하/자료가 변하는 단일 표본이며 OS cold·p95·코드 단독 개선율이 아니다. 원 d249의503과 긴 관측은 보존한다.
+
+HTTP Root 첫 Invocation15b26a3d53734aa8850b14770ceff51e는 실제done·Main0·cgroup부재·소유자식 종료를 확인했다. SQL5초/최신 상태60초와 실제 원천 시각·stale를 유지한다. 정본 원문은 Git 밖 liveness-release/expiry-forward/live-http.json이다.
+
+추가 CI42460952945/Python128669935280은 PG16의0039 설치 validator에서 실패했다. PG16은 NOT NULL을 attnotnull에만 기록하고 PG18은 pg_constraint에도 n행을 기록한다. 정규화는 n행 표현만 제외하고 attnotnull·정확열/PK/CHECK/FK/추가제약 검사 전체를 유지한다. 원 실패를 PG18의 운영 장애로 바꾸지 않는다. PG16/18 각각 WSL39개·Docker40개(전체 migration 체인 포함), PG16 별도 WSL 체인1개와 Ruff를 통과했다. 겹친 시험은 합산하지 않는다. capture_liveness·트리거 본문·install/remove/register AST·0039 SHA가 같으므로 매 hit/DDL 계약은 변하지 않는다. 운영0039는 재실행하지 않는다.
+
+
+## 최종 배포 정산
+
+PG16/18 호환 제품 `2bda70e37606fd52c37bfc1f88d2d8a934234a1f`를 API 이미지 `sha256:cbb036c153d2fae7cd2453246139266c9394f4e6586a40d8dac8914f31c7fe4d`·CID `71e996cd451bdc538a43787e1f174e7fe7930f43ba0a3b839d0549731c9f3b7d`·실제Cmd12201에 반영했다. 운영 PG18.6/schema0039와 epoch0/0/0·reader5초·상태60초를 native 읽기로 확인했고 공식 Manager adopt/verify/show는 healthy다. 빌드 첫 Invocation3bf1af2ba3e343e0ae7c7c15bf92b770·배포 bdbbfb015eb04cb0815f90274e7fc81c·짧은 후속 HTTP ce1ffc61eb87444986d2fdd6886c3957는 실제done/Main0/cgroup부재·소유자식 종료다. 마지막 보정의 migration/환경 변경/일정 변경은0이다. Weather 웹·CS·Transport MCP 등 다른7역할과 전체Compose runtime은 그대로다.
+
+최신 이미지의 health167.09ms200·version13.28ms200·미인증401, current100행44.203초200·바로 다음 조건부340.44ms304를 관측했다. 같은 API/router/cache/capture/trigger/DDL의 불변을 Git/AST로 확인하고 앞선13응답은 측정 소스b369d35d로 별도 보존한다. 변경은 설치 시 `_counter`의 NOT NULL 표현 정규화뿐이다. 원천 자료·시각이 달라 새 이미지 payload SHA를 이전 표본과 같다고 쓰지 않는다. 합친 재사용 관측은66.73~340.44ms이며 최초/만료 전체 재구성19.70~54.41초는 미해결이다.
+
+최종 정본은 Git 밖 `weather-aggressive-read-20261108/final-acceptance.json`, SHA `4a1b12f80eef446a02feee6765bddd409fba49047b9f6f4bc67131aa9bdf3a37`다. 기존 UI는 웹 소스d59e7083/이미지46decb61 그대로여서 이전 Firefox PC/모바일 실제 수용을 참조하며 새 캡처로 꾸미지 않는다. 원 실패/UNKNOWN·원503·PG16 원CI 실패와 소유 시험 보조의 경로 오류는 각각 원문으로 남긴다. 백업/복원은 사용자 지시로 생략했고 원본·영구 통계·공용daemon·다른 서비스를 유지했다. Draft PR208/main 머지 없음 정책을 유지한다.
+
+병행한 유가 MCP는 Transport API 동일 프로세스12302의 `/mcp`에서 별도 수용됐다. 반경 내 전5유종 최저가/평균·전국/현재시군구 통계·독립 거리/산술·실제 MCP 양 프로토콜을 검산했다. 운영 수용 정본은 `transport-fuel-mcp-release-20261108/final-acceptance.json` SHA `5ae25e420f2e850d0495604fab09f065fcf19152b8c509f03cfd14a3c703deb9`이며 [Draft PR175](https://github.com/digitie/kor-travel-transport/pull/175)에 분리했다. 기존 인증 토큰·peer CIDR 내부 접근이며 공개 gateway/HAProxy는 열지 않았다.
+
+제품2bda70e3의 CI42462180386은 최종 문서 정산 시 frontend SUCCESS·Python 진행 중으로 관측했다. 이것을 전체CI 통과로 쓰지 않는다. 원42460952945의PG16 설치 실패는 별도로 보존하며 집중PG16/18 체인 검산과 실제 운영 수용은 위 근거에 한정한다.

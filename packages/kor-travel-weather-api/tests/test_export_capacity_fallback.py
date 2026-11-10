@@ -1,6 +1,7 @@
 """새 manifest 예산 초과는 마지막 승인 vector를 오염시키지 않는다."""
 
 import pytest
+from export_clock import install_api_clock
 from sqlalchemy import func, select
 from test_frozen_service_exports import HEADERS, _client, _collect, _collect_forecast
 from test_frozen_service_exports import repository as repository
@@ -16,6 +17,7 @@ def test_manifest_overflow_keeps_previous_vector_stale_without_new_snapshot(
 ):
     (_collect if kind == "current" else _collect_forecast)(repository, tmp_path)
     client = _client(repository, tmp_path)
+    clock = install_api_clock(monkeypatch, client)
     url = "/v1/service/exports/" + kind
     params = {} if kind == "current" else {"style": "ultra_short"}
     first = client.get(url, params={**params, "limit": 1}, headers=HEADERS)
@@ -42,10 +44,17 @@ def test_manifest_overflow_keeps_previous_vector_stale_without_new_snapshot(
             return original_fallback(reader, frozen)
 
     monkeypatch.setattr(export_snapshots.FrozenCurrentExports, "_capacity_fallback", fallback)
+    if kind == "current":
+        assert client.get(url, params={**params, "limit": 1}, headers={
+            **HEADERS, "if-none-match": first.headers["etag"],
+        }).status_code == 304
+        assert calls == 0  # 완성 페이지는 허용 시간 동안 새 freeze를 실행하지 않는다.
+        clock[0] += 60
     retained = client.get(url, params={**params, "limit": 1}, headers={
         **HEADERS, "if-none-match": first.headers["etag"],
     })
     assert retained.status_code == 200
+    assert calls > 0
     assert retained.json()["items"] == first.json()["items"]
     assert retained.json()["meta"]["source_status"] == "stale"
     cursor = retained.json()["meta"]["next_cursor"]
@@ -56,7 +65,10 @@ def test_manifest_overflow_keeps_previous_vector_stale_without_new_snapshot(
     assert repeated.json()["meta"]["snapshot_id"] == retained.json()["meta"]["snapshot_id"]
     with repository.engine.connect() as c:
         assert c.scalar(select(func.count()).select_from(snapshots)) == before + 1
-    monkeypatch.undo()
+    monkeypatch.setattr(module, "MetadataBudget", MetadataBudget)
+    monkeypatch.setattr(export_snapshots.FrozenCurrentExports, "_capacity_fallback",
+                        original_fallback)
+    clock[0] += 60
     recovered = client.get(url, params={**params, "limit": 1}, headers={
         **HEADERS, "if-none-match": retained.headers["etag"],
     })

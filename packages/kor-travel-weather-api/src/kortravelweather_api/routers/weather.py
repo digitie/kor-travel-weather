@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
-from kortravelweather.alerts import active_alert_values
+from kortravelweather.alerts import active_alert_values, alert_location_scope
 from kortravelweather.models import SyncRun, WeatherKind, WeatherLocation, WeatherValue, kst_now
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
@@ -102,6 +102,8 @@ class LocationOut(BaseModel):
     ny: int | None = None
     region_code: str | None = None
     enabled: bool
+    sido_name: str | None = None
+    sigungu_name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -141,6 +143,7 @@ class NearbyOut(LocationOut):
     latest: list[WeatherValueOut] = Field(default_factory=list)
     forecast: list[WeatherValueOut] = Field(default_factory=list)
     alerts: list[WeatherValueOut] = Field(default_factory=list)
+    alert_scope_unverified: bool = False
 
 
 class MeasurementPointOut(BaseModel):
@@ -176,6 +179,7 @@ class ResolvedWeatherOut(BaseModel):
     latest: list[WeatherValueOut] = Field(default_factory=list)
     forecast: list[WeatherValueOut] = Field(default_factory=list)
     alerts: list[WeatherValueOut] = Field(default_factory=list)
+    alert_scope_unverified: bool = False
 
 
 class WeatherMarkerOut(BaseModel):
@@ -188,6 +192,7 @@ class WeatherMarkerOut(BaseModel):
     latest: list[WeatherValueOut] = Field(default_factory=list)
     forecast: list[WeatherValueOut] = Field(default_factory=list)
     alerts: list[WeatherValueOut] = Field(default_factory=list)
+    alert_scope_unverified: bool = False
 
 
 class SourceRecordSummary(BaseModel):
@@ -409,6 +414,7 @@ def measurement_point_out(
 
 def _split_weather_values(
     rows: list[WeatherValue],
+    location: WeatherLocation,
 ) -> tuple[list[WeatherValue], list[WeatherValue], list[WeatherValue]]:
     alerts: list[WeatherValue] = []
     forecast: list[WeatherValue] = []
@@ -416,12 +422,22 @@ def _split_weather_values(
     for row in rows:
         marker = f"{row.dataset_key} {row.weather_domain}".lower()
         if "alert" in marker or "warning" in marker or row.metric_key == "ALERT":
-            alerts.append(row)
+            if alert_location_scope(row, location) == "matched":
+                alerts.append(row)
         elif row.forecast_style.value in {"short", "mid", "ultra_short"}:
             forecast.append(row)
         else:
             latest.append(row)
     return latest, forecast, active_alert_values(alerts)
+
+
+def _unverified_alert_scope(rows: list[WeatherValue], location: WeatherLocation) -> bool:
+    return any(
+        (row.metric_key == "ALERT" or "alert" in f"{row.dataset_key} {row.weather_domain}".lower()
+         or "warning" in f"{row.dataset_key} {row.weather_domain}".lower())
+        and alert_location_scope(row, location) == "unverified"
+        for row in rows
+    )
 
 
 def _weather_bundle(
@@ -431,6 +447,7 @@ def _weather_bundle(
     latest_rows: list[WeatherValue],
     forecast_rows: list[WeatherValue],
     alert_rows: list[WeatherValue],
+    alert_scope_unverified: bool = False,
 ) -> dict[str, Any]:
     return {
         **location_out(location).model_dump(mode="json"),
@@ -443,6 +460,7 @@ def _weather_bundle(
         "latest": [value_out(row).model_dump(mode="json") for row in latest_rows],
         "forecast": [value_out(row).model_dump(mode="json") for row in forecast_rows],
         "alerts": [value_out(row).model_dump(mode="json") for row in alert_rows],
+        "alert_scope_unverified": alert_scope_unverified,
     }
 
 
@@ -474,10 +492,14 @@ async def list_locations(
     total = await run_in_threadpool(
         repo.count_locations, enabled_only=True, search=search, **filters,
     )
+    regions = await run_in_threadpool(repo.public_location_regions, rows)
     return envelope(
         request,
         started,
-        [location_out(row).model_dump(mode="json") for row in rows],
+        [
+            {**location_out(row).model_dump(mode="json"), **regions.get(row.location_id, {})}
+            for row in rows
+        ],
         limit=limit,
         offset=offset,
         total=total,
@@ -516,15 +538,18 @@ async def latest(
     # ``latest_values`` includes alert facts for the location.  Apply the
     # same active-alert projection used by markers/resolve so a named latest
     # request cannot resurrect a released or stale notice.
-    current_rows, forecast_rows, alert_rows = _split_weather_values(rows)
+    scope_unverified = _unverified_alert_scope(rows, location)
+    current_rows, forecast_rows, alert_rows = _split_weather_values(rows, location)
     rows = [*current_rows, *forecast_rows, *alert_rows]
-    return envelope(
+    result = envelope(
         request,
         started,
         [value_out(row).model_dump(mode="json") for row in rows],
         limit=limit,
         returned=len(rows),
     )
+    result["meta"]["alert_scope_unverified"] = scope_unverified
+    return result
 
 
 @router.get("/locations/{location_id}/forecast", response_model=WeatherValueListResponse)
@@ -641,9 +666,9 @@ async def nearby(
                 repo.latest_values, location.location_id, limit=20
             )
         _, forecast_rows, timeline_alerts = _split_weather_values(
-            forecast_by_location.get(location.location_id, [])
+            forecast_by_location.get(location.location_id, []), location,
         )
-        current_rows, _, current_alerts = _split_weather_values(latest_rows)
+        current_rows, _, current_alerts = _split_weather_values(latest_rows, location)
         if dedicated_alerts_available:
             # Classify rather than trust the query: ``_split_weather_values``
             # is what decides a row is a warning, and it also applies the
@@ -651,7 +676,7 @@ async def nearby(
             # would promote whatever the read returned -- a temperature row
             # included -- into the alert list.
             _, _, alert_rows = _split_weather_values(
-                alert_by_location.get(location.location_id, [])
+                alert_by_location.get(location.location_id, []), location,
             )
         else:
             # No dedicated read: fall back to the shared batches, which is the
@@ -664,6 +689,10 @@ async def nearby(
                 latest_rows=current_rows,
                 forecast_rows=forecast_rows,
                 alert_rows=alert_rows,
+                alert_scope_unverified=_unverified_alert_scope(
+                    [*latest_rows, *forecast_by_location.get(location.location_id, []),
+                     *alert_by_location.get(location.location_id, [])], location,
+                ),
             )
         )
     return envelope(
@@ -703,6 +732,10 @@ async def resolve_weather(
         if measurement_point_out(location, distance_km=distance) is not None
     ]
     location, distance = (station_rows or rows)[0]
+    # 가장 가까운 관측소의 특보구역을 다른 요청 좌표에 그대로 적용하지 않는다.
+    alert_location = location
+    if (round(lat, 6), round(lon, 6)) != (location.latitude, location.longitude):
+        alert_location = location.model_copy(update={"metadata": {}})
     # A station anchor and a KMA/external anchor can be separate catalog rows
     # even when they represent the same requested place.  Include nearby
     # anchors in a small source-radius projection and merge their current,
@@ -778,15 +811,15 @@ async def resolve_weather(
                     repo.timeline, candidate_id, limit=2000, include_revisions=False
                 )
             )
-    _, forecast_values, timeline_alerts = _split_weather_values(timeline_rows)
-    latest_values, _, latest_alerts = _split_weather_values(latest_rows)
+    _, forecast_values, timeline_alerts = _split_weather_values(timeline_rows, alert_location)
+    latest_values, _, latest_alerts = _split_weather_values(latest_rows, alert_location)
     if dedicated_alerts_available:
         # Branch on availability, not on whether the read happened to return
         # something. A truthiness test would quietly restore the shared-budget
         # path for every ordinary coordinate -- the exact behaviour the
         # dedicated read exists to replace -- and would let the two paths
         # disagree about the same warning.
-        _, _, alert_values = _split_weather_values(alert_rows)
+        _, _, alert_values = _split_weather_values(alert_rows, alert_location)
     else:
         alert_values = timeline_alerts
     point = measurement_point_out(location, distance_km=distance)
@@ -796,6 +829,9 @@ async def resolve_weather(
         distance_km=distance,
         measurement_point=point,
         source_locations=[location_out(candidate) for candidate, _ in source_rows],
+        alert_scope_unverified=_unverified_alert_scope(
+            [*latest_rows, *timeline_rows, *alert_rows], alert_location,
+        ),
         latest=[value_out(row) for row in latest_values],
         forecast=[value_out(row) for row in forecast_values],
         alerts=[
@@ -906,14 +942,16 @@ async def _marker_summaries(
     data: list[dict[str, Any]] = []
     for location_id in valid_ids:
         latest, forecast, latest_alerts = _split_weather_values(
-            latest_by_location.get(location_id, []),
+            latest_by_location.get(location_id, []), by_id[location_id],
         )
         # 운영 marker projection은 같은 묶음을 공유한다. 특보 판정은 한 번만
         # 수행하되 별도 alerts를 돌려주는 기존 repository double도 지원한다.
         if alert_by_location is latest_by_location:
             alerts = latest_alerts
         else:
-            _, _, filtered_alerts = _split_weather_values(alert_by_location.get(location_id, []))
+            _, _, filtered_alerts = _split_weather_values(
+                alert_by_location.get(location_id, []), by_id[location_id],
+            )
             alerts = filtered_alerts or latest_alerts
         data.append(
             WeatherMarkerOut(
@@ -924,6 +962,9 @@ async def _marker_summaries(
                 latest=[value_out(row) for row in latest],
                 forecast=[value_out(row) for row in forecast] if kinds is not None else [],
                 alerts=[value_out(row) for row in alerts],
+                alert_scope_unverified=_unverified_alert_scope(
+                    alert_by_location.get(location_id, []), by_id[location_id],
+                ),
             ).model_dump(mode="json")
         )
     return envelope(request, started, data, limit=len(valid_ids), returned=len(data))

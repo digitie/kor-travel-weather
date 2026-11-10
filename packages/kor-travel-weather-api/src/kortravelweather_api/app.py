@@ -18,6 +18,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from kortravelweather.export_page_cache import ExportPageCache
+from kortravelweather.export_selection_cache import ExportSelectionCache
 from kortravelweather.metrics import (
     change_http_in_flight,
     forward_partition_days_exposition,
@@ -146,6 +148,10 @@ def create_app(
     # 지도 이동의 이전 배치가 DB·일반 worker 슬롯을 독점하지 않도록 제한한다.
     api.state.marker_limiter = CapacityLimiter(2)
     api.state.service_export_limiter = CapacityLimiter(2)
+    api.state.export_selection_cache = ExportSelectionCache()
+    api.state.export_page_cache = ExportPageCache(
+        clock=lambda: api.state.export_selection_cache.clock(),
+    )
     # 인증 조회는 긴 일반 조회가 모두 worker를 사용해도 별도로 처리한다.
     api.state.auth_limiter = CapacityLimiter(2)
     # 수집 버퍼는 하나만 만들고 대기는 일반 API의 worker 슬롯을 쓰지 않는다.

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+from export_clock import install_api_clock
 from krex import parse_rest_area_weather
 from sqlalchemy import select
 from test_airkorea_weather import _EntersAndCloses
@@ -19,7 +20,7 @@ from kortravelweather.settings import WeatherSettings
 
 
 def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers(
-    external_repository, tmp_path,
+    external_repository, tmp_path, monkeypatch,
 ):
     from kortravelweather_dagster.regional_sources import run_krex_restarea_sync
 
@@ -81,6 +82,7 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
     publish_http(records[0])
 
     client = TestClient(create_app(settings, repo))
+    clock = install_api_clock(monkeypatch, client)
     daily_path, daily_headers = "/v1/service/exports/daily-summaries", {
         "x-admin-token": "discovery-fixture",
     }
@@ -118,6 +120,10 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
     assert cross_provider.status_code == 503
     # 전체 목록은 새 원천의 최초 미승인을503 대신 stale로 낮춘다. 기존 위치의 요약은 그대로이고
     # 새 위치는 승인된 원천(HTTP)만으로 요약된다. 개별 위치 조회는 위와 같이503이다.
+    assert client.get(daily_path, params={"days": 1}, headers={
+        **daily_headers, "if-none-match": daily_prior.headers["etag"],
+    }).status_code == 304
+    clock[0] += 60
     retained = client.get(daily_path, params={"days": 1}, headers=daily_headers)
     assert retained.status_code == 200 and retained.json()["meta"]["source_status"] == "stale"
     new_key = restarea_location(records[1]).location_id
@@ -131,6 +137,7 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
     recovered, _ = reader.page("current", limit=5000, cursor=None)
     assert recovered["meta"]["source_status"] == "ok" and len(recovered["items"]) == 4
     drain()
+    clock[0] += 60
     daily_ready = client.get(daily_path, params={"days": 1}, headers=daily_headers)
     assert daily_ready.status_code == 200 and daily_ready.json()["meta"]["source_status"] == "ok"
     assert len(daily_ready.json()["items"]) == 6

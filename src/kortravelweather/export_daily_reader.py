@@ -1,18 +1,19 @@
 """사전 계산 summary만 조회한다. fact와 비공개 winner JSON은 읽지 않는다."""
 
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, text, tuple_
 
+from .export_capacity import any_of
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
 from .export_inventory_selection import (
     MAX_SELECTED_ROWS,
     SDK_NETWORKS,
-    approved_source_selection,
     catalog_source_projection,
     counts_for_freshness,
     freshness_min,
@@ -22,11 +23,11 @@ from .export_snapshots import (
     MAX_PAGE_BYTES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
-    SNAPSHOT_TTL,
     ExportCursorInvalid,
     ExportSnapshotExpired,
     ExportSnapshotUnavailable,
     FrozenCurrentExports,
+    snapshot_expires_at,
 )
 
 
@@ -87,6 +88,11 @@ class DailySummaryExports(FrozenCurrentExports):
         return rows
 
     def _selected_coverage(self, connection, keys):
+        # API 첫 페이지의 freeze와 값 조회가 같은 RR을 사용한다. 같은 roster의 건강도를
+        # 한 요청 안에서 두 번 계산하지 않는다. 다른 TX·요청·cursor에는 넘기지 않는다.
+        memo = getattr(self, "_daily_coverage_memo", None)
+        if memo is not None and memo[0] is connection and memo[1] == tuple(keys):
+            return memo[2]
         rows = self._coverage_rows(connection, keys)
         if self.source_inventory:
             rows, unconfirmed = self._inventory_coverage(connection, keys, rows)
@@ -108,7 +114,9 @@ class DailySummaryExports(FrozenCurrentExports):
                         self.heads.generations.c.attempt_id == attempts.c.attempt_id,
                     )
                 )
-                .where(owners.c.source_scope.in_(scopes))
+                .where(any_of(owners.c.source_scope, sorted(scopes))
+                       if connection.dialect.name == "postgresql" else
+                       owners.c.source_scope.in_(scopes))
             )
         )
         self.daily_health_digest = _digest(sorted([list(row) for row in statuses], key=str))
@@ -118,7 +126,21 @@ class DailySummaryExports(FrozenCurrentExports):
             or (run == "success" and generation is None)
             for attempt, run, generation in statuses
         )
-        return rows, unconfirmed
+        result = rows, unconfirmed
+        if self.selection_cache is not None and connection is getattr(
+            self, "_daily_connection", None,
+        ):
+            self._daily_coverage_memo = connection, tuple(keys), result
+        return result
+
+    def validate_reusable_page(self):
+        from .export_page_cache import PageReuseExpired
+
+        now = datetime.now(UTC).astimezone(KST)
+        before = self.reuse_wall_started.astimezone(KST)
+        if (now.date(), now.hour // 6) != (before.date(), before.hour // 6):
+            raise PageReuseExpired()
+        return super().validate_reusable_page()
 
     def _inventory_coverage(self, connection, keys, rows):
         """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
@@ -138,14 +160,14 @@ class DailySummaryExports(FrozenCurrentExports):
             # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
             keys = [row["location_id"] for row in locations]
         keys = set(keys)
-        from .export_artifacts import ExportArtifactError
+        from .export_artifacts import ExportArtifactError, ExportGuardTimeout
 
         try:
-            selection = approved_source_selection(
-                connection, self.heads.metadata, locations,
-                expected=self.expected_sources, optional=self.optional_sources,
-                health_location_ids=keys if self.location_id else None,
+            selection = self._approved_selection(
+                connection, locations, health_location_ids=keys if self.location_id else None,
             )
+        except ExportGuardTimeout:
+            raise
         except (ExportArtifactError, KeyError, TypeError, ValueError) as exc:
             raise ExportSnapshotUnavailable("관측 source 승인 집합이 준비되지 않았습니다.") from exc
         expected = {
@@ -233,7 +255,7 @@ class DailySummaryExports(FrozenCurrentExports):
         }
         with self.heads._transaction() as connection:
             previous = connection.execute(select(self.snapshots).where(
-                self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+                self.snapshots.c.daily_resource == self.resource,
             ).order_by(self.snapshots.c.issue_order.desc()).limit(1)).mappings().one_or_none()
             if previous is None:
                 return None
@@ -245,21 +267,18 @@ class DailySummaryExports(FrozenCurrentExports):
                 return {**previous, "_reused": True}
             row = dict(previous)
             row.pop("issue_order", None)
+            for column in self.snapshots.c:
+                if column.computed is not None:
+                    row.pop(column.name, None)
             row["manifest"] = {**row["manifest"], **window, "fallback_unconfirmed": True}
             row.update(snapshot_id=str(uuid4()), manifest_digest=_digest(row["manifest"]),
-                       created_at=now, expires_at=now + SNAPSHOT_TTL)
+                       created_at=now, expires_at=snapshot_expires_at(now))
             connection.execute(self.snapshots.insert().values(**row))
             return row
 
     def _freeze_daily_ready(self):
         now = datetime.now(UTC)
-        with (
-            self.repository.engine.connect().execution_options(
-                isolation_level="REPEATABLE READ"
-            ) as c,
-            c.begin(),
-        ):
-            c.execute(text("SET LOCAL statement_timeout = '5s'"))
+        with self._daily_transaction() as c:
             ready = c.execute(select(self.progress)).mappings().one_or_none()
             if ready is None or ready["source_collected_at"] is None:
                 raise ExportSnapshotUnavailable("승인된 관측 요약이 아직 없습니다.")
@@ -289,7 +308,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 c.execute(
                     select(self.snapshots)
                     .where(
-                        self.snapshots.c.manifest["daily_resource"].as_string() == self.resource,
+                        self.snapshots.c.daily_resource == self.resource,
                     )
                     .order_by(self.snapshots.c.issue_order.desc())
                     .limit(1)
@@ -316,24 +335,47 @@ class DailySummaryExports(FrozenCurrentExports):
                     default=ready["published_at"],
                 ),
                 "created_at": now,
-                "expires_at": now + SNAPSHOT_TTL,
+                "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**row))
             return row
 
     def page(self, *, limit, cursor):
-        # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
-        # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
+        # 파일을 읽지 않는 DB page다. 각 RR 조회가 값을 복사하므로 GC의 파일 잠금은 불필요하다.
         return self._page_guarded(limit=limit, cursor=cursor)
 
+    @contextmanager
+    def _daily_transaction(self):
+        connection = getattr(self, "_daily_connection", None)
+        if connection is not None:
+            yield connection
+            return
+        with self.repository.engine.connect().execution_options(
+            isolation_level="REPEATABLE READ"
+        ) as connection, connection.begin():
+            connection.execute(text("SET LOCAL statement_timeout = '5s'"))
+            yield connection
+
     def _page_guarded(self, *, limit, cursor):
+        # snapshot roster·coverage·사전 계산 값을 같은 MVCC에서 읽는다. 페이지가 끝나면
+        # connection과 memo를 지우므로 reader 인스턴스 재사용도 다음 TX를 다시 검산한다.
+        with self._daily_transaction() as connection:
+            self._daily_connection = connection
+            self._daily_coverage_memo = None
+            try:
+                return self._daily_page(limit=limit, cursor=cursor)
+            finally:
+                self._daily_coverage_memo = None
+                self._daily_connection = None
+
+    def _daily_page(self, *, limit, cursor):
         if cursor:
             state = self._decode(cursor)
             if state["r"] != self.resource or state["l"] != limit:
                 raise ExportCursorInvalid(
                     "days/location_id/limit은 cursor 도중 변경할 수 없습니다."
                 )
-            with self.heads._transaction() as s:
+            with self._daily_transaction() as s:
                 row = (
                     s.execute(
                         select(self.snapshots).where(self.snapshots.c.snapshot_id == state["s"])
@@ -355,6 +397,7 @@ class DailySummaryExports(FrozenCurrentExports):
                 "p": 0,
             }
         manifest, now = frozen["manifest"], datetime.now(UTC)
+        self.reuse_snapshot = (frozen["snapshot_id"], frozen["manifest_digest"])
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("요약 cursor selection이 다릅니다.")
         first, last = (
@@ -366,13 +409,7 @@ class DailySummaryExports(FrozenCurrentExports):
         if state["g"] > len(keys) or state["p"] > len(positions):
             raise ExportCursorInvalid("요약 cursor 위치가 올바르지 않습니다.")
         # scalar summary만 선택한다. 한 위치의 최대 31일×3구간만 메모리에 유지한다.
-        with (
-            self.repository.engine.connect().execution_options(
-                isolation_level="REPEATABLE READ"
-            ) as s,
-            s.begin(),
-        ):
-            s.execute(text("SET LOCAL statement_timeout = '5s'"))
+        with self._daily_transaction() as s:
             while state["g"] < len(keys):
                 key = keys[state["g"]]
                 rows = {

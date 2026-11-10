@@ -696,15 +696,145 @@ def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
 def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
-    """freeze가 commit하기 전(GC가 ref를 못 보는 때)에 head가 바뀌고 GC가 지우면 다시 발급한다."""
-    from sqlalchemy import event
+    """API pin의 짧은 공유 guard는 writer를 commit 뒤로 보내고 옛 파일을 실제 지킨다."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
 
     from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
     from kortravelweather.export_gc import collect_export_artifacts
 
     monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
     _collect(repository, tmp_path, hours=2, value="11")
+    old_files = set(tmp_path.glob("*.jsonl"))
+    assert old_files
+    orphan = tmp_path / ("e" * 64 + ".jsonl")
+    orphan.write_bytes(b"{}\n")
     client = _client(repository, tmp_path)
+    snapshots, refs = export_snapshot_tables(Base.metadata)
+    blocked = Event()
+    raced, futures = {}, []
+
+    def writer():
+        store = ExportArtifactStore(tmp_path)
+        # SQL hook가 pin guard를 쥔 채 writer를 시작한다. 실제 flock 경합을 확인한 후에만
+        # hook를 풀어 INSERT/ref/commit이 진행되게 한다(동기 _collect 자기 경합 금지).
+        with pytest.raises(ExportGuardTimeout), store.guard(timeout_seconds=0.05):
+            pytest.fail("snapshot INSERT 전에 API의 pin guard가 writer를 막지 못했습니다.")
+        blocked.set()
+        with store.guard(timeout_seconds=5), repository.engine.connect() as connection:
+            frozen = connection.execute(select(snapshots)).mappings().one()
+            pinned = set(connection.scalars(select(refs.c.generation_id).where(
+                refs.c.snapshot_id == frozen["snapshot_id"],
+            )))
+            assert pinned == {scope["generation_id"] for scope in frozen["manifest"]["scopes"]}
+            digests = {ref["artifact_digest"] for scope in frozen["manifest"]["scopes"]
+                       for ref in scope["refs"]}
+            assert digests == {path.stem for path in old_files}
+            raced["pin_visible"] = True  # 별도 연결이 본 commit된 원래 generation ref
+        _collect(repository, tmp_path, hours=0, value="22")
+        _make_old_generations_collectable(repository, tmp_path)
+        raced["report"] = collect_export_artifacts(
+            repository, tmp_path, mode="delete", deadline=float("inf"),
+            retention=timedelta(hours=1),
+        )
+
+    original_present = ExportArtifactStore.present
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        def present_under_pin_guard(self, *args, **kwargs):
+            # pin의 공유 guard는 INSERT 뒤 파일 stat·commit만 감싼다. 첫 stat에서 writer를 띄운다.
+            if not raced:
+                raced["hit"] = True
+                futures.append(executor.submit(writer))
+                assert blocked.wait(5), "별도 writer가 실제 pin guard 경합을 확인하지 못했습니다."
+            return original_present(self, *args, **kwargs)
+
+        monkeypatch.setattr(ExportArtifactStore, "present", present_under_pin_guard)
+        try:
+            response = client.get("/v1/service/exports/current", headers=HEADERS)
+        finally:
+            monkeypatch.setattr(ExportArtifactStore, "present", original_present)
+        assert len(futures) == 1
+        futures[0].result(timeout=30)  # writer 실패를 주 시험에 전달하고 종료도 회수한다.
+    assert raced["pin_visible"]
+    assert raced["report"]["deleted"] >= 1 and not orphan.exists()
+    assert all(path.is_file() for path in old_files)  # head/retention이 아닌 실제 pin이 보존했다.
+    assert response.status_code == 200, response.text
+    values = {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"}
+    assert values == {11.0}
+
+
+def test_api_pin_insert_runs_outside_the_guard_and_reissues_when_gc_wins(
+    repository, tmp_path, monkeypatch, restore_daily_progress,
+):
+    """API 원자 pin의 snapshot INSERT는 guard 밖이다(#209: DB 작업 동안 writer를 막지 않는다).
+
+    INSERT와 commit 사이에 GC가 이긴 경우 pin의 stat가 유실을 보고 발급을 되돌린 뒤 새 head로
+    재발급한다(일시 503도 허용). 없는 파일을 가리키는 snapshot을 내지 않는다.
+    """
+    from sqlalchemy import event
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_gc import collect_export_artifacts
+
+    monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
+    _collect(repository, tmp_path, hours=2, value="11")
+    old_files = set(tmp_path.glob("*.jsonl"))
+    assert old_files
+    client = _client(repository, tmp_path)
+    raced = {}
+
+    def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
+        insert = statement.lstrip().upper().startswith("INSERT INTO WEATHER_EXPORT_SNAPSHOTS")
+        if raced or not insert:
+            return
+        raced["hit"] = True
+        # 별도 fd의 writer가 즉시 배타 guard를 얻는다(reader가 INSERT 동안 쥐고 있지 않다).
+        with ExportArtifactStore(tmp_path).guard(timeout_seconds=0.05):
+            raced["writer_free"] = True
+        _collect(repository, tmp_path, hours=0, value="22")
+        _make_old_generations_collectable(repository, tmp_path)
+        raced["report"] = collect_export_artifacts(
+            repository, tmp_path, mode="delete", deadline=float("inf"),
+            retention=timedelta(hours=1),
+        )
+
+    event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    try:
+        response = client.get("/v1/service/exports/current", headers=HEADERS)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
+    assert raced["writer_free"]
+    assert raced["report"]["deleted"] >= 1
+    assert all(not path.exists() for path in old_files)  # GC가 pin commit 전에 실제로 지웠다.
+    if response.status_code == 503:
+        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+        return
+    assert response.status_code == 200, response.text
+    values = {item["value"] for item in response.json()["items"] if item["metric_key"] == "T1H"}
+    assert values == {22.0}  # 되돌린 발급 대신 새 head로 재발급했다.
+
+
+def test_sdk_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
+    repository, tmp_path, monkeypatch, restore_daily_progress,
+):
+    """SDK 기본 발급은 commit 전 GC를 재검산해 새 head로 재발급하거나 일시503 사유로 닫는다."""
+    from sqlalchemy import event
+
+    from kortravelweather import export_gc
+    from kortravelweather.export_artifacts import ExportArtifactStore, ExportGuardTimeout
+    from kortravelweather.export_gc import collect_export_artifacts
+    from kortravelweather.export_snapshots import FrozenCurrentExports
+
+    monkeypatch.setattr(export_gc, "LATEST_SNAPSHOTS", 64)
+    _collect(repository, tmp_path, hours=2, value="11")
+    old_files = set(tmp_path.glob("*.jsonl"))
+    assert old_files
+    reader = FrozenCurrentExports(
+        repository, ExportArtifactStore(tmp_path), signing_key=TOKEN, immutable_reads=False,
+    )
     raced = {}
 
     def before_snapshot_insert(_conn, _cursor, statement, _parameters, _context, _many):
@@ -721,16 +851,18 @@ def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
 
     event.listen(repository.engine, "before_cursor_execute", before_snapshot_insert)
     try:
-        response = client.get("/v1/service/exports/current", headers=HEADERS)
+        try:
+            page, _ = reader.page("current", limit=5000, cursor=None)
+        except ExportGuardTimeout:
+            # HTTP adapter가 EXPORT_TEMPORARILY_UNAVAILABLE/503으로 분류하는 SDK 예외다.
+            page = None
     finally:
         event.remove(repository.engine, "before_cursor_execute", before_snapshot_insert)
-    assert raced["report"]["deleted"] >= 1  # 이전 generation 파일이 실제로 지워졌다
-    assert response.status_code in {200, 503}, response.text
-    if response.status_code == 200:
-        values = {i["value"] for i in response.json()["items"] if i["metric_key"] == "T1H"}
-        assert values == {22.0}  # 다시 발급해 새 head를 읽었다
-    else:
-        assert response.json()["code"] == "EXPORT_TEMPORARILY_UNAVAILABLE"
+    assert raced["report"]["deleted"] >= 1
+    assert all(not path.exists() for path in old_files)  # commit 전 옛 파일이 실제 삭제됐다.
+    if page is not None:
+        values = {item["value"] for item in page["items"] if item["metric_key"] == "T1H"}
+        assert values == {22.0}
 
 
 def test_writer_retries_a_short_guard_contention_instead_of_failing(tmp_path):
@@ -828,7 +960,13 @@ def test_dense_forecast_grid_is_unavailable_or_previous_stale_not_500(
     repository, tmp_path, previous
 ):
     if previous:
-        _collect_forecast(repository, tmp_path)
+        # 거절되는60격자만 고정한다. 무관한61격자가 정상 갱신되면 첫 scope 순서에 따라
+        # 그 지점의 새 known_at을 이전 값과 비교하던 비결정적 시험이 됐다.
+        _collect_forecast(repository, tmp_path, targets=[
+            WeatherTarget(WeatherLocation(
+                location_id=key, name=key, latitude=37.5, longitude=127, nx=60, ny=127,
+            )) for key in ("a", "b")
+        ])
     client = _client(repository, tmp_path)
     url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 1}
     first = client.get(url, params=params, headers=HEADERS) if previous else None
@@ -1002,9 +1140,14 @@ def test_real_approved_current_and_locations_have_etag_gzip_and_auth(repository,
         )
 
 
-def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(repository, tmp_path):
+def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(
+    repository, tmp_path, monkeypatch,
+):
     _collect(repository, tmp_path, hours=1)
+    from test_all_source_exports import _selection_clock
+
     client = _client(repository, tmp_path)
+    clock = _selection_clock(client, monkeypatch)
     url = "/v1/service/exports/current?limit=1"
     first = client.get(url, headers=HEADERS).json()
     cursor = first["meta"]["next_cursor"]
@@ -1019,6 +1162,15 @@ def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(reposi
     assert len(values) == 24 and all(
         row["value"] == 18.4 for row in values if row["metric_key"] == "T1H"
     )
+    clock[0] += 59
+    within = client.get("/v1/service/exports/current", headers=HEADERS).json()
+    # 새 limit의 첫 페이지는 별도 key이며 60초보다 일찍 새 승인을 반영할 수 있다.
+    # 기존 cursor는 위에서24개 모두 옛 snapshot/값으로 끝까지 확인했다.
+    assert len(within["items"]) == 24
+    assert {row["value"] for row in within["items"] if row["metric_key"] == "T1H"} in (
+        {18.4}, {20.4},
+    )
+    clock[0] += 1
     latest = client.get("/v1/service/exports/current", headers=HEADERS).json()
     assert latest["meta"]["snapshot_id"] != first["meta"]["snapshot_id"]
     assert all(row["value"] == 20.4 for row in latest["items"] if row["metric_key"] == "T1H")
@@ -1028,12 +1180,25 @@ def test_frozen_cursor_survives_new_success_head_and_bound_resource_limit(reposi
     assert client.get(url, params={"cursor": initial + "x"}, headers=HEADERS).status_code == 422
 
 
-def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp_path):
+def _expire_export_state(client, monkeypatch):
+    """승인된 최대60초 상태 반영 한도를 지나 실제 갱신을 확인한다. 캐시는 지우지 않는다."""
+    from kortravelweather import export_snapshots
+
+    now = client.app.state.export_selection_cache.clock() + 60
+    monkeypatch.setattr(export_snapshots, "monotonic", lambda: now)
+    client.app.state.export_selection_cache.clock = lambda: now
+
+
+def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp_path, monkeypatch):
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
     first = client.get("/v1/service/exports/current", headers=HEADERS)
     with pytest.raises(KmaError):
         _collect(repository, tmp_path, failed=True)
+    assert client.get("/v1/service/exports/current", headers={
+        **HEADERS, "if-none-match": first.headers["etag"],
+    }).status_code == 304
+    _expire_export_state(client, monkeypatch)
     stale = client.get(
         "/v1/service/exports/current", headers={**HEADERS, "if-none-match": first.headers["etag"]}
     )
@@ -1347,20 +1512,20 @@ def test_export_page_is_validated_serialized_and_compressed_off_the_event_loop(
     repository, tmp_path, monkeypatch
 ):
     """4MiB까지의 페이지 직렬화·gzip이 event loop(일반 API·health)를 막지 않는다."""
-    import json as real_json
     import threading
-    from types import SimpleNamespace
 
     from kortravelweather_api.routers import service_exports
 
     _collect(repository, tmp_path)
     threads = []
 
-    def dumps(*args, **kwargs):
-        threads.append(threading.current_thread().name)
-        return real_json.dumps(*args, **kwargs)
+    original = service_exports.ExportPage.model_dump_json
 
-    monkeypatch.setattr(service_exports, "json", SimpleNamespace(dumps=dumps))
+    def dump_json(self, *args, **kwargs):
+        threads.append(threading.current_thread().name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(service_exports.ExportPage, "model_dump_json", dump_json)
     client = _client(repository, tmp_path)
     response = client.get("/v1/service/exports/current", headers=HEADERS)
     assert response.status_code == 200 and response.headers["content-encoding"] == "gzip"
@@ -1379,6 +1544,9 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     def fail(self, *args, **kwargs):
         raise SQLAlchemyError("postgresql://user:secret@db/weather")
 
+    # 예외가 실제 reader에서 올라온 경우에도 위치만 남기고 자격 메시지는 버린다.
+    fail.__code__ = fail.__code__.replace(co_filename="/app/src/kortravelweather/test_reader.py")
+
     from kortravelweather_api.routers import service_exports
 
     monkeypatch.setattr(FrozenCurrentExports, "page", fail)
@@ -1395,10 +1563,14 @@ def test_unavailable_export_logs_only_sanitized_cause(repository, tmp_path, monk
     assert failed.json()["code"] == unsupported.json()["code"] == "EXPORT_NOT_READY"
     assert "resource=current reason=SQLAlchemyError request_id=trace-503" in caplog.text
     assert "resource=current reason=source_selection" in caplog.text
+    assert (
+        "weather_service_export_failure_site resource=current site=test_reader.py:fail:"
+        in caplog.text
+    )
     assert "secret" not in caplog.text and "postgresql" not in caplog.text
 
 
-@pytest.mark.parametrize("resource", ["current", "forecasts"])
+@pytest.mark.parametrize("resource", ["current", "forecasts", "locations"])
 def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypatch, resource):
     """만료 직전 handle을 재사용한 새 pagination도 다음 페이지에서410이 되지 않는다."""
     from kortravelweather import export_forecasts, export_snapshots
@@ -1407,15 +1579,54 @@ def test_reused_first_page_handle_renews_its_ttl(repository, tmp_path, monkeypat
     if resource == "current":
         _collect(repository, tmp_path)
         url, params, module = "/v1/service/exports/current", {"limit": 1}, export_snapshots
-    else:
+    elif resource == "forecasts":
         _collect_forecast(repository, tmp_path)
         url, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 1}
         module = export_forecasts
+    else:
+        from kortravelweather import export_locations
+
+        _collect(repository, tmp_path)
+        url, params, module = "/v1/service/exports/locations", {"limit": 1}, export_locations
     client = _client(repository, tmp_path)
     first = client.get(url, params=params, headers=HEADERS)
     assert first.status_code == 200 and first.json()["meta"]["has_more"]
     snapshot_id = first.json()["meta"]["snapshot_id"]
     table, _ = export_snapshot_tables(Base.metadata)
+    # 분 단위 여유를 둔 새 handle은 같은 시각의 조건부 요청마다 UPDATE하지 않는다.
+    from sqlalchemy import event
+
+    from kortravelweather import export_locations
+
+    fixed = datetime.now(UTC)
+
+    class Fixed(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz or UTC)
+
+    for reader_module in (export_snapshots, export_forecasts, export_locations):
+        monkeypatch.setattr(reader_module, "datetime", Fixed)
+    with repository.engine.begin() as c:
+        c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
+            expires_at=fixed + SNAPSHOT_TTL + timedelta(minutes=1),
+        ))
+    writes = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith("UPDATE WEATHER_EXPORT_SNAPSHOTS"):
+            writes.append(statement)
+
+    event.listen(repository.engine, "before_cursor_execute", record)
+    try:
+        for _ in range(2):
+            unchanged = client.get(
+                url, params=params, headers={**HEADERS, "If-None-Match": first.headers["etag"]},
+            )
+            assert unchanged.status_code == 304
+        assert writes == []
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", record)
     with repository.engine.begin() as c:
         c.execute(update(table).where(table.c.snapshot_id == snapshot_id).values(
             expires_at=datetime.now(UTC) + timedelta(seconds=5),
