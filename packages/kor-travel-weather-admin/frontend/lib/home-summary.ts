@@ -6,18 +6,13 @@ export type CardState<T> =
   | { status: "ready"; value: T }
   | { status: "error"; message: string };
 
-export type HomeSummary = {
-  active: CardState<number>;
-  catalog: CardState<number>;
-  runs: CardState<SyncRun[]>;
-  health: CardState<string>;
-};
+type HomeValues = { active: number; catalog: number; runs: SyncRun[]; health: string };
 
-export type HomeFetchers = { [K in keyof HomeSummary]: () => Promise<HomeValue<K>> };
+export type HomeCard = keyof HomeValues;
+export type HomeSummary = { [K in HomeCard]: CardState<HomeValues[K]> };
+export type HomeFetchers = { [K in HomeCard]: () => Promise<HomeValues[K]> };
 
-type HomeValue<K extends keyof HomeSummary> = HomeSummary[K] extends CardState<infer T> ? T : never;
-
-export const HOME_CARDS = ["active", "catalog", "runs", "health"] as const satisfies readonly (keyof HomeSummary)[];
+export const HOME_CARDS: readonly HomeCard[] = ["active", "catalog", "runs", "health"];
 
 export function loadingSummary(): HomeSummary {
   return { active: { status: "loading" }, catalog: { status: "loading" }, runs: { status: "loading" }, health: { status: "loading" } };
@@ -25,6 +20,23 @@ export function loadingSummary(): HomeSummary {
 
 function failure(reason: unknown): string {
   return reason instanceof Error && reason.message ? reason.message : "상태를 불러오지 못했습니다.";
+}
+
+function startCard<K extends HomeCard>(
+  card: K,
+  fetchers: HomeFetchers,
+  settle: (card: K, state: HomeSummary[K]) => void,
+): void {
+  let pending: Promise<HomeValues[K]>;
+  try {
+    pending = fetchers[card]();
+  } catch (reason: unknown) {
+    pending = Promise.reject(reason);
+  }
+  pending.then(
+    (value) => settle(card, { status: "ready", value }),
+    (reason: unknown) => settle(card, { status: "error", message: failure(reason) }),
+  );
 }
 
 /**
@@ -36,23 +48,13 @@ function failure(reason: unknown): string {
  */
 export function startHomeSummary(
   fetchers: HomeFetchers,
-  onChange: <K extends keyof HomeSummary>(card: K, state: HomeSummary[K]) => void,
+  onChange: <K extends HomeCard>(card: K, state: HomeSummary[K]) => void,
 ): () => void {
   let cancelled = false;
   for (const card of HOME_CARDS) {
-    const settle = (state: HomeSummary[typeof card]) => {
-      if (!cancelled) onChange(card, state);
-    };
-    let pending: Promise<unknown>;
-    try {
-      pending = fetchers[card]();
-    } catch (reason: unknown) {
-      pending = Promise.reject(reason);
-    }
-    pending.then(
-      (value) => settle({ status: "ready", value } as HomeSummary[typeof card]),
-      (reason: unknown) => settle({ status: "error", message: failure(reason) }),
-    );
+    startCard(card, fetchers, (settled, state) => {
+      if (!cancelled) onChange(settled, state);
+    });
   }
   return () => {
     cancelled = true;

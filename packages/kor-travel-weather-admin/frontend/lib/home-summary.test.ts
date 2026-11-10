@@ -66,6 +66,47 @@ describe("home summary cards", () => {
     expect(h.current()).toEqual(loadingSummary());
   });
 
+  it("keeps only the latest refresh when an older one resolves late", async () => {
+    let summary: HomeSummary = loadingSummary();
+    const record = <K extends keyof HomeSummary>(card: K, state: HomeSummary[K]) => {
+      summary = { ...summary, [card]: state };
+    };
+    const older = deferred<number>();
+    const newer = deferred<number>();
+    const fetchers = (active: Promise<number>): HomeFetchers => ({
+      active: () => active,
+      catalog: () => new Promise(() => {}),
+      runs: () => new Promise(() => {}),
+      health: () => new Promise(() => {}),
+    });
+    const cancelOlder = startHomeSummary(fetchers(older.promise), record);
+    cancelOlder();
+    summary = loadingSummary();
+    startHomeSummary(fetchers(newer.promise), record);
+    newer.resolve(2);
+    older.resolve(1);
+    await flush();
+    expect(summary.active).toEqual({ status: "ready", value: 2 });
+  });
+
+  it("uses a fallback message for a rejection without an Error message", async () => {
+    let summary: HomeSummary = loadingSummary();
+    startHomeSummary(
+      {
+        active: () => Promise.reject("plain string"),
+        catalog: () => Promise.reject(new Error("")),
+        runs: () => Promise.resolve([]),
+        health: () => Promise.resolve("정상"),
+      },
+      (card, state) => {
+        summary = { ...summary, [card]: state };
+      },
+    );
+    await flush();
+    expect(summary.active).toEqual({ status: "error", message: "상태를 불러오지 못했습니다." });
+    expect(summary.catalog).toEqual({ status: "error", message: "상태를 불러오지 못했습니다." });
+  });
+
   it("turns a synchronously throwing fetcher into that card's error only", async () => {
     let summary: HomeSummary = loadingSummary();
     startHomeSummary(
