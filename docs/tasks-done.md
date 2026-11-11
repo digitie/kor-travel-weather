@@ -1,3 +1,7 @@
+## 2026-11-11
+
+- [x] KMA 호출 상한 2배·PR208 포함 이미지·Open-Meteo 중지와 기존 자료 삭제를 실제 수용했다.
+
 ## 2026-11-10 — 역할별 복호 캐시 배포
 
 - [x] **W-DECODE-CACHE-20261110** — main3bcda7e1 API/CS 실제 배포와 역할별 캐시·일정/Manager·HTTP 수용 완료. [근거](reports/2026-11-10-decode-cache-release.md).

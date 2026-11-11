@@ -38,6 +38,7 @@ class KmaClientResource(ConfigurableResource):
             key,
             timeout=runtime.provider_http_timeout_seconds,
             retries=runtime.provider_retries,
+            max_rps=runtime.kma_max_rps,
         )
 
     def create_data_client(
@@ -64,6 +65,7 @@ class KmaClientResource(ConfigurableResource):
             key,
             timeout=runtime.provider_http_timeout_seconds,
             retries=runtime.provider_retries,
+            max_rps=runtime.kma_max_rps,
         )
 
 
