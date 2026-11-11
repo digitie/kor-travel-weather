@@ -78,7 +78,6 @@ try {
       "--port",
       String(webPort),
     ],
-    true,
   );
   let ready = false;
   for (let attempt = 0; attempt < 100; attempt++) {

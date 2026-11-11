@@ -1,3 +1,7 @@
+# 2026-11-12 — 후보9 정책 검사기 동기화
+
+UI/tokens의 후보8→9는 check-dependencies.mjs 한 파일씩만 다르며 실행 코드·CSS·metadata117개는 동일하다. 실제 설치 파일과 최신 중앙 정책 검사를 재확인했다. 앞선 단위304·타입·lint·Doctor0·production build 증거를 유지한다. n150의 별도 npm ci와 build도 성공했으나 브라우저는 서버 준비 단계에서 실패해 CLI 로그를 보존하도록 fixture를 보완했다. 후속 브라우저·독립2리뷰·CI·머지·운영 배포는 미완이다.
+
 # 2026-11-12 — 공통 후보8 단일 산출물 채택
 
 integration-8-review의 UI0.2.0/tokens0.1.1·Lightning CSS1.33.0+nativecss.fix.4를 같은 정본 파일로 설치했다. 지도 사용 앱은 기존 core1.0.1/web1.0.3의 같은 bytes를 유지한다. 설치된 모든 pack 파일의 원문 일치, 로컬·최신 외부 정책 검사, 단위·lint·타입·Doctor0을 확인했다. 중앙 CI 실행 코드는 common670a753으로 고정했다. 최종 브라우저·원격 CI·독립2리뷰·PR머지·운영 배포는 별도 gate다.
