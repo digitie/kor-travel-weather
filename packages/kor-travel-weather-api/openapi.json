@@ -2924,6 +2924,31 @@
         ],
         "title": "ExportForecastGroup"
       },
+      "ExportForecastMember": {
+        "properties": {
+          "location_id": {
+            "type": "string",
+            "title": "Location Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "location_id",
+          "provider",
+          "published_at"
+        ],
+        "title": "ExportForecastMember"
+      },
       "ExportLocation": {
         "properties": {
           "location_id": {
@@ -3097,6 +3122,44 @@
               }
             ],
             "title": "Next Since"
+          },
+          "membership_digest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Membership Digest"
+          },
+          "clock_epoch": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^pg:[0-9a-f]{32}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clock Epoch"
+          },
+          "omitted_expired": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ExportForecastMember"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Omitted Expired"
           }
         },
         "additionalProperties": false,
