@@ -13,13 +13,13 @@ function visit(node: ts.Node) {
     (d) => ["MARKER_BATCH_SIZE", "MARKER_BATCH_CONCURRENCY"].includes(d.name.getText(tree)),
   )) constants.push(node.getText(tree));
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect") {
-    callbacks.set(node.arguments[1]?.getText(tree) ?? "", node.arguments[0]);
+    callbacks.set(node.arguments[1]?.getText(tree).replace(/\s+/g, "").replace(/,]/g, "]") ?? "", node.arguments[0]);
   }
   ts.forEachChild(node, visit);
 }
 visit(tree);
 function compileEffect(deps: string) {
-  const callback = callbacks.get(deps);
+  const callback = callbacks.get(deps.replace(/\s+/g, ""));
   if (!callback || constants.length !== 2) throw new Error("마커 effect를 찾지 못했습니다.");
   return new Function("WEATHER_KINDS", "mapLocations", "mode", "refreshToken", "markerRefreshRef",
     "summariesRef", "setSummaries", "getMarkerSummaries", "providerFilter", "kindFilter",

@@ -60,6 +60,21 @@ function SummaryCard({
   );
 }
 
+function RunCard({ state }: { state: HomeSummary["runs"] }) {
+  const last = state.status === "ready" ? state.value[0] : undefined;
+  const value = state.status === "ready" && last ? syncRunStatusLabel(last.status) : cardText(state, () => "—");
+  const detail = state.status === "error" ? "불러오지 못함" : last ? `${last.values_loaded.toLocaleString("ko-KR")}건 저장` : "실행 기록 없음";
+  return <SummaryCard icon={Activity} label="최근 수집" value={value} detail={detail} loading={state.status === "loading"} />;
+}
+
+function RecentRun({ state }: { state: HomeSummary["runs"] }) {
+  if (state.status === "loading") return <div className="empty">불러오는 중…</div>;
+  if (state.status === "error") return <div className="empty">실행 기록을 불러오지 못했습니다.</div>;
+  const last = state.value[0];
+  if (!last) return <div className="empty">아직 수집 실행이 없습니다.</div>;
+  return <div className="run-summary"><code>{last.run_id}</code><span className={`status ${last.status === "success" ? "on" : "off"}`}>{syncRunStatusLabel(last.status)}</span><span>{last.values_loaded}건 저장 · 격자 {last.grids_fetched}개 · 요청 {last.requests_fetched}건</span></div>;
+}
+
 export default function HomePage() {
   const [summary, setSummary] = useState<HomeSummary>(loadingSummary);
   const cancelPrevious = useRef<(() => void) | null>(null);
@@ -84,8 +99,6 @@ export default function HomePage() {
     return state.status === "error" ? [`${CARD_LABELS[card]}: ${state.message}`] : [];
   });
   const error = errors.length ? errors.join(" · ") : null;
-  const runs = summary.runs.status === "ready" ? summary.runs.value : [];
-  const lastRun = runs[0];
   return (
     <>
       <PageHeader
@@ -107,7 +120,7 @@ export default function HomePage() {
       <section className="cards home-metrics" aria-busy={loading} aria-label="운영 요약">
         <SummaryCard icon={MapPin} label="활성 위치" value={cardText(summary.active, (total) => total.toLocaleString("ko-KR"))} detail={cardDetail(summary.active, "공개 API에 노출된 위치")} loading={summary.active.status === "loading"} />
         <SummaryCard icon={Database} label="카탈로그 전체" value={cardText(summary.catalog, (total) => total.toLocaleString("ko-KR"))} detail={cardDetail(summary.catalog, "등록된 전체 위치")} loading={summary.catalog.status === "loading"} />
-        <SummaryCard icon={Activity} label="최근 수집" value={summary.runs.status === "ready" ? (lastRun ? syncRunStatusLabel(lastRun.status) : "—") : cardText(summary.runs, () => "—")} detail={summary.runs.status === "error" ? "불러오지 못함" : lastRun ? `${lastRun.values_loaded.toLocaleString("ko-KR")}건 저장` : "실행 기록 없음"} loading={summary.runs.status === "loading"} />
+        <RunCard state={summary.runs} />
         <SummaryCard icon={CloudSun} label="API 상태" value={cardText(summary.health, (status) => status)} detail={cardDetail(summary.health, "공개 API 응답 상태")} loading={summary.health.status === "loading"} />
       </section>
       <section className="panel dashboard-note">
@@ -120,10 +133,7 @@ export default function HomePage() {
       </section>
       <section className="panel recent-panel">
         <div className="panel-head"><div><h2>최근 실행</h2><p>가장 최근 수집 실행 상태입니다.</p></div></div>
-        {summary.runs.status === "loading" ? <div className="empty">불러오는 중…</div>
-          : summary.runs.status === "error" ? <div className="empty">실행 기록을 불러오지 못했습니다.</div>
-          : lastRun ? <div className="run-summary"><code>{lastRun.run_id}</code><span className={`status ${lastRun.status === "success" ? "on" : "off"}`}>{syncRunStatusLabel(lastRun.status)}</span><span>{lastRun.values_loaded}건 저장 · 격자 {lastRun.grids_fetched}개 · 요청 {lastRun.requests_fetched}건</span></div>
-          : <div className="empty">아직 수집 실행이 없습니다.</div>}
+        <RecentRun state={summary.runs} />
       </section>
     </>
   );

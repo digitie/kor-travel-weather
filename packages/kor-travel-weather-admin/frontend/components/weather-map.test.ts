@@ -171,7 +171,7 @@ describe("마커 모델 참조 보존", () => {
     );
     let previous: unknown[] | undefined;
     let value: unknown;
-    const useMemo = (factory: () => unknown, deps: unknown[]) => {
+    const memoize = (factory: () => unknown, deps: unknown[]) => {
       if (!previous || deps.some((dep, index) => !Object.is(dep, previous![index]))) {
         previous = deps;
         value = factory();
@@ -185,7 +185,7 @@ describe("마커 모델 참조 보존", () => {
       { location_id: "b", name: "나", longitude: 128, latitude: 36 },
     ];
     const call = (selectedId = "a", summaries = {}, points = locations) => render(
-      null, emptyRegions, useMemo, points, selectedId, summaries, select,
+      null, emptyRegions, memoize, points, selectedId, summaries, select,
       () => ({ kind: "clear", label: "맑음" }),
       (summary: { temperature?: number } | undefined) => summary?.temperature ?? null,
       (kind: string) => kind, { current: JSON.stringify([0, undefined, undefined]) }, undefined, 0, undefined, vi.fn(), vi.fn(), { current: null },
@@ -246,7 +246,7 @@ function effectWith(deps: string, names: string[], prelude: string[] = []) {
   let found: ts.ArrowFunction | undefined;
   function find(node: ts.Node) {
     if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect"
-      && node.arguments[1]?.getText(tree) === deps) found = node.arguments[0] as ts.ArrowFunction;
+      && node.arguments[1]?.getText(tree).replace(/\s+/g, "").replace(/,]/g, "]") === deps.replace(/\s+/g, "")) found = node.arguments[0] as ts.ArrowFunction;
     ts.forEachChild(node, find);
   }
   find(tree);

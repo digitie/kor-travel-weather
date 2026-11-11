@@ -1,3 +1,15 @@
+## 2026-11-11 — Weather 공통 Radix·표·지도 전환 후보
+
+기존 미커밋 초안을 보존해 위치/주소/실행/원본/시간별 표를 공통 VirtualTable로,
+안내·메뉴를 공통 shadcn/Radix로 연결했다. RHF·Zod 위치 폼, 인스턴스별 Zustand,
+Pretendard 실제 로드, GitHub 지도 wrapper 소비를 적용했다. ESLint10/Doctor0.9.22 full
+경고 차단·공통 버전/bytes/source guard·production Chromium20와 타일5를 CI에 연결했다.
+후보3의 guard/lint/type/build/Doctor 진단0·일반 브라우저20/타일5·Ruff는 통과했다.
+unit은303PASS/1FAIL(공통 LoginForm SSR 기본 admin 누락)로 전체 gate는 아직 실패다.
+최종 해시 freeze·독립2리뷰·원격CI·PR/merge/push·운영 배포는 미실행이며 부모 소유다.
+[정본·실패·남은 blocker](reports/common-unification-20261111-weather.md)와
+[web 단독 이미지 배포 계획](runbooks/common-ui-web-release-20261111.md)을 남긴다.
+
 ## 2026-11-11 — KMA 호출 한도·Open-Meteo 중지와 자료 삭제 완료
 
 PR208을 포함한 제품 `b52c980817be`의 새 API·수집기 이미지를 반영했다.

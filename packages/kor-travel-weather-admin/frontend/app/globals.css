@@ -2524,7 +2524,7 @@ tbody tr:hover {
 .info-positioner { z-index: var(--kt-z-overlay); }
 .info-popup {
   width: min(22rem, calc(100vw - 24px));
-  max-height: min(24rem, var(--available-height));
+  max-height: min(24rem, var(--radix-popover-content-available-height));
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: 0.75rem;
@@ -2664,3 +2664,12 @@ tbody tr:hover {
 
 .weather-wind-direction { display:inline-flex; color:var(--brand); height:1.5rem; align-items:center; }
 .weather-wind-direction > span { display:inline-block; font-size:1.25rem; line-height:1; }
+
+/* 공통 표의 비가상 경로에서도 시간 열과 그래프의 64px 축을 맞춘다. */
+.weather-hourly th:first-child { width: 76px; }
+.weather-hourly th:not(:first-child) { width: 64px; }
+
+/* 가로로 짧은 화면의 상세 본문에서도 기온 전체를 스크롤로 확인할 수 있다. */
+@media (height < 30rem) and (orientation: landscape) {
+  .weather-inspector .weather-current-hero > strong { font-size: 2rem; }
+}

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { WeatherValue } from "@/lib/api";
-import { WeatherDetails, hourlyWeather, tomorrowWeather, TemperatureGraph } from "./weather-details";
+import { WeatherDetails, TemperatureGraph } from "./weather-details";
+import { hourlyWeather, tomorrowWeather } from "@/lib/weather-detail-model";
 
 const row=(key:string,value:number,provider="kma")=>({value_id:key+provider,metric_key:key,value_number:value,value_text:null,unit:key==="TMP"?"deg_c":key==="WSD"?"m/s":"%",provider,dataset_key:"short",target_at:"2026-10-30T15:00:00Z",issued_at:"2026-10-30T14:00:00Z"} as WeatherValue);
 describe("날씨 상세",()=>{

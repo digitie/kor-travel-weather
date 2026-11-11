@@ -17,7 +17,7 @@ function visit(node: ts.Node) {
     helpers.push(node.getText(tree));
   }
   if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect"
-    && node.arguments[1]?.getText(tree) === "[detailOpen, refreshToken, selectedLocationId, providerFilter, kindFilter]") callback = node.arguments[0];
+    && node.arguments[1]?.getText(tree).replace(/\s+/g, "").replace(/,]/g, "]") === "[detailOpen,refreshToken,selectedLocationId,providerFilter,kindFilter]") callback = node.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(tree);

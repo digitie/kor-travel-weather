@@ -32,7 +32,8 @@ export function SourceMultiSelect({ id, options, value, onChange, fallbackFocusR
     observer.observe(trigger);
     return () => observer.disconnect();
   }, [open]);
-  const selected = options.filter((option) => value === null || value.includes(option.value));
+  const selectedValues = new Set(value);
+  const selected = options.filter((option) => value === null || selectedValues.has(option.value));
   const label = value === null ? "모든 소스" : selected.length === 0 ? "소스 선택"
     : selected.length === 1 ? selected[0].label : `${selected.length}개 소스`;
   // 보이는 선택 상태를 접근성 이름에도 포함한다(WCAG 2.5.3 label in name).
@@ -44,7 +45,7 @@ export function SourceMultiSelect({ id, options, value, onChange, fallbackFocusR
           <span>{label}</span><ChevronDown size={14} aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent ref={contentRef} align="start" aria-label="날씨 소스 선택" onCloseAutoFocus={(event) => {
+      <DropdownMenuContent className="multi-select-content" ref={contentRef} align="start" aria-label="날씨 소스 선택" onCloseAutoFocus={(event) => {
         if (!triggerRef.current?.getClientRects().length) {
           event.preventDefault();
           const active = document.activeElement;
@@ -58,7 +59,7 @@ export function SourceMultiSelect({ id, options, value, onChange, fallbackFocusR
         <DropdownMenuItem className="multi-select-action" onSelect={(event) => { event.preventDefault(); onChange([]); }}>전체 해제</DropdownMenuItem>
         <DropdownMenuSeparator className="multi-select-separator" />
         {options.map((option) => (
-          <DropdownMenuCheckboxItem key={option.value} checked={value === null || value.includes(option.value)}
+          <DropdownMenuCheckboxItem className="multi-select-option" key={option.value} checked={value === null || selectedValues.has(option.value)}
             onSelect={(event) => event.preventDefault()}
             onCheckedChange={(checked) => {
               const next = new Set(selected.map((item) => item.value));

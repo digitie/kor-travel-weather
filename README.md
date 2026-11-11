@@ -75,7 +75,7 @@ npm run dev                 # http://127.0.0.1:14105
 ```
 
 `/weather`는 [`digitie/maplibre-vworld-react`](https://github.com/digitie/maplibre-vworld-react)의
-`VWorldMapView`/`WeatherMarker` 패턴을 따르는 MapLibre VWorld 지도다. VWorld WMTS
+`vworld-map-web` 고정 산출물의 `VWorldMapView`/`Marker`를 실제 사용하는 MapLibre VWorld 지도다. VWorld WMTS
 키는 브라우저 타일 요청에 포함되는 공개 식별자이므로 `NEXT_PUBLIC_VWORLD_API_KEY`로
 개발/빌드 환경에 주입한다. 키가 비어 있으면 지도는 중립 배경으로 안전하게 표시되고
 날씨 marker와 inspector는 계속 동작한다. Next.js의 `NEXT_PUBLIC_*` 값은 빌드 시

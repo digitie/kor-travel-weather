@@ -30,7 +30,7 @@ for (const { recover, initialFailure, moveAway, label } of [
     } finally { pending -= 1; }
   });
   const stamp = new Date().toISOString();
-  const location = { location_id: "tile-fixture", name: "타일 회복 시험", latitude: 36.2, longitude: 127.8, enabled: true, nx: null, ny: null, region_code: null, metadata: {} };
+  const location = { location_id: "tile-fixture", name: "타일 회복 시험", sido_name: "충청남도", sigungu_name: "시험군", latitude: 36.2, longitude: 127.8, enabled: true, nx: null, ny: null, region_code: null, metadata: {} };
   const value = { value_id: "temperature", location_id: location.location_id, provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: "tile-fixture-source" };
   await page.route("**/api/weather/**", (route) => {
     const pathname = new URL(route.request().url()).pathname;
@@ -49,11 +49,12 @@ for (const { recover, initialFailure, moveAway, label } of [
   await expect(page.locator('[role="application"]')).toHaveAttribute("data-vworld-key", "configured");
   if (!initialFailure) {
     await expect(page.getByText(tileFailure, { exact: true })).toHaveCount(0);
+    await expect(page.locator(".kt-map-coordinates")).toHaveText(/z 7\.2$/);
     failing = true;
     const readout = page.locator(".kt-map-coordinates");
     const initial = await readout.innerText();
     await page.locator(".maplibregl-ctrl-zoom-in").click();
-    await expect(readout).not.toHaveText(initial);
+    await expect(readout).toHaveText(initial.replace(/z [\d.]+$/, "z 8.2"));
     await expect(page.getByText(tileFailure, { exact: true })).toBeVisible();
     await expect.poll(() => pending).toBe(0);
     const failedCamera = await readout.innerText();
@@ -75,7 +76,7 @@ for (const { recover, initialFailure, moveAway, label } of [
       await expect(readout).not.toHaveText(failedCamera);
     } else {
       await page.locator(".maplibregl-ctrl-zoom-out").click();
-      await expect(readout).not.toHaveText(failedCamera);
+      await expect(readout).toHaveText(initial);
       await page.locator(".maplibregl-ctrl-zoom-in").click();
       await expect(readout).toHaveText(failedCamera);
     }
@@ -91,7 +92,7 @@ for (const { recover, initialFailure, moveAway, label } of [
   await page.getByRole("tab", { name: "목록", exact: true }).click();
   await page.locator(".location-list").getByRole("button", { name: /타일 회복 시험/ }).click();
   const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
-  await expect(recover ? detail.getByText("시험 날씨 요청 실패", { exact: true }) : detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })).toBeVisible();
+  await expect(recover ? detail.getByText("시험 날씨 요청 실패", { exact: true }) : detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
   if (!recover) await expect(page.getByText(tileFailure, { exact: true })).toBeVisible();
   await testInfo.attach("타일 주입 결과", { body: JSON.stringify({ failedTiles: failedTiles.size, retriedTiles: retriedTiles.size, pending }), contentType: "application/json" });
   await page.screenshot({ path: `test-results/weather-tiles-${testInfo.project.name}-${moveAway ? `${moveAway}-recovered` : recover ? "recovered" : initialFailure ? "initial-persistent" : "persistent"}.png`, fullPage: true });

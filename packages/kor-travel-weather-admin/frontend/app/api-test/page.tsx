@@ -39,6 +39,12 @@ export default function ApiTestPage() {
       });
       setStatus(response.status);
       setDuration(Math.round(performance.now() - started));
+      if (!response.ok) {
+        setError(`요청 실패 (HTTP ${response.status}). 아래 응답을 확인하세요.`);
+        const failure = await response.text();
+        try { setResult(JSON.parse(failure)); } catch { setResult(failure); }
+        return;
+      }
       const text = await response.text();
       try {
         setResult(JSON.parse(text));

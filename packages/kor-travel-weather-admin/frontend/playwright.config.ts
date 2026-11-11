@@ -6,6 +6,7 @@ export default defineConfig({
   fullyParallel: false,
   reporter: [["list"], ["json", { outputFile: "test-results/weather-address-ui.json" }]],
   use: { baseURL: process.env.E2E_BASE_URL ?? "http://localhost:24105",
+    extraHTTPHeaders: process.env.E2E_TRUST_PROXY ? { "x-forwarded-for": "127.0.0.1" } : undefined,
     trace: "retain-on-failure", screenshot: "only-on-failure" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });
