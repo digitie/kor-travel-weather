@@ -83,3 +83,32 @@ def test_membership_digest_definition():
     moved = [("a", "p", "2026-11-11T00:00:00.000001+00:00"), base[0]]
     assert membership_digest(base) != membership_digest(moved)
     assert membership_digest(base + base[:1]) != membership_digest(base)
+
+
+def test_omitted_expired_members_complete_the_digest(repository, tmp_path, monkeypatch):
+    """미래 시각이 없어 뺀 위치는 meta.omitted_expired로 알린다. item과 합치면 digest와 같다.
+
+    (그렇지 않으면 그 위치가 남아 있는 동안 전량을 받아도 digest가 맞지 않는다.)
+    """
+    from datetime import timedelta
+
+    from kortravelweather.export_artifacts import ExportArtifactStore
+
+    _collect_forecast(repository, tmp_path)
+    original = ExportArtifactStore.read
+    past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+
+    def expired_c(self, *args, **kwargs):
+        for point in original(self, *args, **kwargs):
+            yield {**point, "target_at": past} if point["location_id"] == "c" else point
+
+    monkeypatch.setattr(ExportArtifactStore, "read", expired_c)
+    client = _client(repository, tmp_path)
+    pages = _walk(client, {"style": "ultra_short", "limit": 1})
+    items = [item for page in pages for item in page.json()["items"]]
+    omitted = [row for page in pages for row in page.json()["meta"]["omitted_expired"]]
+    assert {item["location_id"] for item in items} == {"a", "b"}
+    assert [row["location_id"] for row in omitted] == ["c"]
+    digest = pages[0].json()["meta"]["membership_digest"]
+    assert _consumer_digest(items) != digest
+    assert _consumer_digest(items + omitted) == digest

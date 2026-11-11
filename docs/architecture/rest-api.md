@@ -53,9 +53,12 @@ all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 
   (`target_at > now`) **전** 집합이고 `since`와 무관하며 한 walk의 모든 페이지가 같다. 정의: 행을 정렬하고
   (문자열은 code point 순) `published_at`을 UTC·마이크로초 6자리·`Z`로 적은
   `[[location_id, provider, "YYYY-MM-DDTHH:MM:SS.ffffffZ"], ...]`를 구분자 `,`·`:`, `ensure_ascii=False`로 JSON
-  직렬화한 UTF-8의 SHA-256(`sha256:` 접두). 중복 행은 그대로 센다. 중기는 위치마다 한 행(육상·기온 쌍의 큰
-  `published_at`)이다. 소비자는 병합 상태로 같은 값을 계산해 다르면 전량을 받는다 — tombstone 없는 제거·놓친 추가·
-  재공개됐지만 미래 시각이 없어 빠진 위치를 잡는다.
+  직렬화한 UTF-8의 SHA-256(`sha256:` 접두). 한 style에서 (위치, provider)는 하나뿐이다(중복이면 503). 중기는
+  위치마다 한 행(육상·기온 쌍의 큰 `published_at`)이다. 소비자는 병합 상태로 같은 값을 계산해 다르면 전량을 받는다
+  — tombstone 없는 제거·놓친 추가·재공개됐지만 미래 시각이 없어 빠진 위치를 잡는다.
+- `omitted_expired`: 이 페이지에서 미래 시각이 없어 뺀 `{location_id, provider, published_at}`(그 페이지는 `stale`).
+  digest에는 들어 있으므로 소비자는 이 행을 값 없는 멤버로 상태에 두어야 전량 walk 뒤 digest가 맞는다. 증분
+  walk에서도 재공개된 scope의 그런 위치가 여기에 실린다. 페이지 바이트 상한 안에서만 싣고 나머지는 다음 페이지다.
 - `clock_epoch`: `next_since`를 발급한 DB의 epoch(`pg:` + 32 hex). database oid·timeline·postmaster 시작 시각에서
   만든다. 복원(새 database·PITR)·재설치에 바뀌고, 제자리 파일 복원과 구분할 수 없어 단순 재시작에도 바뀐다(보수적).
   바뀌면 소비자는 cursor를 버리고 전량을 받는다.

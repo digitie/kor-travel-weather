@@ -58,12 +58,16 @@ def membership_digest(rows):
     얼린 manifest 전체(시간 필터 전, ``since`` 무관)의 행을 정렬해(문자열은 code point 순)
     ``[[location_id, provider, "YYYY-MM-DDTHH:MM:SS.ffffffZ"], ...]``를 구분자 ``,``·``:``와
     ``ensure_ascii=False``로 JSON 직렬화한 UTF-8 바이트의 SHA-256이다(``sha256:`` 접두).
-    중복 행은 그대로 센다(집합으로 줄이지 않는다).
+    한 style에서 (위치, provider)는 하나뿐이다(중복이면 ExportSnapshotUnavailable).
     """
     canonical = sorted(
         (str(location_id), str(provider), _membership_instant(published_at))
         for location_id, provider, published_at in rows
     )
+    if len({row[:2] for row in canonical}) != len(canonical):
+        # 한 style에서 (위치, provider)는 item 하나다(inventory key·격자 묶음·중기 쌍).
+        # 어긋나면 소비자가 같은 값을 만들 수 없으므로 정상 응답으로 내지 않는다.
+        raise ExportSnapshotUnavailable("예보 멤버십에 같은 위치·provider가 중복됐습니다.")
     body = json.dumps([list(row) for row in canonical], ensure_ascii=False,
                       separators=(",", ":"))
     return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -104,6 +108,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         self.dataset = self.STYLE_DATASETS[style]
         # 이번 요청 페이지에서 미래 예보가 없어 뺀 위치가 있으면 stale로 알린다.
         self._expired_omitted = False
+        self._omitted: list[dict[str, str]] = []
         self.selection = {
             "kind": "forecasts",
             "style": style,
@@ -286,6 +291,8 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "unconfirmed_sources": unconfirmed,
             }
             manifest = self._prepare_manifest(manifest)
+            # 페이지마다 다시 세지 않도록 얼릴 때 한 번 계산한다(manifest는 불변).
+            manifest["membership_digest"] = membership_digest(self._membership_rows(manifest))
             digest = bounded_manifest_digest(
                 manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
             )
@@ -429,6 +436,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
         self._expired_omitted = False
+        self._omitted = []
         output, more = self._page_items(manifest, state, limit, now)
         stale = (
             self._expired_omitted
@@ -455,11 +463,17 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "has_more": more,
                 "next_since": manifest["next_since"],
                 # 얼린 manifest 전체 멤버십(시간 필터 전, since 무관). 페이지마다 같다.
-                "membership_digest": membership_digest(self._membership_rows(manifest)),
+                "membership_digest": manifest.get("membership_digest")
+                or membership_digest(self._membership_rows(manifest)),
+                # 이 페이지에서 미래 시각이 없어 뺀 (위치, provider, published_at). 소비자는
+                # 이 행을 값 없는 멤버로 더해 digest를 맞춘다(시간 필터 전 집합).
+                "omitted_expired": list(self._omitted),
                 "clock_epoch": epoch,
             },
         }
-        etag = 'W/"' + _digest([frozen["snapshot_id"], cursor, limit, status, output]) + '"'
+        etag = 'W/"' + _digest(
+            [frozen["snapshot_id"], cursor, limit, status, output, self._omitted],
+        ) + '"'
         return page, etag
 
     def _prepare_manifest(self, manifest):
@@ -522,7 +536,18 @@ class FrozenForecastExports(FrozenCurrentExports):
                 if not future:
                     # 이 위치의 최신 승인 예보가 모두 지났다. 페이지를 실패시키면 재시도가
                     # 매번 같은 위치에서 멈추므로 이 위치만 빼고 응답을 stale로 표시한다.
+                    omitted = {
+                        "location_id": key,
+                        "provider": scope.get("provider", "python-kma-api"),
+                        "published_at": scope["published_at"],
+                    }
+                    omitted_size = len(json.dumps(omitted, ensure_ascii=False).encode()) + 1
+                    if size + omitted_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                        more = True
+                        break
                     self._expired_omitted = True
+                    self._omitted.append(omitted)
+                    size += omitted_size
                     state["p"] += 1
                     continue
                 targets = sorted({p["target_at"] for p in future})

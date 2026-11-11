@@ -186,7 +186,14 @@ class FrozenMidForecastExports(FrozenForecastExports):
             future = [point for point in points if _at(point["target_at"]) > now]
             if not future:
                 # 지난 발표만 남은 위치 하나가 style 전체를 막지 않게 빼고 stale로 알린다.
+                omitted = {"location_id": key, "provider": MID_SOURCE[0],
+                           "published_at": pair["published_at"]}
+                omitted_size = len(json.dumps(omitted, ensure_ascii=False).encode()) + 1
+                if size + omitted_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                    return output, True
                 self._expired_omitted = True
+                self._omitted.append(omitted)
+                size += omitted_size
                 state["g"] += 1
                 continue
             targets = sorted({_at(point["target_at"]) for point in future})

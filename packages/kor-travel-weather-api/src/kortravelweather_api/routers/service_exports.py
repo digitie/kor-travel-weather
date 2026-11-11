@@ -57,6 +57,14 @@ SourceStatus = Literal["ok", "stale", "failed"]
 ExportStyle = Literal["observed", "nowcast", "ultra_short", "short", "mid", "external"]
 
 
+class ExportForecastMember(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    provider: str
+    published_at: AwareDatetime
+
+
 class ExportMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -75,6 +83,8 @@ class ExportMeta(BaseModel):
     membership_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
     # W3만. publication clock 출처 DB의 epoch — 복원·재설치(와 재시작)에 바뀐다(요청 2).
     clock_epoch: str | None = Field(default=None, pattern=r"^pg:[0-9a-f]{32}$")
+    # W3만. 이 페이지에서 미래 시각이 없어 뺀 멤버(digest에는 들어 있다).
+    omitted_expired: list[ExportForecastMember] | None = None
 
 
 class ExportLocation(BaseModel):
