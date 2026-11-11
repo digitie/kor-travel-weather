@@ -2,6 +2,10 @@
 
 - [x] KMA 호출 상한 2배·PR208 포함 이미지·Open-Meteo 중지와 기존 자료 삭제를 실제 수용했다.
 
+## 2026-11-10 — 역할별 복호 캐시 배포
+
+- [x] **W-DECODE-CACHE-20261110** — main3bcda7e1 API/CS 실제 배포와 역할별 캐시·일정/Manager·HTTP 수용 완료. [근거](reports/2026-11-10-decode-cache-release.md).
+
 ## 2026-11-09 — 강제 중지 승인 후 최신 API·수집기 배포 완료
 
 - [x] **W-COLD-REBASE-DEPLOY-20261109** — PR209 통합·최신 API/수집기 이미지·원 일정 복원·Manager·실제 부모 종료 수용 완료. 최초 조회 성능 미달은 W-EXPORT-SLOW-20261108로 유지한다.

@@ -9,6 +9,10 @@ Open-Meteo 두 일정과 제공처를 비활성화하고 배포 종료 뒤 원�
 원 일정·Manager·최초 부모 종료·잔여0·실제 API 응답을 확인했다.
 [실제 결과와 참조 검산](reports/2026-11-11-kma-open-meteo-release.md).
 
+## 2026-11-10 — main3bcda7e1·역할별 복호 캐시 실제 반영
+
+PR219/220의 API4c9741b6·수집기40ad395f를 반영했다. API64MiB/8192·Dagster4MiB/1024의 실제 모듈/환경 일치, healthy·원27 복원·Manager·두 첫 부모0/자식 종료·6HTTP200을 확인했다. 웹/DB/다른 서비스·설정은 보존했으며 전체 export 성능 달성으로 확대하지 않는다. [정본과 한계](reports/2026-11-10-decode-cache-release.md).
+
 ## 2026-11-09 — 강제 중지 승인 후 최신 API·수집기 배포 완료
 
 사용자의 “강제 중지하고 올려” 지시에 따라 Weather 실행·큐4건을 공식 강제 취소했고, 실제 terminal3CANCELED/1FAILURE·old worker0을 확인했다. app 실패 이력과 이미 저장된499,968건은 그대로이며 canonical 회수 변경도0이었다. 수집기를 제품8723afc/이미지68c093c9·CIDb1626cea로 교체했다. 같은 API f3f7a4a8/CID810b4885와 웹·다른 서비스·설정/키는 보존했다.
