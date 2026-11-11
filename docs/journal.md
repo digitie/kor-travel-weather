@@ -1,3 +1,7 @@
+## 2026-11-10 — 최신 main 세 역할 이미지 배포 완료
+
+main ea7fda1(PR208/212~217)을 API0a27c0e2·수집기456a1478·웹a7048330에 반영했다. API/수집기 healthy·웹 running, schema0039/migration0·원27 상태·설정/키·다른 서비스 보존·Manager healthy·최초 배포 부모0/done/Main0/cgroup부재/자식85종료를 확인했다. Weather만 공식 취소17건·old worker0 뒤 교체했고 이미 저장된 대상 run 카운터는 동일하다. 기존 정확 main CI 성공과 운영6HTTP200·PC 화면을 확인했다. 모바일375도 지도 준비 뒤 목록·서울 위치 상세·내일 상태·시간별 그래프를 확인했다. 브라우저 오류·가로 넘침0, logout200, 소유 브라우저 자식 종료를 확인했다. [실제 근거·실패 이력·한계](reports/2026-11-10-latest-main-image-release.md).
+
 ## 2026-11-09 — 강제 중지 승인 후 최신 API·수집기 배포 완료
 
 사용자의 “강제 중지하고 올려” 지시에 따라 Weather 실행·큐4건을 공식 강제 취소했고, 실제 terminal3CANCELED/1FAILURE·old worker0을 확인했다. app 실패 이력과 이미 저장된499,968건은 그대로이며 canonical 회수 변경도0이었다. 수집기를 제품8723afc/이미지68c093c9·CIDb1626cea로 교체했다. 같은 API f3f7a4a8/CID810b4885와 웹·다른 서비스·설정/키는 보존했다.
