@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { waitForFixtureServer } from "./wait-for-fixture-server.mjs";
 
 const tileFixture = process.argv.includes("--tile-fixture");
 const children = new Set();
@@ -30,7 +31,7 @@ portProbe.listen(0, "127.0.0.1");
 await once(portProbe, "listening");
 const webPort = portProbe.address().port;
 await new Promise((resolve) => portProbe.close(resolve));
-const baseURL = `http://localhost:${webPort}`;
+const baseURL = `http://127.0.0.1:${webPort}`;
 const env = {
   ...process.env,
   NEXT_TELEMETRY_DISABLED: "1",
@@ -46,10 +47,10 @@ const env = {
 };
 env.E2E_UI_PASSWORD = env.WEATHER_UI_PASSWORD;
 if (tileFixture) { env.NEXT_PUBLIC_VWORLD_API_KEY = "layout-tile-fixture-only"; env.E2E_TILE_FIXTURE = "1"; }
-function start(args, quiet = false) {
+function start(args) {
   const child = spawn(process.execPath, args, {
     env,
-    stdio: quiet ? "ignore" : "inherit",
+    stdio: ["ignore", "inherit", "inherit"],
   });
   children.add(child);
   child.on("exit", () => children.delete(child));
@@ -79,21 +80,7 @@ try {
       String(webPort),
     ],
   );
-  let ready = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
-    if (web.exitCode !== null)
-      throw new Error("로컬 production 서버 기동 실패");
-    try {
-      if ((await fetch(`${baseURL}/login`)).ok) {
-        ready = true;
-        break;
-      }
-    } catch {
-      /* 기동 대기 */
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  if (!ready) throw new Error("로컬 production 서버 준비 시간 초과");
+  await waitForFixtureServer({ child: web, url: baseURL + "/login" });
   const runner = start([
     "node_modules/@playwright/test/cli.js",
     "test",

@@ -28,7 +28,7 @@
 - `deploy/README.md`, `deploy/n150.md`, `docs/runbooks/docker-app.md` (역사/로컬 경계 확인)
 - 부모 소유 Manager `config/docker-targets.yml`의 weather target과 web container, `docker-compose.yml`의 web build/command/env 계약 (읽기만 확인)
 
-최종 push·독립 리뷰·PR·merge·운영 배포 승인 판단은 부모가 담당한다.
+담당 worker는 승인된 feature branch push와 Draft PR 226의 검증 결과 갱신을 수행한다. 독립 2인 리뷰·정확 HEAD CI·merge·운영 배포 go는 부모가 담당한다. 최종 후보9 브라우저 증거는 [검증 기록](../reports/common-unification-weather-browser-20261112.md)에 남겼으며, 타일 fixture의 dummy-key 빌드는 운영 이미지 입력으로 사용하지 않는다.
 
 ## read-only baseline 결과
 
