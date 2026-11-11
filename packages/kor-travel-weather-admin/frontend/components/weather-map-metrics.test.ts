@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WeatherValue } from "@/lib/api";
-import { DETAIL_METRICS, weatherDetailText } from "./weather-details";
+import { DETAIL_METRICS, weatherDetailText } from "@/lib/weather-detail-model";
 const row=(value_number:number|null, unit:string|null, value_text:string|null=null)=>({metric_key:"TEMP",value_number,unit,value_text,target_at:"2026-10-30T12:00:00Z",provider:"kma",issued_at:null} as WeatherValue);
 describe("실제 날씨 상세의 값·단위 보존",()=>{
  it.each([[0,"0°"],[-2.56,"-2.6°"],[-0.04,"-0.04°"]])("기온 %s의 부호와 작은 비영 값을 보존한다",(value,expected)=>{

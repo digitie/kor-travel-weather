@@ -44,12 +44,12 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   await page.locator(".location-list").getByRole("button", { name: /날씨 상세 시험 위치/ }).click();
   const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
   await expect(detail).toBeVisible();
-  await expect(detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })).toBeVisible();
+  await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
   await expect(detail.getByText("오래됨", { exact: true })).toBeVisible();
   await expect(detail.locator(".inspector-freshness")).toContainText("수집");
   await expect(detail.getByText("기상특보", { exact: true })).toBeVisible();
   await expect(detail.getByText("호우주의보 · 주의", { exact: true })).toBeVisible();
-  await expect(detail.locator(".inspector-section").filter({ hasText: "최근 측정값" }).getByText("32개", { exact: true })).toBeVisible();
+  await expect(detail.locator(".weather-source-details summary")).toHaveText("측정 자료 32개 · 출처 보기");
   await expect(detail.locator(".inspector-heading")).not.toContainText(location.location_id);
   await expect(page.getByText(sourceKey, { exact: true })).toHaveCount(0);
 
@@ -82,14 +82,15 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
       const color = (variable: string) => { probe.style.color = `var(${variable})`; return getComputedStyle(probe).color; };
       const names = ["surface-card", "surface-subtle", "text-primary", "text-secondary", "brand", "brand-tint", "focus", "warning", "destructive"];
       const local = ["card", "surface-subtle", "text-primary", "text-secondary", "brand", "brand-tint", "focus", "warning", "destructive"];
+      const colors = names.map((name, index) => [color(`--kt-${name}`), color(`--${local[index]}`)]);
       const matches = names.map((name, index) => color(`--kt-${name}`) === color(`--${local[index]}`));
       const popupBackground = getComputedStyle(document.querySelector(".info-popup")!).backgroundColor;
       const expectedPopup = color("--popover");
       const popupOverflow = getComputedStyle(document.querySelector(".info-popup")!).overflowY;
       probe.remove();
-      return { matches, popupBackground, expectedPopup, popupOverflow };
+      return { colors, matches, popupBackground, expectedPopup, popupOverflow };
     });
-    expect(tone.matches.every(Boolean)).toBe(true);
+    expect(tone.matches.every(Boolean), JSON.stringify(tone)).toBe(true);
     expect(tone.popupBackground).toBe(tone.expectedPopup);
     expect(tone.popupOverflow).toBe("auto");
     const scrollBefore = await page.evaluate(() => window.scrollY);

@@ -1,3 +1,36 @@
+## 2026-11-12 — C11 정본과 FocusScope fix2 채택
+
+integration-11-review 단일pack의 원장7개·vendor7개를 동일 bytes로 동기화한다.
+공통 producer a35481349d6747b4f13b958ae64d9c0bbd0b5413,
+FocusScope source1752a539c8d5ae57961a0fa2702d2573d48fefe7의
+1.3.1+kortravel.fix.2를 runtime file 직접 의존성과 root override로 연결한다.
+Lightning CSS fix.4는 dev 필수이며 지도9a bytes를 유지한다. RN은 vendor/원장에만 두고 웹에 설치하지 않는다.
+중앙 workflow 실행 코드는55a921b55d248106cbe320e7f5305f3d3cdb60fe를 유지한다.
+C10 checkpoint·원925/e4·원 A/B와 전후 실패 로그를 보존한다.
+n150 슬롯2에서 기존 cache를 재사용해 명시 file 설치/실제 UI94+tokens25+Scope15 bytes,
+외부 C11 canonical guard 및 최종 frontend gate를 검증 중이다.
+검증 완료·독립2리뷰·CI·merge·부모 go 전까지 배포하지 않는다. DB/API/RustFS/Dagster lifecycle 변경 없음.
+
+# 2026-11-12 — 후보9 정책 검사기 동기화
+
+UI/tokens의 후보8→9는 check-dependencies.mjs 한 파일씩만 다르며 실행 코드·CSS·metadata117개는 동일하다. 실제 설치 파일과 최신 중앙 정책 검사를 재확인했다. 앞선 단위304·타입·lint·Doctor0·production build 증거를 유지한다. n150의 별도 npm ci와 build도 성공했으나 브라우저는 서버 준비 단계에서 실패해 CLI 로그를 보존하도록 fixture를 보완했다. 후속 브라우저·독립2리뷰·CI·머지·운영 배포는 미완이다.
+
+# 2026-11-12 — 공통 후보8 단일 산출물 채택
+
+integration-8-review의 UI0.2.0/tokens0.1.1·Lightning CSS1.33.0+nativecss.fix.4를 같은 정본 파일로 설치했다. 지도 사용 앱은 기존 core1.0.1/web1.0.3의 같은 bytes를 유지한다. 설치된 모든 pack 파일의 원문 일치, 로컬·최신 외부 정책 검사, 단위·lint·타입·Doctor0을 확인했다. 중앙 CI 실행 코드는 common670a753으로 고정했다. 최종 브라우저·원격 CI·독립2리뷰·PR머지·운영 배포는 별도 gate다.
+
+## 2026-11-11 — Weather 공통 Radix·표·지도 전환 후보
+
+기존 미커밋 초안을 보존해 위치/주소/실행/원본/시간별 표를 공통 VirtualTable로,
+안내·메뉴를 공통 shadcn/Radix로 연결했다. RHF·Zod 위치 폼, 인스턴스별 Zustand,
+Pretendard 실제 로드, GitHub 지도 wrapper 소비를 적용했다. ESLint10/Doctor0.9.22 full
+경고 차단·공통 버전/bytes/source guard·production Chromium20와 타일5를 CI에 연결했다.
+후보3의 guard/lint/type/build/Doctor 진단0·일반 브라우저20/타일5·Ruff는 통과했다.
+unit은303PASS/1FAIL(공통 LoginForm SSR 기본 admin 누락)로 전체 gate는 아직 실패다.
+최종 해시 freeze·독립2리뷰·원격CI·PR/merge/push·운영 배포는 미실행이며 부모 소유다.
+[정본·실패·남은 blocker](reports/common-unification-20261111-weather.md)와
+[web 단독 이미지 배포 계획](runbooks/common-ui-web-release-20261111.md)을 남긴다.
+
 ## 2026-11-11 — KMA 호출 한도·Open-Meteo 중지와 자료 삭제 완료
 
 PR208을 포함한 제품 `b52c980817be`의 새 API·수집기 이미지를 반영했다.

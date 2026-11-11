@@ -15,8 +15,8 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...credentials, next: destination }),
       });
-      const payload = (await response.json().catch(() => ({}))) as { next?: string; detail?: unknown };
       if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { detail?: unknown };
         // 503은 원인이 여러 가지다(설정 누락, rate-limit 저장소 응답 지연 등) — 늘 설정 탓으로
         // 표시하지 말고 서버가 준 사유를 보여 준다.
         const serverDetail = typeof payload.detail === "string" ? payload.detail : null;
@@ -28,6 +28,7 @@ export function LoginForm({ nextPath }: { nextPath: string }) {
         setError(messages[response.status] ?? "아이디 또는 비밀번호가 올바르지 않습니다.");
         return;
       }
+      const payload = (await response.json().catch(() => ({}))) as { next?: string };
       window.location.assign(sanitizeLocalPath(payload.next ?? destination));
     } catch {
       setError("로그인 요청에 실패했습니다. 네트워크를 확인해 주세요.");

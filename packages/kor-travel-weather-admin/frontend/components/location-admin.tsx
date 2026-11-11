@@ -1,11 +1,28 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { locationSchema, type LocationFields } from "@/lib/location-schema";
+import { VirtualTable, type ColumnDef } from "@kor-travel/ui/virtual-table";
+import { Button, Input } from "@kor-travel/ui/primitives";
 
-import { createLocation, getLocations, Location, updateLocation } from "@/lib/api";
+import {
+  createLocation,
+  getLocations,
+  Location,
+  updateLocation,
+} from "@/lib/api";
 
 const PAGE_SIZE = 100;
+const defaultLocation: LocationFields = {
+  location_id: "",
+  name: "",
+  latitude: 37.5665,
+  longitude: 126.978,
+  nx: 60,
+  ny: 127,
+};
 
 const newLocationFields = [
   { key: "location_id", label: "위치 ID", type: "text" },
@@ -23,13 +40,14 @@ export function LocationAdmin() {
   const [message, setMessage] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
-  const [newLocation, setNewLocation] = useState({
-    location_id: "",
-    name: "",
-    latitude: "37.5665",
-    longitude: "126.978",
-    nx: "60",
-    ny: "127",
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<LocationFields>({
+    resolver: zodResolver(locationSchema),
+    defaultValues: defaultLocation,
   });
 
   const refresh = useCallback(async () => {
@@ -50,8 +68,7 @@ export function LocationAdmin() {
     void refresh();
   }, [refresh]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  async function submit(newLocation: LocationFields) {
     setMessage(null);
     try {
       await createLocation({
@@ -62,14 +79,7 @@ export function LocationAdmin() {
         ny: Number(newLocation.ny),
         enabled: true,
       });
-      setNewLocation({
-        location_id: "",
-        name: "",
-        latitude: "37.5665",
-        longitude: "126.978",
-        nx: "60",
-        ny: "127",
-      });
+      reset(defaultLocation);
       setOffset(0);
       if (offset === 0) await refresh();
     } catch (error) {
@@ -79,7 +89,9 @@ export function LocationAdmin() {
 
   async function toggle(location: Location) {
     try {
-      await updateLocation(location.location_id, { enabled: !location.enabled });
+      await updateLocation(location.location_id, {
+        enabled: !location.enabled,
+      });
       await refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "상태 변경 실패");
@@ -106,24 +118,32 @@ export function LocationAdmin() {
             <p>위도·경도와 격자 좌표를 등록합니다.</p>
           </div>
         </div>
-        <form className="location-create-form" onSubmit={submit}>
+        <form className="location-create-form" onSubmit={handleSubmit(submit)}>
           {newLocationFields.map((field) => (
-            <label className="location-field" htmlFor={`new-location-${field.key}`} key={field.key}>
+            <label
+              className="location-field"
+              htmlFor={`new-location-${field.key}`}
+              key={field.key}
+            >
               <span>{field.label}</span>
-              <input
+              <Input
                 id={`new-location-${field.key}`}
-                name={field.key}
                 required
                 step={field.type === "number" ? field.step : undefined}
                 type={field.type}
-                value={newLocation[field.key]}
-                onChange={(event) =>
-                  setNewLocation((current) => ({ ...current, [field.key]: event.target.value }))
-                }
+                {...register(field.key, {
+                  valueAsNumber: field.type === "number",
+                })}
+                aria-invalid={Boolean(errors[field.key])}
               />
             </label>
           ))}
-          <button type="submit">위치 추가</button>
+          {Object.keys(errors).length ? (
+            <p role="alert">위치 ID와 이름, 유효한 좌표를 확인하세요.</p>
+          ) : null}
+          <Button type="submit" disabled={isSubmitting}>
+            위치 추가
+          </Button>
         </form>
       </div>
       <div className="panel">
@@ -133,7 +153,7 @@ export function LocationAdmin() {
             <p>비활성화해도 기록은 남고, 수집 대상에서만 제외됩니다.</p>
           </div>
           <div className="toolbar catalog-toolbar">
-            <input
+            <Input
               aria-label="위치 검색"
               id="location-search"
               name="search"
@@ -142,44 +162,152 @@ export function LocationAdmin() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
-            <button className="secondary" onClick={runSearch} type="button">
+            <Button className="secondary" onClick={runSearch} type="button">
               검색
-            </button>
-            <button className="secondary" onClick={() => void refresh()} type="button">
+            </Button>
+            <Button
+              className="secondary"
+              onClick={() => void refresh()}
+              type="button"
+            >
               새로고침
-            </button>
+            </Button>
           </div>
         </div>
-        {message ? <div className="error" role="alert">{message}</div> : null}
+        {message ? (
+          <div className="error" role="alert">
+            {message}
+          </div>
+        ) : null}
         {loading ? (
-          <div className="loading" aria-busy="true">위치를 불러오는 중…</div>
+          <div className="loading" aria-busy="true">
+            위치를 불러오는 중…
+          </div>
         ) : locations.length === 0 ? (
           <div className="empty">등록된 위치가 없습니다.</div>
         ) : (
           <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th scope="col">위치</th><th scope="col">격자</th><th scope="col">좌표</th><th scope="col">상태</th><th scope="col" /></tr>
-            </thead>
-            <tbody>
-              {locations.map((location) => (
-                <tr key={location.location_id}>
-                  <td><strong>{location.name}</strong><br /><code>{location.location_id}</code></td>
-                  <td><code>{location.nx ?? "—"} / {location.ny ?? "—"}</code></td>
-                  <td><code>{location.latitude.toFixed(4)}, {location.longitude.toFixed(4)}</code></td>
-                  <td><span className={`status ${location.enabled ? "on" : "off"}`}>{location.enabled ? "사용 중" : "사용 안 함"}</span></td>
-                  <td><button className="secondary" onClick={() => void toggle(location)} type="button">{location.enabled ? "비활성화" : "활성화"}</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+            <VirtualTable
+              ariaLabel="등록된 위치 목록"
+              data={locations}
+              getRowId={(location) => location.location_id}
+              columns={
+                [
+                  {
+                    id: "c0",
+                    header: "위치",
+                    enableSorting: false,
+                    cell: ({ row }) => {
+                      const location = row.original;
+                      return (
+                        <>
+                          {" "}
+                          <strong>{location.name}</strong>
+                          <br />
+                          <code>{location.location_id}</code>{" "}
+                        </>
+                      );
+                    },
+                  },
+                  {
+                    id: "c1",
+                    header: "격자",
+                    enableSorting: false,
+                    cell: ({ row }) => {
+                      const location = row.original;
+                      return (
+                        <>
+                          {" "}
+                          <code>
+                            {location.nx ?? "—"} / {location.ny ?? "—"}
+                          </code>{" "}
+                        </>
+                      );
+                    },
+                  },
+                  {
+                    id: "c2",
+                    header: "좌표",
+                    enableSorting: false,
+                    cell: ({ row }) => {
+                      const location = row.original;
+                      return (
+                        <>
+                          {" "}
+                          <code>
+                            {location.latitude.toFixed(4)},{" "}
+                            {location.longitude.toFixed(4)}
+                          </code>{" "}
+                        </>
+                      );
+                    },
+                  },
+                  {
+                    id: "c3",
+                    header: "상태",
+                    enableSorting: false,
+                    cell: ({ row }) => {
+                      const location = row.original;
+                      return (
+                        <>
+                          {" "}
+                          <span
+                            className={`status ${location.enabled ? "on" : "off"}`}
+                          >
+                            {location.enabled ? "사용 중" : "사용 안 함"}
+                          </span>{" "}
+                        </>
+                      );
+                    },
+                  },
+                  {
+                    id: "c4",
+                    header: "",
+                    enableSorting: false,
+                    cell: ({ row }) => {
+                      const location = row.original;
+                      return (
+                        <>
+                          {" "}
+                          <Button
+                            className="secondary"
+                            onClick={() => void toggle(location)}
+                            type="button"
+                          >
+                            {location.enabled ? "비활성화" : "활성화"}
+                          </Button>{" "}
+                        </>
+                      );
+                    },
+                  },
+                ] satisfies ColumnDef<Location, unknown>[]
+              }
+            />
           </div>
         )}
         <div className="pagination" aria-label="위치 페이지 이동">
-          <span>{total.toLocaleString("ko-KR")}개 위치 · {first}–{last}</span>
+          <span>
+            {total.toLocaleString("ko-KR")}개 위치 · {first}–{last}
+          </span>
           <div className="toolbar">
-            <button className="secondary" type="button" disabled={offset === 0} onClick={() => setOffset((value) => Math.max(0, value - PAGE_SIZE))}>이전</button>
-            <button className="secondary" type="button" disabled={offset + locations.length >= total} onClick={() => setOffset((value) => value + PAGE_SIZE)}>다음</button>
+            <Button
+              className="secondary"
+              type="button"
+              disabled={offset === 0}
+              onClick={() =>
+                setOffset((value) => Math.max(0, value - PAGE_SIZE))
+              }
+            >
+              이전
+            </Button>
+            <Button
+              className="secondary"
+              type="button"
+              disabled={offset + locations.length >= total}
+              onClick={() => setOffset((value) => value + PAGE_SIZE)}
+            >
+              다음
+            </Button>
           </div>
         </div>
       </div>

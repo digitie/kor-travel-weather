@@ -123,8 +123,8 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     await expect(detail).toBeVisible();
     await expect(detail.getByRole("button", { name: "상세 닫기", exact: true })).toBeInViewport();
     await expect(detail.getByText("호우주의보 · 주의", { exact: true })).toBeVisible();
-    await expect(detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })).toBeVisible();
-    for (const content of [detail.getByText("최신", { exact: true }), detail.getByText("호우주의보 · 주의", { exact: true }), detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })]) {
+    await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
+    for (const content of [detail.getByText("최신", { exact: true }), detail.getByText("호우주의보 · 주의", { exact: true }), detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })]) {
       await content.scrollIntoViewIfNeeded();
       await expect(content).toBeInViewport({ ratio: 0.9 });
     }
@@ -253,8 +253,8 @@ test.describe("작은 화면 글자 확대", () => {
     await page.getByRole("tab", { name: "목록", exact: true }).click();
     await page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ }).click();
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
-    await expect(detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })).toBeVisible();
-    const detailMetrics = await detail.evaluate((element) => Object.fromEntries(Object.entries({ detail: element, header: element.querySelector('[data-slot="map-detail-header"]')!, body: element.querySelector('[data-slot="map-detail-body"]')!, close: element.querySelector('button[aria-label="상세 닫기"]')!, freshness: element.querySelector(".weather-current-status")!, alert: element.querySelector(".alert-panel")!, temperature: element.querySelector(".metric-card.primary")!, zoomIn: document.querySelector(".maplibregl-ctrl-zoom-in")!, zoomOut: document.querySelector(".maplibregl-ctrl-zoom-out")! }).map(([name, node]) => {
+    await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
+    const detailMetrics = await detail.evaluate((element) => Object.fromEntries(Object.entries({ detail: element, header: element.querySelector('[data-slot="map-detail-header"]')!, body: element.querySelector('[data-slot="map-detail-body"]')!, close: element.querySelector('button[aria-label="상세 닫기"]')!, freshness: element.querySelector(".weather-current-status")!, alert: element.querySelector(".alert-panel")!, temperature: element.querySelector(".weather-current-hero")!, zoomIn: document.querySelector(".maplibregl-ctrl-zoom-in")!, zoomOut: document.querySelector(".maplibregl-ctrl-zoom-out")! }).map(([name, node]) => {
       const box = node.getBoundingClientRect();
       return [name, { x: box.x, y: box.y, width: box.width, height: box.height, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight }];
     })));
@@ -264,7 +264,7 @@ test.describe("작은 화면 글자 확대", () => {
     expect(detailMetrics.body.height).toBeGreaterThan(0);
     expect(detailMetrics.detail.x + detailMetrics.detail.width).toBeLessThanOrEqual(detailMetrics.zoomIn.x);
     expect([detailMetrics.zoomIn.width, detailMetrics.zoomIn.height]).toEqual([44, 44]);
-    for (const content of [detail.getByText("최신", { exact: true }), detail.getByText("호우주의보 · 주의", { exact: true }), detail.locator(".metric-card.primary").getByText("20 °C", { exact: true })]) {
+    for (const content of [detail.getByText("최신", { exact: true }), detail.getByText("호우주의보 · 주의", { exact: true }), detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })]) {
       await content.scrollIntoViewIfNeeded();
       await expect(content).toBeInViewport({ ratio: 0.9 });
     }

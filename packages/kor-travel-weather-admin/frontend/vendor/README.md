@@ -1,5 +1,7 @@
 # 공용 UI 고정 산출물
 
+현재 참조/원장은 아래 **2026-11-11 공통 Radix·VirtualTable 후보** 절을 따른다. 앞선 절은 보존한 이력이다.
+
 토큰 원천: [kor-travel-common](https://github.com/digitie/kor-travel-common/tree/50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3), commit `50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3`.
 `npm run build` 후 `npm pack ./packages/tokens`, `npm pack ./packages/ui`로 생성했다.
 각 archive의 GPL LICENSE·NOTICE·THIRD_PARTY_NOTICES와 package metadata를 유지한다.
@@ -43,3 +45,31 @@ Common main `aa232ad5f255233184de80eceaab2e9b6ccb00c9`(PR #47, T-217)의 `git ar
 돌리지 않으므로 시험 결과가 아니다. hydration 전에는 Weather 전역 `button:disabled`(opacity 0.55) 때문에 제출 버튼이 잠시
 흐리게 보이고, 브라우저 자동완성은 비활성 입력을 채우지 않을 수 있어 저장된 계정을 목록에서 고르게 될 수 있다.
 JS가 로드되지 않으면 폼이 계속 비활성이다. dev.6~dev.8은 이력으로 보존한다.
+
+## 2026-11-11 공통 Radix·VirtualTable 후보
+
+현재 참조는 UI `0.2.0`, tokens `0.1.1`, 지도 web `1.0.3`·core `1.0.0`이다.
+이번 root artifacts의 **동일 bytes**를 복사하며 실제 원장은 frontend `common-artifacts.json`이다.
+과거 dev 산출물은 이력으로 보존하고 package.json/lock이 참조하지 않는다.
+
+`status: CANDIDATE_NOT_RELEASED`는 통합 후보를 뜻한다. 후보 보정은 부모가 pack하고
+원장·vendor·lock을 함께 동기화하며, 정식 릴리스 동일 버전 재발행을 의미하지 않는다.
+최종 source commit manifest와 single pack freeze는 부모가 확정한다. 소비자는 개별로 재pack하지 않는다.
+
+지도는 `digitie/maplibre-vworld-react`의 최신 main
+`9c46c57181d433c91f7e8837c4e4396204e9b583`을 부모가 조회·검증한 후보 build다.
+web `1.0.3`의 빌드 target/package metadata 후보 보정과 upstream 최종 commit/PR은 부모 소유다.
+core `1.0.0`은 부모가 기존 배포 golden hash와 동일함을 확인했다.
+최종 지도 source SHA는 부모의 immutable manifest를 우선하고 이 GitHub base SHA만으로
+미커밋 빌드 metadata까지 고정됐다고 주장하지 않는다.
+
+```bash
+# 부모가 갱신한 동일 tgz/원장을 복사한 뒤, 같은 버전 후보도 npm cache 대신 새 bytes로 설치한다.
+npm install @kor-travel/ui@file:vendor/kor-travel-ui-0.2.0.tgz --ignore-scripts --no-audit --no-fund
+npm run check:dependencies
+```
+
+`check:dependencies`는 common 제공 `check-dependencies.mjs`를 직접 실행하고
+`app`, `components`, `lib`를 모두 지정한다. 선언/실제 lock 버전·필수 라이브러리·금지된
+중복 표/overlay·tgz 원장/실제 bytes/lock integrity를 검사하며 CI의 필수 단계다.
+React Doctor `0.9.22 --scope full --blocking warning`과 ESLint `10.14.0`도 별도 CI gate다.

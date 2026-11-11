@@ -84,8 +84,13 @@ jobs:
           cache: npm
           cache-dependency-path: packages/kor-travel-weather-admin/frontend/package-lock.json
       - run: npx --yes npm@12.0.1 ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check:dependencies
       - run: npm run lint
+      - run: npm run doctor
       - run: npm run type-check
       # `vitest run`, not watch mode: the script exits with the suite's result.
       - run: npm test
       - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:fixtures
+      - run: npm run test:e2e:tiles

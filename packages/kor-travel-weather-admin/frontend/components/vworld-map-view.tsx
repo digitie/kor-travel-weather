@@ -13,17 +13,16 @@ import type {
   PointLike,
   PositionAnchor,
 } from "maplibre-gl";
-import { createPortal } from "react-dom";
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
 
 import {
-  buildVWorldStyle,
-  getVWorldMaxZoom,
   isVWorldApiKeyConfigured,
   redactVWorldUrl,
   type VWorldLayerType,
 } from "@/lib/vworld-style";
+import { VWorldMapView as UpstreamMapView, Marker as UpstreamMarker, useMap } from "vworld-map-web";
+
 import {
   buildWeatherClusterData,
   weatherConditionIcon,
@@ -43,12 +42,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 // that constructs one, rather than inside the component.
 maplibregl.setWorkerUrl("/maplibre/maplibre-gl-worker.mjs");
 
-/**
- * React/MapLibre boundary modelled on digitie's maplibre-vworld-react
- * `vworld-map-web` package.  The app keeps the adapter local because that
- * GitHub monorepo intentionally does not publish an npm package; the public
- * props and VWorld style rules remain compatible with its VWorldMapView.
- */
+// 지도 생성·제거·카메라·스타일·마커 생명주기는 GitHub 고정 산출물이 소유한다.
+// 이 어댑터는 Weather의 무키 중립 배경과 타일 오류 회복 표시만 연결한다.
 export type VWorldMapViewProps = {
   apiKey?: string;
   center: [number, number];
@@ -67,194 +62,87 @@ export type VWorldMapViewProps = {
   onRecover?: () => void;
 };
 
-type MapContextValue = MapLibreMap | null;
-const VWorldMapContext = createContext<MapContextValue>(null);
+export const useVWorldMap = useMap;
 
-export function useVWorldMap(): MapLibreMap | null {
-  return useContext(VWorldMapContext);
+// API 키가 없을 때도 위치 마커·이동·확대는 제공한다. upstream의 hasApiKey 경계에는
+// 공개 sentinel을 넘기고 모든 raster 요청은 로컬 data URI로 바꿔 외부 요청을 막는다.
+const NEUTRAL_TILE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGN4+e4LAAWPAsxuc85WAAAAAElFTkSuQmCC";
+
+type TileRecoveryState = {
+  failedTiles: Map<string, maplibregl.ErrorEvent>;
+  shown: boolean;
+  blocked: boolean;
+};
+
+function rememberTileError(state: TileRecoveryState, event: maplibregl.ErrorEvent) {
+  const key = rasterTileKey(event as unknown as maplibregl.MapSourceDataEvent);
+  if (key) state.failedTiles.set(key, event);
+  else state.blocked = true;
+  state.shown = true;
 }
 
-export function VWorldMapView({
-  apiKey,
-  center,
-  zoom,
-  layerType = "Base",
-  minZoom = 6,
-  maxZoom = 19,
-  navigation = true,
-  scale = false,
-  className,
-  style,
-  children,
-  onLoad,
-  onMoveEnd,
-  onError,
-  onRecover,
-}: VWorldMapViewProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<MapLibreMap | null>(null);
-  const [map, setMap] = useState<MapLibreMap | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const onLoadRef = useRef(onLoad);
-  const onMoveEndRef = useRef(onMoveEnd);
-  const onErrorRef = useRef(onError);
-  const onRecoverRef = useRef(onRecover);
-  useLayoutEffect(() => {
-    onLoadRef.current = onLoad;
-    onMoveEndRef.current = onMoveEnd;
-    onErrorRef.current = onError;
-    onRecoverRef.current = onRecover;
-  }, [onLoad, onMoveEnd, onError, onRecover]);
-
-  const initialOptionsRef = useRef({
-    center,
-    zoom,
-    minZoom,
-    maxZoom: Math.min(maxZoom, getVWorldMaxZoom(layerType)),
-    layerType,
-    apiKey,
-  });
-  const initialOptions = initialOptionsRef.current;
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || mapRef.current) return;
-
-    let instance: MapLibreMap;
-    try {
-      instance = new maplibregl.Map({
-        container,
-        style: buildVWorldStyle(initialOptions.apiKey, initialOptions.layerType),
-        center: initialOptions.center,
-        zoom: initialOptions.zoom,
-        minZoom: initialOptions.minZoom,
-        maxZoom: initialOptions.maxZoom,
-        attributionControl: { compact: true },
-      });
-    } catch (reason) {
-      const error = reason instanceof Error ? reason : new Error(String(reason));
-      onErrorRef.current?.({ type: "error", error } as maplibregl.ErrorEvent);
-      return;
-    }
-
-    mapRef.current = instance;
-    setMap(instance);
-    const handleLoad = () => {
-      setLoaded(true);
-      onLoadRef.current?.(instance);
-    };
-    const handleMoveEnd = (event: MapLibreEvent) => onMoveEndRef.current?.(instance, event);
-    const failedTiles = new Map<string, maplibregl.ErrorEvent>();
-    let recoveryBlocked = false;
-    let rasterErrorShown = false;
-    type RasterTileEvent = { sourceId?: string; tile?: { tileID?: { key: string }; state?: string } };
-    const rasterTileKey = (event: RasterTileEvent) => event.sourceId && event.tile?.tileID && instance.getSource(event.sourceId)?.type === "raster"
-      ? `${event.sourceId}/${event.tile.tileID.key}` : null;
-    const handleError = (event: maplibregl.ErrorEvent) => {
-      const key = rasterTileKey(event as maplibregl.ErrorEvent & RasterTileEvent);
-      if (key) {
-        failedTiles.set(key, event);
-        rasterErrorShown = true;
-      } else recoveryBlocked = true;
-      if (onErrorRef.current) {
-        onErrorRef.current(event);
-        return;
-      }
-      const error = event.error as { message?: string; url?: string } | undefined;
-      // VWorld keys are embedded in tile URLs. Never log the raw URL.
-      console.warn("[VWorldMapView]", error?.message ?? "map error", redactVWorldUrl(error?.url) ?? "");
-    };
-    const handleSourceData = (event: maplibregl.MapSourceDataEvent) => {
-      const key = rasterTileKey(event);
-      if (key && event.tile?.state === "loaded") failedTiles.delete(key);
-    };
-    const handleIdle = () => {
-      // load/idle은 errored 타일도 완료로 센다. 공개 coveringTiles로 현재 화면의 실패를 확인한다.
-      if (recoveryBlocked || !instance.isStyleLoaded() || !instance.areTilesLoaded()) return;
-      const visibleTiles = new Set(Object.entries(instance.getStyle().sources).flatMap(([sourceId, source]) => source.type === "raster"
-        ? instance.coveringTiles({ tileSize: source.tileSize ?? 512, minzoom: source.minzoom, maxzoom: source.maxzoom, roundZoom: true }).map((tile) => `${sourceId}/${tile.key}`)
-        : []));
-      const visibleError = Array.from(failedTiles).find(([key]) => visibleTiles.has(key))?.[1];
-      if (visibleError && !rasterErrorShown) handleError(visibleError);
-      else if (!visibleError && rasterErrorShown && visibleTiles.size) {
-        rasterErrorShown = false;
-        onRecoverRef.current?.();
-      }
-    };
-    instance.once("load", handleLoad);
-    instance.on("moveend", handleMoveEnd);
-    instance.on("error", handleError);
-    instance.on("sourcedata", handleSourceData);
-    instance.on("idle", handleIdle);
-
-    const controls: maplibregl.IControl[] = [];
-    if (navigation) {
-      const control = new maplibregl.NavigationControl({ showCompass: false });
-      instance.addControl(control, "top-right");
-      controls.push(control);
-    }
-    if (scale) {
-      const control = new maplibregl.ScaleControl({ maxWidth: 150, unit: "metric" });
-      instance.addControl(control, "bottom-right");
-      controls.push(control);
-    }
-    // keepMounted 탭이 숨겨진 0×0 상태에서 resize하면 중심 좌표가 틀어질 수 있다.
-    // 다시 보일 때의 양수 크기 관측과 지도 탭 effect가 실제 resize를 수행한다.
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
-      if (container.clientWidth > 0 && container.clientHeight > 0) instance.resize();
-    });
-    resizeObserver?.observe(container);
-
-    return () => {
-      resizeObserver?.disconnect();
-      instance.off("moveend", handleMoveEnd);
-      instance.off("error", handleError);
-      instance.off("sourcedata", handleSourceData);
-      instance.off("idle", handleIdle);
-      controls.forEach((control) => {
-        try { instance.removeControl(control); } catch { /* map is already tearing down */ }
-      });
-      instance.remove();
-      mapRef.current = null;
-      setLoaded(false);
-      setMap(null);
-    };
-  }, [initialOptions, navigation, scale]);
-
-  useEffect(() => {
-    if (!map || !map.isStyleLoaded()) return;
-    map.setStyle(buildVWorldStyle(apiKey, layerType));
-    map.setMaxZoom(Math.min(maxZoom, getVWorldMaxZoom(layerType)));
-  }, [apiKey, layerType, map, maxZoom]);
-
+function TileRecovery({ state, onError, onRecover }: Pick<VWorldMapViewProps, "onError" | "onRecover"> & { state: TileRecoveryState }) {
+  const map = useMap();
+  const callbacks = useRef({ onError, onRecover });
+  useLayoutEffect(() => { callbacks.current = { onError, onRecover }; }, [onError, onRecover]);
   useEffect(() => {
     if (!map) return;
-    map.setMinZoom(minZoom);
-    map.setMaxZoom(Math.min(maxZoom, getVWorldMaxZoom(layerType)));
-  }, [map, minZoom, maxZoom, layerType]);
+    // upstream은 load 뒤 children을 연다. 최초 load 전 실패도 부모의 onError에 보존한다.
+    const handleSourceData = (event: maplibregl.MapSourceDataEvent) => {
+      const key = rasterTileKey(event);
+      if (key && event.tile?.state === "loaded") state.failedTiles.delete(key);
+    };
+    const handleIdle = () => {
+      if (state.blocked || !map.isStyleLoaded() || !map.areTilesLoaded()) return;
+      const visibleTiles = new Set(Object.entries(map.getStyle().sources).flatMap(([sourceId, source]) => source.type === "raster"
+        ? map.coveringTiles({ tileSize: source.tileSize ?? 512, minzoom: source.minzoom, maxzoom: source.maxzoom, roundZoom: true }).map(tile => `${sourceId}/${tile.key}`) : []));
+      const visibleError = Array.from(state.failedTiles).find(([key]) => visibleTiles.has(key))?.[1];
+      if (visibleError && !state.shown) {
+        state.shown = true;
+        callbacks.current.onError?.(visibleError);
+      } else if (!visibleError && state.shown && visibleTiles.size) {
+        state.shown = false;
+        callbacks.current.onRecover?.();
+      }
+    };
+    map.on("sourcedata", handleSourceData);
+    map.on("idle", handleIdle);
+    return () => {
+      map.off("sourcedata", handleSourceData);
+      map.off("idle", handleIdle);
+    };
+  }, [map, state]);
+  return null;
+}
 
-  useEffect(() => {
-    if (!map || !map.isStyleLoaded()) return;
-    const current = map.getCenter();
-    if (current.lng === center[0] && current.lat === center[1] && map.getZoom() === zoom) return;
-    map.easeTo({ center, zoom, duration: 350 });
-  }, [map, center, zoom]);
+function rasterTileKey(event: { sourceId?: string; tile?: { tileID?: { key?: string } } }): string | null {
+  return event.sourceId && event.tile?.tileID?.key ? `${event.sourceId}/${event.tile.tileID.key}` : null;
+}
 
+export function VWorldMapView({ apiKey, center, zoom, layerType = "Base", minZoom = 6,
+  maxZoom = 19, navigation = true, scale = false, className, style, children,
+  onLoad, onMoveEnd, onError, onRecover,
+}: VWorldMapViewProps) {
   const configured = isVWorldApiKeyConfigured(apiKey);
-  return (
-    <VWorldMapContext.Provider value={map}>
-      <div
-        ref={containerRef}
-        aria-label="VWorld 날씨 지도"
-        className={className}
-        data-vworld-basemap={configured ? layerType : "fallback"}
-        data-vworld-key={configured ? "configured" : "missing"}
-        role="application"
-        style={style}
-      />
-      {map && loaded ? children : null}
-    </VWorldMapContext.Provider>
-  );
+  const recovery = useMemo<TileRecoveryState>(() => ({ failedTiles: new Map(), shown: false, blocked: false }), []);
+  return <div aria-label="VWorld 날씨 지도" role="application" className={className} style={style}
+    data-vworld-basemap={configured ? layerType : "fallback"} data-vworld-key={configured ? "configured" : "missing"}>
+    <UpstreamMapView apiKey={configured ? apiKey.trim() : "weather-neutral-basemap"}
+      center={center} zoom={zoom} layerType={layerType} minZoom={minZoom} maxZoom={maxZoom}
+      navigation={navigation} scale={scale} geolocate={false}
+      transformRequest={configured ? undefined : () => ({ url: NEUTRAL_TILE })}
+      onLoad={onLoad} onMoveEnd={event => onMoveEnd?.(event.target, event)}
+      onError={event => {
+        // 최초 load 이전의 타일 오류도 사용자에게 전달한다.
+        rememberTileError(recovery, event);
+        onError?.(event);
+        if (!onError) console.warn("[VWorldMapView]", redactVWorldUrl(event.error?.message));
+      }}
+      fallback={<p role="alert">지도를 초기화하지 못했습니다. 위치 목록을 이용해 주세요.</p>}>
+      <TileRecovery state={recovery} onError={onError} onRecover={onRecover} />
+      {children}
+    </UpstreamMapView>
+  </div>;
 }
 
 export type VWorldMarkerProps = {
@@ -269,80 +157,11 @@ export type VWorldMarkerProps = {
   children: ReactNode;
 };
 
-/** React portal marker primitive matching maplibre-vworld-react's Marker. */
-export function VWorldMarker({
-  lngLat,
-  anchor = "center",
-  offset,
-  className,
-  selected = false,
-  ariaLabel,
-  title,
-  onClick,
-  children,
-}: VWorldMarkerProps) {
-  const map = useVWorldMap();
-  const markerRef = useRef<MapLibreMarker | null>(null);
-  const lngLatRef = useRef(lngLat);
-  lngLatRef.current = lngLat;
-  const onClickRef = useRef(onClick);
-  onClickRef.current = onClick;
-  const previousClassNameRef = useRef<string | undefined>(undefined);
-  const longitude = lngLat[0];
-  const latitude = lngLat[1];
-  const element = useMemo<HTMLDivElement | null>(() => {
-    if (typeof document === "undefined") return null;
-    return document.createElement("div");
-  }, []);
-
-  useEffect(() => {
-    if (!map || !element) return;
-    const marker = new maplibregl.Marker({ element, anchor, offset })
-      .setLngLat(lngLatRef.current)
-      .addTo(map);
-    const handleClick = (event: MouseEvent) => {
-      event.stopPropagation();
-      onClickRef.current?.(event, marker);
-    };
-    element.addEventListener("click", handleClick);
-    markerRef.current = marker;
-    return () => {
-      element.removeEventListener("click", handleClick);
-      marker.remove();
-      markerRef.current = null;
-    };
-  }, [map, element, anchor, offset]);
-
-  useEffect(() => {
-    markerRef.current?.setLngLat([longitude, latitude]);
-  }, [longitude, latitude]);
-
-  useEffect(() => {
-    if (!element) return;
-    // MapLibre owns the root classes (including the anchor/covered tokens)
-    // and its stylesheet owns the projection transform. Update only the
-    // consumer tokens so a state change cannot erase those classes.
-    const previousTokens = previousClassNameRef.current
-      ? previousClassNameRef.current.split(/\s+/).filter(Boolean)
-      : [];
-    const nextTokens = className ? className.split(/\s+/).filter(Boolean) : [];
-    const nextSet = new Set(nextTokens);
-    for (const token of previousTokens) {
-      if (!nextSet.has(token)) element.classList.remove(token);
-    }
-    const previousSet = new Set(previousTokens);
-    for (const token of nextTokens) {
-      if (!previousSet.has(token)) element.classList.add(token);
-    }
-    previousClassNameRef.current = className;
-    element.dataset.selected = String(selected);
-    if (ariaLabel) element.setAttribute("aria-label", ariaLabel);
-    else element.removeAttribute("aria-label");
-    if (title) element.title = title;
-    else element.removeAttribute("title");
-  }, [element, className, selected, ariaLabel, title]);
-
-  return element ? createPortal(children, element) : null;
+/** Weather 내용은 앱이, 좌표·포털·마커 생명주기는 upstream이 소유한다. */
+export function VWorldMarker({ onClick, title, ariaLabel, children, ...props }: VWorldMarkerProps) {
+  return <UpstreamMarker {...props} onClick={onClick ? (event, _context, marker) => onClick(event, marker) : undefined}>
+    <span title={title} aria-label={ariaLabel}>{children}</span>
+  </UpstreamMarker>;
 }
 
 export type VWorldWeatherMarkerProps = Omit<VWorldMarkerProps, "children"> & {
@@ -499,9 +318,9 @@ export function VWorldWeatherClusters({
   const map = useVWorldMap();
   const data = useMemo(() => buildWeatherClusterData(markers), [markers]);
   const dataRef = useRef<WeatherClusterData>(data);
-  dataRef.current = data;
+  useLayoutEffect(() => { dataRef.current = data; }, [data]);
   const markerByIdRef = useRef(new Map<string, WeatherClusterMarker>());
-  markerByIdRef.current = new Map(markers.map((marker) => [marker.id, marker]));
+  useLayoutEffect(() => { markerByIdRef.current = new Map(markers.map((marker) => [marker.id, marker])); }, [markers]);
 
   useEffect(() => {
     if (!map) return;

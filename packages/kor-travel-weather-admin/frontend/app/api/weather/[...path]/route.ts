@@ -196,6 +196,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   return unavailable(503);
 }
 
+// react-doctor-disable-next-line react-doctor/nextjs-no-side-effect-in-get-handler -- readBody의 bytes.set은 POST 본문의 로컬 Uint8Array 복사이며 GET은 즉시 반환한다.
 export const GET = proxy;
 export const POST = proxy;
 export const PATCH = proxy;
