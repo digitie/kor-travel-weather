@@ -7,7 +7,9 @@ from time import monotonic
 from .export_artifacts import ExportGuardTimeout
 
 SELECTION_MAX_AGE_SECONDS = 60
-_MAX_ENTRIES = 4
+# 예보(초단기·단기·외부 × provider 필터)도 같은 캐시를 쓴다(2026-11-10). 현재·일별 항목이
+# 예보 항목에 밀려나지 않도록 항목 수를 늘린다. 메모리 상한은 바이트(_MAX_BYTES)가 정한다.
+_MAX_ENTRIES = 8
 _MAX_BYTES = 16 * 1024 * 1024
 _MAX_ENTRY_BYTES = 8 * 1024 * 1024
 _CATALOG_FIELDS = (
