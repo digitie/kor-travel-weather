@@ -1,3 +1,16 @@
+## 2026-11-12 — C11 정본과 FocusScope fix2 채택
+
+integration-11-review 단일pack의 원장7개·vendor7개를 동일 bytes로 동기화한다.
+공통 producer a35481349d6747b4f13b958ae64d9c0bbd0b5413,
+FocusScope source1752a539c8d5ae57961a0fa2702d2573d48fefe7의
+1.3.1+kortravel.fix.2를 runtime file 직접 의존성과 root override로 연결한다.
+Lightning CSS fix.4는 dev 필수이며 지도9a bytes를 유지한다. RN은 vendor/원장에만 두고 웹에 설치하지 않는다.
+중앙 workflow 실행 코드는55a921b55d248106cbe320e7f5305f3d3cdb60fe를 유지한다.
+C10 checkpoint·원925/e4·원 A/B와 전후 실패 로그를 보존한다.
+n150 슬롯2에서 기존 cache를 재사용해 명시 file 설치/실제 UI94+tokens25+Scope15 bytes,
+외부 C11 canonical guard 및 최종 frontend gate를 검증 중이다.
+검증 완료·독립2리뷰·CI·merge·부모 go 전까지 배포하지 않는다. DB/API/RustFS/Dagster lifecycle 변경 없음.
+
 # 2026-11-12 — 후보9 정책 검사기 동기화
 
 UI/tokens의 후보8→9는 check-dependencies.mjs 한 파일씩만 다르며 실행 코드·CSS·metadata117개는 동일하다. 실제 설치 파일과 최신 중앙 정책 검사를 재확인했다. 앞선 단위304·타입·lint·Doctor0·production build 증거를 유지한다. n150의 별도 npm ci와 build도 성공했으나 브라우저는 서버 준비 단계에서 실패해 CLI 로그를 보존하도록 fixture를 보완했다. 후속 브라우저·독립2리뷰·CI·머지·운영 배포는 미완이다.
