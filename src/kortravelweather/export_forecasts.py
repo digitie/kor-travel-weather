@@ -1,5 +1,6 @@
 """승인된 예보를 위치별 배열로 읽는다. 날짜 이력/current 표를 스캔하지 않는다."""
 
+import hashlib
 import json
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,49 @@ def _freshness(heads, now):
         "source_collected_at": min(h.source_collected_at for h in fresh),
         "data_revision_at": min(h.data_revision_at for h in fresh),
     }
+
+def _membership_instant(value):
+    """멤버십 digest의 시각 표기: UTC, 마이크로초 6자리, ``Z``(문자열 표기 차이를 지운다)."""
+    clock = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if clock.tzinfo is None or clock.utcoffset() is None:
+        raise ExportSnapshotUnavailable("멤버십 시각에는 timezone이 필요합니다.")
+    return clock.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def membership_digest(rows):
+    """``(location_id, provider, published_at)`` 집합의 digest(W3 ``meta.membership_digest``).
+
+    얼린 manifest 전체(시간 필터 전, ``since`` 무관)의 행을 정렬해(문자열은 code point 순)
+    ``[[location_id, provider, "YYYY-MM-DDTHH:MM:SS.ffffffZ"], ...]``를 구분자 ``,``·``:``와
+    ``ensure_ascii=False``로 JSON 직렬화한 UTF-8 바이트의 SHA-256이다(``sha256:`` 접두).
+    중복 행은 그대로 센다(집합으로 줄이지 않는다).
+    """
+    canonical = sorted(
+        (str(location_id), str(provider), _membership_instant(published_at))
+        for location_id, provider, published_at in rows
+    )
+    body = json.dumps([list(row) for row in canonical], ensure_ascii=False,
+                      separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def clock_epoch(connection):
+    """publication clock 출처의 epoch(W3 ``meta.clock_epoch``). 같은 RR에서 읽는다.
+
+    DB를 복원하거나 다시 설치하면 바뀐다: 새 database(oid), PITR·승격(새 timeline),
+    파일 단위 복원·재설치(둘 다 postmaster 재시작). 단순 재시작에도 바뀐다 — 재시작과
+    제자리 파일 복원을 구분할 수 없어서다. 그때 소비자는 전량을 한 번 더 받는다(보수적).
+    """
+    row = connection.execute(text(
+        "SELECT d.oid::bigint, pg_postmaster_start_time(), "
+        "pg_walfile_name(pg_current_wal_lsn()) "
+        "FROM pg_database d WHERE d.datname = current_database()"
+    )).one()
+    oid, started, walfile = row
+    timeline = int(str(walfile)[:8], 16)
+    material = f"{oid}|{started.astimezone(UTC).isoformat()}|{timeline}"
+    return "pg:" + hashlib.sha256(material.encode()).hexdigest()[:32]
+
 
 class FrozenForecastExports(FrozenCurrentExports):
     STYLE_DATASETS = {
@@ -237,6 +281,8 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "as_of": anchor.isoformat(),
                 "scopes": scopes,
                 "next_since": watermark.isoformat(),
+                # watermark를 발급한 DB의 epoch. 같은 RR에서 읽는다(ADR-122 요청 2).
+                "clock_epoch": clock_epoch(c),
                 "unconfirmed_sources": unconfirmed,
             }
             manifest = self._prepare_manifest(manifest)
@@ -390,6 +436,11 @@ class FrozenForecastExports(FrozenCurrentExports):
             or self._health(manifest, frozen, now)
         )
         status = "stale" if stale else "ok"
+        epoch = manifest.get("clock_epoch")
+        if epoch is None:
+            # 이 필드 전에 얼린 snapshot(최대 15분 handle). 같은 DB에서 읽은 값으로 채운다.
+            with self.heads._transaction() as s:
+                epoch = clock_epoch(s)
         page = {
             "items": output,
             "meta": {
@@ -403,6 +454,9 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "next_cursor": self._encode(state) if more else None,
                 "has_more": more,
                 "next_since": manifest["next_since"],
+                # 얼린 manifest 전체 멤버십(시간 필터 전, since 무관). 페이지마다 같다.
+                "membership_digest": membership_digest(self._membership_rows(manifest)),
+                "clock_epoch": epoch,
             },
         }
         etag = 'W/"' + _digest([frozen["snapshot_id"], cursor, limit, status, output]) + '"'
@@ -411,6 +465,14 @@ class FrozenForecastExports(FrozenCurrentExports):
     def _prepare_manifest(self, manifest):
         """특수 source 조합도 완결을 검증한 뒤 불변 manifest로 보존한다."""
         return manifest
+
+    def _membership_rows(self, manifest):
+        """응답 item과 같은 ``(location_id, provider, published_at)``. 시간 필터 전 전체다."""
+        return [
+            (key, scope.get("provider", "python-kma-api"), scope["published_at"])
+            for scope in manifest["scopes"]
+            for key in scope["location_ids"]
+        ]
 
     def _page_items(self, manifest, state, limit, now):
         """일반 source의 기존 bounded 페이지 출력을 그대로 유지한다."""

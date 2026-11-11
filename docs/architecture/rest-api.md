@@ -45,6 +45,21 @@ all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 
 `/v1/features/*` 경로는 이 source가 소유하지 않지만, KMA 특보는 `alerts`와
 지도 marker 상태로 제공한다.
 
+## forecasts(W3) meta의 멤버십 digest와 clock epoch (2026-11-11, Map ADR-122)
+
+`/v1/service/exports/forecasts`의 모든 페이지 `meta`에 두 값을 더한다(추가 필드, 기존 소비자 호환).
+
+- `membership_digest`: 얼린 manifest 전체의 `(location_id, provider, published_at)` 집합 digest다. 시간 필터
+  (`target_at > now`) **전** 집합이고 `since`와 무관하며 한 walk의 모든 페이지가 같다. 정의: 행을 정렬하고
+  (문자열은 code point 순) `published_at`을 UTC·마이크로초 6자리·`Z`로 적은
+  `[[location_id, provider, "YYYY-MM-DDTHH:MM:SS.ffffffZ"], ...]`를 구분자 `,`·`:`, `ensure_ascii=False`로 JSON
+  직렬화한 UTF-8의 SHA-256(`sha256:` 접두). 중복 행은 그대로 센다. 중기는 위치마다 한 행(육상·기온 쌍의 큰
+  `published_at`)이다. 소비자는 병합 상태로 같은 값을 계산해 다르면 전량을 받는다 — tombstone 없는 제거·놓친 추가·
+  재공개됐지만 미래 시각이 없어 빠진 위치를 잡는다.
+- `clock_epoch`: `next_since`를 발급한 DB의 epoch(`pg:` + 32 hex). database oid·timeline·postmaster 시작 시각에서
+  만든다. 복원(새 database·PITR)·재설치에 바뀌고, 제자리 파일 복원과 구분할 수 없어 단순 재시작에도 바뀐다(보수적).
+  바뀌면 소비자는 cursor를 버리고 전량을 받는다.
+
 ## current·daily·forecasts export의 검증 완료 결과 재사용
 
 forecasts(중기 제외)의 cursor 페이지도 상태 검사에 같은 앱 공용 승인 선택(최대60초)을 쓴다.

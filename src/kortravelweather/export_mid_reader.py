@@ -130,6 +130,13 @@ class FrozenMidForecastExports(FrozenForecastExports):
         ), pair["location_id"]))
         return {**manifest, "mid_locations": pairs}
 
+    def _membership_rows(self, manifest):
+        """중기 item은 위치마다 하나(육상·기온 쌍, published_at은 둘 중 큰 값)다."""
+        return [
+            (pair["location_id"], MID_SOURCE[0], pair["published_at"])
+            for pair in manifest["mid_locations"]
+        ]
+
     def _chunk(self, scope, key, cache):
         ref = _location_ref(scope, key)
         identity = (scope["generation_id"], ref["artifact_digest"])

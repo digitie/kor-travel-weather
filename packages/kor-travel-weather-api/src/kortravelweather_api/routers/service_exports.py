@@ -70,6 +70,11 @@ class ExportMeta(BaseModel):
     next_cursor: str | None = None
     has_more: bool = False
     next_since: AwareDatetime | None = None
+    # W3(forecasts)만 채운다. 얼린 manifest 전체 (location_id, provider, published_at)의 digest
+    # — 시간 필터 전, since 무관(ADR-122 요청 1). 정의는 export_forecasts.membership_digest.
+    membership_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    # W3만. publication clock 출처 DB의 epoch — 복원·재설치(와 재시작)에 바뀐다(요청 2).
+    clock_epoch: str | None = Field(default=None, pattern=r"^pg:[0-9a-f]{32}$")
 
 
 class ExportLocation(BaseModel):
