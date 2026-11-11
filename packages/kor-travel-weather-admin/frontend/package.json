@@ -29,7 +29,7 @@
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-hook-form": "7.92.0",
-    "vworld-map-core": "file:vendor/vworld-map-core-1.0.0.tgz",
+    "vworld-map-core": "file:vendor/vworld-map-core-1.0.1.tgz",
     "vworld-map-web": "file:vendor/vworld-map-web-1.0.3.tgz",
     "zod": "4.6.7",
     "zustand": "5.1.0"
@@ -48,13 +48,13 @@
     "eslint-plugin-react-dom": "5.30.1",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-x": "5.30.1",
+    "postcss": "8.5.32",
     "react-doctor": "0.9.22",
     "tailwindcss": "4.3.5",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.2",
     "vite": "8.3.8",
-    "vitest": "5.1.0",
-    "postcss": "8.5.32"
+    "vitest": "5.1.0"
   },
   "overrides": {
     "postcss": "8.5.32"
