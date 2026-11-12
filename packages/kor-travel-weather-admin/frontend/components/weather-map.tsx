@@ -51,6 +51,8 @@ import {
   weatherRegionLevel,
 } from "@/lib/weather-regions";
 import { WeatherDetails } from "./weather-details";
+import { WeatherRegionBoundary } from "./weather-region-boundary";
+import { boundaryLevel, type BoundaryRequest } from "@/lib/weather-boundary";
 import type { WeatherCondition } from "@/lib/weather-clusters";
 
 import {
@@ -438,6 +440,7 @@ function useWeatherMapModel({
   const [regionListOpen, setRegionListOpen] = useState(false);
   const regionListId = useId();
   const [selectedId, setSelectedId] = useState(locations[0]?.location_id ?? "");
+  const [boundaryRequest, setBoundaryRequest] = useState<BoundaryRequest | null>(null);
   const [values, setValues] = useState<WeatherValue[]>([]);
   const [forecast, setForecast] = useState<WeatherValue[]>([]);
   const [query, setQuery] = useState("");
@@ -609,6 +612,7 @@ function useWeatherMapModel({
   const automaticSelectionRef = useRef<string | null>(null);
   const selectedPositionRef = useRef<[number, number] | null>(null);
   const regionLevel = weatherRegionLevel(mapViewport?.zoom ?? initialCamera.zoom);
+  const markerBoundaryLevel = boundaryLevel(mapViewport?.zoom ?? initialCamera.zoom);
   const regional = useMemo(() => {
     // 전역 대표는 전체 목록 대기/실패 중·무필터 저배율에만 사용한다.
     // 종류·제공처·검색 또는 전체 목록 완료 뒤에는 기존 집합의 대표를 그대로 고른다.
@@ -678,6 +682,7 @@ function useWeatherMapModel({
               : location.name,
             onClick: () => {
               setSelectedId(location.location_id);
+              setBoundaryRequest({ latitude: location.latitude, longitude: location.longitude, level: markerBoundaryLevel });
               setDetailOpen(true);
               requestAnimationFrame(() => detailRef.current?.focus());
             },
@@ -692,6 +697,7 @@ function useWeatherMapModel({
       refreshToken,
       regionLevel,
       regional,
+      markerBoundaryLevel,
     ],
   );
   useEffect(() => {
@@ -1080,6 +1086,8 @@ function useWeatherMapModel({
   }, [mode]);
 
   return {
+    boundaryRequest,
+    setBoundaryRequest,
     locations,
     catalogLoading,
     catalogError,
@@ -1310,11 +1318,11 @@ function WeatherMeasurementPoint({ model }: { model: WeatherMapModel }) {
         className="inline-link"
         disabled={!Number.isFinite(point.longitude) || !Number.isFinite(point.latitude)
           || Math.abs(point.longitude) > 180 || Math.abs(point.latitude) > 90}
-        onClick={() => model.map.current?.easeTo({
+        onClick={() => { model.setBoundaryRequest(null); model.map.current?.easeTo({
           center: [point.longitude, point.latitude],
           zoom: Math.max(model.map.current?.getZoom() ?? 0, 13),
           duration: 500,
-        })}
+        }); }}
       >{point.station_name} 위치로 이동</button>
       <small>
         {point.address ?? ""} · {point.distance_km.toFixed(1)}km
@@ -1431,7 +1439,7 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
               disabled={model.loading || model.forecastLoading}
               onClick={() => model.setRefreshToken(value => value + 1)}><RefreshCw size={17} /></button>
             <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동"
-              onClick={() => model.map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 13, duration: 500 })}><Crosshair size={17} /></button>
+              onClick={() => { model.setBoundaryRequest(null); model.map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 13, duration: 500 }); }}><Crosshair size={17} /></button>
           </div>
         </div>
       }
@@ -1495,6 +1503,8 @@ function weatherFilterLabel(
 export function WeatherMap(props: WeatherMapProps) {
   const model = useWeatherMapModel(props);
   const {
+    boundaryRequest,
+    setBoundaryRequest,
     map,
     setMapReady,
     regionListOpen,
@@ -1594,7 +1604,7 @@ export function WeatherMap(props: WeatherMapProps) {
           hidden={mode !== "map"}
         >
           <MapStage
-            className="weather-region-stage"
+            className={`weather-region-stage${boundaryRequest && model.detailOpen ? " weather-boundary-open" : ""}`}
             view="map"
             summary={mode === "map" ? mapNotice : null}
             detail={mode === "map" ? detailPanel : null}
@@ -1614,6 +1624,7 @@ export function WeatherMap(props: WeatherMapProps) {
               onRecover={() => setMapError("")}
               zoom={initialCamera.zoom}
             >
+              <WeatherRegionBoundary request={mode === "map" && model.detailOpen ? boundaryRequest : null} />
               <VWorldWeatherClusters markers={regionLevel ? [] : markers} />
               {regionLevel && !regional.length && visibleLocations.length ? (
                 <p role="status">
@@ -1693,6 +1704,7 @@ export function WeatherMap(props: WeatherMapProps) {
                   }
                   onClick={() => {
                     setSelectedId(location.location_id);
+                    setBoundaryRequest({ latitude: location.latitude, longitude: location.longitude, level: boundaryLevel(mapViewport?.zoom ?? 10) });
                     setDetailOpen(true);
                     setMode("map");
                     requestAnimationFrame(() => {

@@ -167,6 +167,7 @@ describe("마커 모델 참조 보존", () => {
     const render = new Function(
       "regionLevel", "regional", "useMemo", "mapLocations", "selectedId", "summaries", "setSelectedId",
       "markerState", "markerTemperature", "markerCondition", "markerRefreshRef", "providerFilter", "refreshToken", "kindFilter", "setDetailOpen", "requestAnimationFrame", "detailRef",
+      "markerBoundaryLevel", "setBoundaryRequest",
       ts.transpileModule("return " + markerMemo.getText(tree), {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
@@ -182,6 +183,7 @@ describe("마커 모델 참조 보존", () => {
     };
     const emptyRegions: unknown[] = [];
     const select = vi.fn();
+    const boundary = vi.fn();
     const locations = [
       { location_id: "a", name: "가", longitude: 127, latitude: 37 },
       { location_id: "b", name: "나", longitude: 128, latitude: 36 },
@@ -191,11 +193,12 @@ describe("마커 모델 참조 보존", () => {
       () => ({ kind: "clear", label: "맑음" }),
       (summary: { temperature?: number } | undefined) => summary?.temperature ?? null,
       (kind: string) => kind, { current: JSON.stringify([0, undefined, undefined]) }, undefined, 0, undefined, vi.fn(), vi.fn(), { current: null },
+      "sigungu", boundary,
     ) as Array<{
       id: string; selected: boolean; temperature: number | null;
       lngLat: number[]; title: string; onClick: () => void;
     }>;
-    return { call, locations, select };
+    return { call, locations, select, boundary };
   }
 
   it("상세·제공처 등 무관한 렌더는 같은 배열을 유지하고 summary 변경은 반영한다", () => {
@@ -217,6 +220,7 @@ describe("마커 모델 참조 보존", () => {
     expect(selected.map((marker) => marker.selected)).toEqual([false, true]);
     selected[1].onClick();
     expect(view.select).toHaveBeenCalledWith("b");
+    expect(view.boundary).toHaveBeenCalledWith({ latitude: 36, longitude: 128, level: "sigungu" });
     const moved = view.call("b", summaries, [{ ...view.locations[1], name: "새 이름", longitude: 129 }]);
     expect(moved).not.toBe(selected);
     expect(moved[0].lngLat).toEqual([129, 36]);
