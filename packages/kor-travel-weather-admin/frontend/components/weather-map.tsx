@@ -555,6 +555,8 @@ function useWeatherMapModel({
     selectedKinds.length > 0 &&
     sourceCatalog?.key !== sourceKey &&
     !sourceError;
+  const selectionLoading = (needsSourceCatalog ? sourceLoading : catalogLoading)
+    || (!needsSourceCatalog && !query.trim() && Boolean(catalogError) && Boolean(regionProjection?.ready));
   const visibleLocations = useMemo(() => {
     const catalog = !needsSourceCatalog
       ? locations
@@ -583,7 +585,7 @@ function useWeatherMapModel({
   const selected = resolveSelection(
     visibleLocations,
     selectedId,
-    catalogLoading || sourceLoading,
+    selectionLoading,
     [sourceCatalog?.locations ?? [], locations, regionProjection?.items.map(row => row.location) ?? []],
   );
   const selectedLocationId = selected?.location_id;
@@ -608,11 +610,11 @@ function useWeatherMapModel({
   const selectedPositionRef = useRef<[number, number] | null>(null);
   const regionLevel = weatherRegionLevel(mapViewport?.zoom ?? initialCamera.zoom);
   const regional = useMemo(() => {
-    // 전역 대표는 초기 전체 목록 대기 중·무필터 저배율에만 사용한다.
+    // 전역 대표는 전체 목록 대기/실패 중·무필터 저배율에만 사용한다.
     // 종류·제공처·검색 또는 전체 목록 완료 뒤에는 기존 집합의 대표를 그대로 고른다.
     return weatherRepresentatives(visibleLocations, mapViewport?.zoom ?? initialCamera.zoom,
-      catalogLoading && !needsSourceCatalog && !query.trim() ? regionProjection : null);
-  }, [catalogLoading, needsSourceCatalog, query, regionProjection, visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
+      (catalogLoading || Boolean(catalogError)) && !needsSourceCatalog && !query.trim() ? regionProjection : null);
+  }, [catalogLoading, catalogError, needsSourceCatalog, query, regionProjection, visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
     const candidates = weatherRegionLevel(
@@ -832,7 +834,7 @@ function useWeatherMapModel({
 
   useEffect(() => {
     // 필터 결과를 불러오는 동안의 빈 목록은 선택·상세를 지우지 않는다.
-    if (catalogLoading || sourceLoading) return;
+    if (selectionLoading) return;
     if (!visibleLocations.length) {
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- 완료된 외부 카탈로그의 선택을 조정하며 로딩 중 선택은 유지한다.
       if (selectedId) setSelectedId("");
@@ -852,7 +854,7 @@ function useWeatherMapModel({
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- 완료된 카탈로그에서 제거된 선택의 상세만 닫는다.
       setDetailOpen(false);
     }
-  }, [catalogLoading, selectedId, sourceLoading, visibleLocations, regionProjection?.ready]);
+  }, [selectionLoading, selectedId, visibleLocations, regionProjection?.ready]);
 
   useEffect(() => {
     selectedPositionRef.current = selected
