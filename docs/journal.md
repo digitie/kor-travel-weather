@@ -25,6 +25,7 @@ public 자산/worker는 기존 빌드 산출물을 그대로 보존한다. host 
 - 전체 목록이 숨은 상태에서도 모든 버튼을 만들던 비용을 제거하고 이전 카탈로그 요청의 취소/후속 페이지 중단을 추가했다.
 - 최신 main #227의 Node/npm·이미지 실행 계약을 보존했다. 이번 범위는 코드·시험·머지이며 production 빌드·배포는 하지 않는다. 원본·수집·DB 변경0,21개 요구 전체 완료 아님이다.
 - [상세와 미완 범위](reports/2026-11-13-weather-chart-and-map-detail.md).
+- 최종 제품fe4fb7c에서 WSL/Docker 전체 각각329PASS·타입 검사·변경 파일 lint 경고0을 확인했다. 두 독립 리뷰의 터치 영역·작은 기온 tooltip P2를 수정하고 재확인했다. 원321PASS/2FAIL과 Docker EROFS 실패는 보존한다. 빌드·운영 실화면·배포 수용과 구분한다.
 
 ## 2026-11-12 — C11 정본과 FocusScope fix2 채택
 
