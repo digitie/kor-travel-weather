@@ -11,6 +11,14 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
   useEffect(() => {
     if (!map || !request) return;
     const controller = new AbortController();
+    const root = map.getContainer();
+    const stage = root.closest(".weather-region-stage");
+    const compact = () => {
+      const mobile = root.getBoundingClientRect().width <= 700;
+      stage?.setAttribute("data-weather-boundary-compact", String(mobile));
+      return mobile;
+    };
+    compact();
     let value: WeatherBoundary | null = null;
     let manualMove = false;
     const move = (event: { originalEvent?: unknown }) => { if (event.originalEvent) manualMove = true; };
@@ -38,12 +46,11 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
         value = result.data as WeatherBoundary;
         draw(); setMessage(`${value.name} 경계`);
         if (manualMove) return;
-        const root = map.getContainer();
         const bounds = root.getBoundingClientRect();
         const { width, height } = bounds;
         if (width < 120 || height < 120) return;
-        const mobile = width < 700;
-        const detail = root.closest(".weather-region-stage")?.querySelector(".kt-map-detail")?.getBoundingClientRect();
+        const mobile = compact();
+        const detail = stage?.querySelector(".kt-map-detail")?.getBoundingClientRect();
         map.fitBounds([[value.bbox[0], value.bbox[1]], [value.bbox[2], value.bbox[3]]], {
           padding: { top: mobile ? Math.min(height - 100, Math.max(56, detail ? detail.bottom - bounds.top + 12 : height * 0.45)) : 56,
             left: 28, right: mobile ? 28 : Math.min(width - 120, Math.max(28, detail ? bounds.right - detail.left + 12 : Math.min(480, width * 0.45))), bottom: 40 },
@@ -52,6 +59,7 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
       }).catch(() => { if (!controller.signal.aborted) setMessage("행정 경계를 읽지 못했습니다."); });
     return () => {
       controller.abort(); map.off("movestart", move); map.off("style.load", draw); remove();
+      stage?.removeAttribute("data-weather-boundary-compact");
     };
   }, [id, map, request]);
   return request && message ? <span className="weather-boundary-status" role="status">{message}</span> : null;

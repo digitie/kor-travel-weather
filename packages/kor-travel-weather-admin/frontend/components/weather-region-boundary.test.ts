@@ -15,6 +15,7 @@ const effect = ts.transpileModule(`const effect = ${callback.getText(tree)}; ret
 function fixture(width: number, fetcher: ReturnType<typeof vi.fn>) {
   const listeners = new Map<string, (event: object) => void>();
   const layers = new Set<string>(); let hasSource = false;
+  const stage = { setAttribute: vi.fn(), removeAttribute: vi.fn(), querySelector: () => ({ getBoundingClientRect: () => ({ bottom: 340, left: width - 350 }) }) };
   const map = {
     on: vi.fn((event: string, fn: (event: object) => void) => listeners.set(event, fn)),
     off: vi.fn((event: string) => listeners.delete(event)),
@@ -22,25 +23,27 @@ function fixture(width: number, fetcher: ReturnType<typeof vi.fn>) {
     getSource: () => hasSource, removeSource: vi.fn(() => { hasSource = false; }),
     addSource: vi.fn(() => { hasSource = true; }), addLayer: vi.fn((layer: { id: string }) => layers.add(layer.id)),
     isStyleLoaded: () => true, getStyle: () => ({ layers: [] }),
-    getContainer: () => ({ getBoundingClientRect: () => ({ width, height: 800 }), closest: () => null }), fitBounds: vi.fn(),
+    getContainer: () => ({ getBoundingClientRect: () => ({ width, height: 800, top: 10, right: width }), closest: () => stage }), fitBounds: vi.fn(),
   };
   const message = vi.fn();
   const run = new Function("map", "request", "id", "setMessage", "fetch", effect)(map, { latitude: 37, longitude: 127, level: "emd" }, "boundary", message, fetcher);
-  return { map, listeners, message, cleanup: run() as () => void };
+  return { map, stage, listeners, message, cleanup: run() as () => void };
 }
 const boundary = { name: "테스트동", bbox: [127, 37, 127.1, 37.1], feature: { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [] } } };
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)); };
 describe("지역 경계 지도 생명주기", () => {
-  it.each([1440, 375])("폭%s에서 실제 경계를 표시하고 상세 패널 여백을 남긴다", async width => {
+  it.each([1440, 700, 375])("폭%s에서 실제 경계를 표시하고 상세 패널 여백을 남긴다", async width => {
     const current = fixture(width, vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: boundary }))));
     await flush();
     expect(current.map.addSource).toHaveBeenCalledWith("boundary", { type: "geojson", data: boundary.feature });
     expect(current.map.fitBounds).toHaveBeenCalledOnce();
     const options = current.map.fitBounds.mock.calls[0][1];
-    expect(width < 700 ? options.padding.top : options.padding.right).toBeGreaterThan(200);
+    expect(width <= 700 ? options.padding.top : options.padding.right).toBeGreaterThan(200);
+    expect(current.stage.setAttribute).toHaveBeenCalledWith("data-weather-boundary-compact", String(width <= 700));
     current.listeners.get("style.load")?.({});
     expect(current.map.fitBounds).toHaveBeenCalledOnce();
     current.cleanup(); expect(current.map.removeSource).toHaveBeenCalled(); expect(current.listeners.size).toBe(0);
+    expect(current.stage.removeAttribute).toHaveBeenCalledWith("data-weather-boundary-compact");
   });
   it("늦은 응답은 새 선택을 이동시키지 않고 사용자의 수동 이동도 덮지 않는다", async () => {
     let resolve!: (response: Response) => void;

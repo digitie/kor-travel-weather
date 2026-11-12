@@ -1190,7 +1190,7 @@ tbody tr:hover {
 
 .weather-current-status { margin-top: 0; padding: 0.5rem 1rem; }
 .weather-boundary-status { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: 80%; padding: 4px 8px; border-radius: 6px; background: var(--card); color: var(--foreground); font-size: 0.75rem; pointer-events: none; z-index: 3; }
-@media (max-width: 700px) { .weather-boundary-open .kt-map-stage-detail { flex: 0 1 auto; height: 42%; max-height: 42%; min-height: 58px; } }
+.weather-boundary-open[data-weather-boundary-compact="true"] .kt-map-stage-detail { flex: 0 1 auto; height: 42%; max-height: 42%; min-height: 58px; }
 
 .inspector-actions {
   display: flex;
