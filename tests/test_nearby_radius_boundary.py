@@ -35,6 +35,10 @@ def test_exact_radius_boundary_survives_sql_prefilter_and_limit(weather_test_dat
         assert [location.location_id for location, _ in rows] == ["near", "edge"]
         assert 499.8 < rows[1][1] < 500
         assert len(repo.nearest_locations(37, 126, radius_km=500, limit=1)) == 1
+        assert [
+            location.location_id
+            for location, _ in repo.nearest_locations(37, 126, radius_km=500, limit=3)
+        ] == ["near", "edge"]
     finally:
         repo.engine.dispose()
 
@@ -57,7 +61,7 @@ def test_nearby_api_returns_inside_edge_without_outside_point(weather_test_datab
                 "lat": 37,
                 "lon": 126,
                 "radius_km": 500,
-                "limit": 2,
+                "limit": 3,
             },
         )
         assert response.status_code == 200
