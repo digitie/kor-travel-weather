@@ -1,5 +1,17 @@
 import type { Location } from "./api";
 
+const REGION_SHORT_NAMES: Readonly<Record<string, string>> = {
+  충청북도: "충북", 충청남도: "충남", 경상북도: "경북", 경상남도: "경남",
+  전라북도: "전북", 전북특별자치도: "전북", 전라남도: "전남",
+};
+
+/** 표시만 축약한다. 원래 위치명·주소·지역별 그룹 키는 변경하지 않는다. */
+export function abbreviateWeatherRegionName(name: string): string {
+  return name.trim().split(/\s+/u).map(part => REGION_SHORT_NAMES[part]
+    ?? part.replace(/(?:특별자치도|특별자치시|특별시|광역시|자치도|자치시|시|도)$/u, ""))
+    .join(" ");
+}
+
 export function weatherRegionLevel(zoom: number) {
   return zoom < 8 ? "sido" : zoom < 12 ? "sigungu" : null;
 }

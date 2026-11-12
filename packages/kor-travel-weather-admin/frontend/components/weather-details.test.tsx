@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { WeatherValue } from "@/lib/api";
 import { WeatherDetails, TemperatureGraph } from "./weather-details";
 import { hourlyWeather, tomorrowWeather } from "@/lib/weather-detail-model";
+import { temperatureChartModel } from "@/lib/weather-temperature-chart";
 
 const row=(key:string,value:number,provider="kma")=>({value_id:key+provider,metric_key:key,value_number:value,value_text:null,unit:key==="TMP"?"deg_c":key==="WSD"?"m/s":"%",provider,dataset_key:"short",target_at:"2026-10-30T15:00:00Z",issued_at:"2026-10-30T14:00:00Z"} as WeatherValue);
 describe("날씨 상세",()=>{
@@ -47,9 +48,12 @@ describe("현재·내일 요약과 마지막 시간별 그래프", () => {
    {time:"2026-10-31T07:00:00Z",values:[at("TMP",2,"2026-10-31T07:00:00Z")]},
   ];
   const html=renderToStaticMarkup(<TemperatureGraph slots={slots}/>);
-  expect(html).toContain("-1°");expect(html).toContain("0°");
-  const path=html.match(/<path d="([^"]+)"/)?.[1] ?? "";
-  expect(path.match(/M/g)).toHaveLength(3);expect(path.match(/L/g)).toHaveLength(1);
+  expect(html).toContain("시간별 기온 변화 그래프");
+  const model=temperatureChartModel(slots);
+  expect(model.data.map(point=>model.segments.map(key=>point[key]??null))).toEqual([
+    [-1,null,null],[0,null,null],[null,null,null],[null,1,null],[null,null,2],
+  ]);
+  expect(model.data[0].time).toBe("2026-10-31 09:00");
   expect(renderToStaticMarkup(<TemperatureGraph slots={[{...slots[0],values:[{...slots[0].values[0],unit:"K"}]}]}/>)).toContain("그래프로 표시할 기온 자료가 없습니다.");
  });
 });
