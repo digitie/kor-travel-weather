@@ -21,6 +21,13 @@ public 자산/worker는 기존 빌드 산출물을 그대로 보존한다. host 
 - lint는 max-warnings0, test는 passWithNoTests 없는 실제 vitest run을 사용한다. 실제 suite 존재와 기존 nonempty 증거를 기록하고 새 canonical 전후·품질 검증은 별도로 남긴다. README/AGENTS 명령은 Doctor full/blocking warning과 실제 script에 맞춘다.
 - WSL 도구는22.22.2/11.19.1이므로 canonical 실행 성공으로 쓰지 않는다. 설치·full build·브라우저·운영 작업은0이며 새 Common checker/ref와 부모 heavy 슬롯 조정 전 publish를 보류한다. Python·데이터·도메인 UI·과거 실패/성공 원문을 수정하지 않는다.
 
+## 2026-11-13 — 예보 차트·지도 상세 코드 개선
+
+- 공식 EvilCharts ECharts 시간별 선 그래프, 측정 지점 정보 링크, 상단 조작 버튼, 측정자료 순서와 표시 이름 축약을 구현했다.
+- 지도 모드의 전체 위치 목록 DOM을 제거하고 재조회/페이지 이탈 시 이전 카탈로그 요청을 취소한다. 원래 지도 인스턴스와 자료 의미는 유지한다.
+- #227의 최신 빌드 도구 계약을 병합했다. 테스트는 최신 사용자 지시로 수행하고 빌드·배포는 별도 담당 범위다. 최종 테스트·리뷰·머지 결과는 [정산 문서](reports/2026-11-13-weather-chart-and-map-detail.md)에 남긴다.
+- 다음 작업: 이번 소스 테스트와 리뷰를 마치고 머지한다. 지역 대표 읽기 모델·경계·반경 조회와 나머지21개 요구는 계속 미완이다.
+
 ## 2026-11-12 — C11 정본과 FocusScope fix2 채택
 
 integration-11-review 단일pack의 원장7개·vendor7개를 동일 bytes로 동기화한다.

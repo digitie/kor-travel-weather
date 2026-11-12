@@ -215,6 +215,7 @@ export async function getAllPublicLocations(providers?: string[], signal?: Abort
   const all: Location[] = [];
   let offset = 0;
   while (true) {
+    signal?.throwIfAborted();
     const page = await getPublicLocations(pageSize, offset, providers, signal, weatherOnly, kinds);
     all.push(...page.data);
     if (page.data.length < pageSize) return all;
