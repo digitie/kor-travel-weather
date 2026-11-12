@@ -1,3 +1,7 @@
+## 2026-11-13 — 반경 조회 경계 정확성
+
+- [x] 기존 반경 API에서 구면 원 내부 지점이 경도 사전 필터에 누락되는 실제 SQL/API 재현·수정. PG18 WSL/Docker 각각10PASS이며 배포 완료를 뜻하지 않는다. [검증](reports/2026-11-13-nearby-radius-boundary.md).
+
 ## 2026-11-11
 
 - [x] KMA 호출 상한 2배·PR208 포함 이미지·Open-Meteo 중지와 기존 자료 삭제를 실제 수용했다.
@@ -108,7 +112,3 @@ API·수집기 healthy, source SHA·실효 설정/키·DB0039, 원 Weather27 일
 - [x] 2026-11-02 모든 미반영 PR 통합·새 ARM64 이미지 운영 반영·PC/모바일 실제 확인. [결과](reports/2026-11-02-all-pr-images-release.md)
 
 - [x] 2026-11-03 PR198 API 새 이미지 반영·응답14사례·실제 health/status200·Manager 정산. [원 실패와 범위](reports/2026-11-03-pr198-api-release.md)
-# 2026-11-13 — 반경 조회 경계 정확성
-
-- [x] 기존 반경 API에서 구면 원 내부 지점이 경도 사전 필터에 누락되는 실제 SQL/API 재현·수정. PG18 WSL/Docker 각각10PASS이며 배포 완료를 뜻하지 않는다. [검증](reports/2026-11-13-nearby-radius-boundary.md).
-
