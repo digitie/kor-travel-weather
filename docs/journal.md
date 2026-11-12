@@ -1,3 +1,9 @@
+## 2026-11-13 — 실제 병합된 Common toolchain guard 연결
+
+- reusable uses/common-ref를 실제 merge36e4d285ea926b9d8c20da4221ade86ebf74c04d로 고정했다. 기존 frontend matrix의 private anchor와 생산 Node Dockerfile 경로를 JSON으로 연결하며 추가 설치 anchor는 없다.
+- 기능 CI의 pull_request는 경로 필터가 없어 공통 guard 파일 변경도 기존 app CI를 실행한다. trigger/step 상대 순서·needs·fail-fast는 변경하지 않았다.
+- 앞선 후보·old r1 앱 소스 QA는 보존한다. 이 ref 연결은 새 USER node 이미지의 런타임 수용이나 최종 exact CI 성공을 뜻하지 않는다. 원2 재검토·새 이미지·merged source 수용/배포는 아직 미완이며 설치·빌드·운영 변경0이다.
+
 ## 2026-11-13 — CI-33의 웹 runner non-root 소스 후보
 
 최종 runner를 USER node로 고정하고 .next와 이미지 내부 cache의 소유권만 조정했다.

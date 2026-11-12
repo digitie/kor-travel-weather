@@ -1,3 +1,11 @@
+## 현재 상태 — 2026-11-13 최종 Common ref 연결 후보
+
+Common 실제 merge36e4d285ea926b9d8c20da4221ade86ebf74c04d의 reusable guard에
+기존 private frontend anchor와 생산 Node Dockerfile을 연결했다. 추가 설치 anchor는 없다.
+PR 경로 필터가 없어 guard 변경도 기존 기능 CI 대상이며 trigger/step 순서는 그대로다.
+다음 한 작업은 최종 exact CI·원2 재검토와 새 USER node 이미지 QA다.
+old r1 앱 소스 QA는 새 image profile 결과가 아니며 build/apply는 실행하지 않았다.
+
 ## 2026-11-13 — CI-33의 웹 runner non-root 소스 후보
 
 최종 runner를 USER node로 고정하고 .next와 이미지 내부 cache의 소유권만 조정했다.
