@@ -1,0 +1,174 @@
+{
+  "source": "kor-travel-geo OpenAPI",
+  "schemas": {
+    "reverse": {
+      "additionalProperties": false,
+      "properties": {
+        "bjd_cd": {
+          "anyOf": [
+            {
+              "pattern": "^(\\d{8}|\\d{10})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bjd Cd"
+        },
+        "crs": {
+          "$ref": "#/components/schemas/CRS",
+          "default": "EPSG:4326"
+        },
+        "include_geometry": {
+          "default": false,
+          "title": "Include Geometry",
+          "type": "boolean"
+        },
+        "include_region": {
+          "default": true,
+          "title": "Include Region",
+          "type": "boolean"
+        },
+        "include_zipcode": {
+          "default": true,
+          "title": "Include Zipcode",
+          "type": "boolean"
+        },
+        "key": {
+          "title": "Key"
+        },
+        "lat": {
+          "title": "Lat",
+          "type": "number"
+        },
+        "lon": {
+          "title": "Lon",
+          "type": "number"
+        },
+        "radius_m": {
+          "default": 200,
+          "maximum": 2000.0,
+          "minimum": 1.0,
+          "title": "Radius M",
+          "type": "integer"
+        },
+        "sig_cd": {
+          "anyOf": [
+            {
+              "pattern": "^(\\d{2}|\\d{5})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sig Cd"
+        }
+      },
+      "required": [
+        "lon",
+        "lat"
+      ],
+      "title": "ReverseV2Input",
+      "type": "object"
+    },
+    "search": {
+      "additionalProperties": false,
+      "properties": {
+        "bbox": {
+          "anyOf": [
+            {
+              "$ref": "#/components/schemas/BBoxV2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bjd_cd": {
+          "anyOf": [
+            {
+              "pattern": "^(\\d{8}|\\d{10})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Bjd Cd"
+        },
+        "category_group_code": {
+          "anyOf": [
+            {
+              "maxLength": 20,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Category Group Code"
+        },
+        "include_geometry": {
+          "default": false,
+          "title": "Include Geometry",
+          "type": "boolean"
+        },
+        "key": {
+          "title": "Key"
+        },
+        "page": {
+          "default": 1,
+          "minimum": 1.0,
+          "title": "Page",
+          "type": "integer"
+        },
+        "query": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Query",
+          "type": "string"
+        },
+        "sig_cd": {
+          "anyOf": [
+            {
+              "pattern": "^(\\d{2}|\\d{5})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sig Cd"
+        },
+        "size": {
+          "default": 10,
+          "maximum": 100.0,
+          "minimum": 1.0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "type": {
+          "default": "address",
+          "enum": [
+            "address",
+            "place",
+            "district",
+            "road",
+            "category"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "SearchV2Input",
+      "type": "object"
+    }
+  },
+  "sha256": "59ae22e4d9eef4f853e88555a21635d7f77eb180c9c83a24c8250cddbc65807f"
+}
