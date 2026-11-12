@@ -24,8 +24,8 @@ public 자산/worker는 기존 빌드 산출물을 그대로 보존한다. host 
 ## 2026-11-13 — 저배율 대표 위치 조회 개선
 
 - 예보 차트·상세정보 개선은 #228/main179e4a9로 머지됐다. 새 대표 위치 참조 테이블0040과 `/v1/weather/regions`를 추가하고 초기 무필터 저배율 지도에 연결했다.
-- 별도 PG18 WSL/Docker 각각38PASS, 프런트 WSL330PASS·타입·lint 통과다. 기존 경고와 초기 실패는 보존한다. 운영 DB·빌드·배포 변경0이다.
-- 다음 작업: 프런트 Docker·독립 리뷰와 PR 머지를 마친다. [범위·계약·미완](reports/2026-11-13-region-location-read-model.md).
+- 별도 PG18 WSL/Docker 각각38PASS, 최종 프런트 WSL/Docker 각각333PASS·타입·lint 통과다. James의 초기/필터 선택 P1·오류 fallback P2를 수정하고 재확인했다. Popper는 확정 지적 없음이다. 기존 경고와 초기 실패는 보존하며 운영 DB·빌드·배포 변경0이다.
+- 다음 작업: 대표 조회 PR을 머지한 뒤 반경 경계 누락과 Geo 경계를 진행한다. Transport 유가·공항/항공편/고속도로는 별도 병행 중이다. [범위·계약·미완](reports/2026-11-13-region-location-read-model.md).
 
 ## 2026-11-13 — 예보 차트·지도 상세 코드 개선
 

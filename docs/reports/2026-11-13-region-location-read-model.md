@@ -47,7 +47,13 @@ James의 P1은 전역 목록을 기다리는 중 먼저 완료된 필터 목록�
 선택 보존·재조정은 현재 사용하는 카탈로그의 로딩 상태를 기준으로 바꿨다. P2는 전체 목록 조회
 실패 시 성공한 캐시까지 지워지는 문제로, 무필터 캐시 fallback과 선택 보존을 추가했다.
 실제 소스의 선택·대표 계산식을 실행한 회귀3개는 수정 전3FAIL, 수정 후3PASS였다.
-Popper의 DB·게시·API 계약 정적 리뷰에서는 확정 지적이 없었다. 최종 후보 재확인은 별도다.
+Popper의 DB·게시·API 계약 정적 리뷰에서는 확정 지적이 없었다. James는0282c3c에서 두 지적의 수정과
+새 확정 회귀 없음을 재확인했다. 백엔드 제품 소스는 Popper가 검토한1ba1987과 같다.
+
+최종 프런트 WSL/Docker는 각각333PASS, 타입 검사·변경 TS/TSX lint 경고0이다.
+원문은 `regions-front-qa-r4-20261113`과 `weather-regions-docker-front-r2-20261113`에 있다.
+회귀 시험에서 hook을 모방한 함수명의 lint 경고는 일반 함수 별칭으로 고쳤고 규칙은 완화하지 않았다.
+최종 비밀값 부재 검사는 실제 값 출력 없이 두 저장소의 소스·staged·최근 커밋 메시지에서 통과했다.
 
 Git 밖 원문 루트는 `C:/Users/digit/.codex/tmp/weather-transport-evilcharts-20261112`의
 `weather-regions-qa-r3-20261113`, `regions-front-qa-r2-20261113`이다. 최초 계약 생성은

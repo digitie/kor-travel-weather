@@ -290,8 +290,9 @@ describe("대표 캐시 로딩 오류 회귀", () => {
   it("전체 목록 실패 뒤에도 무필터 저배율의 캐시 대표를 표시한다", () => {
     const expression = modelVariable("regional")?.initializer?.getText(tree);
     if (!expression) throw new Error("실제 대표 memo가 필요합니다");
+    const evaluateMemo = (body: () => unknown) => body();
     expect(evaluateModelExpression(expression, {
-      useMemo: (body: () => unknown) => body(), weatherRepresentatives,
+      useMemo: evaluateMemo, weatherRepresentatives,
       visibleLocations: [], mapViewport: { zoom: 7 }, initialCamera: { zoom: 6 },
       catalogLoading: false, needsSourceCatalog: false, query: "", regionProjection,
       catalogError: "fixture failure",
