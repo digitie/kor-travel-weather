@@ -32,8 +32,13 @@
 ```bash
 uv run ruff check .
 uv run pytest -q
-cd packages/kor-travel-weather-admin/frontend && npm run type-check && npm test
+cd packages/kor-travel-weather-admin/frontend
+npm run check:dependencies && npm run lint && npm run doctor
+npm run type-check && npm test && npm run build
 ```
 
 PR은 초안으로 먼저 만들고, 기능 단위로 작은 커밋을 남긴다. 원본 저장소의 로컬
 미커밋 변경은 복사 대상이 아니며 되돌리지 않는다.
+
+프론트엔드 도구는 루트 .nvmrc의 Node22.23.1과 private anchor의 npm12.0.1을 사용한다.
+설치는 npm ci --engine-strict와 기존 lifecycle 옵션을 유지한다. 경고·빈 테스트 성공 예외를 추가하지 않는다.
