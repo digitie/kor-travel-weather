@@ -4,7 +4,7 @@ import ts from "typescript";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { abbreviateWeatherRegionName } from "../lib/weather-regions";
+import { abbreviateWeatherRegionName, weatherRepresentatives } from "../lib/weather-regions";
 
 
 // 실제 effect callback을 실행한다. DOM/지도 대신 React의 cleanup→새 effect 순서만 명시한다.
@@ -236,6 +236,70 @@ describe("조회 실패의 미확인 상태", () => {
   });
 });
 
+function modelVariable(name: string): ts.VariableDeclaration | undefined {
+  let found: ts.VariableDeclaration | undefined;
+  const model = tree.statements.find(node => ts.isFunctionDeclaration(node)
+    && node.name?.text === "useWeatherMapModel");
+  function visit(node: ts.Node) {
+    if (found) return;
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === name) found = node;
+    else ts.forEachChild(node, visit);
+  }
+  if (model) visit(model);
+  return found;
+}
+
+function evaluateModelExpression(expression: string, scope: Record<string, unknown>): unknown {
+  const code = ts.transpileModule(`return (${expression});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return new Function(...Object.keys(scope), code)(...Object.values(scope));
+}
+
+describe("대표 캐시 로딩 오류 회귀", () => {
+  const a = { location_id: "a", name: "A", longitude: 127, latitude: 37,
+    nx: null, ny: null, region_code: null, enabled: true, metadata: {},
+    sido_name: "경기도", sigungu_name: "수원시" };
+  const b = { ...a, location_id: "b", name: "B" };
+  const regionProjection = { ready: true, calculated_at: null, items: [
+    { level: "sido", region_key: "province", label: "경기도", member_count: 1, location: a },
+  ] };
+  const resolve = new Function(ts.transpileModule(
+    declaration("resolveSelection") + "\nreturn resolveSelection;",
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText)();
+  function selection(visibleLocations: typeof a[], state: Record<string, unknown>) {
+    const selected = modelVariable("selected")?.initializer;
+    if (!selected || !ts.isCallExpression(selected)) throw new Error("실제 선택 표현식이 필요합니다");
+    const scope = { regionProjection, visibleLocations, selectedId: "a", locations: [],
+      sourceCatalog: { locations: visibleLocations }, resolveSelection: resolve, ...state };
+    const loading = modelVariable("selectionLoading")?.initializer?.getText(tree)
+      ?? selected.arguments[2].getText(tree);
+    return evaluateModelExpression(selected.getText(tree), {
+      ...scope, selectionLoading: evaluateModelExpression(loading, scope),
+    });
+  }
+  it("필터 목록이 먼저 완료되면 전역 목록 대기 중에도 제외된 캐시 선택을 대체한다", () => {
+    expect(selection([b], { catalogLoading: true, sourceLoading: false,
+      needsSourceCatalog: true, catalogError: null, query: "" })).toBe(b);
+  });
+  it("전체 목록 실패 뒤에도 무필터 캐시 선택의 상세를 유지한다", () => {
+    expect(selection([], { catalogLoading: false, sourceLoading: false,
+      needsSourceCatalog: false, catalogError: "fixture failure", query: "" })).toBe(a);
+  });
+  it("전체 목록 실패 뒤에도 무필터 저배율의 캐시 대표를 표시한다", () => {
+    const expression = modelVariable("regional")?.initializer?.getText(tree);
+    if (!expression) throw new Error("실제 대표 memo가 필요합니다");
+    const evaluateMemo = (body: () => unknown) => body();
+    expect(evaluateModelExpression(expression, {
+      useMemo: evaluateMemo, weatherRepresentatives,
+      visibleLocations: [], mapViewport: { zoom: 7 }, initialCamera: { zoom: 6 },
+      catalogLoading: false, needsSourceCatalog: false, query: "", regionProjection,
+      catalogError: "fixture failure",
+    })).toEqual([{ location: a, label: "경기도" }]);
+  });
+});
+
 function declaration(name: string) {
   const node = tree.statements.find((statement) => (ts.isFunctionDeclaration(statement) && statement.name?.text === name)
     || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((item) => item.name.getText(tree) === name)));
@@ -261,13 +325,13 @@ function effectWith(deps: string, names: string[], prelude: string[] = []) {
 }
 
 describe("필터 변경 중 선택·상세·카메라 보존", () => {
-  const reconcile = effectWith("[catalogLoading, selectedId, sourceLoading, visibleLocations]", [
-    "catalogLoading", "sourceLoading", "visibleLocations", "selectedId", "setSelectedId",
-    "setDetailOpen", "automaticSelectionRef",
+  const reconcile = effectWith("[selectionLoading, selectedId, visibleLocations, regionProjection?.ready]", [
+    "selectionLoading", "visibleLocations", "selectedId", "setSelectedId",
+    "setDetailOpen", "automaticSelectionRef", "regionProjection",
   ]);
-  function run(visibleLocations: { location_id: string }[], selectedId: string, sourceLoading = false) {
+  function run(visibleLocations: { location_id: string }[], selectedId: string, sourceLoading = false, regionalReady = false) {
     const view = { setSelectedId: vi.fn(), setDetailOpen: vi.fn(), automaticSelectionRef: { current: null as string | null } };
-    reconcile(false, sourceLoading, visibleLocations, selectedId, view.setSelectedId, view.setDetailOpen, view.automaticSelectionRef);
+    reconcile(sourceLoading, visibleLocations, selectedId, view.setSelectedId, view.setDetailOpen, view.automaticSelectionRef, { ready: regionalReady });
     return view;
   }
 
@@ -288,6 +352,8 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
     const initial = run([{ location_id: "b" }], "");
     expect(initial.setSelectedId).toHaveBeenCalledWith("b");
     expect(initial.automaticSelectionRef.current).toBeNull();
+    const afterRegionalMap = run([{ location_id: "b" }], "", false, true);
+    expect(afterRegionalMap.automaticSelectionRef.current).toBe("b");
     const empty = run([], "a");
     expect(empty.setSelectedId).toHaveBeenCalledWith("");
     expect(empty.setDetailOpen).toHaveBeenCalledWith(false);

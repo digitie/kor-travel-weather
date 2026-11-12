@@ -25,8 +25,9 @@ def test_definitions_resolve_without_error() -> None:
 
 @pytest.mark.parametrize("dataset", ["mid", "alerts"])
 @pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("projection_fails", [False, True])
 def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
-    monkeypatch, tmp_path, dataset, enabled,
+    monkeypatch, tmp_path, dataset, enabled, projection_fails,
 ):
     from types import SimpleNamespace
 
@@ -57,6 +58,15 @@ def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
             return [{"stnId": "108", "tmFc": "202601010600", "tmSeq": "1", "title": "호우주의보"}]
 
     repo, client, data_client = FakeRepository(), FakeClient(), DataClient()
+    projection_calls = []
+
+    def refresh_regions():
+        projection_calls.append(True)
+        if projection_fails:
+            raise RuntimeError("fixture projection failure")
+        return True
+
+    repo.refresh_region_locations = refresh_regions
     target = WeatherTarget(
         _target().location, mid_land_region_code="11B00000", mid_temperature_region_code="11B10101",
     )
@@ -80,6 +90,10 @@ def test_export_flag_on_preserves_actual_mid_and_alert_asset_collection(
     }) as context:
         result = asset(context)
     assert result["status"] == "success" and repo.values
+    assert repo.runs[0].status == "success"
+    assert len(projection_calls) == (1 if dataset == "mid" else 0)
+    if dataset == "mid":
+        assert result["region_locations_updated"] is (not projection_fails)
     assert calls == (["land", "temperature"] if dataset == "mid" else ["alerts"])
     if dataset == "mid":
         assert len(issues) == 2 and issues[0] == issues[1]

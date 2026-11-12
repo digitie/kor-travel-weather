@@ -1,4 +1,4 @@
-import type { Location } from "./api";
+import type { Location, WeatherRegionProjection } from "./api";
 
 const REGION_SHORT_NAMES: Readonly<Record<string, string>> = {
   충청북도: "충북", 충청남도: "충남", 경상북도: "경북", 경상남도: "경남",
@@ -17,9 +17,11 @@ export function weatherRegionLevel(zoom: number) {
 }
 
 /** 행정구역별 중심에 가장 가까운 실제 지점을 고른다. 기상 코드를 평균내지 않는다. */
-export function weatherRepresentatives(locations: Location[], zoom: number): { location: Location; label: string }[] {
+export function weatherRepresentatives(locations: Location[], zoom: number, initialProjection?: WeatherRegionProjection | null): { location: Location; label: string }[] {
   const level = weatherRegionLevel(zoom);
   if (!level) return locations.map(location => ({ location, label: location.name }));
+  if (initialProjection?.ready) return initialProjection.items.filter(row => row.level === level)
+    .map(row => ({ location: row.location, label: row.label }));
   const groups = new Map<string, Location[]>();
   for (const location of locations) {
     if (!location.sido_name || (level === "sigungu" && !location.sigungu_name)) continue;

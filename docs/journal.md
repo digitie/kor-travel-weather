@@ -19,6 +19,13 @@ public 자산/worker는 기존 빌드 산출물을 그대로 보존한다. host 
 - lint는 max-warnings0, test는 passWithNoTests 없는 실제 vitest run을 사용한다. 실제 suite 존재와 기존 nonempty 증거를 기록하고 새 canonical 전후·품질 검증은 별도로 남긴다. README/AGENTS 명령은 Doctor full/blocking warning과 실제 script에 맞춘다.
 - WSL 도구는22.22.2/11.19.1이므로 canonical 실행 성공으로 쓰지 않는다. 설치·full build·브라우저·운영 작업은0이며 새 Common checker/ref와 부모 heavy 슬롯 조정 전 publish를 보류한다. Python·데이터·도메인 UI·과거 실패/성공 원문을 수정하지 않는다.
 
+## 2026-11-13 — 대표 위치 참조를 작은 DB 읽기로 분리
+
+- `0040_region_locations`와 `/v1/weather/regions`를 추가했다. KMA 일반 날씨 성공 뒤 대표 참조를 원자 게시하고, 자체 writer가 바쁘거나 실패하면 이전 게시본을 보존한다. 기상 성공·원본·특보/출처 필터와 분리한다.
+- 초기 무필터 저배율에서 전체 카탈로그 완료를 기다리지 않고 대표 ID를 사용한다. 검색·필터·상세 축척·카탈로그 완료 시 기존 집합 경로를 유지한다.
+- 별도 PG18 WSL/Docker 각각38PASS·프런트 WSL330PASS·타입·lint 통과. 운영 DB·빌드·배포0이다. [계약·한계·최종 검증](reports/2026-11-13-region-location-read-model.md).
+- 최종 프런트는 WSL/Docker 각각333PASS이며 두 독립 리뷰의 지적을 수정·정산했다. 초기 대표 선택/필터 완료/전체 목록 실패 회귀는 원3FAIL과 수정3PASS를 보존한다. 비밀값 부재 검사는 값 출력 없이 통과했다.
+
 ## 2026-11-13 — 예보 차트·지도 상세와 초기 DOM 개선
 
 - 공식 EvilCharts ECharts 그래프를 지연 로드하고 시간별 원래 수치 표와 결측 의미를 유지한다. 측정 지점은 정보 창 링크로, 관측자료는 시간별 아래로 이동한다. 상단 조작과 지역명 축약을 적용했다.

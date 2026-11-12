@@ -108,6 +108,20 @@ class LocationOut(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RegionLocationOut(BaseModel):
+    level: Literal["sido", "sigungu"]
+    region_key: str
+    label: str
+    member_count: int
+    location: LocationOut
+
+
+class RegionLocationsOut(BaseModel):
+    ready: bool
+    calculated_at: datetime | None = None
+    items: list[RegionLocationOut] = Field(default_factory=list)
+
+
 class WeatherValueOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -463,6 +477,17 @@ def _weather_bundle(
         "alerts": [value_out(row).model_dump(mode="json") for row in alert_rows],
         "alert_scope_unverified": alert_scope_unverified,
     }
+
+
+@router.get("/regions", response_model=Envelope[RegionLocationsOut])
+async def region_locations(
+    request: Request,
+    repo: Annotated[WeatherRepository, Depends(repository)],
+) -> dict[str, Any]:
+    """대표 위치 참조가 미준비/불일치이면 기존 전체 카탈로그 경로로 돌아간다."""
+    started = perf_counter()
+    result = await run_in_threadpool(repo.region_locations)
+    return envelope(request, started, result)
 
 
 @router.get("/locations", response_model=LocationListResponse)

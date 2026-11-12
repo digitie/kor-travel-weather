@@ -63,6 +63,38 @@
         }
       }
     },
+    "/v1/weather/regions": {
+      "get": {
+        "tags": [
+          "weather"
+        ],
+        "summary": "Region Locations",
+        "description": "대표 위치 참조가 미준비/불일치이면 기존 전체 카탈로그 경로로 돌아간다.",
+        "operationId": "region_locations_v1_weather_regions_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Envelope_RegionLocationsOut_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Request validation failed",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/weather/locations": {
       "get": {
         "tags": [
@@ -2449,6 +2481,23 @@
         ],
         "title": "Envelope[ProviderCredentialOut]"
       },
+      "Envelope_RegionLocationsOut_": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/RegionLocationsOut"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[RegionLocationsOut]"
+      },
       "Envelope_ResolvedWeatherOut_": {
         "properties": {
           "data": {
@@ -4106,6 +4155,74 @@
           "datasets"
         ],
         "title": "ProviderOut"
+      },
+      "RegionLocationOut": {
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "sido",
+              "sigungu"
+            ],
+            "title": "Level"
+          },
+          "region_key": {
+            "type": "string",
+            "title": "Region Key"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "member_count": {
+            "type": "integer",
+            "title": "Member Count"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationOut"
+          }
+        },
+        "type": "object",
+        "required": [
+          "level",
+          "region_key",
+          "label",
+          "member_count",
+          "location"
+        ],
+        "title": "RegionLocationOut"
+      },
+      "RegionLocationsOut": {
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          },
+          "calculated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculated At"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RegionLocationOut"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ready"
+        ],
+        "title": "RegionLocationsOut"
       },
       "ResolvedWeatherOut": {
         "properties": {

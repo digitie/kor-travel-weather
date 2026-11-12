@@ -1,5 +1,14 @@
 # Data model
 
+## 저배율 대표 위치 참조 (`0040_region_locations`)
+
+`weather_region_locations`의 PK는 `(level, region_key)`이며, 실제 `weather_locations`의 FK·주소 좌표 키·
+위치 수정 시각과 지역 라벨·멤버 수를 저장한다. 기상값·원본·영구 통계와 구분되는 파생 캐시다.
+`weather_region_projection_states`의 global 행은 계산 시각과 전체 게시 행 수를 보존한다.
+재계산은 자체 비대기 writer lock과 단일 transaction으로 게시하고, 읽기는 같은 snapshot에서
+현재 위치/주소와 대조한다. 참조 불일치나 미준비는 기존 전체 위치 조회로 돌아간다.
+[읽기 계약과 한계](../reports/2026-11-13-region-location-read-model.md).
+
 ## Location
 
 `weather_locations.location_id`는 consumer가 참조하는 안정적인 catalog key다.

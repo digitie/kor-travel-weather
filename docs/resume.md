@@ -21,6 +21,12 @@ public 자산/worker는 기존 빌드 산출물을 그대로 보존한다. host 
 - lint는 max-warnings0, test는 passWithNoTests 없는 실제 vitest run을 사용한다. 실제 suite 존재와 기존 nonempty 증거를 기록하고 새 canonical 전후·품질 검증은 별도로 남긴다. README/AGENTS 명령은 Doctor full/blocking warning과 실제 script에 맞춘다.
 - WSL 도구는22.22.2/11.19.1이므로 canonical 실행 성공으로 쓰지 않는다. 설치·full build·브라우저·운영 작업은0이며 새 Common checker/ref와 부모 heavy 슬롯 조정 전 publish를 보류한다. Python·데이터·도메인 UI·과거 실패/성공 원문을 수정하지 않는다.
 
+## 2026-11-13 — 저배율 대표 위치 조회 개선
+
+- 예보 차트·상세정보 개선은 #228/main179e4a9로 머지됐다. 새 대표 위치 참조 테이블0040과 `/v1/weather/regions`를 추가하고 초기 무필터 저배율 지도에 연결했다.
+- 별도 PG18 WSL/Docker 각각38PASS, 최종 프런트 WSL/Docker 각각333PASS·타입·lint 통과다. James의 초기/필터 선택 P1·오류 fallback P2를 수정하고 재확인했다. Popper는 확정 지적 없음이다. 기존 경고와 초기 실패는 보존하며 운영 DB·빌드·배포 변경0이다.
+- 다음 작업: 대표 조회 PR을 머지한 뒤 반경 경계 누락과 Geo 경계를 진행한다. Transport 유가·공항/항공편/고속도로는 별도 병행 중이다. [범위·계약·미완](reports/2026-11-13-region-location-read-model.md).
+
 ## 2026-11-13 — 예보 차트·지도 상세 코드 개선
 
 - 공식 EvilCharts ECharts 시간별 선 그래프, 측정 지점 정보 링크, 상단 조작 버튼, 측정자료 순서와 표시 이름 축약을 구현했다.

@@ -223,6 +223,16 @@ export async function getAllPublicLocations(providers?: string[], signal?: Abort
   }
 }
 
+export type WeatherRegionProjection = {
+  ready: boolean;
+  calculated_at: string | null;
+  items: { level: "sido" | "sigungu"; region_key: string; label: string; member_count: number; location: Location }[];
+};
+
+export function getPublicRegionLocations(signal?: AbortSignal): Promise<ApiEnvelope<WeatherRegionProjection>> {
+  return request<WeatherRegionProjection>("/v1/weather/regions", { signal });
+}
+
 export type SourceRecordSummary = {
   source_record_key: string;
   provider: string;
