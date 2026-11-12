@@ -2,6 +2,11 @@
   "name": "kor-travel-weather-admin-frontend",
   "version": "0.1.0-dev",
   "private": true,
+  "packageManager": "npm@12.0.1",
+  "engines": {
+    "node": "22.23.1",
+    "npm": "12.0.1"
+  },
   "scripts": {
     "predev": "node ./scripts/copy-maplibre-worker.mjs",
     "dev": "next dev --hostname 127.0.0.1 --port 14105",
@@ -9,8 +14,8 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 14105",
     "type-check": "next typegen && tsc --noEmit",
-    "lint": "eslint .",
-    "test": "vitest run --passWithNoTests",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
     "test:e2e": "playwright test",
     "check:dependencies": "node node_modules/@kor-travel/ui/check-dependencies.mjs --lock package-lock.json --artifacts common-artifacts.json --source app --source components --source lib",
     "doctor": "react-doctor . --scope full --yes --no-telemetry --no-cache --blocking warning",

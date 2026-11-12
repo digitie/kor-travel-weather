@@ -1,3 +1,24 @@
+## 2026-11-13 — 실제 병합된 Common toolchain guard 연결
+
+- reusable uses/common-ref를 실제 merge36e4d285ea926b9d8c20da4221ade86ebf74c04d로 고정했다. 기존 frontend matrix의 private anchor와 생산 Node Dockerfile 경로를 JSON으로 연결하며 추가 설치 anchor는 없다.
+- 기능 CI의 pull_request는 경로 필터가 없어 공통 guard 파일 변경도 기존 app CI를 실행한다. trigger/step 상대 순서·needs·fail-fast는 변경하지 않았다.
+- 앞선 후보·old r1 앱 소스 QA는 보존한다. 이 ref 연결은 새 USER node 이미지의 런타임 수용이나 최종 exact CI 성공을 뜻하지 않는다. 원2 재검토·새 이미지·merged source 수용/배포는 아직 미완이며 설치·빌드·운영 변경0이다.
+
+## 2026-11-13 — CI-33의 웹 runner non-root 소스 후보
+
+최종 runner를 USER node로 고정하고 .next와 이미지 내부 cache의 소유권만 조정했다.
+전체 node_modules와 기존 npm start/Compose 명령을 유지하며 next.config.ts를 명시 복사한다.
+public 자산/worker는 기존 빌드 산출물을 그대로 보존한다. host chmod·root ENV·backend UID·UI/라이브러리 변경0이다.
+이는 소스 후보이며 실제 새 이미지의 uid/config/cache/worker/start·로그인fixture·SSR/health QA는 미실행이다.
+기존 native QA를 새 image profile 수용으로 소급하지 않는다. 실제 Common guard ref/새 이미지 QA/원2리뷰 뒤 최종 merged source에서 한 번 배포한다.
+## 2026-11-13 — Node/npm 선택과 빈 테스트 성공 예외 제거 후보
+
+- actual main faca2cee에서 agent/build-rules-weather-20261113을 만들고 기존 C11 branch를 보존했다.
+- private frontend의 packageManager·engines, repo .nvmrc, anchor .npmrc를 Node22.23.1/npm12.0.1로 맞춘다. lock은 root engines만 갱신하며 의존성 graph/version/SRI·C11 vendor/원장은 보존한다.
+- CI 설치 step에서 npm12를 전역 선택하고 strict ci를 사용한다. 기존 ignore-scripts/no-audit/no-fund 및 후속 step의 상대 순서는 유지한다. 기존 Alpine fresh stage 두 개에 검산된 Node digest/npm12를 적용하고 builder는 dependencies에서 이를 상속한다. ARG·ENV·공개 입력·label 계약을 바꾸지 않는다.
+- lint는 max-warnings0, test는 passWithNoTests 없는 실제 vitest run을 사용한다. 실제 suite 존재와 기존 nonempty 증거를 기록하고 새 canonical 전후·품질 검증은 별도로 남긴다. README/AGENTS 명령은 Doctor full/blocking warning과 실제 script에 맞춘다.
+- WSL 도구는22.22.2/11.19.1이므로 canonical 실행 성공으로 쓰지 않는다. 설치·full build·브라우저·운영 작업은0이며 새 Common checker/ref와 부모 heavy 슬롯 조정 전 publish를 보류한다. Python·데이터·도메인 UI·과거 실패/성공 원문을 수정하지 않는다.
+
 ## 2026-11-12 — C11 정본과 FocusScope fix2 채택
 
 integration-11-review 단일pack의 원장7개·vendor7개를 동일 bytes로 동기화한다.
