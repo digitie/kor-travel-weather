@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/admin-shell";
 import { InfoButton } from "@/components/info-button";
@@ -11,20 +11,29 @@ export default function WeatherPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const catalogRequest = useRef<AbortController | null>(null);
 
   const loadLocations = useCallback(() => {
+    catalogRequest.current?.abort();
+    const request = new AbortController();
+    catalogRequest.current = request;
     setLoading(true);
     setError(null);
-    getAllPublicLocations()
+    getAllPublicLocations(undefined, request.signal)
       .then((result) => {
-        setLocations(result);
+        if (!request.signal.aborted) setLocations(result);
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "위치를 불러오지 못했습니다."))
-      .finally(() => setLoading(false));
+      .catch((reason: unknown) => {
+        if (!request.signal.aborted) setError(reason instanceof Error ? reason.message : "위치를 불러오지 못했습니다.");
+      })
+      .finally(() => {
+        if (!request.signal.aborted) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
     loadLocations();
+    return () => catalogRequest.current?.abort();
   }, [loadLocations]);
 
   return (

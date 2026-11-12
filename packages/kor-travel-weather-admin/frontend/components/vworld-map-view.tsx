@@ -15,6 +15,7 @@ import type {
 } from "maplibre-gl";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { abbreviateWeatherRegionName } from "@/lib/weather-regions";
 
 import {
   isVWorldApiKeyConfigured,
@@ -175,7 +176,7 @@ export type VWorldWeatherMarkerProps = Omit<VWorldMarkerProps, "children"> & {
 export function WeatherMarkerLabel({ temperature, condition, alertCount = 0, regionLabel }: Pick<VWorldWeatherMarkerProps, "temperature" | "condition" | "alertCount" | "regionLabel">) {
   return <>
     <span aria-hidden="true" className="vworld-weather-marker-icon">{weatherConditionIcon(condition)}</span>
-    <span className="vworld-weather-marker-copy">{regionLabel ? <small>{regionLabel}</small> : null}
+    <span className="vworld-weather-marker-copy">{regionLabel ? <small title={regionLabel}>{abbreviateWeatherRegionName(regionLabel)}</small> : null}
       <strong>{temperature === null ? "—" : `${Math.round(temperature)}°`}</strong>
       <small>{weatherConditionLabel(condition)}</small>
     </span>

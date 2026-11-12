@@ -1306,7 +1306,17 @@ function WeatherMeasurementPoint({ model }: { model: WeatherMapModel }) {
   return (
     <div className="measurement-point">
       <span className="section-label">측정 지점</span>
-      <strong>{point.station_name}</strong>
+      <button
+        type="button"
+        className="inline-link"
+        disabled={!Number.isFinite(point.longitude) || !Number.isFinite(point.latitude)
+          || Math.abs(point.longitude) > 180 || Math.abs(point.latitude) > 90}
+        onClick={() => model.map.current?.easeTo({
+          center: [point.longitude, point.latitude],
+          zoom: Math.max(model.map.current?.getZoom() ?? 0, 13),
+          duration: 500,
+        })}
+      >{point.station_name} 위치로 이동</button>
       <small>
         {point.address ?? ""} · {point.distance_km.toFixed(1)}km
       </small>
@@ -1316,14 +1326,12 @@ function WeatherMeasurementPoint({ model }: { model: WeatherMapModel }) {
 
 function WeatherCurrentInfo({ model }: { model: WeatherMapModel }) {
   const {
-    map,
     values,
     forecast,
     loading,
     forecastLoading,
     forecastMessage,
     message,
-    setRefreshToken,
     kindFilter,
     selected,
     selectedSummary,
@@ -1382,36 +1390,8 @@ function WeatherCurrentInfo({ model }: { model: WeatherMapModel }) {
               })
             }
           />
-          <div className="inspector-actions">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="날씨 새로고침"
-              title="날씨 새로고침"
-              onClick={() => setRefreshToken((value) => value + 1)}
-            >
-              <RefreshCw size={17} />
-            </button>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="지도에서 위치로 이동"
-              title="지도에서 위치로 이동"
-              onClick={() =>
-                map.current?.easeTo({
-                  center: [selected.longitude, selected.latitude],
-                  zoom: 10,
-                  duration: 500,
-                })
-              }
-            >
-              <Crosshair size={17} />
-            </button>
-          </div>
-          <WeatherMeasurements model={model} />
         </>
       ) : null}
-      <WeatherMeasurementPoint model={model} />
     </>
   );
 }
@@ -1442,9 +1422,17 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
             <div className="inspector-title">
               <h2>{selected.name}</h2>
               <InfoButton label="위치·데이터 출처">
+                <WeatherMeasurementPoint model={model} />
                 <WeatherSourceInfo model={model} />
               </InfoButton>
             </div>
+          </div>
+          <div className="inspector-actions inspector-header-actions">
+            <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침"
+              disabled={model.loading || model.forecastLoading}
+              onClick={() => model.setRefreshToken(value => value + 1)}><RefreshCw size={17} /></button>
+            <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동"
+              onClick={() => model.map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 13, duration: 500 })}><Crosshair size={17} /></button>
           </div>
         </div>
       }
@@ -1476,6 +1464,7 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
           <p className="muted-note">예보 데이터가 없습니다.</p>
         )}
       </div>
+      {!model.loading ? <WeatherMeasurements model={model} /> : null}
     </MapDetailOverlay>
   );
 }
@@ -1693,7 +1682,7 @@ export function WeatherMap(props: WeatherMapProps) {
           hidden={mode !== "list"}
         >
           {mode === "list" ? mapNotice : null}
-          <MapStage view="list">
+          {mode === "list" ? <MapStage view="list">
             <div className="location-list map-list-overlay">
               {visibleLocations.map((location) => (
                 <button
@@ -1729,7 +1718,7 @@ export function WeatherMap(props: WeatherMapProps) {
                 </button>
               ))}
             </div>
-          </MapStage>
+          </MapStage> : null}
         </MapTabPanel>
       </MapTabs>
     </MapWorkspace>

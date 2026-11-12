@@ -1138,7 +1138,11 @@ tbody tr:hover {
 }
 
 .inspector-heading {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2xs);
+  width: 100%;
   min-width: 0;
   padding: 0;
 }
@@ -1193,6 +1197,8 @@ tbody tr:hover {
   gap: 0.25rem;
   padding: 0 1rem 0.75rem;
 }
+
+.inspector-header-actions { padding: 0; }
 
 .icon-button {
   width: var(--control-h);
@@ -2313,17 +2319,17 @@ tbody tr:hover {
 .vworld-weather-marker-button {
   position: relative;
   display: inline-flex;
-  min-width: 4.25rem;
-  min-height: 2.75rem;
+  min-width: var(--control-h);
+  min-height: var(--control-h);
   align-items: center;
   justify-content: center;
-  gap: 0.25rem;
-  padding: 0.25rem 0.625rem;
-  border: 2px solid var(--weather-marker-color, var(--brand));
+  gap: var(--space-2xs);
+  padding: var(--space-2xs) var(--space-xs);
+  border: 1px solid var(--weather-marker-color, var(--brand));
   border-radius: 999px;
   background: var(--card);
   color: var(--text-primary);
-  box-shadow: 0 2px 4px rgb(0 0 0 / 20%);
+  box-shadow: var(--shadow-elevated);
   cursor: pointer;
   font-size: 0.875rem;
   font-weight: 700;
@@ -2566,6 +2572,7 @@ tbody tr:hover {
 
 @media (pointer: coarse) {
   .info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .vworld-weather-marker-button { min-width: 44px; min-height: 44px; }
   .weather-shell[data-layout="map"] { --weather-map-control-size: 44px; }
 }
 
@@ -2650,11 +2657,9 @@ tbody tr:hover {
 .weather-hourly time small { display:block; color:var(--text-secondary); font-size:0.625rem; font-weight:400; }
 .weather-hour-icon { display:block; font-size:1.5rem; margin-top:0.25rem; }
 .weather-hourly .weather-chart-row td { padding:0; }
-.weather-temperature-graph { display:block; max-width:none; color:var(--brand); overflow:visible; }
-.weather-chart-grid { stroke:var(--border); stroke-width:1; stroke-dasharray:3 4; }
-.weather-chart-line { stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
-.weather-temperature-graph circle { fill:currentColor; }
-.weather-temperature-graph text { fill:var(--text-primary); font-size:13px; font-weight:600; }
+.weather-temperature-graph { display:block; max-width:none; height:var(--weather-forecast-chart-height); color:var(--brand); }
+.weather-temperature-echarts { width:100%; height:100%; min-height:0; }
+.weather-chart-loading { margin:0; padding:var(--space-md); color:var(--text-secondary); }
 .weather-chart-empty { margin:0; padding:2rem var(--space-sm); white-space:normal; }
 .weather-forecast-basis { color:var(--text-secondary); font-size:0.6875rem; margin-block:var(--space-sm); }
 @media (width < 25rem) {

@@ -1,0 +1,84 @@
+{
+  "upstream": "https://github.com/legions-developer/evilcharts",
+  "registry": "https://evilcharts.com/r/",
+  "license": "MIT",
+  "retrieved": "2026-11-12",
+  "engine": "Apache ECharts",
+  "dependencies": {
+    "echarts": "6.1.0",
+    "motion": "14.12.0"
+  },
+  "files": [
+    {
+      "path": "components/evilcharts/ui/echarts-chart.tsx",
+      "upstream_path": "src/registry/ui/echarts-chart.tsx",
+      "url": "https://evilcharts.com/r/echarts-chart.json",
+      "registry_sha256": "c528bca58ef062c0e88a70b89b31e3edc8bb95228ecc934d4baa05fd0f9b0ddd",
+      "upstream_source_sha256": "c0cfe2bcb6dd9c3ed8f2e29d372a073c9cd324811a8d4bcb4e12bf43707e12f3",
+      "installed_source_sha256": "8c78897f36615fa5fa90a956b6ff8c2c44c6084fb5fc33436c29d0dd00a28139",
+      "changes": [
+        "앱의 실제 경로로 import 재배치",
+        "공유 엔진 모듈에 client 경계 명시"
+      ]
+    },
+    {
+      "path": "components/evilcharts/ui/echarts-dot.tsx",
+      "upstream_path": "src/registry/ui/echarts-dot.tsx",
+      "url": "https://evilcharts.com/r/echarts-dot.json",
+      "registry_sha256": "7f4b42b09783b95911479dc05eb37c1c93bb16b9ce82d789115cdf07667fdb6c",
+      "upstream_source_sha256": "27258e7e3072ca8163e266e42b3073a5cadf382d415bc2410cb09f4b3fbc3cdd",
+      "installed_source_sha256": "27258e7e3072ca8163e266e42b3073a5cadf382d415bc2410cb09f4b3fbc3cdd",
+      "changes": [
+        "앱의 실제 경로로 import 재배치"
+      ]
+    },
+    {
+      "path": "components/evilcharts/ui/echarts-tooltip.tsx",
+      "upstream_path": "src/registry/ui/echarts-tooltip.tsx",
+      "url": "https://evilcharts.com/r/echarts-tooltip.json",
+      "registry_sha256": "af1f2bcc567052b39c16acc16784d3fa2908a0b1d1c51256b50f6b0e0be09aaf",
+      "upstream_source_sha256": "582c41558d63f8ef64c842a7a8763a4454819c4854c866a999d25e6883d3481a",
+      "installed_source_sha256": "ce22ba14b2ba17689c7a4b7efdbe6a280a46f68935d081401208ee4b35678f62",
+      "changes": [
+        "앱의 실제 경로로 import 재배치",
+        "툴팁은 작은 비영 기온을0으로 반올림하지 않는 문자열 formatter 사용"
+      ]
+    },
+    {
+      "path": "components/evilcharts/ui/echarts-legend.tsx",
+      "upstream_path": "src/registry/ui/echarts-legend.tsx",
+      "url": "https://evilcharts.com/r/echarts-legend.json",
+      "registry_sha256": "cb74f7b714991b5c1395d377c404bb379d17605fd51dcf572c06649d57b694aa",
+      "upstream_source_sha256": "2f649c97b1c81ad36294eb281629b01c947a2033e278fe0ee1f62eaa656738e4",
+      "installed_source_sha256": "3de64dc7518529a531da5e279d4f8003dd6c5c4c770a399ad3a7fa664b7a95cc",
+      "changes": [
+        "앱의 실제 경로로 import 재배치"
+      ]
+    },
+    {
+      "path": "components/evilcharts/ui/echarts-brush.tsx",
+      "upstream_path": "src/registry/ui/echarts-brush.tsx",
+      "url": "https://evilcharts.com/r/echarts-brush.json",
+      "registry_sha256": "8dc5314c49fdbeff04211515852c6aab7e43a653e020124294e6ae41ca1e8554",
+      "upstream_source_sha256": "8ab742558334a63adadb09d19ff9cd039f22de4303d61f0ec93ebcbc0dd917a2",
+      "installed_source_sha256": "1cf51288872bc00348975decca7d1b1535894f30a9c93582952669b7a99b93fb",
+      "changes": [
+        "앱의 실제 경로로 import 재배치"
+      ]
+    },
+    {
+      "path": "components/evilcharts/charts/echarts-line-chart.tsx",
+      "upstream_path": "src/registry/charts/echarts-line-chart.tsx",
+      "url": "https://evilcharts.com/r/echarts-line-chart.json",
+      "registry_sha256": "af4497e9835369a7f23a007f8dfdb07e87d813bd7fb143a11d2cebba4c540e5d",
+      "upstream_source_sha256": "102e36102ffeeccf1a5d80cfe9a268198cce7bf65a044da531d5dcd91d1bfd60",
+      "installed_source_sha256": "0f2cf596b6a071cea61663d90f050bd2b286b4e3daa93503f6ae79b8b9765615",
+      "changes": [
+        "앱의 실제 경로로 import 재배치",
+        "생성 CSS는 style 텍스트 자식으로 넣어 HTML 삽입 제거",
+        "공식 Children.forEach 슬롯 탐색은 유지하고 해당 벤더 구간의 lint 예외 이유 명시",
+        "툴팁은 작은 비영 기온을0으로 반올림하지 않는 문자열 formatter 사용"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 "use client";
 
 import { VirtualTable, type ColumnDef } from "@kor-travel/ui/virtual-table";
+import dynamic from "next/dynamic";
+import { temperatureChartModel } from "@/lib/weather-temperature-chart";
 import {
   DETAIL_METRICS,
   weatherMetric,
@@ -15,6 +17,10 @@ import type { WeatherValue } from "@/lib/api";
 
 type Condition = { glyph: string; label: string };
 type Slot = ReturnType<typeof hourlyWeather>[number];
+const WeatherTemperatureChart = dynamic(() => import("./weather-temperature-chart"), {
+  ssr: false,
+  loading: () => <p className="weather-chart-loading" role="status">기온 그래프 준비 중…</p>,
+});
 function clockValue(values: WeatherValue[], keys: readonly string[]) {
   const value = weatherMetric(values, keys)?.value_text;
   if (!value) return "미제공";
@@ -23,68 +29,21 @@ function clockValue(values: WeatherValue[], keys: readonly string[]) {
 }
 
 export function TemperatureGraph({ slots }: { slots: Slot[] }) {
-  const temperatures = slots.map((slot) =>
-    weatherMetric(slot.values, DETAIL_METRICS.temperature),
-  );
-  const numbers = temperatures.map((row) =>
-    row &&
-    ["deg_c", "°C", "℃"].includes(row.unit ?? "") &&
-    Number.isFinite(row.value_number)
-      ? row.value_number
-      : null,
-  );
-  const valid = numbers.filter((n): n is number => n !== null);
-  if (!valid.length)
+  const model = temperatureChartModel(slots);
+  if (!model.segments.length)
     return (
       <p className="weather-chart-empty">
         그래프로 표시할 기온 자료가 없습니다.
       </p>
     );
-  const min = Math.min(...valid) - 2,
-    max = Math.max(...valid) + 2;
-  const y = (value: number) => 100 - ((value - min) / (max - min)) * 76;
-  let path = "";
-  numbers.forEach((value, i) => {
-    if (value === null) return;
-    const previous =
-      i > 0 &&
-      numbers[i - 1] !== null &&
-      Date.parse(slots[i].time) - Date.parse(slots[i - 1].time) <= 2 * 3600000;
-    path += `${previous ? "L" : "M"}${i * 64 + 32},${y(value)} `;
-  });
   return (
-    <svg
+    <div
       className="weather-temperature-graph"
       role="img"
       aria-label="시간별 기온 변화 그래프"
-      viewBox={`0 0 ${slots.length * 64} 128`}
-      width={slots.length * 64}
-      height="128"
     >
-      {[30, 66, 102].map((y) => (
-        <line
-          key={y}
-          x1="0"
-          x2={slots.length * 64}
-          y1={y}
-          y2={y}
-          className="weather-chart-grid"
-        />
-      ))}
-      <path d={path.trim()} fill="none" className="weather-chart-line" />
-      {numbers.map((value, i) =>
-        value !== null ? (
-          <g key={slots[i].time}>
-            <circle cx={i * 64 + 32} cy={y(value)} r="3">
-              <title>{`${dateLabel(slots[i].time)} ${hourLabel(slots[i].time)} · ${value}℃`}</title>
-            </circle>
-            <text x={i * 64 + 32} y={y(value) - 12} textAnchor="middle">
-              {value}°
-            </text>
-          </g>
-        ) : null,
-      )}
-    </svg>
+      <WeatherTemperatureChart model={model} />
+    </div>
   );
 }
 

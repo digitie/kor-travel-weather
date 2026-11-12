@@ -23,6 +23,8 @@ for (const width of [375, 1440]) test(`공통 날씨 종류·필터·오버레�
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   await expect(page).toHaveURL(/\/weather$/, { timeout: 30_000 });
   await expect(page.locator('[data-slot="map-workspace"]')).toBeVisible();
+  // 지도 모드에서는 전체 위치 목록의 숨은 DOM을 만들지 않는다.
+  await expect(page.locator(".location-list button")).toHaveCount(0);
   const filterToggle = page.getByRole("button", { name: /^지도 필터/ });
   if (await filterToggle.isVisible()) await filterToggle.click();
   const kinds = page.getByRole("group", { name: "종류 필터" });

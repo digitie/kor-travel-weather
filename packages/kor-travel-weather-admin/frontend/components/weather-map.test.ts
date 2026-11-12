@@ -4,6 +4,7 @@ import ts from "typescript";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { abbreviateWeatherRegionName } from "../lib/weather-regions";
 
 
 // 실제 effect callback을 실행한다. DOM/지도 대신 React의 cleanup→새 effect 순서만 명시한다.
@@ -150,13 +151,14 @@ describe("지도와 대체 목록의 같은 날씨 표시", () => {
   const node = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "WeatherMarkerLabel");
   if (!node) throw new Error("지도와 목록에서 공유할 표시 컴포넌트가 필요합니다.");
   const code = ts.transpileModule(node.getText(ast), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  const label = new Function("require", "weatherConditionIcon", "weatherConditionLabel", `const exports = {}; ${code}; return exports.WeatherMarkerLabel;`)(
-    () => jsxRuntime, () => "?", () => "정보 없음",
+  const label = new Function("require", "weatherConditionIcon", "weatherConditionLabel", "abbreviateWeatherRegionName", `const exports = {}; ${code}; return exports.WeatherMarkerLabel;`)(
+    () => jsxRuntime, () => "?", () => "정보 없음", abbreviateWeatherRegionName,
   ) as (props: { temperature: number | null; condition: string; alertCount: number; regionLabel: string }) => React.ReactElement;
   it.each([null, 21.7])("온도%s의 결측/반올림·대표 지역명·미확인 상태·특보 수를 보존한다", temperature => {
     const html = renderToStaticMarkup(label({ temperature, condition: "unknown", alertCount: 2, regionLabel: "서울특별시 중구" }));
     expect(html).toContain(temperature === null ? "—" : "22°");
-    expect(html).toContain("서울특별시 중구"); expect(html).toContain("정보 없음"); expect(html).toContain("특보 2건");
+    expect(html).toContain("서울특별시 중구"); expect(html).toContain(">서울 중구</small>");
+    expect(html).toContain("정보 없음"); expect(html).toContain("특보 2건");
   });
 });
 describe("마커 모델 참조 보존", () => {
