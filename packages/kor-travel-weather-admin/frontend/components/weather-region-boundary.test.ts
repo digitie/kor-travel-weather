@@ -13,6 +13,7 @@ visit(tree);
 if (!callback) throw new Error("실제 지도 effect가 필요합니다.");
 const effect = ts.transpileModule(`const effect = ${callback.getText(tree)}; return effect;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 function fixture(width: number, fetcher: ReturnType<typeof vi.fn>) {
+  let observedWidth = width;
   const listeners = new Map<string, (event: object) => void>();
   const layers = new Set<string>(); let hasSource = false;
   const stage = { setAttribute: vi.fn(), removeAttribute: vi.fn(), querySelector: () => ({ getBoundingClientRect: () => ({ bottom: 340, left: width - 350 }) }) };
@@ -23,11 +24,11 @@ function fixture(width: number, fetcher: ReturnType<typeof vi.fn>) {
     getSource: () => hasSource, removeSource: vi.fn(() => { hasSource = false; }),
     addSource: vi.fn(() => { hasSource = true; }), addLayer: vi.fn((layer: { id: string }) => layers.add(layer.id)),
     isStyleLoaded: () => true, getStyle: () => ({ layers: [] }),
-    getContainer: () => ({ getBoundingClientRect: () => ({ width, height: 800, top: 10, right: width }), closest: () => stage }), fitBounds: vi.fn(),
+    getContainer: () => ({ getBoundingClientRect: () => ({ width: observedWidth, height: 800, top: 10, right: observedWidth }), closest: () => stage }), fitBounds: vi.fn(),
   };
   const message = vi.fn();
   const run = new Function("map", "request", "id", "setMessage", "fetch", effect)(map, { latitude: 37, longitude: 127, level: "emd" }, "boundary", message, fetcher);
-  return { map, stage, listeners, message, cleanup: run() as () => void };
+  return { map, stage, listeners, message, resize: (next: number) => { observedWidth = next; listeners.get("resize")?.({}); }, cleanup: run() as () => void };
 }
 const boundary = { name: "테스트동", bbox: [127, 37, 127.1, 37.1], feature: { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [] } } };
 const flush = async () => { await new Promise(resolve => setImmediate(resolve)); };
@@ -40,6 +41,9 @@ describe("지역 경계 지도 생명주기", () => {
     const options = current.map.fitBounds.mock.calls[0][1];
     expect(width <= 700 ? options.padding.top : options.padding.right).toBeGreaterThan(200);
     expect(current.stage.setAttribute).toHaveBeenCalledWith("data-weather-boundary-compact", String(width <= 700));
+    current.resize(width <= 700 ? 1440 : 375);
+    expect(current.stage.setAttribute).toHaveBeenLastCalledWith("data-weather-boundary-compact", String(width > 700));
+    expect(current.map.fitBounds).toHaveBeenCalledOnce();
     current.listeners.get("style.load")?.({});
     expect(current.map.fitBounds).toHaveBeenCalledOnce();
     current.cleanup(); expect(current.map.removeSource).toHaveBeenCalled(); expect(current.listeners.size).toBe(0);

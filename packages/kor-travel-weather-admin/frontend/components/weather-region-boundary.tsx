@@ -35,7 +35,7 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
       map.addLayer({ id: `${id}-fill`, type: "fill", source: id, paint: { "fill-color": "#2563eb", "fill-opacity": 0.1 } }, before);
       map.addLayer({ id: `${id}-line`, type: "line", source: id, paint: { "line-color": "#2563eb", "line-width": 2 } }, before);
     };
-    map.on("movestart", move); map.on("style.load", draw);
+    map.on("movestart", move); map.on("style.load", draw); map.on("resize", compact);
     setMessage("행정 경계 확인 중");
     const params = new URLSearchParams({ lat: String(request.latitude), lon: String(request.longitude), level: request.level });
     void fetch(`/api/region-boundary?${params}`, { signal: controller.signal, cache: "no-store" })
@@ -58,7 +58,7 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
         });
       }).catch(() => { if (!controller.signal.aborted) setMessage("행정 경계를 읽지 못했습니다."); });
     return () => {
-      controller.abort(); map.off("movestart", move); map.off("style.load", draw); remove();
+      controller.abort(); map.off("movestart", move); map.off("style.load", draw); map.off("resize", compact); remove();
       stage?.removeAttribute("data-weather-boundary-compact");
     };
   }, [id, map, request]);
