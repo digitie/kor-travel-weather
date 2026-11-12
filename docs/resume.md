@@ -1,3 +1,8 @@
+## 2026-11-13 — 지도 기능 후속
+
+- 차트·상세 #228과 대표 위치 #229는 머지했다. 반경 SQL/API의 실제 경계 누락도 수정하고 WSL/Docker 각각10개 집중 시험을 통과했다. [반경 검증](reports/2026-11-13-nearby-radius-boundary.md).
+- 다음 작업은 반경 수정 PR 정산과 Geo 실제 경계 표시다. Transport 유가·공항/항공편/고속도로는 별도 작업트리에서 병행 중이다. 테스트까지 수행하며 이미지 빌드·배포·운영 변경은 별도 담당 범위다.
+
 ## 현재 상태 — 2026-11-13 최종 Common ref 연결 후보
 
 Common 실제 merge36e4d285ea926b9d8c20da4221ade86ebf74c04d의 reusable guard에
