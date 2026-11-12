@@ -507,6 +507,19 @@ def _make_kma_dataset_asset(
                     else {}
                 ),
             )
+            # 기상 publication 뒤 참조 캐시를 별도로 갱신한다. 캐시 실패로 이미
+            # 저장된 기상 성공을 failed로 뒤집거나 외부 재수집을 시작하지 않는다.
+            refresh_regions = getattr(repository, "refresh_region_locations", None)
+            if (
+                result.get("status") == "success"
+                and not include_alerts
+                and callable(refresh_regions)
+            ):
+                try:
+                    result["region_locations_updated"] = refresh_regions()
+                except Exception as exc:
+                    result["region_locations_updated"] = False
+                    context.log.warning(f"대표 위치 읽기 모델 갱신 지연: {type(exc).__name__}")
             if result.get("values_skipped"):
                 # KMA reports a station without an observation as Missing
                 # sentinels (|v| >= 900); those metrics are skipped, not failed.

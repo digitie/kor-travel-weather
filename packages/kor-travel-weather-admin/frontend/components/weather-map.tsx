@@ -38,6 +38,7 @@ import {
   WeatherMarker,
   WeatherKind,
   WeatherValue,
+  type WeatherRegionProjection,
 } from "@/lib/api";
 import {
   VWorldMapView,
@@ -60,6 +61,7 @@ import { InfoButton } from "@/components/info-button";
 
 type WeatherMapProps = {
   locations: Location[];
+  regionProjection?: WeatherRegionProjection | null;
   catalogLoading?: boolean;
   catalogError?: string | null;
   onRetryCatalog?: () => void;
@@ -426,6 +428,7 @@ function resolveSelection<T extends { location_id: string }>(
 
 function useWeatherMapModel({
   locations,
+  regionProjection,
   catalogLoading = false,
   catalogError,
   onRetryCatalog,
@@ -581,7 +584,7 @@ function useWeatherMapModel({
     visibleLocations,
     selectedId,
     catalogLoading || sourceLoading,
-    [sourceCatalog?.locations ?? [], locations],
+    [sourceCatalog?.locations ?? [], locations, regionProjection?.items.map(row => row.location) ?? []],
   );
   const selectedLocationId = selected?.location_id;
   // VWorldMapView treats a changed center/zoom prop as an explicit recenter
@@ -603,15 +606,19 @@ function useWeatherMapModel({
   const zoomOnFirstMoveRef = useRef(initialCamera.zoom < SELECTED_ZOOM);
   const automaticSelectionRef = useRef<string | null>(null);
   const selectedPositionRef = useRef<[number, number] | null>(null);
+  const regionLevel = weatherRegionLevel(mapViewport?.zoom ?? initialCamera.zoom);
+  const regional = useMemo(() => {
+    // 전역 대표는 초기 전체 목록 대기 중·무필터 저배율에만 사용한다.
+    // 종류·제공처·검색 또는 전체 목록 완료 뒤에는 기존 집합의 대표를 그대로 고른다.
+    return weatherRepresentatives(visibleLocations, mapViewport?.zoom ?? initialCamera.zoom,
+      catalogLoading && !needsSourceCatalog && !query.trim() ? regionProjection : null);
+  }, [catalogLoading, needsSourceCatalog, query, regionProjection, visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
     const candidates = weatherRegionLevel(
       mapViewport?.zoom ?? initialCamera.zoom,
     )
-      ? weatherRepresentatives(
-          visibleLocations,
-          mapViewport?.zoom ?? initialCamera.zoom,
-        ).map((r) => r.location)
+      ? regional.map((r) => r.location)
       : visibleLocations;
     const inViewport = candidates.filter((location) =>
       isInViewport(location, viewport),
@@ -629,21 +636,11 @@ function useWeatherMapModel({
     selected,
     viewport,
     visibleLocations,
+    regional,
     mapViewport?.zoom,
     initialCamera.zoom,
   ]);
   // 상세·제공처 상태만 바뀐 렌더는 동일한 GeoJSON을 다시 만들지 않는다.
-  const regionLevel = weatherRegionLevel(
-    mapViewport?.zoom ?? initialCamera.zoom,
-  );
-  const regional = useMemo(
-    () =>
-      weatherRepresentatives(
-        visibleLocations,
-        mapViewport?.zoom ?? initialCamera.zoom,
-      ),
-    [visibleLocations, mapViewport?.zoom, initialCamera.zoom],
-  );
   const markers = useMemo(
     () =>
       mapLocations
@@ -847,15 +844,15 @@ function useWeatherMapModel({
       !visibleLocations.some((location) => location.location_id === selectedId)
     ) {
       // 보던 위치가 필터에서 빠지면 대체 위치를 고르되 상세는 닫고 카메라는 그대로 둔다.
-      // 처음 고르는 위치(selectedId 없음)는 명시 선택처럼 카메라를 옮긴다.
-      automaticSelectionRef.current = selectedId
+      // 대표 지도로 먼저 탐색한 경우 전체 목록 도착만으로 카메라를 되돌리지 않는다.
+      automaticSelectionRef.current = selectedId || regionProjection?.ready
         ? visibleLocations[0].location_id
         : null;
       setSelectedId(visibleLocations[0].location_id);
       // react-doctor-disable-next-line react-doctor/no-adjust-state-on-prop-change -- 완료된 카탈로그에서 제거된 선택의 상세만 닫는다.
       setDetailOpen(false);
     }
-  }, [catalogLoading, selectedId, sourceLoading, visibleLocations]);
+  }, [catalogLoading, selectedId, sourceLoading, visibleLocations, regionProjection?.ready]);
 
   useEffect(() => {
     selectedPositionRef.current = selected

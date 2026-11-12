@@ -1,9 +1,24 @@
 import { describe, expect, it } from "vitest";
-import type { Location } from "./api";
+import type { Location, WeatherRegionProjection } from "./api";
 import { abbreviateWeatherRegionName, weatherRepresentatives, weatherRegionLevel } from "./weather-regions";
 
 const point = (id: string, longitude: number, district: string): Location => ({location_id:id,name:id,longitude,latitude:37,nx:null,ny:null,region_code:null,enabled:true,metadata:{},sido_name:"경기도",sigungu_name:district});
 describe("행정구역 대표 날씨", () => {
+  it("초기 저배율은 전체 카탈로그 없이 저장 대표를 쓰고 상세 축척은 실제 목록을 쓴다", () => {
+    const station = point("saved", 127, "수원시");
+    const projection: WeatherRegionProjection = {
+      ready: true, calculated_at: "2026-11-13T00:00:00Z", items: [
+        { level: "sido", region_key: "province", label: "경기도", member_count: 1000, location: station },
+        { level: "sigungu", region_key: "district", label: "경기도 수원시", member_count: 100, location: station },
+      ],
+    };
+    expect(weatherRepresentatives([], 7, projection)).toEqual([{ location: station, label: "경기도" }]);
+    expect(weatherRepresentatives([], 9, projection)).toEqual([{ location: station, label: "경기도 수원시" }]);
+    const live = point("live", 128, "용인시");
+    expect(weatherRepresentatives([live], 12, projection)).toEqual([{ location: live, label: "live" }]);
+    expect(weatherRepresentatives([live], 7, { ...projection, ready: false })[0].location).toBe(live);
+    expect(weatherRepresentatives([live], 7, null)[0].location).toBe(live);
+  });
   it.each([
     ["인천광역시", "인천"], ["서울특별시", "서울"], ["파주시", "파주"],
     ["충청북도", "충북"], ["경상북도", "경북"], ["경상남도", "경남"],

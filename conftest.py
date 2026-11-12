@@ -45,7 +45,8 @@ def clean_postgresql_database() -> None:
                 ))
                 export_tables = connection.scalars(text(
                     "SELECT tablename FROM pg_tables WHERE schemaname=current_schema() "
-                    "AND tablename LIKE 'weather_export_%'"
+                        "AND (tablename LIKE 'weather_export_%' "
+                        "OR tablename = 'weather_region_projection_states')"
                 )).all()
                 if export_tables:
                     quote = connection.dialect.identifier_preparer.quote

@@ -261,13 +261,13 @@ function effectWith(deps: string, names: string[], prelude: string[] = []) {
 }
 
 describe("필터 변경 중 선택·상세·카메라 보존", () => {
-  const reconcile = effectWith("[catalogLoading, selectedId, sourceLoading, visibleLocations]", [
+  const reconcile = effectWith("[catalogLoading, selectedId, sourceLoading, visibleLocations, regionProjection?.ready]", [
     "catalogLoading", "sourceLoading", "visibleLocations", "selectedId", "setSelectedId",
-    "setDetailOpen", "automaticSelectionRef",
+    "setDetailOpen", "automaticSelectionRef", "regionProjection",
   ]);
-  function run(visibleLocations: { location_id: string }[], selectedId: string, sourceLoading = false) {
+  function run(visibleLocations: { location_id: string }[], selectedId: string, sourceLoading = false, regionalReady = false) {
     const view = { setSelectedId: vi.fn(), setDetailOpen: vi.fn(), automaticSelectionRef: { current: null as string | null } };
-    reconcile(false, sourceLoading, visibleLocations, selectedId, view.setSelectedId, view.setDetailOpen, view.automaticSelectionRef);
+    reconcile(false, sourceLoading, visibleLocations, selectedId, view.setSelectedId, view.setDetailOpen, view.automaticSelectionRef, { ready: regionalReady });
     return view;
   }
 
@@ -288,6 +288,8 @@ describe("필터 변경 중 선택·상세·카메라 보존", () => {
     const initial = run([{ location_id: "b" }], "");
     expect(initial.setSelectedId).toHaveBeenCalledWith("b");
     expect(initial.automaticSelectionRef.current).toBeNull();
+    const afterRegionalMap = run([{ location_id: "b" }], "", false, true);
+    expect(afterRegionalMap.automaticSelectionRef.current).toBe("b");
     const empty = run([], "a");
     expect(empty.setSelectedId).toHaveBeenCalledWith("");
     expect(empty.setDetailOpen).toHaveBeenCalledWith(false);

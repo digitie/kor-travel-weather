@@ -5,12 +5,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "@/components/admin-shell";
 import { InfoButton } from "@/components/info-button";
 import { WeatherMap } from "@/components/weather-map";
-import { getAllPublicLocations, Location } from "@/lib/api";
+import { getAllPublicLocations, getPublicRegionLocations, Location, type WeatherRegionProjection } from "@/lib/api";
 
 export default function WeatherPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [regionProjection, setRegionProjection] = useState<WeatherRegionProjection | null>(null);
   const catalogRequest = useRef<AbortController | null>(null);
 
   const loadLocations = useCallback(() => {
@@ -19,6 +20,11 @@ export default function WeatherPage() {
     catalogRequest.current = request;
     setLoading(true);
     setError(null);
+    setRegionProjection(null);
+    // 전체 목록은 병행해서 유지한다. 대표 참조의 실패·미준비는 전체 조회를 막지 않는다.
+    void getPublicRegionLocations(AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]))
+      .then(({ data }) => { if (!request.signal.aborted && data.ready) setRegionProjection(data); })
+      .catch(() => { /* 기존 전체 카탈로그 경로로 진행한다. */ });
     getAllPublicLocations(undefined, request.signal)
       .then((result) => {
         if (!request.signal.aborted) setLocations(result);
@@ -44,7 +50,7 @@ export default function WeatherPage() {
         section="날씨 탐색"
         title="날씨 지도"
       />
-      <WeatherMap locations={locations} catalogLoading={loading} catalogError={error} onRetryCatalog={loadLocations} />
+      <WeatherMap locations={locations} regionProjection={regionProjection} catalogLoading={loading} catalogError={error} onRetryCatalog={loadLocations} />
     </>
   );
 }

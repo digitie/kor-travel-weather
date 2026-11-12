@@ -249,6 +249,35 @@ class WeatherLocationRow(Base):
     updated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
 
 
+class WeatherRegionLocationRow(Base):
+    """대표 지점 참조만 저장하는 재생성 가능한 읽기 모델. 기상 원본은 복제하지 않는다."""
+
+    __tablename__ = "weather_region_locations"
+    __table_args__ = (
+        CheckConstraint("level IN ('sido', 'sigungu')", name="ck_weather_region_level"),
+        CheckConstraint("member_count > 0", name="ck_weather_region_members"),
+    )
+    level: Mapped[str] = mapped_column(String(8), primary_key=True)
+    region_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    sido_name: Mapped[str] = mapped_column(Text, nullable=False)
+    sigungu_name: Mapped[str | None] = mapped_column(Text)
+    location_id: Mapped[str] = mapped_column(
+        String(120), ForeignKey("weather_locations.location_id", ondelete="CASCADE"), nullable=False
+    )
+    location_updated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    coordinate_key: Mapped[str] = mapped_column(Text, nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class WeatherRegionProjectionStateRow(Base):
+    __tablename__ = "weather_region_projection_states"
+    __table_args__ = (CheckConstraint("row_count >= 0", name="ck_weather_region_projection_count"),)
+    projection_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    calculated_at: Mapped[datetime] = mapped_column(AwareDateTime(), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class SourceRecordRow(Base):
     """provider raw response lineage."""
 
@@ -1199,6 +1228,166 @@ class WeatherRepository:
                     entries.c.target_key.in_(targets))).mappings()
             return {r["target_key"]: {"sido_name": r["sido"], "sigungu_name": r["sigungu"]}
                     for r in rows if r["coordinate_key"] == targets[r["target_key"]]}
+
+    def refresh_region_locations(self) -> bool:
+        """저장 주소로 대표 위치 참조를 원자 갱신한다. 외부 API를 호출하지 않는다."""
+        from kortravelcommon.address_providers import VworldKakaoAddressResolver
+        from kortravelcommon.reverse_address import AddressTarget
+
+        from .regional_locations import representative_locations
+
+        addresses = Base.metadata.tables["reverse_address_entries"]
+        location = WeatherLocationRow.__table__
+        with self.engine.begin() as connection:
+            # 이 캐시의 writer끼리만 합치며, 원천 수집 writer를 기다리게 하지 않는다.
+            acquired = connection.scalar(text("SELECT pg_try_advisory_xact_lock(1465017671, 1)"))
+            if not acquired:
+                return False
+            connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+            rows = connection.execute(
+                select(
+                    location.c.location_id,
+                    location.c.longitude,
+                    location.c.latitude,
+                    location.c.updated_at,
+                    addresses.c.coordinate_key,
+                    addresses.c.payload["region"]["sido"].as_string().label("sido_name"),
+                        addresses.c.payload["region"]["sigungu"].as_string().label("sigungu_name"),
+                )
+                .join(
+                    addresses,
+                    and_(
+                        addresses.c.target_key == location.c.location_id,
+                        addresses.c.provider_id == VworldKakaoAddressResolver.provider_id,
+                        addresses.c.status.in_(["ok", "error"]),
+                    ),
+                )
+                .where(location.c.enabled.is_(True))
+            ).mappings()
+            candidates = [
+                row
+                for row in rows
+                if row["coordinate_key"]
+                == AddressTarget(
+                    row["location_id"], float(row["longitude"]), float(row["latitude"])
+                ).coordinate_key
+            ]
+            representatives = representative_locations(candidates)
+            if len(representatives) > 1000:
+                raise ValueError("대표 행정구역 수가 읽기 모델 상한을 넘었습니다")
+            # 두 DELETE/INSERT와 상태 publication은 같은 transaction이다.
+            # 원본·영구 통계는 건드리지 않는다.
+            connection.execute(delete(WeatherRegionLocationRow))
+            if representatives:
+                connection.execute(insert(WeatherRegionLocationRow), representatives)
+            connection.execute(
+                delete(WeatherRegionProjectionStateRow).where(
+                    WeatherRegionProjectionStateRow.projection_key == "global"
+                )
+            )
+            connection.execute(
+                insert(WeatherRegionProjectionStateRow).values(
+                    projection_key="global", calculated_at=kst_now(), row_count=len(representatives)
+                )
+            )
+        return True
+
+    def region_locations(self) -> dict[str, Any]:
+        """대표 참조와 현재 위치/주소를 읽고 불일치는 전체 catalog fallback으로 돌린다."""
+        from kortravelcommon.address_providers import VworldKakaoAddressResolver
+
+        region = WeatherRegionLocationRow.__table__
+        location = WeatherLocationRow.__table__
+        addresses = Base.metadata.tables["reverse_address_entries"]
+        with self.engine.connect().execution_options(
+            isolation_level="REPEATABLE READ"
+        ) as connection:
+            state = (
+                connection.execute(
+                    select(WeatherRegionProjectionStateRow.__table__).where(
+                        WeatherRegionProjectionStateRow.projection_key == "global"
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if state is None or state["row_count"] == 0 or state["row_count"] > 1000:
+                return {"ready": False, "calculated_at": None, "items": []}
+            rows = (
+                connection.execute(
+                    select(
+                        region.c.level,
+                        region.c.region_key,
+                        region.c.label,
+                        region.c.sido_name,
+                    addresses.c.payload["region"]["sigungu"].as_string().label("sigungu_name"),
+                        region.c.member_count,
+                        location.c.location_id,
+                        location.c.name,
+                        location.c.latitude,
+                        location.c.longitude,
+                        location.c.nx,
+                        location.c.ny,
+                        location.c.region_code,
+                        location.c.enabled,
+                    )
+                    .join(
+                        location,
+                        and_(
+                            location.c.location_id == region.c.location_id,
+                            location.c.updated_at == region.c.location_updated_at,
+                            location.c.enabled.is_(True),
+                        ),
+                    )
+                    .join(
+                        addresses,
+                        and_(
+                            addresses.c.target_key == region.c.location_id,
+                            addresses.c.provider_id == VworldKakaoAddressResolver.provider_id,
+                            addresses.c.status.in_(["ok", "error"]),
+                            addresses.c.coordinate_key == region.c.coordinate_key,
+                            addresses.c.payload["region"]["sido"].as_string() == region.c.sido_name,
+                            or_(
+                                region.c.level == "sido",
+                                addresses.c.payload["region"]["sigungu"].as_string()
+                                == region.c.sigungu_name,
+                            ),
+                        ),
+                    )
+                    .order_by(region.c.level, region.c.region_key)
+                    .limit(1001)
+                )
+                .mappings()
+                .all()
+            )
+            if len(rows) != state["row_count"]:
+                return {"ready": False, "calculated_at": state["calculated_at"], "items": []}
+            items = [
+                {
+                    "level": row["level"],
+                    "region_key": row["region_key"],
+                    "label": row["label"],
+                    "member_count": row["member_count"],
+                    "location": {
+                        key: row[key]
+                        for key in (
+                            "location_id",
+                            "name",
+                            "latitude",
+                            "longitude",
+                            "nx",
+                            "ny",
+                            "region_code",
+                            "enabled",
+                            "sido_name",
+                            "sigungu_name",
+                        )
+                    }
+                    | {"metadata": {}},
+                }
+                for row in rows
+            ]
+            return {"ready": True, "calculated_at": state["calculated_at"], "items": items}
 
     def __init__(self, database_url: str, *, export_status_enabled: bool = False) -> None:
         self.orchestrator_run_id: str | None = None
