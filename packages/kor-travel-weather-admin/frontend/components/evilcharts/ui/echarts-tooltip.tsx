@@ -15,6 +15,11 @@ export type TooltipRoundness = "sm" | "md" | "lg" | "xl";
 // the top (fixed Y).
 export type TooltipPosition = "fixed" | "variable";
 
+/** 기온의 작은 비영 값을 기본 locale 반올림으로 0으로 바꾸지 않는다. */
+export function tooltipValueText(value: unknown): string {
+  return String(value ?? "");
+}
+
 export const roundnessClass: Record<TooltipRoundness, string> = {
   sm: "rounded-sm",
   md: "rounded-md",

@@ -17,6 +17,7 @@ import {
   tooltipIndicatorHtml,
   tooltipRow,
   tooltipShell,
+  tooltipValueText,
   type TooltipPosition,
   type TooltipRoundness,
   type TooltipVariant,
@@ -846,8 +847,7 @@ function createTooltipFormatter(ctx: OptionBuildContext) {
           (hovered != null && hovered !== key)
             ? " opacity-30"
             : "";
-        const value =
-          typeof p.value === "number" ? p.value.toLocaleString() : String(p.value ?? "");
+        const value = tooltipValueText(p.value);
 
         return tooltipRow({
           indicatorHtml: tooltipIndicatorHtml(key, colorsCount),

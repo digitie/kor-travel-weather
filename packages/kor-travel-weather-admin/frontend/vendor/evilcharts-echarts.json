@@ -38,9 +38,10 @@
       "url": "https://evilcharts.com/r/echarts-tooltip.json",
       "registry_sha256": "af1f2bcc567052b39c16acc16784d3fa2908a0b1d1c51256b50f6b0e0be09aaf",
       "upstream_source_sha256": "582c41558d63f8ef64c842a7a8763a4454819c4854c866a999d25e6883d3481a",
-      "installed_source_sha256": "35b7330058bac8e1360d6e0b244a0c30cc8b048bb922f677ef336f89e27e7b90",
+      "installed_source_sha256": "ce22ba14b2ba17689c7a4b7efdbe6a280a46f68935d081401208ee4b35678f62",
       "changes": [
-        "앱의 실제 경로로 import 재배치"
+        "앱의 실제 경로로 import 재배치",
+        "툴팁은 작은 비영 기온을0으로 반올림하지 않는 문자열 formatter 사용"
       ]
     },
     {
@@ -71,11 +72,12 @@
       "url": "https://evilcharts.com/r/echarts-line-chart.json",
       "registry_sha256": "af4497e9835369a7f23a007f8dfdb07e87d813bd7fb143a11d2cebba4c540e5d",
       "upstream_source_sha256": "102e36102ffeeccf1a5d80cfe9a268198cce7bf65a044da531d5dcd91d1bfd60",
-      "installed_source_sha256": "d15756fe6b8bda21dd10579deb0692981b73979e7d0dc1f5e86c1e83336b9419",
+      "installed_source_sha256": "0f2cf596b6a071cea61663d90f050bd2b286b4e3daa93503f6ae79b8b9765615",
       "changes": [
         "앱의 실제 경로로 import 재배치",
         "생성 CSS는 style 텍스트 자식으로 넣어 HTML 삽입 제거",
-        "공식 Children.forEach 슬롯 탐색은 유지하고 해당 벤더 구간의 lint 예외 이유 명시"
+        "공식 Children.forEach 슬롯 탐색은 유지하고 해당 벤더 구간의 lint 예외 이유 명시",
+        "툴팁은 작은 비영 기온을0으로 반올림하지 않는 문자열 formatter 사용"
       ]
     }
   ]

@@ -2572,6 +2572,7 @@ tbody tr:hover {
 
 @media (pointer: coarse) {
   .info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .vworld-weather-marker-button { min-width: 44px; min-height: 44px; }
   .weather-shell[data-layout="map"] { --weather-map-control-size: 44px; }
 }
 
