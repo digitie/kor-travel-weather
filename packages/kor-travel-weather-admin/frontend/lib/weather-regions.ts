@@ -32,6 +32,14 @@ export function weatherRepresentatives(locations: Location[], zoom: number, init
     const lon = group.reduce((n, p) => n + p.longitude, 0) / group.length;
     const lat = group.reduce((n, p) => n + p.latitude, 0) / group.length;
     const distance = (p: Location) => (p.longitude - lon) ** 2 + (p.latitude - lat) ** 2;
-    return { label, location: [...group].sort((a, b) => distance(a) - distance(b) || a.location_id.localeCompare(b.location_id))[0] };
+    let representative = group[0];
+    let nearest = Infinity;
+    for (const point of group) {
+      const next = distance(point);
+      if (next < nearest || (next === nearest && point.location_id.localeCompare(representative.location_id) < 0)) {
+        representative = point; nearest = next;
+      }
+    }
+    return { label, location: representative };
   }).sort((a, b) => a.label.localeCompare(b.label));
 }

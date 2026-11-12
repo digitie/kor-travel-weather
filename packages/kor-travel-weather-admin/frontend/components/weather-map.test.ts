@@ -145,6 +145,20 @@ describe("지역 대표 카드의 화면 충돌", () => {
   });
 });
 
+it("카탈로그가 같은 지점의 좌표를 바꾸면 이전 행정 도형을 표시하지 않는다", () => {
+  let expression: string | undefined;
+  function find(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "displayedBoundary") expression = node.initializer?.getText(tree);
+    ts.forEachChild(node, find);
+  }
+  find(tree);
+  if (!expression) throw new Error("실제 경계 선택 판정이 필요합니다");
+  const request = { latitude: 37, longitude: 127, level: "sigungu" };
+  expect(evaluateModelExpression(expression, { mode: "map", boundaryRequest: request, model: { detailOpen: true, selected: { latitude: 37, longitude: 127 } } })).toBe(request);
+  expect(evaluateModelExpression(expression, { mode: "map", boundaryRequest: request, model: { detailOpen: true, selected: { latitude: 37, longitude: 128 } } })).toBeNull();
+  expect(evaluateModelExpression(expression, { mode: "list", boundaryRequest: request, model: { detailOpen: true, selected: request } })).toBeNull();
+});
+
 describe("지도와 대체 목록의 같은 날씨 표시", () => {
   const source = readFileSync(new URL("./vworld-map-view.tsx", import.meta.url), "utf8");
   const ast = ts.createSourceFile("map.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -298,9 +312,25 @@ describe("대표 캐시 로딩 오류 회귀", () => {
     expect(evaluateModelExpression(expression, {
       useMemo: evaluateMemo, weatherRepresentatives,
       visibleLocations: [], mapViewport: { zoom: 7 }, initialCamera: { zoom: 6 },
+      regionLevel: "sido",
       catalogLoading: false, needsSourceCatalog: false, query: "", regionProjection,
       catalogError: "fixture failure",
     })).toEqual([{ location: a, label: "경기도" }]);
+  });
+  it("같은 행정 단계의 작은 줌 변화는 대표 위치를 다시 구성하지 않는다", () => {
+    const expression = modelVariable("regional")?.initializer?.getText(tree);
+    if (!expression) throw new Error("실제 대표 memo가 필요합니다");
+    let previous: unknown[] | undefined; let value: unknown;
+    const memoize = (factory: () => unknown, deps: unknown[]) => {
+      if (!previous || deps.some((item, index) => item !== previous![index])) { value = factory(); previous = deps; }
+      return value;
+    };
+    const visibleLocations = [a];
+    const scope = { useMemo: memoize, weatherRepresentatives, visibleLocations, regionLevel: "sido", catalogLoading: false,
+      catalogError: null, needsSourceCatalog: false, query: "", regionProjection: null, initialCamera: { zoom: 6 } };
+    const first = evaluateModelExpression(expression, { ...scope, mapViewport: { zoom: 6.5 } });
+    expect(evaluateModelExpression(expression, { ...scope, mapViewport: { zoom: 7.9 } })).toBe(first);
+    expect(evaluateModelExpression(expression, { ...scope, regionLevel: "sigungu", mapViewport: { zoom: 8 } })).not.toBe(first);
   });
 });
 

@@ -109,22 +109,13 @@ export function LegendOverlay({
         const isSelected =
           (selectedKey === null || selectedKey === key) &&
           (hoveredKey === null || hoveredKey === key);
-        return (
-          // No entrance here — the Recharts legend appears instantly, and a
-          // fade-in reads as disconnected from the canvas draw-in.
-          <div
-            key={key}
-            className={`flex items-center gap-1.5 transition-opacity ${
-              !isSelected ? "opacity-30" : ""
-            } ${isClickable ? "cursor-pointer" : ""}`}
-            onClick={() => {
-              if (isClickable) onToggle(key);
-            }}
-          >
-            <LegendIndicator variant={variant} dataKey={key} colorsCount={colorsCount} />
-            {item?.label}
-          </div>
-        );
+        const content = <><LegendIndicator variant={variant} dataKey={key} colorsCount={colorsCount} />{item?.label}</>;
+        const className = `flex items-center gap-1.5 transition-opacity ${!isSelected ? "opacity-30" : ""}`;
+        return isClickable ? (
+          <button key={key} type="button" className={`${className} cursor-pointer`}
+            style={{ border: 0, padding: 0, background: "none", font: "inherit", color: "inherit" }}
+            aria-pressed={selectedKey === null || selectedKey === key} onClick={() => onToggle(key)}>{content}</button>
+        ) : <div key={key} className={className}>{content}</div>;
       })}
     </div>
   );

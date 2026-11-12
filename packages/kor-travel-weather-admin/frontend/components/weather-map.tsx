@@ -616,9 +616,9 @@ function useWeatherMapModel({
   const regional = useMemo(() => {
     // 전역 대표는 전체 목록 대기/실패 중·무필터 저배율에만 사용한다.
     // 종류·제공처·검색 또는 전체 목록 완료 뒤에는 기존 집합의 대표를 그대로 고른다.
-    return weatherRepresentatives(visibleLocations, mapViewport?.zoom ?? initialCamera.zoom,
+    return weatherRepresentatives(visibleLocations, regionLevel === "sido" ? 7 : regionLevel === "sigungu" ? 9 : 12,
       (catalogLoading || Boolean(catalogError)) && !needsSourceCatalog && !query.trim() ? regionProjection : null);
-  }, [catalogLoading, catalogError, needsSourceCatalog, query, regionProjection, visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
+  }, [catalogLoading, catalogError, needsSourceCatalog, query, regionProjection, visibleLocations, regionLevel]);
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
     const candidates = weatherRegionLevel(
@@ -1536,6 +1536,10 @@ export function WeatherMap(props: WeatherMapProps) {
     markers,
     syncViewport,
   } = model;
+  // 같은 ID의 좌표가 카탈로그 갱신으로 바뀌면 이전 위치의 도형을 새 날씨와 섞지 않는다.
+  const displayedBoundary = mode === "map" && model.detailOpen
+    && boundaryRequest?.latitude === model.selected?.latitude
+    && boundaryRequest?.longitude === model.selected?.longitude ? boundaryRequest : null;
   const filterLabel = weatherFilterLabel(
     selectedKinds,
     selectedSources,
@@ -1604,7 +1608,7 @@ export function WeatherMap(props: WeatherMapProps) {
           hidden={mode !== "map"}
         >
           <MapStage
-            className={`weather-region-stage${boundaryRequest && model.detailOpen ? " weather-boundary-open" : ""}`}
+            className={`weather-region-stage${displayedBoundary ? " weather-boundary-open" : ""}`}
             view="map"
             summary={mode === "map" ? mapNotice : null}
             detail={mode === "map" ? detailPanel : null}
@@ -1624,7 +1628,7 @@ export function WeatherMap(props: WeatherMapProps) {
               onRecover={() => setMapError("")}
               zoom={initialCamera.zoom}
             >
-              <WeatherRegionBoundary request={mode === "map" && model.detailOpen ? boundaryRequest : null} />
+              <WeatherRegionBoundary request={displayedBoundary} />
               <VWorldWeatherClusters markers={regionLevel ? [] : markers} />
               {regionLevel && !regional.length && visibleLocations.length ? (
                 <p role="status">

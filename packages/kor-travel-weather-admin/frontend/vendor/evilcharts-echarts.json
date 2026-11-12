@@ -50,9 +50,10 @@
       "url": "https://evilcharts.com/r/echarts-legend.json",
       "registry_sha256": "cb74f7b714991b5c1395d377c404bb379d17605fd51dcf572c06649d57b694aa",
       "upstream_source_sha256": "2f649c97b1c81ad36294eb281629b01c947a2033e278fe0ee1f62eaa656738e4",
-      "installed_source_sha256": "3de64dc7518529a531da5e279d4f8003dd6c5c4c770a399ad3a7fa664b7a95cc",
+      "installed_source_sha256": "88b48513f2693fe1572e7a77d480e5f69ceb499e49e4fc5d1c3864d7b40195ef",
       "changes": [
-        "앱의 실제 경로로 import 재배치"
+        "앱의 실제 경로로 import 재배치",
+        "클릭 범례를 native button으로 바꾸고 전체 선택 aria-pressed를 보존"
       ]
     },
     {
