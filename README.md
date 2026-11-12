@@ -70,7 +70,9 @@ Admin frontend:
 ```bash
 cd packages/kor-travel-weather-admin/frontend
 cp .env.example .env.local  # set WEATHER_API_INTERNAL_URL/WEATHER_ADMIN_TOKEN
-npm ci
+nvm use
+npm install --global npm@12.0.1
+npm ci --engine-strict --ignore-scripts --no-audit --no-fund
 npm run dev                 # http://127.0.0.1:14105
 ```
 
@@ -167,3 +169,23 @@ response idempotency와 run overlap guard로 중복 publish를 막고 매 실행
 GPL-3.0-or-later. Provider 원천 데이터와 API 응답은 각 기관의 이용약관을 따른다.
 
 공식 기상특보 발표 관측의 원천·지역 검증·수집/보존·공개 API 경계는 [특보 이벤트 계약](docs/pinvi-alert-events.md)을 따른다. 기존 활성 카드와 빈 목록의 의미는 유지한다.
+
+### 프론트엔드 필수 검증
+
+루트 .nvmrc의 Node22.23.1과 private frontend의 npm12.0.1을 선택한 뒤 실행한다.
+다음 명령은 실제 설치·품질 검증용이며 문서에 적었다는 사실은 통과 증거가 아니다.
+
+```bash
+cd packages/kor-travel-weather-admin/frontend
+npm run check:dependencies
+npm run lint
+npm run doctor
+npm run type-check
+npm test
+npm run build
+```
+
+lint는 경고0을 요구한다. 단위 테스트는 실제 suite가 없으면 실패해야 하므로
+passWithNoTests 성공 예외를 사용하지 않는다. Doctor full·blocking warning과
+기존 lifecycle/peer 정책은 유지한다. 브라우저 검증은 CI의 기존 fixture 명령과
+N150 슬롯 조정에 따르며 운영 인증·서비스 호출로 대체하지 않는다.
