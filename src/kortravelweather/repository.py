@@ -4392,10 +4392,16 @@ class WeatherRepository:
         earth_km = 6371.0088
         # Haversine uses radians while the catalog stores degrees.
         degrees_per_radian = 180.0 / math.pi
-        latitude_delta = radius_km / earth_km * degrees_per_radian
+        angular_radius = radius_km / earth_km
+        latitude_delta = angular_radius * degrees_per_radian
         cosine = abs(math.cos(math.radians(latitude)))
+        # 선형 각도/cos 근사는 동·서 끝을 작게 잡는다. 최종 거리 검사 전에
+        # 실제 원 안의 지점을 버리지 않도록 구면 원의 경도 극값을 사용한다.
         longitude_delta = (
-            radius_km / (earth_km * max(cosine, 1e-12)) * degrees_per_radian
+            180.0
+            if abs(latitude) + latitude_delta >= 90.0
+            else math.asin(min(1.0, math.sin(angular_radius) / max(cosine, 1e-12)))
+            * degrees_per_radian
         )
         # Catalog constraints are Korea-specific.  Clamping the box to those
         # bounds keeps the composite coordinate index selective at edge

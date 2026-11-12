@@ -1,3 +1,8 @@
+## 2026-11-13 — 반경 날씨 경계 누락 수정
+
+- 대표 위치 개선은 #229/main4cb5986으로 머지했다. 기존 반경 API의 경도 사전 필터가 실제 반경 안 지점을 제외하는 문제를 재현해 구면 원 극값으로 수정했다.
+- 실제 SQL/API 회귀2FAIL 뒤 집중 PG18 WSL/Docker 각각10PASS다. 정확 거리·LIMIT·필드·인덱스 조회 계약을 유지하며 빌드·배포·운영 변경0이다. [원문과 범위](reports/2026-11-13-nearby-radius-boundary.md).
+
 ## 2026-11-13 — 실제 병합된 Common toolchain guard 연결
 
 - reusable uses/common-ref를 실제 merge36e4d285ea926b9d8c20da4221ade86ebf74c04d로 고정했다. 기존 frontend matrix의 private anchor와 생산 Node Dockerfile 경로를 JSON으로 연결하며 추가 설치 anchor는 없다.
