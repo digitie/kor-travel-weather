@@ -136,7 +136,7 @@ weather-map-dev-r6-20261113/results.json 및 geometry-observation.json이다.
 tracked production E2E의5초 기대·90% 가시 기준은 유지했다. 임시 인증은 loopback
 메모리 API만 사용했고 실제 제공자·DB·Geo·운영에는 접속하지 않았다. 이는 production
 이미지 빌드나 실제 타일 수용은 아니다. 생성된 next-env의 dev 경로는 서버 종료 뒤
-원래 tracked 경로로 복구했다. 서버·브라우저·모든 소유 자식은 terminal이다.
+원래 tracked 경로로 복구했다. 브라우저 종료와 runner가 추적한 서버·시험 자식의 terminal을 확인했다.
 
 관련27개 WSL/Docker각PASS, 타입·전체 lint·공통 의존성0, Doctor105파일 진단0이다.
 중간 Root 렌더 복잡도 경고1은 안내 표시 위치 판단을 안내 컴포넌트 안으로 응집해
