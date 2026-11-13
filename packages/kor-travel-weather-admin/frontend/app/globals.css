@@ -1219,7 +1219,7 @@ tbody tr:hover {
 @container weather-inspector (max-width: 16rem) {
   .kt-map-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 0; }
   .kt-map-detail-heading, .inspector-heading { display: contents; }
-  /* 새 32px 제어 행도 기존 제목의 3em 높이 예산 안에 포함한다. */
+  /* 제어 행을 제목 상한에서 빼 확대 글자가 본문을 밀지 않게 하며 제목은 최소 32px를 둔다. */
   .inspector-heading > div:first-child { grid-column: 1 / -1; grid-row: 2; max-height: max(32px, calc(3em - 32px)); overflow: auto; overscroll-behavior: contain; }
   .inspector-title { align-items: flex-start; }
   .inspector-header-actions { grid-column: 1; grid-row: 1; justify-self: end; }
