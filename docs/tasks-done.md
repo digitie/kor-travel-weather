@@ -1,3 +1,7 @@
+## 2026-11-13 — 지도 렌더 비용·품질 소스
+
+- [x] 대표 위치 선형 선택·같은 단계 memo와 카탈로그 좌표 변화 대응, 차트 callback/Motion/범례 개선. WSL/Docker각349PASS 및 전체lint·타입·의존성·Doctor0. 실제 CI/운영 수용은 별도다. [결과](reports/2026-11-13-map-render-quality.md).
+
 ## 2026-11-13 — 선택 지역 행정 경계 소스
 
 - [x] Geo의 기존 API·실제 법정 코드로 시도/시군구/읍면동/리 도형·지도 맞춤·상한 캐시를 구현하고 집중/전체 WSL·Docker 및 정적 리뷰를 완료했다. 운영 환경 연결·전국 자료·실화면·배포는 별도다. [정산](reports/2026-11-13-selected-region-boundary.md).
