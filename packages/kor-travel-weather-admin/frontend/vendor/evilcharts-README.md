@@ -1,7 +1,7 @@
 # EvilCharts ECharts 사용
 
 공식 [EvilCharts](https://github.com/legions-developer/evilcharts)의 ECharts 엔진 시간별 선 그래프를 사용한다.
-Recharts 엔진은 설치하지 않는다. Apache ECharts6.1.0과 motion14.12.0을 정확 버전으로 고정하며,
+Recharts 엔진은 설치하지 않는다. Apache ECharts6.1.0과 motion14.13.0을 정확 버전으로 고정하며,
 공식 합성 컴포넌트 소스6개를 `components/evilcharts`에 둔다.
 
 - 원문 URL·registry/원본/설치본 SHA와 경로 변경은 `evilcharts-echarts.json`에 기록한다.
