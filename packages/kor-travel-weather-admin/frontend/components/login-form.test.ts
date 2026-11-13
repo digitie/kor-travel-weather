@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 
-import { LoginForm } from "./LoginForm";
+import { LoginForm } from "./login-form";
 
 // 공용 UI dev.9: 서버 렌더와 최초 hydration 동안 입력·제출은 native disabled다.
 // client handler가 준비되기 전의 클릭·Enter가 기본 POST /login으로 새지 않게 한다.

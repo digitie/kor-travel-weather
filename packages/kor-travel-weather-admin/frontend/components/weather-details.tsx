@@ -14,6 +14,7 @@ import {
   hourLabel,
 } from "@/lib/weather-detail-model";
 import type { WeatherValue } from "@/lib/api";
+import { DetailList } from "@/components/detail-list";
 
 type Condition = { glyph: string; label: string };
 type Slot = ReturnType<typeof hourlyWeather>[number];
@@ -273,36 +274,39 @@ export function WeatherDetails({
       </div>
       <section className="weather-detail-metrics" aria-label="세부 날씨 정보">
         <h3 className="sr-only">미세먼지와 세부 날씨 정보</h3>
-        <div className="metric-grid">
-          {[
-            ["미세먼지", DETAIL_METRICS.pm10, "μg/m³"],
-            ["초미세먼지", DETAIL_METRICS.pm25, "μg/m³"],
-            ["체감", DETAIL_METRICS.feels, "°"],
-            ["풍속", DETAIL_METRICS.wind, "m/s"],
-            ["풍향", DETAIL_METRICS.direction, "°"],
-            ["습도", DETAIL_METRICS.humidity, "%"],
-            ["자외선", DETAIL_METRICS.uv, ""],
-          ].map(([label, keys, suffix]) => (
-            <div className="metric-card" key={label as string}>
-              <span>{label}</span>
-              <strong>
-                {weatherDetailText(
-                  values,
-                  keys as readonly string[],
-                  suffix as string,
-                )}
-              </strong>
-            </div>
-          ))}
-          <div className="metric-card weather-sun-times">
-            <span>
-              일출 <strong>{clockValue(values, DETAIL_METRICS.sunrise)}</strong>
-            </span>
-            <span>
-              일몰 <strong>{clockValue(values, DETAIL_METRICS.sunset)}</strong>
-            </span>
-          </div>
-        </div>
+        <DetailList
+          columns={2}
+          items={[
+            ...[
+              ["미세먼지", DETAIL_METRICS.pm10, "μg/m³"],
+              ["초미세먼지", DETAIL_METRICS.pm25, "μg/m³"],
+              ["체감", DETAIL_METRICS.feels, "°"],
+              ["풍속", DETAIL_METRICS.wind, "m/s"],
+              ["풍향", DETAIL_METRICS.direction, "°"],
+              ["습도", DETAIL_METRICS.humidity, "%"],
+              ["자외선", DETAIL_METRICS.uv, ""],
+            ].map(([label, keys, suffix]) => ({
+              label: label as string,
+              value: (
+                <strong>
+                  {weatherDetailText(
+                    values,
+                    keys as readonly string[],
+                    suffix as string,
+                  )}
+                </strong>
+              ),
+            })),
+            {
+              label: "일출",
+              value: <strong>{clockValue(values, DETAIL_METRICS.sunrise)}</strong>,
+            },
+            {
+              label: "일몰",
+              value: <strong>{clockValue(values, DETAIL_METRICS.sunset)}</strong>,
+            },
+          ]}
+        />
       </section>
     </section>
   );

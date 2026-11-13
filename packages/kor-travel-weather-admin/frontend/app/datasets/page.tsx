@@ -4,8 +4,20 @@ import Link from "next/link";
 import { MapPin } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { PageHeader } from "@/components/admin-shell";
+import { AdminShell } from "@/components/admin-shell";
+import { EmptyState } from "@/components/empty-state";
+import { StatusBadge } from "@/components/status-badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { getProviders, Provider } from "@/lib/api";
+import type { StatusTone } from "@/lib/status-label";
 
 // These providers key their readings off this project's own location catalog
 // (fixed KMA grids / measurement stations); the rest fetch on demand for
@@ -32,6 +44,14 @@ function credentialLabel(provider: Provider) {
   return provider.credential_configured ? "API 키 설정됨" : "API 키 미설정";
 }
 
+function credentialTone(provider: Provider): StatusTone {
+  if (!provider.auth_required) return "neutral";
+  return provider.credential_configured ? "success" : "warning";
+}
+
+const linkClassName =
+  "rounded-control underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus";
+
 export default function DatasetsPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -39,38 +59,68 @@ export default function DatasetsPage() {
     getProviders().then((result) => setProviders(result.data)).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "데이터셋을 불러오지 못했습니다."));
   }, []);
   return (
-    <>
-      <PageHeader
-        description="각 데이터 제공처가 어떤 데이터를 얼마나 자주 보내주는지 정리한 목록입니다."
-        section="수집 파이프라인"
-        title="데이터셋"
-      />
-      {error ? <div className="error" role="alert">{error}</div> : null}
-      <section className="dataset-list" aria-label="제공처별 데이터셋">
-        {providers.flatMap((provider) => provider.datasets.map((dataset) => (
-          <article className="panel dataset-row" key={`${provider.provider}-${dataset.key}`}>
-            <div>
-              <span className="eyebrow">{provider.label} · {dataset.label}</span>
-              <Link className="dataset-detail-link" href={detailHref(provider.provider)}>
-                <h2>{dataset.description}</h2>
-                <small><MapPin size={12} aria-hidden="true" /> {detailLabel(provider.provider)}</small>
-              </Link>
-            </div>
-            {provider.auth_required ? (
-              <Link className="dataset-cadence" href={`/settings/providers#provider-${provider.provider}`} title="이 제공처의 API 키 설정으로 이동">
-                <code>{dataset.cadence}</code>
-                <small>{credentialLabel(provider)}</small>
-              </Link>
-            ) : (
-              <div className="dataset-cadence">
-                <code>{dataset.cadence}</code>
-                <small>{credentialLabel(provider)}</small>
-              </div>
-            )}
-          </article>
-        )))}
-        {!providers.length && !error ? <div className="panel empty">등록된 데이터셋이 없습니다.</div> : null}
-      </section>
-    </>
+    <AdminShell
+      description="각 데이터 제공처가 어떤 데이터를 얼마나 자주 보내주는지 정리한 목록입니다."
+      section="수집 파이프라인"
+      title="데이터셋"
+    >
+      <div className="flex flex-col gap-6">
+        {error ? (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        <section
+          aria-label="제공처별 데이터셋"
+          className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
+        >
+          {providers.flatMap((provider) => provider.datasets.map((dataset) => {
+            const meta = (
+              <>
+                <code className="font-mono text-xs text-text-primary">{dataset.cadence}</code>
+                <StatusBadge label={credentialLabel(provider)} status={null} tone={credentialTone(provider)} />
+              </>
+            );
+            return (
+              <Card key={`${provider.provider}-${dataset.key}`} size="sm">
+                <CardHeader>
+                  <CardDescription>{provider.label} · {dataset.label}</CardDescription>
+                  <CardTitle>
+                    <Link className={linkClassName} href={detailHref(provider.provider)}>
+                      {dataset.description}
+                    </Link>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Link
+                    className={`${linkClassName} inline-flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary`}
+                    href={detailHref(provider.provider)}
+                  >
+                    <MapPin aria-hidden="true" size={12} />
+                    {detailLabel(provider.provider)}
+                  </Link>
+                </CardContent>
+                <CardFooter className="flex items-center justify-between gap-2">
+                  {provider.auth_required ? (
+                    <Link
+                      className={`${linkClassName} flex w-full items-center justify-between gap-2`}
+                      href={`/settings/providers#provider-${provider.provider}`}
+                      title="이 제공처의 API 키 설정으로 이동"
+                    >
+                      {meta}
+                    </Link>
+                  ) : (
+                    <div className="flex w-full items-center justify-between gap-2">{meta}</div>
+                  )}
+                </CardFooter>
+              </Card>
+            );
+          }))}
+          {!providers.length && !error ? (
+            <EmptyState className="col-span-full" framed title="등록된 데이터셋이 없습니다." />
+          ) : null}
+        </section>
+      </div>
+    </AdminShell>
   );
 }

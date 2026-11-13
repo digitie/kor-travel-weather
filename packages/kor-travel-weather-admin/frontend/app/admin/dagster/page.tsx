@@ -4,7 +4,12 @@ import { AddressRefresh } from "@/components/address-refresh";
 
 import { DagsterOperations } from "@kor-travel/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PageHeader } from "@/components/admin-shell";
+import { AdminShell } from "@/components/admin-shell";
+import { DetailList } from "@/components/detail-list";
+import { EmptyState } from "@/components/empty-state";
+import { StatusBadge } from "@/components/status-badge";
+import { Alert, AlertActions, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { type DagsterSnapshot, type DagsterRunFailureDetail, getDagsterSnapshot, getDagsterRunFailure, jobLabel, runStatusLabel } from "@/lib/dagster";
 import { dagsterLocationUrl, dagsterRunUrl, dagsterScheduleUrl } from "@/lib/dagster-scope";
 
@@ -93,30 +98,42 @@ export default function DagsterPage() {
   })) };
 
   return (
-    <>
-      <PageHeader
-        description="매시간 날씨를 자동으로 가져오는 작업이 잘 돌고 있는지 보여줍니다. 실패하거나 멈춘 작업을 여기서 확인하세요."
-        section="시스템"
-        title="Dagster 운영"
-      />
-      <AddressRefresh />
-      <DagsterOperations snapshot={displaySnapshot} error={error} loading={loading} onRefresh={load}
-        showRunDetails selectedRunId={selectedRunId} onSelectRun={selectRun}
-        renderRunDetail={run => !run ? <p className="empty">실행을 선택하면 상세를 확인할 수 있습니다.</p> : (
-          <div>
-            <h3>{jobLabel(run.jobName)}</h3><code>{run.runId}</code><p>{runStatusLabel(run.status)}</p>
-            {run.status === "FAILURE" ? (
-              <div aria-busy={detail?.loading ?? false}>
-                {detail?.runId !== run.runId ? <p>실패 원인 미조회</p> : detail.loading ? <p role="status">실패 원인 조회 중…</p> : detail.error ? (
-                  <div role="alert"><p>{detail.error}</p><button type="button" onClick={() => selectRun(run.runId)}>실패 원인 다시 조회</button></div>
-                ) : <><p className="dagster-run-error">{detail.result?.message ?? (detail.result?.complete ? "실패 이벤트가 없습니다." : "조회 범위에서 실패 원인을 찾지 못했습니다.")}</p>
-                  {!detail.result?.complete ? <p>조회 상한에 도달했습니다. 전체 로그는 Dagster에서 확인하세요.</p> : null}</>}
-              </div>
-            ) : <p>실패하지 않은 실행은 오류 로그를 자동 조회하지 않습니다.</p>}
-            <a className="inline-link" href={dagsterRunUrl(run.runId)} target="_blank" rel="noreferrer">선택한 실행을 Dagster에서 열기 ↗</a>
-          </div>
-        )}
-        jobLabel={jobLabel} runUrl={dagsterRunUrl} scheduleUrl={dagsterScheduleUrl} locationUrl={dagsterLocationUrl()} />
-    </>
+    <AdminShell
+      description="매시간 날씨를 자동으로 가져오는 작업이 잘 돌고 있는지 보여줍니다. 실패하거나 멈춘 작업을 여기서 확인하세요."
+      section="시스템"
+      title="Dagster 운영"
+    >
+      <div className="flex flex-col gap-6">
+        <AddressRefresh />
+        <DagsterOperations snapshot={displaySnapshot} error={error} loading={loading} onRefresh={load}
+          showRunDetails selectedRunId={selectedRunId} onSelectRun={selectRun}
+          renderRunDetail={run => !run ? <EmptyState title="실행을 선택하면 상세를 확인할 수 있습니다." /> : (
+            <div className="flex min-w-0 flex-col gap-3">
+              <h3 className="text-sm font-semibold text-text-primary">{jobLabel(run.jobName)}</h3>
+              <DetailList layout="inline" items={[
+                { label: "실행 ID", value: run.runId, mono: true, copyable: true },
+                { label: "상태", value: <StatusBadge label={runStatusLabel(run.status)} status={run.status} /> },
+              ]} />
+              {run.status === "FAILURE" ? (
+                <div aria-busy={detail?.loading ?? false} className="flex flex-col gap-2 text-sm">
+                  {detail?.runId !== run.runId ? <p className="text-text-secondary">실패 원인 미조회</p> : detail.loading ? <p className="text-text-secondary" role="status">실패 원인 조회 중…</p> : detail.error ? (
+                    <Alert variant="destructive">
+                      <AlertDescription>{detail.error}</AlertDescription>
+                      <AlertActions>
+                        <Button size="sm" type="button" variant="outline" onClick={() => selectRun(run.runId)}>실패 원인 다시 조회</Button>
+                      </AlertActions>
+                    </Alert>
+                  ) : <>
+                    <p className="break-words text-destructive">{detail.result?.message ?? (detail.result?.complete ? "실패 이벤트가 없습니다." : "조회 범위에서 실패 원인을 찾지 못했습니다.")}</p>
+                    {!detail.result?.complete ? <p className="text-text-secondary">조회 상한에 도달했습니다. 전체 로그는 Dagster에서 확인하세요.</p> : null}
+                  </>}
+                </div>
+              ) : <p className="text-sm text-text-secondary">실패하지 않은 실행은 오류 로그를 자동 조회하지 않습니다.</p>}
+              <a className="inline-flex w-fit text-sm text-brand underline-offset-4 hover:underline" href={dagsterRunUrl(run.runId)} target="_blank" rel="noreferrer">선택한 실행을 Dagster에서 열기 ↗</a>
+            </div>
+          )}
+          jobLabel={jobLabel} runUrl={dagsterRunUrl} scheduleUrl={dagsterScheduleUrl} locationUrl={dagsterLocationUrl()} />
+      </div>
+    </AdminShell>
   );
 }
