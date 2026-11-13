@@ -59,7 +59,8 @@ describe("지역 경계 지도 생명주기", () => {
     expect(old.map.addSource).not.toHaveBeenCalled(); expect(old.map.fitBounds).not.toHaveBeenCalled();
     const current = fixture(375, vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: boundary }))));
     current.listeners.get("movestart")?.({ originalEvent: {} }); await flush();
-    expect(current.map.addSource).toHaveBeenCalled(); expect(current.map.fitBounds).not.toHaveBeenCalled(); current.cleanup();
+    expect(current.map.addSource).toHaveBeenCalled(); expect(current.map.fitBounds).not.toHaveBeenCalled();
+    expect(current.stage.setAttribute).toHaveBeenLastCalledWith("data-weather-boundary-compact", "true"); current.cleanup();
   });
   it("경계가 없거나 작은 화면의 글자200%에서는 본문을 축소하지 않는다", async () => {
     const absent = fixture(320, vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: null }))));

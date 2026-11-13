@@ -50,11 +50,11 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
         if (!response.ok || !result.data) { setMessage(result.detail ?? "행정 경계 자료가 없습니다."); return; }
         value = result.data as WeatherBoundary;
         draw(); setMessage(`${value.name} 경계`);
+        const mobile = compact();
         if (manualMove) return;
         const bounds = root.getBoundingClientRect();
         const { width, height } = bounds;
         if (width < 120 || height < 120) return;
-        const mobile = compact();
         const detail = stage?.querySelector(".kt-map-detail")?.getBoundingClientRect();
         map.fitBounds([[value.bbox[0], value.bbox[1]], [value.bbox[2], value.bbox[3]]], {
           padding: { top: mobile ? Math.min(height - 100, Math.max(56, detail ? detail.bottom - bounds.top + 12 : height * 0.45)) : 56,

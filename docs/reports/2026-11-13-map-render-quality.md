@@ -67,3 +67,6 @@ Chromium156의 실제 WeatherInspector와 실제 ECharts를1440/375px 고정 자
 포함한 운영 실화면 수용이 아니다. 소유 fixture 서버와 브라우저는 정상 종료했다.
 원장은 `weather-browser-20261113/results-r2.json`과
 `weather-text200-fix-20261113`, `weather-text200-docker-20261113`이다.
+독립 재검토의 수동 pan 중 응답 P2도 실제 회귀1FAIL로 재현했다. 경계 표시/패널 갱신은
+수동 이동과 무관하게 처리하고 카메라 fit만 막도록 분리했다. 관련27개 WSL/Docker를
+다시 확인했으며 기존 결과와 합산하지 않는다. 원 실패 weather-boundary-manual-pan-red.log 보존.
