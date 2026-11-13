@@ -128,11 +128,39 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             "provider",
             "metric_key",
         ]
+        assert inspector.get_pk_constraint("weather_region_locations")["constrained_columns"] == [
+            "level", "region_key",
+        ]
+        region_foreign_key = inspector.get_foreign_keys("weather_region_locations")
+        assert len(region_foreign_key) == 1
+        assert region_foreign_key[0]["constrained_columns"] == ["location_id"]
+        assert region_foreign_key[0]["referred_table"] == "weather_locations"
+        assert region_foreign_key[0]["options"]["ondelete"] == "CASCADE"
+        assert {
+            item["name"] for item in inspector.get_check_constraints("weather_region_locations")
+        } == {
+            "ck_weather_region_level", "ck_weather_region_members",
+        }
+        state_primary_key = inspector.get_pk_constraint("weather_region_projection_states")
+        assert state_primary_key["constrained_columns"] == ["projection_key"]
+        assert {
+            item["name"] for item in inspector.get_check_constraints(
+                "weather_region_projection_states"
+            )
+        } == {
+            "ck_weather_region_projection_count",
+        }
         with engine.connect() as connection:
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0039_page_liveness"
+            assert version == "0040_region_locations"
+            assert connection.execute(text(
+                "SELECT count(*) FROM weather_region_locations"
+            )).scalar_one() == 0
+            assert connection.execute(text(
+                "SELECT count(*) FROM weather_region_projection_states"
+            )).scalar_one() == 0
             epochs = connection.execute(text(
                 "SELECT target_name,epoch FROM weather_page_liveness_epochs"
             )).all()

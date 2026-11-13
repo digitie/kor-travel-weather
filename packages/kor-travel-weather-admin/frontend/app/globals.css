@@ -1139,6 +1139,7 @@ tbody tr:hover {
 
 .inspector-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2xs);
@@ -1148,10 +1149,12 @@ tbody tr:hover {
 }
 
 .inspector-heading > div:first-child {
+  flex: 1 1 8rem;
   min-width: 0;
 }
 
 .inspector-heading h2 {
+  min-width: 0;
   margin: 0;
   font-size: 1.0625rem;
   font-weight: 700;
@@ -1201,6 +1204,20 @@ tbody tr:hover {
 }
 
 .inspector-header-actions { padding: 0; }
+
+.weather-inspector { container: weather-inspector / inline-size; }
+@container weather-inspector (max-width: 20rem) {
+  .kt-map-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+  .kt-map-detail-heading, .inspector-heading { display: contents; }
+  .inspector-heading > div:first-child { grid-column: 1 / -1; grid-row: 2; }
+  .inspector-header-actions { grid-column: 1; grid-row: 1; justify-self: end; }
+  .inspector-header-actions .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+  .kt-map-detail-header > button { grid-row: 1; }
+}
+@container weather-inspector (max-width: 12rem) {
+  .weather-detail-overview .weather-day-panels { grid-template-columns: minmax(0, 1fr); }
+  .weather-detail-overview .weather-tomorrow-panel { border-left: 0; border-top: 1px solid var(--border); }
+}
 
 .icon-button {
   width: var(--control-h);

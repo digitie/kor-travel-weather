@@ -269,6 +269,9 @@ test.describe("작은 화면 글자 확대", () => {
       await expect(content).toBeInViewport({ ratio: 0.9 });
     }
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-320-text200-temperature.png`, fullPage: true });
+    for (const name of ["날씨 새로고침", "지도에서 위치로 이동", "위치·데이터 출처 안내"]) {
+      await expect(detail.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+    }
     const info = detail.getByRole("button", { name: "위치·데이터 출처 안내", exact: true });
     await info.click();
     const popup = page.getByRole("dialog", { name: "위치·데이터 출처", exact: true });

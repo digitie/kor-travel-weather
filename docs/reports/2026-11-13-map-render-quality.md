@@ -70,3 +70,27 @@ Chromium156의 실제 WeatherInspector와 실제 ECharts를1440/375px 고정 자
 독립 재검토의 수동 pan 중 응답 P2도 실제 회귀1FAIL로 재현했다. 경계 표시/패널 갱신은
 수동 이동과 무관하게 처리하고 카메라 fit만 막도록 분리했다. 관련27개 WSL/Docker를
 다시 확인했으며 기존 결과와 합산하지 않는다. 원 실패 weather-boundary-manual-pan-red.log 보존.
+
+## 후속 전체 CI의 두 실제 실패
+
+e701d89의 CI43341365561은 frontend19PASS/1FAIL과 Python1891PASS/1FAIL이다.
+본문 높이 검사를 통과한 뒤 정보 버튼을 갱신 버튼이 가려 클릭할 수 없는 실제320px/
+글자200% 실패가 드러났다. 좁은 상세는 컨테이너 폭으로 버튼4개를 첫 행에 모으고
+제목·info를 다음 행에 놓는다. 글자 확대 때문에 두 기온 열이 겹치는 너비에서는
+현재·내일을 한 열로 보인다. 44px 버튼과 기존 Common 접기/닫기 동작은 유지하고
+E2E에는 갱신/이동/info의 전체 viewport 단정을 추가했다.
+
+새 실제 Chromium fixture1440/375/320×568(320은글자200%)는 엔진·관측소 위치 이동·
+정보 버튼 클릭·overflow/pageerror/외부요청0·dispose를 확인했다.
+CSS-only 수정 때 Vite의 DrvFS 감시가 예전 CSS를 계속 제공한 fixture 실패도 남겼고,
+소유 서버를 정상 종료한 뒤 새 프로세스로 읽은 결과를 정본으로 사용했다.
+최종 사진/원장은 weather-browser-20261113/results-r8.json이며 실제 전체 Map/Geo
+운영 수용과 구분한다. 관련 프론트27PASS·타입/lint/Doctor105파일0은
+weather-header-final-20261113에 있다.
+
+Python 실패는 test_migration.py의 고정 expected0039와 실제 head0040 불일치다.
+expected를0040으로 맞추고 새 대표 위치/상태 테이블의 PK·FK CASCADE·check와
+마이그레이션 직후 빈 cache를 실제로 검사한다. 기존 사실 backfill·색인·안전 계약
+검사는 그대로다. 전용 PostgreSQL18에서 WSL/Docker각1PASS, Ruff0이며 정확 CID·
+label 확인 뒤 자기 PG만 종료·제거했다. 원장은 weather-migration-head-qa-20261113,
+실패 원문 weather232-ci-python-e701-failure.log다. 기존 원 CI 실패를 성공으로 바꾸지 않는다.
