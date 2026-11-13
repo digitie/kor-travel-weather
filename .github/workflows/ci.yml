@@ -9,6 +9,16 @@ permissions:
   contents: read
 
 jobs:
+  common-policy:
+    uses: digitie/kor-travel-common/.github/workflows/frontend-consumer-guard.yml@9e163936d72b6323f5a38e266004534152767751
+    with:
+      common-ref: 9e163936d72b6323f5a38e266004534152767751
+      frontends: >-
+        [{"package":"packages/kor-travel-weather-admin/frontend/package.json","lock":"packages/kor-travel-weather-admin/frontend/package-lock.json","workspace":"","profile":"web"}]
+      toolchain-manifests: '[]'
+      node-dockerfiles: >-
+        ["deploy/Dockerfile.web"]
+
   python:
     runs-on: ubuntu-latest
     env:
@@ -39,10 +49,6 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --extra dev --extra dagster
-      - name: Migrate PostgreSQL test database
-        run: uv run --locked alembic upgrade head
-      - name: Test
-        run: TMPDIR=/tmp uv run --locked --extra dev --extra dagster pytest -q
       - name: Lint
         run: uv run --locked ruff check .
       - name: Check Prometheus configuration
@@ -70,8 +76,13 @@ jobs:
           PYTHONPATH=src:packages/kor-travel-weather-api/src \
             uv run --locked python packages/kor-travel-weather-api/scripts/export_openapi.py
           git diff --exit-code -- packages/kor-travel-weather-api/openapi.json
+      - name: Migrate PostgreSQL test database
+        run: uv run --locked alembic upgrade head
+      - name: Test
+        run: TMPDIR=/tmp uv run --locked --extra dev --extra dagster pytest -q
 
   frontend:
+    needs: common-policy
     runs-on: ubuntu-latest
     defaults:
       run:
