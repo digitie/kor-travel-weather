@@ -60,7 +60,14 @@ import {
   SourceMultiSelect,
   type SourceOption,
 } from "@/components/source-multi-select";
-import { InfoButton } from "@/components/info-button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { DetailList } from "@/components/detail-list";
+import { EmptyState } from "@/components/empty-state";
+import { HelpTip } from "@/components/help-tip";
 
 type WeatherMapProps = {
   locations: Location[];
@@ -1210,18 +1217,19 @@ function WeatherMapNotice({ model, inDetail = false }: { model: WeatherMapModel;
         <span key={text}>{text}</span>
       ))}
       {catalogError && onRetryCatalog ? (
-        <button type="button" className="secondary" onClick={onRetryCatalog}>
+        <Button type="button" variant="outline" size="sm" onClick={onRetryCatalog}>
           다시 시도
-        </button>
+        </Button>
       ) : null}
       {visibleMarkerError ? (
-        <button
+        <Button
           type="button"
-          className="secondary"
+          variant="outline"
+          size="sm"
           onClick={() => setMarkerRetryToken((value) => value + 1)}
         >
           날씨 다시 조회
-        </button>
+        </Button>
       ) : null}
     </div>
   );
@@ -1231,46 +1239,48 @@ function WeatherSourceInfo({ model }: { model: WeatherMapModel }) {
   const { selected, lastRefreshedAt, values, providerLabels, datasetLabels } =
     model;
   if (!selected) return null;
+  const sources = Array.from(
+    new Map(
+      values.map((value) => [`${value.provider}/${value.dataset_key}`, value]),
+    ).values(),
+  );
   return (
-    <>
-      <dl className="info-metadata">
-        <div>
-          <dt>위치 ID</dt>
-          <dd>{selected.location_id}</dd>
-        </div>
-        <div>
-          <dt>좌표</dt>
-          <dd>
-            {selected.latitude.toFixed(4)}, {selected.longitude.toFixed(4)}
-          </dd>
-        </div>
-        {lastRefreshedAt ? (
-          <div>
-            <dt>조회 시각</dt>
-            <dd>{lastRefreshedAt.toLocaleString("ko-KR")}</dd>
-          </div>
-        ) : null}
-      </dl>
+    <div className="flex flex-col gap-3">
+      <DetailList
+        layout="inline"
+        items={[
+          { label: "위치 ID", value: selected.location_id, mono: true },
+          {
+            label: "좌표",
+            value: `${selected.latitude.toFixed(4)}, ${selected.longitude.toFixed(4)}`,
+            mono: true,
+          },
+          ...(lastRefreshedAt
+            ? [{ label: "조회 시각", value: lastRefreshedAt.toLocaleString("ko-KR") }]
+            : []),
+        ]}
+      />
       {values.length ? (
-        <div className="info-source-list">
-          <strong>최근 측정값 출처</strong>
-          <ul>
-            {Array.from(
-              new Map(
-                values.map((value) => [
-                  `${value.provider}/${value.dataset_key}`,
-                  value,
-                ]),
-              ).values(),
-            ).map((value) => (
-              <li key={`${value.provider}/${value.dataset_key}`}>
+        <div className="flex flex-col gap-2">
+          <span className="text-2xs font-medium text-text-secondary">
+            최근 측정값 출처
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {sources.map((value) => (
+              <Badge
+                key={`${value.provider}/${value.dataset_key}`}
+                variant="outline"
+              >
                 {providerLabels.get(value.provider) ?? value.provider} ·{" "}
                 {datasetLabels.get(value.dataset_key) ?? value.dataset_key}
-              </li>
+              </Badge>
             ))}
-          </ul>
-          <details>
-            <summary>측정값별 원본 키</summary>
+          </div>
+          <details className="group/details">
+            <summary className="inline-flex h-control-sm cursor-pointer list-none items-center rounded-control text-xs font-medium text-text-secondary select-none hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus [&::-webkit-details-marker]:hidden">
+              측정값별 원본 키
+            </summary>
+            {/* DetailList는 label을 key로 쓰는데 측정 이름은 제공처마다 겹칠 수 있어 value_id 키의 dl을 유지한다. */}
             <dl className="info-metadata">
               {values.map((value) => (
                 <div key={value.value_id}>
@@ -1282,7 +1292,7 @@ function WeatherSourceInfo({ model }: { model: WeatherMapModel }) {
           </details>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -1320,9 +1330,10 @@ function WeatherMeasurementPoint({ model }: { model: WeatherMapModel }) {
   return (
     <div className="measurement-point">
       <span className="section-label">측정 지점</span>
-      <button
+      <Button
         type="button"
-        className="inline-link"
+        variant="link"
+        size="sm"
         disabled={!Number.isFinite(point.longitude) || !Number.isFinite(point.latitude)
           || Math.abs(point.longitude) > 180 || Math.abs(point.latitude) > 90}
         onClick={() => { model.setBoundaryRequest(null); model.map.current?.easeTo({
@@ -1330,10 +1341,25 @@ function WeatherMeasurementPoint({ model }: { model: WeatherMapModel }) {
           zoom: Math.max(model.map.current?.getZoom() ?? 0, 13),
           duration: 500,
         }); }}
-      >{point.station_name} 위치로 이동</button>
+      >{point.station_name} 위치로 이동</Button>
       <small>
         {point.address ?? ""} · {point.distance_km.toFixed(1)}km
       </small>
+    </div>
+  );
+}
+
+/** 조회 중 자리표시. 텍스트는 상태 안내로 남기고 본문 높이는 Skeleton이 채운다. */
+function WeatherLoading({ label }: { label: string }) {
+  return (
+    <div
+      aria-busy="true"
+      aria-live="polite"
+      className="flex flex-col gap-2"
+      role="status"
+    >
+      <p className="text-xs text-text-secondary">{label}</p>
+      <Skeleton className="h-16 w-full" />
     </div>
   );
 }
@@ -1356,10 +1382,10 @@ function WeatherCurrentInfo({ model }: { model: WeatherMapModel }) {
   return (
     <>
       {includesCurrentKind(kindFilter) ? (
-        <div className="inspector-freshness weather-current-status">
-          <span className={`status ${isFresh ? "on" : "warn"}`}>
+        <div className="inspector-freshness weather-current-status flex flex-wrap items-center gap-2">
+          <Badge variant={isFresh ? "success" : "warning"}>
             {isFresh ? "최신" : "오래됨"}
-          </span>
+          </Badge>
           <small>
             {latestCollectedAt
               ? `수집 ${latestCollectedAt.toLocaleString("ko-KR")}`
@@ -1367,26 +1393,24 @@ function WeatherCurrentInfo({ model }: { model: WeatherMapModel }) {
           </small>
         </div>
       ) : null}
-      {loading ? (
-        <div className="loading-block" role="status" aria-live="polite">
-          날씨 조회 중…
-        </div>
-      ) : null}
+      {loading ? <WeatherLoading label="날씨 조회 중…" /> : null}
       {message ? (
-        <div className="empty" role="status">
-          {message}
+        <div role="status">
+          <EmptyState title={message} size="sm" />
         </div>
       ) : null}
       {selectedSummary?.alerts.length ? (
-        <div className="alert-panel" role="status">
-          <strong>기상특보</strong>
-          {selectedSummary.alerts.slice(0, 3).map((alert) => (
-            <span key={alert.value_id}>
-              {alert.value_text ?? alert.metric_name ?? "특보"} ·{" "}
-              {alert.severity ?? "주의"}
-            </span>
-          ))}
-        </div>
+        <Alert role="status">
+          <AlertTitle>기상특보</AlertTitle>
+          <AlertDescription>
+            {selectedSummary.alerts.slice(0, 3).map((alert) => (
+              <span className="block" key={alert.value_id}>
+                {alert.value_text ?? alert.metric_name ?? "특보"} ·{" "}
+                {alert.severity ?? "주의"}
+              </span>
+            ))}
+          </AlertDescription>
+        </Alert>
       ) : null}
       {!loading ? (
         <>
@@ -1433,55 +1457,88 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
       collapsed={model.detailCollapsed}
       onCollapsedChange={model.setDetailCollapsed}
       header={
-        <div className="inspector-heading">
-          <div>
-            <div className="inspector-title">
-              <h2>{selected.name}</h2>
-              <InfoButton label="위치·데이터 출처">
+        <div className="inspector-heading flex min-w-0 items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="text-2xs font-medium text-text-secondary">
+              선택한 위치
+            </span>
+            <div className="inspector-title flex min-w-0 items-center gap-1">
+              <h2 className="text-md leading-snug font-semibold text-text-primary">
+                {selected.name}
+              </h2>
+              {/* 원본 목록(측정값별 원본 키)이 길어도 팝오버 안에서 스크롤한다. */}
+              <HelpTip
+                contentClassName="max-h-[min(70dvh,32rem)] overflow-y-auto overscroll-contain"
+                label="위치·데이터 출처"
+                variant="info"
+              >
                 <WeatherMeasurementPoint model={model} />
                 <WeatherSourceInfo model={model} />
-              </InfoButton>
+              </HelpTip>
             </div>
           </div>
-          <div className="inspector-actions inspector-header-actions">
-            <button type="button" className="icon-button" aria-label="날씨 새로고침" title="날씨 새로고침"
+          <div className="inspector-actions inspector-header-actions flex shrink-0 items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="날씨 새로고침"
+              title="날씨 새로고침"
               disabled={model.loading || model.forecastLoading}
-              onClick={() => model.setRefreshToken(value => value + 1)}><RefreshCw size={17} /></button>
-            <button type="button" className="icon-button" aria-label="지도에서 위치로 이동" title="지도에서 위치로 이동"
-              onClick={() => { model.setBoundaryRequest(null); model.map.current?.easeTo({ center: [selected.longitude, selected.latitude], zoom: 13, duration: 500 }); }}><Crosshair size={17} /></button>
+              onClick={() => model.setRefreshToken((value) => value + 1)}
+            >
+              <RefreshCw aria-hidden="true" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="지도에서 위치로 이동"
+              title="지도에서 위치로 이동"
+              onClick={() => {
+                model.setBoundaryRequest(null);
+                model.map.current?.easeTo({
+                  center: [selected.longitude, selected.latitude],
+                  zoom: 13,
+                  duration: 500,
+                });
+              }}
+            >
+              <Crosshair aria-hidden="true" />
+            </Button>
           </div>
         </div>
       }
     >
-      <WeatherMapNotice model={model} inDetail />
-      <WeatherCurrentInfo model={model} />
-      <div className="inspector-section forecast-section">
-        {forecastLoading ? (
-          <div className="loading-block" role="status">
-            예보 조회 중…
-          </div>
-        ) : forecastMessage ? (
-          <div className="empty" role="status">
-            {forecastMessage}
-          </div>
-        ) : groupedForecast.length ? (
-          <WeatherDetails
-            values={[]}
-            forecast={forecast}
-            condition={(rows) =>
-              markerState({
-                location_id: selected.location_id,
-                latest: rows,
-                alerts: [],
-                measurement_point: null,
-              })
-            }
-          />
-        ) : (
-          <p className="muted-note">예보 데이터가 없습니다.</p>
-        )}
+      <div className="flex flex-col gap-3 p-3">
+        <WeatherMapNotice model={model} inDetail />
+        <WeatherCurrentInfo model={model} />
+        <div className="inspector-section forecast-section">
+          {forecastLoading ? (
+            <WeatherLoading label="예보 조회 중…" />
+          ) : forecastMessage ? (
+            <div role="status">
+              <EmptyState title={forecastMessage} size="sm" />
+            </div>
+          ) : groupedForecast.length ? (
+            <WeatherDetails
+              values={[]}
+              forecast={forecast}
+              condition={(rows) =>
+                markerState({
+                  location_id: selected.location_id,
+                  latest: rows,
+                  alerts: [],
+                  measurement_point: null,
+                })
+              }
+            />
+          ) : (
+            <EmptyState title="예보 데이터가 없습니다." size="sm" />
+          )}
+        </div>
+        {!model.loading ? <WeatherMeasurements model={model} /> : null}
       </div>
-      {!model.loading ? <WeatherMeasurements model={model} /> : null}
     </MapDetailOverlay>
   );
 }
@@ -1517,8 +1574,10 @@ function WeatherRegionAccess({ model }: { model: WeatherMapModel }) {
                 className="weather-region-access"
                 aria-label="지역별 대표 날씨"
               >
-                <button
+                <Button
                   type="button"
+                  variant="outline"
+                  size="sm"
                   aria-expanded={regionListOpen}
                   aria-controls={regionListId}
                   onClick={() => setRegionListOpen((open) => !open)}
@@ -1526,7 +1585,7 @@ function WeatherRegionAccess({ model }: { model: WeatherMapModel }) {
                   {regionListOpen
                     ? "지역 날씨 접기"
                     : `지역 날씨 모두 보기 (${markers.length})`}
-                </button>
+                </Button>
                 {regionListOpen ? (
                   <div
                     id={regionListId}
@@ -1622,10 +1681,11 @@ export function WeatherMap(props: WeatherMapProps) {
             }}
           />
           <MapFilterField label="장소 검색" htmlFor="weather-location-search">
-            <input
+            <Input
               id="weather-location-search"
               ref={searchRef}
               type="search"
+              size="sm"
               aria-label="위치 검색"
               placeholder="도시·위치 검색"
               value={query}
@@ -1667,8 +1727,9 @@ export function WeatherMap(props: WeatherMapProps) {
             <VWorldMapView
               apiKey={process.env.NEXT_PUBLIC_VWORLD_API_KEY}
               center={initialCamera.center}
-              className="map-canvas"
+              className="absolute inset-0 h-full w-full"
               layerType="Base"
+              testId="weather-map-canvas-container"
               onLoad={(instance) => {
                 map.current = instance;
                 setMapReady(true);

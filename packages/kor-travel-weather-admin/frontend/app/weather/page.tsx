@@ -2,8 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { PageHeader } from "@/components/admin-shell";
-import { InfoButton } from "@/components/info-button";
+import { AdminShell } from "@/components/admin-shell";
 import { WeatherMap } from "@/components/weather-map";
 import { getAllPublicLocations, getPublicRegionLocations, Location, type WeatherRegionProjection } from "@/lib/api";
 
@@ -42,15 +41,23 @@ export default function WeatherPage() {
     return () => catalogRequest.current?.abort();
   }, [loadLocations]);
 
+  // 메타 줄은 로딩·실패 중에도 한 줄을 유지해 카탈로그 응답 전후 작업면이 밀리지 않게 한다.
   return (
-    <>
-      <PageHeader
-        compact
-        info={<InfoButton label="날씨 지도"><p>위치를 선택하면 최신 관측값과 예보를 확인할 수 있습니다. 종류와 데이터 출처로 표시할 자료를 좁힐 수 있습니다.</p><p>지도 건수는 현재 범위의 여백과 선택 위치까지 포함해 불러온 위치 수입니다. 목록 건수는 종류·출처·검색 조건에 맞는 위치 수이며 묶음 마커 수와 다릅니다.</p>{!loading && !error ? <p>활성 위치 카탈로그 {locations.length}곳</p> : null}</InfoButton>}
-        section="날씨 탐색"
-        title="날씨 지도"
-      />
+    <AdminShell
+      compact
+      fillViewport
+      help={
+        <>
+          <p>위치를 선택하면 최신 관측값과 예보를 확인할 수 있습니다. 종류와 데이터 출처로 표시할 자료를 좁힐 수 있습니다.</p>
+          <p>지도 건수는 현재 범위의 여백과 선택 위치까지 포함해 불러온 위치 수입니다. 목록 건수는 종류·출처·검색 조건에 맞는 위치 수이며 묶음 마커 수와 다릅니다.</p>
+        </>
+      }
+      helpVariant="info"
+      meta={loading ? "활성 위치 카탈로그 확인 중" : error ? "활성 위치 카탈로그 확인 실패" : `활성 위치 카탈로그 ${locations.length}곳`}
+      section="날씨 탐색"
+      title="날씨 지도"
+    >
       <WeatherMap locations={locations} regionProjection={regionProjection} catalogLoading={loading} catalogError={error} onRetryCatalog={loadLocations} />
-    </>
+    </AdminShell>
   );
 }

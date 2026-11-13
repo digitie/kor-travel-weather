@@ -56,6 +56,8 @@ export type VWorldMapViewProps = {
   scale?: boolean;
   className?: string;
   style?: CSSProperties;
+  /** 지도 래퍼의 data-testid. kor-travel-map의 VWorldMapView testId와 같은 계약이다. */
+  testId?: string;
   children?: ReactNode;
   onLoad?: (map: MapLibreMap) => void;
   onMoveEnd?: (map: MapLibreMap, event: MapLibreEvent) => void;
@@ -121,12 +123,12 @@ function rasterTileKey(event: { sourceId?: string; tile?: { tileID?: { key?: str
 }
 
 export function VWorldMapView({ apiKey, center, zoom, layerType = "Base", minZoom = 6,
-  maxZoom = 19, navigation = true, scale = false, className, style, children,
+  maxZoom = 19, navigation = true, scale = false, className, style, testId, children,
   onLoad, onMoveEnd, onError, onRecover,
 }: VWorldMapViewProps) {
   const configured = isVWorldApiKeyConfigured(apiKey);
   const recovery = useMemo<TileRecoveryState>(() => ({ failedTiles: new Map(), shown: false, blocked: false }), []);
-  return <div aria-label="VWorld 날씨 지도" role="application" className={className} style={style}
+  return <div aria-label="VWorld 날씨 지도" role="application" className={className} style={style} data-testid={testId}
     data-vworld-basemap={configured ? layerType : "fallback"} data-vworld-key={configured ? "configured" : "missing"}>
     <UpstreamMapView apiKey={configured ? apiKey.trim() : "weather-neutral-basemap"}
       center={center} zoom={zoom} layerType={layerType} minZoom={minZoom} maxZoom={maxZoom}
