@@ -14,13 +14,17 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
     const controller = new AbortController();
     const root = map.getContainer();
     const stage = root.closest(".weather-region-stage");
+    let value: WeatherBoundary | null = null;
     const compact = () => {
-      const mobile = root.getBoundingClientRect().width <= 700;
-      stage?.setAttribute("data-weather-boundary-compact", String(mobile));
+      const bounds = root.getBoundingClientRect();
+      const mobile = bounds.width <= 700;
+      const fontSize = Number.parseFloat(root.ownerDocument?.defaultView?.getComputedStyle(root).fontSize ?? "16") || 16;
+      // 경계 미제공/로딩 상태나 큰 글자에서 본문이 사라질 작은 패널은 축소하지 않는다.
+      const readable = bounds.height * 0.42 >= fontSize * 10;
+      stage?.setAttribute("data-weather-boundary-compact", String(Boolean(value) && mobile && readable));
       return mobile;
     };
     compact();
-    let value: WeatherBoundary | null = null;
     let manualMove = false;
     const move = (event: { originalEvent?: unknown }) => { if (event.originalEvent) manualMove = true; };
     const remove = () => {

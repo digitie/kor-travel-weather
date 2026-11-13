@@ -12,7 +12,7 @@ function visit(node: ts.Node) {
 visit(tree);
 if (!callback) throw new Error("실제 지도 effect가 필요합니다.");
 const effect = ts.transpileModule(`const effect = ${callback.getText(tree)}; return effect;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-function fixture(width: number, fetcher: ReturnType<typeof vi.fn>) {
+function fixture(width: number, fetcher: ReturnType<typeof vi.fn>, height = 800, fontSize = 16) {
   let observedWidth = width;
   const listeners = new Map<string, (event: object) => void>();
   const layers = new Set<string>(); let hasSource = false;
@@ -24,7 +24,8 @@ function fixture(width: number, fetcher: ReturnType<typeof vi.fn>) {
     getSource: () => hasSource, removeSource: vi.fn(() => { hasSource = false; }),
     addSource: vi.fn(() => { hasSource = true; }), addLayer: vi.fn((layer: { id: string }) => layers.add(layer.id)),
     isStyleLoaded: () => true, getStyle: () => ({ layers: [] }),
-    getContainer: () => ({ getBoundingClientRect: () => ({ width: observedWidth, height: 800, top: 10, right: observedWidth }), closest: () => stage }), fitBounds: vi.fn(),
+    getContainer: () => ({ getBoundingClientRect: () => ({ width: observedWidth, height, top: 10, right: observedWidth }), closest: () => stage,
+      ownerDocument: { defaultView: { getComputedStyle: () => ({ fontSize: `${fontSize}px` }) } } }), fitBounds: vi.fn(),
   };
   const message = vi.fn();
   const run = new Function("map", "request", "id", "setMessage", "fetch", effect)(map, { latitude: 37, longitude: 127, level: "emd" }, "boundary", message, fetcher);
@@ -59,5 +60,13 @@ describe("지역 경계 지도 생명주기", () => {
     const current = fixture(375, vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: boundary }))));
     current.listeners.get("movestart")?.({ originalEvent: {} }); await flush();
     expect(current.map.addSource).toHaveBeenCalled(); expect(current.map.fitBounds).not.toHaveBeenCalled(); current.cleanup();
+  });
+  it("경계가 없거나 작은 화면의 글자200%에서는 본문을 축소하지 않는다", async () => {
+    const absent = fixture(320, vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: null }))));
+    await flush(); expect(absent.stage.setAttribute).toHaveBeenLastCalledWith("data-weather-boundary-compact", "false");
+    expect(absent.map.fitBounds).not.toHaveBeenCalled(); absent.cleanup();
+    const enlarged = fixture(320, vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: boundary }))), 468, 32);
+    await flush(); expect(enlarged.stage.setAttribute).toHaveBeenLastCalledWith("data-weather-boundary-compact", "false");
+    enlarged.cleanup();
   });
 });

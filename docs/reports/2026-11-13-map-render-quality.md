@@ -48,3 +48,22 @@
 `weather-render-benchmark-20261113`, `weather-final-quality-20261113`,
 `weather-final-docker-20261113`, `weather-shared-chart-fix-20261113.json`이다.
 이미지 빌드·운영 DB/환경/일정·키·배포 변경은 없다. 최종 PR의 실제 CI는 별도로 정산한다.
+
+## 작은 화면 CI 회귀와 실제 상세 fixture
+
+#232의 최초 CI는 Doctor·lint·타입·단위349개·Next 빌드를 통과했지만 실제 Playwright
+20개 중320×568/글자200% 상세 본문 높이가0이 되어1개 실패했다. 원문은
+`weather232-ci-front-failure.log`로 보존했다. 경계가 없거나 읽는 중인 상태에는
+패널을 줄이지 않고, 실제 도형이 있어도 확대 글자가 들어갈 높이가 부족하면
+원래 상세 패널 높이를 유지한다. 기존 접근성 기대값과 CI 검사는 완화하지 않았다.
+CSS import 순서 경고도 수정했다. 후속 WSL/Docker 관련27개 각각 통과,
+전체 Doctor·lint·타입·의존성 검사0이다. 이27개는 이전349개에 합산하지 않는다.
+
+Chromium156의 실제 WeatherInspector와 실제 ECharts를1440/375px 고정 자료로 렌더링해
+현재/내일/작은 부가 정보/24시간 차트·관측자료 순서·갱신·info 링크의 실제 관측소 좌표
+이동·범람0·pageerror0·외부 요청0·엔진 해제를 확인하고 캡처를 검토했다.
+첫 fixture는 실제 complementary 역할을 region으로 기다린 시험 오류로 실패했으며
+원 실패를 보존한 뒤 올바른 역할로 별도 재검증했다. 이것은 지도·Geo·인증 서버를
+포함한 운영 실화면 수용이 아니다. 소유 fixture 서버와 브라우저는 정상 종료했다.
+원장은 `weather-browser-20261113/results-r2.json`과
+`weather-text200-fix-20261113`, `weather-text200-docker-20261113`이다.

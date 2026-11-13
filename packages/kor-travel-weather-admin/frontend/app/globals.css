@@ -4,6 +4,7 @@
 @import "@kor-travel/ui/map-controls.css";
 @import "@kor-travel/tokens/theme.css";
 @import "@kor-travel/tokens/radix.css";
+@import "./tokens.css";
 @source "../node_modules/@kor-travel/ui/dist";
 
 /*
@@ -15,7 +16,6 @@
  * pages only add domain-specific map/metric rules below the shared shell.
  * Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V5 · contrast: pass · nav: N3 · footer: Ft2 · responsive: pass
  */
-@import "./tokens.css";
 
 * {
   box-sizing: border-box;
