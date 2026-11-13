@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 
-import { LoginForm } from "@/components/auth/LoginForm";
+import { LoginForm } from "@/components/login-form";
 import { sanitizeLocalPath } from "@/lib/navigation";
 import {
   adminUsername,
