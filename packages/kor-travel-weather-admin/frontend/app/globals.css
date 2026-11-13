@@ -4,6 +4,7 @@
 @import "@kor-travel/ui/map-controls.css";
 @import "@kor-travel/tokens/theme.css";
 @import "@kor-travel/tokens/radix.css";
+@import "./tokens.css";
 @source "../node_modules/@kor-travel/ui/dist";
 
 /*
@@ -15,7 +16,6 @@
  * pages only add domain-specific map/metric rules below the shared shell.
  * Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V5 · contrast: pass · nav: N3 · footer: Ft2 · responsive: pass
  */
-@import "./tokens.css";
 
 * {
   box-sizing: border-box;
@@ -1139,6 +1139,7 @@ tbody tr:hover {
 
 .inspector-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2xs);
@@ -1148,10 +1149,12 @@ tbody tr:hover {
 }
 
 .inspector-heading > div:first-child {
+  flex: 1 1 8rem;
   min-width: 0;
 }
 
 .inspector-heading h2 {
+  min-width: 0;
   margin: 0;
   font-size: 1.0625rem;
   font-weight: 700;
@@ -1201,6 +1204,31 @@ tbody tr:hover {
 }
 
 .inspector-header-actions { padding: 0; }
+
+/* 두 앱 상세의 아이콘 버튼 표시 크기는 PC·모바일 모두 32px로 맞춘다. */
+.weather-inspector .kt-map-detail-header > button,
+.weather-inspector .inspector-header-actions .icon-button,
+.weather-inspector .inspector-title .info-button,
+.info-popup .info-button {
+  width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 0;
+}
+.weather-inspector .kt-map-detail-header button svg,
+.info-popup .info-button svg { width: 16px; height: 16px; }
+
+.weather-inspector { container: weather-inspector / inline-size; }
+@container weather-inspector (max-width: 16rem) {
+  .kt-map-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 0; }
+  .kt-map-detail-heading, .inspector-heading { display: contents; }
+  /* 제어 행을 제목 상한에서 빼 확대 글자가 본문을 밀지 않게 하며 제목은 최소 32px를 둔다. */
+  .inspector-heading > div:first-child { grid-column: 1 / -1; grid-row: 2; max-height: max(32px, calc(3em - 32px)); overflow: auto; overscroll-behavior: contain; }
+  .inspector-title { align-items: flex-start; }
+  .inspector-header-actions { grid-column: 1; grid-row: 1; justify-self: end; }
+  .kt-map-detail-header > button { grid-row: 1; }
+}
+@container weather-inspector (max-width: 12rem) {
+  .weather-detail-overview .weather-day-panels { grid-template-columns: minmax(0, 1fr); }
+  .weather-detail-overview .weather-tomorrow-panel { border-left: 0; border-top: 1px solid var(--border); }
+}
 
 .icon-button {
   width: var(--control-h);

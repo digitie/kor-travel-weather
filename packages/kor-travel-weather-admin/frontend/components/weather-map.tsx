@@ -49,10 +49,11 @@ import {
 import {
   weatherRepresentatives,
   weatherRegionLevel,
+  weatherSelectionLoading,
 } from "@/lib/weather-regions";
 import { WeatherDetails } from "./weather-details";
 import { WeatherRegionBoundary } from "./weather-region-boundary";
-import { boundaryLevel, type BoundaryRequest } from "@/lib/weather-boundary";
+import { boundaryForSelection, boundaryLevel, type BoundaryRequest } from "@/lib/weather-boundary";
 import type { WeatherCondition } from "@/lib/weather-clusters";
 
 import {
@@ -479,6 +480,7 @@ function useWeatherMapModel({
     null,
   );
   const [detailOpen, setDetailOpen] = useState(false);
+  const [detailCollapsed, setDetailCollapsed] = useState(false);
   const detailRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
@@ -558,8 +560,7 @@ function useWeatherMapModel({
     selectedKinds.length > 0 &&
     sourceCatalog?.key !== sourceKey &&
     !sourceError;
-  const selectionLoading = (needsSourceCatalog ? sourceLoading : catalogLoading)
-    || (!needsSourceCatalog && !query.trim() && Boolean(catalogError) && Boolean(regionProjection?.ready));
+  const selectionLoading = weatherSelectionLoading({ needsSourceCatalog, sourceLoading, catalogLoading, query, catalogError, regionProjection });
   const visibleLocations = useMemo(() => {
     const catalog = !needsSourceCatalog
       ? locations
@@ -616,9 +617,9 @@ function useWeatherMapModel({
   const regional = useMemo(() => {
     // 전역 대표는 전체 목록 대기/실패 중·무필터 저배율에만 사용한다.
     // 종류·제공처·검색 또는 전체 목록 완료 뒤에는 기존 집합의 대표를 그대로 고른다.
-    return weatherRepresentatives(visibleLocations, mapViewport?.zoom ?? initialCamera.zoom,
+    return weatherRepresentatives(visibleLocations, regionLevel === "sido" ? 7 : regionLevel === "sigungu" ? 9 : 12,
       (catalogLoading || Boolean(catalogError)) && !needsSourceCatalog && !query.trim() ? regionProjection : null);
-  }, [catalogLoading, catalogError, needsSourceCatalog, query, regionProjection, visibleLocations, mapViewport?.zoom, initialCamera.zoom]);
+  }, [catalogLoading, catalogError, needsSourceCatalog, query, regionProjection, visibleLocations, regionLevel]);
   const mapLocations = useMemo(() => {
     if (!viewport) return selected ? [selected] : [];
     const candidates = weatherRegionLevel(
@@ -683,6 +684,7 @@ function useWeatherMapModel({
             onClick: () => {
               setSelectedId(location.location_id);
               setBoundaryRequest({ latitude: location.latitude, longitude: location.longitude, level: markerBoundaryLevel });
+              setDetailCollapsed(false);
               setDetailOpen(true);
               requestAnimationFrame(() => detailRef.current?.focus());
             },
@@ -829,6 +831,7 @@ function useWeatherMapModel({
     Date.now() - latestCollectedAt.getTime() <= 2 * 60 * 60 * 1000;
 
   function closeDetail() {
+    setDetailCollapsed(false);
     setDetailOpen(false);
     const target = searchRef.current?.getClientRects().length
       ? searchRef.current
@@ -1127,6 +1130,8 @@ function useWeatherMapModel({
     mapViewport,
     detailOpen,
     setDetailOpen,
+    detailCollapsed,
+    setDetailCollapsed,
     detailRef,
     searchRef,
     filterTriggerRef,
@@ -1160,7 +1165,7 @@ function catalogNoticeText(model: WeatherMapModel) {
   return !model.visibleLocations.length ? "검색 결과가 없습니다." : "";
 }
 
-function WeatherMapNotice({ model }: { model: WeatherMapModel }) {
+function WeatherMapNotice({ model, inDetail = false }: { model: WeatherMapModel; inDetail?: boolean }) {
   const {
     mode,
     mapError,
@@ -1174,6 +1179,8 @@ function WeatherMapNotice({ model }: { model: WeatherMapModel }) {
     onRetryCatalog,
     setMarkerRetryToken,
   } = model;
+  const detailVisible = mode === "map" && model.detailOpen && Boolean(model.selected) && !model.detailCollapsed;
+  if (inDetail !== detailVisible) return null;
   const visibleMapError = mode === "map" ? mapError : "";
   const visibleMarkerError =
     mode === "map" && mapLocations.length > 0 ? markerError : "";
@@ -1423,6 +1430,8 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
       aria-label="선택한 위치 상세"
       onDismiss={closeDetail}
       collapsible
+      collapsed={model.detailCollapsed}
+      onCollapsedChange={model.setDetailCollapsed}
       header={
         <div className="inspector-heading">
           <div>
@@ -1444,6 +1453,7 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
         </div>
       }
     >
+      <WeatherMapNotice model={model} inDetail />
       <WeatherCurrentInfo model={model} />
       <div className="inspector-section forecast-section">
         {forecastLoading ? (
@@ -1500,6 +1510,51 @@ function weatherFilterLabel(
     .join(" · ");
 }
 
+function WeatherRegionAccess({ model }: { model: WeatherMapModel }) {
+  const { regionLevel, markers, regionListOpen, setRegionListOpen, regionListId } = model;
+  return (regionLevel && markers.length ? (
+              <section
+                className="weather-region-access"
+                aria-label="지역별 대표 날씨"
+              >
+                <button
+                  type="button"
+                  aria-expanded={regionListOpen}
+                  aria-controls={regionListId}
+                  onClick={() => setRegionListOpen((open) => !open)}
+                >
+                  {regionListOpen
+                    ? "지역 날씨 접기"
+                    : `지역 날씨 모두 보기 (${markers.length})`}
+                </button>
+                {regionListOpen ? (
+                  <div
+                    id={regionListId}
+                    className="weather-region-access-list"
+                    role="region"
+                    aria-label="모든 지역 대표 날씨"
+                    tabIndex={0}
+                  >
+                    {markers.map((marker) => (
+                      <button
+                        key={marker.id}
+                        type="button"
+                        className={`vworld-weather-marker-button vworld-weather-marker weather-marker-${marker.condition}`}
+                        aria-pressed={marker.selected}
+                        onClick={marker.onClick}
+                      >
+                        <WeatherMarkerLabel {...marker} />
+                        <span className="sr-only">
+                          {marker.title} 날씨 보기
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null);
+}
+
 export function WeatherMap(props: WeatherMapProps) {
   const model = useWeatherMapModel(props);
   const {
@@ -1507,9 +1562,6 @@ export function WeatherMap(props: WeatherMapProps) {
     setBoundaryRequest,
     map,
     setMapReady,
-    regionListOpen,
-    setRegionListOpen,
-    regionListId,
     selectedId,
     setSelectedId,
     query,
@@ -1524,6 +1576,7 @@ export function WeatherMap(props: WeatherMapProps) {
     setSelectedKinds,
     mapViewport,
     setDetailOpen,
+    setDetailCollapsed,
     detailRef,
     searchRef,
     filterTriggerRef,
@@ -1536,6 +1589,8 @@ export function WeatherMap(props: WeatherMapProps) {
     markers,
     syncViewport,
   } = model;
+  // 같은 ID의 좌표가 카탈로그 갱신으로 바뀌면 이전 위치의 도형을 새 날씨와 섞지 않는다.
+  const displayedBoundary = boundaryForSelection(boundaryRequest, model.selected, model.detailOpen, mode);
   const filterLabel = weatherFilterLabel(
     selectedKinds,
     selectedSources,
@@ -1604,7 +1659,7 @@ export function WeatherMap(props: WeatherMapProps) {
           hidden={mode !== "map"}
         >
           <MapStage
-            className={`weather-region-stage${boundaryRequest && model.detailOpen ? " weather-boundary-open" : ""}`}
+            className={`weather-region-stage${displayedBoundary ? " weather-boundary-open" : ""}`}
             view="map"
             summary={mode === "map" ? mapNotice : null}
             detail={mode === "map" ? detailPanel : null}
@@ -1624,7 +1679,7 @@ export function WeatherMap(props: WeatherMapProps) {
               onRecover={() => setMapError("")}
               zoom={initialCamera.zoom}
             >
-              <WeatherRegionBoundary request={mode === "map" && model.detailOpen ? boundaryRequest : null} />
+              <WeatherRegionBoundary request={displayedBoundary} />
               <VWorldWeatherClusters markers={regionLevel ? [] : markers} />
               {regionLevel && !regional.length && visibleLocations.length ? (
                 <p role="status">
@@ -1642,47 +1697,7 @@ export function WeatherMap(props: WeatherMapProps) {
                   ))
                 : null}
             </VWorldMapView>
-            {regionLevel && markers.length ? (
-              <section
-                className="weather-region-access"
-                aria-label="지역별 대표 날씨"
-              >
-                <button
-                  type="button"
-                  aria-expanded={regionListOpen}
-                  aria-controls={regionListId}
-                  onClick={() => setRegionListOpen((open) => !open)}
-                >
-                  {regionListOpen
-                    ? "지역 날씨 접기"
-                    : `지역 날씨 모두 보기 (${markers.length})`}
-                </button>
-                {regionListOpen ? (
-                  <div
-                    id={regionListId}
-                    className="weather-region-access-list"
-                    role="region"
-                    aria-label="모든 지역 대표 날씨"
-                    tabIndex={0}
-                  >
-                    {markers.map((marker) => (
-                      <button
-                        key={marker.id}
-                        type="button"
-                        className={`vworld-weather-marker-button vworld-weather-marker weather-marker-${marker.condition}`}
-                        aria-pressed={marker.selected}
-                        onClick={marker.onClick}
-                      >
-                        <WeatherMarkerLabel {...marker} />
-                        <span className="sr-only">
-                          {marker.title} 날씨 보기
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
+            <WeatherRegionAccess model={model} />
           </MapStage>
         </MapTabPanel>
         <MapTabPanel
@@ -1705,6 +1720,7 @@ export function WeatherMap(props: WeatherMapProps) {
                   onClick={() => {
                     setSelectedId(location.location_id);
                     setBoundaryRequest({ latitude: location.latitude, longitude: location.longitude, level: boundaryLevel(mapViewport?.zoom ?? 10) });
+                    setDetailCollapsed(false);
                     setDetailOpen(true);
                     setMode("map");
                     requestAnimationFrame(() => {

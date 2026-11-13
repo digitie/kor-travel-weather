@@ -2,9 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
 // UI 작업면 fixture다. 실제 기상 제공처·운영 타일 수용과 구분한다.
-async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; emptyCatalog?: boolean; failedCatalog?: boolean; failedProviders?: boolean } = {}) {
+async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; emptyCatalog?: boolean; failedCatalog?: boolean; failedProviders?: boolean; locationName?: string } = {}) {
   const stamp = new Date().toISOString();
-  const locations = Array.from({ length: 80 }, (_, index) => ({ location_id: `workspace-${index}`, name: index === 0 ? "지도 작업면 시험 위치" : `시험 위치 ${index}`, latitude: 36.2, longitude: 127.8, nx: null, ny: null, region_code: null, enabled: true, metadata: {} }));
+  const locations = Array.from({ length: 80 }, (_, index) => ({ location_id: `workspace-${index}`, name: index === 0 ? options.locationName ?? "지도 작업면 시험 위치" : `시험 위치 ${index}`, latitude: 36.2, longitude: 127.8, nx: null, ny: null, region_code: null, enabled: true, metadata: {} }));
   const value = { value_id: "temperature", location_id: "workspace-0", provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: "workspace-fixture-source-record-key-with-full-lineage" };
   const queries: URL[] = [];
   let releaseCatalog: (() => Promise<void>) | undefined;
@@ -121,6 +121,10 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     await page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ }).click();
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
     await expect(detail).toBeVisible();
+    for (const button of await detail.locator('[data-slot="map-detail-header"] button').all()) {
+      await expect(button).toHaveCSS("width", "32px");
+      await expect(button).toHaveCSS("height", "32px");
+    }
     await expect(detail.getByRole("button", { name: "상세 닫기", exact: true })).toBeInViewport();
     await expect(detail.getByText("호우주의보 · 주의", { exact: true })).toBeVisible();
     await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
@@ -223,7 +227,7 @@ test.describe("작은 화면 글자 확대", () => {
   test.use({ viewport: { width: 320, height: 568 }, hasTouch: true });
   test("글자200%의 지도 접근 치수", async ({ page }, testInfo) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
-    const controls = await openWorkspace(page, { delayedCatalog: true });
+    const controls = await openWorkspace(page, { delayedCatalog: true, locationName: "지도 작업면 시험 위치".padEnd(200, "가") });
     await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
     const pending = await layoutMetrics(page);
     await testInfo.attach("320px 글자200% 초기 조회 중", { body: JSON.stringify(pending), contentType: "application/json" });
@@ -269,6 +273,9 @@ test.describe("작은 화면 글자 확대", () => {
       await expect(content).toBeInViewport({ ratio: 0.9 });
     }
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-320-text200-temperature.png`, fullPage: true });
+    for (const name of ["날씨 새로고침", "지도에서 위치로 이동", "위치·데이터 출처 안내"]) {
+      await expect(detail.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
+    }
     const info = detail.getByRole("button", { name: "위치·데이터 출처 안내", exact: true });
     await info.click();
     const popup = page.getByRole("dialog", { name: "위치·데이터 출처", exact: true });

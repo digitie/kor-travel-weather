@@ -8,18 +8,23 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
   const map = useVWorldMap();
   const id = `weather-boundary-${useId().replaceAll(":", "")}`;
   const [message, setMessage] = useState("");
+  // react-doctor-disable-next-line react-doctor/no-set-state-after-await-in-effect -- JSON await 직후·catch의 모든 갱신은 signal.aborted를 검사하고 cleanup이 abort한다. 늦은 응답 회귀로 검산한다.
   useEffect(() => {
     if (!map || !request) return;
     const controller = new AbortController();
     const root = map.getContainer();
     const stage = root.closest(".weather-region-stage");
+    let value: WeatherBoundary | null = null;
     const compact = () => {
-      const mobile = root.getBoundingClientRect().width <= 700;
-      stage?.setAttribute("data-weather-boundary-compact", String(mobile));
+      const bounds = root.getBoundingClientRect();
+      const mobile = bounds.width <= 700;
+      const fontSize = Number.parseFloat(root.ownerDocument?.defaultView?.getComputedStyle(root).fontSize ?? "16") || 16;
+      // 경계 미제공/로딩 상태나 큰 글자에서 본문이 사라질 작은 패널은 축소하지 않는다.
+      const readable = bounds.height * 0.42 >= fontSize * 10;
+      stage?.setAttribute("data-weather-boundary-compact", String(Boolean(value) && mobile && readable));
       return mobile;
     };
     compact();
-    let value: WeatherBoundary | null = null;
     let manualMove = false;
     const move = (event: { originalEvent?: unknown }) => { if (event.originalEvent) manualMove = true; };
     const remove = () => {
@@ -45,11 +50,11 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
         if (!response.ok || !result.data) { setMessage(result.detail ?? "행정 경계 자료가 없습니다."); return; }
         value = result.data as WeatherBoundary;
         draw(); setMessage(`${value.name} 경계`);
+        const mobile = compact();
         if (manualMove) return;
         const bounds = root.getBoundingClientRect();
         const { width, height } = bounds;
         if (width < 120 || height < 120) return;
-        const mobile = compact();
         const detail = stage?.querySelector(".kt-map-detail")?.getBoundingClientRect();
         map.fitBounds([[value.bbox[0], value.bbox[1]], [value.bbox[2], value.bbox[3]]], {
           padding: { top: mobile ? Math.min(height - 100, Math.max(56, detail ? detail.bottom - bounds.top + 12 : height * 0.45)) : 56,

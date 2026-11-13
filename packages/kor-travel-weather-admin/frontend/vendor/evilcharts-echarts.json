@@ -50,9 +50,11 @@
       "url": "https://evilcharts.com/r/echarts-legend.json",
       "registry_sha256": "cb74f7b714991b5c1395d377c404bb379d17605fd51dcf572c06649d57b694aa",
       "upstream_source_sha256": "2f649c97b1c81ad36294eb281629b01c947a2033e278fe0ee1f62eaa656738e4",
-      "installed_source_sha256": "3de64dc7518529a531da5e279d4f8003dd6c5c4c770a399ad3a7fa664b7a95cc",
+      "installed_source_sha256": "6fae1ca37b8786937019fc6530e84ef40573c09a383913468c0297e482f268ad",
       "changes": [
-        "앱의 실제 경로로 import 재배치"
+        "앱의 실제 경로로 import 재배치",
+        "클릭 범례를 native button으로 바꾸고 전체 선택 aria-pressed를 보존",
+        "Transport f4cc5aad의 검증된 LazyMotion·선택 callback·EffectEvent·정확 utility 예외 소비; Weather의 Children.forEach ESLint 지시문 유지"
       ]
     },
     {
@@ -61,9 +63,10 @@
       "url": "https://evilcharts.com/r/echarts-brush.json",
       "registry_sha256": "8dc5314c49fdbeff04211515852c6aab7e43a653e020124294e6ae41ca1e8554",
       "upstream_source_sha256": "8ab742558334a63adadb09d19ff9cd039f22de4303d61f0ec93ebcbc0dd917a2",
-      "installed_source_sha256": "1cf51288872bc00348975decca7d1b1535894f30a9c93582952669b7a99b93fb",
+      "installed_source_sha256": "841b9b5b4cb2bfbb866b38eabdae99aa725bc7a29e1a14cf2ab4f82ecc7a7f84",
       "changes": [
-        "앱의 실제 경로로 import 재배치"
+        "앱의 실제 경로로 import 재배치",
+        "Transport f4cc5aad의 검증된 LazyMotion·선택 callback·EffectEvent·정확 utility 예외 소비; Weather의 Children.forEach ESLint 지시문 유지"
       ]
     },
     {
@@ -72,13 +75,19 @@
       "url": "https://evilcharts.com/r/echarts-line-chart.json",
       "registry_sha256": "af4497e9835369a7f23a007f8dfdb07e87d813bd7fb143a11d2cebba4c540e5d",
       "upstream_source_sha256": "102e36102ffeeccf1a5d80cfe9a268198cce7bf65a044da531d5dcd91d1bfd60",
-      "installed_source_sha256": "0f2cf596b6a071cea61663d90f050bd2b286b4e3daa93503f6ae79b8b9765615",
+      "installed_source_sha256": "305b87d237e4366777181e01f4264a359b995d6ec7371961159a152f95773145",
       "changes": [
         "앱의 실제 경로로 import 재배치",
         "생성 CSS는 style 텍스트 자식으로 넣어 HTML 삽입 제거",
         "공식 Children.forEach 슬롯 탐색은 유지하고 해당 벤더 구간의 lint 예외 이유 명시",
-        "툴팁은 작은 비영 기온을0으로 반올림하지 않는 문자열 formatter 사용"
+        "툴팁은 작은 비영 기온을0으로 반올림하지 않는 문자열 formatter 사용",
+        "Transport f4cc5aad의 검증된 LazyMotion·선택 callback·EffectEvent·정확 utility 예외 소비; Weather의 Children.forEach ESLint 지시문 유지"
       ]
     }
-  ]
+  ],
+  "shared_quality_fix": {
+    "repository": "digitie/kor-travel-transport",
+    "commit": "f4cc5aad07ce2650fc74366622d5081d16f02667",
+    "weather_eslint_children_directives_retained": true
+  }
 }

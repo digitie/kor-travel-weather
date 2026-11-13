@@ -62,6 +62,8 @@ export type BrushOverlayElements = {
   labelEnd: ZrText;
 };
 
+// 공식 Brush marker와 renderer별 DOM overlay/dataZoom 유틸리티를 함께 제공하는 고정 모듈 계약을 유지한다.
+// react-doctor-disable-next-line react-doctor/only-export-components
 export function syncBrushOverlay(
   chart: EChartsInstance,
   store: { brushOverlay: BrushOverlayElements | null },
@@ -187,6 +189,8 @@ export function syncBrushOverlay(
 // mini-series (which differ per chart type) are built by the chart, not here.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// 공식 Brush marker와 renderer별 DOM overlay/dataZoom 유틸리티를 함께 제공하는 고정 모듈 계약을 유지한다.
+// react-doctor-disable-next-line react-doctor/only-export-components
 export function buildBrushDataZoom(params: {
   brushBottom: number;
   brushHeight: number;

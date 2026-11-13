@@ -4,7 +4,8 @@ import ts from "typescript";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { abbreviateWeatherRegionName, weatherRepresentatives } from "../lib/weather-regions";
+import { abbreviateWeatherRegionName, weatherRepresentatives, weatherSelectionLoading } from "../lib/weather-regions";
+import { boundaryForSelection } from "../lib/weather-boundary";
 
 
 // 실제 effect callback을 실행한다. DOM/지도 대신 React의 cleanup→새 effect 순서만 명시한다.
@@ -145,6 +146,20 @@ describe("지역 대표 카드의 화면 충돌", () => {
   });
 });
 
+it("카탈로그가 같은 지점의 좌표를 바꾸면 이전 행정 도형을 표시하지 않는다", () => {
+  let expression: string | undefined;
+  function find(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "displayedBoundary") expression = node.initializer?.getText(tree);
+    ts.forEachChild(node, find);
+  }
+  find(tree);
+  if (!expression) throw new Error("실제 경계 선택 판정이 필요합니다");
+  const request = { latitude: 37, longitude: 127, level: "sigungu" };
+  expect(evaluateModelExpression(expression, { mode: "map", boundaryRequest: request, model: { detailOpen: true, selected: { latitude: 37, longitude: 127 } } })).toBe(request);
+  expect(evaluateModelExpression(expression, { mode: "map", boundaryRequest: request, model: { detailOpen: true, selected: { latitude: 37, longitude: 128 } } })).toBeNull();
+  expect(evaluateModelExpression(expression, { mode: "list", boundaryRequest: request, model: { detailOpen: true, selected: request } })).toBeNull();
+});
+
 describe("지도와 대체 목록의 같은 날씨 표시", () => {
   const source = readFileSync(new URL("./vworld-map-view.tsx", import.meta.url), "utf8");
   const ast = ts.createSourceFile("map.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -167,7 +182,7 @@ describe("마커 모델 참조 보존", () => {
     const render = new Function(
       "regionLevel", "regional", "useMemo", "mapLocations", "selectedId", "summaries", "setSelectedId",
       "markerState", "markerTemperature", "markerCondition", "markerRefreshRef", "providerFilter", "refreshToken", "kindFilter", "setDetailOpen", "requestAnimationFrame", "detailRef",
-      "markerBoundaryLevel", "setBoundaryRequest",
+      "markerBoundaryLevel", "setBoundaryRequest", "setDetailCollapsed",
       ts.transpileModule("return " + markerMemo.getText(tree), {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
       }).outputText,
@@ -184,6 +199,7 @@ describe("마커 모델 참조 보존", () => {
     const emptyRegions: unknown[] = [];
     const select = vi.fn();
     const boundary = vi.fn();
+    const collapse = vi.fn();
     const locations = [
       { location_id: "a", name: "가", longitude: 127, latitude: 37 },
       { location_id: "b", name: "나", longitude: 128, latitude: 36 },
@@ -193,12 +209,12 @@ describe("마커 모델 참조 보존", () => {
       () => ({ kind: "clear", label: "맑음" }),
       (summary: { temperature?: number } | undefined) => summary?.temperature ?? null,
       (kind: string) => kind, { current: JSON.stringify([0, undefined, undefined]) }, undefined, 0, undefined, vi.fn(), vi.fn(), { current: null },
-      "sigungu", boundary,
+      "sigungu", boundary, collapse,
     ) as Array<{
       id: string; selected: boolean; temperature: number | null;
       lngLat: number[]; title: string; onClick: () => void;
     }>;
-    return { call, locations, select, boundary };
+    return { call, locations, select, boundary, collapse };
   }
 
   it("상세·제공처 등 무관한 렌더는 같은 배열을 유지하고 summary 변경은 반영한다", () => {
@@ -220,6 +236,7 @@ describe("마커 모델 참조 보존", () => {
     expect(selected.map((marker) => marker.selected)).toEqual([false, true]);
     selected[1].onClick();
     expect(view.select).toHaveBeenCalledWith("b");
+    expect(view.collapse).toHaveBeenCalledWith(false);
     expect(view.boundary).toHaveBeenCalledWith({ latitude: 36, longitude: 128, level: "sigungu" });
     const moved = view.call("b", summaries, [{ ...view.locations[1], name: "새 이름", longitude: 129 }]);
     expect(moved).not.toBe(selected);
@@ -254,6 +271,7 @@ function modelVariable(name: string): ts.VariableDeclaration | undefined {
 }
 
 function evaluateModelExpression(expression: string, scope: Record<string, unknown>): unknown {
+  scope = { weatherSelectionLoading, boundaryForSelection, ...scope };
   const code = ts.transpileModule(`return (${expression});`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
@@ -298,9 +316,25 @@ describe("대표 캐시 로딩 오류 회귀", () => {
     expect(evaluateModelExpression(expression, {
       useMemo: evaluateMemo, weatherRepresentatives,
       visibleLocations: [], mapViewport: { zoom: 7 }, initialCamera: { zoom: 6 },
+      regionLevel: "sido",
       catalogLoading: false, needsSourceCatalog: false, query: "", regionProjection,
       catalogError: "fixture failure",
     })).toEqual([{ location: a, label: "경기도" }]);
+  });
+  it("같은 행정 단계의 작은 줌 변화는 대표 위치를 다시 구성하지 않는다", () => {
+    const expression = modelVariable("regional")?.initializer?.getText(tree);
+    if (!expression) throw new Error("실제 대표 memo가 필요합니다");
+    let previous: unknown[] | undefined; let value: unknown;
+    const memoize = (factory: () => unknown, deps: unknown[]) => {
+      if (!previous || deps.some((item, index) => item !== previous![index])) { value = factory(); previous = deps; }
+      return value;
+    };
+    const visibleLocations = [a];
+    const scope = { useMemo: memoize, weatherRepresentatives, visibleLocations, regionLevel: "sido", catalogLoading: false,
+      catalogError: null, needsSourceCatalog: false, query: "", regionProjection: null, initialCamera: { zoom: 6 } };
+    const first = evaluateModelExpression(expression, { ...scope, mapViewport: { zoom: 6.5 } });
+    expect(evaluateModelExpression(expression, { ...scope, mapViewport: { zoom: 7.9 } })).toBe(first);
+    expect(evaluateModelExpression(expression, { ...scope, regionLevel: "sigungu", mapViewport: { zoom: 8 } })).not.toBe(first);
   });
 });
 

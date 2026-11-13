@@ -9,6 +9,10 @@ export type WeatherBoundary = {
   feature: Feature<Polygon | MultiPolygon>;
 };
 export type BoundaryRequest = { latitude: number; longitude: number; level: BoundaryLevel };
+export function boundaryForSelection(request: BoundaryRequest | null, selected: { latitude: number; longitude: number } | null | undefined, detailOpen: boolean, mode: string): BoundaryRequest | null {
+  if (!detailOpen || mode !== "map" || !request || !selected) return null;
+  return request.latitude === selected.latitude && request.longitude === selected.longitude ? request : null;
+}
 export function boundaryLevel(zoom: number): BoundaryLevel {
   return zoom < 8 ? "sido" : zoom < 12 ? "sigungu" : zoom < 15 ? "emd" : "li";
 }

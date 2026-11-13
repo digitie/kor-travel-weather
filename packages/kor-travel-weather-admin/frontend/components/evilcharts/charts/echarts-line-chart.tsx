@@ -44,6 +44,7 @@ import {
   isValidElement,
   useCallback,
   useEffect,
+  useEffectEvent,
   useId,
   useMemo,
   useRef,
@@ -61,7 +62,7 @@ import {
 } from "@/components/evilcharts/ui/echarts-dot";
 import { LegendOverlay, type LegendVariant } from "@/components/evilcharts/ui/echarts-legend";
 import { LineChart, type LineSeriesOption } from "echarts/charts";
-import { motion, useReducedMotion } from "motion/react";
+import { domAnimation, LazyMotion, m, useReducedMotion } from "motion/react";
 import type { ComposeOption } from "echarts/core";
 import * as echarts from "echarts/core";
 
@@ -1351,6 +1352,8 @@ type LiveState = {
  * imperative ECharts instance. Fully self-contained: its only dependencies are
  * `react`, `echarts`, and `motion`.
  */
+// 공식 compound API가 하나의 renderer 수명과 선언 슬롯을 공유한다. 임의 분해 대신 고정 upstream 구조를 보존한다.
+// react-doctor-disable-next-line react-doctor/no-giant-component
 export function EChartsLineChart<TData extends Record<string, unknown>>({
   data,
   config,
@@ -1498,13 +1501,14 @@ export function EChartsLineChart<TData extends Record<string, unknown>>({
         live.hoveredKey = null;
         setHoveredDataKey(null);
       }
-      setSelectedDataKey((prev) => {
-        const next = prev === key ? null : key;
-        onSelectionChange?.(next);
-        return next;
-      });
+      // 사용자 callback은 StrictMode가 재실행하는 state updater 안에서 호출하지 않는다.
+      // 같은 React batch의 연속 클릭도 즉시 다음 선택을 보도록 event snapshot을 갱신한다.
+      const next = live.handlers.selectedDataKey === key ? null : key;
+      live.handlers.selectedDataKey = next;
+      setSelectedDataKey(next);
+      live.handlers.onSelectionChange?.(next);
     },
-    [live, onSelectionChange],
+    [live],
   );
 
   // Reposition the brush overlays from the live refs — safe to call from drag
@@ -1987,6 +1991,7 @@ export function EChartsLineChart<TData extends Record<string, unknown>>({
   }, [renderer, live, lines, hasSelection, isLoading]);
 
   // ── Loading shimmer — rAF sweeps a bright band, regenerating data off-screen ─
+  const loadingFrameData = useEffectEvent(loadingData);
   useEffect(() => {
     const chart = echartsRef.current;
     if (!chart || !isLoading) return;
@@ -2030,7 +2035,7 @@ export function EChartsLineChart<TData extends Record<string, unknown>>({
           series: [
             {
               id: "__loading",
-              data: loadingData(),
+              data: loadingFrameData(),
               lineStyle: { color: clip(LOADING_STROKE_OPACITY), width: 1 },
             },
           ],
@@ -2041,7 +2046,7 @@ export function EChartsLineChart<TData extends Record<string, unknown>>({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [renderer, live, isLoading, loadingPoints, loadingData]);
+  }, [renderer, live, isLoading, loadingPoints]);
 
   // ── Legend overlay position ──────────────────────────────────────────────────
   // Insets match the Recharts legend's breathing room inside the plot frame.
@@ -2086,7 +2091,8 @@ export function EChartsLineChart<TData extends Record<string, unknown>>({
 
       {isLoading && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-          <motion.div
+          <LazyMotion features={domAnimation} strict>
+          <m.div
             initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.92 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ duration: 0.25, ease: "easeOut" }}
@@ -2094,7 +2100,8 @@ export function EChartsLineChart<TData extends Record<string, unknown>>({
           >
             <div className="border-border border-t-primary h-3 w-3 animate-spin rounded-full border" />
             <span>Loading</span>
-          </motion.div>
+          </m.div>
+          </LazyMotion>
         </div>
       )}
     </div>
