@@ -1,90 +1,500 @@
-@import "tailwindcss/theme.css";
-@import "tailwindcss/utilities.css";
-@import "@kor-travel/ui/dagster.css";
-@import "@kor-travel/ui/map-controls.css";
+/* Hallmark · genre: editorial-utilitarian · macrostructure: Rail-Workbench · design-system: design.md · designed-as-app */
+/*
+ * 토큰 정본(design.md §Theme/§Typography/§Spacing/§Motion). Tailwind v4에서는 이 파일의
+ * `:root`/`.dark` + `@theme inline`이 곧 토큰 파일이다(별도 tokens.css 없음).
+ *
+ * 규칙:
+ * - 색 값(oklch)은 이 파일에만 둔다. 컴포넌트는 아래 utility 이름만 쓴다.
+ * - alpha는 `--overlay`(dialog scrim)와 shadow에만 허용. 팔레트 alpha(`/10`,`/50`) 금지 →
+ *   불투명 `*-tint` 토큰 사용.
+ * - radius 2종(`rounded-control` 6px · `rounded-panel` 8px), control 높이 2종
+ *   (`h-control` 36px · `h-control-sm` 30px), inspector rail `w-rail` 22rem.
+ *   in-flow micro-control 예외 목록은 design.md §Spacing.
+ * - hairline 2종: 장식/구분선은 `border-border`(= `--surface-muted`), **컨트롤 경계는
+ *   `border-input`(= `--control-line`)** — 후자는 WCAG 1.4.11 대상이라 3:1 이상을 지킨다.
+ * - focus 레시피 1종은 이 파일 `@layer base`의 `:focus-visible`이 **혼자** 발행한다. 컴포넌트는
+ *   아무것도 선언하지 않아도 링을 받는다. 링을 끄는 예외는 닫힌 목록 4개뿐이고 각 컴포넌트에서
+ *   `focus-visible:outline-0`으로 끈다. design.md §Focus + §금지 패턴.
+ *   - `outline-none` 금지(조건 없이). v4에서 이 유틸은 `outline-style: none` + 내부 변수
+ *     `--tw-outline-style: none`을 박고, 같은 요소의 `outline-<n>`은 style을 그 변수에서 읽는다
+ *     → 짝을 맞춰 다시 적어도 링은 안 그려진다. 꺼야 하면 `focus-visible:outline-0`(폭 0만 바꾸고
+ *     style/색은 무오염, `focus-visible:outline-2`와 같은 twMerge 그룹).
+ *   - 링은 전환 대상이 아니다. v4의 `transition`/`transition-colors`는 전환 목록에
+ *     `outline-color`를 포함하므로 열거형(`transition-[color,background-color,border-color]`)만 쓴다.
+ *   - 링을 흐리지 않는다: root `opacity`는 자기 outline·border까지 합성한다(light page 6.66 → 2.57,
+ *     `border-input` 3.54 → 1.87). 흐림은 라벨 자식 래퍼에만(design.md §States).
+ * - motion: `duration-fast`(100ms, hover/colour) · `duration-base`(150ms, overlay) ·
+ *   `ease-out`/`ease-in`; 대상을 열거하지 않는 전환 유틸(`transition-all`/`transition-colors`/
+ *   맨 `transition`) 금지; reduced-motion 전역 규칙은 파일 끝.
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
 @import "@kor-travel/tokens/theme.css";
 @import "@kor-travel/tokens/radix.css";
 @import "./tokens.css";
+@import "@kor-travel/ui/dagster.css";
+@import "@kor-travel/ui/map-controls.css";
 @source "../node_modules/@kor-travel/ui/dist";
 
-/*
- * kor-travel-map admin visual source
- *
- * This file intentionally keeps the weather console on the map console's
- * Rail-Workbench recipe: Geist/Pretendard typography, a 4pt rhythm, hairline
- * surfaces, flat map-style navigation, card headers, and compact controls. Weather
- * pages only add domain-specific map/metric rules below the shared shell.
- * Hallmark · pre-emit critique: P5 H5 E4 S5 R5 V5 · contrast: pass · nav: N3 · footer: Ft2 · responsive: pass
- */
-
-* {
-  box-sizing: border-box;
+@custom-variant data-checked {
+  &:where([data-state="checked"]),
+  &:where([data-checked]:not([data-checked="false"])) {
+    @slot;
+  }
 }
 
-html {
-  font-size: 16px;
-  overflow-x: clip;
+@custom-variant data-active {
+  &:where([data-state="active"]),
+  &:where([data-active]:not([data-active="false"])) {
+    @slot;
+  }
 }
 
-html,
-body {
-  margin: 0;
-  min-height: 100%;
-  background: var(--surface-page);
+/* Card의 `data-interactive` opt-in(실제로 클릭되는 카드만) — 이름 있는 data variant는
+   shadcn 스타일시트를 import하지 않으므로 이 파일이 직접 소유한다
+   (`tests/unit/test_frontend_dependency_security.py::test_frontend_owns_every_named_shadcn_css_token_it_uses`).
+   `data-interactive="false"`는 opt-out으로 취급한다 — data-checked/data-active와 같은 규약. */
+@custom-variant data-interactive {
+  &:where([data-interactive]:not([data-interactive="false"])) {
+    @slot;
+  }
 }
 
-body {
-  color: var(--text-primary);
-  font-family: var(--font-body);
-  font-size: 0.9375rem;
-  line-height: 1.5;
-  overflow-x: clip;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+@custom-variant data-horizontal {
+  &:where([data-orientation="horizontal"]) {
+    @slot;
+  }
 }
 
+@custom-variant data-vertical {
+  &:where([data-orientation="vertical"]) {
+    @slot;
+  }
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* ── shadcn alias (kept; component code speaks the project vocabulary below) ── */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  /* `border-input` = 컨트롤 경계(--control-line). shadcn 이름을 유지하되 값은 장식용
+     `--border`와 분리된 고대비 hairline이다. */
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* ── project vocabulary: surfaces · ink ── */
+  --color-surface-page: var(--surface-page);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-muted: var(--surface-muted);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-disabled: var(--text-disabled);
+  --color-icon-default: var(--icon-default);
+
+  /* ── hairlines: 장식(`--border`)과 컨트롤 경계(`--control-line`)를 분리한다 ── */
+  --color-control-line: var(--control-line);
+
+  /* ── brand ── */
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-tint: var(--brand-tint);
+  --color-brand-foreground: var(--brand-foreground);
+
+  /* ── status (single tone table: src/lib/status-label.ts) ── */
+  --color-success: var(--success);
+  --color-success-tint: var(--success-tint);
+  --color-warning: var(--warning);
+  --color-warning-tint: var(--warning-tint);
+  --color-info: var(--info);
+  --color-info-tint: var(--info-tint);
+  --color-destructive: var(--destructive);
+  --color-destructive-tint: var(--destructive-tint);
+
+  /* ── focus · overlay · compare pair ── */
+  --color-focus: var(--focus);
+  --color-overlay: var(--overlay);
+  --color-compare-a: var(--compare-a);
+  --color-compare-b: var(--compare-b);
+
+  /* ── sidebar / chart aliases (kept) ── */
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+
+  /* ── radii: exactly two. legacy names collapse onto them (design.md §Spacing) ── */
+  --radius-control: var(--radius-control);
+  --radius-panel: var(--radius-panel);
+  --radius-xs: var(--radius-control);
+  --radius-sm: var(--radius-control);
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius-panel);
+  --radius-xl: var(--radius-panel);
+  --radius-2xl: var(--radius-panel);
+  --radius-3xl: var(--radius-panel);
+  --radius-4xl: var(--radius-panel);
+
+  /* ── type scale (7 steps; no text-[Npx]) — 12 / 13.5 / 15 / 17 / 20 / 24 / 30 px ── */
+  --text-2xs: 0.75rem;
+  --text-2xs--line-height: 1.5;
+  --text-xs: 0.84375rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 0.9375rem; /* legacy alias → body size (kept on-scale) */
+  --text-base--line-height: 1.5;
+  --text-md: 1.0625rem;
+  --text-md--line-height: 1.4;
+  --text-lg: 1.25rem;
+  --text-lg--line-height: 1.3;
+  --text-xl: 1.5rem;
+  --text-xl--line-height: 1.25;
+  --text-2xl: 1.875rem;
+  --text-2xl--line-height: 1.2;
+
+  /* ── sizes: h-control · h-control-sm · w-rail (spacing namespace) ── */
+  --spacing-control: var(--control-h);
+  --spacing-control-sm: var(--control-h-sm);
+  --spacing-rail: var(--rail);
+  --container-rail: var(--rail); /* max-w-rail / min-w-rail resolve via container ns too */
+
+  /* ── fonts ── */
+  --font-sans:
+    var(--font-pretendard, "Pretendard Variable"), Pretendard, "Noto Sans KR",
+    "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-mono:
+    var(--font-geist-mono, "Geist Mono"), ui-monospace, SFMono-Regular, Menlo,
+    Consolas, "Liberation Mono", monospace;
+  --font-heading: var(--font-sans);
+
+  /* ── shadows: overlays only (rest = hairline) ── */
+  --shadow-elevated: var(--shadow-elevated);
+  --shadow-modal: var(--shadow-modal);
+
+  /* ── motion ── */
+  --ease-out: var(--ease-out);
+  --ease-in: var(--ease-in);
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-out);
+}
+
+/* duration-fast / duration-base — Tailwind v4에는 --duration-* namespace가 없어
+   utility로 등록한다. `--tw-duration`도 함께 세팅해 tw-animate-css가 읽게 한다. */
+@utility duration-fast {
+  --tw-duration: var(--duration-fast);
+  transition-duration: var(--duration-fast);
+}
+
+@utility duration-base {
+  --tw-duration: var(--duration-base);
+  transition-duration: var(--duration-base);
+}
+
+:root {
+  /* shape · size */
+  --radius-control: 0.375rem; /* 6px — button/input/badge/tab */
+  --radius-panel: 0.5rem; /* 8px — Card/SectionCard/dialog/popover */
+  --radius: var(--radius-control);
+  --control-h: 2.25rem; /* 36px */
+  --control-h-sm: 1.875rem; /* 30px */
+  --rail: 22rem; /* right inspector rail */
+
+  /* motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --duration-fast: 100ms; /* hover / colour */
+  --duration-base: 150ms; /* overlay enter: opacity + scale .98 */
+  --dur-fast: var(--duration-fast); /* design.md name parity */
+  --dur-base: var(--duration-base);
+
+  /* paper · ink (light) */
+  --surface-page: oklch(97.8% 0.003 250);
+  --surface-subtle: oklch(96.7% 0.006 250);
+  --surface-muted: oklch(92.5% 0.01 250);
+  --card: oklch(99.2% 0.002 250);
+  --text-primary: oklch(30% 0.025 255);
+  --text-secondary: oklch(48% 0.04 255);
+  /* design.md 명목값 56%는 paper 4.35:1 / subtle 4.21:1로 계산돼 AA(≥4.5:1) 목표에 미달 →
+     54%(paper 4.73 · subtle 4.58 · card 4.92)로 조정. */
+  --text-tertiary: oklch(54% 0.04 255);
+  --text-disabled: oklch(79% 0.012 154); /* non-text cue only */
+  --icon-default: oklch(54% 0.012 154); /* 의미 있는 아이콘(= text-tertiary와 같은 값) */
+
+  /* hairline 2종. `--border`(= --surface-muted)는 표 구분선·패널 테두리 같은 *장식*이고,
+     컨트롤 경계는 WCAG 1.4.11(non-text contrast) 대상이라 인접 배경 대비 3:1이 필요하다.
+     이전 값 oklch(89% 0.01 145)는 card 1.36 · page 1.30 · subtle 1.26으로 전부 미달했다.
+     oklch(61% 0.012 145) = card 3.69 · surface-page 3.54 · surface-subtle 3.43
+     · surface-muted 3.03 — 컨트롤이 놓이는 네 표면 모두 3:1 이상. */
+  --control-line: oklch(61% 0.035 255);
+
+  /* brand */
+  --brand: oklch(47% 0.14 255);
+  --brand-hover: oklch(41% 0.15 255);
+  --brand-tint: oklch(95% 0.025 250);
+  --brand-foreground: oklch(99% 0.002 250);
+
+  /* status (AA as text on paper and on its own tint) */
+  --success: oklch(46.9% 0.087 149);
+  --success-tint: oklch(95% 0.03 150);
+  --warning: oklch(50.9% 0.103 71);
+  --warning-tint: oklch(96% 0.035 80);
+  --info: oklch(50% 0.16 258);
+  --info-tint: oklch(95.5% 0.025 255);
+  --destructive: oklch(51.4% 0.167 27);
+  --destructive-tint: oklch(96% 0.03 25);
+
+  /* focus · overlay · compare */
+  --focus: oklch(45% 0.09 169); /* opaque, used with 2px offset */
+  --overlay: oklch(30% 0.006 157 / 0.45); /* the ONLY alpha colour */
+  --compare-a: var(--brand);
+  --compare-b: var(--info);
+
+  /* shadows — overlays only; --shadow-card* stay defined, unused at rest */
+  --shadow-card: 0 1px 3px oklch(30% 0.025 255 / 0.04);
+  --shadow-card-hover: 0 2px 4px oklch(30% 0.025 255 / 0.08);
+  --shadow-elevated: 0 4px 12px oklch(30% 0.025 255 / 0.1);
+  --shadow-modal: 0 8px 24px oklch(30% 0.025 255 / 0.14);
+
+  /* shadcn aliases → project tokens */
+  --card-foreground: var(--text-primary);
+  --popover: var(--card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: var(--surface-subtle);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--brand-tint);
+  --accent-foreground: var(--brand);
+  --border: var(--surface-muted); /* 장식 hairline — 대비 요건 없음 */
+  --input: var(--control-line); /* 컨트롤 경계 — 3:1 이상 */
+  --ring: var(--focus);
+  --background: var(--surface-page);
+  --foreground: var(--text-primary);
+  --chart-1: var(--brand);
+  --chart-2: var(--info);
+  --chart-3: var(--warning);
+  --chart-4: var(--success);
+  --chart-5: var(--destructive);
+  --sidebar: var(--surface-subtle);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: var(--brand-tint);
+  --sidebar-accent-foreground: var(--brand);
+  --sidebar-border: var(--surface-muted);
+  --sidebar-ring: var(--focus);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    overflow-x: clip;
+    @apply font-sans;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+    background: var(--surface-page);
+  }
+
+  body {
+    @apply bg-surface-page font-sans text-sm text-text-primary antialiased;
+  }
+
+  /* prose links only — button-styled <Link className=…> is unaffected */
+  a:not([class]),
+  .prose a,
+  .link {
+    @apply text-brand underline-offset-4 hover:underline;
+  }
+
+  /* one focus recipe, opaque, appears instantly (never transitioned).
+     light: page 6.66:1 · card 6.93 · subtle 6.45 · muted 5.70
+     dark:  page 10.26   · card 9.38 · subtle 9.13 · muted 7.28   (전부 1.4.11의 3:1 위) */
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+
+  /* 링을 끄는 예외는 여기 base에 두지 않는다 — 대상이 4개뿐이고 모두 단일 공용 primitive라
+     (DialogContent · AlertDialogContent · PopoverContent · AdminShell `<main>`) 그 자리에
+     `focus-visible:outline-0` + 이유 주석을 두는 편이 호출부에서 바로 보인다. 규칙과 닫힌 목록은
+     design.md §Focus. `outline-none`은 어느 쪽에서도 금지(§금지 패턴 6). */
+
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+}
+
+.dark {
+  /* paper · ink (dark) — same names, dark values; no toggle mounted */
+  --surface-page: oklch(19% 0.025 255);
+  --surface-subtle: oklch(24% 0.03 255);
+  --surface-muted: oklch(31% 0.04 255);
+  --card: oklch(23% 0.028 255);
+  --text-primary: oklch(93% 0.02 255);
+  --text-secondary: oklch(78% 0.025 255);
+  --text-tertiary: oklch(68% 0.03 255);
+  --text-disabled: oklch(52% 0.025 255);
+  --icon-default: oklch(70% 0.03 255);
+
+  /* light와 같은 규칙: 이전 oklch(36% 0.012 145)는 card 1.56 · page 1.71 · subtle 1.52로
+     미달. oklch(58% 0.012 145) = card 3.96 · surface-page 4.33 · surface-subtle 3.85
+     · surface-muted 3.07. */
+  --control-line: oklch(58% 0.035 255);
+
+  --brand: oklch(76% 0.13 250);
+  --brand-hover: oklch(81% 0.13 250);
+  --brand-tint: oklch(31% 0.06 250);
+  --brand-foreground: oklch(20% 0.04 250);
+
+  --success: oklch(75% 0.09 149);
+  --success-tint: oklch(28% 0.04 150);
+  --warning: oklch(77% 0.12 75);
+  --warning-tint: oklch(30% 0.045 80);
+  --info: oklch(75% 0.11 258);
+  --info-tint: oklch(30% 0.05 258);
+  --destructive: oklch(72% 0.14 27);
+  --destructive-tint: oklch(30% 0.06 27);
+
+  --focus: oklch(80% 0.12 250);
+  --overlay: oklch(10% 0.025 255 / 0.6);
+  --compare-a: var(--brand);
+  --compare-b: var(--info);
+
+  --shadow-card: 0 1px 3px oklch(30% 0.025 255 / 0.04);
+  --shadow-card-hover: 0 2px 4px oklch(30% 0.025 255 / 0.08);
+  --shadow-elevated: 0 4px 12px oklch(10% 0.025 255 / 0.32);
+  --shadow-modal: 0 8px 24px oklch(10% 0.025 255 / 0.4);
+
+  --background: var(--surface-page);
+  --foreground: var(--text-primary);
+  --card-foreground: var(--text-primary);
+  --popover: var(--card);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
+  --secondary: var(--surface-subtle);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-subtle);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--brand-tint);
+  --accent-foreground: var(--brand);
+  --border: var(--surface-muted); /* 장식 hairline — 대비 요건 없음 */
+  --input: var(--control-line); /* 컨트롤 경계 — 3:1 이상 */
+  --ring: var(--focus);
+  --chart-1: var(--brand);
+  --chart-2: var(--info);
+  --chart-3: var(--warning);
+  --chart-4: var(--success);
+  --chart-5: var(--destructive);
+  --sidebar: var(--surface-subtle);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: var(--brand-tint);
+  --sidebar-accent-foreground: var(--brand);
+  --sidebar-border: var(--surface-muted);
+  --sidebar-ring: var(--focus);
+}
+
+/* Reduced motion (design.md §Motion): all spatial motion collapses. Elements that carry
+   `transition-opacity` or `data-motion="crossfade"` keep a ≤150ms opacity crossfade only. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .transition-opacity,
+  [data-motion="crossfade"] {
+    transition-property: opacity !important;
+    transition-duration: var(--duration-base) !important;
+  }
+
+  /* 로딩 스피너는 장식이 아니라 "지금 처리 중"을 알리는 유일한 시각 신호다(Button loading은
+     라벨을 opacity-0으로 감추고 스피너만 남긴다 — 멈추면 정지 상태와 구분되지 않는다).
+     그래서 위 킬스위치에서 제외하고, 대신 회전을 느리게(1.6s, 기본 1s) 돌려 전정기관 부담만
+     줄인다. `*` 규칙과 specificity로 경쟁하므로 두 속성 모두 다시 선언해야 한다.
+     반대로 Skeleton은 콘텐츠 자리표시(장식)라 컴포넌트에서 `motion-reduce:animate-none`으로
+     완전히 끈다 — 로딩 여부는 감싸는 영역의 `aria-busy`가 알린다. */
+  [data-slot="button-spinner"] svg,
+  [data-sonner-toast] [data-icon] svg.animate-spin {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* 공통 컴포넌트는 Map의 기존 의미 색상에 연결한다. */
+:root,
+.dark,
+.map-common-surface {
+  --kt-surface-page: var(--surface-page);
+  --kt-surface-subtle: var(--surface-subtle);
+  --kt-surface-muted: var(--surface-muted);
+  --kt-text-primary: var(--text-primary);
+  --kt-text-secondary: var(--text-secondary);
+  --kt-text-tertiary: var(--text-tertiary);
+  --kt-surface-card: var(--card);
+  --kt-border: var(--border);
+  --kt-radius-control: var(--radius-control);
+  --kt-control-line: var(--control-line);
+  --kt-brand: var(--brand);
+  --kt-brand-tint: var(--brand-tint);
+  --kt-focus: var(--focus);
+}
+@media (min-width: 1024px) {
+  .map-common-menu[data-collapsed="true"] [data-slot="app-menu-group-label"],
+  .map-common-menu[data-collapsed="true"] [data-slot="app-menu-link"] > span:not([aria-hidden]) { display: none; }
+  .map-common-menu[data-collapsed="true"] [data-slot="app-menu-link"] { padding-inline: 0; justify-content: center; }
+}
+
+/* ===== weather 고유 화면 규칙 (map과 겹치지 않는 셀렉터만) ===== */
 a {
   color: inherit;
   text-decoration: none;
 }
 
-a:not([class]),
-.link {
-  color: var(--brand);
-  text-underline-offset: 0.25rem;
-}
-
 a:not([class]):hover,
 .link:hover {
   text-decoration: underline;
-}
-
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
-
-button {
-  align-items: center;
-  height: var(--control-h);
-  min-height: var(--control-h);
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  background: var(--brand);
-  color: var(--brand-foreground);
-  cursor: pointer;
-  display: inline-flex;
-  flex-shrink: 0;
-  gap: 0.5rem;
-  padding: 0 1rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-  transition: color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
 }
 
 button:hover {
@@ -145,27 +555,6 @@ button.danger,
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
-}
-
-input,
-select,
-textarea {
-  width: 100%;
-  min-width: 0;
-  min-height: var(--control-h);
-  border: 1px solid var(--control-line);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--text-primary);
-  padding: 0 0.75rem;
-  outline: 0;
-  transition: border-color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out);
-}
-
-textarea {
-  min-height: 9rem;
-  padding: 0.75rem;
-  resize: vertical;
 }
 
 input:hover,
@@ -230,325 +619,6 @@ h3 {
   line-height: 1.4;
 }
 
-.skip-link {
-  position: absolute;
-  z-index: 100;
-  top: 0.75rem;
-  left: 0.75rem;
-  transform: translateY(-200%);
-  border: 1px solid var(--control-line);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--text-primary);
-  padding: 0.5rem 0.75rem;
-  font-size: 0.8125rem;
-  box-shadow: var(--shadow-elevated);
-}
-
-.skip-link:focus {
-  transform: translateY(0);
-}
-
-/* -------------------------------------------------------------------------
- * Shared map shell: flat 17rem rail + card header
- * ------------------------------------------------------------------------- */
-.weather-shell {
-  min-height: 100dvh;
-  background: var(--surface-page);
-  color: var(--text-primary);
-}
-
-.app-grid {
-  display: grid;
-  grid-template-columns: 17rem minmax(0, 1fr);
-  min-height: 100dvh;
-  min-width: 0;
-}
-
-.rail {
-  align-self: start;
-  min-width: 0;
-  height: 100dvh;
-  position: sticky;
-  top: 0;
-  border-right: 1px solid var(--surface-muted);
-  background: var(--card);
-  box-shadow: var(--shadow-card);
-}
-
-.rail-shell {
-  display: flex;
-  height: 100%;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1.25rem;
-  padding: 1.25rem;
-}
-
-.rail-header {
-  display: flex;
-  height: 2.5rem;
-  min-width: 0;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  border-bottom: 0;
-  padding: 0;
-}
-
-.brand {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  gap: 0.375rem;
-  border-radius: var(--radius-control);
-  color: var(--text-primary);
-  font-family: var(--font-display);
-  font-size: 0.875rem;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.brand-mark {
-  display: inline-flex;
-  width: 2.5rem;
-  height: 2.5rem;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.75rem;
-  background: var(--brand-tint);
-  color: var(--brand);
-}
-
-.brand-wordmark,
-.brand-subtitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.brand-subtitle {
-  color: var(--text-tertiary);
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.rail-nav {
-  display: flex;
-  min-height: 0;
-  min-width: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 0.25rem;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 0;
-}
-
-.nav-link {
-  position: relative;
-  display: flex;
-  min-width: 0;
-  min-height: var(--control-h);
-  height: var(--control-h);
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.625rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--text-secondary);
-  padding: 0 0.75rem;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  line-height: 1;
-  text-align: left;
-  white-space: nowrap;
-}
-
-.nav-link svg {
-  flex: 0 0 auto;
-  color: var(--icon-default);
-}
-
-.nav-link:hover {
-  background: var(--surface-subtle);
-  color: var(--text-primary);
-}
-
-.nav-link.active {
-  background: var(--surface-subtle);
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.nav-link.active::before {
-  display: none;
-}
-
-.nav-link.active svg {
-  color: var(--brand);
-}
-
-.rail-footer {
-  flex-shrink: 0;
-  border-top: 1px solid var(--surface-muted);
-  padding: 0.75rem 0 0;
-}
-
-.logout-button {
-  width: 100%;
-  color: var(--text-secondary);
-}
-
-.logout-button:hover {
-  background: var(--destructive-tint);
-  color: var(--destructive);
-}
-
-.main {
-  min-width: 0;
-  padding: 0;
-}
-
-.main:focus-visible {
-  outline: 0;
-}
-
-/* PageHeader remains a component because each weather route supplies title and
- * action content; its frame is the same flush header band as map's shell. */
-.page-header-wrap {
-  border: 0;
-  padding: 1.5rem 1.5rem 0;
-}
-
-.page-header {
-  display: flex;
-  min-width: 0;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  border: 1px solid color-mix(in srgb, var(--surface-muted) 70%, transparent);
-  border-radius: 1.125rem;
-  background: var(--card);
-  box-shadow: var(--shadow-card);
-  padding: 1.5rem;
-}
-
-.page-header-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.page-context {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--text-secondary);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.page-context .page-section {
-  min-height: 1.5rem;
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  background: var(--brand-tint);
-  color: var(--brand);
-  padding: 0.125rem 0.5rem;
-  font-size: 0.75rem;
-}
-
-.page-section {
-  color: var(--text-secondary);
-}
-
-.page-path {
-  overflow: hidden;
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.page-header-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1.5rem;
-}
-
-.page-header h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  line-height: 1.25;
-}
-
-.page-title { display: flex; min-width: 0; align-items: center; gap: 0.25rem; }
-
-.page-header .description {
-  max-width: 65ch;
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.5;
-}
-
-.page-header-actions {
-  display: flex;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-/* Content margins match map's main px-6 py-6. */
-.main > .panel,
-.main > .cards,
-.main > .weather-workbench,
-.main > .api-console,
-.main > .ops-grid,
-.main > .dagster-layout,
-.main > .kt-dagster-operations,
-.main > .dataset-list,
-.main > .credential-grid,
-.main > .settings-note,
-.main > .loading-banner,
-.main > .weather-notice,
-.main > .notice,
-.main > .error,
-.main > .empty {
-  margin-right: 1.5rem;
-  margin-left: 1.5rem;
-}
-
-.main > .panel,
-.main > .cards,
-.main > .weather-workbench,
-.main > .api-console,
-.main > .ops-grid,
-.main > .dagster-layout,
-.main > .kt-dagster-operations,
-.main > .dataset-list,
-.main > .credential-grid,
-.main > .settings-note {
-  margin-top: 1.5rem;
-}
-
-/* -------------------------------------------------------------------------
- * Shared data surfaces: map's hairline panels, controls and tables
- * ------------------------------------------------------------------------- */
 .panel {
   min-width: 0;
   border: 1px solid var(--surface-muted);
@@ -622,11 +692,6 @@ h3 {
 .status.warn {
   background: var(--warning-tint);
   color: var(--warning);
-}
-
-.page-header .status::before,
-.page-header .context-badge::before {
-  display: none;
 }
 
 .context-badge {
@@ -755,9 +820,6 @@ tbody tr:hover {
   font-size: 0.8125rem;
 }
 
-/* -------------------------------------------------------------------------
- * Dashboard and data cards
- * ------------------------------------------------------------------------- */
 .cards {
   display: grid;
   gap: 1rem;
@@ -957,11 +1019,42 @@ tbody tr:hover {
   font-variant-numeric: tabular-nums;
 }
 
-/* -------------------------------------------------------------------------
- * Weather map workbench
- * ------------------------------------------------------------------------- */
 .weather-workbench {
   min-width: 0;
+}
+
+/* 날씨 지도 작업면은 AdminShell(fillViewport)의 남은 높이를 채운다. 짧은 가로 화면에서도 지도가
+   0px로 접히지 않도록 map의 최소 높이를 지키고, 넘치는 부분은 페이지가 스크롤한다.
+   map-controls.css의 unlayered `.kt-map-workspace { min-height: 0 }`를 이기려고 특이도를 높였다. */
+.weather-workbench.kt-map-workspace {
+  min-height: 28rem;
+}
+
+/* 날씨 지도를 확대하면 셸 레일·페이지 헤더를 숨기고 작업면이 가로 전체를 쓴다(원본 weather-shell 규칙의 셸 범위 버전). */
+body:has([data-slot="map-workspace"][data-expanded="true"]) [data-slot="admin-shell-rail"],
+body:has([data-slot="map-workspace"][data-expanded="true"]) [data-slot="admin-shell-header"] {
+  display: none;
+}
+body:has([data-slot="map-workspace"][data-expanded="true"]) div:has(> [data-slot="admin-shell-rail"]) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* 날씨 지도 줌 버튼은 터치 기기에서 44px 접근 크기를 지킨다(원본 weather-shell 규칙의 작업면 범위 버전). */
+@media (pointer: coarse) {
+  [data-slot="map-workspace"] .maplibregl-ctrl-group > button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+  /* 상세 헤더의 날씨 전용 버튼(새로고침·위치 이동·도움말)도 map 공통 터치 기준을 따른다. */
+  [data-slot="map-detail-header"] button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
 }
 
 .workbench-toolbar {
@@ -1192,7 +1285,9 @@ tbody tr:hover {
 }
 
 .weather-current-status { margin-top: 0; padding: 0.5rem 1rem; }
+
 .weather-boundary-status { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: 80%; padding: 4px 8px; border-radius: 6px; background: var(--card); color: var(--foreground); font-size: 0.75rem; pointer-events: none; z-index: 3; }
+
 .weather-boundary-open[data-weather-boundary-compact="true"] .kt-map-stage-detail { flex: 0 1 auto; height: 42%; max-height: 42%; min-height: 58px; }
 
 .inspector-actions {
@@ -1205,17 +1300,24 @@ tbody tr:hover {
 
 .inspector-header-actions { padding: 0; }
 
-/* 두 앱 상세의 아이콘 버튼 표시 크기는 PC·모바일 모두 32px로 맞춘다. */
-.weather-inspector .kt-map-detail-header > button,
-.weather-inspector .inspector-header-actions .icon-button,
-.weather-inspector .inspector-title .info-button,
+/* 데스크톱 상세 헤더 버튼은 32px로 둔다. 터치 기기는 map 공통 44px 기준(위 pointer: coarse 규칙)을 따른다. */
+@media (pointer: fine) {
+  .weather-inspector .kt-map-detail-header > button,
+  .weather-inspector .inspector-header-actions .icon-button,
+  .weather-inspector .inspector-title .info-button {
+    width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 0;
+  }
+}
+
 .info-popup .info-button {
   width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 0;
 }
+
 .weather-inspector .kt-map-detail-header button svg,
 .info-popup .info-button svg { width: 16px; height: 16px; }
 
 .weather-inspector { container: weather-inspector / inline-size; }
+
 @container weather-inspector (max-width: 16rem) {
   .kt-map-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 0; }
   .kt-map-detail-heading, .inspector-heading { display: contents; }
@@ -1225,6 +1327,7 @@ tbody tr:hover {
   .inspector-header-actions { grid-column: 1; grid-row: 1; justify-self: end; }
   .kt-map-detail-header > button { grid-row: 1; }
 }
+
 @container weather-inspector (max-width: 12rem) {
   .weather-detail-overview .weather-day-panels { grid-template-columns: minmax(0, 1fr); }
   .weather-detail-overview .weather-tomorrow-panel { border-left: 0; border-top: 1px solid var(--border); }
@@ -1443,9 +1546,6 @@ tbody tr:hover {
   min-width: 44rem;
 }
 
-/* -------------------------------------------------------------------------
- * Catalog / provider settings forms
- * ------------------------------------------------------------------------- */
 .location-create-form {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
@@ -1722,9 +1822,6 @@ tbody tr:hover {
   font-size: 0.75rem;
 }
 
-/* -------------------------------------------------------------------------
- * Dagster operations
- * ------------------------------------------------------------------------- */
 .ops-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1933,9 +2030,6 @@ tbody tr:hover {
   letter-spacing: 0.04em;
 }
 
-/* -------------------------------------------------------------------------
- * Login: the same standalone shell, card and form rhythm as kor-travel-geo
- * ------------------------------------------------------------------------- */
 .login-content {
   min-height: 100dvh;
 }
@@ -2027,14 +2121,6 @@ tbody tr:hover {
   justify-content: center;
 }
 
-.logout-error {
-  margin: 0.5rem 0 0;
-  color: var(--destructive);
-  font-size: 0.75rem;
-  line-height: 1.4;
-}
-
-/* keep status animations quiet and deterministic */
 .spin {
   animation: spin 0.9s linear infinite;
 }
@@ -2043,245 +2129,98 @@ tbody tr:hover {
   to { transform: rotate(360deg); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
-/* -------------------------------------------------------------------------
- * Responsive map breakpoints copied from kor-travel-map's rail behavior.
- * ------------------------------------------------------------------------- */
 @media (max-width: 62rem) {
-  .app-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rail {
-    align-self: auto;
-    height: auto;
-    min-height: 0;
-    position: static;
-    border-right: 0;
-    border-bottom: 1px solid var(--surface-muted);
-  }
-
-  .rail-header {
-    height: 2.5rem;
-  }
-
-  .rail-nav {
-    display: flex;
-    flex-direction: row;
-    flex: 0 1 auto;
-    gap: 0.25rem;
-    max-width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 0;
-  }
-
-  .nav-link {
-    width: auto;
-    min-width: max-content;
-  }
-
-  .rail-footer {
-    display: none;
-  }
-
-  .main > .panel,
-  .main > .cards,
-  .main > .weather-workbench,
-  .main > .api-console,
-  .main > .ops-grid,
-  .main > .dagster-layout,
-.main > .kt-dagster-operations,
-  .main > .dataset-list,
-  .main > .credential-grid,
-  .main > .settings-note,
-  .main > .loading-banner,
-  .main > .weather-notice,
-  .main > .notice,
-  .main > .error,
-  .main > .empty {
-    margin-right: 1rem;
-    margin-left: 1rem;
-  }
-
-  .page-header-wrap {
-    padding-right: 1rem;
-    padding-left: 1rem;
-  }
-
-  .weather-layout,
+.weather-layout,
   .dagster-layout {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .weather-inspector {
+.weather-inspector {
     min-height: auto;
   }
-
-  .home-metrics {
+.home-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .dataset-list,
+.dataset-list,
   .credential-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .ops-grid {
+.ops-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .location-create-form {
+.location-create-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .location-create-form button {
+.location-create-form button {
     grid-column: 1 / -1;
     justify-self: start;
   }
-
-  .api-console {
+.api-console {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
 @media (max-width: 42rem) {
-  .rail-header {
-    padding-right: 0;
-    padding-left: 0;
-  }
-
-  .page-header-wrap {
-    padding-top: 1rem;
-    padding-right: 0.75rem;
-    padding-bottom: 0.75rem;
-    padding-left: 0.75rem;
-  }
-
-  .page-header-row {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.75rem;
-  }
-
-  .page-header-actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .page-header-actions .button,
-  .page-header-actions button {
-    flex: 1 1 auto;
-  }
-
-  .main > .panel,
-  .main > .cards,
-  .main > .weather-workbench,
-  .main > .api-console,
-  .main > .ops-grid,
-  .main > .dagster-layout,
-.main > .kt-dagster-operations,
-  .main > .dataset-list,
-  .main > .credential-grid,
-  .main > .settings-note,
-  .main > .loading-banner,
-  .main > .weather-notice,
-  .main > .notice,
-  .main > .error,
-  .main > .empty {
-    margin-right: 0.75rem;
-    margin-left: 0.75rem;
-  }
-
-  .home-metrics,
+.home-metrics,
   .ops-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .panel-head {
+.panel-head {
     flex-direction: column;
     padding: 1rem 1rem 0;
   }
-
-  .table-wrap {
+.table-wrap {
     margin: 0.75rem;
   }
-
-  .location-create-form,
+.location-create-form,
   .api-form {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .location-create-form {
+.location-create-form {
     padding: 1rem;
   }
-
-  .location-create-form button {
+.location-create-form button {
     grid-column: auto;
     width: 100%;
   }
-
-  .api-form,
+.api-form,
   .api-body-field,
   .api-result,
   .credential-card {
     padding: 1rem;
   }
-
-  .api-submit {
+.api-submit {
     width: 100%;
   }
-
-  .catalog-toolbar {
+.catalog-toolbar {
     width: 100%;
     align-items: stretch;
   }
-
-  .catalog-toolbar input,
+.catalog-toolbar input,
   .catalog-toolbar button {
     width: 100%;
     flex: 1 1 100%;
   }
-
-  .pagination {
+.pagination {
     align-items: stretch;
     flex-direction: column;
   }
-
-  .pagination .toolbar {
+.pagination .toolbar {
     width: 100%;
   }
-
-  .pagination .toolbar button {
+.pagination .toolbar button {
     flex: 1;
   }
-
-  .forecast-row {
+.forecast-row {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .schedule-row {
+.schedule-row {
     grid-template-columns: minmax(0, 1fr) auto;
   }
-
-  .schedule-row small {
+.schedule-row small {
     grid-column: 1 / -1;
   }
-
 }
 
-/* Weather-aware map markers.  Shapes remain the map console's compact navy
- * control while color/glyph communicates the latest provider projection. */
 .weather-marker {
   position: relative;
   display: inline-flex;
@@ -2308,14 +2247,20 @@ tbody tr:hover {
 }
 
 .weather-marker-clear { background: #d98b20; }
+
 .weather-marker-cloud { background: #526b90; }
+
 .weather-marker-rain { background: #2563a8; }
+
 .weather-marker-snow { background: #5f82a8; }
+
 .weather-marker-storm,
 .weather-marker-alert { background: #b13b4a; }
+
 .weather-marker-unknown { background: var(--brand); }
 
 .weather-marker-glyph { line-height: 1; }
+
 .weather-marker-glyph {
   display: inline-flex;
   width: 1.5rem;
@@ -2323,7 +2268,9 @@ tbody tr:hover {
   align-items: center;
   justify-content: center;
 }
+
 .weather-marker-glyph svg { width: 1.5rem; height: 1.5rem; }
+
 .weather-marker-badge {
   position: absolute;
   right: -0.2rem;
@@ -2340,12 +2287,6 @@ tbody tr:hover {
   font-weight: 800;
 }
 
-/* The WeatherMarker primitive from digitie/maplibre-vworld-react renders a
- * React-owned centre-anchored pill inside MapLibre's marker root. The
- * library's weather marker uses a white chip and a condition-coloured border;
- * keeping the same geometry means the [longitude, latitude] coordinate is
- * the visual centre of the chip (a pointed PinMarker uses bottom anchoring).
- */
 .vworld-weather-marker-button {
   position: relative;
   display: inline-flex;
@@ -2377,9 +2318,13 @@ tbody tr:hover {
 }
 
 .vworld-weather-marker.weather-marker-sunny { --weather-marker-color: #ffa500; }
+
 .vworld-weather-marker.weather-marker-cloudy { --weather-marker-color: #808080; }
+
 .vworld-weather-marker.weather-marker-rainy { --weather-marker-color: #4169e1; }
+
 .vworld-weather-marker.weather-marker-snowy { --weather-marker-color: #add8e6; }
+
 .vworld-weather-marker.weather-marker-storm,
 .vworld-weather-marker.weather-marker-alert { --weather-marker-color: #b13b4a; }
 
@@ -2389,9 +2334,6 @@ tbody tr:hover {
   transform: scale(1.05);
 }
 
-/* Native MapLibre weather clusters. The source does the spatial grouping;
- * these DOM buttons keep the same library weather-marker language and remain
- * reachable from the keyboard when a dense station area is zoomed out. */
 .vworld-weather-cluster {
   display: grid;
   min-width: 2.75rem;
@@ -2458,18 +2400,32 @@ tbody tr:hover {
 }
 
 .weather-region-marker { pointer-events:none; }
+
 .weather-region-marker .vworld-weather-marker-button { translate:var(--weather-region-x, 0px) var(--weather-region-y, 0px); pointer-events:auto; }
+
 .weather-region-marker[data-region-overflow="true"] .vworld-weather-marker-button { visibility:hidden; pointer-events:none; }
+
 .weather-region-link, .weather-region-origin { position:absolute; left:50%; top:50%; pointer-events:none; }
+
 .weather-region-link { overflow:visible; color:var(--text-secondary); }
+
 .weather-region-link line { stroke:currentColor; stroke-width:1; }
+
 .weather-region-origin { width:var(--space-xs); height:var(--space-xs); border-radius:50%; background:var(--text-primary); translate:-50% -50%; }
+
 .weather-region-access { position:absolute; left:var(--space-sm); right:var(--space-sm); bottom:var(--space-xl); z-index:5; width:fit-content; max-width:calc(100% - 2 * var(--space-sm)); display:grid; gap:var(--space-xs); }
+
 .weather-region-access > button { min-height:var(--control-h-sm); padding:var(--space-xs) var(--space-sm); border:1px solid var(--border); border-radius:var(--radius-control); background:var(--card); color:var(--text-primary); }
+
 .weather-region-access-list { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--space-sm); max-height:min(50dvh, 24rem); overflow:auto; overscroll-behavior:contain; padding:var(--space-sm); border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); box-shadow:var(--shadow-map); }
+
 .weather-region-access-list > button { min-width:0; height:100%; white-space:normal; }
+
 .weather-region-access-list .vworld-weather-marker-copy { min-width:0; overflow-wrap:anywhere; }
-@media (pointer:coarse) { .weather-region-access > button { min-height:44px; } }
+
+@media (pointer:coarse) {
+.weather-region-access > button { min-height:44px; }
+}
 
 .measurement-point,
 .alert-panel {
@@ -2484,12 +2440,14 @@ tbody tr:hover {
 
 .measurement-point strong,
 .alert-panel strong { color: var(--brand); }
+
 .measurement-point small,
 .alert-panel span { color: var(--text-secondary); font-size: 0.75rem; }
 
-/* shadcn/Radix 다중 선택: 포털은 지도 캔버스 위에 표시한다. */
 .source-filter-trigger { max-width: 100%; }
+
 .source-filter-trigger > span { overflow: hidden; text-overflow: ellipsis; }
+
 .multi-select-content {
   z-index: 80;
   width: 18rem;
@@ -2503,7 +2461,9 @@ tbody tr:hover {
   color: var(--text-primary);
   box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
 }
+
 .multi-select-label { padding: 0.5rem; font-size: 0.75rem; color: var(--text-secondary); }
+
 .multi-select-option, .multi-select-action {
   display: flex;
   align-items: center;
@@ -2515,12 +2475,19 @@ tbody tr:hover {
   outline: none;
   cursor: pointer;
 }
+
 .multi-select-option[data-highlighted], .multi-select-action[data-highlighted] { background: var(--surface-subtle); }
+
 .multi-select-check { display: inline-flex; width: 1rem; height: 1rem; flex-shrink: 0; align-items: center; justify-content: center; border: 1px solid var(--control-line); border-radius: 3px; }
+
 .multi-select-option[data-state="checked"] .multi-select-check { background: var(--brand); border-color: var(--brand); color: var(--brand-foreground); }
+
 .multi-select-option-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
 .multi-select-count { color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
 .multi-select-separator { height: 1px; margin: 0.375rem 0; background: var(--control-line); }
+
 .source-coverage-option {
   display: inline-flex;
   align-items: center;
@@ -2528,6 +2495,7 @@ tbody tr:hover {
   font-size: 0.8rem;
   cursor: pointer;
 }
+
 .source-coverage-option input[type="checkbox"] {
   width: 1rem;
   height: 1rem;
@@ -2537,10 +2505,8 @@ tbody tr:hover {
   accent-color: var(--brand);
 }
 
-/* 도메인 내용만 조정하고 작업면·상세 외곽과 높이는 Common이 소유한다. */
 .weather-workbench .inspector-actions { flex-wrap: wrap; }
 
-/* Transport의 제목 옆 안내 패턴을 Weather 토큰으로 재사용한다. */
 .info-button {
   display: inline-flex;
   flex: 0 0 auto;
@@ -2556,9 +2522,13 @@ tbody tr:hover {
   color: var(--text-secondary);
   background: transparent;
 }
+
 .info-button:hover { color: var(--text-primary); background: var(--surface-subtle); }
+
 .info-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
 .info-positioner { z-index: var(--kt-z-overlay); }
+
 .info-popup {
   width: min(22rem, calc(100vw - 24px));
   max-height: min(24rem, var(--radix-popover-content-available-height));
@@ -2574,6 +2544,7 @@ tbody tr:hover {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+
 .info-popup-heading {
   display: flex;
   align-items: center;
@@ -2582,41 +2553,30 @@ tbody tr:hover {
   margin-bottom: 0.375rem;
   font-weight: 600;
 }
+
 .info-popup-heading h2 { margin: 0; font-size: inherit; }
+
 .info-metadata { display: grid; gap: 0.5rem; margin: 0; }
+
 .info-metadata dt { color: var(--text-secondary); }
+
 .info-metadata dd { margin: 0; }
+
 .info-source-list { margin-top: 0.75rem; }
+
 .info-source-list ul { margin: 0.375rem 0; padding-left: 1rem; }
+
 .info-source-list summary { cursor: pointer; }
+
 .info-source-list details .info-metadata { margin-top: 0.5rem; }
 
-/* 지도 페이지의 중첩 헤더 카드를 걷어내고 검색 영역에 바로 연결한다. */
-.page-header-compact { padding-top: 0.75rem; }
-.page-header-compact .page-header { padding: 0; border: 0; border-radius: 0; background: transparent; }
-.page-header-compact .page-header-copy { width: 100%; }
-.page-header-compact .page-context { display: none; }
-.page-header-compact .page-header-row { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.page-header-compact .page-header-actions { width: auto; }
-.page-header-compact + .weather-workbench { margin-top: 0.75rem; }
-
 @media (pointer: coarse) {
-  .info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
-  .vworld-weather-marker-button { min-width: 44px; min-height: 44px; }
-  .weather-shell[data-layout="map"] { --weather-map-control-size: 44px; }
+.info-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+.vworld-weather-marker-button { min-width: 44px; min-height: 44px; }
 }
 
-/* 날씨 지도에서만 shell의 남은 공간을 작업면으로 전달한다. */
-.weather-shell[data-layout="map"] { height: 100dvh; min-height: 0; }
-.weather-shell[data-layout="map"] .app-grid { height: 100%; min-height: 0; }
-.weather-shell[data-layout="map"] .main { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
-.weather-shell[data-layout="map"] .page-header-wrap { flex: 0 0 auto; }
-.weather-shell[data-layout="map"] .weather-workbench { flex: 1 1 0; min-height: 0; margin-bottom: 1.5rem; }
-.weather-shell[data-layout="map"] .maplibregl-ctrl-group > button { width: var(--weather-map-control-size, min(var(--control-h), 44px)); min-width: var(--weather-map-control-size, min(var(--control-h), 44px)); height: var(--weather-map-control-size, min(var(--control-h), 44px)); min-height: var(--weather-map-control-size, min(var(--control-h), 44px)); }
-.weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) .app-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-.weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) :is(.rail, .page-header-wrap) { display: none; }
-.weather-shell[data-layout="map"]:has([data-slot="map-workspace"][data-expanded="true"]) .weather-workbench { margin: var(--space-3xs); }
 .weather-inspector .metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 7rem), 1fr)); }
+
 .weather-map-notice {
   display: flex;
   flex: 0 0 auto;
@@ -2633,79 +2593,97 @@ tbody tr:hover {
   font-size: 0.8125rem;
   overflow-wrap: anywhere;
 }
+
 .weather-map-notice[role="alert"] { border-color: var(--destructive); }
 
-@media (width < 64rem) {
-  .weather-shell[data-layout="map"] .app-grid { grid-template-columns: minmax(0, 1fr); }
-  .weather-shell[data-layout="map"] .rail { height: auto; min-height: 0; position: static; border-right: 0; border-bottom: 1px solid var(--border); }
-  .weather-shell[data-layout="map"] .app-grid { grid-template-rows: auto minmax(0, 1fr); }
-  .weather-shell[data-layout="map"] .rail-shell { height: auto; flex-direction: row; align-items: center; gap: var(--space-2xs); padding: var(--space-3xs) var(--space-2xs); }
-  .weather-shell[data-layout="map"] .rail-header { height: auto; flex: 0 0 auto; }
-  .weather-shell[data-layout="map"] .brand { width: 44px; height: 44px; align-items: center; justify-content: center; }
-  .weather-shell[data-layout="map"] .brand-mark { width: 2rem; height: 2rem; border-radius: var(--radius-control); }
-  .weather-shell[data-layout="map"] .brand-wordmark,
-  .weather-shell[data-layout="map"] .brand-subtitle { display: none; }
-  .weather-shell[data-layout="map"] .rail-nav { flex: 1 1 0; flex-direction: row; overflow-x: auto; overflow-y: hidden; }
-  .weather-shell[data-layout="map"] .rail-nav [data-slot="app-menu"] { padding: 0; }
-  .weather-shell[data-layout="map"] .rail-footer { display: none; }
-  .weather-shell[data-layout="map"] .page-header-compact { padding: 0 var(--space-2xs); }
-  .weather-shell[data-layout="map"] .weather-workbench { margin: var(--space-3xs) var(--space-2xs) max(var(--space-2xs), env(safe-area-inset-bottom)); }
-}
-
-/* 자료 부재·요청 실패는 실제 구름 상태와 구별한다. */
 .vworld-weather-marker.weather-marker-unknown { --weather-marker-color: var(--muted); }
 
-/* 위치 상세: 현재·내일 → 세부 지표 → 마지막 시간별 그래프. */
 .weather-day-panels { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); margin-block:var(--space-md); }
+
 .weather-current-panel, .weather-tomorrow-panel { min-width:0; text-align:center; padding:var(--space-sm); }
+
 .weather-tomorrow-panel { border-left:1px solid var(--border); }
+
 .weather-date-badge { display:inline-block; padding:0.25rem 0.625rem; border:1px solid var(--border); border-radius:999px; font-size:0.75rem; font-weight:600; }
+
 .weather-current-hero { display:flex; align-items:center; justify-content:center; gap:0.25rem; margin-block:var(--space-sm); }
+
 .weather-current-hero > strong { font-size:clamp(2.5rem,6vw,3.75rem); line-height:1.15; letter-spacing:-0.05em; }
+
 .weather-current-hero > span:first-child { font-size:2.5rem; }
+
 .weather-current-panel > p { margin-block:0.375rem 0; color:var(--text-secondary); font-size:0.75rem; }
+
 .weather-tomorrow-range { display:flex; align-items:end; justify-content:center; gap:0.375rem; margin-block:var(--space-sm); }
+
 .weather-tomorrow-range small { display:block; color:var(--text-secondary); font-size:0.6875rem; }
+
 .weather-tomorrow-range strong { font-size:clamp(1.5rem,4vw,2.5rem); font-weight:600; line-height:1.15; letter-spacing:-0.04em; }
+
 .weather-tomorrow-period { display:flex; flex-wrap:wrap; justify-content:center; column-gap:0.375rem; row-gap:0.125rem; margin:0.25rem 0; font-size:0.75rem; }
+
 .weather-detail-overview .metric-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,5.25rem),1fr)); gap:0.5rem; max-width:100%; margin:0; padding:0.5rem 0; border-block:1px solid var(--border); }
+
 .weather-detail-overview .metric-card { min-width:0; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; line-height:1.35; gap:0.125rem; }
+
 .weather-detail-overview .metric-card > span { font-size:0.625rem; }
+
 .weather-detail-overview .metric-card strong { display:block; font-size:0.75rem; font-weight:600; white-space:nowrap; }
+
 .weather-sun-times { display:flex; flex-direction:column; justify-content:center; }
+
 .weather-detail-overview .weather-sun-times strong { display:inline; font-size:0.6875rem; }
+
 .weather-source-details { color:var(--text-secondary); font-size:0.75rem; }
+
 .weather-source-details summary { cursor:pointer; padding-block:var(--space-sm); }
+
 .weather-hourly-section { min-width:0; }
+
 .weather-hourly-section > h3 { margin-block:var(--space-md) var(--space-sm); font-size:0.875rem; }
+
 .weather-hourly { max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; }
+
 .weather-hourly table { table-layout:fixed; border-collapse:collapse; min-width:100%; font-variant-numeric:tabular-nums; }
+
 .weather-hourly th, .weather-hourly td { padding:0.5rem 0.125rem; white-space:nowrap; text-align:center; border-bottom:1px solid var(--border); font-size:0.75rem; }
+
 .weather-hourly th:first-child { position:sticky; left:0; background:var(--surface-card); color:var(--text-secondary); font-weight:500; }
+
 .weather-hourly thead { font-size:0.75rem; }
+
 .weather-hourly time { display:block; }
+
 .weather-hourly time small { display:block; color:var(--text-secondary); font-size:0.625rem; font-weight:400; }
+
 .weather-hour-icon { display:block; font-size:1.5rem; margin-top:0.25rem; }
+
 .weather-hourly .weather-chart-row td { padding:0; }
+
 .weather-temperature-graph { display:block; max-width:none; height:var(--weather-forecast-chart-height); color:var(--brand); }
+
 .weather-temperature-echarts { width:100%; height:100%; min-height:0; }
+
 .weather-chart-loading { margin:0; padding:var(--space-md); color:var(--text-secondary); }
+
 .weather-chart-empty { margin:0; padding:2rem var(--space-sm); white-space:normal; }
+
 .weather-forecast-basis { color:var(--text-secondary); font-size:0.6875rem; margin-block:var(--space-sm); }
+
 @media (width < 25rem) {
-  .weather-current-panel, .weather-tomorrow-panel { padding-inline:0.25rem; }
-  .weather-current-hero { gap:0; }
-  .weather-current-hero > span:first-child { font-size:2rem; }
+.weather-current-panel, .weather-tomorrow-panel { padding-inline:0.25rem; }
+.weather-current-hero { gap:0; }
+.weather-current-hero > span:first-child { font-size:2rem; }
 }
 
 .weather-wind-direction { display:inline-flex; color:var(--brand); height:1.5rem; align-items:center; }
+
 .weather-wind-direction > span { display:inline-block; font-size:1.25rem; line-height:1; }
 
-/* 공통 표의 비가상 경로에서도 시간 열과 그래프의 64px 축을 맞춘다. */
 .weather-hourly th:first-child { width: 76px; }
+
 .weather-hourly th:not(:first-child) { width: 64px; }
 
-/* 가로로 짧은 화면의 상세 본문에서도 기온 전체를 스크롤로 확인할 수 있다. */
 @media (height < 30rem) and (orientation: landscape) {
-  .weather-inspector .weather-current-hero > strong { font-size: 2rem; }
+.weather-inspector .weather-current-hero > strong { font-size: 2rem; }
 }
