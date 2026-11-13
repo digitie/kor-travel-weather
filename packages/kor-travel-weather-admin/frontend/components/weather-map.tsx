@@ -480,6 +480,7 @@ function useWeatherMapModel({
     null,
   );
   const [detailOpen, setDetailOpen] = useState(false);
+  const [detailCollapsed, setDetailCollapsed] = useState(false);
   const detailRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
@@ -683,6 +684,7 @@ function useWeatherMapModel({
             onClick: () => {
               setSelectedId(location.location_id);
               setBoundaryRequest({ latitude: location.latitude, longitude: location.longitude, level: markerBoundaryLevel });
+              setDetailCollapsed(false);
               setDetailOpen(true);
               requestAnimationFrame(() => detailRef.current?.focus());
             },
@@ -829,6 +831,7 @@ function useWeatherMapModel({
     Date.now() - latestCollectedAt.getTime() <= 2 * 60 * 60 * 1000;
 
   function closeDetail() {
+    setDetailCollapsed(false);
     setDetailOpen(false);
     const target = searchRef.current?.getClientRects().length
       ? searchRef.current
@@ -1127,6 +1130,8 @@ function useWeatherMapModel({
     mapViewport,
     detailOpen,
     setDetailOpen,
+    detailCollapsed,
+    setDetailCollapsed,
     detailRef,
     searchRef,
     filterTriggerRef,
@@ -1160,7 +1165,7 @@ function catalogNoticeText(model: WeatherMapModel) {
   return !model.visibleLocations.length ? "검색 결과가 없습니다." : "";
 }
 
-function WeatherMapNotice({ model }: { model: WeatherMapModel }) {
+function WeatherMapNotice({ model, inDetail = false }: { model: WeatherMapModel; inDetail?: boolean }) {
   const {
     mode,
     mapError,
@@ -1174,6 +1179,8 @@ function WeatherMapNotice({ model }: { model: WeatherMapModel }) {
     onRetryCatalog,
     setMarkerRetryToken,
   } = model;
+  const detailVisible = mode === "map" && model.detailOpen && Boolean(model.selected) && !model.detailCollapsed;
+  if (inDetail !== detailVisible) return null;
   const visibleMapError = mode === "map" ? mapError : "";
   const visibleMarkerError =
     mode === "map" && mapLocations.length > 0 ? markerError : "";
@@ -1423,6 +1430,8 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
       aria-label="선택한 위치 상세"
       onDismiss={closeDetail}
       collapsible
+      collapsed={model.detailCollapsed}
+      onCollapsedChange={model.setDetailCollapsed}
       header={
         <div className="inspector-heading">
           <div>
@@ -1444,6 +1453,7 @@ function WeatherInspector({ model }: { model: WeatherMapModel }) {
         </div>
       }
     >
+      <WeatherMapNotice model={model} inDetail />
       <WeatherCurrentInfo model={model} />
       <div className="inspector-section forecast-section">
         {forecastLoading ? (
@@ -1566,6 +1576,7 @@ export function WeatherMap(props: WeatherMapProps) {
     setSelectedKinds,
     mapViewport,
     setDetailOpen,
+    setDetailCollapsed,
     detailRef,
     searchRef,
     filterTriggerRef,
@@ -1709,6 +1720,7 @@ export function WeatherMap(props: WeatherMapProps) {
                   onClick={() => {
                     setSelectedId(location.location_id);
                     setBoundaryRequest({ latitude: location.latitude, longitude: location.longitude, level: boundaryLevel(mapViewport?.zoom ?? 10) });
+                    setDetailCollapsed(false);
                     setDetailOpen(true);
                     setMode("map");
                     requestAnimationFrame(() => {
