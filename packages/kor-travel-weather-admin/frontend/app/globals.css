@@ -1205,14 +1205,23 @@ tbody tr:hover {
 
 .inspector-header-actions { padding: 0; }
 
+/* 두 앱 상세의 아이콘 버튼 표시 크기는 PC·모바일 모두 32px로 맞춘다. */
+.weather-inspector .kt-map-detail-header > button,
+.weather-inspector .inspector-header-actions .icon-button,
+.weather-inspector .inspector-title .info-button,
+.info-popup .info-button {
+  width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 0;
+}
+.weather-inspector .kt-map-detail-header button svg,
+.info-popup .info-button svg { width: 16px; height: 16px; }
+
 .weather-inspector { container: weather-inspector / inline-size; }
-@container weather-inspector (max-width: 20rem) {
+@container weather-inspector (max-width: 16rem) {
   .kt-map-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
   .kt-map-detail-heading, .inspector-heading { display: contents; }
   .inspector-heading > div:first-child { grid-column: 1 / -1; grid-row: 2; max-height: max(44px, 3em); overflow: auto; overscroll-behavior: contain; }
   .inspector-title { align-items: flex-start; }
   .inspector-header-actions { grid-column: 1; grid-row: 1; justify-self: end; }
-  .inspector-header-actions .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
   .kt-map-detail-header > button { grid-row: 1; }
 }
 @container weather-inspector (max-width: 12rem) {

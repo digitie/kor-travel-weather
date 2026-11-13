@@ -99,3 +99,18 @@ label 확인 뒤 자기 PG만 종료·제거했다. 원장은 weather-migration-
 높이제한·내부스크롤을새제목wrapper에보존했다. 보완후 header183/body257 및info실제클릭을
 확인했다. E2E의같은320px케이스는API fixture에서200자이름을직접받도록강화했다.
 원장weather-browser-20261113/long-before.json(FAIL),long-after.json(PASS)와사진보존.
+
+## 우선 요청 — 양 앱 상세 버튼32px 통일
+
+사용자가 다른 후속보다 상세 버튼 축소·같은 크기를 우선하라고 지시했다.
+Weather 상세의 정보·갱신·위치 이동·접기·닫기를 PC와모바일 모두32×32px,
+SVG16×16px로맞췄다. 좁은폭의상단배치는유지하고일반375px에서는제목과버튼을
+같은행에놓을수있는16rem컨테이너경계로맞췄다. 지도zoom/필터버튼은변경하지않았다.
+Chromium156 1440/375/320×568(320글자200%)에서5개씩모두실제32×32/SVG16×16을
+측정했고정보링크·갱신·실관측소위치·키보드Enter접기/펼침·엔진해제·overflow/
+pageerror/외부요청0을확인했다. 캡처원장은weather-browser-20261113/results-buttons.json이다.
+이것은실Inspector고정자료검증이며전체Map/Geo/운영수용은아니다.
+앞의44px버튼정산은이우선요청으로대체되며공통라이브러리·모바일지도zoom의44px기준은그대로다.
+정보팝업의portal닫기X도동일32×32/SVG16이며375/320추가실측을확인했다.
+원장weather-browser-20261113/results-buttons-popup.json. 전체React경로타입/집중ESLint0,
+서버/브라우저정상종료다. 텍스트이동링크나지도zoom44px는정사각형으로축소하지않았다.

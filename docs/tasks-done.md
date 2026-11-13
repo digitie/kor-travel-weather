@@ -1,3 +1,7 @@
+## 2026-11-13 — 상세 버튼 축소 우선 요청
+
+Weather 상세의 정보·갱신·위치·접기·닫기와 정보 팝업 닫기를32×32px/SVG16×16px로 통일했다. PC1440/모바일375/320×568 글자200%에서 실제 치수·키보드 접기/펼침·갱신·관측소 이동·overflow/pageerror0과 엔진 해제를 확인했다. Transport도 별도 병행 작업 중이며 두 앱 전체 배포/최종 CI 완료를 뜻하지 않는다. 타입·집중 lint0, 운영/이미지/환경 변경0. [원장](reports/2026-11-13-map-render-quality.md).
+
 ## 2026-11-13 — 지도 렌더 비용·품질 소스
 
 - [x] 대표 위치 선형 선택·같은 단계 memo와 카탈로그 좌표 변화 대응, 차트 callback/Motion/범례 개선. WSL/Docker각349PASS 및 전체lint·타입·의존성·Doctor0. 실제 CI/운영 수용은 별도다. [결과](reports/2026-11-13-map-render-quality.md).

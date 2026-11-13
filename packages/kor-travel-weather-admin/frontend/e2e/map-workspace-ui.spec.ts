@@ -121,6 +121,10 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     await page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ }).click();
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
     await expect(detail).toBeVisible();
+    for (const button of await detail.locator('[data-slot="map-detail-header"] button').all()) {
+      await expect(button).toHaveCSS("width", "32px");
+      await expect(button).toHaveCSS("height", "32px");
+    }
     await expect(detail.getByRole("button", { name: "상세 닫기", exact: true })).toBeInViewport();
     await expect(detail.getByText("호우주의보 · 주의", { exact: true })).toBeVisible();
     await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
