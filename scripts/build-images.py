@@ -16,6 +16,8 @@ import signal
 import subprocess
 import sys
 import tarfile
+import time
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -42,6 +44,64 @@ def json_hash(value) -> str:
     return digest(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
 
 
+_GROUP_GRACE_SECONDS = 15
+
+
+def _live_owned_group(p) -> bool:
+    """Popen이 만든 session/group의 live 멤버만 본다. 종료한 leader와 혼동하지 않는다."""
+    p.poll()
+    live = False
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if int(fields[2]) != p.pid:
+            continue
+        if int(fields[3]) != p.pid:
+            raise ContractError("소유 process group의 session이 다릅니다")
+        if fields[0] not in {"Z", "X"}:
+            if int(proc.name) == p.pid and p.returncode is not None:
+                raise ContractError("종료한 leader PID가 다른 process에 재사용됐습니다")
+            live = True
+    return live
+
+
+def _cleanup_owned_group(p) -> None:
+    """leader wait와 독립적으로 own PGID를 TERM/KILL하고 live 종료를 확인한다."""
+    if (not isinstance(p.pid, int) or isinstance(p.pid, bool)
+            or p.pid <= 1 or p.pid in {os.getpid(), os.getpgrp()}):
+        raise ContractError("소유 process group identity가 올바르지 않습니다")
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
+    try:
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            deadline = time.monotonic() + _GROUP_GRACE_SECONDS
+            if _live_owned_group(p):
+                with suppress(ProcessLookupError):
+                    os.killpg(p.pid, signum)
+            try:
+                p.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                continue
+            while _live_owned_group(p):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(.02)
+            else:
+                # 이미 이 프로세스에 입양된 같은 group의 자식만 회수한다.
+                try:
+                    while os.waitpid(-p.pid, os.WNOHANG)[0]:
+                        pass
+                except ChildProcessError:
+                    pass
+                return
+        raise ContractError("bounded KILL 뒤에도 소유 group이 살아 있습니다")
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 def run(argv, *, cwd=None, input=None) -> bytes:
     p = subprocess.Popen(
         argv,
@@ -54,13 +114,12 @@ def run(argv, *, cwd=None, input=None) -> bytes:
     try:
         stdout, stderr = p.communicate(input, timeout=120)
     except BaseException:
-        if p.poll() is None:
-            os.killpg(p.pid, signal.SIGTERM)
-            try:
-                p.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                os.killpg(p.pid, signal.SIGKILL)
-                p.wait()
+        try:
+            _cleanup_owned_group(p)
+        finally:
+            for pipe in (p.stdin, p.stdout, p.stderr):
+                if pipe is not None:
+                    pipe.close()
         raise
     if p.returncode:
         error = ContractError("외부 읽기/검증 명령이 실패했습니다")
@@ -352,13 +411,7 @@ def execute_build(command: list[str], env: dict, log: Path, values: list[str]) -
                 stream.flush()
             code = p.wait()
         except BaseException:
-            if p.poll() is None:
-                os.killpg(p.pid, signal.SIGTERM)
-                try:
-                    p.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    os.killpg(p.pid, signal.SIGKILL)
-                    p.wait()
+            _cleanup_owned_group(p)
             raise
         finally:
             p.stdout.close()

@@ -59,7 +59,10 @@ runner에 raw UI source가 있다고 주장하지 않는다.
 원 JS/CSS나 키 문자열을 보고서에 저장하지 않는다. 실제 화면·로그인·지도·API·schema0040
 수용 및 운영 approved baseline 비교는 공식 SDK/QA의 별도 gate다.
 
-취소 시 EOF 뒤 wait를 포함해 own client group만 TERM/bounded wait/KILL/reap한다.
+취소·읽기 timeout 시 EOF 뒤 wait와 leader 종료 여부에 관계없이 own client group의
+live 멤버만 TERM → 단계별 최대15초 → KILL로 정리하고 종료를 확인한다. PID/session
+불일치는 신호 전에 거부하며, leader와 이미 입양된 같은 group의 자식만 reap한다.
+foreign group과 Docker daemon 작업은 이 client 정리의 대상이 아니다.
 runtime probe 실패는 stdout/stderr를 공개 입력 치환 후 private 진단에 보존하고 exact
 image+nonce label로 검증한 own CID만 정리한다. 실패 재시도는 새 output을 사용한다.
 global prune/다른 container/daemon 변경은 없다.

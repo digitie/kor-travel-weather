@@ -362,6 +362,7 @@ class ProcessAndInputTests(unittest.TestCase):
             with (
                 patch.object(build.subprocess, "Popen", return_value=child),
                 patch.object(build.os, "killpg") as kill,
+                patch.object(build, "_live_owned_group", side_effect=[True, False]),
                 self.assertRaises(InterruptedError),
             ):
                 build.execute_build(["docker", "build"], {}, Path(d) / "log", [])
@@ -379,6 +380,7 @@ class ProcessAndInputTests(unittest.TestCase):
             with (
                 patch.object(build.subprocess, "Popen", return_value=child),
                 patch.object(build.os, "killpg") as kill,
+                patch.object(build, "_live_owned_group", side_effect=[True, True, False]),
                 self.assertRaises(InterruptedError),
             ):
                 build.execute_build(["docker", "build"], {}, Path(d) / "log", [])
