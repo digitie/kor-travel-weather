@@ -1209,7 +1209,8 @@ tbody tr:hover {
 @container weather-inspector (max-width: 20rem) {
   .kt-map-detail-header { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
   .kt-map-detail-heading, .inspector-heading { display: contents; }
-  .inspector-heading > div:first-child { grid-column: 1 / -1; grid-row: 2; }
+  .inspector-heading > div:first-child { grid-column: 1 / -1; grid-row: 2; max-height: max(44px, 3em); overflow: auto; overscroll-behavior: contain; }
+  .inspector-title { align-items: flex-start; }
   .inspector-header-actions { grid-column: 1; grid-row: 1; justify-self: end; }
   .inspector-header-actions .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
   .kt-map-detail-header > button { grid-row: 1; }

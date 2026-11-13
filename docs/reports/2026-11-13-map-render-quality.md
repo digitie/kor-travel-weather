@@ -94,3 +94,8 @@ expected를0040으로 맞추고 새 대표 위치/상태 테이블의 PK·FK CAS
 검사는 그대로다. 전용 PostgreSQL18에서 WSL/Docker각1PASS, Ruff0이며 정확 CID·
 label 확인 뒤 자기 PG만 종료·제거했다. 원장은 weather-migration-head-qa-20261113,
 실패 원문 weather232-ci-python-e701-failure.log다. 기존 원 CI 실패를 성공으로 바꾸지 않는다.
+추가 독립 P2는200자 위치명에서제목높이상한이없어본문이0으로밀리는경계였다.
+실제Chromium320×568/글자200%에서 header440/body0을재현한뒤공통의기존3em제목
+높이제한·내부스크롤을새제목wrapper에보존했다. 보완후 header183/body257 및info실제클릭을
+확인했다. E2E의같은320px케이스는API fixture에서200자이름을직접받도록강화했다.
+원장weather-browser-20261113/long-before.json(FAIL),long-after.json(PASS)와사진보존.

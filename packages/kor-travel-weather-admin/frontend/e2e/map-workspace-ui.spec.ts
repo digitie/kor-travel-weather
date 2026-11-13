@@ -2,9 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
 // UI 작업면 fixture다. 실제 기상 제공처·운영 타일 수용과 구분한다.
-async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; emptyCatalog?: boolean; failedCatalog?: boolean; failedProviders?: boolean } = {}) {
+async function openWorkspace(page: Page, options: { delayedCatalog?: boolean; emptyCatalog?: boolean; failedCatalog?: boolean; failedProviders?: boolean; locationName?: string } = {}) {
   const stamp = new Date().toISOString();
-  const locations = Array.from({ length: 80 }, (_, index) => ({ location_id: `workspace-${index}`, name: index === 0 ? "지도 작업면 시험 위치" : `시험 위치 ${index}`, latitude: 36.2, longitude: 127.8, nx: null, ny: null, region_code: null, enabled: true, metadata: {} }));
+  const locations = Array.from({ length: 80 }, (_, index) => ({ location_id: `workspace-${index}`, name: index === 0 ? options.locationName ?? "지도 작업면 시험 위치" : `시험 위치 ${index}`, latitude: 36.2, longitude: 127.8, nx: null, ny: null, region_code: null, enabled: true, metadata: {} }));
   const value = { value_id: "temperature", location_id: "workspace-0", provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: "workspace-fixture-source-record-key-with-full-lineage" };
   const queries: URL[] = [];
   let releaseCatalog: (() => Promise<void>) | undefined;
@@ -223,7 +223,7 @@ test.describe("작은 화면 글자 확대", () => {
   test.use({ viewport: { width: 320, height: 568 }, hasTouch: true });
   test("글자200%의 지도 접근 치수", async ({ page }, testInfo) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
-    const controls = await openWorkspace(page, { delayedCatalog: true });
+    const controls = await openWorkspace(page, { delayedCatalog: true, locationName: "지도 작업면 시험 위치".padEnd(200, "가") });
     await page.evaluate(() => { document.documentElement.style.fontSize = "200%"; });
     const pending = await layoutMetrics(page);
     await testInfo.attach("320px 글자200% 초기 조회 중", { body: JSON.stringify(pending), contentType: "application/json" });
