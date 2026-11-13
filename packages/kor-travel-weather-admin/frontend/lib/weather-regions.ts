@@ -1,5 +1,11 @@
 import type { Location, WeatherRegionProjection } from "./api";
 
+/** 전역/필터 목록과 대표 캐시의 선택 보존 규칙을 한 곳에서 판정한다. */
+export function weatherSelectionLoading(state: { needsSourceCatalog: boolean; sourceLoading: boolean; catalogLoading: boolean; query: string; catalogError?: string | null; regionProjection?: Pick<WeatherRegionProjection, "ready"> | null }): boolean {
+  return (state.needsSourceCatalog ? state.sourceLoading : state.catalogLoading)
+    || (!state.needsSourceCatalog && !state.query.trim() && Boolean(state.catalogError) && Boolean(state.regionProjection?.ready));
+}
+
 const REGION_SHORT_NAMES: Readonly<Record<string, string>> = {
   충청북도: "충북", 충청남도: "충남", 경상북도: "경북", 경상남도: "경남",
   전라북도: "전북", 전북특별자치도: "전북", 전라남도: "전남",

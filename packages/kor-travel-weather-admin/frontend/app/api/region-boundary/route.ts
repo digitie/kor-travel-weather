@@ -26,6 +26,7 @@ async function boundedJson(response: Response) {
   return JSON.parse(new TextDecoder().decode(result));
 }
 
+// react-doctor-disable-next-line react-doctor/nextjs-no-side-effect-in-get-handler -- Geo의 POST search/reverse는 읽기 전용이며 Map/Uint8Array 갱신은 상한 있는 로컬 메모리 캐시·복사다. 원천/도메인 DB write는 없다.
 export async function GET(request: NextRequest) {
   // 본 경로도 기존 session-only middleware와 durable revocation 검사를 거친다.
   const params = request.nextUrl.searchParams;
@@ -45,10 +46,11 @@ export async function GET(request: NextRequest) {
   if (active >= 4) return Response.json({ data: null, detail: "행정 경계 조회가 많습니다. 잠시 후 다시 선택해 주세요." }, { status: 503, headers: { ...headers, "retry-after": "1" } });
   active += 1;
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(8_000)]);
+  const authentication = { "X-KTG-API-Key": apiKey };
   async function geo(path: string, body: Record<string, unknown>) {
     const url = new URL(path, endpoint);
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("configuration");
-    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "X-KTG-API-Key": apiKey! },
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...authentication },
       body: JSON.stringify(body), cache: "no-store", redirect: "error", signal });
     if (!response.ok) throw new Error("upstream");
     return boundedJson(response);
@@ -65,8 +67,10 @@ export async function GET(request: NextRequest) {
     const current = cache.get(cacheKey);
     if (current) { bytes -= current.bytes; cache.delete(cacheKey); }
     while (cache.size && (cache.size >= 128 || bytes + size > MAX_BYTES)) {
-      const key = cache.keys().next().value!;
-      bytes -= cache.get(key)!.bytes; cache.delete(key);
+      const oldest = cache.entries().next();
+      if (oldest.done) break;
+      const [key, entry] = oldest.value;
+      bytes -= entry.bytes; cache.delete(key);
     }
     cache.set(cacheKey, { expires: Date.now() + 6 * 60 * 60 * 1000, value, bytes: size }); bytes += size;
     return Response.json({ data: value }, { headers });

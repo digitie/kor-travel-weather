@@ -49,10 +49,11 @@ import {
 import {
   weatherRepresentatives,
   weatherRegionLevel,
+  weatherSelectionLoading,
 } from "@/lib/weather-regions";
 import { WeatherDetails } from "./weather-details";
 import { WeatherRegionBoundary } from "./weather-region-boundary";
-import { boundaryLevel, type BoundaryRequest } from "@/lib/weather-boundary";
+import { boundaryForSelection, boundaryLevel, type BoundaryRequest } from "@/lib/weather-boundary";
 import type { WeatherCondition } from "@/lib/weather-clusters";
 
 import {
@@ -558,8 +559,7 @@ function useWeatherMapModel({
     selectedKinds.length > 0 &&
     sourceCatalog?.key !== sourceKey &&
     !sourceError;
-  const selectionLoading = (needsSourceCatalog ? sourceLoading : catalogLoading)
-    || (!needsSourceCatalog && !query.trim() && Boolean(catalogError) && Boolean(regionProjection?.ready));
+  const selectionLoading = weatherSelectionLoading({ needsSourceCatalog, sourceLoading, catalogLoading, query, catalogError, regionProjection });
   const visibleLocations = useMemo(() => {
     const catalog = !needsSourceCatalog
       ? locations
@@ -1500,6 +1500,51 @@ function weatherFilterLabel(
     .join(" · ");
 }
 
+function WeatherRegionAccess({ model }: { model: WeatherMapModel }) {
+  const { regionLevel, markers, regionListOpen, setRegionListOpen, regionListId } = model;
+  return (regionLevel && markers.length ? (
+              <section
+                className="weather-region-access"
+                aria-label="지역별 대표 날씨"
+              >
+                <button
+                  type="button"
+                  aria-expanded={regionListOpen}
+                  aria-controls={regionListId}
+                  onClick={() => setRegionListOpen((open) => !open)}
+                >
+                  {regionListOpen
+                    ? "지역 날씨 접기"
+                    : `지역 날씨 모두 보기 (${markers.length})`}
+                </button>
+                {regionListOpen ? (
+                  <div
+                    id={regionListId}
+                    className="weather-region-access-list"
+                    role="region"
+                    aria-label="모든 지역 대표 날씨"
+                    tabIndex={0}
+                  >
+                    {markers.map((marker) => (
+                      <button
+                        key={marker.id}
+                        type="button"
+                        className={`vworld-weather-marker-button vworld-weather-marker weather-marker-${marker.condition}`}
+                        aria-pressed={marker.selected}
+                        onClick={marker.onClick}
+                      >
+                        <WeatherMarkerLabel {...marker} />
+                        <span className="sr-only">
+                          {marker.title} 날씨 보기
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null);
+}
+
 export function WeatherMap(props: WeatherMapProps) {
   const model = useWeatherMapModel(props);
   const {
@@ -1507,9 +1552,6 @@ export function WeatherMap(props: WeatherMapProps) {
     setBoundaryRequest,
     map,
     setMapReady,
-    regionListOpen,
-    setRegionListOpen,
-    regionListId,
     selectedId,
     setSelectedId,
     query,
@@ -1537,9 +1579,7 @@ export function WeatherMap(props: WeatherMapProps) {
     syncViewport,
   } = model;
   // 같은 ID의 좌표가 카탈로그 갱신으로 바뀌면 이전 위치의 도형을 새 날씨와 섞지 않는다.
-  const displayedBoundary = mode === "map" && model.detailOpen
-    && boundaryRequest?.latitude === model.selected?.latitude
-    && boundaryRequest?.longitude === model.selected?.longitude ? boundaryRequest : null;
+  const displayedBoundary = boundaryForSelection(boundaryRequest, model.selected, model.detailOpen, mode);
   const filterLabel = weatherFilterLabel(
     selectedKinds,
     selectedSources,
@@ -1646,47 +1686,7 @@ export function WeatherMap(props: WeatherMapProps) {
                   ))
                 : null}
             </VWorldMapView>
-            {regionLevel && markers.length ? (
-              <section
-                className="weather-region-access"
-                aria-label="지역별 대표 날씨"
-              >
-                <button
-                  type="button"
-                  aria-expanded={regionListOpen}
-                  aria-controls={regionListId}
-                  onClick={() => setRegionListOpen((open) => !open)}
-                >
-                  {regionListOpen
-                    ? "지역 날씨 접기"
-                    : `지역 날씨 모두 보기 (${markers.length})`}
-                </button>
-                {regionListOpen ? (
-                  <div
-                    id={regionListId}
-                    className="weather-region-access-list"
-                    role="region"
-                    aria-label="모든 지역 대표 날씨"
-                    tabIndex={0}
-                  >
-                    {markers.map((marker) => (
-                      <button
-                        key={marker.id}
-                        type="button"
-                        className={`vworld-weather-marker-button vworld-weather-marker weather-marker-${marker.condition}`}
-                        aria-pressed={marker.selected}
-                        onClick={marker.onClick}
-                      >
-                        <WeatherMarkerLabel {...marker} />
-                        <span className="sr-only">
-                          {marker.title} 날씨 보기
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
+            <WeatherRegionAccess model={model} />
           </MapStage>
         </MapTabPanel>
         <MapTabPanel

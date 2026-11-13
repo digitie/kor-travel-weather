@@ -18,6 +18,8 @@ export type LegendVariant =
   | "vertical-bar"
   | "horizontal-bar";
 
+// 공식 LegendIndicator/LegendOverlay와 같은 CSS 색상 규칙을 사용하는 공개 스타일 유틸리티 계약을 유지한다.
+// react-doctor-disable-next-line react-doctor/only-export-components
 export function legendFillStyle(key: string, colorsCount: number): CSSProperties {
   if (colorsCount <= 1) return { backgroundColor: `var(--color-${key}-0)` };
   return { background: indicatorBackground(key, colorsCount) };
@@ -25,6 +27,8 @@ export function legendFillStyle(key: string, colorsCount: number): CSSProperties
 
 // Punches out the centre with a mask-composite so only the "border" shows —
 // works with gradients and border-radius, unlike plain border-color.
+// 공식 LegendIndicator/LegendOverlay와 같은 CSS 색상 규칙을 사용하는 공개 스타일 유틸리티 계약을 유지한다.
+// react-doctor-disable-next-line react-doctor/only-export-components
 export function legendOutlineStyle(key: string, colorsCount: number): CSSProperties {
   const mask: CSSProperties = {
     WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",

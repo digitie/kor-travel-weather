@@ -8,6 +8,7 @@ export function WeatherRegionBoundary({ request }: { request: BoundaryRequest | 
   const map = useVWorldMap();
   const id = `weather-boundary-${useId().replaceAll(":", "")}`;
   const [message, setMessage] = useState("");
+  // react-doctor-disable-next-line react-doctor/no-set-state-after-await-in-effect -- JSON await 직후·catch의 모든 갱신은 signal.aborted를 검사하고 cleanup이 abort한다. 늦은 응답 회귀로 검산한다.
   useEffect(() => {
     if (!map || !request) return;
     const controller = new AbortController();

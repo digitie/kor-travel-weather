@@ -4,7 +4,8 @@ import ts from "typescript";
 import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { abbreviateWeatherRegionName, weatherRepresentatives } from "../lib/weather-regions";
+import { abbreviateWeatherRegionName, weatherRepresentatives, weatherSelectionLoading } from "../lib/weather-regions";
+import { boundaryForSelection } from "../lib/weather-boundary";
 
 
 // 실제 effect callback을 실행한다. DOM/지도 대신 React의 cleanup→새 effect 순서만 명시한다.
@@ -268,6 +269,7 @@ function modelVariable(name: string): ts.VariableDeclaration | undefined {
 }
 
 function evaluateModelExpression(expression: string, scope: Record<string, unknown>): unknown {
+  scope = { weatherSelectionLoading, boundaryForSelection, ...scope };
   const code = ts.transpileModule(`return (${expression});`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
