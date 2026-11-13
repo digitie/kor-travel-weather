@@ -26,17 +26,20 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   await page.locator('input[name="password"]').fill(process.env.E2E_UI_PASSWORD!);
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   await expect(page).toHaveURL(/\/weather$/, { timeout: 30_000 });
-  const pageInfo = page.getByRole("button", { name: "날씨 지도 안내", exact: true });
+  // AdminShell help는 공용 HelpTip(`도움말: {title}`)을 쓴다: 24px 가시 버튼 + before:-inset-2 히트 영역.
+  const pageInfo = page.getByRole("button", { name: "도움말: 날씨 지도", exact: true });
   await expect(pageInfo).toBeVisible();
   expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(width === 375);
-  await expect(pageInfo).toHaveCSS("width", width === 375 ? "44px" : "28px");
-  await expect(pageInfo.locator("svg")).toHaveAttribute("width", "15");
-  await expect(page.locator(".page-header")).toHaveCSS("border-top-width", "0px");
-  await expect(page.locator(".page-header")).toHaveCSS("padding-top", "0px");
-  await expect(page.locator(".page-header .description")).toHaveCount(0);
+  await expect(pageInfo).toHaveCSS("width", "24px");
+  await expect(pageInfo.locator("svg")).toHaveAttribute("width", "24");
+  // kor-travel-map AdminShell compact header: border-b only, py-3 (0.75rem) top padding, no description line.
+  await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("border-top-width", "0px");
+  await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("padding-top", "12px");
+  await expect(page.locator('[data-slot="admin-shell-header"] p.max-w-3xl')).toHaveCount(0);
   await pageInfo.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog", { name: "날씨 지도", exact: true })).toContainText("종류와 데이터 출처");
+  // Radix PopoverContent(role=dialog)는 접근성 이름이 없으므로 본문으로 찾는다.
+  await expect(page.getByRole("dialog").filter({ hasText: "종류와 데이터 출처" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(pageInfo).toBeFocused();
 
@@ -55,10 +58,10 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
 
   for (const theme of ["light", "dark"]) {
     await page.evaluate((dark) => document.documentElement.classList.toggle("dark", dark), theme === "dark");
-    const info = detail.getByRole("button", { name: "위치·데이터 출처 안내", exact: true });
+    const info = detail.getByRole("button", { name: "도움말: 위치·데이터 출처", exact: true });
     await info.focus();
     await page.keyboard.press("Enter");
-    const popup = page.getByRole("dialog", { name: "위치·데이터 출처", exact: true });
+    const popup = page.getByRole("dialog").filter({ has: page.locator("dl.info-metadata") });
     await expect(popup).toBeVisible();
     await expect(popup).toContainText(location.location_id);
     await expect(popup).toContainText("36.2000, 127.8000");
@@ -84,9 +87,10 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
       const local = ["card", "surface-subtle", "text-primary", "text-secondary", "brand", "brand-tint", "focus", "warning", "destructive"];
       const colors = names.map((name, index) => [color(`--kt-${name}`), color(`--${local[index]}`)]);
       const matches = names.map((name, index) => color(`--kt-${name}`) === color(`--${local[index]}`));
-      const popupBackground = getComputedStyle(document.querySelector(".info-popup")!).backgroundColor;
+      const popupEl = document.querySelector<HTMLElement>('[role="dialog"]')!;
+      const popupBackground = getComputedStyle(popupEl).backgroundColor;
       const expectedPopup = color("--popover");
-      const popupOverflow = getComputedStyle(document.querySelector(".info-popup")!).overflowY;
+      const popupOverflow = getComputedStyle(popupEl).overflowY;
       probe.remove();
       return { colors, matches, popupBackground, expectedPopup, popupOverflow };
     });

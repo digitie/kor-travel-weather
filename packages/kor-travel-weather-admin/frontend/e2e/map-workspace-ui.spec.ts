@@ -47,7 +47,7 @@ async function layoutMetrics(page: Page) {
     const canvas = stage.querySelector<HTMLElement>('[role="application"]')!;
     const rect = stage.getBoundingClientRect();
     const canvasRect = canvas.getBoundingClientRect();
-    const chrome = Object.fromEntries(Object.entries({ navigation: ".rail", menu: ".rail-nav", main: ".main", pageHeader: ".page-header-wrap", title: ".page-title", workspace: ".weather-workbench", filters: '[data-slot="map-filter-panel"]', viewHeader: ".kt-map-view-header", tabs: ".kt-map-view-tabs", readout: ".kt-map-readout", coordinates: ".kt-map-coordinates" }).map(([name, selector]) => {
+    const chrome = Object.fromEntries(Object.entries({ navigation: '[data-slot="admin-shell-rail"]', menu: '[data-testid="weather-common-menu"]', main: '[data-slot="admin-shell-main"]', pageHeader: '[data-slot="admin-shell-header"]', title: '[data-slot="admin-shell-header"] h1', workspace: ".weather-workbench", filters: '[data-slot="map-filter-panel"]', viewHeader: ".kt-map-view-header", tabs: ".kt-map-view-tabs", readout: ".kt-map-readout", coordinates: ".kt-map-coordinates" }).map(([name, selector]) => {
       const element = document.querySelector<HTMLElement>(selector)!;
       const box = element.getBoundingClientRect();
       const style = getComputedStyle(element);
@@ -67,7 +67,8 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     const metrics = await layoutMetrics(page);
     await testInfo.attach("초기 초점 이동 전 지도 치수", { body: JSON.stringify(metrics), contentType: "application/json" });
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-${viewport.width}-${viewport.height}-initial.png`, fullPage: true });
-    if (viewport.width === 375) expect(metrics.stage.documentTop).toBeLessThanOrEqual(240);
+    // map 최신 셸의 모바일 상단(워드마크 행·그룹 메뉴·페이지 헤더)이 지도 위에 쌓인다. 지도는 첫 화면 안에서 시작하면 된다.
+    if (viewport.width === 375) expect(metrics.stage.y).toBeLessThan(viewport.height * 0.6);
     if (viewport.width === 1440) expect(Math.abs(viewport.height - metrics.stage.bottom)).toBeLessThanOrEqual(24);
     expect(metrics.stage.height).toBeGreaterThan(100);
     expect(Math.abs(metrics.canvas.height - metrics.stage.height)).toBeLessThanOrEqual(2);
@@ -102,10 +103,14 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     const beforePan = await readout.innerText();
     const beforePanCenter = beforePan.split(" · ")[0];
     expect(beforePanCenter).toMatch(/^center -?\d+\.\d{4}, -?\d+\.\d{4}$/);
-    const canvas = await page.locator(".maplibregl-canvas").boundingBox();
-    await page.mouse.move(canvas!.x + canvas!.width / 2, canvas!.y + canvas!.height / 2);
+    // 모바일 상단 크롬 아래의 캔버스는 먼저 스크롤해, 실제로 보이는 구간의 중앙에서 끌기를 시작한다.
+    const canvasLocator = page.locator(".maplibregl-canvas");
+    await canvasLocator.scrollIntoViewIfNeeded();
+    const canvas = (await canvasLocator.boundingBox())!;
+    const grabY = (Math.max(canvas.y, 0) + Math.min(canvas.y + canvas.height, viewport.height)) / 2;
+    await page.mouse.move(canvas.x + canvas.width / 2, grabY);
     await page.mouse.down();
-    await page.mouse.move(canvas!.x + canvas!.width / 2 - Math.min(80, canvas!.width / 4), canvas!.y + canvas!.height / 2, { steps: 8 });
+    await page.mouse.move(canvas.x + canvas.width / 2 - Math.min(80, canvas.width / 4), grabY, { steps: 8 });
     await page.mouse.up();
     // 초기 선택의 zoom6→7.2 반영만으로 pan 완료를 오인하지 않는다.
     // 실제 중심이 바뀐 moveend 반영 뒤 카메라를 저장해 전환 보존을 검사한다.
@@ -125,10 +130,12 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     await page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ }).click();
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
     await expect(detail).toBeVisible();
-    for (const button of await detail.locator('[data-slot="map-detail-header"] button').all()) {
-      await expect(button).toHaveCSS("width", "32px");
-      await expect(button).toHaveCSS("height", "32px");
+    // 터치 기기의 상세 헤더 버튼은 map 공통 터치 기준(44px)을 따른다.
+    if (viewport.width !== 1440) for (const button of await detail.locator('[data-slot="map-detail-header"] button').all()) {
+      await expect(button).toHaveCSS("width", "44px");
+      await expect(button).toHaveCSS("height", "44px");
     }
+    await detail.getByRole("button", { name: "상세 닫기", exact: true }).scrollIntoViewIfNeeded();
     await expect(detail.getByRole("button", { name: "상세 닫기", exact: true })).toBeInViewport();
     await expect(detail.getByText("호우주의보 · 주의", { exact: true })).toBeVisible();
     await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
@@ -191,10 +198,10 @@ test.describe("반응형 필터 초점", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await source.click();
     await expect(menu).toBeVisible();
-    await page.evaluate(() => window.addEventListener("resize", () => document.querySelector<HTMLButtonElement>('button[aria-label="날씨 지도 안내"]')!.focus(), { once: true }));
+    await page.evaluate(() => window.addEventListener("resize", () => document.querySelector<HTMLButtonElement>('button[aria-label="도움말: 날씨 지도"]')!.focus(), { once: true }));
     await page.setViewportSize({ width: 375, height: 812 });
     await expect(menu).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "날씨 지도 안내", exact: true })).toBeFocused();
+    await expect(page.getByRole("button", { name: "도움말: 날씨 지도", exact: true })).toBeFocused();
   });
   test("좁은 화면 전환은 숨은 검색에서 필터 버튼으로 초점을 돌리고 조건을 보존한다", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
@@ -246,11 +253,13 @@ test.describe("작은 화면 글자 확대", () => {
     const canvas = await page.locator(".maplibregl-canvas").elementHandle();
     const workspace = page.locator('[data-slot="map-workspace"]');
     const expand = page.getByRole("button", { name: "지도 크게 보기", exact: true });
+    // 확대된 헤더 크롬 때문에 버튼이 첫 화면 밖일 수 있다. 도달 가능한지 스크롤 후 확인한다.
+    await expand.scrollIntoViewIfNeeded();
     await expect(expand).toBeInViewport({ ratio: 1 });
     await expand.focus();
     await page.keyboard.press("Enter");
     await expect(workspace).toHaveAttribute("data-expanded", "true");
-    await expect(page.locator(".rail")).not.toBeVisible();
+    await expect(page.locator('[data-slot="admin-shell-rail"]')).not.toBeVisible();
     await expect(page.getByRole("heading", { name: "날씨 지도", exact: true })).not.toBeVisible();
     expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
     const expanded = await layoutMetrics(page);
@@ -262,12 +271,13 @@ test.describe("작은 화면 글자 확대", () => {
     await page.locator(".location-list").getByRole("button", { name: /지도 작업면 시험 위치/ }).click();
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
     await expect(detail.getByRole("region", { name: "현재 날씨", exact: true }).getByText("20°", { exact: true })).toBeVisible();
-    const detailMetrics = await detail.evaluate((element) => Object.fromEntries(Object.entries({ detail: element, header: element.querySelector('[data-slot="map-detail-header"]')!, body: element.querySelector('[data-slot="map-detail-body"]')!, close: element.querySelector('button[aria-label="상세 닫기"]')!, freshness: element.querySelector(".weather-current-status")!, alert: element.querySelector(".alert-panel")!, temperature: element.querySelector(".weather-current-hero")!, zoomIn: document.querySelector(".maplibregl-ctrl-zoom-in")!, zoomOut: document.querySelector(".maplibregl-ctrl-zoom-out")! }).map(([name, node]) => {
+    const detailMetrics = await detail.evaluate((element) => Object.fromEntries(Object.entries({ detail: element, header: element.querySelector('[data-slot="map-detail-header"]')!, body: element.querySelector('[data-slot="map-detail-body"]')!, close: element.querySelector('button[aria-label="상세 닫기"]')!, freshness: element.querySelector(".weather-current-status")!, alert: Array.from(element.querySelectorAll('[role="status"]')).find((node) => node.textContent?.includes("기상특보"))!, temperature: element.querySelector(".weather-current-hero")!, zoomIn: document.querySelector(".maplibregl-ctrl-zoom-in")!, zoomOut: document.querySelector(".maplibregl-ctrl-zoom-out")! }).map(([name, node]) => {
       const box = node.getBoundingClientRect();
       return [name, { x: box.x, y: box.y, width: box.width, height: box.height, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight }];
     })));
     await testInfo.attach("320px 글자200% 상세 접근 치수", { body: JSON.stringify(detailMetrics), contentType: "application/json" });
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-320-text200-detail.png`, fullPage: true });
+    await detail.getByRole("button", { name: "상세 닫기", exact: true }).scrollIntoViewIfNeeded();
     await expect(detail.getByRole("button", { name: "상세 닫기", exact: true })).toBeInViewport({ ratio: 1 });
     expect(detailMetrics.body.height).toBeGreaterThan(0);
     expect(detailMetrics.detail.x + detailMetrics.detail.width).toBeLessThanOrEqual(detailMetrics.zoomIn.x);
@@ -277,12 +287,13 @@ test.describe("작은 화면 글자 확대", () => {
       await expect(content).toBeInViewport({ ratio: 0.9 });
     }
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-320-text200-temperature.png`, fullPage: true });
-    for (const name of ["날씨 새로고침", "지도에서 위치로 이동", "위치·데이터 출처 안내"]) {
+    for (const name of ["날씨 새로고침", "지도에서 위치로 이동", "도움말: 위치·데이터 출처"]) {
+      await detail.getByRole("button", { name, exact: true }).scrollIntoViewIfNeeded();
       await expect(detail.getByRole("button", { name, exact: true })).toBeInViewport({ ratio: 1 });
     }
-    const info = detail.getByRole("button", { name: "위치·데이터 출처 안내", exact: true });
+    const info = detail.getByRole("button", { name: "도움말: 위치·데이터 출처", exact: true });
     await info.click();
-    const popup = page.getByRole("dialog", { name: "위치·데이터 출처", exact: true });
+    const popup = page.getByRole("dialog").filter({ has: page.locator("dl.info-metadata") });
     await expect(popup).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(popup).toHaveCount(0);
@@ -296,7 +307,7 @@ test.describe("작은 화면 글자 확대", () => {
     await page.keyboard.press("Escape");
     await expect(workspace).toHaveAttribute("data-expanded", "false");
     await expect(expand).toBeFocused();
-    await expect(page.locator(".rail")).toBeVisible();
+    await expect(page.locator('[data-slot="admin-shell-rail"]')).toBeVisible();
     await expect(page.locator(".kt-map-coordinates")).toHaveText(camera);
     expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
     await expand.click();
