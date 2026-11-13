@@ -100,12 +100,16 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     const readout = page.locator(".kt-map-coordinates");
     await expect(readout).toContainText("center");
     const beforePan = await readout.innerText();
+    const beforePanCenter = beforePan.split(" · ")[0];
+    expect(beforePanCenter).toMatch(/^center -?\d+\.\d{4}, -?\d+\.\d{4}$/);
     const canvas = await page.locator(".maplibregl-canvas").boundingBox();
     await page.mouse.move(canvas!.x + canvas!.width / 2, canvas!.y + canvas!.height / 2);
     await page.mouse.down();
     await page.mouse.move(canvas!.x + canvas!.width / 2 - Math.min(80, canvas!.width / 4), canvas!.y + canvas!.height / 2, { steps: 8 });
     await page.mouse.up();
-    await expect(readout).not.toHaveText(beforePan);
+    // 초기 선택의 zoom6→7.2 반영만으로 pan 완료를 오인하지 않는다.
+    // 실제 중심이 바뀐 moveend 반영 뒤 카메라를 저장해 전환 보존을 검사한다.
+    await expect(readout).not.toContainText(beforePanCenter);
     const camera = await readout.innerText();
     await page.getByRole("tab", { name: "목록", exact: true }).click();
     const listStage = page.locator('[data-slot="map-stage"]:visible');
