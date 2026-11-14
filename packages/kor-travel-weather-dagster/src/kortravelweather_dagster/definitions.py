@@ -60,6 +60,7 @@ from .kma_weather import (
     KMA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_NOWCAST,
+    KmaAllValuesSkippedError,
     WeatherTarget,
     run_weather_sync,
     targets_from_settings,
@@ -571,7 +572,15 @@ def _make_kma_dataset_asset(
                     "provider_fetch", "publication", "collection",
                 } else "collection"
                 metadata["error_type"] = type(exc).__name__
-                raise Failure(description="KMA_COLLECTION_FAILED", metadata=metadata) from None
+                description = "KMA_COLLECTION_FAILED"
+                if isinstance(exc, KmaAllValuesSkippedError):
+                    metadata["error_code"] = exc.code
+                    metadata.update({
+                        key: value for key, value in exc.value_counts.items()
+                        if type(value) is int and value >= 0
+                    })
+                    description = exc.public_description
+                raise Failure(description=description, metadata=metadata) from None
             raise
         # No `finally: client.close()` here -- KmaClient/DataGoKrClient are
         # async-only now, and run_weather_sync closes both itself, inside the

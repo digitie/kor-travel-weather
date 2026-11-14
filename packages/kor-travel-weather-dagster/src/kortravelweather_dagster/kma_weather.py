@@ -147,6 +147,23 @@ GRID_RESPONSE_VALUES = 5_000
 GRID_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
+class KmaAllValuesSkippedError(RuntimeError):
+    """전부 결측/범위 밖인 응답은 정상 수집과 구분해 실패로 남긴다."""
+
+    code = "KMA_ALL_VALUES_SKIPPED"
+    public_description = "KMA 값을 모두 건너뛰어 수집에 실패했습니다."
+
+    def __init__(
+        self, message: str, *, values_attempted: int, values_skipped: int,
+        missing_values: int, invalid_values: int,
+    ) -> None:
+        super().__init__(message)
+        self.value_counts = {
+            "values_attempted": values_attempted, "values_skipped": values_skipped,
+            "missing_values": missing_values, "invalid_values": invalid_values,
+        }
+
+
 async def _prefetch_grids(
     calls: Iterable[Callable[[], Awaitable[Any]]],
 ) -> AsyncIterator[Any]:
@@ -1635,9 +1652,11 @@ async def _stage_and_publish_weather(
                 dict(values_skipped.most_common()),
             )
             if values_accepted == 0:
-                raise RuntimeError(
+                raise KmaAllValuesSkippedError(
                     f"KMA 값 {values_attempted}건을 모두 건너뛰었습니다: "
-                    f"{dict(values_skipped.most_common())}"
+                    f"{dict(values_skipped.most_common())}",
+                    values_attempted=values_attempted, values_skipped=values_skipped.total(),
+                    missing_values=values_missing, invalid_values=values_invalid,
                 )
             if values_invalid or (
                 values_missing >= VALUE_PARTIAL_MIN_SKIPPED

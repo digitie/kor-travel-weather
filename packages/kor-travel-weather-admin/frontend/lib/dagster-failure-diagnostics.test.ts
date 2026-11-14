@@ -117,3 +117,19 @@ it("기상청 격자 수집 고정 코드는 단계·시간을 보존하며 원�
   expect(result).not.toContain(secret);
   expect(result).not.toContain("https://");
 });
+
+it("모든 값 건너뜀은 일반 실패로 숨기지 않고 안전한 건수를 표시한다", () => {
+  const result = failureDiagnostic({ message: "KMA 값을 모두 건너뛰어 수집에 실패했습니다.",
+    failureMetadata: { metadataEntries: [
+      { label: "error_code", text: "KMA_ALL_VALUES_SKIPPED" },
+      { label: "values_attempted", intValue: 10 }, { label: "values_skipped", intValue: 10 },
+      { label: "missing_values", intValue: 8 }, { label: "invalid_values", intValue: 2 },
+    ] },
+  });
+  expect(result).toContain("오류 코드: KMA_ALL_VALUES_SKIPPED");
+  expect(result).toContain("시도 값 수: 10");
+  expect(result).toContain("건너뛴 값 수: 10");
+  expect(result).toContain("결측 값 수: 8");
+  expect(result).toContain("범위 밖 값 수: 2");
+  expect(result).toContain("빈 결과로 마지막 정상 자료를 바꾸지 않습니다");
+});
