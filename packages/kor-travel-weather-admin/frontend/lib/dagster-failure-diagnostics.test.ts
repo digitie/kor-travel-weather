@@ -92,3 +92,28 @@ it("배편 파일 규격 실패의 원천과 보존·건수를 표시한다", ()
   expect(result).toContain("성공 데이터셋 수: 3");
   expect(result).toContain("성공 저장분 보존: 예");
 });
+
+
+it("기상청 격자 수집 고정 코드는 단계·시간을 보존하며 원문을 숨긴다", () => {
+  const secret = "fixture-kma-private-key";
+  const result = JSON.stringify(sanitizeFailureResponse({ data: { runsOrError: { __typename: "Runs", results: [{ eventConnection: { hasMore: false, events: [{
+    __typename: "ExecutionStepFailureEvent", message: "KMA_COLLECTION_FAILED",
+    error: { className: "Failure", message: `https://example.invalid/?key=${secret}` },
+    failureMetadata: { metadataEntries: [
+      { label: "stage", text: "publish" }, { label: "fetch_ms", floatValue: 122.5 },
+      { label: "normalize_ms", floatValue: 0 }, { label: "publish_ms", floatValue: 8.25 },
+      { label: "published_values", intValue: 200 }, { label: "completed_grids", intValue: 2 },
+    ] },
+  }] } }] } } }));
+  expect(result).toContain("오류 코드: KMA_COLLECTION_FAILED");
+  expect(result).toContain("실패 단계: DB 게시");
+  expect(result).toContain("요청 소요(ms): 122.5");
+  expect(result).toContain("정규화 소요(ms): 0");
+  expect(result).toContain("게시 소요(ms): 8.25");
+  expect(result).toContain("저장 값 수: 200");
+  expect(result).toContain("완료 격자 수: 2");
+  expect(result).toContain("호출 보호 후 다음 정기 실행");
+  expect(result).not.toContain("UNKNOWN_FAILURE");
+  expect(result).not.toContain(secret);
+  expect(result).not.toContain("https://");
+});
