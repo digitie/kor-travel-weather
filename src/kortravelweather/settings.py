@@ -315,7 +315,7 @@ class WeatherSettings(BaseSettings):
         default=3, validation_alias="KOR_TRAVEL_WEATHER_PROVIDER_RETRIES", ge=0, le=5
     )
     kma_max_rps: float = Field(
-        default=5.0,
+        default=20.0,
         validation_alias="KOR_TRAVEL_WEATHER_KMA_MAX_RPS",
         gt=0,
         allow_inf_nan=False,

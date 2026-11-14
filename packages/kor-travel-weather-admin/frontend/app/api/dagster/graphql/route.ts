@@ -1,15 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { scopedDagsterRequest } from "@/lib/dagster-scope";
+import { sanitizeFailureResponse } from "@/lib/dagster-failure-diagnostics";
 
 const dagsterBase = () => process.env.DAGSTER_UI_INTERNAL_URL ?? "http://127.0.0.1:14102";
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 
-async function readBoundedText(request: NextRequest): Promise<string | null> {
+async function readBoundedText(request: Pick<Request, "body" | "text">, maximumBytes = MAX_BODY_BYTES): Promise<string | null> {
   const reader = request.body?.getReader();
   if (!reader) {
     const text = await request.text();
-    return new TextEncoder().encode(text).byteLength <= MAX_BODY_BYTES ? text : null;
+    return new TextEncoder().encode(text).byteLength <= maximumBytes ? text : null;
   }
   const decoder = new TextDecoder();
   let total = 0;
@@ -18,7 +19,7 @@ async function readBoundedText(request: NextRequest): Promise<string | null> {
     const { done, value } = await reader.read();
     if (done) return text + decoder.decode();
     total += value.byteLength;
-    if (total > MAX_BODY_BYTES) {
+    if (total > maximumBytes) {
       await reader.cancel();
       return null;
     }
@@ -60,6 +61,13 @@ export async function POST(request: NextRequest) {
       cache: "no-store",
       signal: AbortSignal.timeout(10_000),
     });
+    if ((parsed as { operationName?: string } | null)?.operationName === "WeatherDagsterRunFailure") {
+      const result = await readBoundedText(response, 4_194_304);
+      if (result === null) throw new Error("실행 상세 응답 크기 상한 초과");
+      return NextResponse.json(sanitizeFailureResponse(JSON.parse(result)), {
+        status: response.status, headers: { "cache-control": "no-store, private" },
+      });
+    }
     return new NextResponse(response.body, {
       status: response.status,
       headers: {
@@ -67,7 +75,7 @@ export async function POST(request: NextRequest) {
         "cache-control": "no-store, private",
       },
     });
-  } catch (reason: unknown) {
-    return NextResponse.json({ errors: [{ message: reason instanceof Error ? reason.message : "Dagster 연결 실패" }] }, { status: 502 });
+  } catch {
+    return NextResponse.json({ errors: [{ message: "Dagster 연결 실패" }] }, { status: 502 });
   }
 }

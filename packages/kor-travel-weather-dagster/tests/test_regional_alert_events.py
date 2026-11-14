@@ -145,6 +145,109 @@ async def test_zero_success_is_fresh_without_inventing_clear(repo):
     assert result["requests_fetched"] == 1
 
 
+@pytest.mark.parametrize("format", ["json", "xml"])
+async def test_sdk_normalized_no_data_without_page_metadata_is_complete(repo, format):
+    """운영의 정상 빈 특보 응답을 같은 공개 SDK 경계로 재현한다."""
+    def handler(_request):
+        if format == "xml":
+            return httpx.Response(200, text=(
+                "<OpenAPI_ServiceResponse><cmmMsgHeader><resultCode>03</resultCode>"
+                "<resultMsg>NODATA_ERROR</resultMsg></cmmMsgHeader></OpenAPI_ServiceResponse>"
+            ), headers={"content-type": "application/xml"})
+        return httpx.Response(200, json={"response": {
+            "header": {"resultCode": "03", "resultMsg": "NODATA_ERROR"},
+        }})
+
+    async with sdk(handler) as client:
+        result = await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert result["status"] == "success" and result["pages_complete"]
+    assert result["observations"] == 0 and result["requests_fetched"] == 1
+    stored = repo.list_sync_run_sources(result["run_id"])
+    assert len(stored) == 1
+
+
+@pytest.mark.parametrize("value,page", [
+    ({"totalCount": 1, "items": {"item": []}}, 1),
+    ({"totalCount": 0, "items": {"item": [raw_row()]}}, 1),
+    ({"totalCount": 0, "items": {}}, 1),
+    ({"totalCount": 0}, 1),
+    ({"totalCount": True, "items": {"item": []}}, 1),
+    ({"items": {"item": []}}, 1),
+    ({"totalCount": 0, "items": {"item": []}}, 2),
+    ({"totalCount": 0, "items": {"item": []}, "pageNo": True}, 1),
+])
+def test_no_data_exception_does_not_accept_incomplete_or_contradictory_pages(value, page):
+    with pytest.raises(module.AlertCollectionError):
+        module._page(value, page)
+
+
+def test_metadata_failure_carries_safe_stage_and_actual_counts():
+    with pytest.raises(module.AlertCollectionError) as caught:
+        module._page(body([], total=1, page=2), 1)
+    assert caught.value.diagnostics == {
+        "error_code": "ALERT_PAGE_METADATA", "stage": "page_validation",
+        "requested_page": 1, "returned_page": 2, "page_size": 100, "total_count": 1,
+    }
+
+
+def test_diagnostic_metadata_drops_unknown_text_and_secret_values():
+    secret = "fixture-key-not-for-diagnostics"
+    error = module.AlertCollectionError("ALERT_PAGE_METADATA", diagnostics={
+        "url": f"https://example.invalid?serviceKey={secret}",
+        "stage": secret, "metadata_type": secret, "returned_rows": secret,
+        "http_status": True, "total_count": -1,
+    })
+    assert error.diagnostics == {"error_code": "ALERT_PAGE_METADATA"}
+    with pytest.raises(module.AlertCollectionError) as caught:
+        module._page({"totalCount": secret}, 1)
+    assert caught.value.diagnostics["metadata_type"] == "string"
+    assert secret not in str(caught.value) + str(caught.value.diagnostics)
+
+
+def test_asset_failure_retains_code_and_safe_diagnostics_for_admin(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from dagster import Failure, build_asset_context
+    from kortravelweather_dagster import definitions
+
+    repository = SimpleNamespace(engine=SimpleNamespace(dispose=Mock()))
+    monkeypatch.setattr(definitions, "_run_repository", lambda _context: repository)
+
+    def fail(**_kwargs):
+        raise module.AlertCollectionError("ALERT_PAGE_METADATA", diagnostics={
+            "stage": "page_validation", "requested_page": 1, "page_size": 3,
+        })
+
+    monkeypatch.setattr(definitions, "run_alert_event_sync", fail)
+    resource = SimpleNamespace(create_data_client=lambda **_: object())
+    with build_asset_context(resources={"kma_client": resource, "weather_repository": object()}):
+        # 직접 decorated compute를 호출해 실제 op 경계의 Failure metadata를 검산한다.
+        compute = definitions.kma_regional_alert_events_sync.op.compute_fn.decorated_fn
+        context = SimpleNamespace(resources=SimpleNamespace(kma_client=resource))
+        with pytest.raises(Failure) as caught:
+            compute(context)
+    assert caught.value.description == "ALERT_PAGE_METADATA"
+    assert {key: value.value for key, value in caught.value.metadata.items()} == {
+        "error_code": "ALERT_PAGE_METADATA", "stage": "page_validation",
+        "requested_page": 1, "page_size": 3,
+    }
+    repository.engine.dispose.assert_called_once()
+
+
+async def test_run_preserves_fixed_public_error_but_exception_has_page_diagnostics(repo):
+    async with sdk(lambda _: response({"totalCount": 1, "items": {"item": []}})) as client:
+        with pytest.raises(module.AlertCollectionError) as caught:
+            await module.run_alert_event_sync_async(repository=repo, client=client)
+    run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
+    assert run.error == "ALERT_PAGE_METADATA"
+    assert caught.value.diagnostics == {
+        "error_code": "ALERT_PAGE_METADATA", "stage": "page_validation",
+        "metadata_field": "pageNo", "metadata_type": "null",
+        "requested_page": 1, "requests_fetched": 1,
+    }
+
+
 async def test_provider_auth_error_is_safe_in_run_and_exception(repo):
     with pytest.raises(module.AlertCollectionError) as caught:
         async with sdk(

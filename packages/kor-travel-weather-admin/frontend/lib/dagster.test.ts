@@ -12,6 +12,14 @@ import {
 } from "./dagster";
 import { DAGSTER_LOCATION_NAME, scopedDagsterRequest } from "./dagster-scope";
 
+it("서버가 정제한 상세 단계 원인이 일반 실행 실패보다 우선한다", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: { runsOrError: { __typename: "Runs", results: [{ eventConnection: {
+    events: [{ __typename: "ExecutionStepFailureEvent", diagnostic: true, message: "오류 코드: ALERT_PAGE_METADATA\n검사 필드: pageNo" }, { __typename: "RunFailureEvent", message: "일반 실행 실패" }], hasMore: false,
+  } }] } } })));
+  try { expect(await getDagsterRunFailure("11111111-1111-1111-1111-111111111111")).toEqual({ message: "오류 코드: ALERT_PAGE_METADATA\n검사 필드: pageNo", complete: true }); }
+  finally { vi.unstubAllGlobals(); }
+});
+
 function run(overrides: Partial<DagsterRun>): DagsterRun {
   return {
     runId: "11111111-1111-1111-1111-111111111111",

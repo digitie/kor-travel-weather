@@ -139,8 +139,9 @@ GRID_PUBLISH_VALUES = 2_500
 # 실패한 run이 ingest하지 못한 export attempt를 닫는 데 쓰는 시간 상한.
 LEFTOVER_REJECT_SECONDS = 10
 
-# HTTP 응답은 순서대로 소비하고 두 격자까지만 선행 요청한다. DB 게시자는 하나다.
-GRID_FETCH_CONCURRENCY = 2
+# HTTP 응답은 순서대로 소비하고 네 격자까지만 선행 요청한다. DB 게시자는 하나다.
+# 대기 응답은 합계 raw JSON 32MiB·정규화 fact 20,000개 이내다.
+GRID_FETCH_CONCURRENCY = 4
 GRID_RESPONSE_ROWS = 5_000
 GRID_RESPONSE_VALUES = 5_000
 GRID_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -200,10 +201,20 @@ class StagedResponse:
     values: list[WeatherValue]
 
 
-async def _kma_provider_call(call: Any, *, dataset: str, retries: int) -> Any:
+async def _kma_provider_call(
+    call: Any, *, dataset: str, retries: int, timings: Counter[str] | None = None,
+) -> Any:
     """Observe one logical KMA/DataGo.kr call across the retry boundary."""
-    with provider_request(KMA_PROVIDER_NAME, dataset):
-        return await _retry_call(call, retries=retries)
+    started = time.monotonic()
+    try:
+        with provider_request(KMA_PROVIDER_NAME, dataset):
+            return await _retry_call(call, retries=retries)
+    except Exception as exc:
+        exc.kma_stage = "provider_fetch"
+        raise
+    finally:
+        if timings is not None:
+            timings["fetch_ms"] += max(0, int((time.monotonic() - started) * 1000))
 
 
 def targets_from_settings(
@@ -595,6 +606,7 @@ async def stage_grid(
     max_response_rows: int | None = None,
     max_normalized_values: int | None = None,
     skipped: Counter[str] | None = None,
+    timings: Counter[str] | None = None,
 ) -> list[StagedResponse]:
     """Fetch one grid with bounded row/value materialization.
 
@@ -639,6 +651,7 @@ async def stage_grid(
             lambda: client.now(nx=location.nx, ny=location.ny),
             dataset="kma_ultra_short_nowcast",
             retries=retries,
+            timings=timings,
         )
         raw_snapshot = getattr(snapshot, "raw", None)
         raw_items = raw_snapshot.get("items", []) if isinstance(raw_snapshot, Mapping) else []
@@ -674,6 +687,7 @@ async def stage_grid(
                 lambda: client.forecast.short(nx=location.nx, ny=location.ny),
                 dataset="kma_ultra_short_forecast",
                 retries=retries,
+                timings=timings,
             ),
             limit=row_limit(),
             label="초단기예보",
@@ -706,6 +720,7 @@ async def stage_grid(
                 lambda: client.forecast.vilage(nx=location.nx, ny=location.ny),
                 dataset="kma_short_forecast",
                 retries=retries,
+                timings=timings,
             ),
             limit=row_limit(),
             label="단기예보",
@@ -746,6 +761,7 @@ async def stage_grid(
                 lambda: data_client.mid_land_forecast(reg_id=land_region_code),
                 dataset="kma_mid_forecast",
                 retries=retries,
+                timings=timings,
             ),
             limit=row_limit(26),
             label="중기육상예보",
@@ -782,6 +798,7 @@ async def stage_grid(
                 lambda: data_client.mid_temperature_forecast(reg_id=temperature_region_code),
                 dataset="kma_mid_forecast",
                 retries=retries,
+                timings=timings,
             ),
             limit=row_limit(16),
             label="중기기온예보",
@@ -981,6 +998,26 @@ async def _stage_and_publish_weather(
     )
     #: Alert chunks already committed; reported even when the run fails.
     published_values = 0
+    timings: Counter[str] = Counter()
+    last_progress_log = time.monotonic()
+
+    def diagnostic_counts() -> dict[str, int]:
+        return {
+            "fetch_ms": timings["fetch_ms"], "normalize_ms": timings["normalize_ms"],
+            "publish_ms": timings["publish_ms"], "published_values": published_values,
+            "completed_grids": timings["completed_grids"],
+        }
+
+    async def timed_publish(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        started = time.monotonic()
+        try:
+            return await asyncio.to_thread(call, *args, **kwargs)
+        except Exception as exc:
+            exc.kma_stage = "publication"
+            raise
+        finally:
+            timings["publish_ms"] += max(0, int((time.monotonic() - started) * 1000))
+
     try:
         alert_target_list = list(alert_targets) if alert_targets is not None else list(targets)
         # Check each dataset against the targets it actually reads.  A single
@@ -1127,8 +1164,14 @@ async def _stage_and_publish_weather(
         heartbeat = getattr(repository, "heartbeat_sync_run", None)
 
         def keep_alive() -> None:
+            nonlocal last_progress_log
             if callable(heartbeat) and heartbeat(run.run_id) is False:
                 raise RuntimeError("sync run lease가 만료되어 publish를 중단했습니다.")
+            if time.monotonic() - last_progress_log >= 60:
+                # 고빈도 행별 로그·DB 쓰기 없이 장기 작업의 실제 진행을 관측한다.
+                logger.info("kma_collection_progress run_id=%s counts=%s", run.run_id,
+                            diagnostic_counts())
+                last_progress_log = time.monotonic()
 
         async def flush_alert_batch() -> None:
             nonlocal published_values
@@ -1154,12 +1197,12 @@ async def _stage_and_publish_weather(
                 max_values=GRID_PUBLISH_VALUES,
             ):
                 keep_alive()
-                published_values += await asyncio.to_thread(
+                published_values += await timed_publish(
                     repository.ingest_batch, source_records=chunk_sources, values=chunk
                 )
             empty = uncited_sources(sources, values)
             if empty:
-                await asyncio.to_thread(repository.ingest_batch, source_records=empty, values=[])
+                await timed_publish(repository.ingest_batch, source_records=empty, values=[])
             sources.clear()
             values.clear()
 
@@ -1175,21 +1218,30 @@ async def _stage_and_publish_weather(
             if remaining_values < len(group_targets):
                 raise ValueError("normalized fact 예산이 target fan-out을 수용하지 못합니다.")
             skipped: Counter[str] = Counter()
-            responses = await stage_grid(
-                client=client,
-                target=group_targets[0],
-                include_mid=include_mid_for_group,
-                include_base=include_base and not include_mid_for_group,
-                base_datasets=base_datasets,
-                data_client=data_client,
-                retries=retries,
-                source_entity_id=source_entity_id,
-                max_response_rows=remaining_rows,
-                max_normalized_values=min(
-                    GRID_RESPONSE_VALUES, max(1, remaining_values // len(group_targets))
+            phase_timings: Counter[str] = Counter()
+            started = time.monotonic()
+            try:
+                responses = await stage_grid(
+                    client=client,
+                    target=group_targets[0],
+                    include_mid=include_mid_for_group,
+                    include_base=include_base and not include_mid_for_group,
+                    base_datasets=base_datasets,
+                    data_client=data_client,
+                    retries=retries,
+                    source_entity_id=source_entity_id,
+                    max_response_rows=remaining_rows,
+                    max_normalized_values=min(
+                        GRID_RESPONSE_VALUES, max(1, remaining_values // len(group_targets))
                 ),
                 skipped=skipped,
-            )
+                timings=phase_timings,
+                )
+            finally:
+                timings["fetch_ms"] += phase_timings["fetch_ms"]
+                timings["normalize_ms"] += max(
+                    0, int((time.monotonic() - started) * 1000) - phase_timings["fetch_ms"],
+                )
             # provider 내부의 일시적 할당은 라이브러리가 소유한다. 대기열에는
             # 격자당 raw JSON 8MiB·정규화 fact 5,000개 이내만 진입시킨다.
             size = sum(
@@ -1237,7 +1289,7 @@ async def _stage_and_publish_weather(
                 if export_collector is not None:
                     record = {**response.source_record, "run_id": run.run_id}
                     if record["dataset_key"] != KMA_ULTRA_SHORT_NOWCAST:
-                        published_values += await asyncio.to_thread(
+                        published_values += await timed_publish(
                             export_collector.ingest_fanout,
                             prepared_exports.pop(record["source_entity_id"], None),
                             record=record,
@@ -1261,7 +1313,7 @@ async def _stage_and_publish_weather(
                             for target in group_targets
                             for value in response.values
                         ]
-                        published = await asyncio.to_thread(
+                        published = await timed_publish(
                             export_collector.ingest,
                             prepared_exports.pop(record["source_entity_id"], None),
                             record=record,
@@ -1331,7 +1383,7 @@ async def _stage_and_publish_weather(
                     )
                 return prepared
 
-            prepared_exports.update(await asyncio.to_thread(prepare_grids))
+            prepared_exports.update(await timed_publish(prepare_grids))
         calls = []
         if include_base:
             calls.extend(
@@ -1356,7 +1408,19 @@ async def _stage_and_publish_weather(
         try:
             async with aclosing(_prefetch_grids(calls)) as prefetched:
                 async for group_targets, responses, skipped in prefetched:
-                    await append_group(group_targets, responses, skipped)
+                    started = time.monotonic()
+                    publish_before = timings["publish_ms"]
+                    try:
+                        await append_group(group_targets, responses, skipped)
+                        if any(str(response.source_record.get("source_entity_id", "")).startswith(
+                            "grid:",
+                        ) for response in responses):
+                            timings["completed_grids"] += 1
+                    finally:
+                        timings["normalize_ms"] += max(
+                            0, int((time.monotonic() - started) * 1000)
+                            - (timings["publish_ms"] - publish_before),
+                        )
                     del group_targets, responses, skipped
         finally:
             # 소비 실패·취소로 ingest하지 못한 준비 attempt는 다음 claim까지 preparing으로
@@ -1591,7 +1655,7 @@ async def _stage_and_publish_weather(
             keep_alive()
             # Off the event loop: a lock race retries with a blocking pause
             # (``WeatherRepository._retry_lock_race``).
-            published_values += await asyncio.to_thread(
+            published_values += await timed_publish(
                 repository.ingest_batch, source_records=chunk_sources, values=chunk
             )
         # Responses no fact cites -- notices that matched no location -- are
@@ -1602,7 +1666,7 @@ async def _stage_and_publish_weather(
         ]
         publish_and_finish = getattr(repository, "publish_and_finish", None)
         if callable(publish_and_finish):
-            loaded, finished = await asyncio.to_thread(
+            loaded, finished = await timed_publish(
                 publish_and_finish,
                 run_id=run.run_id,
                 source_records=final_sources,
@@ -1616,7 +1680,7 @@ async def _stage_and_publish_weather(
             )
         else:
             loaded = (
-                await asyncio.to_thread(
+                await timed_publish(
                     repository.ingest_batch, source_records=final_sources, values=[]
                 )
                 + published_values
@@ -1635,6 +1699,7 @@ async def _stage_and_publish_weather(
                 f"sync run ownership was lost before publish completion: {finished.status}"
             )
         return {
+            **diagnostic_counts(),
             "values_attempted": values_attempted,
             "values_skipped": values_skipped.total(),
             "values_skipped_by_reason": dict(values_skipped.most_common()),
@@ -1650,6 +1715,7 @@ async def _stage_and_publish_weather(
             "alert_locations_starved": alerts_starved,
         }
     except (Exception, asyncio.CancelledError) as exc:
+        exc.kma_diagnostics = diagnostic_counts()
         repository.finish_sync_run(
             run.run_id,
             status="failed",

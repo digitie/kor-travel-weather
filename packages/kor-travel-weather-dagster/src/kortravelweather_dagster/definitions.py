@@ -51,7 +51,7 @@ from kortravelweather.settings import WeatherSettings
 
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
-from .alert_events import run_alert_event_sync
+from .alert_events import AlertCollectionError, run_alert_event_sync
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -545,7 +545,7 @@ def _make_kma_dataset_asset(
         except SyncRunAlreadyActive:
             # Nothing was opened, so nothing to finish; see overlap.py.
             raise
-        except Exception:
+        except Exception as exc:
             if run is None:
                 # Target parsing failed before a normal run could be opened.
                 # Keep the setup failure visible in the sync-run catalog too.
@@ -556,6 +556,22 @@ def _make_kma_dataset_asset(
                 )
             if not sync_started:
                 repository.finish_sync_run(run.run_id, status="failed", error="asset setup failed")
+            counts = getattr(exc, "kma_diagnostics", None)
+            if isinstance(counts, dict):
+                metadata = {
+                    key: counts[key]
+                    for key in (
+                        "fetch_ms", "normalize_ms", "publish_ms",
+                        "published_values", "completed_grids",
+                    )
+                    if type(counts.get(key)) is int and counts[key] >= 0
+                }
+                stage = getattr(exc, "kma_stage", "collection")
+                metadata["stage"] = stage if stage in {
+                    "provider_fetch", "publication", "collection",
+                } else "collection"
+                metadata["error_type"] = type(exc).__name__
+                raise Failure(description="KMA_COLLECTION_FAILED", metadata=metadata) from None
             raise
         # No `finally: client.close()` here -- KmaClient/DataGoKrClient are
         # async-only now, and run_weather_sync closes both itself, inside the
@@ -635,6 +651,8 @@ def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, 
         result = run_alert_event_sync(repository=repository, client=client)
         context.add_output_metadata(result)
         return result
+    except AlertCollectionError as exc:
+        raise Failure(description=exc.code, metadata=exc.diagnostics) from None
     finally:
         repository.engine.dispose()
 

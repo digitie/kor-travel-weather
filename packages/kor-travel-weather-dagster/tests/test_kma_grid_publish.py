@@ -108,17 +108,19 @@ def test_grid_batches_publish_before_fetching_the_whole_sweep(monkeypatch):
         async def now(self, **kwargs):
             nonlocal calls
             calls += 1
-            if calls == 3:
-                assert repository._committed == 3
+            if calls == 6:
+                # HTTP 준비와 DB thread 완료 순서는 환경마다 다르다. 전체
+                # 요청 전에 최소 한 batch가 저장됐다는 계약을 검산한다.
+                assert repository._committed >= 3
             return await super().now(**kwargs)
 
     result = run_weather_sync(
         repository=repository,
         client=Client(),
-        targets=_targets(3, 2),
+        targets=_targets(6, 2),
         base_datasets=frozenset({kma_weather.KMA_ULTRA_SHORT_NOWCAST}),
     )
-    assert result["values_loaded"] == 6
+    assert result["values_loaded"] == 12
 
 
 def test_grid_budget_does_not_reset_after_flushing_memory(monkeypatch):
