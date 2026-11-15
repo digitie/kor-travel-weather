@@ -31,6 +31,12 @@ function ActionNotice({ result, pending, onCheck, onRecover, busy }: { result: C
   </Alert>;
 }
 
+/** 기존 예약을 확인한 복구에서는 뒤늦은 실행 차단을 예약 해제로 해석하지 않는다. */
+function keepKnownReservation(current:ConsoleActionResult,next:ConsoleActionResult,requestId:string):ConsoleActionResult {
+  if(current.state!=="unknown"||!current.runId||!["blocked","rejected"].includes(next.state))return next;
+  return {...next,state:"unknown",runId:current.runId,requestId,message:`${next.message} 기존 예약의 해제가 확인되지 않아 같은 요청을 유지합니다.`};
+}
+
 function useConsoleAction(onChanged?: () => void) {
   const [busy,setBusy] = useState(false), [result,setResult] = useState<ConsoleActionResult | null>(null);
   const pending = useRef<ConsoleActionRequest | null>(null), inFlight = useRef(false), mounted = useRef(true);
@@ -64,7 +70,8 @@ function useConsoleAction(onChanged?: () => void) {
     try {
       const current=await getConsoleRequestStatus(command.requestId);
       // 명시적으로 누른 이 경로에서만 동일 ID/본문으로 native idempotent 예약을 복구한다.
-      const next=current.state==="unknown"?await performConsoleAction(command):current;
+      const attempted=current.state==="unknown"?await performConsoleAction(command):current;
+      const next=keepKnownReservation(current,attempted,command.requestId);
       if(mounted.current){setResult(next);if(next.state!=="unknown"){pending.current=null;onChanged?.();}}
     }catch{if(mounted.current)setResult({state:"unknown",message:"같은 요청의 복구 결과가 확인되지 않았습니다. 새 실행 요청은 만들지 않았습니다."});}
     finally{inFlight.current=false;if(mounted.current)setBusy(false);}

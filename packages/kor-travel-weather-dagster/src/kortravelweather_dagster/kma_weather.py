@@ -249,7 +249,12 @@ async def _kma_provider_call(
     started = time.monotonic()
     try:
         with provider_request(KMA_PROVIDER_NAME, dataset):
-            return await _retry_call(call, retries=retries)
+            result = await _retry_call(call, retries=retries)
+        # SDK 메서드의 정상 반환 1회다(빈 정상 응답 포함). 내부 HTTP 재시도·
+        # 페이지 수가 아니며, 뒤 정규화·게시의 성공 여부와 독립적으로 보존한다.
+        if timings is not None and dataset in BASE_GRID_DATASETS:
+            timings["base_requests_fetched"] += 1
+        return result
     except Exception as exc:
         exc.kma_stage = "provider_fetch"
         raise
@@ -1049,6 +1054,7 @@ async def _stage_and_publish_weather(
             "fetch_ms": timings["fetch_ms"], "normalize_ms": timings["normalize_ms"],
             "publish_ms": timings["publish_ms"], "published_values": published_values,
             "completed_grids": timings["completed_grids"],
+            "requests_fetched": timings["base_requests_fetched"],
             "planned_grids": timings["planned_grids"],
             "failed_grids": grid_failures.total(),
             "deferred_grids": grid_failures.total(),
@@ -1303,6 +1309,7 @@ async def _stage_and_publish_weather(
                 return GridFetchFailure(source_entity_id, code)
             finally:
                 timings["fetch_ms"] += phase_timings["fetch_ms"]
+                timings["base_requests_fetched"] += phase_timings["base_requests_fetched"]
                 timings["normalize_ms"] += max(
                     0, int((time.monotonic() - started) * 1000) - phase_timings["fetch_ms"],
                 )
@@ -1652,10 +1659,7 @@ async def _stage_and_publish_weather(
         grids_fetched = timings["completed_grids"] if include_base else 0
         if grid_failures and not grids_fetched:
             raise KmaAllGridsFailedError(grid_failures)
-        base_dataset_count = (
-            len(base_datasets) if base_datasets is not None else len(BASE_GRID_DATASETS)
-        )
-        base_requests_fetched = grids_fetched * base_dataset_count
+        base_requests_fetched = timings["base_requests_fetched"]
         # Every fact publishes in location chunks, each its own short
         # transaction holding only its own locations' locks.  One transaction
         # for the run held every location it touched for as long as the
@@ -1835,6 +1839,7 @@ async def _stage_and_publish_weather(
             run.run_id,
             status="failed",
             grids_fetched=0,
+            requests_fetched=timings["base_requests_fetched"],
             # None keeps the count each committed chunk recorded on the run
             # row; ``published_values`` misses a chunk whose COMMIT landed
             # but whose reply did not.

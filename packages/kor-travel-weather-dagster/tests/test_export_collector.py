@@ -151,6 +151,71 @@ def test_partial_provider_outage_preserves_previous_heads_and_raw_successes(repo
     assert all(row["status"] != "preparing" for row in attempts)
 
 
+@pytest.mark.parametrize("mode,completed_calls,wire_calls", [
+    ("empty", 2, 2), ("server", 0, 2), ("second_dataset_failed", 2, 4),
+])
+def test_failed_asset_preserves_completed_logical_reads_in_metadata_and_database(
+    repository, monkeypatch, mode, completed_calls, wire_calls,
+):
+    import asyncio
+
+    from dagster import Failure, build_asset_context
+    from kortravelweather_dagster import definitions, kma_weather
+
+    calls = []
+
+    def respond(request):
+        calls.append(request.url.path)
+        if mode == "server" or (
+            mode == "second_dataset_failed" and request.url.path.endswith("getUltraSrtFcst")
+        ):
+            return httpx.Response(500)
+        query = request.url.params
+        rows = [] if mode == "empty" else [{
+            "baseDate": query["base_date"], "baseTime": query["base_time"],
+            "nx": int(query["nx"]), "ny": int(query["ny"]),
+            "category": "T1H", "obsrValue": "18.4",
+        }]
+        return httpx.Response(200, json={"response": {
+            "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+            "body": {"pageNo": 1, "numOfRows": 1000,
+                     "totalCount": len(rows), "items": {"item": rows}},
+        }})
+
+    session = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    client = KmaClient("fixture-key", session=session, retries=0, max_rps=20)
+    monkeypatch.setattr(definitions, "_run_repository", lambda _: repository)
+    monkeypatch.setattr(definitions, "_kma_grid_targets", lambda *args, **kwargs: (
+        _targets(), {}, set(), None,
+    ))
+    asset = definitions.kma_ultra_short_nowcast_sync
+    if mode == "second_dataset_failed":
+        asset = definitions._make_kma_dataset_asset(
+            name="fixture_bundled_request_count", dataset_key="kma_weather_bundle",
+            description="첫 dataset 반환 뒤 다음 dataset 실패의 계수 검산",
+            base_datasets=frozenset({
+                KMA_ULTRA_SHORT_NOWCAST, kma_weather.KMA_ULTRA_SHORT_FORECAST,
+            }),
+            include_base=True, include_mid=False, include_alerts=False, needs_data_client=False,
+        )
+    try:
+        with build_asset_context(resources={
+            "kma_client": SimpleNamespace(create_client=lambda **kwargs: client),
+            "weather_repository": repository,
+        }) as context, pytest.raises(Failure) as caught:
+            asset(context)
+    finally:
+        asyncio.run(session.aclose())
+    meta = {key: value.value for key, value in caught.value.metadata.items()}
+    assert caught.value.description == "KMA_ALL_GRIDS_FAILED"
+    assert meta["requests_fetched"] == completed_calls and len(calls) == wire_calls
+    assert meta["completed_grids"] == meta["published_values"] == 0
+    assert meta["failed_grids"] == 2
+    run = repository.list_sync_runs(provider="python-kma-api")[0]
+    assert run.status == "failed" and run.requests_fetched == completed_calls
+    assert run.values_loaded == 0
+
+
 @pytest.mark.parametrize("sqlstate", ["55P03", "40P01", "40001"])
 @pytest.mark.parametrize("reply_lost", [False, True])
 def test_export_grid_lock_does_not_abort_later_grid_or_lose_committed_count(
@@ -189,6 +254,7 @@ def test_export_grid_lock_does_not_abort_later_grid_or_lose_committed_count(
     assert result["status"] == "partial"
     assert result["values_loaded"] == result["published_values"] == 84
     assert result["completed_grids"] == result["failed_grids"] == 1
+    assert result["requests_fetched"] == 2  # 두 SDK 조회 완료와 한 격자 게시 유예는 별개다.
     assert result["grid_failure_counts"] == {"DB_LOCK_CONTENTION": 1}
     assert result["deferred_grid_ids"] == ["grid:60:127"]
     assert "PUBLISHED" not in publish_pending_exports(repository, tmp_path).results
@@ -199,6 +265,8 @@ def test_export_grid_lock_does_not_abort_later_grid_or_lose_committed_count(
         )) == 84
         assert connection.scalar(select(Base.metadata.tables["weather_sync_runs"].c.values_loaded
         ).where(Base.metadata.tables["weather_sync_runs"].c.run_id == result["run_id"])) == 84
+        assert connection.scalar(select(Base.metadata.tables["weather_sync_runs"].c.requests_fetched
+        ).where(Base.metadata.tables["weather_sync_runs"].c.run_id == result["run_id"])) == 2
         assert connection.scalar(select(func.count()).select_from(heads.heads)) == 0
         assert connection.scalar(select(func.count()).select_from(heads.lifecycle.attempts).where(
             heads.lifecycle.attempts.c.status == "preparing",

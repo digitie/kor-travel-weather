@@ -1,3 +1,7 @@
+## 2026-11-15 — Dagster 독립 검토 후속
+
+CI43674264123이 성공한 후보 `c43ded901a554ad871c4e4615db9689a80526e87`을 James·Popper가 독립 검토했다. P0/P1은 없고 James의 이벤트 밀리초·미해결 예약 ID 두 건과 Popper의 조회/게시 계수 혼동 한 건을 수정했다. 시각·예약·진행 계수는 WSL/Docker 각각74개, 실제 조회/저장 계수는 각각10개를 확인했다. 최종 정확 CI·delta 검토·머지 결과는 [PR241](https://github.com/digitie/kor-travel-weather/pull/241)과 [보고서](reports/2026-11-15-dagster-admin-resilience.md)가 정본이며 운영 rate·이미지·실제 액션 변경0이다.
+
 ## 2026-11-15 — Dagster 상세·액션과 부분 장애 회복
 
 실행·단계·처리 건수·안전 원인과 상태별 액션을 관리자에 연결했다. 부분 저장과 다음 주기 대기를 전체 실패로 증폭하지 않고 경고로 구분하며 전체 원천·저장 장애는 실제 실패로 보존한다. KMA SDK23 유한 재시도 소비와 전담 rate 계산도 통합했다. [계약·검증·한계](reports/2026-11-15-dagster-admin-resilience.md). 정확 CI·독립2검토·머지는 이번 PR 원장을 따르며 빌드·운영 배포·실제 액션 실행0이다.

@@ -593,7 +593,7 @@ def _make_kma_dataset_asset(
                     key: counts[key]
                     for key in (
                         "fetch_ms", "normalize_ms", "publish_ms",
-                        "published_values", "completed_grids",
+                        "published_values", "completed_grids", "requests_fetched",
                         "planned_grids", "failed_grids", "deferred_grids",
                     )
                     if type(counts.get(key)) is int and counts[key] >= 0

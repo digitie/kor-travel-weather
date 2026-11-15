@@ -14,7 +14,13 @@ const string = (value: unknown) => typeof value === "string" ? value : "";
 const identifier = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.\[\]-]{0,199}$/.test(value) ? value : null;
 const uuid = (value: unknown) => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 const number = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1e12 ? value : null;
-const clock = (value: unknown) => { const v = typeof value === "string" ? Number(value) : value; const n = number(v); return n === null ? null : n > 1e11 ? n / 1000 : n; };
+// Run/단계는 초, native MessageEvent.timestamp는 밀리초다. 건수 상한과 섞지 않는다.
+const clock = (value: unknown, unit: "seconds" | "milliseconds" = "seconds"): number | null => {
+  const numeric = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if(typeof numeric !== "number" || !Number.isFinite(numeric) || numeric < 0)return null;
+  const seconds = unit === "milliseconds" ? numeric / 1000 : numeric;
+  return seconds <= 8_640_000_000_000 ? seconds : null;
+};
 const status = (value: unknown) => ["NOT_STARTED", "QUEUED", "STARTING", "STARTED", "CANCELING", "SUCCESS", "FAILURE", "CANCELED", "SKIPPED", "IN_PROGRESS", "RETRY_REQUESTED"].includes(string(value)) ? string(value) : "UNKNOWN";
 const tag = { key: DAGSTER_REPOSITORY_TAG_KEY, value: DAGSTER_REPOSITORY_TAG_VALUE };
 const selector = { repositoryLocationName: DAGSTER_LOCATION_NAME, repositoryName: DAGSTER_REPOSITORY_NAME };
@@ -99,7 +105,7 @@ export function sanitizeConsoleEvents(value: unknown): ConsoleEvent[] {
     else if (kind === "LogMessageEvent") {
       if (!/^kma_collection_progress\b/.test(string(event.message))) continue;
       title = "KMA 처리 진행";
-      for (const key of ["fetch_ms", "normalize_ms", "publish_ms", "published_values", "completed_grids"]) {
+      for (const key of ["fetch_ms", "normalize_ms", "publish_ms", "published_values", "completed_grids", "requests_fetched"]) {
         const match = string(event.message).slice(0,4096).match(new RegExp(`['\"]?${key}['\"]?\\s*:\\s*([0-9]{1,12})\\b`));
         if (match) metadata.counts[key] = Number(match[1]);
       }
@@ -107,7 +113,7 @@ export function sanitizeConsoleEvents(value: unknown): ConsoleEvent[] {
     if (!failure && metadata.diagnostic) detail = failureDiagnostic({ failureMetadata: { metadataEntries: event.metadataEntries } });
     const notes = metadata.notes.join("\n");
     if (notes) detail = detail ? `${notes}\n${detail}` : notes;
-    result.push({ kind, time: clock(event.timestamp), step: identifier(event.stepKey), title, detail, warning: failure || metadata.warning || metadata.diagnostic, counts: metadata.counts });
+    result.push({ kind, time: clock(event.timestamp,"milliseconds"), step: identifier(event.stepKey), title, detail, warning: failure || metadata.warning || metadata.diagnostic, counts: metadata.counts });
   }
   return result;
 }
@@ -169,17 +175,22 @@ export async function handleConsoleRequest(input: ConsoleRequest, graphql: Graph
     const prior = await requestRun(input.requestId);
     if (prior && prior.jobName !== job) return { state:"rejected",message:"다른 작업에 사용한 요청 ID입니다. 실행 상태를 확인해 주세요." };
     if (prior && prior.status !== "NOT_STARTED") return accepted(prior,input.requestId,true);
+    const preserveOrReject = (state: "blocked" | "rejected", message: string, extra: Pick<ConsoleActionResult,"runId" | "requestId"> = {}): ConsoleActionResult => {
+      if(prior)return {...accepted(prior,input.requestId,true),state:"unknown",message:`${message} 기존 예약의 시작·해제가 확인되지 않아 같은 요청을 유지합니다.`};
+      return {state,message,...extra};
+    };
     const target = list(repository.jobs).map(row).find(item => item.name === job && item.hasLaunchExecutionPermission === true && !job.startsWith("__"));
-    if (!target || !mutations.has("launchIdempotentRun")) return { state:"blocked",message:"이 작업을 실행할 권한 또는 서버 기능이 없습니다." };
+    if (!target || !mutations.has("launchIdempotentRun")) return preserveOrReject("blocked","이 작업을 실행할 권한 또는 서버 기능이 없습니다.");
     const active = runs(await graphql(ACTIVE_JOB,{ filter:filter({ pipelineName:job,statuses:[...CONSOLE_ACTIVE] }) })).find(item=>item.runId!==prior?.runId);
-    if (active) return { state:"blocked",message:"같은 작업이 이미 대기 또는 실행 중입니다. 기존 실행에서 진행 상황을 확인하세요.", ...(uuid(active.runId)?{runId:string(active.runId)}:{}) };
+    if (active) return preserveOrReject("blocked","같은 작업이 이미 대기 또는 실행 중입니다. 기존 실행에서 진행 상황을 확인하세요.",uuid(active.runId)?{runId:string(active.runId)}:{});
     const nativeId=consoleRequestId(input.requestId);
     try {
       const result=row((await graphql(LAUNCH,{ requestId:nativeId, executionParams:{ selector:{...selector,pipelineName:job}, runConfigData:{}, executionMetadata:{ tags:[{key:".dagster/repository",value:`${DAGSTER_REPOSITORY_NAME}@${DAGSTER_LOCATION_NAME}`},{key:"dagster/code_location",value:DAGSTER_LOCATION_NAME},{key:"kortravel/admin-request",value:nativeId},...(input.action==="retry"?[{key:"kortravel/admin-retry-of",value:input.runId!}]:[])] } } })).result);
       const run=row(result.run);
       if (result.__typename !== "IdempotentLaunchRunSuccess") {
         const rejection=launchRejections[string(result.__typename)];
-        return {state:rejection?"rejected":"unknown",message:rejection??"실행 예약 결과를 확인하지 못했습니다. 요청 상태를 조회하세요.",requestId:input.requestId};
+        if(rejection)return preserveOrReject("rejected",rejection,{requestId:input.requestId});
+        return {state:"unknown",message:"실행 예약 결과를 확인하지 못했습니다. 요청 상태를 조회하세요.",requestId:input.requestId};
       }
       const owned=list(run.tags).some(value=>row(value).key===tag.key&&row(value).value===tag.value);
       if(!owned) return {state:"unknown",message:"이 프로젝트의 실행 예약 여부를 확인하지 못했습니다. 요청 상태를 조회하세요.",requestId:input.requestId};

@@ -175,3 +175,40 @@ it("부분 완료 출력의 JSON 원인은 허용한 숫자 열만 브라우저�
  const result=sanitizeConsoleEvents([{__typename:"ExecutionStepOutputEvent",metadataEntries:[{label:"collection_outcome",text:"partial"},{label:"planned_grids",intValue:20},{label:"grid_failure_counts",jsonString:'{"PROVIDER_NETWORK":2,"PROVIDER_PARSE":3,"private":"private-canary"}'}]}]);
  expect(result[0]).toMatchObject({warning:true,counts:{planned_grids:20,grid_failure_PROVIDER_NETWORK:2,grid_failure_PROVIDER_PARSE:3}});expect(JSON.stringify(result)).not.toContain("private-canary");expect(JSON.stringify(result)).not.toContain("jsonString");
 });
+
+
+describe("실제 native 시각 단위",()=>{
+ it("Run·단계·대기 시각의 초를 그대로 유지한다",()=>{
+  const value={...run(),creationTime:1780000000,startTime:1780000001,endTime:1780000010,stats:{enqueuedTime:1780000000.5},stepStats:[{stepKey:"fetch",startTime:1780000001,endTime:1780000002}]};
+  expect(sanitizeConsoleRun(value)).toMatchObject({creationTime:1780000000,startTime:1780000001,endTime:1780000010,queuedTime:1780000000.5,steps:[{key:"fetch",startTime:1780000001,endTime:1780000002},{key:"publish"}]});
+ });
+ it.each([1780000000000,"1780000000000",1780000000125,"1780000000125",0,"0",8640000000000000,"8640000000000000"])("native event milliseconds %s를 초로 변환한다",value=>{expect(sanitizeConsoleEvents([{__typename:"RunSuccessEvent",timestamp:value}])[0].time).toBe(Number(value)/1000);});
+ it.each([NaN,Infinity,-1,"NaN","-1",""," ","private-canary",8640000000000001,true,null])("잘못된 event 시각 %s는 null이다",value=>{expect(sanitizeConsoleEvents([{__typename:"RunSuccessEvent",timestamp:value}])[0].time).toBeNull();});
+ it("Run 초의 Date 경계와 일반 건수 제한은 별개다",()=>{
+  expect(sanitizeConsoleRun({...run(),startTime:8640000000000}).startTime).toBe(8640000000000);expect(sanitizeConsoleRun({...run(),startTime:8640000000001}).startTime).toBeNull();
+  expect(sanitizeConsoleRun({...run(),startTime:NaN,endTime:-1}).startTime).toBeNull();
+  const event=sanitizeConsoleEvents([{__typename:"ExecutionStepOutputEvent",timestamp:"1780000000000",metadataEntries:[{label:"fetch_ms",intValue:1000000000001}]}])[0];expect(event.time).toBe(1780000000);expect(event.counts).toEqual({});
+ });
+});
+
+describe("확인한 미해결 예약은 일시 차단으로 해제되지 않는다",()=>{
+ const input={operation:"action",action:"launch",name:"fixture_job",requestId} as const;
+ it("다른 같은 작업이 진행 중이면 원래 예약의 UNKNOWN과 ID를 유지한다",async()=>{
+  const f=fixture();f.setPrior([{runId:id,jobName:"fixture_job",status:"NOT_STARTED"}]);f.setActive([{runId:id,jobName:"fixture_job",status:"NOT_STARTED"},{runId:other,jobName:"fixture_job",status:"STARTED"}]);
+  expect(await handleConsoleRequest(input,f.graphql)).toMatchObject({state:"unknown",requestId,runId:id});expect(f.graphql.mock.calls.some(([query])=>/^\s*mutation\b/.test(query))).toBe(false);
+  f.setActive([{runId:id,jobName:"fixture_job",status:"NOT_STARTED"}]);expect(await handleConsoleRequest(input,f.graphql)).toMatchObject({state:"accepted",requestId});
+  const calls=f.graphql.mock.calls.filter(([query])=>/^\s*mutation\b/.test(query));expect(calls).toHaveLength(1);expect(calls[0][1].requestId).toBe(consoleRequestId(requestId));
+ });
+ it.each(["permission","capability"])("기존 예약 뒤 %s가 차단돼도 UNKNOWN이며 native 실행하지 않는다",async reason=>{
+  const f=fixture();f.setPrior([{runId:id,jobName:"fixture_job",status:"NOT_STARTED"}]);if(reason==="permission")f.catalog.repositoryOrError.jobs[0].hasLaunchExecutionPermission=false;else f.catalog.__schema.mutationType.fields=[];
+  expect(await handleConsoleRequest(input,f.graphql)).toMatchObject({state:"unknown",requestId,runId:id});expect(f.graphql.mock.calls.some(([query])=>/^\s*mutation\b/.test(query))).toBe(false);
+ });
+ it.each(["UnauthorizedError","RunConfigValidationInvalid"])("기존 예약 뒤 native %s도 예약 해제를 뜻하지 않는다",async type=>{
+  const f=fixture(),original=f.graphql.getMockImplementation()!;f.setPrior([{runId:id,jobName:"fixture_job",status:"NOT_STARTED"}]);f.graphql.mockImplementation(async(query,variables)=>query.includes("AdminDagsterLaunch")?{result:{__typename:type}}:original(query,variables));
+  expect(await handleConsoleRequest(input,f.graphql)).toMatchObject({state:"unknown",requestId,runId:id});expect(f.graphql.mock.calls.filter(([query])=>/^\s*mutation\b/.test(query))).toHaveLength(1);
+ });
+});
+it("KMA progress에서 SDK 정상 반환 요청 건수만 고정 숫자로 꺼낸다",()=>{
+ const events=sanitizeConsoleEvents([{__typename:"LogMessageEvent",timestamp:"1780000000000",message:"kma_collection_progress counts={'requests_fetched': 4, 'wire_attempts': 99} private-canary"}]);
+ expect(events[0].counts).toEqual({requests_fetched:4});expect(JSON.stringify(events)).not.toContain("wire_attempts");expect(JSON.stringify(events)).not.toContain("private-canary");
+});
