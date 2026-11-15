@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import quote, unquote
 
 from kma import PaginationReceipt
+from kma.exceptions import KmaError
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
@@ -147,6 +148,29 @@ GRID_RESPONSE_VALUES = 5_000
 GRID_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
+@dataclass(frozen=True, slots=True)
+class GridFetchFailure:
+    """SDK 재시도 후에도 조회하지 못한 한 격자. 원문·traceback은 보관하지 않는다."""
+
+    source_entity_id: str
+    code: str
+
+
+class KmaAllGridsFailedError(RuntimeError):
+    code = "KMA_ALL_GRIDS_FAILED"
+
+    def __init__(self, failures: Mapping[str, int]) -> None:
+        super().__init__(self.code)
+        self.kma_stage = (
+            "publication" if "DB_LOCK_CONTENTION" in failures else "provider_fetch"
+        )
+        self.grid_failure_counts = dict(failures)
+
+
+class KmaGridNoDataError(ValueError):
+    """정상 응답이지만 현재 격자에 게시할 관측값이 없는 경우."""
+
+
 class KmaAllValuesSkippedError(RuntimeError):
     """전부 결측/범위 밖인 응답은 정상 수집과 구분해 실패로 남긴다."""
 
@@ -225,7 +249,12 @@ async def _kma_provider_call(
     started = time.monotonic()
     try:
         with provider_request(KMA_PROVIDER_NAME, dataset):
-            return await _retry_call(call, retries=retries)
+            result = await _retry_call(call, retries=retries)
+        # SDK 메서드의 정상 반환 1회다(빈 정상 응답 포함). 내부 HTTP 재시도·
+        # 페이지 수가 아니며, 뒤 정규화·게시의 성공 여부와 독립적으로 보존한다.
+        if timings is not None and dataset in BASE_GRID_DATASETS:
+            timings["base_requests_fetched"] += 1
+        return result
     except Exception as exc:
         exc.kma_stage = "provider_fetch"
         raise
@@ -508,7 +537,7 @@ def _redact_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def _forecast_grid(rows: Sequence[Any], nx: int, ny: int) -> None:
     if not rows:
-        raise ValueError("KMA 응답이 비어 있습니다.")
+        raise KmaGridNoDataError("KMA 응답이 비어 있습니다.")
     for row in rows:
         parsed = KmaForecastRow.from_raw(row)
         if parsed.nx != nx or parsed.ny != ny:
@@ -519,7 +548,7 @@ def _forecast_grid(rows: Sequence[Any], nx: int, ny: int) -> None:
 
 def _nowcast_grid(rows: Sequence[Any], nx: int, ny: int) -> None:
     if not rows:
-        raise ValueError("KMA 초단기실황 응답이 비어 있습니다.")
+        raise KmaGridNoDataError("KMA 초단기실황 응답이 비어 있습니다.")
     for row in rows:
         parsed = KmaNowcastRow.from_raw(row)
         if parsed.nx != nx or parsed.ny != ny:
@@ -849,10 +878,9 @@ async def stage_grid(
         )
     skipped_here = (skipped.total() if skipped is not None else 0) - skipped_before
     if not any(response.values for response in staged) and not skipped_here:
-        # A grid whose every value was a skipped sentinel is an outage at that
-        # station, counted by the run; only a response with nothing in it is
-        # a contract failure.
-        raise ValueError("KMA 응답에서 normalized weather fact가 생성되지 않았습니다.")
+        # 결측 sentinel은 기존 값별 계수로 남긴다. 정상 빈 응답은 이 격자를
+        # 미완료로 두고 다른 격자 수집을 이어 가되, 정상 최신 값으로 만들지 않는다.
+        raise KmaGridNoDataError("KMA 응답에서 normalized weather fact가 생성되지 않았습니다.")
     return staged
 
 
@@ -1016,6 +1044,9 @@ async def _stage_and_publish_weather(
     #: Alert chunks already committed; reported even when the run fails.
     published_values = 0
     timings: Counter[str] = Counter()
+    grid_failures: Counter[str] = Counter()
+    deferred_grid_ids: list[str] = []
+    authoritative_count_required = False
     last_progress_log = time.monotonic()
 
     def diagnostic_counts() -> dict[str, int]:
@@ -1023,6 +1054,10 @@ async def _stage_and_publish_weather(
             "fetch_ms": timings["fetch_ms"], "normalize_ms": timings["normalize_ms"],
             "publish_ms": timings["publish_ms"], "published_values": published_values,
             "completed_grids": timings["completed_grids"],
+            "requests_fetched": timings["base_requests_fetched"],
+            "planned_grids": timings["planned_grids"],
+            "failed_grids": grid_failures.total(),
+            "deferred_grids": grid_failures.total(),
         }
 
     async def timed_publish(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -1129,6 +1164,7 @@ async def _stage_and_publish_weather(
             raise ValueError(
                 f"중기예보 지역 조합 수가 상한을 초과했습니다: {len(mid_groups)} > {mid_limit}"
             )
+        timings["planned_grids"] = len(grid_groups) if include_base else 0
         export_collector = None
         prepared_exports = {}
         if export_artifact_root is not None and not mid_export_mode:
@@ -1227,7 +1263,7 @@ async def _stage_and_publish_weather(
             group_targets: Sequence[WeatherTarget],
             include_mid_for_group: bool,
             source_entity_id: str,
-        ) -> tuple[Sequence[WeatherTarget], list[StagedResponse], Counter[str]]:
+        ) -> tuple[Sequence[WeatherTarget], list[StagedResponse], Counter[str]] | GridFetchFailure:
             remaining_rows = min(GRID_RESPONSE_ROWS, max_response_rows - response_rows_total)
             remaining_values = max_values - normalized_values_total
             if remaining_rows <= 0:
@@ -1254,8 +1290,26 @@ async def _stage_and_publish_weather(
                 skipped=skipped,
                 timings=phase_timings,
                 )
+            except (KmaError, KmaGridNoDataError) as exc:
+                # SDK의 유한 재시도가 끝난 한 격자만 격리한다. 인증·할당량·요청
+                # 오류 및 모르는 예외는 전체 원인이므로 후속 요청을 중단한다.
+                code = (
+                    "PROVIDER_NO_DATA" if isinstance(exc, KmaGridNoDataError)
+                    else {
+                        "network": "PROVIDER_NETWORK",
+                        "server": "PROVIDER_SERVER",
+                        "parse": "PROVIDER_PARSE",
+                    }.get(exc.failure_kind)
+                )
+                if (
+                    not source_entity_id.startswith("grid:") or code is None
+                    or (isinstance(exc, KmaError) and exc.status_code in {401, 403, 429})
+                ):
+                    raise
+                return GridFetchFailure(source_entity_id, code)
             finally:
                 timings["fetch_ms"] += phase_timings["fetch_ms"]
+                timings["base_requests_fetched"] += phase_timings["base_requests_fetched"]
                 timings["normalize_ms"] += max(
                     0, int((time.monotonic() - started) * 1000) - phase_timings["fetch_ms"],
                 )
@@ -1308,7 +1362,7 @@ async def _stage_and_publish_weather(
                     if record["dataset_key"] != KMA_ULTRA_SHORT_NOWCAST:
                         published_values += await timed_publish(
                             export_collector.ingest_fanout,
-                            prepared_exports.pop(record["source_entity_id"], None),
+                            prepared_exports.get(record["source_entity_id"]),
                             record=record,
                             values=response.values,
                             location_ids=[target.location.location_id for target in group_targets],
@@ -1316,6 +1370,7 @@ async def _stage_and_publish_weather(
                             max_locations=GRID_PUBLISH_LOCATIONS,
                             heartbeat=keep_alive,
                         )
+                        prepared_exports.pop(record["source_entity_id"], None)
                         normalized_values_total += len(response.values) * len(group_targets)
                         continue
                     # 원래 게시 상한 안에서만 whole-grid capture를 시도한다.
@@ -1332,10 +1387,11 @@ async def _stage_and_publish_weather(
                         ]
                         published = await timed_publish(
                             export_collector.ingest,
-                            prepared_exports.pop(record["source_entity_id"], None),
+                            prepared_exports.get(record["source_entity_id"]),
                             record=record,
                             values=group_values,
                         )
+                        prepared_exports.pop(record["source_entity_id"], None)
                         published_values += published
                         normalized_values_total += group_count
                         continue
@@ -1424,15 +1480,49 @@ async def _stage_and_publish_weather(
         keep_alive()
         try:
             async with aclosing(_prefetch_grids(calls)) as prefetched:
-                async for group_targets, responses, skipped in prefetched:
+                async for frame in prefetched:
+                    if isinstance(frame, GridFetchFailure):
+                        grid_failures[frame.code] += 1
+                        deferred_grid_ids.append(frame.source_entity_id)
+                        # 준비된 export attempt는 finally가 실패로 닫는다. 이전 head를
+                        # 빈 값으로 덮거나 불완전 cohort를 최신으로 승격하지 않는다.
+                        del frame
+                        continue
+                    group_targets, responses, skipped = frame
+                    del frame
                     started = time.monotonic()
                     publish_before = timings["publish_ms"]
+                    facts_before = normalized_values_total
                     try:
                         await append_group(group_targets, responses, skipped)
                         if any(str(response.source_record.get("source_entity_id", "")).startswith(
                             "grid:",
                         ) for response in responses):
                             timings["completed_grids"] += 1
+                    except OperationalError as exc:
+                        state = getattr(getattr(exc, "orig", None), "sqlstate", None)
+                        # 여러 격자가 섞인 staging batch는 격자 단위로
+                        # 분리할 수 없다. export 직접 게시 경로의 잠금 재시도 소진만
+                        # 격리하고 연결/디스크/권한/소유권 오류는 원래대로 실패한다.
+                        direct_export = export_collector is not None and all(
+                            response.source_record["dataset_key"] != KMA_ULTRA_SHORT_NOWCAST
+                            or (
+                                0 < len(response.values) * len(group_targets) <= GRID_PUBLISH_VALUES
+                                and len(group_targets) <= GRID_PUBLISH_LOCATIONS
+                            ) for response in responses
+                        )
+                        if not direct_export or state not in {"55P03", "40P01", "40001"}:
+                            raise
+                        authoritative_count_required = True
+                        grid_failures["DB_LOCK_CONTENTION"] += 1
+                        deferred_grid_ids.append(str(responses[0].source_record["source_entity_id"]))
+                        # 어느 chunk까지 commit됐는지 추측하지 않는다. 이 격자의
+                        # 전체 예상 fact를 예산에서 차감해 뒤 격자가 상한을 넘지 않는다.
+                        normalized_values_total = max(
+                            normalized_values_total,
+                            facts_before
+                            + sum(len(r.values) for r in responses) * len(group_targets),
+                        )
                     finally:
                         timings["normalize_ms"] += max(
                             0, int((time.monotonic() - started) * 1000)
@@ -1566,11 +1656,10 @@ async def _stage_and_publish_weather(
                         if len(alert_values) >= KMA_STAGE_VALUES:
                             await flush_alert_batch()
                 keep_alive()
-        grids_fetched = len(grid_groups) if include_base else 0
-        base_dataset_count = (
-            len(base_datasets) if base_datasets is not None else len(BASE_GRID_DATASETS)
-        )
-        base_requests_fetched = grids_fetched * base_dataset_count
+        grids_fetched = timings["completed_grids"] if include_base else 0
+        if grid_failures and not grids_fetched:
+            raise KmaAllGridsFailedError(grid_failures)
+        base_requests_fetched = timings["base_requests_fetched"]
         # Every fact publishes in location chunks, each its own short
         # transaction holding only its own locations' locks.  One transaction
         # for the run held every location it touched for as long as the
@@ -1604,12 +1693,18 @@ async def _stage_and_publish_weather(
         alerts_starved: list[str] = []
         skip_note: str | None = None
         status = "success"
+        if grid_failures:
+            status = "partial"
+            skip_note = "KMA_GRID_DEFERRED " + json.dumps(
+                dict(sorted(grid_failures.items())), separators=(",", ":"),
+            )
         if alerts_skipped:
             alert_locations = len(alert_locations_seen)
             observe_sync_locations_skipped(
                 KMA_PROVIDER_NAME, "kma_weather_alerts", len(alerts_skipped)
             )
-            skip_note = _alert_skip_note(alerts_skipped)
+            alert_note = _alert_skip_note(alerts_skipped)
+            skip_note = f"{alert_note}; {skip_note}" if skip_note else alert_note
             if not alert_locations_published and alert_locations >= ALERT_PARTIAL_MIN_SKIPPED:
                 # The note leads the error so the starvation check reads this
                 # run's skips back like any other's.
@@ -1693,7 +1788,7 @@ async def _stage_and_publish_weather(
                 grids_fetched=grids_fetched,
                 mid_groups_fetched=len(mid_groups),
                 requests_fetched=base_requests_fetched + mid_requests_fetched + alert_groups,
-                values_loaded_offset=published_values,
+                values_loaded_offset=(None if authoritative_count_required else published_values),
                 status=status,
                 error=skip_note,
             )
@@ -1717,8 +1812,13 @@ async def _stage_and_publish_weather(
             raise RuntimeError(
                 f"sync run ownership was lost before publish completion: {finished.status}"
             )
+        if authoritative_count_required:
+            published_values = loaded
         return {
             **diagnostic_counts(),
+            "grid_failure_counts": dict(grid_failures),
+            "deferred_grid_ids": deferred_grid_ids,
+            "previous_data_preserved": bool(grid_failures),
             "values_attempted": values_attempted,
             "values_skipped": values_skipped.total(),
             "values_skipped_by_reason": dict(values_skipped.most_common()),
@@ -1735,10 +1835,11 @@ async def _stage_and_publish_weather(
         }
     except (Exception, asyncio.CancelledError) as exc:
         exc.kma_diagnostics = diagnostic_counts()
-        repository.finish_sync_run(
+        failed_run = repository.finish_sync_run(
             run.run_id,
             status="failed",
             grids_fetched=0,
+            requests_fetched=timings["base_requests_fetched"],
             # None keeps the count each committed chunk recorded on the run
             # row; ``published_values`` misses a chunk whose COMMIT landed
             # but whose reply did not.
@@ -1749,6 +1850,9 @@ async def _stage_and_publish_weather(
                 else str(exc)[:2000]
             ),
         )
+        recorded = getattr(failed_run, "values_loaded", None)
+        if type(recorded) is int and recorded >= 0:
+            exc.kma_diagnostics["published_values"] = recorded
         raise
 
 

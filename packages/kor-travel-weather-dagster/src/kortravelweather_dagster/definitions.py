@@ -3,6 +3,7 @@
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
@@ -61,6 +62,7 @@ from .kma_weather import (
     KMA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_NOWCAST,
+    KmaAllGridsFailedError,
     KmaAllValuesSkippedError,
     WeatherTarget,
     run_weather_sync,
@@ -394,6 +396,28 @@ def _kma_alert_targets(
     return targets_from_settings(merged.values(), disabled_location_ids=disabled_ids)
 
 
+def _record_collection_outcome(context, outcome: str) -> None:
+    """자기 실행의 관측 태그만 상향한다. 부가 기록 장애로 수집을 실패시키지 않는다."""
+    ranks = {"success": 0, "deferred": 1, "partial": 2}
+    if outcome not in {"partial", "deferred"}:
+        return
+    try:
+        instance = getattr(context, "instance", None)
+        run_id = getattr(context, "run_id", None)
+        if instance is None or not run_id:
+            return
+        run = instance.get_run_by_id(run_id)
+        if run is None:
+            return
+        previous = (getattr(run, "tags", None) or {}).get("kortravel/collection-outcome")
+        if previous in ranks and ranks[previous] >= ranks[outcome]:
+            return
+        instance.add_run_tags(run_id, {"kortravel/collection-outcome": outcome})
+    except Exception:
+        with suppress(Exception):
+            context.log.warning("COLLECTION_OUTCOME_TAG_DEFERRED")
+
+
 def _make_kma_dataset_asset(
     *,
     name: str,
@@ -455,6 +479,7 @@ def _make_kma_dataset_asset(
                 "locations_total": len(targets),
             }
             context.add_output_metadata(skipped)
+            _record_collection_outcome(context, "deferred")
             return skipped
         alert_targets = (
             _kma_alert_targets(repository, settings, disabled_ids) if include_alerts else None
@@ -542,7 +567,11 @@ def _make_kma_dataset_asset(
                     f"{ALERT_STARVED_RUNS}회 건너뛰어짐(lock starvation): "
                     f"{result['alert_locations_starved'][:ALERT_SKIP_LOG_IDS]}"
                 )
+            result["collection_outcome"] = (
+                "deferred" if result.get("status") == "skipped" else result.get("status", "unknown")
+            )
             context.add_output_metadata(result)
+            _record_collection_outcome(context, result["collection_outcome"])
             return result
         except SyncRunAlreadyActive:
             # Nothing was opened, so nothing to finish; see overlap.py.
@@ -564,7 +593,8 @@ def _make_kma_dataset_asset(
                     key: counts[key]
                     for key in (
                         "fetch_ms", "normalize_ms", "publish_ms",
-                        "published_values", "completed_grids",
+                        "published_values", "completed_grids", "requests_fetched",
+                        "planned_grids", "failed_grids", "deferred_grids",
                     )
                     if type(counts.get(key)) is int and counts[key] >= 0
                 }
@@ -574,7 +604,14 @@ def _make_kma_dataset_asset(
                 } else "collection"
                 metadata["error_type"] = type(exc).__name__
                 description = "KMA_COLLECTION_FAILED"
-                if isinstance(exc, KmaAllValuesSkippedError):
+                if isinstance(exc, KmaAllGridsFailedError):
+                    description = exc.code
+                    metadata.update({
+                        "error_code": exc.code, "retryable": True,
+                        "recovery_hint": "RETRY_AFTER_BACKOFF",
+                        "grid_failure_counts": exc.grid_failure_counts,
+                    })
+                elif isinstance(exc, KmaAllValuesSkippedError):
                     metadata["error_code"] = exc.code
                     metadata.update({
                         key: value for key, value in exc.value_counts.items()
@@ -590,11 +627,15 @@ def _make_kma_dataset_asset(
                             "error_code": description, "retryable": False,
                             "recovery_hint": "CHECK_RUN_DETAIL",
                         })
-                    elif exc.failure_kind == "quota":
+                    elif exc.failure_kind in {"quota", "rate_limit"} or exc.status_code == 429:
                         description = "PROVIDER_RATE_LIMIT"
+                        daily = exc.failure_kind == "quota"
                         metadata.update({
-                            "error_code": description, "retryable": True,
-                            "recovery_hint": "RETRY_AFTER_BACKOFF",
+                            "error_code": description, "retryable": not daily,
+                            "rate_limit_scope": "daily" if daily else "per_second",
+                            "recovery_hint": (
+                                "WAIT_QUOTA_RESET" if daily else "RETRY_AFTER_BACKOFF"
+                            ),
                         })
                 raise Failure(description=description, metadata=metadata) from None
             raise
@@ -674,7 +715,11 @@ def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, 
             settings=WeatherSettings(), repository=repository,
         )
         result = run_alert_event_sync(repository=repository, client=client)
+        result["collection_outcome"] = (
+            "deferred" if result.get("status") == "skipped" else result.get("status", "unknown")
+        )
         context.add_output_metadata(result)
+        _record_collection_outcome(context, result["collection_outcome"])
         return result
     except AlertCollectionError as exc:
         raise Failure(description=exc.code, metadata=exc.diagnostics) from None

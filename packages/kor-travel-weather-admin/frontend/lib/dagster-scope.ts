@@ -60,6 +60,12 @@ const OVERVIEW_QUERY = `query WeatherDagsterOverview($limit: Int!, $repositoryLo
     ... on InvalidPipelineRunsFilterError { message }
     ... on PythonError { message }
   }
+  activeRuns: runsOrError(limit: 1000, filter: { statuses: [NOT_STARTED, QUEUED, STARTING, STARTED, CANCELING], ${RUN_TAG_FILTER} }) {
+    __typename
+    ... on Runs { results { runId status jobName startTime endTime tags { key value } } }
+    ... on InvalidPipelineRunsFilterError { message }
+    ... on PythonError { message }
+  }
 }`;
 
 // Looked up through the same tag filter as the run list rather than
@@ -78,7 +84,7 @@ const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: String!, $repo
           events {
             __typename
             ... on RunFailureEvent { message error { className message cause { className message cause { className message cause { className message } } } } }
-            ... on ExecutionStepFailureEvent { stepKey message error { className message cause { className message cause { className message cause { className message } } } } failureMetadata { metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } } } }
+            ... on ExecutionStepFailureEvent { stepKey message error { className message cause { className message cause { className message cause { className message } } } } failureMetadata { metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } ... on JsonMetadataEntry { jsonString } } } }
           }
         }
       }
@@ -196,3 +202,44 @@ export function dagsterRunUrl(runId: string): string {
 export const ADDRESS_REFRESH_PREVIOUS_QUERY = 'query PreviousAddressRefresh($location: String!, $requestId: String!) { runsOrError(limit: 1, filter: { pipelineName: "address_refresh_job", tags: [{key: "dagster/code_location", value: $location}, {key: "kortravel/address-request", value: $requestId}] }) { __typename ... on Runs { results { runId status } } } }';
 export const ADDRESS_REFRESH_ACTIVE_QUERY = 'query ActiveAddressRefresh($location: String!) { runsOrError(limit: 1, filter: { pipelineName: "address_refresh_job", statuses: [QUEUED, NOT_STARTED, STARTING, STARTED, CANCELING], tags: [{key: "dagster/code_location", value: $location}] }) { __typename ... on Runs { results { runId status } } } }';
 export const ADDRESS_REFRESH_LAUNCH_MUTATION = 'mutation LaunchAddressRefresh($requestId: String!, $executionParams: ExecutionParams!) { launchRun: launchIdempotentRun(requestId: $requestId, executionParams: $executionParams) { __typename ... on IdempotentLaunchRunSuccess { replayed run { runId status } } } }';
+
+
+/** 관리자 콘솔의 고정 GraphQL 문서. selector와 소유 run 필터는 서버가 채운다. */
+export const METADATA = 'metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } ... on JsonMetadataEntry { jsonString } }';
+export const ERROR = 'error { className message cause { className message cause { className message cause { className message } } } }';
+export const RUN_FIELDS = 'runId jobName status creationTime startTime endTime canTerminate hasTerminatePermission hasReExecutePermission';
+export const CONSOLE_CATALOG_QUERY = `query AdminDagsterCatalog($selector: RepositorySelector!) {
+  repositoryOrError(repositorySelector: $selector) { __typename ... on Repository {
+    jobs { name hasLaunchExecutionPermission }
+    schedules { name cronSchedule pipelineName defaultStatus scheduleState { id status hasStartPermission hasStopPermission } }
+    sensors { name defaultStatus sensorState { id status hasStartPermission hasStopPermission } }
+  } }
+  __schema { mutationType { fields { name } } }
+}`;
+export const CONSOLE_RUN_QUERY = `query AdminDagsterRun($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 1) { __typename ... on Runs { results {
+  ${RUN_FIELDS}
+  stats { __typename ... on RunStatsSnapshot { stepsSucceeded stepsFailed materializations enqueuedTime } }
+  executionPlan { steps { key } }
+  stepStats { stepKey status startTime endTime attempts { startTime endTime } }
+} } } }`;
+export const BASIC_RUN_QUERY = `query AdminDagsterOwnedRun($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 1) { __typename ... on Runs { results { ${RUN_FIELDS} } } } }`;
+export const CONSOLE_EVENTS_QUERY = `query AdminDagsterEvents($filter: RunsFilter!, $cursor: String) { runsOrError(filter: $filter, limit: 1) { __typename ... on Runs { results {
+  runId jobName
+  eventConnection(limit: 200, afterCursor: $cursor) { cursor hasMore events { __typename
+    ... on MessageEvent { timestamp stepKey message }
+    ... on ExecutionStepFailureEvent { ${ERROR} failureMetadata { ${METADATA} } }
+    ... on RunFailureEvent { ${ERROR} }
+    ... on ExecutionStepOutputEvent { ${METADATA} }
+    ... on HandledOutputEvent { ${METADATA} }
+    ... on MaterializationEvent { ${METADATA} }
+    ... on EngineEvent { ${METADATA} }
+  } }
+} } } }`;
+export const FIND_REQUEST = 'query AdminDagsterRequest($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 2) { __typename ... on Runs { results { runId jobName status } } } }';
+export const ACTIVE_JOB = 'query AdminDagsterActive($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 2) { __typename ... on Runs { results { runId jobName status } } } }';
+export const LAUNCH = 'mutation AdminDagsterLaunch($requestId: String!, $executionParams: ExecutionParams!) { result: launchIdempotentRun(requestId: $requestId, executionParams: $executionParams) { __typename ... on IdempotentLaunchRunSuccess { replayed run { runId status tags { key value } } } } }';
+export const CANCEL = 'mutation AdminDagsterCancel($runId: String!) { result: terminateRun(runId: $runId, terminatePolicy: SAFE_TERMINATE) { __typename ... on TerminateRunSuccess { run { runId status } } } }';
+export const START_SCHEDULE = 'mutation AdminDagsterStartSchedule($selector: ScheduleSelector!) { result: startSchedule(scheduleSelector: $selector) { __typename ... on ScheduleStateResult { scheduleState { status } } } }';
+export const STOP_SCHEDULE = 'mutation AdminDagsterStopSchedule($id: String!) { result: stopRunningSchedule(id: $id) { __typename ... on ScheduleStateResult { scheduleState { status } } } }';
+export const START_SENSOR = 'mutation AdminDagsterStartSensor($selector: SensorSelector!) { result: startSensor(sensorSelector: $selector) { __typename ... on Sensor { sensorState { status } } } }';
+export const STOP_SENSOR = 'mutation AdminDagsterStopSensor($id: String!) { result: stopSensor(id: $id) { __typename ... on StopSensorMutationResult { instigationState { status } } } }';

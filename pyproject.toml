@@ -24,7 +24,7 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "cryptography>=42",
   "prometheus-client>=0.20,<1",
-  "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@b77fc5ad980e5baa0138ec05e7e13af67bd83859",
+  "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@ff80b74bdab507e642bf5deeaa7e89106943c4f4",
   "python-airkorea-api",
   "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@9c952bb8613472ccd4e532d1267680ab23d66dbd",
   "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@270ef7a9884bef1f995e2f8fb43c5fb1e9da7905",
