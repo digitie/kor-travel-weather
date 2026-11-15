@@ -21,6 +21,7 @@ from dagster import (
     in_process_executor,
     multiprocess_executor,
 )
+from kma.exceptions import KmaError
 from kortravelcommon.dagster import RecoveryPolicy
 from kortravelcommon.deadline import DeadlineExceeded
 from kortravelcommon.scheduling import staggered_cron
@@ -580,6 +581,21 @@ def _make_kma_dataset_asset(
                         if type(value) is int and value >= 0
                     })
                     description = exc.public_description
+                elif isinstance(exc, KmaError):
+                    if type(exc.status_code) is int and 100 <= exc.status_code <= 599:
+                        metadata["http_status"] = exc.status_code
+                    if exc.failure_kind == "auth":
+                        description = "PROVIDER_AUTH"
+                        metadata.update({
+                            "error_code": description, "retryable": False,
+                            "recovery_hint": "CHECK_RUN_DETAIL",
+                        })
+                    elif exc.failure_kind == "quota":
+                        description = "PROVIDER_RATE_LIMIT"
+                        metadata.update({
+                            "error_code": description, "retryable": True,
+                            "recovery_hint": "RETRY_AFTER_BACKOFF",
+                        })
                 raise Failure(description=description, metadata=metadata) from None
             raise
         # No `finally: client.close()` here -- KmaClient/DataGoKrClient are

@@ -84,6 +84,16 @@ targets 전체와 진단 후속35개는 WSL/Docker PG18에서 각각 통과했�
 WSL/Docker에서 통과했다. 겹침은 합산하지 않는다. 이 후속의 정확 CI와 James/Popper
 독립 검토·최종 머지 SHA는 PR239 원장에 남기며 앞선 실패를 성공으로 바꾸지 않는다.
 
+후보 `21137692aae79f93ea1239f2d4b73534f3568dba`의 CI43654786348은 전체 성공이며
+Python1959PASS/23subtests·916.64초였다. James 독립 검토는 P0/P1/P2=0,
+Popper는 P0/P1=0·P2=1로 격자 수집의 인증/한도가 일반 실패에 가려지는 점을 지적했다.
+이를 유예하지 않고 실제 SDK `KmaError.failure_kind`의 auth/quota만 기존 고정 코드
+`PROVIDER_AUTH`/`PROVIDER_RATE_LIMIT`로 전달한다. HTTP 상태는 정수100~599만 받으며,
+원문·실제 재시도 정책·게시 계약은 바꾸지 않는다. 실제 SDK 예외가 요청→수집→asset을
+지나는 auth/quota·잘못된 HTTP 타입/범위·일반 실패/전체 건너뜀 경계를 WSL/Docker PG18
+각44개로 검산했다. 비공개 URL/메시지가 metadata·직렬화 예외 체인에 남지 않는 것도
+확인했다. 후속 정확 CI와 두 검토자의 delta 수용·머지 결과는 PR239 원장을 따른다.
+
 사용자가 정한 테스트·머지 범위로 진행한다. 실제 운영 이미지·명시적 환경 한도·정규 실행
 성공은 완료로 주장하지 않는다. 배포 담당은 `KOR_TRAVEL_WEATHER_KMA_MAX_RPS=20`을
 반영하고 정기 실행의 fetch/normalize/publish 시간과 실패 상세를 실제 확인해야 한다.
