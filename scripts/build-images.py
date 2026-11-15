@@ -476,7 +476,14 @@ def build(args, inputs: dict) -> dict:
     native = run(["docker", "info", "--format", "{{.Architecture}}"]).decode().strip()
     if {"aarch64": "arm64", "x86_64": "amd64"}.get(native, native) != args.architecture:
         raise ContractError("native Docker architecture와 다릅니다")
-    verify_builder(getattr(args, "builder", None))
+    builder = getattr(args, "builder", None)
+    if not builder and (getattr(args, "cache_from", None) or getattr(args, "cache_to", None)):
+        # cache만 지정해도 다른 프로젝트의 current Buildx node를 암묵적으로 쓰지 않는다.
+        builder = run(["docker", "context", "show"]).decode().strip()
+        if not builder:
+            raise ContractError("native Docker context의 builder를 확인할 수 없습니다")
+        args.builder = builder
+    verify_builder(builder)
     if len(set(args.role)) != len(args.role):
         raise ContractError("중복 build role")
     inputs = public_inputs(inputs, roles)

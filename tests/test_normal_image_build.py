@@ -180,6 +180,9 @@ class MockBuildOrchestrationTests(unittest.TestCase):
             cache_to=["type=local,dest=/private/cache-next,mode=max"],
         )
 
+    def test_external_cache_without_builder_uses_native_context(self):
+        self._three_roles(cache_from=["type=local,src=/private/cache"])
+
     def test_containerd_manifest_identity_uses_actual_loaded_image(self):
         self._three_roles(builder="weather-arm64", manifest_store=True)
 
@@ -235,11 +238,11 @@ class MockBuildOrchestrationTests(unittest.TestCase):
             else:
                 self.assertEqual(env["GIT_COMMIT"], revision)
                 self.assertEqual(env["INSTALL_DAGSTER"], "0" if role == "api" else "1")
-            if builder:
+            if args.builder:
                 self.assertEqual(argv[:3], ["docker", "buildx", "build"])
                 self.assertIn("--load", argv)
                 self.assertIn("--provenance=false", argv)
-                self.assertEqual(argv[argv.index("--builder") + 1], builder)
+                self.assertEqual(argv[argv.index("--builder") + 1], args.builder)
                 if cache_from:
                     self.assertEqual(argv[argv.index("--cache-from") + 1], cache_from[0])
                 if cache_to:
@@ -270,6 +273,8 @@ class MockBuildOrchestrationTests(unittest.TestCase):
         def mock_run(argv, **kwargs):
             if argv[:2] == ["docker", "info"]:
                 return b"same-daemon\n" if "{{.ID}}" in argv else b"aarch64\n"
+            if argv == ["docker", "context", "show"]:
+                return b"default\n"
             if argv[:3] == ["docker", "buildx", "inspect"]:
                 return b"Driver: docker-container\nNodes:\nName: fixture\nEndpoint: default\n"
             if argv[:3] == ["docker", "--context", "default"]:
