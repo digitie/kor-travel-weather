@@ -307,3 +307,16 @@ describe("getDagsterSnapshot", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe("진행 중 실행과 수집 경고",()=>{
+  it("최근 이력 밖의 실행을 합치고 안전한 경고 태그만 보존한다",async()=>{
+    const id="22222222-2222-4222-8222-222222222222";
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(Response.json({data:{repositoryOrError:{__typename:"Repository"},runsOrError:{__typename:"Runs",results:[]},activeRuns:{__typename:"Runs",results:[{runId:id,jobName:"fixture_job",status:"STARTED",startTime:1,endTime:null,tags:[{key:"kortravel/collection-outcome",value:"partial"},{key:"private",value:"private-canary"}]}]}}})));
+    try{const result=await getDagsterSnapshot();expect(result.runs).toHaveLength(1);expect(result.runs[0].runId).toBe(id);expect(result.runs[0].tags).toEqual([{key:"kortravel/collection-outcome",value:"partial"}]);expect(JSON.stringify(result)).not.toContain("private-canary");}finally{vi.unstubAllGlobals();}
+  });
+  it("진행 중 실행 조회가 실패하면 빈 정상 목록으로 숨기지 않는다",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(Response.json({data:{repositoryOrError:{__typename:"Repository"},runsOrError:{__typename:"Runs",results:[]},activeRuns:{__typename:"PythonError"}}})));
+    try{await expect(getDagsterSnapshot()).rejects.toThrow("진행 중인 실행");}finally{vi.unstubAllGlobals();}
+  });
+});

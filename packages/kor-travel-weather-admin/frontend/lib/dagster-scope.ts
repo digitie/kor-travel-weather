@@ -60,6 +60,12 @@ const OVERVIEW_QUERY = `query WeatherDagsterOverview($limit: Int!, $repositoryLo
     ... on InvalidPipelineRunsFilterError { message }
     ... on PythonError { message }
   }
+  activeRuns: runsOrError(limit: 1000, filter: { statuses: [NOT_STARTED, QUEUED, STARTING, STARTED, CANCELING], ${RUN_TAG_FILTER} }) {
+    __typename
+    ... on Runs { results { runId status jobName startTime endTime tags { key value } } }
+    ... on InvalidPipelineRunsFilterError { message }
+    ... on PythonError { message }
+  }
 }`;
 
 // Looked up through the same tag filter as the run list rather than

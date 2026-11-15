@@ -44,14 +44,16 @@ def test_grid_asset_failure_exposes_bounded_numeric_diagnostics_not_raw_error(mo
 
 @pytest.mark.parametrize("failure_kind,status,error_code,retryable,hint", [
     ("auth", 403, "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
-    ("quota", 429, "PROVIDER_RATE_LIMIT", True, "RETRY_AFTER_BACKOFF"),
+    ("quota", None, "PROVIDER_RATE_LIMIT", False, "WAIT_QUOTA_RESET"),
+    ("quota", 429, "PROVIDER_RATE_LIMIT", False, "WAIT_QUOTA_RESET"),
+    ("rate_limit", 429, "PROVIDER_RATE_LIMIT", True, "RETRY_AFTER_BACKOFF"),
     ("auth", None, "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
     ("auth", True, "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
     ("auth", 99, "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
     ("auth", 600, "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
     ("auth", "403", "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
     ("auth", 403.0, "PROVIDER_AUTH", False, "CHECK_RUN_DETAIL"),
-    ("server", 503, None, None, None),
+    ("server", 503, "KMA_ALL_GRIDS_FAILED", True, "RETRY_AFTER_BACKOFF"),
 ])
 def test_real_sdk_failure_classification_retains_only_safe_metadata(
     monkeypatch, failure_kind, status, error_code, retryable, hint,
@@ -84,11 +86,18 @@ def test_real_sdk_failure_classification_retains_only_safe_metadata(
     metadata = {key: value.value for key, value in caught.value.metadata.items()}
     assert repository.runs[-1].status == "failed" and repository.values == []
     assert caught.value.description == (error_code or "KMA_COLLECTION_FAILED")
-    assert metadata["stage"] == "provider_fetch" and metadata["error_type"] == "KmaError"
+    assert metadata["stage"] == "provider_fetch"
+    assert metadata["error_type"] == (
+        "KmaAllGridsFailedError" if failure_kind == "server" else "KmaError"
+    )
     assert metadata["published_values"] == metadata["completed_grids"] == 0
     assert all(type(metadata[key]) is int and metadata[key] >= 0
                for key in ("fetch_ms", "normalize_ms", "publish_ms"))
-    if type(status) is int and 100 <= status <= 599:
+    if failure_kind == "server":
+        assert metadata["grid_failure_counts"] == {"PROVIDER_SERVER": 1}
+        assert metadata["failed_grids"] == metadata["deferred_grids"] == 1
+        assert "http_status" not in metadata  # 여러 격자의 상태를 단일 HTTP값으로 꾸미지 않는다.
+    elif type(status) is int and 100 <= status <= 599:
         assert metadata["http_status"] == status
     else:
         assert "http_status" not in metadata
@@ -96,6 +105,10 @@ def test_real_sdk_failure_classification_retains_only_safe_metadata(
         assert metadata["error_code"] == error_code
         assert metadata["retryable"] is retryable
         assert metadata["recovery_hint"] == hint
+        if error_code == "PROVIDER_RATE_LIMIT":
+            assert metadata["rate_limit_scope"] == (
+                "daily" if failure_kind == "quota" else "per_second"
+            )
     else:
         assert not {"error_code", "retryable", "recovery_hint"} & metadata.keys()
     serialized = serializable_error_info_from_exc_info((

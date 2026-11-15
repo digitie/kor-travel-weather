@@ -1,6 +1,7 @@
 "use client";
 
 import { AddressRefresh } from "@/components/address-refresh";
+import { DagsterCollectionWarnings, DagsterConsoleControls, DagsterRunInspector } from "@/components/dagster-console";
 
 import { DagsterOperations } from "@kor-travel/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -105,6 +106,8 @@ export default function DagsterPage() {
     >
       <div className="flex flex-col gap-6">
         <AddressRefresh />
+        <DagsterConsoleControls jobLabel={jobLabel} onChanged={load} />
+        <DagsterCollectionWarnings runs={snapshot?.runs ?? []} jobLabel={jobLabel} onSelectRun={selectRun} />
         <DagsterOperations snapshot={displaySnapshot} error={error} loading={loading} onRefresh={load}
           showRunDetails selectedRunId={selectedRunId} onSelectRun={selectRun}
           renderRunDetail={run => !run ? <EmptyState title="실행을 선택하면 상세를 확인할 수 있습니다." /> : (
@@ -128,7 +131,8 @@ export default function DagsterPage() {
                     {!detail.result?.complete ? <p className="text-text-secondary">조회 상한에 도달했습니다. 전체 로그는 Dagster에서 확인하세요.</p> : null}
                   </>}
                 </div>
-              ) : <p className="text-sm text-text-secondary">실패하지 않은 실행은 오류 로그를 자동 조회하지 않습니다.</p>}
+              ) : null}
+              <DagsterRunInspector key={run.runId} runId={run.runId} jobLabel={jobLabel} />
               <a className="inline-flex w-fit text-sm text-brand underline-offset-4 hover:underline" href={dagsterRunUrl(run.runId)} target="_blank" rel="noreferrer">선택한 실행을 Dagster에서 열기 ↗</a>
             </div>
           )}

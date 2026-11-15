@@ -2768,7 +2768,7 @@ class WeatherRepository:
         requests_fetched: int = 0,
         status: str = "success",
         error: str | None = None,
-        values_loaded_offset: int = 0,
+        values_loaded_offset: int | None = 0,
     ) -> tuple[int, SyncRun]:
         """Publish facts and terminalize their run in one transaction.
 
@@ -2780,13 +2780,19 @@ class WeatherRepository:
         final batch, and a sweep that published 400,000 values across ten
         batches would report the last 50,000 -- the count operators read on the
         수집 실행 page to tell a working provider from a broken one.
+
+        ``None``이면 각 ingest transaction이 run 행에 누적한 DB 계수를 유지한다.
+        다중 chunk 게시의 중간 commit 뒤 응답이 끊겨 호출자가 반환값을 받지 못한
+        경우에도 계수를 덮어쓰지 않는다. 조건부 UPDATE 자체의 행 잠금 안에서
+        현재 계수를 읽으므로 동시 ingest의 확정 값도 유실하지 않는다.
         """
 
         def step() -> tuple[int, SyncRun, int]:
             with self._session_factory.begin() as session:
                 self._set_ingest_lock_timeout(session)
                 loaded = self._ingest_batch_session(session, source_records, values)
-                loaded += values_loaded_offset
+                if values_loaded_offset is not None:
+                    loaded += values_loaded_offset
                 result = session.execute(
                     update(SyncRunRow)
                     .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
@@ -2797,7 +2803,10 @@ class WeatherRepository:
                         grids_fetched=grids_fetched,
                         mid_groups_fetched=mid_groups_fetched,
                         requests_fetched=requests_fetched,
-                        values_loaded=loaded,
+                        values_loaded=(
+                            func.coalesce(SyncRunRow.values_loaded, 0)
+                            if values_loaded_offset is None else loaded
+                        ),
                         error=error,
                     )
                 )
@@ -2806,6 +2815,8 @@ class WeatherRepository:
                 row = session.get(SyncRunRow, run_id)
                 if row is None:
                     raise KeyError(run_id)
+                if values_loaded_offset is None:
+                    loaded = row.values_loaded or 0
                 self._project_export_terminal(session, row)
                 # Every source the run published, read from its lineage rows:
                 # collectors publish in location chunks, so ``source_records``

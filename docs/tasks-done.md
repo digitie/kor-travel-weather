@@ -1,3 +1,7 @@
+## 2026-11-15 — Dagster 콘솔·수집 회복 소스
+
+- **DAGSTER-CONSOLE-SOURCE-20261115** — 상세·안전 진단·현재 상태/권한 액션과 부분/유예 경고를 구현하고 집중 시험했다. 소스 CI·독립 검토·최종 머지는 이번 PR 원장이 정본이며 운영 수용은 별도 task다. [근거](reports/2026-11-15-dagster-admin-resilience.md).
+
 ## 2026-11-15 — 수집 신뢰성 소스·집중 검증
 
 - [x] **COLLECTOR-RELIABILITY-SOURCE-QA-20261115** — 재현한 원인 수정·안전한 관리자 상세·WSL/Docker 집중 검증과 PC/mobile 소스 fixture를 마쳤다. 정확 HEAD의 CI·독립 검토·머지는 PR 원장으로 별도 확인하며 운영 수용을 주장하지 않는다.

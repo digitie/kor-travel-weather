@@ -46,16 +46,19 @@ class AlertCollectionError(RuntimeError):
             "stage": {"run_start", "page_request", "page_validation", "publication"},
             "metadata_field": {"totalCount", "pageNo", "numOfRows"},
             "metadata_type": {"null", "boolean", "integer", "number", "string", "object", "array"},
+            "rate_limit_scope": {"daily", "per_second"},
+            "recovery_hint": {"WAIT_QUOTA_RESET", "RETRY_AFTER_BACKOFF"},
         }
         numeric = {
             "requested_page", "returned_page", "page_size", "total_count",
             "expected_rows", "returned_rows", "requests_fetched", "http_status",
         }
-        self.diagnostics: dict[str, str | int] = {"error_code": code}
+        self.diagnostics: dict[str, str | int | bool] = {"error_code": code}
         for key, value in (diagnostics or {}).items():
             if (
                 key in choices and isinstance(value, str) and value in choices[key]
                 or key in numeric and type(value) is int and 0 <= value <= 10_000_000
+                or key == "retryable" and type(value) is bool
             ):
                 self.diagnostics[key] = value
         super().__init__(code)
@@ -163,6 +166,7 @@ async def collect_alert_pages(
                 "stage": "page_request", "requested_page": page_no,
                 "requests_fetched": requests,
                 **({"http_status": exc.status_code} if type(exc.status_code) is int else {}),
+                **_rate_limit_diagnostics(exc),
             }) from None
         requests += 1
         progress = {
@@ -252,6 +256,18 @@ def safe_collection_error(exc: Exception) -> str:
     if isinstance(exc, ValueError) and str(exc) == "ALERT_RUN_OWNERSHIP_LOST":
         return "ALERT_RUN_OWNERSHIP_LOST"
     return "ALERT_COLLECTION_FAILED"
+
+
+def _rate_limit_diagnostics(exc: KmaError) -> dict[str, str | bool]:
+    """SDK 분류만 사용한다. resultCode·메시지·URL을 앱에서 재해석하지 않는다."""
+    if safe_collection_error(exc) != "ALERT_PROVIDER_RATE_LIMIT":
+        return {}
+    daily = exc.failure_kind == "quota"
+    return {
+        "rate_limit_scope": "daily" if daily else "per_second",
+        "retryable": not daily,
+        "recovery_hint": "WAIT_QUOTA_RESET" if daily else "RETRY_AFTER_BACKOFF",
+    }
 
 
 def _cleanup_notice(stage: str) -> None:
@@ -359,6 +375,8 @@ async def run_alert_event_sync_async(
         )
         if isinstance(exc, KmaError) and type(exc.status_code) is int:
             diagnostics = {**diagnostics, "http_status": exc.status_code}
+        if isinstance(exc, KmaError):
+            diagnostics = {**diagnostics, **_rate_limit_diagnostics(exc)}
         raise AlertCollectionError(code, diagnostics=diagnostics) from None
     finally:
         await _safe_close(client)

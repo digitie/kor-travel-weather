@@ -1,5 +1,6 @@
-import type { DagsterSnapshot } from "@kor-travel/ui/dagster-model";
-export type { DagsterSchedule, DagsterRepository, DagsterRun, DagsterSnapshot } from "@kor-travel/ui/dagster-model";
+import type { DagsterSnapshot as CommonDagsterSnapshot } from "@kor-travel/ui/dagster-model";
+export type { DagsterSchedule, DagsterRepository, DagsterRun } from "@kor-travel/ui/dagster-model";
+export type DagsterSnapshot = Omit<CommonDagsterSnapshot, "runs"> & { runs: Array<CommonDagsterSnapshot["runs"][number] & { tags?: Array<{ key:string; value:string }> }> };
 export { runStatusLabel, runElapsedSeconds, STALLED_RUN_THRESHOLD_SECONDS, isStalledRun, formatElapsed, describeCron } from "@kor-travel/ui/dagster-model";
 
 import type { DagsterOperationName, DagsterOperationRequest } from "@/lib/dagster-scope";
@@ -87,6 +88,7 @@ type GraphqlResponse = {
   data?: {
     repositoryOrError?: { __typename: string; name?: string; location?: { name: string }; schedules?: Array<{ name: string; cronSchedule: string | null; pipelineName: string; scheduleState: { status: string } }>; jobs?: Array<{ name: string }>; assetNodes?: Array<{ assetKey: { path: string[] } }>; message?: string };
     runsOrError?: { __typename: string; results?: Array<{ runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null; tags?: Array<{ key: string; value: string }> }>; message?: string };
+    activeRuns?: { __typename: string; results?: Array<{ runId: string; status: string; jobName: string; startTime: number | null; endTime: number | null; tags?: Array<{ key: string; value: string }> }>; message?: string };
   };
   errors?: Array<{ message?: string }>;
 };
@@ -194,7 +196,10 @@ export async function getDagsterSnapshot(limit = 12, signal?: AbortSignal): Prom
   // it as an empty list would show a broken run query as "no runs yet".
   const runs = payload.data?.runsOrError;
   if (!runs || runs.__typename !== "Runs") throw new Error(runs?.message ?? "Dagster 실행 기록을 읽지 못했습니다.");
-  const results = runs.results ?? [];
+  const active = payload.data?.activeRuns;
+  if (active && active.__typename !== "Runs") throw new Error("진행 중인 실행을 확인하지 못했습니다.");
+  // 최근 이력 밖에서 오래 진행 중인 실행도 상세를 선택할 수 있다.
+  const results = [...new Map([...(runs.results ?? []), ...(active?.results ?? [])].map(run => [run.runId,run])).values()];
   return {
     checkedAt: new Date().toISOString(),
     repositories: [
@@ -214,6 +219,7 @@ export async function getDagsterSnapshot(limit = 12, signal?: AbortSignal): Prom
       endTime: run.endTime,
       // null은 아직 상세 미조회다. UI에서 조회 실패와 구별해 표시한다.
       errorMessage: null,
+      tags: (run.tags ?? []).filter(tag => tag.key === "kortravel/collection-outcome" && ["partial","deferred"].includes(tag.value)),
       ...(runtimeLimit(run.tags) !== undefined ? { maxRuntimeSeconds: runtimeLimit(run.tags) } : {}),
     })),
   };

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { scopedDagsterRequest } from "@/lib/dagster-scope";
-import { sanitizeFailureResponse } from "@/lib/dagster-failure-diagnostics";
+import { sanitizeDagsterOverview, sanitizeFailureResponse } from "@/lib/dagster-failure-diagnostics";
 
 const dagsterBase = () => process.env.DAGSTER_UI_INTERNAL_URL ?? "http://127.0.0.1:14102";
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
@@ -68,12 +68,10 @@ export async function POST(request: NextRequest) {
         status: response.status, headers: { "cache-control": "no-store, private" },
       });
     }
-    return new NextResponse(response.body, {
-      status: response.status,
-      headers: {
-        "content-type": response.headers.get("content-type") ?? "application/json",
-        "cache-control": "no-store, private",
-      },
+    const result = await readBoundedText(response,4_194_304);
+    if(result===null)throw new Error("개요 응답 크기 상한 초과");
+    return NextResponse.json(sanitizeDagsterOverview(JSON.parse(result)), {
+      status:response.status,headers:{"cache-control":"no-store, private"},
     });
   } catch {
     return NextResponse.json({ errors: [{ message: "Dagster 연결 실패" }] }, { status: 502 });
