@@ -271,9 +271,7 @@ class MockBuildOrchestrationTests(unittest.TestCase):
             if argv[:2] == ["docker", "info"]:
                 return b"same-daemon\n" if "{{.ID}}" in argv else b"aarch64\n"
             if argv[:3] == ["docker", "buildx", "inspect"]:
-                return json.dumps({
-                    "Driver": "docker-container", "Nodes": [{"Endpoint": "default"}]
-                }).encode()
+                return b"Driver: docker-container\nNodes:\nName: fixture\nEndpoint: default\n"
             if argv[:3] == ["docker", "--context", "default"]:
                 return b"same-daemon\n"
             if argv[:3] == ["docker", "image", "inspect"]:
@@ -650,7 +648,7 @@ class RealVendorTests(unittest.TestCase):
 class BuilderCacheSafetyTests(unittest.TestCase):
     def test_another_daemon_builder_cannot_bypass_native_guard(self):
         responses = [
-            json.dumps({"Driver": "docker-container", "Nodes": [{"Endpoint": "foreign"}]}).encode(),
+            b"Driver: docker-container\nNodes:\nName: fixture\nEndpoint: foreign\n",
             b"native-engine\n", b"other-engine\n",
         ]
         with (

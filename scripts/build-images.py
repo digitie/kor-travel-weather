@@ -440,13 +440,15 @@ def verify_builder(builder: str | None) -> None:
     """다른 daemon의 builder로 기존 native architecture 검증을 우회하지 않는다."""
     if not builder:
         return
-    info = json.loads(run(["docker", "buildx", "inspect", builder, "--format", "{{json .}}"]))
-    nodes = info.get("Nodes") or []
-    if info.get("Driver") not in {"docker", "docker-container"} or len(nodes) != 1:
+    # inspect --format은 구형 Buildx에 없어 공통으로 제공되는 inspect 필드를 읽는다.
+    info = run(["docker", "buildx", "inspect", builder]).decode()
+    drivers = re.findall(r"^Driver:\s*(\S+)", info, re.MULTILINE)
+    endpoints = re.findall(r"^Endpoint:\s*(\S+)", info, re.MULTILINE)
+    if len(drivers) != 1 or drivers[0] not in {"docker", "docker-container"}:
+        raise ContractError("동일 native Docker daemon의 Docker builder가 필요합니다")
+    if len(endpoints) != 1:
         raise ContractError("동일 native Docker daemon의 단일 node builder가 필요합니다")
-    endpoint = nodes[0].get("Endpoint")
-    if not isinstance(endpoint, str) or not endpoint:
-        raise ContractError("builder Docker endpoint를 확인할 수 없습니다")
+    endpoint = endpoints[0]
     own = run(["docker", "info", "--format", "{{.ID}}"]).decode().strip()
     selector = "--host" if "://" in endpoint else "--context"
     selected = run(["docker", selector, endpoint, "info", "--format", "{{.ID}}"]).decode().strip()
