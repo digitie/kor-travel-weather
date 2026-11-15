@@ -77,8 +77,8 @@ const RUN_FAILURE_QUERY = `query WeatherDagsterRunFailure($runId: String!, $repo
           hasMore
           events {
             __typename
-            ... on RunFailureEvent { message }
-            ... on ExecutionStepFailureEvent { stepKey message }
+            ... on RunFailureEvent { message error { className message cause { className message cause { className message cause { className message } } } } }
+            ... on ExecutionStepFailureEvent { stepKey message error { className message cause { className message cause { className message cause { className message } } } } failureMetadata { metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } } } }
           }
         }
       }

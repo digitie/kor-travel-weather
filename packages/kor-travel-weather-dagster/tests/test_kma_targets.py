@@ -570,11 +570,16 @@ def test_a_run_whose_every_value_was_skipped_fails() -> None:
     repository = _CatalogRepository(_station_catalog())
     client = _MissingStationNowcastClient(bad_grids=5, answer={"REH": "-998", "T1H": "-999"})
 
-    with pytest.raises(Exception, match="건너뛰"):
+    with pytest.raises(Exception, match="건너뛰") as caught:
         _run_asset(kma_ultra_short_nowcast_sync, repository, client)
 
     assert repository.values == []
     assert repository.runs[-1].status == "failed"
+    metadata = {key: value.value for key, value in caught.value.metadata.items()}
+    assert metadata["error_code"] == "KMA_ALL_VALUES_SKIPPED"
+    assert metadata["values_attempted"] == metadata["values_skipped"] > 0
+    assert metadata["missing_values"] == metadata["values_skipped"]
+    assert metadata["invalid_values"] == 0
 
 
 @pytest.mark.usefixtures("_station_only_env")

@@ -36,10 +36,28 @@ logger = logging.getLogger(__name__)
 
 
 class AlertCollectionError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, diagnostics: Mapping[str, Any] | None = None):
         if code not in ALERT_SAFE_ERROR_CODES:
             raise ValueError("알 수 없는 특보 오류 분류")
         self.code = code
+        # 제공기관 원문/예외 문자열은 받지 않는다. 관리자 진단도 고정 식별자와
+        # 개수/상태 코드만 전달하여 Dagster metadata에 credential이 섞이지 않게 한다.
+        choices = {
+            "stage": {"run_start", "page_request", "page_validation", "publication"},
+            "metadata_field": {"totalCount", "pageNo", "numOfRows"},
+            "metadata_type": {"null", "boolean", "integer", "number", "string", "object", "array"},
+        }
+        numeric = {
+            "requested_page", "returned_page", "page_size", "total_count",
+            "expected_rows", "returned_rows", "requests_fetched", "http_status",
+        }
+        self.diagnostics: dict[str, str | int] = {"error_code": code}
+        for key, value in (diagnostics or {}).items():
+            if (
+                key in choices and isinstance(value, str) and value in choices[key]
+                or key in numeric and type(value) is int and 0 <= value <= 10_000_000
+            ):
+                self.diagnostics[key] = value
         super().__init__(code)
 
 
@@ -51,21 +69,45 @@ class AlertCollection:
     unknown_observations: int
 
 
-def _integer(raw: object) -> int:
+def _integer(raw: object, *, field: str) -> int:
     if isinstance(raw, bool) or not re.fullmatch(r"[0-9]{1,10}", str(raw)):
-        raise AlertCollectionError("ALERT_PAGE_METADATA")
+        kind = (
+            "null" if raw is None else "boolean" if isinstance(raw, bool)
+            else "integer" if isinstance(raw, int) else "number" if isinstance(raw, float)
+            else "string" if isinstance(raw, str) else "array" if isinstance(raw, list)
+            else "object"
+        )
+        raise AlertCollectionError("ALERT_PAGE_METADATA", diagnostics={
+            "stage": "page_validation", "metadata_field": field, "metadata_type": kind,
+        })
     return int(str(raw))
 
 
 def _page(body: Mapping[str, Any], page_no: int) -> tuple[list[dict[str, Any]], int]:
-    total = _integer(body.get("totalCount"))
-    returned_page = _integer(body.get("pageNo"))
-    size = _integer(body.get("numOfRows"))
-    if returned_page != page_no or size != PAGE_SIZE and not (total == 0 and size == 0):
-        raise AlertCollectionError("ALERT_PAGE_METADATA")
-    if total > PAGE_SIZE * MAX_PAGES:
-        raise AlertCollectionError("ALERT_TOO_MANY_ROWS")
+    total = _integer(body.get("totalCount"), field="totalCount")
     items = body.get("items")
+    # SDK는 정상 NO_DATA(03)를 이 모양으로 정규화하며 원문에 없는 pageNo/
+    # numOfRows를 만들지 않는다. 첫 빈 결과만 수용하고 누락된 비어 있지 않은
+    # 페이지나 자료/개수 불일치는 아래의 기존 완결 검증에서 계속 거절한다.
+    if (
+        total == 0
+        and page_no == 1
+        and body.get("pageNo") is None
+        and body.get("numOfRows") is None
+        and isinstance(items, Mapping)
+        and items.get("item") == []
+    ):
+        return [], 0
+    returned_page = _integer(body.get("pageNo"), field="pageNo")
+    size = _integer(body.get("numOfRows"), field="numOfRows")
+    metadata = {
+        "stage": "page_validation", "requested_page": page_no,
+        "returned_page": returned_page, "page_size": size, "total_count": total,
+    }
+    if returned_page != page_no or size != PAGE_SIZE and not (total == 0 and size == 0):
+        raise AlertCollectionError("ALERT_PAGE_METADATA", diagnostics=metadata)
+    if total > PAGE_SIZE * MAX_PAGES:
+        raise AlertCollectionError("ALERT_TOO_MANY_ROWS", diagnostics=metadata)
     raw = items.get("item") if isinstance(items, Mapping) else None
     if raw in (None, "") or raw == {}:
         rows = []
@@ -74,10 +116,12 @@ def _page(body: Mapping[str, Any], page_no: int) -> tuple[list[dict[str, Any]], 
     elif isinstance(raw, list) and all(isinstance(row, Mapping) for row in raw):
         rows = [dict(row) for row in raw]
     else:
-        raise AlertCollectionError("ALERT_PAGE_ROWS")
+        raise AlertCollectionError("ALERT_PAGE_ROWS", diagnostics=metadata)
     expected = min(PAGE_SIZE, max(0, total - (page_no - 1) * PAGE_SIZE))
     if len(rows) != expected:
-        raise AlertCollectionError("ALERT_PAGE_ROWS")
+        raise AlertCollectionError("ALERT_PAGE_ROWS", diagnostics={
+            **metadata, "expected_rows": expected, "returned_rows": len(rows),
+        })
     return rows, total
 
 
@@ -106,17 +150,35 @@ async def collect_alert_pages(
     for page_no in range(1, MAX_PAGES + 1):
         if heartbeat:
             await heartbeat()
-        body, _metadata = await client.request_with_metadata(
-            "WthrWrnInfoService",
-            "getPwnCd",
-            query,
-            page_no=page_no,
-            num_of_rows=PAGE_SIZE,
-        )
+        try:
+            body, _metadata = await client.request_with_metadata(
+                "WthrWrnInfoService",
+                "getPwnCd",
+                query,
+                page_no=page_no,
+                num_of_rows=PAGE_SIZE,
+            )
+        except KmaError as exc:
+            raise AlertCollectionError(safe_collection_error(exc), diagnostics={
+                "stage": "page_request", "requested_page": page_no,
+                "requests_fetched": requests,
+                **({"http_status": exc.status_code} if type(exc.status_code) is int else {}),
+            }) from None
         requests += 1
-        rows, total = _page(body, page_no)
+        progress = {
+            "stage": "page_validation", "requested_page": page_no,
+            "requests_fetched": requests,
+        }
+        try:
+            rows, total = _page(body, page_no)
+        except AlertCollectionError as exc:
+            raise AlertCollectionError(exc.code, diagnostics={
+                **exc.diagnostics, "requested_page": page_no, "requests_fetched": requests,
+            }) from None
         if expected_total is not None and total != expected_total:
-            raise AlertCollectionError("ALERT_PAGE_TOTAL_CHANGED")
+            raise AlertCollectionError("ALERT_PAGE_TOTAL_CHANGED", diagnostics={
+                **progress, "total_count": total,
+            })
         expected_total = total
         fingerprint = sorted(canonical_hash(row) for row in rows)
         if page_no == 1:
@@ -129,11 +191,13 @@ async def collect_alert_pages(
         }
         bytes_seen += len(json.dumps(payload, ensure_ascii=False, allow_nan=False).encode())
         if bytes_seen > MAX_BYTES:
-            raise AlertCollectionError("ALERT_RESPONSE_TOO_LARGE")
+            raise AlertCollectionError("ALERT_RESPONSE_TOO_LARGE", diagnostics=progress)
         for raw in rows:
             event = normalize_alert(raw)
             if event.event_id in seen:
-                raise AlertCollectionError("ALERT_PAGE_DUPLICATE")
+                raise AlertCollectionError("ALERT_PAGE_DUPLICATE", diagnostics={
+                    **progress, "returned_rows": len(rows), "total_count": total,
+                })
             seen.add(event.event_id)
             unknown += event.action == "unknown"
         records.append(
@@ -167,7 +231,10 @@ async def collect_alert_pages(
             total != expected_total
             or sorted(canonical_hash(row) for row in rows) != first_fingerprint
         ):
-            raise AlertCollectionError("ALERT_FIRST_PAGE_CHANGED")
+            raise AlertCollectionError("ALERT_FIRST_PAGE_CHANGED", diagnostics={
+                "stage": "page_validation", "requested_page": 1,
+                "requests_fetched": requests, "total_count": total,
+            })
     return AlertCollection(records, requests, len(seen), unknown)
 
 
@@ -231,6 +298,7 @@ async def run_alert_event_sync_async(
 ) -> dict[str, object]:
     run = None
     start_task = None
+    stage = "run_start"
     try:
         start_task = asyncio.create_task(
             asyncio.to_thread(
@@ -248,7 +316,9 @@ async def run_alert_event_sync_async(
                 raise AlertCollectionError("ALERT_RUN_OWNERSHIP_LOST")
 
         async with asyncio.timeout(COLLECTION_TIMEOUT_SECONDS):
+            stage = "page_request"
             collected = await collect_alert_pages(client, heartbeat=heartbeat)
+        stage = "publication"
         loaded, finished = await asyncio.to_thread(
             repository.publish_alert_events,
             run_id=run.run_id,
@@ -284,7 +354,12 @@ async def run_alert_event_sync_async(
         if run is not None:
             await _safe_terminalize(repository, run.run_id, status="failed", error=code)
         # 원문 KMA 오류가 가진 URL·credential은 Dagster 예외 chain에도 남기지 않는다.
-        raise AlertCollectionError(code) from None
+        diagnostics = (
+            exc.diagnostics if isinstance(exc, AlertCollectionError) else {"stage": stage}
+        )
+        if isinstance(exc, KmaError) and type(exc.status_code) is int:
+            diagnostics = {**diagnostics, "http_status": exc.status_code}
+        raise AlertCollectionError(code, diagnostics=diagnostics) from None
     finally:
         await _safe_close(client)
 

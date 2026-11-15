@@ -22,6 +22,9 @@ export function syncRunErrorText(dataset: string, error: string | null): string 
   if (!error || dataset !== REGIONAL_ALERT_DATASET) return error;
   const reason = Object.hasOwn(reasons, error) ? reasons[error] : undefined;
   return reason
-    ? reason + " (" + error + ")"
+    ? reason + " (" + error + ") " + (
+      error === "ALERT_PROVIDER_AUTH" ? "활용신청·키 권한을 확인해야 합니다. 즉시 반복 호출하지 않습니다."
+        : error === "ALERT_PROVIDER_RATE_LIMIT" ? "호출 보호 시간을 지킨 뒤 정기 재시도합니다."
+          : "마지막 정상 자료는 유지합니다. Dagster 화면에서 실패 단계·페이지 진단을 확인할 수 있습니다.")
     : "기상특보 수집 실패의 원인을 확인할 수 없습니다.";
 }

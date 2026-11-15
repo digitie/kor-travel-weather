@@ -45,6 +45,8 @@ const JOB_LABELS: Record<string, string> = {
   kma_short_forecast_job: "기상청 단기예보 수집",
   kma_mid_forecast_job: "기상청 중기예보 수집",
   kma_weather_alerts_job: "기상청 특보 수집",
+  kma_regional_alert_events_job: "기상청 지역별 특보 발표 수집",
+  weather_short_forecast_retention_job: "단기예보 보존 기간 정리",
   airkorea_weather_job: "에어코리아 대기질 수집",
   weather_retention_job: "보존 기간 만료 데이터 정리",
   regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집",
@@ -58,6 +60,8 @@ const STEP_LABELS: Record<string, string> = {
   kma_short_forecast_sync: "기상청 단기예보 수집",
   kma_mid_forecast_sync: "기상청 중기예보 수집",
   kma_weather_alerts_sync: "기상청 특보 수집",
+  kma_regional_alert_events_sync: "기상청 지역별 특보 발표 수집",
+  weather_short_forecast_retention: "단기예보 보존 기간 정리",
   airkorea_weather_sync: "에어코리아 대기질 수집",
   weather_retention_purge: "보존 기간 만료 데이터 정리",
   khoa_beach_index_sync: "해수욕장 지수 수집",
@@ -89,7 +93,7 @@ type GraphqlResponse = {
 
 type RunEvent =
   | { __typename: "RunFailureEvent"; message: string }
-  | { __typename: "ExecutionStepFailureEvent"; stepKey: string | null; message: string }
+  | { __typename: "ExecutionStepFailureEvent"; stepKey: string | null; message: string; diagnostic?: boolean }
   | { __typename: string };
 
 type RunEventsResponse = {
@@ -155,7 +159,6 @@ export async function getDagsterRunFailure(runId: string, signal?: AbortSignal):
       (event): event is Extract<RunEvent, { __typename: "RunFailureEvent" }> =>
         event.__typename === "RunFailureEvent",
     );
-    if (runFailure) return { message: runFailure.message, complete: true };
     // No run-level message (e.g. still CANCELING when read): fall back to the
     // last step that actually raised, which is more useful than nothing.
     const stepFailures = events.filter(
@@ -163,6 +166,7 @@ export async function getDagsterRunFailure(runId: string, signal?: AbortSignal):
         event.__typename === "ExecutionStepFailureEvent",
     );
     lastStepFailure = stepFailures.at(-1) ?? lastStepFailure;
+    if (runFailure) return { message: lastStepFailure?.diagnostic ? message() : runFailure.message, complete: true };
     if (!connection.hasMore) return { message: message(), complete: true };
     if (!connection.cursor || connection.cursor === cursor) throw new Error("실행 로그의 다음 페이지를 확인하지 못했습니다.");
     cursor = connection.cursor;

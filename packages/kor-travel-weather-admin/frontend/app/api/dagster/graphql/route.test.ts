@@ -19,6 +19,24 @@ describe("POST /api/dagster/graphql", () => {
     vi.unstubAllEnvs();
   });
 
+  it("실패 원문과 metadata의 키·URL은 서버 응답에서 제외한다", async () => {
+    const secret = "fixture-private-token";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: { runsOrError: { __typename: "Runs", results: [{ eventConnection: {
+      hasMore: false, cursor: null, events: [{ __typename: "ExecutionStepFailureEvent", message: secret,
+        error: { className: "AlertCollectionError", message: `ALERT_PAGE_METADATA https://example.invalid/?key=${secret}` },
+        failureMetadata: { metadataEntries: [{ label: "stage", text: "page_validation" }, { label: "metadata_field", text: "pageNo" }, { label: "raw", text: secret }] },
+      }],
+    } }] } } })));
+    const response = await POST(post({ operationName: "WeatherDagsterRunFailure", variables: { runId: "11111111-1111-1111-1111-111111111111", cursor: null } }));
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(body).toContain("ALERT_PAGE_METADATA");
+    expect(body).toContain("페이지 완결성 검사");
+    expect(body).not.toContain(secret);
+    expect(body).not.toContain("https://");
+    expect(body).not.toContain('"error"');
+  });
+
   it("never forwards a raw GraphQL document to the webserver", async () => {
     const upstream = vi.fn();
     vi.stubGlobal("fetch", upstream);

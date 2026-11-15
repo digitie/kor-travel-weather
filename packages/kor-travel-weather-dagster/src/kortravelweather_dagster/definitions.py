@@ -21,6 +21,7 @@ from dagster import (
     in_process_executor,
     multiprocess_executor,
 )
+from kma.exceptions import KmaError
 from kortravelcommon.dagster import RecoveryPolicy
 from kortravelcommon.deadline import DeadlineExceeded
 from kortravelcommon.scheduling import staggered_cron
@@ -51,7 +52,7 @@ from kortravelweather.settings import WeatherSettings
 
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
-from .alert_events import run_alert_event_sync
+from .alert_events import AlertCollectionError, run_alert_event_sync
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -60,6 +61,7 @@ from .kma_weather import (
     KMA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_FORECAST,
     KMA_ULTRA_SHORT_NOWCAST,
+    KmaAllValuesSkippedError,
     WeatherTarget,
     run_weather_sync,
     targets_from_settings,
@@ -545,7 +547,7 @@ def _make_kma_dataset_asset(
         except SyncRunAlreadyActive:
             # Nothing was opened, so nothing to finish; see overlap.py.
             raise
-        except Exception:
+        except Exception as exc:
             if run is None:
                 # Target parsing failed before a normal run could be opened.
                 # Keep the setup failure visible in the sync-run catalog too.
@@ -556,6 +558,45 @@ def _make_kma_dataset_asset(
                 )
             if not sync_started:
                 repository.finish_sync_run(run.run_id, status="failed", error="asset setup failed")
+            counts = getattr(exc, "kma_diagnostics", None)
+            if isinstance(counts, dict):
+                metadata = {
+                    key: counts[key]
+                    for key in (
+                        "fetch_ms", "normalize_ms", "publish_ms",
+                        "published_values", "completed_grids",
+                    )
+                    if type(counts.get(key)) is int and counts[key] >= 0
+                }
+                stage = getattr(exc, "kma_stage", "collection")
+                metadata["stage"] = stage if stage in {
+                    "provider_fetch", "publication", "collection",
+                } else "collection"
+                metadata["error_type"] = type(exc).__name__
+                description = "KMA_COLLECTION_FAILED"
+                if isinstance(exc, KmaAllValuesSkippedError):
+                    metadata["error_code"] = exc.code
+                    metadata.update({
+                        key: value for key, value in exc.value_counts.items()
+                        if type(value) is int and value >= 0
+                    })
+                    description = exc.public_description
+                elif isinstance(exc, KmaError):
+                    if type(exc.status_code) is int and 100 <= exc.status_code <= 599:
+                        metadata["http_status"] = exc.status_code
+                    if exc.failure_kind == "auth":
+                        description = "PROVIDER_AUTH"
+                        metadata.update({
+                            "error_code": description, "retryable": False,
+                            "recovery_hint": "CHECK_RUN_DETAIL",
+                        })
+                    elif exc.failure_kind == "quota":
+                        description = "PROVIDER_RATE_LIMIT"
+                        metadata.update({
+                            "error_code": description, "retryable": True,
+                            "recovery_hint": "RETRY_AFTER_BACKOFF",
+                        })
+                raise Failure(description=description, metadata=metadata) from None
             raise
         # No `finally: client.close()` here -- KmaClient/DataGoKrClient are
         # async-only now, and run_weather_sync closes both itself, inside the
@@ -635,6 +676,8 @@ def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, 
         result = run_alert_event_sync(repository=repository, client=client)
         context.add_output_metadata(result)
         return result
+    except AlertCollectionError as exc:
+        raise Failure(description=exc.code, metadata=exc.diagnostics) from None
     finally:
         repository.engine.dispose()
 
