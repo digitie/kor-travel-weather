@@ -419,6 +419,43 @@ def execute_build(command: list[str], env: dict, log: Path, values: list[str]) -
             raise ContractError("normal Docker build 실패; redacted log를 보세요")
 
 
+def build_command(args) -> list[str]:
+    """명시한 persistent builder/cache를 쓰되 native Docker output은 실제로 load한다."""
+    builder = getattr(args, "builder", None)
+    cache_from = getattr(args, "cache_from", None) or []
+    cache_to = getattr(args, "cache_to", None) or []
+    if not (builder or cache_from or cache_to):
+        return ["docker", "build"]
+    command = ["docker", "buildx", "build", "--load", "--provenance=false"]
+    if builder:
+        command += ["--builder", builder]
+    for value in cache_from:
+        command += ["--cache-from", value]
+    for value in cache_to:
+        command += ["--cache-to", value]
+    return command
+
+
+def verify_builder(builder: str | None) -> None:
+    """다른 daemon의 builder로 기존 native architecture 검증을 우회하지 않는다."""
+    if not builder:
+        return
+    # inspect --format은 구형 Buildx에 없어 공통으로 제공되는 inspect 필드를 읽는다.
+    info = run(["docker", "buildx", "inspect", builder]).decode()
+    drivers = re.findall(r"^Driver:\s*(\S+)", info, re.MULTILINE)
+    endpoints = re.findall(r"^Endpoint:\s*(\S+)", info, re.MULTILINE)
+    if len(drivers) != 1 or drivers[0] not in {"docker", "docker-container"}:
+        raise ContractError("동일 native Docker daemon의 Docker builder가 필요합니다")
+    if len(endpoints) != 1:
+        raise ContractError("동일 native Docker daemon의 단일 node builder가 필요합니다")
+    endpoint = endpoints[0]
+    own = run(["docker", "info", "--format", "{{.ID}}"]).decode().strip()
+    selector = "--host" if "://" in endpoint else "--context"
+    selected = run(["docker", selector, endpoint, "info", "--format", "{{.ID}}"]).decode().strip()
+    if not own or own != selected:
+        raise ContractError("builder가 native architecture를 검증한 Docker daemon과 다릅니다")
+
+
 def build(args, inputs: dict) -> dict:
     repo = args.repo.resolve()
     output = args.output_dir.absolute()
@@ -439,6 +476,14 @@ def build(args, inputs: dict) -> dict:
     native = run(["docker", "info", "--format", "{{.Architecture}}"]).decode().strip()
     if {"aarch64": "arm64", "x86_64": "amd64"}.get(native, native) != args.architecture:
         raise ContractError("native Docker architecture와 다릅니다")
+    builder = getattr(args, "builder", None)
+    if not builder and (getattr(args, "cache_from", None) or getattr(args, "cache_to", None)):
+        # cache만 지정해도 다른 프로젝트의 current Buildx node를 암묵적으로 쓰지 않는다.
+        builder = run(["docker", "context", "show"]).decode().strip()
+        if not builder:
+            raise ContractError("native Docker context의 builder를 확인할 수 없습니다")
+        args.builder = builder
+    verify_builder(builder)
     if len(set(args.role)) != len(args.role):
         raise ContractError("중복 build role")
     inputs = public_inputs(inputs, roles)
@@ -490,8 +535,8 @@ def build(args, inputs: dict) -> dict:
             name: args.revision if value == "$REVISION" else value
             for name, value in build_arguments.items()
         }
-        env = {**os.environ, **selected, **fixed}
-        cmd = ["docker", "build"]
+        env = {**os.environ, **selected, **fixed, "DOCKER_BUILDKIT": "1"}
+        cmd = build_command(args)
         cmd += [
             "--platform",
             "linux/" + args.architecture,
@@ -507,17 +552,36 @@ def build(args, inputs: dict) -> dict:
         for key in [*sorted(selected), *sorted(fixed)]:
             cmd += ["--build-arg", key]
         iid = output / (role + ".iid")
-        cmd += ["--iidfile", str(iid)]
+        metadata = output / (role + ".metadata.json")
+        use_buildx = cmd[:3] == ["docker", "buildx", "build"]
+        cmd += ["--metadata-file", str(metadata)] if use_buildx else ["--iidfile", str(iid)]
         cmd.append(str(source))
         execute_build(cmd, env, output / (role + ".redacted.log"), list(selected.values()))
         verify_source(repo, args.revision, args.expected_tree)
         verify_context(source, snapshot)
-        identity = iid.read_text().strip()
-        if not re.fullmatch("sha256:[0-9a-f]{64}", identity):
-            raise ContractError("실제 build iid가 없습니다")
-        image = json.loads(run(["docker", "image", "inspect", identity]))[0]
-        if image["Id"] != identity:
-            raise ContractError("반환 iid와 실제 image 불일치")
+        if use_buildx:
+            # classic store는 config ID, containerd store는 manifest ID를 반환할 수 있다.
+            built = json.loads(metadata.read_text())
+            config_id = built["containerimage.config.digest"]
+            if not re.fullmatch("sha256:[0-9a-f]{64}", config_id):
+                raise ContractError("실제 build config digest가 없습니다")
+            identities = {config_id}
+            manifest_id = built.get("containerimage.digest")
+            if manifest_id:
+                if not re.fullmatch("sha256:[0-9a-f]{64}", manifest_id):
+                    raise ContractError("실제 build manifest digest가 잘못되었습니다")
+                identities.add(manifest_id)
+            image = json.loads(run(["docker", "image", "inspect", tag]))[0]
+            if image["Id"] not in identities:
+                raise ContractError("실제 build metadata와 load된 image가 다릅니다")
+        else:
+            identity = iid.read_text().strip()
+            if not re.fullmatch("sha256:[0-9a-f]{64}", identity):
+                raise ContractError("실제 build iid가 없습니다")
+            image = json.loads(run(["docker", "image", "inspect", identity]))[0]
+            if image["Id"] != identity:
+                raise ContractError("반환 iid와 실제 image 불일치")
+        identity = image["Id"]
         contract.validate_image(
             image,
             role,
@@ -598,6 +662,13 @@ def arguments(argv=None):
     p.add_argument("--architecture", choices=["amd64", "arm64"], required=True)
     p.add_argument("--output", choices=["docker"], default="docker")
     p.add_argument("--output-dir", type=Path, required=True)
+    p.add_argument("--builder", help="재사용할 단일 native Docker node의 기존 Buildx builder")
+    p.add_argument(
+        "--cache-from", action="append", default=[], help="복원할 BuildKit cache; 반복 가능"
+    )
+    p.add_argument(
+        "--cache-to", action="append", default=[], help="보존할 BuildKit cache; 반복 가능"
+    )
     p.add_argument(
         "--public-inputs",
         type=Path,
