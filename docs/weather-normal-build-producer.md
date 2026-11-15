@@ -67,6 +67,39 @@ runtime probe 실패는 stdout/stderr를 공개 입력 치환 후 private 진단
 image+nonce label로 검증한 own CID만 정리한다. 실패 재시도는 새 output을 사용한다.
 global prune/다른 container/daemon 변경은 없다.
 
+## 의존성 캐시 재사용
+
+앱 코드와 Alembic/README는 외부 의존성을 설치한 다음 COPY한다. 첫 `uv sync`는
+`--locked --no-install-project`로 lock에 고정된 외부 패키지만 설치하며, 마지막 sync는
+앱을 설치한다. API/CS의 wheel·Git 다운로드는 같은 BuildKit cache mount를 쓴다.
+cache ID는 Python digest·uv 버전·architecture를 구분하며 cache 파일은 이미지에 넣지 않는다.
+
+반복 빌드는 이전 빌드의 기존 builder를 `--builder`로 명시한다. 이 옵션은 기본
+builder/context를 바꾸거나 새 builder를 만들지 않는다. 다른 Docker daemon의 builder는
+native guard 우회가 되므로 거부한다. 명시한 builder/cache 옵션이 있으면 Buildx의
+`--load --provenance=false`로 실제 Docker image ID와 기존 receipt 계약을 유지한다.
+
+빌더가 교체되거나 CI runner가 초기화될 때는 외부 레이어 캐시를 복원·저장한다.
+아래 옵션은 반복 가능하며, 같은 repository/architecture의 쓰기 권한 있는 cache ref를 쓴다.
+registry 인증은 Docker의 기존 credential 설정으로 제공한다.
+
+~~~sh
+# 앞 절의 source/role/public-input 인자는 그대로 둔다.
+python3 scripts/build-images.py ... --builder weather-arm64 \
+  --cache-from type=registry,ref=ghcr.io/digitie/kor-travel-weather-buildcache:arm64 \
+  --cache-to type=registry,ref=ghcr.io/digitie/kor-travel-weather-buildcache:arm64,mode=max
+~~~
+
+`mode=max`는 중간 의존성 레이어도 보존한다. cache mount의 내용은 외부 레이어 cache와
+별개이므로 같은 builder의 저장소도 유지한다. 단순한 source 변경에 `--no-cache`나
+builder 삭제를 사용하지 않는다. 공간 정리는 정확한 own unused 앱 산출물부터 수행하고,
+나이만으로 GDAL·Python·npm 의존성 cache를 일괄 삭제하지 않는다. base digest·architecture·
+lock/설치 입력이 달라졌거나 cache가 실제로 없으면 해당 의존성만 다시 만든다.
+
+운영 기록에는 실제 build argv와 log hash가 남는다. cache 사용 가능 여부와 실제 `CACHED`
+적중은 구분하며, 캐시가 있다는 이유로 source/ABI/runtime 검증을 생략하지 않는다.
+uv의 [Docker 캐시·의존성 layer 가이드](https://docs.astral.sh/uv/guides/integration/docker/)를 따른다.
+
 ## receipt와 SDK 연계
 
 build-receipt.json: version 1, kind weather-normal-build, mode NORMAL_BUILD_ONLY,
@@ -97,4 +130,4 @@ ruff check scripts/build-images.py scripts/weather-build-contract.py tests/test_
 순수 테스트 mock image/runtime은 실제 이미지·ABI·HTTP·배포 PASS 증거가 아니다.
 실제 normal image/runtime/browser 수용은 승인 슬롯에서 최종 merged source로 수행한다.
 Transport193 archive/COPY/EOF 취소 패턴을 GPL-3.0-or-later 조건으로 재사용했다.
-C11·라이브러리·lock·Dockerfile·앱·CI 순서와 다른 프로젝트는 변경하지 않는다.
+C11·라이브러리·lock·앱·CI 순서와 다른 프로젝트는 변경하지 않는다.

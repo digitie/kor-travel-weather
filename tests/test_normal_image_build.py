@@ -171,6 +171,19 @@ class MockBuildOrchestrationTests(unittest.TestCase):
     g = GitSourceTests.g
 
     def test_three_roles_bind_argv_env_labels_receipt(self):
+        self._three_roles()
+
+    def test_persistent_builder_and_external_cache_keep_loaded_receipts(self):
+        self._three_roles(
+            builder="weather-arm64",
+            cache_from=["type=local,src=/private/cache"],
+            cache_to=["type=local,dest=/private/cache-next,mode=max"],
+        )
+
+    def test_containerd_manifest_identity_uses_actual_loaded_image(self):
+        self._three_roles(builder="weather-arm64", manifest_store=True)
+
+    def _three_roles(self, builder=None, cache_from=None, cache_to=None, manifest_store=False):
         (self.repo / "deploy").mkdir()
         for name in ("Dockerfile.python", "Dockerfile.web"):
             (self.repo / "deploy" / name).write_text(
@@ -198,6 +211,7 @@ class MockBuildOrchestrationTests(unittest.TestCase):
             expected_tree=tree,
             architecture="arm64",
             output="docker",
+            builder=builder, cache_from=cache_from or [], cache_to=cache_to or [],
         )
         inputs = {
             "NEXT_PUBLIC_VWORLD_API_KEY": "fixture-only",
@@ -209,7 +223,11 @@ class MockBuildOrchestrationTests(unittest.TestCase):
         def mock_execute(argv, env, log, values):
             labels = dict(argv[i + 1].split("=", 1) for i, x in enumerate(argv) if x == "--label")
             role = labels["io.kor-travel-weather.build-role"]
-            image_id = "sha256:" + build.digest(role.encode())
+            config_id = "sha256:" + build.digest(role.encode())
+            image_id = (
+                "sha256:" + build.digest((role + "manifest").encode())
+                if manifest_store else config_id
+            )
             if role == "frontend":
                 self.assertEqual(argv[argv.index("--target") + 1], "runner")
                 self.assertEqual(env["NEXT_PUBLIC_VWORLD_API_KEY"], "fixture-only")
@@ -217,7 +235,17 @@ class MockBuildOrchestrationTests(unittest.TestCase):
             else:
                 self.assertEqual(env["GIT_COMMIT"], revision)
                 self.assertEqual(env["INSTALL_DAGSTER"], "0" if role == "api" else "1")
-            self.assertEqual(argv[:2], ["docker", "build"])
+            if builder:
+                self.assertEqual(argv[:3], ["docker", "buildx", "build"])
+                self.assertIn("--load", argv)
+                self.assertIn("--provenance=false", argv)
+                self.assertEqual(argv[argv.index("--builder") + 1], builder)
+                if cache_from:
+                    self.assertEqual(argv[argv.index("--cache-from") + 1], cache_from[0])
+                if cache_to:
+                    self.assertEqual(argv[argv.index("--cache-to") + 1], cache_to[0])
+            else:
+                self.assertEqual(argv[:2], ["docker", "build"])
             self.assertNotIn("tag", argv)
             produced[image_id] = {
                 "Id": image_id,
@@ -229,12 +257,25 @@ class MockBuildOrchestrationTests(unittest.TestCase):
                     "Env": ["KOR_TRAVEL_WEATHER_GIT_COMMIT=" + revision],
                 },
             }
-            Path(argv[argv.index("--iidfile") + 1]).write_text(image_id + "\n")
+            if "--metadata-file" in argv:
+                Path(argv[argv.index("--metadata-file") + 1]).write_text(json.dumps({
+                    "containerimage.config.digest": config_id,
+                    "containerimage.digest": image_id if manifest_store else "sha256:" + "f" * 64,
+                }))
+                produced[argv[argv.index("--tag") + 1]] = produced[image_id]
+            else:
+                Path(argv[argv.index("--iidfile") + 1]).write_text(image_id + "\n")
             log.write_text("MOCK Docker orchestration only\n")
 
         def mock_run(argv, **kwargs):
             if argv[:2] == ["docker", "info"]:
-                return b"aarch64\n"
+                return b"same-daemon\n" if "{{.ID}}" in argv else b"aarch64\n"
+            if argv[:3] == ["docker", "buildx", "inspect"]:
+                return json.dumps({
+                    "Driver": "docker-container", "Nodes": [{"Endpoint": "default"}]
+                }).encode()
+            if argv[:3] == ["docker", "--context", "default"]:
+                return b"same-daemon\n"
             if argv[:3] == ["docker", "image", "inspect"]:
                 return json.dumps([produced[argv[3]]]).encode()
             return original_run(argv, **kwargs)
@@ -602,6 +643,32 @@ class RealVendorTests(unittest.TestCase):
         files = contract.common_manifest(ROOT)
         self.assertEqual(set(files), contract.COMMON_PACKAGES)
         self.assertEqual(sum(len(x) for x in files.values()), 263)
+
+
+
+
+class BuilderCacheSafetyTests(unittest.TestCase):
+    def test_another_daemon_builder_cannot_bypass_native_guard(self):
+        responses = [
+            json.dumps({"Driver": "docker-container", "Nodes": [{"Endpoint": "foreign"}]}).encode(),
+            b"native-engine\n", b"other-engine\n",
+        ]
+        with (
+            patch.object(build, "run", side_effect=responses),
+            self.assertRaises(contract.ContractError),
+        ):
+            build.verify_builder("foreign")
+
+    def test_source_only_edits_follow_dependency_layer(self):
+        text = (ROOT / "deploy/Dockerfile.python").read_text()
+        text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+        first_sync = text.index("uv sync")
+        app_copy = text.index("COPY src ./src")
+        self.assertLess(first_sync, app_copy)
+        self.assertIn("--no-install-project", text[:app_copy])
+        self.assertNotIn("COPY alembic", text[:first_sync])
+        self.assertIn("target=/root/.cache/uv,sharing=locked", text[:first_sync])
+        self.assertGreater(text.rindex("uv sync"), app_copy)
 
 
 if __name__ == "__main__":

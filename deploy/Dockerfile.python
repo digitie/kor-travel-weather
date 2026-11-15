@@ -20,24 +20,38 @@ ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-COPY pyproject.toml uv.lock README.md ./
-COPY alembic.ini ./
-COPY alembic ./alembic
-COPY src ./src
+COPY pyproject.toml uv.lock ./
 # python-airkorea-api is a path dependency of the weather runtime.  Copy the
 # vendored library before ``uv sync`` so clean Docker builds resolve the same
 # package that local/CI installs use.
 COPY packages/python-airkorea-api ./packages/python-airkorea-api
 
 ARG INSTALL_DAGSTER=0
-RUN if [ "${INSTALL_DAGSTER}" = "1" ]; then \
+# 앱 소스와 무관한 의존성 layer를 먼저 만든다. API/CS는 같은 uv cache를 재사용한다.
+# cache는 최종 이미지에 포함하지 않고 pinned Python/uv/architecture별로 격리한다.
+ARG TARGETARCH
+RUN --mount=type=cache,id=weather-uv-py312-f77ac9e44ae9-uv01121-${TARGETARCH},target=/root/.cache/uv,sharing=locked \
+    if [ "${INSTALL_DAGSTER}" = "1" ]; then \
+      uv sync --locked --no-dev --no-install-project --extra dagster; \
+    else \
+      uv sync --locked --no-dev --no-install-project; \
+    fi
+
+COPY README.md alembic.ini ./
+COPY alembic ./alembic
+COPY src ./src
+
+COPY packages/kor-travel-weather-api/src ./packages/kor-travel-weather-api/src
+COPY packages/kor-travel-weather-dagster/src ./packages/kor-travel-weather-dagster/src
+
+# root 프로젝트만 마지막에 설치한다. uv.lock은 재해석하지 않으며 source 변경으로
+# 외부 library 다운로드/빌드를 되풀이하지 않는다.
+RUN --mount=type=cache,id=weather-uv-py312-f77ac9e44ae9-uv01121-${TARGETARCH},target=/root/.cache/uv,sharing=locked \
+    if [ "${INSTALL_DAGSTER}" = "1" ]; then \
       uv sync --locked --no-dev --extra dagster; \
     else \
       uv sync --locked --no-dev; \
     fi
-
-COPY packages/kor-travel-weather-api/src ./packages/kor-travel-weather-api/src
-COPY packages/kor-travel-weather-dagster/src ./packages/kor-travel-weather-dagster/src
 
 # 최종 runtime interpreter로 stdlib checked-hash cache를 준비한다. 실패는 빌드를 중단한다.
 RUN python -I -m kortravelcommon.build_bytecode --stdlib
