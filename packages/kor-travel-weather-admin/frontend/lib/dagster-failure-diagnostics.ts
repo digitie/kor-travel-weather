@@ -4,6 +4,24 @@ export type FailureEvent = { __typename: string; message?: string; stepKey?: str
 const object = (value: unknown): ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 const text = (value: unknown) => typeof value === "string" ? value : "";
 
+export const GRID_FAILURE_LABELS:Record<string,string>={PROVIDER_NETWORK:"제공기관 연결 실패",PROVIDER_SERVER:"제공기관 서버 오류",PROVIDER_PARSE:"제공기관 응답 해석 실패",PROVIDER_NO_DATA:"제공기관 자료 없음",DB_LOCK_CONTENTION:"DB 잠금 경합"};
+
+/** JSON metadata 중 고정된 격자 오류 건수만 읽는다. 임의 키·값·원문은 반환하지 않는다. */
+export function gridFailureCounts(raw:unknown):Record<string,number> {
+  if(!Array.isArray(raw))return {};
+  const entry=raw.slice(0,64).map(object).find(value=>value.label==="grid_failure_counts");
+  const encoded=entry?.jsonString;
+  if(typeof encoded!=="string"||encoded.length>4096||new TextEncoder().encode(encoded).byteLength>4096)return {};
+  try{
+    const parsed=object(JSON.parse(encoded)),counts:Record<string,number>={};
+    for(const key of Object.keys(GRID_FAILURE_LABELS)){
+      const value=parsed[key];
+      if(typeof value==="number"&&Number.isInteger(value)&&value>=0&&value<=1_000_000_000)counts[key]=value;
+    }
+    return counts;
+  }catch{return {};}
+}
+
 const reasons: Record<string, [string, string]> = {
   COLLECTION_DEFERRED: ["현재 수집이 진행 중이거나 수집 주기에 따라 이번 실행을 이월했습니다.", "기존 실행과 다음 수집 시각을 확인하세요. 기존 정상 자료는 유지합니다."],
   DERIVED_CACHE_DEFERRED: ["관측 자료는 저장했지만 파생 조회 캐시 갱신이 지연됐습니다.", "저장 자료는 유지합니다. 다음 캐시 갱신 결과를 확인하세요."],
@@ -22,6 +40,7 @@ const reasons: Record<string, [string, string]> = {
   ALERT_TIMEOUT: ["특보 요청 또는 게시가 실행 시간 예산을 넘었습니다.", "다음 정기 실행에서 재시도합니다. 반복되면 단계별 시간을 확인하세요."],
   ALERT_COLLECTION_CANCELLED: ["특보 수집이 취소됐습니다.", "취소 요청과 실행 소유권을 확인하세요."],
   ALERT_COLLECTION_FAILED: ["특보 수집을 완료하지 못했습니다.", "실행 단계와 오류 유형을 확인하세요. 원문은 별도 Dagster에서 확인할 수 있습니다."],
+  KMA_ALL_GRIDS_FAILED: ["이번 기상청 조회 대상 격자의 수집이 모두 미완료입니다.", "원인별 건수와 제공기관·DB 상태를 확인하고 다음 수집에서 재개하세요. 마지막 정상 자료를 빈 결과로 바꾸지 않습니다."],
   KMA_COLLECTION_FAILED: ["기상청 격자 자료의 요청·정규화·게시 중 수집을 완료하지 못했습니다.", "실패 단계와 단계별 소요 시간·저장 건수를 확인하세요. 마지막 정상 자료를 유지하며 호출 보호 후 다음 정기 실행에서 재시도합니다."],
   KMA_ALL_VALUES_SKIPPED: ["기상청에서 받은 모든 값이 결측·범위 밖 값으로 건너뛰어졌습니다.", "시도·건너뜀·결측·범위 밖 건수와 원천 상태를 확인하세요. 빈 결과로 마지막 정상 자료를 바꾸지 않습니다."],
   TRAFFIC_FLOW_INVALID_RECORDS: ["고속도로 소통 응답에 해석할 수 없는 행이 있습니다.", "수신·파싱·불량 행 수와 제공기관 필드 규격을 확인하세요. 정상 저장분은 유지합니다."],
@@ -41,7 +60,7 @@ const reasons: Record<string, [string, string]> = {
 };
 const stages: Record<string, string> = { run_start: "실행 시작", page_request: "원천 페이지 요청", page_validation: "페이지 완결성 검사", publication: "자료 게시", fetch: "원천 요청", normalize: "자료 정규화", publish: "DB 게시", storage: "DB 저장", provider_parse: "제공기관 응답 해석", provider_fetch: "제공기관 요청", collection: "수집 실행", validation: "원천 자료 규격 검사" };
 const steps: Record<string, string> = { kma_regional_alert_events_sync: "지역별 기상특보 수집", collect_highway_transport: "고속도로 소통·돌발 수집", collect_fuel_transport: "주유소·유가 수집", collect_vadahub_reference: "배편 기준자료 수집", weather_short_forecast_retention: "단기예보 정리" };
-const numbers: Record<string, string> = { values_attempted: "시도 값 수", values_skipped: "건너뛴 값 수", missing_values: "결측 값 수", invalid_values: "범위 밖 값 수", requested_page: "요청 페이지", returned_page: "반환 페이지", page_size: "페이지 크기", total_count: "전체 행 수", expected_rows: "예상 행 수", returned_rows: "반환 행 수", requests_fetched: "요청 횟수", http_status: "HTTP 상태", received_rows: "수신 행 수", parsed_rows: "파싱 행 수", invalid_rows: "불량 행 수", fetch_ms: "요청 소요(ms)", normalize_ms: "정규화 소요(ms)", publish_ms: "게시 소요(ms)", published_values: "저장 값 수", completed_grids: "완료 격자 수", run_id: "저장 실행 ID", error_count: "오류 수", raw_response_count: "저장 원문 수", traffic_snapshot_count: "소통 저장 수", incident_snapshot_count: "돌발 저장 수", fuel_station_count: "주유소 저장 수", fuel_price_count: "가격 저장 수", failed_dataset_count: "실패 데이터셋 수", successful_dataset_count: "성공 데이터셋 수" };
+const numbers: Record<string, string> = { planned_grids: "계획 격자 수", failed_grids: "미완료 격자 수", deferred_grids: "재개 대기 격자 수", values_attempted: "시도 값 수", values_skipped: "건너뛴 값 수", missing_values: "결측 값 수", invalid_values: "범위 밖 값 수", requested_page: "요청 페이지", returned_page: "반환 페이지", page_size: "페이지 크기", total_count: "전체 행 수", expected_rows: "예상 행 수", returned_rows: "반환 행 수", requests_fetched: "요청 횟수", http_status: "HTTP 상태", received_rows: "수신 행 수", parsed_rows: "파싱 행 수", invalid_rows: "불량 행 수", fetch_ms: "요청 소요(ms)", normalize_ms: "정규화 소요(ms)", publish_ms: "게시 소요(ms)", published_values: "저장 값 수", completed_grids: "완료 격자 수", run_id: "저장 실행 ID", error_count: "오류 수", raw_response_count: "저장 원문 수", traffic_snapshot_count: "소통 저장 수", incident_snapshot_count: "돌발 저장 수", fuel_station_count: "주유소 저장 수", fuel_price_count: "가격 저장 수", failed_dataset_count: "실패 데이터셋 수", successful_dataset_count: "성공 데이터셋 수" };
 const fieldNames = new Set(["totalCount", "pageNo", "numOfRows"]);
 const fieldTypes = new Set(["null", "boolean", "integer", "number", "string", "object", "array"]);
 const classNames = new Set(["Failure", "AlertCollectionError", "KrexParseError", "TimeoutError", "RuntimeError", "ValueError", "KeyError", "TypeError", "OperationalError", "IntegrityError", "DagsterExecutionStepExecutionError", "SchemaError", "ValidationError"]);
@@ -110,6 +129,7 @@ export function failureDiagnostic(raw: unknown): string {
   if (typeof data.successful_data_preserved === "boolean") lines.push(`성공 저장분 보존: ${data.successful_data_preserved ? "예" : "확인 필요"}`);
   if (data.metadata_field) lines.push(`검사 필드: ${data.metadata_field} · 응답 형식: ${data.metadata_type ?? "미제공"}`);
   for (const [key, label] of Object.entries(numbers)) if (data[key] !== undefined) lines.push(`${label}: ${data[key]}`);
+  for(const [code,count] of Object.entries(gridFailureCounts(object(event.failureMetadata).metadataEntries))) lines.push(`격자 원인 · ${GRID_FAILURE_LABELS[code]}: ${count}`);
   return lines.join("\n");
 }
 

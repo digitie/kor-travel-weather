@@ -35,3 +35,7 @@ SDK WSL/Docker 각306개(통합12개 제외), 격자109개, 제한 진단27개, 
 새 SDK의 공개 `KmaClient`와 모의 HTTP 응답을 실제 Weather 격자·게시·asset에 연결한 추가4조건은 WSL/Docker 각각 통과했다. JSON/XML23 뒤 정상 응답은 HTTP2회로 원문·관측값을 각각1회만 저장했고,22는 HTTP1회·저장0,23 재시도 소진은 기존 예산의 HTTP3회·저장0과 정확한 scope/복구 지침을 확인했다. 저장 seam은 기존 FakeRepository이므로 이4조건을 실DB·운영 수용으로 확대하지 않는다. 원 사전 Git 경로 실패와 optional HTTP status 시험 가정 오류는 별도 보존했다.
 
 관리자 집중 시험은 WSL·Docker 각각132개, 변경 ESLint·타입 검사도 통과했다. 원본 소스 Controls/Inspector/Warnings를 PC1440·모바일375에서 확인하고 overflow·pageerror·외부 요청0, 소유 브라우저·fixture 서버 잔여0을 검산했다. 화면 액션은 모의 서버에서만 시험했다.
+
+실행 응답이 HTTP200이어도 본문이 손상되거나 action state가 누락되면 결과를 미확인으로 유지하도록 보강했다. 동일 요청 ID를 보존하고 새 실행을 자동 제출하지 않는다. 양 앱 각각 실제 RED12개 실패 후 WSL/Docker37개 통과를 확인했다. 최초 CI의 Doctor 경고4개(두 화면 함수 복잡도, 이벤트 재구독, 응답 상태 확인 순서)는 검사 설정을 완화하지 않고 소스 구조로 보정한다. 원 실패는 PR 원장에 남긴다.
+
+최종 보정본은 전체 Doctor·변경 lint·타입 검사0, WSL/Docker 집중 각각129개를 확인했다. 앞선 시험과 합산하지 않는다. 고정 visibility 구독·최신 선택 실행 조회와 손상 응답 UNKNOWN을 보존하고, 격자 원인 JSON은4KB·허용5코드 정수만 표시한다. KMA 전체 격자 실패도 고정 원인으로 표시하며 임의 키·값·원문은 차단한다. 실제 소스 PC/mobile4캡처의 화면·동작 보존과 소유 프로세스 잔여0을 확인했다. native12문서도 Json fragment를 포함해 읽기 전용 재검증했다. 최종 소스 원장은 Git 밖 doctor-r3/receipt.json이다.

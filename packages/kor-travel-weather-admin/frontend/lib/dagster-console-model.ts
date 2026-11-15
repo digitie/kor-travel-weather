@@ -17,6 +17,7 @@ export type ConsoleRequest = { operation: "catalog" } | { operation: "detail"; r
 export type ConsoleActionResult = { state: "accepted" | "unchanged" | "blocked" | "unknown" | "rejected"; message: string; runId?: string; replayed?: boolean; requestId?: string };
 
 export const CONSOLE_COUNT_LABELS: Record<string, string> = {
+  planned_grids: "계획 격자", grid_failure_PROVIDER_NETWORK: "제공기관 연결 실패", grid_failure_PROVIDER_SERVER: "제공기관 서버 오류", grid_failure_PROVIDER_PARSE: "제공기관 응답 해석 실패", grid_failure_PROVIDER_NO_DATA: "제공기관 자료 없음", grid_failure_DB_LOCK_CONTENTION: "DB 잠금 경합",
   fetch_ms: "요청 시간(ms)", normalize_ms: "정규화 시간(ms)", publish_ms: "게시 시간(ms)",
   values_attempted: "시도 값", values_skipped: "건너뛴 값", missing_values: "결측 값", invalid_values: "범위 밖 값",
   published_values: "저장 값", values_loaded: "저장 값", completed_grids: "완료 격자", grids_fetched: "조회 격자", requests_fetched: "조회 요청",

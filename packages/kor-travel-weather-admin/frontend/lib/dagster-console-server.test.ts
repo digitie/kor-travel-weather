@@ -170,3 +170,8 @@ it.each(["PythonError","RunConflict","UnverifiedType"])("%s는 미예약으로 �
  expect(await handleConsoleRequest({operation:"action",action:"launch",name:"fixture_job",requestId},f.graphql)).toMatchObject({state:"unknown",requestId});
  expect(f.graphql.mock.calls.filter(([query])=>/^\s*mutation\b/.test(query))).toHaveLength(1);
 });
+
+it("부분 완료 출력의 JSON 원인은 허용한 숫자 열만 브라우저에 보낸다",()=>{
+ const result=sanitizeConsoleEvents([{__typename:"ExecutionStepOutputEvent",metadataEntries:[{label:"collection_outcome",text:"partial"},{label:"planned_grids",intValue:20},{label:"grid_failure_counts",jsonString:'{"PROVIDER_NETWORK":2,"PROVIDER_PARSE":3,"private":"private-canary"}'}]}]);
+ expect(result[0]).toMatchObject({warning:true,counts:{planned_grids:20,grid_failure_PROVIDER_NETWORK:2,grid_failure_PROVIDER_PARSE:3}});expect(JSON.stringify(result)).not.toContain("private-canary");expect(JSON.stringify(result)).not.toContain("jsonString");
+});

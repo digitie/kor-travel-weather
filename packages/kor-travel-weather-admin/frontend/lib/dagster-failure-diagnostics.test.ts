@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failureDiagnostic, sanitizeDagsterOverview, sanitizeFailureResponse } from "./dagster-failure-diagnostics";
+import { failureDiagnostic, gridFailureCounts, sanitizeDagsterOverview, sanitizeFailureResponse } from "./dagster-failure-diagnostics";
 
 const event = {
   __typename: "ExecutionStepFailureEvent", stepKey: "kma_regional_alert_events_sync", message: "step failed",
@@ -146,4 +146,14 @@ describe("한도·부분 완료 복구 정책",()=>{
 it("개요에서 임의 태그·원문 오류를 숨기고 경고와 실행 예산만 유지한다",()=>{
  const result=sanitizeDagsterOverview({data:{repositoryOrError:{__typename:"PythonError",message:"private-canary"},runsOrError:{__typename:"Runs",results:[{runId:"fixture",status:"SUCCESS",jobName:"fixture_job",tags:[{key:"private",value:"private-canary"},{key:"kortravel/collection-outcome",value:"partial"},{key:"dagster/max_runtime",value:"3600"}]}]}}});
  expect(JSON.stringify(result)).not.toContain("private-canary");expect(JSON.stringify(result)).toContain("partial");expect(JSON.stringify(result)).toContain("3600");
+});
+
+
+describe("격자 실패 JSON의 고정 진단",()=>{
+ it("허용 원인별 건수와 전체 격자 실패 코드를 표시한다",()=>{
+  const result=failureDiagnostic({failureMetadata:{metadataEntries:[{label:"error_code",text:"KMA_ALL_GRIDS_FAILED"},{label:"planned_grids",intValue:20},{label:"grid_failure_counts",jsonString:JSON.stringify({PROVIDER_NETWORK:2,PROVIDER_SERVER:3,PROVIDER_PARSE:4,PROVIDER_NO_DATA:5,DB_LOCK_CONTENTION:6,private:"private-canary"})}]}});
+  expect(result).toContain("KMA_ALL_GRIDS_FAILED");expect(result).not.toContain("UNKNOWN_FAILURE");expect(result).toContain("계획 격자 수: 20");expect(result).toContain("제공기관 연결 실패: 2");expect(result).toContain("제공기관 서버 오류: 3");expect(result).toContain("제공기관 응답 해석 실패: 4");expect(result).toContain("제공기관 자료 없음: 5");expect(result).toContain("DB 잠금 경합: 6");expect(result).not.toContain("private-canary");
+ });
+ it.each(["{","[]",JSON.stringify({PROVIDER_NETWORK:"2",PROVIDER_SERVER:-1,PROVIDER_PARSE:0.2,PROVIDER_NO_DATA:1e10,DB_LOCK_CONTENTION:{private:"private-canary"}}),JSON.stringify({PROVIDER_NETWORK:1,padding:"x".repeat(4096)}),JSON.stringify({PROVIDER_NETWORK:1,padding:"한".repeat(2000)})])("잘못되거나 4KB를 넘는 JSON은 원문 없이 제외한다",jsonString=>{expect(gridFailureCounts([{label:"grid_failure_counts",jsonString}])).toEqual({});});
+ it("0은 보존하고 임의 metadata JSON은 읽지 않는다",()=>{expect(gridFailureCounts([{label:"grid_failure_counts",jsonString:'{"PROVIDER_NETWORK":0,"private":"private-canary"}'}])).toEqual({PROVIDER_NETWORK:0});expect(gridFailureCounts([{label:"private",jsonString:'{"PROVIDER_NETWORK":2}'}])).toEqual({});});
 });

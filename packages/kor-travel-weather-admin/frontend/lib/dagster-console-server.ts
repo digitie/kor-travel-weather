@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { DAGSTER_LOCATION_NAME, DAGSTER_REPOSITORY_NAME, DAGSTER_REPOSITORY_TAG_KEY, DAGSTER_REPOSITORY_TAG_VALUE } from "./dagster-scope";
-import { failureDiagnostic } from "./dagster-failure-diagnostics";
+import { failureDiagnostic, gridFailureCounts } from "./dagster-failure-diagnostics";
 import { CONSOLE_ACTIVE, CONSOLE_COUNT_LABELS, type ConsoleActionRequest, type ConsoleActionResult, type ConsoleCatalog, type ConsoleEvent, type ConsoleRequest, type ConsoleRunDetail } from "./dagster-console-model";
 
 type Row = Record<string, unknown>;
@@ -15,7 +15,7 @@ const clock = (value: unknown) => { const v = typeof value === "string" ? Number
 const status = (value: unknown) => ["NOT_STARTED", "QUEUED", "STARTING", "STARTED", "CANCELING", "SUCCESS", "FAILURE", "CANCELED", "SKIPPED", "IN_PROGRESS", "RETRY_REQUESTED"].includes(string(value)) ? string(value) : "UNKNOWN";
 const tag = { key: DAGSTER_REPOSITORY_TAG_KEY, value: DAGSTER_REPOSITORY_TAG_VALUE };
 const selector = { repositoryLocationName: DAGSTER_LOCATION_NAME, repositoryName: DAGSTER_REPOSITORY_NAME };
-const METADATA = 'metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } }';
+const METADATA = 'metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } ... on JsonMetadataEntry { jsonString } }';
 const ERROR = 'error { className message cause { className message cause { className message cause { className message } } } }';
 const RUN_FIELDS = 'runId jobName status creationTime startTime endTime canTerminate hasTerminatePermission hasReExecutePermission';
 export const CONSOLE_CATALOG_QUERY = `query AdminDagsterCatalog($selector: RepositorySelector!) {
@@ -119,6 +119,7 @@ function safeMetadata(entries: unknown) {
     if (key === "skipped" && item.boolValue === true) { notes.push("이번 수집 건너뜀 · 신규 적재 완료를 뜻하지 않음"); warning = true; }
     if (key === "error_code" && typeof item.text === "string") diagnostic = true;
   }
+  for(const [code,count] of Object.entries(gridFailureCounts(entries))){counts[`grid_failure_${code}`]=count;warning ||= count>0;}
   return { counts, notes: [...new Set(notes)], warning, diagnostic };
 }
 const eventTitles: Record<string,string> = { RunStartEvent: "실행 시작", RunStartingEvent: "실행 준비", RunEnqueuedEvent: "대기열 등록", RunDequeuedEvent: "대기열에서 선택", RunSuccessEvent: "실행 완료", RunCanceledEvent: "실행 취소", RunCancelingEvent: "취소 처리", ExecutionStepStartEvent: "단계 시작", ExecutionStepSuccessEvent: "단계 완료", ExecutionStepSkippedEvent: "단계 건너뜀", ExecutionStepRestartEvent: "단계 재시작", ExecutionStepUpForRetryEvent: "단계 재시도 대기", ExecutionStepOutputEvent: "처리 결과", HandledOutputEvent: "결과 저장", MaterializationEvent: "자료 게시", EngineEvent: "실행기 상태" };
