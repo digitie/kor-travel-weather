@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { DAGSTER_LOCATION_NAME, DAGSTER_REPOSITORY_NAME, DAGSTER_REPOSITORY_TAG_KEY, DAGSTER_REPOSITORY_TAG_VALUE } from "./dagster-scope";
+import { DAGSTER_LOCATION_NAME, DAGSTER_REPOSITORY_NAME, DAGSTER_REPOSITORY_TAG_KEY, DAGSTER_REPOSITORY_TAG_VALUE,
+  CONSOLE_CATALOG_QUERY, CONSOLE_RUN_QUERY, BASIC_RUN_QUERY, CONSOLE_EVENTS_QUERY, FIND_REQUEST, ACTIVE_JOB, LAUNCH, CANCEL, START_SCHEDULE, STOP_SCHEDULE, START_SENSOR, STOP_SENSOR
+} from "./dagster-scope";
+export { CONSOLE_CATALOG_QUERY, CONSOLE_RUN_QUERY, CONSOLE_EVENTS_QUERY } from "./dagster-scope";
 import { failureDiagnostic, gridFailureCounts } from "./dagster-failure-diagnostics";
 import { CONSOLE_ACTIVE, CONSOLE_COUNT_LABELS, type ConsoleActionRequest, type ConsoleActionResult, type ConsoleCatalog, type ConsoleEvent, type ConsoleRequest, type ConsoleRunDetail } from "./dagster-console-model";
 
@@ -15,38 +18,7 @@ const clock = (value: unknown) => { const v = typeof value === "string" ? Number
 const status = (value: unknown) => ["NOT_STARTED", "QUEUED", "STARTING", "STARTED", "CANCELING", "SUCCESS", "FAILURE", "CANCELED", "SKIPPED", "IN_PROGRESS", "RETRY_REQUESTED"].includes(string(value)) ? string(value) : "UNKNOWN";
 const tag = { key: DAGSTER_REPOSITORY_TAG_KEY, value: DAGSTER_REPOSITORY_TAG_VALUE };
 const selector = { repositoryLocationName: DAGSTER_LOCATION_NAME, repositoryName: DAGSTER_REPOSITORY_NAME };
-const METADATA = 'metadataEntries { __typename label ... on TextMetadataEntry { text } ... on IntMetadataEntry { intValue } ... on FloatMetadataEntry { floatValue } ... on BoolMetadataEntry { boolValue } ... on JsonMetadataEntry { jsonString } }';
-const ERROR = 'error { className message cause { className message cause { className message cause { className message } } } }';
-const RUN_FIELDS = 'runId jobName status creationTime startTime endTime canTerminate hasTerminatePermission hasReExecutePermission';
-export const CONSOLE_CATALOG_QUERY = `query AdminDagsterCatalog($selector: RepositorySelector!) {
-  repositoryOrError(repositorySelector: $selector) { __typename ... on Repository {
-    jobs { name hasLaunchExecutionPermission }
-    schedules { name cronSchedule pipelineName defaultStatus scheduleState { id status hasStartPermission hasStopPermission } }
-    sensors { name defaultStatus sensorState { id status hasStartPermission hasStopPermission } }
-  } }
-  __schema { mutationType { fields { name } } }
-}`;
-export const CONSOLE_RUN_QUERY = `query AdminDagsterRun($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 1) { __typename ... on Runs { results {
-  ${RUN_FIELDS}
-  stats { __typename ... on RunStatsSnapshot { stepsSucceeded stepsFailed materializations enqueuedTime } }
-  executionPlan { steps { key } }
-  stepStats { stepKey status startTime endTime attempts { startTime endTime } }
-} } } }`;
-const BASIC_RUN_QUERY = `query AdminDagsterOwnedRun($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 1) { __typename ... on Runs { results { ${RUN_FIELDS} } } } }`;
-export const CONSOLE_EVENTS_QUERY = `query AdminDagsterEvents($filter: RunsFilter!, $cursor: String) { runsOrError(filter: $filter, limit: 1) { __typename ... on Runs { results {
-  runId jobName
-  eventConnection(limit: 200, afterCursor: $cursor) { cursor hasMore events { __typename
-    ... on MessageEvent { timestamp stepKey message }
-    ... on ExecutionStepFailureEvent { ${ERROR} failureMetadata { ${METADATA} } }
-    ... on RunFailureEvent { ${ERROR} }
-    ... on ExecutionStepOutputEvent { ${METADATA} }
-    ... on HandledOutputEvent { ${METADATA} }
-    ... on MaterializationEvent { ${METADATA} }
-    ... on EngineEvent { ${METADATA} }
-  } }
-} } } }`;
-const FIND_REQUEST = 'query AdminDagsterRequest($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 2) { __typename ... on Runs { results { runId jobName status } } } }';
-const ACTIVE_JOB = 'query AdminDagsterActive($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 2) { __typename ... on Runs { results { runId jobName status } } } }';
+
 // 실제 native union에서 실행 생성 전의 검증·권한 거절로 확정되는 종류만 분류한다.
 const launchRejections:Record<string,string> = {
   UnauthorizedError:"이 작업을 실행할 권한이 없습니다.",
@@ -59,12 +31,6 @@ const launchRejections:Record<string,string> = {
   InvalidOutputError:"실행 출력이 현재 작업 정의와 맞지 않습니다. 제어 상태를 새로 확인하세요.",
   InvalidSubsetError:"실행 대상이 현재 작업 정의와 맞지 않습니다. 제어 상태를 새로 확인하세요.",
 };
-const LAUNCH = 'mutation AdminDagsterLaunch($requestId: String!, $executionParams: ExecutionParams!) { result: launchIdempotentRun(requestId: $requestId, executionParams: $executionParams) { __typename ... on IdempotentLaunchRunSuccess { replayed run { runId status tags { key value } } } } }';
-const CANCEL = 'mutation AdminDagsterCancel($runId: String!) { result: terminateRun(runId: $runId, terminatePolicy: SAFE_TERMINATE) { __typename ... on TerminateRunSuccess { run { runId status } } } }';
-const START_SCHEDULE = 'mutation AdminDagsterStartSchedule($selector: ScheduleSelector!) { result: startSchedule(scheduleSelector: $selector) { __typename ... on ScheduleStateResult { scheduleState { status } } } }';
-const STOP_SCHEDULE = 'mutation AdminDagsterStopSchedule($id: String!) { result: stopRunningSchedule(id: $id) { __typename ... on ScheduleStateResult { scheduleState { status } } } }';
-const START_SENSOR = 'mutation AdminDagsterStartSensor($selector: SensorSelector!) { result: startSensor(sensorSelector: $selector) { __typename ... on Sensor { sensorState { status } } } }';
-const STOP_SENSOR = 'mutation AdminDagsterStopSensor($id: String!) { result: stopSensor(id: $id) { __typename ... on StopSensorMutationResult { instigationState { status } } } }';
 
 export class ConsoleServiceError extends Error { constructor(readonly status: number) { super("Dagster console request failed"); } }
 

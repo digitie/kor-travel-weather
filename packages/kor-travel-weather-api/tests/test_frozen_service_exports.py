@@ -7,10 +7,11 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from kma import KmaClient, KmaError
+from kma import KmaClient
 from kortravelweather_api.app import create_app
 from kortravelweather_dagster.kma_weather import (
     KMA_ULTRA_SHORT_NOWCAST,
+    KmaAllGridsFailedError,
     WeatherTarget,
     run_weather_sync,
 )
@@ -1190,11 +1191,41 @@ def _expire_export_state(client, monkeypatch):
 
 
 def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp_path, monkeypatch):
+    from sqlalchemy import func
+
+    from kortravelweather.export_heads import ExportHeads
+
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
     first = client.get("/v1/service/exports/current", headers=HEADERS)
-    with pytest.raises(KmaError):
+    assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
+    heads = ExportHeads(repository)
+
+    def saved_data():
+        with repository.engine.connect() as connection:
+            return (
+                connection.scalar(select(func.count()).select_from(
+                    Base.metadata.tables["weather_source_records"],
+                )),
+                connection.scalar(select(func.count()).select_from(
+                    Base.metadata.tables["weather_values"],
+                )),
+                list(connection.execute(select(
+                    heads.heads.c.namespace, heads.heads.c.generation_id,
+                ).order_by(heads.heads.c.namespace))),
+            )
+
+    previous = saved_data()
+    with pytest.raises(KmaAllGridsFailedError, match="KMA_ALL_GRIDS_FAILED") as caught:
         _collect(repository, tmp_path, failed=True)
+    assert caught.value.grid_failure_counts == {"PROVIDER_SERVER": 2}
+    assert caught.value.kma_diagnostics["failed_grids"] == 2
+    assert caught.value.kma_diagnostics["completed_grids"] == 0
+    assert saved_data() == previous  # 원문·값·마지막 정상 head를 실패로 교체하지 않는다.
+    runs = repository.list_sync_runs(provider="python-kma-api", dataset_key=KMA_ULTRA_SHORT_NOWCAST)
+    assert len(runs) == 2 and sorted(run.status for run in runs) == ["failed", "success"]
+    failed = next(run for run in runs if run.status == "failed")
+    assert failed.error == "KMA_ALL_GRIDS_FAILED" and failed.values_loaded == 0
     assert client.get("/v1/service/exports/current", headers={
         **HEADERS, "if-none-match": first.headers["etag"],
     }).status_code == 304
@@ -1204,6 +1235,9 @@ def test_failed_new_source_keeps_old_data_stale_and_changes_etag(repository, tmp
     )
     assert stale.status_code == 200 and stale.json()["meta"]["source_status"] == "stale"
     assert stale.json()["items"] == first.json()["items"]
+    assert stale.json()["meta"]["source_collected_at"] == (
+        first.json()["meta"]["source_collected_at"]
+    )
     assert stale.headers["etag"] != first.headers["etag"]
 
 
