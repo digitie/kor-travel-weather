@@ -1,3 +1,7 @@
+## 2026-11-16 — 실황 마커 하늘 상태 보완
+
+- [x] **MARKER-SKY-FALLBACK-20261116** — 실황의 기온·PTY=0 때문에 현재 시간 예보 SKY를 버리던 경로를 재현·수정했다. WSL/Docker 각각61개, 정적 품질 검사를 통과했다. CI·소스 머지는 PR 원장, 운영 반영은 별도다. [검증·제한](reports/2026-11-16-weather-marker-unknown.md).
+
 ## 2026-11-15 — Dagster 콘솔·수집 회복 소스
 
 - **DAGSTER-CONSOLE-SOURCE-20261115** — 상세·안전 진단·현재 상태/권한 액션과 부분/유예 경고를 구현하고 집중 시험했다. 소스 CI·독립 검토·최종 머지는 이번 PR 원장이 정본이며 운영 수용은 별도 task다. [근거](reports/2026-11-15-dagster-admin-resilience.md).

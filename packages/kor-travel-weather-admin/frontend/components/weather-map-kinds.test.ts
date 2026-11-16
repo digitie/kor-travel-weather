@@ -11,11 +11,40 @@ for (const node of tree.statements) {
 }
 const actual = new Function(ts.transpileModule(helpers.join("\n") + "\nreturn { markerState, markerCondition, markerTemperature };", {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
-}).outputText)() as { markerState(summary: unknown): { kind: string; label: string }; markerCondition(kind: string): string; markerTemperature(summary: unknown): number | null };
+}).outputText)() as { markerState(summary: unknown, referenceTime?: number): { kind: string; label: string }; markerCondition(kind: string): string; markerTemperature(summary: unknown): number | null };
 const classify = actual.markerState;
 const target_at = "2026-10-24T01:00:00Z";
 
 describe("종류를 선택한 예보 마커", () => {
+  const now = Date.parse("2026-11-16T08:42:00Z");
+  const currentSky = { provider: "python-kma-api", metric_key: "SKY", value_number: 3, target_at: "2026-11-16T08:00:00Z" };
+  const nowcast = [
+    { provider: "python-kma-api", metric_key: "T1H", value_number: 19.2, target_at: "2026-11-16T05:00:00Z" },
+    { provider: "python-kma-api", metric_key: "PTY", value_number: 0, target_at: "2026-11-16T05:00:00Z" },
+  ];
+  it.each([[1, "clear"], [3, "cloud"], [4, "cloud"]])("실황에 하늘 상태가 없으면 현재 시간 예보 SKY %s를 보완한다", (value_number, kind) => {
+    const summary = { latest: nowcast, alerts: [], forecast: [{ ...currentSky, value_number }] };
+    expect(actual.markerState(summary, now)).toMatchObject({ kind, label: expect.stringContaining("예보") });
+    expect(actual.markerTemperature(summary)).toBe(19.2);
+  });
+  it("실황 강수와 하늘 상태는 예보로 덮지 않는다", () => {
+    const forecast = [{ ...currentSky, value_number: 1 }];
+    expect(actual.markerState({ latest: [{ ...nowcast[1], value_number: 1 }], alerts: [], forecast }, now).kind).toBe("rain");
+    expect(actual.markerState({ latest: [{ ...currentSky, value_number: 4 }], alerts: [], forecast }, now).kind).toBe("cloud");
+  });
+  it.each(["2026-11-16T09:00:00Z", "2026-11-16T07:00:00Z", "invalid"])("현재 시간대 밖의 SKY %s는 실황 보완에 쓰지 않는다", target_at => {
+    expect(actual.markerState({ latest: nowcast, alerts: [], forecast: [{ ...currentSky, target_at }] }, now).kind).toBe("unknown");
+  });
+  it("예보 강수와 기온은 실황 보완에 섞지 않고 하늘 상태 미제공은 유지한다", () => {
+    const forecast = [
+      { ...currentSky, metric_key: "PTY", value_number: 1 },
+      { ...currentSky, metric_key: "TMP", value_number: 8 },
+    ];
+    const summary = { latest: nowcast, alerts: [], forecast };
+    expect(actual.markerState(summary, now).kind).toBe("unknown");
+    expect(actual.markerTemperature(summary)).toBe(19.2);
+    expect(actual.markerState({ latest: nowcast, alerts: [], forecast: [{ ...currentSky, value_number: null, value_text: "흐리고 비" }] }, now).kind).toBe("unknown");
+  });
   it.each([["맑음", "clear"], ["구름많음", "cloud"], ["흐리고 비", "rain"], ["흐리고 눈", "snow"]])("중기 SKY %s를 표시한다", (value_text, kind) => {
     expect(classify({ latest: [], alerts: [], forecast: [{ provider: "python-kma-api", metric_key: "SKY", value_number: null, value_text, target_at }] }).kind).toBe(kind);
   });
