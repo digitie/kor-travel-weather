@@ -325,7 +325,10 @@ function markerValues(summary: WeatherMarker): WeatherValue[] {
   return forecast.filter((row) => Date.parse(row.target_at) === next);
 }
 
-function markerState(summary: WeatherMarker | undefined): MarkerState {
+function markerState(
+  summary: WeatherMarker | undefined,
+  referenceTime = Date.now(),
+): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
   // 특보 종류는 현재 날씨가 아니다. 풍랑·강풍 등은 별도 특보 배지로 유지한다.
   const rows = markerValues(summary);
@@ -368,6 +371,19 @@ function markerState(summary: WeatherMarker | undefined): MarkerState {
                 ? "맑음"
                 : "구름";
       return { kind, glyph, label };
+    }
+  }
+  if (summary.latest.length) {
+    // 실황 PTY=0은 맑음을 뜻하지 않는다. 현재 시간대 SKY만 보완하고
+    // 미래 강수·기온이나 지난 시간의 하늘 상태는 실황에 섞지 않는다.
+    const hourStart = Math.floor(referenceTime / 3_600_000) * 3_600_000;
+    const sky = (summary.forecast ?? []).filter((row) => {
+      const targetTime = Date.parse(row.target_at);
+      return row.metric_key === "SKY" && targetTime >= hourStart && targetTime <= referenceTime;
+    });
+    const forecastState = markerState({ ...summary, latest: [], forecast: sky }, referenceTime);
+    if (forecastState.kind === "clear" || forecastState.kind === "cloud") {
+      return { ...forecastState, label: `${forecastState.label} · 현재 시간 예보` };
     }
   }
   return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };

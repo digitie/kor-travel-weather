@@ -1,3 +1,7 @@
+## 2026-11-16 — 로드 완료 후 마커 물음표 수정
+
+실황에 기온·무강수(PTY=0)만 있고 현재 시간대 SKY가 예보 배열에 있는 실제 응답에서 마커가 `?`로 남는 경로를 재현했다. 실황 상태를 판단할 수 없을 때에만 현재 시간대의 맑음·구름 SKY를 보완하며 접근성 이름에 예보임을 표시한다. 실황 강수·기온, 미래 예보 제외와 자료 미제공 판정은 유지한다. WSL/Docker 각각61개·타입·lint·의존성·전체 Doctor를 통과했다. 다음 한 작업은 정확 후보 CI·소스 PR 정산이다. 운영 이미지·수집·DB 변경0. [근거](reports/2026-11-16-weather-marker-unknown.md).
+
 ## 2026-11-15 — Dagster 독립 검토 후속
 
 CI43674264123이 성공한 후보 `c43ded901a554ad871c4e4615db9689a80526e87`을 James·Popper가 독립 검토했다. P0/P1은 없고 James의 이벤트 밀리초·미해결 예약 ID 두 건과 Popper의 조회/게시 계수 혼동 한 건을 수정했다. 시각·예약·진행 계수는 WSL/Docker 각각74개, 실제 조회/저장 계수는 각각10개를 확인했다. 최종 정확 CI·delta 검토·머지 결과는 [PR241](https://github.com/digitie/kor-travel-weather/pull/241)과 [보고서](reports/2026-11-15-dagster-admin-resilience.md)가 정본이며 운영 rate·이미지·실제 액션 변경0이다.
