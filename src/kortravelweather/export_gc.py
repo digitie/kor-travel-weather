@@ -129,6 +129,9 @@ def live_artifact_digests(
     if wanted is None:
         statement = union(referenced, received, pinned)
     else:
+        # planner가 receipt의 전체 hashed SubPlan을 선택해도 후보 digest 밖을
+        # 읽지 않도록 내부 조회에도 같은 유한 집합을 전달한다.
+        received = received.where(chunks.c.artifact_digest.in_(wanted))
         candidates = values(column("digest", String(64)), name="gc_candidates").data(
             [(digest,) for digest in wanted],
         )
@@ -143,6 +146,9 @@ def live_artifact_digests(
         # 세 참조 종류도 한 문장으로 묶어 3초를 종류마다 다시 쓰지 않는다.
         timeout_ms = max(1, int(min(GC_REFERENCE_SECONDS, timeout_seconds) * 1000))
         session.execute(text(f"SET LOCAL statement_timeout = '{timeout_ms}ms'"))
+        # GC는 작은 후보만 조회한다. parameter별 planner 비용 변동으로 JIT가
+        # guard 안에서 컴파일 시간을 쓰지 않도록 이 transaction에서만 끈다.
+        session.execute(text("SET LOCAL jit = off"))
         session.execute(text(f"SET LOCAL lock_timeout = '{GC_LOCK_TIMEOUT}'"))
         return set(session.scalars(statement))
 

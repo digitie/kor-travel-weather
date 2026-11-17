@@ -196,3 +196,54 @@ def test_scoped_reference_check_unlinks_with_large_unrelated_generation_history(
     )
     assert report["complete"] and report["deleted"] == 1 and not target.exists()
     assert live.exists() and report["live"] == 1
+
+
+def test_scoped_gc_with_large_receipt_history_preserves_only_pending_files(
+    publisher_repository,
+    tmp_path,
+):
+    # receipt heap에 긴 이력이 있어도 digest에서 시작한다. 실패/공개 완료 receipt는
+    # 보호하지 않고 preparing/sealed의 미공개 receipt만 남긴다.
+    repo = publisher_repository
+    heads = ExportHeads(repo)
+    index = next(
+        i
+        for i in heads.lifecycle.chunks.indexes
+        if i.name == "ix_weather_export_chunks_artifact_digest"
+    )
+    index.create(repo.engine, checkfirst=True)
+    with repo.engine.begin() as c:
+        c.execute(
+            text("""
+            INSERT INTO weather_export_attempts
+                (attempt_id,run_id,owner_id,scope_key,execution_mode,planned_sources,
+                 plan_digest,status,created_at,published_at)
+            SELECT md5('receipt-' || i::text),'history',repeat('o',36),'scope','native',
+                   '[]'::json,repeat('0',64),
+                   CASE WHEN i % 3 = 0 THEN 'failed'
+                        WHEN i % 3 = 1 THEN 'preparing' ELSE 'sealed' END,
+                   now()-interval '48 hours',CASE WHEN i % 7 = 0 THEN now() END
+            FROM generate_series(1,50000) AS i
+        """)
+        )
+        c.execute(
+            text("""
+            INSERT INTO weather_export_chunks
+                (attempt_id,chunk_key,artifact_digest,byte_count,point_count,
+                 covered_sources,source_collected_at,recorded_at)
+            SELECT md5('receipt-' || i::text),'chunk',lpad(to_hex(i),64,'0'),
+                   10,1,'[]'::json,now()-interval '48 hours',now()-interval '48 hours'
+            FROM generate_series(1,50000) AS i
+        """)
+        )
+        c.execute(text("ANALYZE weather_export_attempts"))
+        c.execute(text("ANALYZE weather_export_chunks"))
+    expected = {f"{i:064x}" for i in range(1, 257) if i % 3 != 0 and i % 7 != 0}
+    for i in range(1, 257):
+        _old(tmp_path, f"{i:064x}")
+    report = collect_export_artifacts(repo, tmp_path, mode="delete", deadline=float("inf"))
+    assert report["complete"] and report["live"] == len(expected)
+    assert report["deleted"] == 256 - len(expected)
+    assert {p.stem for p in tmp_path.glob("*.jsonl")} == expected
+    with repo.engine.connect() as c:
+        assert c.exec_driver_sql("SHOW jit").scalar() == "on"

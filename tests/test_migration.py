@@ -91,6 +91,12 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
         assert "ix_weather_export_attempts_pending" in {
             item["name"] for item in inspector.get_indexes("weather_export_attempts")
         }
+        receipt_index = next(
+            item for item in inspector.get_indexes("weather_export_chunks")
+            if item["name"] == "ix_weather_export_chunks_artifact_digest"
+        )
+        assert receipt_index["column_names"] == ["artifact_digest"]
+        assert not receipt_index["unique"]
         assert inspector.get_foreign_keys("weather_export_chunks")[0]["referred_table"] == (
             "weather_export_attempts"
         )
@@ -154,7 +160,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0040_region_locations"
+            assert version == "0041_export_receipt_gc_index"
             assert connection.execute(text(
                 "SELECT count(*) FROM weather_region_locations"
             )).scalar_one() == 0

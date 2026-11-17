@@ -108,6 +108,11 @@ def export_receipt_tables(metadata: MetaData) -> tuple[Table, Table]:
         CheckConstraint("byte_count BETWEEN 0 AND 8388608", name="ck_weather_export_chunk_bytes"),
         CheckConstraint("point_count BETWEEN 0 AND 5000", name="ck_weather_export_chunk_points"),
     )
+    # GC는 내용 digest에서 시작해 공개 전 attempt의 상태를 확인한다. 큰 receipt
+    # payload heap 전체를 읽지 않도록 digest lookup을 인덱스로 처리한다.
+    Index(
+        "ix_weather_export_chunks_artifact_digest", chunks.c.artifact_digest,
+    )
     return attempts, chunks
 
 
