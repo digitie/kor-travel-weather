@@ -1,6 +1,9 @@
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
 - [ ] **COMMON-PLAN-20261117 / P2** — kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`, 초안) 가운데 Weather가 실행하는 task를 추적한다. Common `T-465`(관리자 프론트 `lib/navigation.ts`의 판정 본체를 공통 `sanitizeLocalPath` 호출로 바꾸는 중복 제거, 선행 없음. 구현 간 검증 차이는 #244로 이미 맞췄다), `T-481a`(로컬 수집 결과 tag 함수를 공통 구현으로, Common `T-313` 뒤), `T-466`(`@kor-travel/ui` 0.3.0 재vendor·guard 호출 SHA 갱신과 관리자 부품 채택, Common `T-221` 뒤). 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다. 시점은 Weather 유지 팀이 정한다.
+## 2026-11-17 — 읽기 성능 계획(세 서비스 공통)
+
+- [ ] **READ-PLAN-20261117** — Map 저장소의 [읽기 성능 계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md) §8(단계 순 작업 목록)이 weather 쪽 요청 `T-READ-WEA-01`~`04`(공개 읽기 시간 상한·단계별 지표, export의 싼 304와 페이지 고정 비용, cursor 페이지의 snapshot 만료 연장, 특보 최신성 조회의 색인 또는 상태 행)의 정본이다. 내부 개선의 정본은 그대로 [실사용 성능 개선안](design/weather-performance-use-cases-20261109.md)과 `W-EXPORT-SLOW-20261108`이며 겹치는 부분은 그쪽이 우선한다. 운영 PinVi는 날씨를 Map의 Valkey 표면으로 읽고 이 서비스를 직접 부르는 곳은 특보(`/v1/weather/markers`)뿐이므로, 이 저장소에서의 우선순위는 Map 적재의 완주와 odroid 부하다. 착수할 때 항목마다 이 원장에 개별 task로 옮긴다. Map PR이 머지되기 전에는 Map 브랜치 `docs/read-performance-plan-20261117`에서 읽는다.
 
 ## 2026-11-15 — Dagster 운영 수용 후속
 
