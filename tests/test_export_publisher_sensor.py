@@ -30,6 +30,10 @@ state = fixtures.state
 def _retire_due_each_test(monkeypatch):
     # 일괄 퇴역은 프로세스당 주기다. 시험마다 새 프로세스처럼 첫 tick에 돌게 한다.
     monkeypatch.setattr(module, "_RETIRE_NEXT", [0.0])
+    scan = module.ArtifactGCScan()
+    monkeypatch.setattr(module, "_GC_SCAN", scan)
+    yield
+    scan.close()
 
 
 @job
@@ -96,8 +100,8 @@ def test_tick_budgets_fit_inside_the_sensor_grpc_deadline():
     assert WeatherSettings(
         service_export_publisher_budget_seconds=45,
     ).service_export_publisher_budget_seconds == upper
-    # 첫 배포의 GC는 지우지 않고 reclaimable만 센다.
-    assert WeatherSettings().service_export_artifact_gc == "dry_run"
+    # 활성 publisher의 기본 GC는 참조 검증 뒤 실제 정리한다.
+    assert WeatherSettings().service_export_artifact_gc == "delete"
 
 
 @pytest.mark.parametrize("field,raw,expected", [
@@ -538,3 +542,53 @@ def test_gc_runs_on_its_interval_and_reports_in_the_skip_reason(
         second = evaluate(sensor, instance, cursor=first.cursor)
     assert "gc=dry_run:0files/0B" in first.skip_message
     assert "gc=" not in second.skip_message
+
+
+
+def test_default_delete_gc_removes_old_unreferenced_files_through_the_public_sensor(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    import os
+    from datetime import UTC, datetime, timedelta
+
+    target = tmp_path / ("a" * 64 + ".jsonl")
+    target.write_bytes(b"obsolete\n")
+    past = (datetime.now(UTC) - timedelta(hours=48)).timestamp()
+    os.utime(target, (past, past))
+    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
+    sensor, owned = build(
+        publisher_repository, tmp_path, gc=WeatherSettings().service_export_artifact_gc,
+    )
+    with DagsterInstance.ephemeral() as instance:
+        result = evaluate(sensor, instance)
+    assert not target.exists()
+    assert "gc=delete:1files/9B" in result.skip_message
+    assert "gc_complete=true" in result.skip_message
+    assert "gc_pending=0" in result.skip_message
+    assert owned[0].engine.pool.checkedout() == 0
+
+
+def test_gc_reference_failure_retries_next_tick_without_resetting_scan_state(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    from sqlalchemy.exc import OperationalError
+
+    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
+    calls = []
+
+    def gc(*args, **kwargs):
+        calls.append(kwargs["scan"])
+        if len(calls) == 1:
+            raise OperationalError("synthetic", {}, RuntimeError("reference unavailable"))
+        return {"mode": "delete", "eligible": 0, "eligible_bytes": 0,
+                "deleted": 0, "deleted_bytes": 0, "complete": True, "pending": 0}
+
+    monkeypatch.setattr(module, "collect_export_artifacts", gc)
+    sensor, _ = build(publisher_repository, tmp_path, gc="delete")
+    with DagsterInstance.ephemeral() as instance:
+        first = evaluate(sensor, instance)
+        assert module._GC_NEXT == [0.0]
+        second = evaluate(sensor, instance, cursor=first.cursor)
+    assert "gc:OperationalError:1" in first.skip_message
+    assert "gc=delete:0files/0B" in second.skip_message
+    assert calls == [module._GC_SCAN, module._GC_SCAN]

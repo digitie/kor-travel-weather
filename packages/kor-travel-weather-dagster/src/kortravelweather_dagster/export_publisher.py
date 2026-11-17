@@ -37,7 +37,7 @@ from kortravelweather.export_collector import (
     refresh_publisher_daily,
     retire_settled_attempts,
 )
-from kortravelweather.export_gc import collect_export_artifacts
+from kortravelweather.export_gc import ArtifactGCScan, collect_export_artifacts
 from kortravelweather.metrics import observe_export_artifact_gc
 from kortravelweather.repository import WeatherRepository
 from kortravelweather.settings import WeatherSettings
@@ -61,6 +61,7 @@ GC_WORST_SECONDS = 10
 GC_INTERVAL_SECONDS = 600
 #: 이 프로세스에서 다음 GC를 시작할 monotonic 시각. 재시작하면 첫 tick에 한 번 돈다.
 _GC_NEXT = [0.0]
+_GC_SCAN = ArtifactGCScan()
 #: 일괄 퇴역의 주기(초). 두 문장은 pending 전체에 소유권 판정(JSON)을 건다. 수천 행이면
 #: CPU가 포화된 호스트에서 5초 head 상한을 넘겨(2026-11-02 odroid 6~11초) 매 tick 예산만
 #: 쓰고 아무것도 퇴역하지 못했다. 퇴역은 정리일 뿐이고 sweep의 후보별 판정도 같은 기록으로
@@ -189,6 +190,11 @@ class _Tick:
                 else self.gc["eligible_bytes"]
             )
             detail.append(f"gc={self.gc['mode']}:{done}files/{size}B")
+            detail.append(
+                f"gc_complete={str(self.gc.get('complete', False)).lower()} "
+                f"gc_visited={self.gc.get('visited', 0)} gc_pending={self.gc.get('pending', 0)} "
+                f"gc_errors={self.gc.get('errors', 0)}"
+            )
         elif self.gc_deferred:
             detail.append("gc=deferred")
         if self.stages:
@@ -271,7 +277,6 @@ def _run_tick(tick: _Tick, repository, root, settings) -> None:
         tick.stage_reasons["daily:tick_deadline"] += 1
     if gc_due:
         if hard - time.monotonic() >= GC_WORST_SECONDS:
-            _GC_NEXT[0] = time.monotonic() + GC_INTERVAL_SECONDS
             with tick.stage("gc"):
                 try:
                     tick.gc = collect_export_artifacts(
@@ -280,8 +285,9 @@ def _run_tick(tick: _Tick, repository, root, settings) -> None:
                             hours=settings.service_export_artifact_retention_hours,
                         ),
                         deadline=time.monotonic() + GC_SCAN_SECONDS,
-                        delete_budget_seconds=GC_DELETE_SECONDS,
+                        delete_budget_seconds=GC_DELETE_SECONDS, scan=_GC_SCAN,
                     )
+                    _GC_NEXT[0] = time.monotonic() + GC_INTERVAL_SECONDS
                     observe_export_artifact_gc(tick.gc)
                 except Exception as exc:
                     tick.defer("gc", exc)

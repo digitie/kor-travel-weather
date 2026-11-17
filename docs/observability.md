@@ -80,10 +80,19 @@ rule·알람을 새 이름으로 함께 전환한다.
   참조 없는 export artifact를 정리한 결과(code-server만 의미 있다). 현재 head·승인 inventory·
   공개 전 receipt·승격 pin·유효하거나 최근인 frozen snapshot·일별 집계가 아직 읽지 않은 세대·
   보존 창(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS`, 기본 24) 안의 세대는
-  지우지 않는다. 기본 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=dry_run`은 지우지 않고
-  reclaimable만 갱신한다. `delete`로 켜면 지운다. reclaimable은 마지막 GC가 찾은 대상 중
-  아직 디스크에 남은 byte다(delete면 지우지 못한 나머지). 같은 tick의 결과는 sensor skip
-  메시지(`gc=…`)에도 남는다
+  지우지 않는다. 활성 publisher의 기본 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`는
+  기존 배타 guard 안에서 후보 digest의 참조와 mtime을 확인한 뒤 실제 파일을 지운다.
+  명시 `dry_run`은 세기만 하고 `off`는 GC를 실행하지 않는다. 알 수 없는 설정은 계속
+  `dry_run`으로 보정한다. 기존 운영에 명시된 `dry_run`은 코드 배포만으로 바뀌지 않는다.
+  참조 조회는 후보 묶음별 EXISTS로 끝내며 전체 live set을 먼저 읽지 않는다. code-server는
+  열린 디렉터리 iterator와 최대 20,000개 후보만 tick 사이에 보관한다. 새 파일·live 파일·
+  알 수 없는 이름도 목록 예산에 포함하며, DB 실패/취소 후에는 같은 미처리 후보를 재확인한다.
+  재시작하면 처음부터 돌아도 안전하다. 전환은 기존 정상 release 절차로 배포와 함께 조정한다.
+  reclaimable은 **마지막 제한된 패스**가 찾은 대상 중 아직 디스크에 남은 byte이며,
+  볼륨 전체 회수량이 아니다. sensor skip 메시지의 `gc=…`, `gc_complete`, `gc_visited`,
+  `gc_pending`, `gc_errors`와 실제 deleted byte counter를 함께 본다. snapshot handle은
+  약 15~16분 후 만료되고 만료 후 6시간을 넘으면 DB 행과 ref만 정리한다. 그 삭제가 파일
+  unlink를 대신하지 않으며, 실제 파일 정리는 위 보존·참조 검사에 따른다.
 - `ktw_metrics_errors_total{operation}`
 - `ktw_metrics_server_up`
 - `ktw_metrics_server_bind_failures_total`
