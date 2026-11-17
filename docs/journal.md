@@ -1,6 +1,9 @@
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
 kor-travel-common이 다섯 저장소를 다시 조사해 계획 초안을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, Weather 조사 기준 `e68f16a7`). Weather 몫은 Common `T-465`·`T-481a`·`T-466`이며 `docs/tasks.md`에 포인터 한 항목만 뒀다. `T-465`는 관리자 프론트의 `sanitizeLocalPath` 로컬 사본을 공통 export로 바꾸는 일이다(서버 쪽 사본에 다른 두 사본에 있는 검증 하나가 빠져 있어 맞춘다). 문서 전용이고 코드·운영 변경은 0이다. Common 계획은 독립 리뷰 전 초안이다.
+## 2026-11-17 — 관리자 로컬 경로 정규화 검사 정렬
+
+관리자 프론트 서버 쪽 `lib/navigation.ts`의 `sanitizeLocalPath`에 공통 `@kor-travel/ui/navigation`과 Transport 사본이 이미 갖고 있는 검증 하나를 더해 세 사본의 판정을 맞췄다. 수정 전 실패하는 단위 시험 한 건을 추가했다. 호출부·세션·화면은 바꾸지 않았다. 운영 이미지·수집·DB 변경0이며 반영에는 Weather 관리자 이미지 배포가 필요하다. 다음 한 작업은 바뀌지 않는다.
 
 ## 2026-11-16 — 로드 완료 후 마커 물음표 수정
 
