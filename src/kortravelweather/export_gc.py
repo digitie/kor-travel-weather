@@ -251,7 +251,10 @@ def collect_export_artifacts(
             + GC_GUARD_TIMEOUT_SECONDS
         )
         attempted = 0
-        while scan.pending and time.monotonic() < processing_deadline:
+        # 다음 참조 조회·guard가 정상 상한을 전부 쓸 수 있을 때만 시작한다.
+        # 호출 끝의 짧은 잔여 시간으로 정상 쿼리를 취소하지 않고 pending을 다음에 넘긴다.
+        reference_reserve = GC_REFERENCE_SECONDS + GC_GUARD_TIMEOUT_SECONDS
+        while scan.pending and time.monotonic() + reference_reserve <= processing_deadline:
             batch = list(islice(scan.pending, UNLINK_BATCH))
             digests = [match.group(1) for name, _ in batch
                        if (match := _ARTIFACT.fullmatch(name)) is not None]

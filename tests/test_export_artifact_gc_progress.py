@@ -247,3 +247,38 @@ def test_scoped_gc_with_large_receipt_history_preserves_only_pending_files(
     assert {p.stem for p in tmp_path.glob("*.jsonl")} == expected
     with repo.engine.connect() as c:
         assert c.exec_driver_sql("SHOW jit").scalar() == "on"
+
+
+def test_gc_defers_tail_batch_without_shortening_reference_budget(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    targets = [_old(tmp_path, c * 64) for c in "ab"]
+    clock, calls = [100.0], []
+    original = export_gc.live_artifact_digests
+
+    def bounded_reference(*args, **kwargs):
+        # 정상 참조 조회가 허용된 3초를 사용한 뒤에도 다음 묶음에 2.5초만
+        # 주며 시작하면 안 된다. 다음 호출에서는 같은 pending을 다시 판정한다.
+        assert kwargs["timeout_seconds"] >= export_gc.GC_REFERENCE_SECONDS
+        calls.append(kwargs["digests"])
+        result = original(*args, **kwargs)
+        clock[0] += export_gc.GC_REFERENCE_SECONDS
+        return result
+
+    monkeypatch.setattr(export_gc.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(export_gc, "live_artifact_digests", bounded_reference)
+    monkeypatch.setattr(export_gc, "UNLINK_BATCH", 1)
+    scan = ArtifactGCScan()
+    try:
+        first = collect_export_artifacts(
+            publisher_repository, tmp_path, mode="delete", deadline=float("inf"), scan=scan,
+        )
+        assert first["deleted"] == 1 and first["pending"] == 1 and not first["complete"]
+        assert len(calls) == 1 and sum(p.exists() for p in targets) == 1
+        second = collect_export_artifacts(
+            publisher_repository, tmp_path, mode="delete", deadline=float("inf"), scan=scan,
+        )
+        assert second["deleted"] == 1 and second["complete"] and not second["pending"]
+        assert len(calls) == 2 and all(not p.exists() for p in targets)
+    finally:
+        scan.close()
