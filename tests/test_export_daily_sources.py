@@ -4,6 +4,7 @@ from test_export_daily import KEY, NOW, point
 from test_export_external import external_repository as external_repository
 
 from kortravelweather.export_daily import merge_observations, summarize
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 
 
 def test_sdk_celsius_and_multiple_providers_do_not_duplicate_hour_or_rain():
@@ -20,11 +21,12 @@ def test_sdk_celsius_and_multiple_providers_do_not_duplicate_hour_or_rain():
 
 
 def _drain(repo, root):
-    from kortravelweather.export_artifacts import ExportArtifactStore
     from kortravelweather.export_daily_store import refresh_daily_summaries
+    from kortravelweather.export_database_artifacts import export_artifact_store
 
+    store = export_artifact_store(repo, root)
     for _ in range(32):
-        if not refresh_daily_summaries(repo, ExportArtifactStore(root), limit=8)["has_more"]:
+        if not refresh_daily_summaries(repo, store, limit=8)["has_more"]:
             return
     raise AssertionError("작은 시험 source 집합이 drain되지 않았습니다.")
 
@@ -154,7 +156,10 @@ def test_new_approved_location_waits_for_reducer_without_losing_previous_full_ro
         "entity_id": "grid:60:127",
         "location_ids": tuple(sorted([original, "daily-b", "daily-c"])),
     })
-    heads, identity, capture, *_ = _candidate(repo, tmp_path, descriptor, cohort=True)
+    heads, identity, capture, *_ = _candidate(
+        repo, tmp_path, descriptor, cohort=True,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     _drain(repo, tmp_path)
     client = TestClient(create_app(WeatherSettings(
@@ -176,7 +181,10 @@ def test_new_approved_location_waits_for_reducer_without_losing_previous_full_ro
     descriptor = descriptor.model_copy(update={
         "location_ids": tuple(sorted([*descriptor.location_ids, "daily-d"])),
     })
-    heads, identity, capture, *_ = _candidate(repo, tmp_path, descriptor, cohort=True)
+    heads, identity, capture, *_ = _candidate(
+        repo, tmp_path, descriptor, cohort=True,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     from test_frozen_service_exports import _expire_export_state
 
@@ -331,7 +339,10 @@ def test_daily_fallback_moves_its_date_window_to_the_current_kst_date(
     from kortravelweather.settings import WeatherSettings
 
     repo = external_repository
-    heads, identity, capture, *_ = _candidate(repo, tmp_path, _descriptor(repo), cohort=True)
+    heads, identity, capture, *_ = _candidate(
+        repo, tmp_path, _descriptor(repo), cohort=True,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     _drain(repo, tmp_path)
     client = TestClient(create_app(WeatherSettings(

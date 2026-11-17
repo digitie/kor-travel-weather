@@ -9,6 +9,7 @@ import traceback
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from functools import partial
+from time import monotonic
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from anyio import to_thread
@@ -20,10 +21,10 @@ from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from kortravelweather.export_artifacts import (
     ExportArtifactError,
-    ExportArtifactStore,
     ExportGuardTimeout,
 )
 from kortravelweather.export_daily_reader import DailySummaryExports
+from kortravelweather.export_database_artifacts import export_artifact_store
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
 from kortravelweather.export_snapshots import (
@@ -34,6 +35,12 @@ from kortravelweather.export_snapshots import (
 from kortravelweather.export_source_registry import select_export_sources
 from kortravelweather.export_status_reader import ExportStatusPending, read_status
 from kortravelweather.models import kst_now
+from kortravelweather.read_performance import (
+    MeasuredArtifacts,
+    ReadTrace,
+    read_stage,
+    read_trace,
+)
 
 from ..auth import require_admin
 from ..response import Problem, request_id
@@ -309,11 +316,8 @@ def _render_page(
     막지 않게 한다. 304이면 payload는 None이다.
     """
     page, etag = read()
-    # wire 응답 생성 시각만 새로 쓴다. 원천 수집·snapshot·as_of는 재사용한 실제 시각 그대로다.
-    body = model.model_validate(page)
-    body = body.model_copy(update={
-        "meta": body.meta.model_copy(update={"generated_at": datetime.now(UTC)}),
-    })
+    with read_stage("render"):
+        body = model.model_validate(page)
     headers = {
         "etag": etag,
         "vary": "Accept-Encoding",
@@ -322,11 +326,15 @@ def _render_page(
     }
     if _matches_etag(if_none_match, etag):
         return None, headers
-    payload = body.model_dump_json().encode()
-    if len(payload) >= gzip_minimum and _accepts_gzip(accept_encoding):
-        payload = gzip.compress(payload, compresslevel=4, mtime=0)
-        headers["content-encoding"] = "gzip"
-    return payload, headers
+    with read_stage("render"):
+        body = body.model_copy(update={
+            "meta": body.meta.model_copy(update={"generated_at": datetime.now(UTC)}),
+        })
+        payload = body.model_dump_json().encode()
+        if len(payload) >= gzip_minimum and _accepts_gzip(accept_encoding):
+            payload = gzip.compress(payload, compresslevel=4, mtime=0)
+            headers["content-encoding"] = "gzip"
+        return payload, headers
 
 
 def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
@@ -391,15 +399,15 @@ async def _frozen_response(
         # 첫 페이지는 예전처럼 매번 새로 읽어 승인/실패를 바로 반영하고
         # 긴 freeze에 60초 상한(503)을 새로 걸지 않는다. 중기는 쓰지 않는다.
         forecast_reuse = resource == "forecasts" and style != "mid" and cursor is not None
-        shares_selection = resource in {"current", "daily-summaries"} or forecast_reuse
+        shares_selection = resource in {"current", "daily-summaries", "forecasts"}
 
         def make_reader():
             return reader_class(
                 repository,
-                ExportArtifactStore(
-                    settings.service_export_artifact_root,
-                    reader_guard_seconds=settings.service_export_reader_guard_seconds,
-                ),
+                MeasuredArtifacts(export_artifact_store(
+                    repository, settings.service_export_artifact_root,
+                )),
+                snapshot_cache=request.app.state.export_snapshot_cache,
                 signing_key=settings.admin_token.get_secret_value(),
                 immutable_reads=resource == "current",
                 # 삭제 epoch token: head·plan 삭제 뒤 공용 선택을 다시 읽는다.
@@ -426,9 +434,10 @@ async def _frozen_response(
         # 앱 공용 캐시에 남아, 이어지는 cursor 페이지는 30초 이상 남았으면 다시 읽지 않는다.
         # (예전에는 요청마다 빈 캐시를 만들어 공용 캐시가 한 번도 쓰이지 않았다.)
         reader = make_reader()
+        reader.revalidate_first_page = resource == "forecasts" and cursor is None
         reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
         read = page_read(reader)
-        if resource in {"current", "daily-summaries"}:
+        if resource in {"current", "daily-summaries", "forecasts"}:
             key = (
                 id(request.app.state.repository.engine), resource, limit, cursor,
                 provider, style, since, days, location_id, tuple(settings.enabled_providers),
@@ -438,25 +447,37 @@ async def _frozen_response(
             read = partial(
                 request.app.state.export_page_cache.read, key, reader,
                 partial(_validated_read, read, _PAGE_MODELS[resource], reader),
+                force=(resource == "forecasts" and cursor is None
+                       and not request.headers.get("if-none-match")),
             )
         elif forecast_reuse:
             # 승인 선택의 60초 수명은 limiter 대기 뒤 실제 읽기부터 센다(현재·일별과 같다).
             def read(inner=read):
                 reader.begin_page_reuse()
                 return inner()
-        payload, headers = await to_thread.run_sync(
-            partial(
-                _render_page,
-                read,
-                _PAGE_MODELS[resource],
-                request.headers.get("if-none-match", ""),
-                request.headers.get("accept-encoding", ""),
-                gzip_minimum=512,
-            ),
-            limiter=request.app.state.service_export_limiter,
-        )
+        trace = ReadTrace(resource, "cursor" if cursor else "first")
+        queued = monotonic()
+
+        def render():
+            trace.timings.append(("worker_queue", monotonic() - queued))
+            with read_trace(trace):
+                return _render_page(
+                    read, _PAGE_MODELS[resource],
+                    request.headers.get("if-none-match", ""),
+                    request.headers.get("accept-encoding", ""), gzip_minimum=512,
+                )
+
+        try:
+            payload, headers = await to_thread.run_sync(
+                render, limiter=request.app.state.service_export_limiter,
+            )
+        except BaseException:
+            trace.finish(outcome="error")
+            raise
+        else:
+            trace.finish(not_modified=payload is None)
         reader.require_current_selection()
-        if resource in {"current", "daily-summaries"}:
+        if resource in {"current", "daily-summaries", "forecasts"}:
             headers["x-export-read"] = reader.page_reuse_status
     except ExportCursorInvalid as exc:
         _log_unavailable(request, resource, _cause(exc))

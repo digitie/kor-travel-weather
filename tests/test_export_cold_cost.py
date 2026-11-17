@@ -67,10 +67,13 @@ def test_daily_first_page_coverage_uses_one_rr_and_does_not_escape_request(
     from test_export_heads import _candidate, _descriptor
 
     from kortravelweather.export_daily_reader import DailySummaryExports
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.settings import WeatherSettings
 
     repo = external_repository
-    heads, identity, capture, *_ = _candidate(repo, tmp_path, _descriptor(repo), cohort=True)
+    heads, identity, capture, *_ = _candidate(
+        repo, tmp_path, _descriptor(repo), cohort=True, artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     _drain(repo, tmp_path)
     seen, readers = [], []

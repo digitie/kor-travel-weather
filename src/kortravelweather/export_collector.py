@@ -20,7 +20,8 @@ from kortravelcommon.deadline import call_with_deadline
 from sqlalchemy import and_, literal_column, select, text, tuple_, update
 from sqlalchemy.exc import DBAPIError, OperationalError
 
-from .export_artifacts import ExportArtifactError, ExportArtifactStore
+from .export_artifacts import ExportArtifactError
+from .export_database_artifacts import export_artifact_store
 from .export_heads import ExportHeads, ScopeDescriptor
 from .export_receipts import ExportAttempt, ExportCapture
 from .models import WeatherValue
@@ -91,7 +92,7 @@ class KmaNowcastExportCollector:
         self.repository = repository
         self.run_id = run_id
         self.heads = ExportHeads(repository)
-        self.artifacts = ExportArtifactStore(artifact_root)
+        self.artifacts = export_artifact_store(repository, artifact_root)
         # 이 collector(run)가 잠금 경합 재시도에 쓴 시간. KMA는 격자 준비와 ingest가
         # 서로 다른 thread에서 돌므로 갱신을 묶는다.
         self._lock_spent = 0.0
@@ -862,7 +863,8 @@ def publish_pending_exports(
     if not 1 <= limit <= MAX_CANDIDATE_PAGE or not 0 < budget_seconds <= 60:
         raise ValueError("publisher 실행 예산이 올바르지 않습니다.")
     deadline = time.monotonic() + budget_seconds
-    heads, artifacts = _publisher_heads(repository), ExportArtifactStore(artifact_root)
+    heads = _publisher_heads(repository)
+    artifacts = export_artifact_store(repository, artifact_root)
     attempts = heads.lifecycle.attempts
     runs = heads.metadata.tables["weather_sync_runs"]
     own = tally is None
@@ -950,7 +952,8 @@ def publish_fresh_exports(
     if not 1 <= run_window <= MAX_FRESH_RUN_WINDOW:
         raise ValueError("fresh run 묶음 크기가 올바르지 않습니다.")
     deadline = time.monotonic() + budget_seconds
-    heads, artifacts = _publisher_heads(repository), ExportArtifactStore(artifact_root)
+    heads = _publisher_heads(repository)
+    artifacts = export_artifact_store(repository, artifact_root)
     attempts = heads.lifecycle.attempts
     runs = heads.metadata.tables["weather_sync_runs"]
     own = tally is None
@@ -1027,7 +1030,7 @@ def refresh_publisher_daily(
 
     total, more = 0, True
     try:
-        artifacts = ExportArtifactStore(artifact_root)
+        artifacts = export_artifact_store(repository, artifact_root)
         for _ in range(MAX_DAILY_GENERATIONS // DAILY_GENERATION_BATCH):
             if time.monotonic() >= deadline:
                 break

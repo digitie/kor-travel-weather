@@ -160,7 +160,9 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             version = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert version == "0041_export_receipt_gc_index"
+            from alembic.script import ScriptDirectory
+
+            assert version == ScriptDirectory.from_config(config).get_current_head()
             assert connection.execute(text(
                 "SELECT count(*) FROM weather_region_locations"
             )).scalar_one() == 0

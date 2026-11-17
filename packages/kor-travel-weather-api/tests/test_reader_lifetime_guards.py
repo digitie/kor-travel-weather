@@ -89,6 +89,7 @@ class AuditedFiles(ExportArtifactStore):
         yield from super().read(*args, **kwargs)
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 @pytest.mark.parametrize("kind", ["current", "forecast", "mid", "reference", "daily"])
 def test_actual_public_page_holds_the_guard_only_for_file_reads_and_releases_pg_for_files(
     external_repository, tmp_path, kind,
@@ -145,6 +146,7 @@ def test_actual_public_page_holds_the_guard_only_for_file_reads_and_releases_pg_
         assert files.depth == 0 and probe()
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_actual_daily_reducer_reads_files_under_guard_and_cas_without_it(
     external_repository, tmp_path,
 ):

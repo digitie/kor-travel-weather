@@ -1030,8 +1030,13 @@ class ExportHeads:
                 return "CONFLICT"
             # 검증은 guard 밖이었다. 새 generation이 가리킬 파일이 그대로인지 CAS 판정 뒤
             # (경쟁 결과를 먼저 돌려준다) 배타 guard 안에서 크기만 다시 본다.
-            for ref in parent_refs if reuse else receipts:
-                artifacts.present(ref["artifact_digest"], byte_count=ref["byte_count"])
+            refs = parent_refs if reuse else receipts
+            present_many = getattr(artifacts, "present_many", None)
+            if callable(present_many):
+                present_many(refs)
+            else:
+                for ref in refs:
+                    artifacts.present(ref["artifact_digest"], byte_count=ref["byte_count"])
             generation = str(uuid4())
             clock = self.metadata.tables["weather_export_publication_clock"]
             # fact/원천 known_at과 별도인 공개 watermark다. 파일 IO 후의 작은

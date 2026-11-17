@@ -15,8 +15,6 @@ from .export_artifacts import (
     MAX_CHUNK_BYTES,
     MAX_CHUNK_POINTS,
     ExportArtifactError,
-    ExportArtifactStore,
-    ExportGuardTimeout,
     PreparedExportChunk,
 )
 from .export_database_artifacts import DatabaseExportArtifactStore
@@ -72,7 +70,6 @@ def migrate_legacy_export_artifacts(
     if time.monotonic() >= deadline:
         return report
     target = DatabaseExportArtifactStore(repository)
-    legacy = ExportArtifactStore(root)
     def process(batch):
         if not batch:
             return True
@@ -99,23 +96,22 @@ def migrate_legacy_export_artifacts(
             if time.monotonic() >= deadline:
                 return False
             try:
-                with legacy.guard(shared=True):
-                    chunk = _legacy_chunk(root, digest, now)
-                    if digest in existing:
-                        target.verify(digest, byte_count=len(chunk.payload),
-                                      point_count=chunk.point_count)
-                        report["already_present"] += 1
-                    elif dry_run:
-                        report["would_import"] += 1
-                    else:
-                        target.publish(chunk)
-                        target.verify(digest, byte_count=len(chunk.payload),
-                                      point_count=chunk.point_count)
-                        report["imported"] += 1
-                        report["imported_bytes"] += len(chunk.payload)
-            except ExportGuardTimeout:
-                report["outcome"] = "guard_busy"
-                return False
+                # 이관은 파일/참조를 삭제하지 않는다. 불변 내용 주소를 읽고 hash를 검증하므로
+                # reader slot을 점유하지 않고 read-only volume에서도 동작한다.
+                # 동시 replace/unlink가 있어도 검증한 열린 FD의 bytes만 DB에 추가한다.
+                chunk = _legacy_chunk(root, digest, now)
+                if digest in existing:
+                    target.verify(digest, byte_count=len(chunk.payload),
+                                  point_count=chunk.point_count)
+                    report["already_present"] += 1
+                elif dry_run:
+                    report["would_import"] += 1
+                else:
+                    target.publish(chunk)
+                    target.verify(digest, byte_count=len(chunk.payload),
+                                  point_count=chunk.point_count)
+                    report["imported"] += 1
+                    report["imported_bytes"] += len(chunk.payload)
             except (FileNotFoundError, ExportArtifactError):
                 report["missing"] += 1
                 report["outcome"] = "missing_or_invalid_live_artifact"

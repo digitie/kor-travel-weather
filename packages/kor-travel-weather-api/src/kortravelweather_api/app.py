@@ -14,11 +14,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from kortravelweather.export_page_cache import ExportPageCache
+from kortravelweather.export_read_cache import SnapshotMetadataCache
 from kortravelweather.export_selection_cache import ExportSelectionCache
 from kortravelweather.metrics import (
     change_http_in_flight,
@@ -29,10 +32,12 @@ from kortravelweather.metrics import (
     observe_metric_error,
     oldest_partition_age_exposition,
 )
+from kortravelweather.read_performance import ReadTrace, read_trace
 from kortravelweather.repository import WeatherRepository, repository_from_settings
 from kortravelweather.settings import WeatherSettings, get_settings
 
 from . import __version__
+from .read_limits import PublicReadTimeout, install_public_read_limits, public_read_deadline
 from .response import Problem, request_id
 from .routers.alert_events import router as alert_event_router
 from .routers.service_exports import router as service_export_router
@@ -69,8 +74,9 @@ class RequestContextMiddleware:
     그러면 지도 이동으로 취소된 marker 배치도 limiter 뒤에서 DB 조회를 시작한다.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, public_read_timeout_seconds: float = 15) -> None:
         self.app = app
+        self.public_read_timeout_seconds = public_read_timeout_seconds
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -92,9 +98,17 @@ class RequestContextMiddleware:
                 headers["x-duration-ms"] = str(max(0, int((perf_counter() - started) * 1000)))
             await send(message)
 
+        public = scope.get("path", "").startswith("/v1/weather/")
+        trace = ReadTrace("public", "public") if public else None
         try:
-            await self.app(scope, receive, send_with_context)
+            if public:
+                with public_read_deadline(self.public_read_timeout_seconds), read_trace(trace):
+                    await self.app(scope, receive, send_with_context)
+            else:
+                await self.app(scope, receive, send_with_context)
         finally:
+            if trace is not None:
+                trace.finish(outcome="timeout" if status_code == 503 else "ok")
             # Do not count scrapes themselves: Prometheus polling must not
             # make request volume grow when it observes the request metric.
             if scope.get("path") != "/metrics":
@@ -145,10 +159,13 @@ def create_app(
     )
     api.state.settings = runtime_settings
     api.state.repository = runtime_repository
+    if isinstance(runtime_repository, WeatherRepository):
+        install_public_read_limits(runtime_repository.engine)
     # 지도 이동의 이전 배치가 DB·일반 worker 슬롯을 독점하지 않도록 제한한다.
     api.state.marker_limiter = CapacityLimiter(2)
     api.state.service_export_limiter = CapacityLimiter(2)
     api.state.export_selection_cache = ExportSelectionCache()
+    api.state.export_snapshot_cache = SnapshotMetadataCache()
     api.state.export_page_cache = ExportPageCache(
         clock=lambda: api.state.export_selection_cache.clock(),
     )
@@ -169,7 +186,26 @@ def create_app(
         )
 
     # CORS 다음에 등록해 기존과 같이 가장 바깥(ServerErrorMiddleware 안쪽)에 둔다.
-    api.add_middleware(RequestContextMiddleware)
+    api.add_middleware(
+        RequestContextMiddleware,
+        public_read_timeout_seconds=runtime_settings.public_read_timeout_seconds,
+    )
+
+    @api.exception_handler(PublicReadTimeout)
+    @api.exception_handler(SQLAlchemyError)
+    async def public_read_error(request: Request, exc: Exception) -> JSONResponse:
+        if not request.url.path.startswith("/v1/weather/"):
+            raise exc
+        state = getattr(getattr(exc, "orig", None), "sqlstate", None)
+        if isinstance(exc, PoolTimeoutError):
+            code = "POOL_BUSY"
+        elif isinstance(exc, PublicReadTimeout) or state == "57014":
+            code = "READ_TIMEOUT"
+        else:
+            raise exc
+        response = _problem(request, 503, "조회 일시 지연", "잠시 후 다시 요청하세요.", code)
+        response.headers["retry-after"] = "1"
+        return response
 
     @api.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> JSONResponse:

@@ -48,7 +48,8 @@ class ExportPageCache:
         # 생성 중 plan/head 삭제도 놓치지 않는다. PostgreSQL에서는 작은 변경 번호와
         # snapshot proof만 확인하고, 파일의 동일 FD hash/count는 여전히 확인한다.
         reader.validate_reusable_page()
-        deadline = min(deadline, reader.selection_checked_after + 60)
+        deadline = min(deadline, reader.selection_checked_after + 60,
+                       getattr(reader, "page_valid_until", float("inf")))
         if self.clock() >= deadline:
             raise ExportGuardTimeout("페이지 생성 중 승인 상태의 60초 수명이 끝났습니다.")
         size = len(json.dumps(result, ensure_ascii=False, default=str).encode())
@@ -69,7 +70,12 @@ class ExportPageCache:
                 old_key, old = self.entries.popitem(last=False)
                 self.bytes -= old.size
 
-    def read(self, key, reader, load):
+    def read(self, key, reader, load, *, force=False):
+        if force:
+            with self.lock:
+                old = self.entries.pop(key, None)
+                if old is not None:
+                    self.bytes -= old.size
         now = self.clock()
         with self.lock:
             for old_key, old in list(self.entries.items()):
@@ -87,6 +93,8 @@ class ExportPageCache:
             try:
                 # 파일·DB 유실을 60초 캐시로 감추지 않는다. 이 검산은 snapshot 재구성이 아니다.
                 entry.reader.validate_reusable_page()
+                if getattr(reader, "revalidate_first_page", False):
+                    reader.validate_cached_first_page(entry.reader)
                 if self.clock() >= entry.deadline:
                     raise PageReuseExpired()
                 reader.selection_deadline = entry.deadline

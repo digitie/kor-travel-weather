@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from khoa import Observatory, parse_beach_index_place
 from test_export_external import external_repository as external_repository
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_sdk_collector import SdkExportCollector, sdk_descriptor
@@ -65,11 +65,11 @@ def test_khoa_approved_rotation_union_and_failed_old_cursor_remain_stale(
             ))
         repo.finish_sync_run(run.run_id, status="success")
         for plan in prepared:
-            assert heads.promote(plan.identity, ExportArtifactStore(tmp_path)) == "PUBLISHED"
+            assert heads.promote(plan.identity, DatabaseExportArtifactStore(repo)) == "PUBLISHED"
 
     publish(locations)
     reader = FrozenForecastExports(
-        repo, ExportArtifactStore(tmp_path), signing_key="khoa-forecast-fixture",
+        repo, DatabaseExportArtifactStore(repo), signing_key="khoa-forecast-fixture",
         style="external", providers=[KHOA_PROVIDER], source_inventory=True,
         expected_sources=[(KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET)],
     )
@@ -138,6 +138,9 @@ def test_location_with_only_past_targets_is_omitted_and_page_is_stale():
                      "next_since": now.isoformat(), "unconfirmed_sources": False},
         "source_collected_at": now, "created_at": now,
     }
+    from kortravelweather.export_heads import _digest
+
+    frozen["manifest_digest"] = _digest(frozen["manifest"])
     reader._freeze_forecasts = lambda: frozen
     reader._health = lambda *_: False
     page, _ = reader.page(limit=5000, cursor=None)

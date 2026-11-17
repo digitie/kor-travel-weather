@@ -2,6 +2,7 @@
 
 import json
 from collections import defaultdict
+from copy import copy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
@@ -20,7 +21,9 @@ from .export_capacity import (
 from .export_heads import ScopeDescriptor, _digest
 from .export_inventory_selection import catalog_source_projection
 from .export_snapshots import (
+    MAX_PAGE_ARTIFACTS,
     MAX_PAGE_BYTES,
+    MAX_PAGE_SCOPES,
     MAX_SNAPSHOT_LOCATIONS,
     PAGE_META_RESERVE,
     ExportCursorInvalid,
@@ -30,6 +33,7 @@ from .export_snapshots import (
     ensure_snapshot_files,
     snapshot_expires_at,
 )
+from .read_performance import measured_stage, read_stage
 
 
 def _freshness(heads, now):
@@ -83,6 +87,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 self.selection["provider_signature"] = _digest(self.current_providers)
         self.resource = f"forecasts:{style}:{_digest(self.selection)}"
 
+    @measured_stage("freeze")
     def _freeze_forecasts(self):
         now = datetime.now(UTC)
         anchor = now.replace(minute=0, second=0, microsecond=0)
@@ -349,17 +354,10 @@ class FrozenForecastExports(FrozenCurrentExports):
             state = self._decode(cursor)
             if state["r"] != self.resource or state["l"] != limit:
                 raise ExportCursorInvalid("예보 style/since/limit은 cursor 도중 바꿀 수 없습니다.")
-            with self.heads._transaction() as s:
-                row = (
-                    s.execute(
-                        select(self.snapshots).where(self.snapshots.c.snapshot_id == state["s"])
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+            row = self._read_cursor_snapshot(state["s"])
             if row is None or row["expires_at"] <= datetime.now(UTC):
                 raise ExportSnapshotExpired("예보 cursor가 만료됐습니다.")
-            frozen = dict(row)
+            frozen = self._renew_reused(dict(row, _reused=True))
         else:
             def issue():
                 try:
@@ -382,14 +380,23 @@ class FrozenForecastExports(FrozenCurrentExports):
         manifest, now = frozen["manifest"], datetime.now(UTC)
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
+        self.reuse_snapshot = (frozen["snapshot_id"], frozen["manifest_digest"])
+        self.reuse_generations.update(scope["generation_id"] for scope in manifest["scopes"])
+        self.reuse_namespaces.update(scope["namespace"] for scope in manifest["scopes"])
         self._expired_omitted = False
         output, more = self._page_items(manifest, state, limit, now)
+        targets = [datetime.fromisoformat(target)
+                   for item in output for target in item["target_at"]]
+        if targets:
+            from time import monotonic
+            self.page_valid_until = monotonic() + max(0, (min(targets) - now).total_seconds())
         stale = (
             self._expired_omitted
             or bool(manifest.get("capacity_limited"))
             or self._health(manifest, frozen, now)
         )
         status = "stale" if stale else "ok"
+        self.cached_source_status = status
         page = {
             "items": output,
             "meta": {
@@ -408,6 +415,31 @@ class FrozenForecastExports(FrozenCurrentExports):
         etag = 'W/"' + _digest([frozen["snapshot_id"], cursor, limit, status, output]) + '"'
         return page, etag
 
+    def validate_cached_first_page(self, cached):
+        """첫 조건부 페이지도 새 승인/실패를 즉시 확인하되 immutable payload는 재독하지 않는다."""
+        from .export_page_cache import PageReuseExpired
+
+        fresh = copy(self)
+        fresh.reuse_generations, fresh.reuse_namespaces, fresh.reuse_artifacts = set(), set(), set()
+        fresh.begin_page_reuse()
+        def issue():
+            try:
+                return fresh._freeze_forecasts()
+            except ExportCapacityExceeded:
+                return fresh._capacity_fallback(fresh._previous_forecasts())
+            except ExportSnapshotUnavailable:
+                return fresh._previous_forecasts()
+
+        with read_stage("metadata"):
+            frozen = ensure_snapshot_files(fresh.artifacts, issue)
+            if (frozen["snapshot_id"], frozen["manifest_digest"]) != cached.reuse_snapshot:
+                raise PageReuseExpired()
+            stale = fresh._health(frozen["manifest"], frozen, datetime.now(UTC))
+        status = "stale" if (stale or cached._expired_omitted
+                             or frozen["manifest"].get("capacity_limited")) else "ok"
+        if status != cached.cached_source_status:
+            raise PageReuseExpired()
+
     def _prepare_manifest(self, manifest):
         """특수 source 조합도 완결을 검증한 뒤 불변 manifest로 보존한다."""
         return manifest
@@ -418,7 +450,11 @@ class FrozenForecastExports(FrozenCurrentExports):
         scopes = manifest["scopes"]
         if state["g"] > len(scopes):
             raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
+        scope_reads, artifact_reads = 0, 0
         while state["g"] < len(scopes):
+            if scope_reads >= MAX_PAGE_SCOPES or len(output) >= limit:
+                return output, True
+            scope_reads += 1
             scope = scopes[state["g"]]
             if self.since and datetime.fromisoformat(scope["published_at"]) <= self.since:
                 state["g"], state["p"] = state["g"] + 1, 0
@@ -437,7 +473,15 @@ class FrozenForecastExports(FrozenCurrentExports):
                         "위치가 단일 bounded chunk에 있지 않습니다."
                     )
                 ref = refs[0]
+                if len(output) >= limit:
+                    return output, True
                 if cached_ref != ref["artifact_digest"]:
+                    if artifact_reads >= MAX_PAGE_ARTIFACTS:
+                        return output, True
+                    artifact_reads += 1
+                    self.reuse_artifacts.add((
+                        ref["artifact_digest"], ref["byte_count"], ref["point_count"],
+                    ))
                     cached = defaultdict(list)
                     for point in self.artifacts.read_shared(
                         ref["artifact_digest"],

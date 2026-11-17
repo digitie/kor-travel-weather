@@ -1,5 +1,6 @@
 """완성 페이지 재사용은 인증·수명·실파일 검사를 건너뛰지 않는다."""
 
+import pytest
 from test_frozen_service_exports import HEADERS, _client, _collect
 from test_frozen_service_exports import repository as repository
 
@@ -129,14 +130,11 @@ def test_pg_head_delete_rebuilds_status_instead_of_reusing_old_etag(repository, 
     assert response.headers["x-export-read"] == "generated"
 
 
-def test_reused_page_checks_files_by_stat_and_rebuild_still_rehashes(
+@pytest.mark.usefixtures("filesystem_exports")
+def test_explicit_file_page_rechecks_content_and_never_hides_tampering(
     repository, tmp_path, monkeypatch,
 ):
-    """2026-11-10 계약: hit는 이미 검증한 메모리 페이지를 낸다. 파일은 존재·크기만 본다.
-
-    예전에는 hit마다 사용한 파일 전체를 다시 읽어 hash했다(odroid eMMC IO, #208 리뷰).
-    유실(삭제·크기 변화)은 여전히 hit에서 503이고, 내용 변조는 다음 miss 재구성이 잡는다.
-    """
+    """명시 파일 backend는 DB 불변성 제약이 없으므로 304도 내용 손상을 감추지 않는다."""
     from kortravelweather.export_artifacts import ExportArtifactStore
 
     _collect(repository, tmp_path)
@@ -154,13 +152,13 @@ def test_reused_page_checks_files_by_stat_and_rebuild_still_rehashes(
     monkeypatch.setattr(ExportArtifactStore, "_lines", counted_lines)
     hit = client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]})
     assert hit.status_code == 304 and hit.headers["x-export-read"] == "reused"
-    assert reads == []  # hit는 파일 내용을 다시 읽지 않는다
+    assert reads  # mutable 파일 backend는 hit도 내용 검증한다
     # 같은 크기의 내용 변조: 메모리 페이지는 이미 검증한 원래 값이다. 새 페이지 구성은 잡는다.
     for path in tmp_path.glob("*.jsonl"):
         path.chmod(0o600)
         path.write_bytes(path.read_bytes().replace(b"18.4", b"28.4"))
     assert client.get(url, headers={**HEADERS, "if-none-match": first.headers["etag"]}
-                      ).status_code == 304
+                      ).status_code == 503
     rebuilt = client.get(url + "?limit=1", headers=HEADERS)
     assert rebuilt.status_code == 503 and "etag" not in rebuilt.headers
     # 유실은 hit에서도 숨기지 않는다.
@@ -170,6 +168,7 @@ def test_reused_page_checks_files_by_stat_and_rebuild_still_rehashes(
     assert lost.status_code == 503 and "etag" not in lost.headers
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_completed_page_does_not_hold_global_gc_lock(repository, tmp_path):
     from kortravelweather.export_artifacts import ExportArtifactStore
 
@@ -185,6 +184,7 @@ def test_completed_page_does_not_hold_global_gc_lock(repository, tmp_path):
     assert response.status_code == 304 and response.headers["x-export-read"] == "reused"
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_selection_and_pin_insert_are_outside_lock_but_pin_commit_is_inside(
     repository, tmp_path, monkeypatch,
 ):

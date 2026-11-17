@@ -77,6 +77,8 @@ _WEAK_ADMIN_TOKENS = {
 class WeatherSettings(BaseSettings):
     """kor-travel-weather 런타임 설정."""
 
+    # 공개 읽기의 SQL/checkout 잔여 시간. 수집·관리자 설정은 변경하지 않는다.
+    public_read_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     # 성공 projection/비용 gate 수용 전에는 운영에서 켜지 않는다.
     service_exports_enabled: bool = False
     service_export_artifact_root: Path | None = None

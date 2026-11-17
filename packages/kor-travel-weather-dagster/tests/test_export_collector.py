@@ -28,7 +28,8 @@ def repository():
         with repository.engine.begin() as connection:
             connection.execute(
                 text(
-                    "TRUNCATE weather_export_scope_plans, weather_export_heads, "
+                    "TRUNCATE weather_export_artifacts, weather_export_scope_plans, "
+                    "weather_export_heads, "
                     "weather_export_generations, weather_export_generation_chunks, "
                     "weather_export_pending_refs, "
                     "weather_export_attempts, weather_locations, weather_sync_runs "
@@ -309,7 +310,12 @@ def test_actual_collector_fanout_then_separate_native_publisher(repository, tmp_
     result = _run(repository, tmp_path)
     assert result["status"] == "success" and result["values_loaded"] == 24
     assert _counts(repository) == (2, 0, 0)
-    assert len(list(tmp_path.glob("*.jsonl"))) == 2
+    from kortravelweather.export_database_artifacts import export_artifact_store
+
+    store = export_artifact_store(repository, tmp_path)
+    with repository.engine.connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(store.table)) == 2
+    assert not list(tmp_path.glob("*.jsonl"))
     first = publish_pending_exports(repository, tmp_path, limit=1)
     assert first.processed == 1 and first.results == {"PUBLISHED": 1} and first.has_more
     second = publish_pending_exports(repository, tmp_path, limit=1, cursor=first.next_cursor)
@@ -353,20 +359,34 @@ def test_exact_dagster_instance_success_required_after_sync_success(repository, 
     assert _counts(repository) == (2, 2, 2)
 
 
-def test_capture_file_failure_keeps_original_success_and_cannot_publish(
+def test_capture_database_failure_keeps_original_success_and_cannot_publish(
     repository, tmp_path, monkeypatch
 ):
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 
-    def fail(*args, **kwargs):
+    original = DatabaseExportArtifactStore.record_in_transaction
+    transactions = []
+
+    def fail(self, session, chunk):
+        # 실제 같은 TX 삽입 뒤 실패하여 savepoint가 artifact와 receipt를 함께 롤백한다.
+        original(self, session, chunk)
+        transactions.append(session.in_transaction())
         raise OSError("storage unavailable")
 
-    monkeypatch.setattr(ExportArtifactStore, "publish", fail)
+    monkeypatch.setattr(DatabaseExportArtifactStore, "record_in_transaction", fail)
     result = _run(repository, tmp_path)
     assert result["status"] == "success" and result["values_loaded"] == 24
     progress = publish_pending_exports(repository, tmp_path)
     assert progress.results == {} and progress.processed == 0
     assert _counts(repository) == (2, 0, 0)
+    assert transactions == [True, True]
+    store = DatabaseExportArtifactStore(repository)
+    heads = ExportHeads(repository)
+    with repository.engine.connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(store.table)) == 0
+        assert connection.scalar(select(func.count()).select_from(heads.lifecycle.chunks)) == 0
+    assert not list(tmp_path.glob("*.jsonl"))
+
 
 
 def test_optin_rejects_unsupported_mixed_datasets(repository, tmp_path):

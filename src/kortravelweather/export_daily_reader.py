@@ -29,6 +29,7 @@ from .export_snapshots import (
     FrozenCurrentExports,
     snapshot_expires_at,
 )
+from .read_performance import measured_stage
 
 
 class DailySummaryExports(FrozenCurrentExports):
@@ -235,6 +236,7 @@ class DailySummaryExports(FrozenCurrentExports):
         # 원천 clock을 다른 위치에서 빌리지 않고 메타는 unknown/stale로 둔다.
         return selected, unconfirmed or not expected
 
+    @measured_stage("freeze")
     def _freeze_daily(self):
         try:
             return self._freeze_daily_ready()
@@ -376,16 +378,10 @@ class DailySummaryExports(FrozenCurrentExports):
                     "days/location_id/limit은 cursor 도중 변경할 수 없습니다."
                 )
             with self._daily_transaction() as s:
-                row = (
-                    s.execute(
-                        select(self.snapshots).where(self.snapshots.c.snapshot_id == state["s"])
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
+                row = self._cursor_snapshot_row(s, state["s"])
             if row is None or row["expires_at"] <= datetime.now(UTC):
                 raise ExportSnapshotExpired("요약 cursor가 만료됐습니다.")
-            frozen = dict(row)
+            frozen = self._renew_reused(dict(row, _reused=True))
         else:
             frozen = self._renew_reused(self._freeze_daily())
             state = {

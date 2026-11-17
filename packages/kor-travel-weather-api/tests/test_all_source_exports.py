@@ -12,7 +12,7 @@ from test_export_external import external_repository as external_repository
 from test_export_sdk import fixture
 from test_frozen_service_exports import _collect
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import export_artifact_store
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_receipts import ExportAttempt
 from kortravelweather.export_sdk_collector import SdkExportCollector, sdk_descriptor
@@ -114,7 +114,7 @@ def _sdk(repo, root, kind, monkeypatch):
         ),
     )
     repo.finish_sync_run(run.run_id, status="success")
-    assert collector.heads.promote(plan.identity, ExportArtifactStore(root)) == "PUBLISHED"
+    assert collector.heads.promote(plan.identity, export_artifact_store(repo, root)) == "PUBLISHED"
 
 
 def _http_adapter(repo, root, adapter):
@@ -148,7 +148,7 @@ def _http_adapter(repo, root, adapter):
                 heads.lifecycle.attempts.c.owner_id,
             ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])
         ).one()
-    assert heads.promote(ExportAttempt(*identity), ExportArtifactStore(root)) == "PUBLISHED"
+    assert heads.promote(ExportAttempt(*identity), export_artifact_store(repo, root)) == "PUBLISHED"
 
 
 def _selection_clock(client, monkeypatch):

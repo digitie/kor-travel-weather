@@ -259,7 +259,7 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_external_cohorts import external_cohort_table
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_receipts import ExportAttempt
@@ -315,7 +315,7 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
         )
     assert len(attempts) == 2
     assert all(
-        heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+        heads.promote(ExportAttempt(*a), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
         for a in attempts
     )
 
@@ -393,7 +393,7 @@ def test_external_forecast_actual_job_groups_and_publication_delta_preserve_know
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_receipts import ExportAttempt
     from kortravelweather.models import WeatherLocation
@@ -438,7 +438,7 @@ def test_external_forecast_actual_job_groups_and_publication_delta_preserve_know
                 )
             )
         assert all(
-            heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+            heads.promote(ExportAttempt(*a), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
             for a in attempts
         )
 
@@ -504,7 +504,7 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_receipts import ExportAttempt
     from kortravelweather.models import WeatherLocation
@@ -533,7 +533,7 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
         ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])).all()
     assert len(attempts) == 2
     assert all(
-        heads.promote(ExportAttempt(*attempt), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+        heads.promote(ExportAttempt(*attempt), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
         for attempt in attempts
     )
     client = TestClient(create_app(WeatherSettings(

@@ -256,3 +256,23 @@ def test_migration_rejects_non_digest_shard(repository, tmp_path, prefix):
         migrate_legacy_export_artifacts(
             repository, tmp_path, deadline=time.monotonic() + 10, digest_prefix=prefix,
         )
+
+
+def test_explicit_migration_reads_a_read_only_legacy_directory(repository, tmp_path):
+    import time
+
+    from kortravelweather.export_artifact_migration import migrate_legacy_export_artifacts
+
+    descriptor = head_fixtures._descriptor(repository)
+    heads, identity, capture, *_ = head_fixtures._candidate(repository, tmp_path, descriptor)
+    assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
+    before = {item.name for item in tmp_path.iterdir()}
+    tmp_path.chmod(0o500)
+    try:
+        result = migrate_legacy_export_artifacts(
+            repository, tmp_path, deadline=time.monotonic() + 10, dry_run=False,
+        )
+    finally:
+        tmp_path.chmod(0o700)
+    assert result["complete"] and result["imported"] == 1
+    assert {item.name for item in tmp_path.iterdir()} == before

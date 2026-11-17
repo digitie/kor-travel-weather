@@ -10,7 +10,7 @@ from test_airkorea_weather import _EntersAndCloses
 from test_export_external import external_repository as external_repository
 from test_export_sdk import fixture
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_external_cohorts import external_cohort_table
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_receipts import ExportAttempt
@@ -123,7 +123,7 @@ def test_actual_regional_runner_prepares_then_captures_full_sdk_response(
             cohorts.c.dataset_key == descriptor.dataset_key,
         )).all()
     assert len(ids) == 1
-    assert heads.promote(ExportAttempt(*ids[0]), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+    assert heads.promote(ExportAttempt(*ids[0]), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
     if kind == "krex":
         from kortravelweather.export_inventory_selection import (
             approved_source_selection,

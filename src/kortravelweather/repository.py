@@ -154,6 +154,7 @@ from .partitions import (
     validate_foreign_keys_into_facts,
     write_deferral_mark,
 )
+from .read_deadline import ReadDeadlineQueuePool
 from .retention import (
     MAX_BATCH_SIZE,
     SHORT_FORECAST_CANDIDATES_AFTER_SQL,
@@ -1415,6 +1416,7 @@ class WeatherRepository:
             pool_size=10,
             max_overflow=10,
             pool_timeout=15,
+            poolclass=ReadDeadlineQueuePool,
             pool_pre_ping=True,
             connect_args={"connect_timeout": 10},
         )

@@ -12,7 +12,7 @@ from sqlalchemy import event, select
 # catalog와 snapshot을 매 시험 정리하는 실제 PostgreSQL fixture다.
 from test_frozen_service_exports import repository as repository
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import export_artifact_store
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_locations import FrozenLocationExports
 from kortravelweather.models import WeatherLocation
@@ -22,7 +22,9 @@ def test_reference_lookup_uses_small_projection_and_latest_issued_handle(reposit
     repository.create_location(WeatherLocation(
         location_id="reference", name="참조", latitude=37.5, longitude=127,
     ))
-    reader = FrozenLocationExports(repository, ExportArtifactStore(tmp_path), signing_key="fixture")
+    reader = FrozenLocationExports(
+        repository, export_artifact_store(repository, tmp_path), signing_key="fixture",
+    )
     first = reader._freeze_locations()
     now = datetime.now(UTC)
     # 다른 종류와 더 최근에 발급된 같은 종류를 섞는다. 만료 여부로 latest를 바꾸지 않는다.
@@ -67,7 +69,7 @@ def test_concurrent_reference_issuance_preserves_each_frozen_cursor(repository, 
 
     def page(cursor=None):
         reader = FrozenLocationExports(
-            repository, ExportArtifactStore(tmp_path), signing_key="fixture",
+            repository, export_artifact_store(repository, tmp_path), signing_key="fixture",
         )
         return reader.page("locations", limit=1, cursor=cursor)
 
@@ -79,7 +81,9 @@ def test_concurrent_reference_issuance_preserves_each_frozen_cursor(repository, 
         assert following["items"][0]["location_id"] == "b"
         assert following["meta"]["snapshot_id"] == first["meta"]["snapshot_id"]
     # 동시 신규 handle 발급은 허용하며 이후에는 실제 가장 최근 발급만 재사용한다.
-    reader = FrozenLocationExports(repository, ExportArtifactStore(tmp_path), signing_key="fixture")
+    reader = FrozenLocationExports(
+        repository, export_artifact_store(repository, tmp_path), signing_key="fixture",
+    )
     with repository.engine.connect() as connection:
         latest = reader._previous(connection)
     again, _ = page()
@@ -92,7 +96,9 @@ def test_missing_catalog_reissues_expired_reference_without_changing_saved_manif
     repository.create_location(WeatherLocation(
         location_id="a", name="남아야 하는 위치", latitude=37.5, longitude=127,
     ))
-    reader = FrozenLocationExports(repository, ExportArtifactStore(tmp_path), signing_key="fixture")
+    reader = FrozenLocationExports(
+        repository, export_artifact_store(repository, tmp_path), signing_key="fixture",
+    )
     first, _ = reader.page("locations", limit=1, cursor=None)
     with repository.engine.begin() as connection:
         previous = reader._previous(connection)
@@ -125,6 +131,7 @@ def test_forecast_single_pass_keeps_sorted_sparse_metrics_and_last_duplicate():
     ]
     reader = object.__new__(FrozenForecastExports)
     reader.style, reader.since = "short", None
+    reader.reuse_artifacts = set()
     reader.artifacts = SimpleNamespace(read_shared=lambda *args, **kwargs: iter(points))
     manifest = {"scopes": [{"published_at": now.isoformat(), "location_ids": ["a"],
                             "refs": [{"location_ids": ["a"], "artifact_digest": "d",
