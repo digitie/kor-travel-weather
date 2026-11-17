@@ -271,9 +271,17 @@ HTTP_DURATION = Histogram(
     "ktw_http_request_duration_seconds",
     "HTTP request duration in seconds.",
     ("method", "route"),
-    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+    buckets=(.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 1200),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+READ_STAGE_DURATION = Histogram(
+    "ktw_read_stage_duration_seconds",
+    "Bounded read stages; nested timings must not be summed as wall time.",
+    ("resource", "page", "stage", "outcome"),
+    buckets=(.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 1200),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+
 HTTP_IN_FLIGHT = Gauge(
     "ktw_http_requests_in_flight",
     "HTTP requests currently being processed.",
@@ -920,3 +928,15 @@ __all__ = [
     "set_sync_recovery_stalled",
     "start_metrics_server",
 ]
+
+
+def observe_read_stage(resource, page, stage, outcome, duration):
+    resources = {"public", "current", "locations", "forecasts", "daily-summaries", "status"}
+    stages = {"worker_queue", "pool_admission", "sql", "freeze", "metadata", "artifact", "render"}
+    labels = (
+        resource if resource in resources else "other",
+        page if page in {"first", "cursor", "304", "public"} else "other",
+        stage if stage in stages else "other",
+        outcome if outcome in {"ok", "timeout", "error"} else "other",
+    )
+    _safe("read_stage", lambda: READ_STAGE_DURATION.labels(*labels).observe(max(0, duration)))

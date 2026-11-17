@@ -259,7 +259,7 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_external_cohorts import external_cohort_table
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_receipts import ExportAttempt
@@ -315,7 +315,7 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
         )
     assert len(attempts) == 2
     assert all(
-        heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+        heads.promote(ExportAttempt(*a), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
         for a in attempts
     )
 
@@ -340,7 +340,8 @@ def test_actual_external_job_declares_whole_selection_before_http_and_publishes_
     url, headers = "/v1/service/exports/current", {"x-admin-token": "external-current"}
     assert client.get(url).status_code == 401
     healthy = client.get(url, headers=headers)
-    assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    assert healthy.status_code == 200, healthy.text
+    assert healthy.json()["meta"]["source_status"] == "ok", healthy.text
     assert len(healthy.json()["items"]) == 6
     assert {v["provider"] for v in healthy.json()["items"]} == {"open_meteo"}
     assert healthy.headers["content-encoding"] == "gzip"
@@ -393,7 +394,7 @@ def test_external_forecast_actual_job_groups_and_publication_delta_preserve_know
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_receipts import ExportAttempt
     from kortravelweather.models import WeatherLocation
@@ -438,7 +439,7 @@ def test_external_forecast_actual_job_groups_and_publication_delta_preserve_know
                 )
             )
         assert all(
-            heads.promote(ExportAttempt(*a), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+            heads.promote(ExportAttempt(*a), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
             for a in attempts
         )
 
@@ -458,7 +459,7 @@ def test_external_forecast_actual_job_groups_and_publication_delta_preserve_know
     url, headers = "/v1/service/exports/forecasts", {"x-admin-token": "external-forecast"}
     params = {"style": "external", "limit": 1}
     first = client.get(url, params=params, headers=headers)
-    assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
+    assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok", first.text
     assert (
         client.get(
             url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
@@ -504,7 +505,7 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
     from kortravelweather_dagster.external_weather import run_external_weather_sync
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_heads import ExportHeads
     from kortravelweather.export_receipts import ExportAttempt
     from kortravelweather.models import WeatherLocation
@@ -533,7 +534,7 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
         ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])).all()
     assert len(attempts) == 2
     assert all(
-        heads.promote(ExportAttempt(*attempt), ExportArtifactStore(tmp_path)) == "PUBLISHED"
+        heads.promote(ExportAttempt(*attempt), DatabaseExportArtifactStore(repo)) == "PUBLISHED"
         for attempt in attempts
     )
     client = TestClient(create_app(WeatherSettings(
@@ -545,7 +546,8 @@ def test_latest_cohort_prepare_before_claim_failure_cannot_hide_behind_old_owner
     params = {"style": "external", "limit": 1} if forecast else {"limit": 1}
     headers = {"x-admin-token": "cohort-failure"}
     healthy = client.get(url, params=params, headers=headers)
-    assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
+    assert healthy.status_code == 200, healthy.text
+    assert healthy.json()["meta"]["source_status"] == "ok", healthy.text
     # 이 기능을 요청하지 않은 기존 native 실행은 opt-in roster를 덮지 않는다.
     legacy = repo.start_sync_run(provider="open_meteo", dataset_key=dataset)
     repo.finish_sync_run(legacy.run_id, status="success")

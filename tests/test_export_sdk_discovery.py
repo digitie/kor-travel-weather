@@ -9,7 +9,7 @@ from sqlalchemy import select
 from test_airkorea_weather import _EntersAndCloses
 from test_export_external import external_repository as external_repository
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_external_cohorts import external_cohort_table
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_receipts import ExportAttempt
@@ -62,7 +62,7 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
             ).join(cohorts, cohorts.c.run_id == heads.lifecycle.attempts.c.run_id).where(
                 cohorts.c.provider == KREX_PROVIDER,
             )).all()
-        return [heads.promote(ExportAttempt(*identity), ExportArtifactStore(tmp_path))
+        return [heads.promote(ExportAttempt(*identity), DatabaseExportArtifactStore(repo))
                 for identity in identities]
 
     assert collect(records[:1]) == ["PUBLISHED"]
@@ -89,7 +89,7 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
 
     def drain():
         for _ in range(8):
-            result = refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=8)
+            result = refresh_daily_summaries(repo, DatabaseExportArtifactStore(repo), limit=8)
             if not result["has_more"]:
                 return
         raise AssertionError("시험 관측이 reducer에 도달하지 않았습니다.")
@@ -98,7 +98,8 @@ def test_discovered_station_keeps_prior_stale_then_next_predeclared_run_recovers
     daily_prior = client.get(daily_path, params={"days": 1}, headers=daily_headers)
     assert daily_prior.status_code == 200 and daily_prior.json()["meta"]["source_status"] == "ok"
     reader = FrozenCurrentExports(
-        repo, ExportArtifactStore(tmp_path), signing_key="discovery-fixture", source_inventory=True,
+        repo, DatabaseExportArtifactStore(repo), signing_key="discovery-fixture",
+        source_inventory=True,
         providers=[KREX_PROVIDER], expected_sources=[(KREX_PROVIDER, KREX_RESTAREA_DATASET)],
     )
     prior, _ = reader.page("current", limit=5000, cursor=None)

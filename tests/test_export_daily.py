@@ -7,9 +7,10 @@ import pytest
 from export_clock import install_api_clock
 from sqlalchemy import select, text
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_daily import merge_observations, observation, summarize
 from kortravelweather.export_daily_store import daily_summary_tables, refresh_daily_summaries
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.repository import Base, WeatherRepository
 
 KST = ZoneInfo("Asia/Seoul")
@@ -153,17 +154,20 @@ def test_daily_projection_uses_only_approved_generations_and_deduplicates_replay
     day = (now - timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
     for hour, value in [(0, "10"), (0, "10"), (1, "20")]:
         heads, identity, capture, _, _, _ = _candidate(
-            repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value
+            repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value,
+            artifacts=DatabaseExportArtifactStore(repository),
         )
         assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
-    progress = refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+    progress = refresh_daily_summaries(repository, DatabaseExportArtifactStore(repository))
     assert progress["processed"] == 3
     table, _ = daily_summary_tables(Base.metadata)
     with repository.engine.connect() as c:
         row = c.execute(select(table.c.summary)).scalar_one()
     assert row["temp_avg"] == 15 and row["sample_count"] == 2
     assert row["source_providers"] == ["python-kma-api"]
-    assert refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))["processed"] == 0
+    assert refresh_daily_summaries(
+        repository, DatabaseExportArtifactStore(repository),
+    )["processed"] == 0
 
 
 def test_failed_raw_commit_never_appears_in_daily_projection(daily_repository, tmp_path):
@@ -172,10 +176,13 @@ def test_failed_raw_commit_never_appears_in_daily_projection(daily_repository, t
     repository = daily_repository
     descriptor = _descriptor(repository)
     heads, identity, capture, _, _, _ = _candidate(
-        repository, tmp_path, descriptor, finish="failed"
+        repository, tmp_path, descriptor, finish="failed",
+        artifacts=DatabaseExportArtifactStore(repository),
     )
     assert heads.promote(identity, capture.artifacts) != "PUBLISHED"
-    assert refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))["processed"] == 0
+    assert refresh_daily_summaries(
+        repository, DatabaseExportArtifactStore(repository),
+    )["processed"] == 0
     table, _ = daily_summary_tables(Base.metadata)
     with repository.engine.connect() as c:
         assert c.execute(select(table.c.summary)).first() is None
@@ -193,9 +200,10 @@ def test_missing_approved_artifact_keeps_checkpoint_and_summary_until_repair(
     yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
         hour=8, minute=0, second=0, microsecond=0
     )
-    store = ExportArtifactStore(tmp_path)
+    store = DatabaseExportArtifactStore(repository)
     heads, identity, capture, _, _, _ = _candidate(
-        repository, tmp_path, descriptor, revision=yesterday, value="10"
+        repository, tmp_path, descriptor, revision=yesterday, value="10",
+        artifacts=DatabaseExportArtifactStore(repository),
     )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     refresh_daily_summaries(repository, store)
@@ -204,7 +212,8 @@ def test_missing_approved_artifact_keeps_checkpoint_and_summary_until_repair(
         before = dict(c.execute(select(progress)).mappings().one())
         original_summary = c.execute(select(table.c.summary)).scalar_one()
     heads, identity, capture, _, _, _ = _candidate(
-        repository, tmp_path, descriptor, revision=yesterday + timedelta(hours=1), value="20"
+        repository, tmp_path, descriptor, revision=yesterday + timedelta(hours=1), value="20",
+        artifacts=DatabaseExportArtifactStore(repository),
     )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     with repository.engine.connect() as c:
@@ -220,15 +229,15 @@ def test_missing_approved_artifact_keeps_checkpoint_and_summary_until_repair(
             .mappings()
             .one()
         )
-    path = tmp_path / (ref["artifact_digest"] + ".jsonl")
-    payload = path.read_bytes()
-    path.unlink()
-    with pytest.raises(OSError):
+    from export_database_fixtures import remove_artifact, restore_artifact
+
+    saved = remove_artifact(repository, ref["artifact_digest"])
+    with pytest.raises(ExportArtifactError):
         refresh_daily_summaries(repository, store)
     with repository.engine.connect() as c:
         assert dict(c.execute(select(progress)).mappings().one()) == before
         assert c.execute(select(table.c.summary)).scalar_one() == original_summary
-    path.write_bytes(payload)
+    restore_artifact(repository, saved)
     assert refresh_daily_summaries(repository, store)["processed"] == 1
     with repository.engine.connect() as c:
         assert c.execute(select(table.c.summary)).scalar_one()["temp_avg"] == 15
@@ -252,7 +261,10 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
     yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
         hour=8, minute=0, second=0, microsecond=0
     )
-    _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", cohort=True)
+    _candidate(
+        repository, tmp_path, descriptor, revision=yesterday, value="12", cohort=True,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
     assert publish_pending_exports(repository, tmp_path, daily_summaries=True).results == {
         "PUBLISHED": 1
     }
@@ -322,7 +334,9 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
         == 422
     )
     _candidate(repository, tmp_path, descriptor, revision=yesterday, value="12", finish="failed",
-               cohort=True)
+               cohort=True,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
     assert client.get(url, params=params, headers={
         **headers, "if-none-match": first.headers["etag"],
     }).status_code == 304  # 승인 상태의 최대 60초 지연은 허용된다.
@@ -370,11 +384,14 @@ def test_concurrent_daily_reducers_commit_one_checkpoint(daily_repository, tmp_p
 
     repository = daily_repository
     descriptor = _descriptor(repository)
-    heads, identity, capture, _, _, _ = _candidate(repository, tmp_path, descriptor)
+    heads, identity, capture, _, _, _ = _candidate(
+        repository, tmp_path, descriptor,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     gate = Barrier(2)
 
-    class RacingStore(ExportArtifactStore):
+    class RacingStore(DatabaseExportArtifactStore):
         inside_guard = False
 
         @contextmanager
@@ -388,7 +405,7 @@ def test_concurrent_daily_reducers_commit_one_checkpoint(daily_repository, tmp_p
 
         def read(self, *args, **kwargs):
             yield from super().read(*args, **kwargs)
-            # 두 reader가 같은 checkpoint의 파일 검증을 끝내고 CAS 전 만난다.
+            # 두 reader가 같은 checkpoint의 DB artifact 검증을 끝내고 CAS 전 만난다.
             # 공개 guard는 이제 CAS까지 감싸므로 guard exit에서 기다리면 늦다.
             assert self.inside_guard
             gate.wait(timeout=10)
@@ -396,12 +413,14 @@ def test_concurrent_daily_reducers_commit_one_checkpoint(daily_repository, tmp_p
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(
             executor.map(
-                lambda _: refresh_daily_summaries(repository, RacingStore(tmp_path)), range(2)
+                lambda _: refresh_daily_summaries(repository, RacingStore(repository)), range(2)
             )
         )
     assert sorted(result["processed"] for result in results) == [0, 1]
     assert sum(result.get("race", False) for result in results) == 1
-    assert refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))["processed"] == 0
+    assert refresh_daily_summaries(
+        repository, DatabaseExportArtifactStore(repository),
+    )["processed"] == 0
 
 
 def test_daily_byte_budget_cursor_resumes_exact_last_included_item(
@@ -413,13 +432,16 @@ def test_daily_byte_budget_cursor_resumes_exact_last_included_item(
 
     repository = daily_repository
     descriptor = _descriptor(repository)
-    heads, identity, capture, _, _, _ = _candidate(repository, tmp_path, descriptor)
+    heads, identity, capture, _, _, _ = _candidate(
+        repository, tmp_path, descriptor,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
-    refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+    refresh_daily_summaries(repository, DatabaseExportArtifactStore(repository))
     # 동일 production byte-budget 분기를 작은 상한으로 통과시켜 중간 slot 재개를 확인한다.
     monkeypatch.setattr(reader, "MAX_PAGE_BYTES", 16 * 1024)
     exports = reader.DailySummaryExports(
-        repository, ExportArtifactStore(tmp_path), signing_key="daily-budget", days=31
+        repository, DatabaseExportArtifactStore(repository), signing_key="daily-budget", days=31
     )
     items, cursor, lengths = [], None, []
     while True:
@@ -449,7 +471,8 @@ def test_legacy_equal_publication_times_resume_with_generation_id(daily_reposito
     for value in ["10", "20"]:
         descriptor = _descriptor(repo)
         heads, identity, capture, _, _, _ = _candidate(
-            repo, tmp_path, descriptor, revision=yesterday, value=value
+            repo, tmp_path, descriptor, revision=yesterday, value=value,
+            artifacts=DatabaseExportArtifactStore(repo),
         )
         assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     # 0026 승인 자료는 publication clock 도입 전이라 서로 같은 시각일 수 있다.
@@ -457,9 +480,15 @@ def test_legacy_equal_publication_times_resume_with_generation_id(daily_reposito
     with repo.engine.begin() as c:
         c.execute(heads.generations.update().values(created_at=legacy_at))
     table, progress = daily_summary_tables(Base.metadata)
-    assert refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=1)["processed"] == 1
-    assert refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=1)["processed"] == 1
-    assert refresh_daily_summaries(repo, ExportArtifactStore(tmp_path), limit=1)["processed"] == 0
+    assert refresh_daily_summaries(
+        repo, DatabaseExportArtifactStore(repo), limit=1,
+    )["processed"] == 1
+    assert refresh_daily_summaries(
+        repo, DatabaseExportArtifactStore(repo), limit=1,
+    )["processed"] == 1
+    assert refresh_daily_summaries(
+        repo, DatabaseExportArtifactStore(repo), limit=1,
+    )["processed"] == 0
     with repo.engine.connect() as c:
         assert sorted(row["temp_avg"] for row in c.scalars(select(table.c.summary))) == [10, 20]
         checkpoint = c.execute(select(progress)).mappings().one()
@@ -480,9 +509,12 @@ def test_daily_coverage_requires_selected_location_and_ignores_other_failures(
     from kortravelweather.export_daily_store import daily_coverage_table
     from kortravelweather.export_snapshots import ExportSnapshotUnavailable
 
-    repo, store = daily_repository, ExportArtifactStore(tmp_path)
+    repo, store = daily_repository, DatabaseExportArtifactStore(daily_repository)
     a, b = _descriptor(repo), _descriptor(repo)
-    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, a)
+    heads, identity, capture, _, _, _ = _candidate(
+        repo, tmp_path, a,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     refresh_daily_summaries(repo, store)
 
@@ -494,7 +526,10 @@ def test_daily_coverage_requires_selected_location_and_ignores_other_failures(
     with pytest.raises(ExportSnapshotUnavailable, match="coverage"):
         read(b.entity_id)
     assert read(a.entity_id)["meta"]["source_status"] == "ok"
-    _candidate(repo, tmp_path, b, finish="failed")
+    _candidate(
+        repo, tmp_path, b, finish="failed",
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert read(a.entity_id)["meta"]["source_status"] == "ok"
     coverage = daily_coverage_table(Base.metadata)
     old = datetime.now(KST) - timedelta(hours=4)
@@ -504,7 +539,10 @@ def test_daily_coverage_requires_selected_location_and_ignores_other_failures(
             .where(coverage.c.location_id == a.entity_id)
             .values(source_collected_at=old)
         )
-    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, b)
+    heads, identity, capture, _, _, _ = _candidate(
+        repo, tmp_path, b,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     refresh_daily_summaries(repo, store)
     selected = read(a.entity_id)
@@ -523,14 +561,15 @@ def test_daily_page_uses_one_rr_snapshot_across_locations_and_progress(daily_rep
     from kortravelweather.export_daily_reader import DailySummaryExports
     from kortravelweather.export_daily_store import daily_coverage_table
 
-    repo, store = daily_repository, ExportArtifactStore(tmp_path)
+    repo, store = daily_repository, DatabaseExportArtifactStore(daily_repository)
     yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
         hour=8, minute=0, second=0, microsecond=0
     )
     for _ in range(2):
         descriptor = _descriptor(repo)
         heads, identity, capture, _, _, _ = _candidate(
-            repo, tmp_path, descriptor, revision=yesterday, value="10"
+            repo, tmp_path, descriptor, revision=yesterday, value="10",
+            artifacts=DatabaseExportArtifactStore(repo),
         )
         assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
     refresh_daily_summaries(repo, store)
@@ -593,9 +632,12 @@ def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invali
 
     repo = daily_repository
     descriptor = _descriptor(repo)
-    heads, identity, capture, _, _, _ = _candidate(repo, tmp_path, descriptor, cohort=True)
+    heads, identity, capture, _, _, _ = _candidate(
+        repo, tmp_path, descriptor, cohort=True,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
-    refresh_daily_summaries(repo, ExportArtifactStore(tmp_path))
+    refresh_daily_summaries(repo, DatabaseExportArtifactStore(repo))
     client = TestClient(
         create_app(
             WeatherSettings(
@@ -613,7 +655,10 @@ def test_non_success_native_terminal_marks_selected_daily_scope_stale_and_invali
     url = "/v1/service/exports/daily-summaries"
     healthy = client.get(url, headers=headers)
     assert healthy.status_code == 200 and healthy.json()["meta"]["source_status"] == "ok"
-    _candidate(repo, tmp_path, descriptor, finish=terminal, cohort=True)
+    _candidate(
+        repo, tmp_path, descriptor, finish=terminal, cohort=True,
+        artifacts=DatabaseExportArtifactStore(repo),
+    )
     assert client.get(url, headers={
         **headers, "if-none-match": healthy.headers["etag"],
     }).status_code == 304
@@ -647,6 +692,7 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
     for hour, value in [(0, "10"), (1, "20")]:
         heads, identity, capture, _, _, _ = _candidate(
             repository, tmp_path, descriptor, revision=day + timedelta(hours=hour), value=value,
+            artifacts=DatabaseExportArtifactStore(repository),
         )
         # 같은 scope의 다음 수집이 소유권을 가져가기 전에 승격한다(요약 reducer는 아직 안 돌린다).
         assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
@@ -665,7 +711,7 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
     # 같은 응답을 정상 경로(승격→요약)로 낸 결과와 같다.
     with repository.engine.begin() as c:
         c.execute(table.delete())
-    refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+    refresh_daily_summaries(repository, DatabaseExportArtifactStore(repository))
     with repository.engine.connect() as c:
         live = {(r.slot, r.date): r.summary for r in c.execute(select(table))}
 
@@ -675,7 +721,9 @@ def test_backfill_rebuilds_unpublished_days_from_successful_raw_responses_like_t
     assert strip(live) == strip(rebuilt)
     # 실패한 run의 응답(같은 격자, 다른 시간·값)은 쓰지 않는다.
     _candidate(repository, tmp_path, descriptor, revision=day + timedelta(hours=2), value="90",
-               finish="failed")
+               finish="failed",
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
     excluded = backfill_daily_from_kma_nowcast(
         repository, first_day=day.date(), last_day=day.date(), pause_seconds=0,
     )

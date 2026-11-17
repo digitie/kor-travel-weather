@@ -545,24 +545,37 @@ def test_gc_runs_on_its_interval_and_reports_in_the_skip_reason(
 
 
 
-def test_default_delete_gc_removes_old_unreferenced_files_through_the_public_sensor(
+def test_default_delete_gc_removes_old_unreferenced_database_artifacts_through_the_public_sensor(
     publisher_repository, tmp_path, monkeypatch,
 ):
-    import os
     from datetime import UTC, datetime, timedelta
 
-    target = tmp_path / ("a" * 64 + ".jsonl")
-    target.write_bytes(b"obsolete\n")
-    past = (datetime.now(UTC) - timedelta(hours=48)).timestamp()
-    os.utime(target, (past, past))
+    from sqlalchemy import select
+
+    from kortravelweather.export_artifacts import prepare_export_chunk
+    from kortravelweather.export_database_artifacts import export_artifact_store
+
+    repo = publisher_repository
+    store = export_artifact_store(repo, tmp_path)
+    chunk = prepare_export_chunk([{"obsolete": True}], source_collected_at=datetime.now(UTC))
+    # DB 행은 UPDATE 불가이므로 오래된 orphan을 처음부터 그 시각으로 삽입한다.
+    with repo.engine.begin() as connection:
+        connection.execute(store.table.insert().values(
+            digest=chunk.digest, payload=chunk.payload, byte_count=len(chunk.payload),
+            point_count=chunk.point_count, created_at=datetime.now(UTC) - timedelta(hours=48),
+        ))
     monkeypatch.setattr(module, "_GC_NEXT", [0.0])
     sensor, owned = build(
-        publisher_repository, tmp_path, gc=WeatherSettings().service_export_artifact_gc,
+        repo, tmp_path, gc=WeatherSettings().service_export_artifact_gc,
     )
     with DagsterInstance.ephemeral() as instance:
         result = evaluate(sensor, instance)
-    assert not target.exists()
-    assert "gc=delete:1files/9B" in result.skip_message
+    with repo.engine.connect() as connection:
+        assert connection.scalar(select(store.table.c.digest).where(
+            store.table.c.digest == chunk.digest,
+        )) is None
+    assert not list(tmp_path.glob("*.jsonl"))
+    assert f"gc=delete:1files/{len(chunk.payload)}B" in result.skip_message
     assert "gc_complete=true" in result.skip_message
     assert "gc_pending=0" in result.skip_message
     assert owned[0].engine.pool.checkedout() == 0

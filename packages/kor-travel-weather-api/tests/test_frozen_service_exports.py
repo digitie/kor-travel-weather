@@ -475,6 +475,7 @@ def test_forecast_missing_head_remains_stale_on_cursor_and_does_not_replace_curr
     assert locations.json()["meta"]["source_status"] == "stale"
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_forecast_four_mib_cap_cursor_keeps_every_last_included_location(
     repository, tmp_path, monkeypatch
 ):
@@ -530,6 +531,7 @@ def test_forecast_snapshot_metadata_lock_has_bounded_wait_and_recovers(repositor
     )
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_reader_guard_wait_is_retryable_and_the_same_request_recovers(repository, tmp_path):
     from kortravelweather.export_artifacts import ExportArtifactStore
 
@@ -544,6 +546,7 @@ def test_reader_guard_wait_is_retryable_and_the_same_request_recovers(repository
     assert client.get(url, params=params, headers=HEADERS).status_code == 200
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_reader_waits_out_a_short_exclusive_hold_instead_of_503(repository, tmp_path):
     """배타 보유가 2초를 조금 넘어도 reader는 기본 5초 안에서 기다려 200을 낸다(2026-11-05 운영)."""
     import threading
@@ -656,6 +659,7 @@ def _make_old_generations_collectable(repository, root):
     export_gc.LATEST_SNAPSHOTS = 0
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
     repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
@@ -694,6 +698,7 @@ def test_gc_after_freeze_commit_cannot_remove_the_snapshot_files(
     assert values == {11.0}  # freeze한 이전 generation 그대로
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
@@ -766,6 +771,7 @@ def test_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     assert values == {11.0}
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_api_pin_insert_runs_outside_the_guard_and_reissues_when_gc_wins(
     repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
@@ -818,6 +824,7 @@ def test_api_pin_insert_runs_outside_the_guard_and_reissues_when_gc_wins(
     assert values == {22.0}  # 되돌린 발급 대신 새 head로 재발급했다.
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_sdk_gc_before_freeze_commit_reissues_instead_of_serving_missing_files(
     repository, tmp_path, monkeypatch, restore_daily_progress,
 ):
@@ -1037,6 +1044,7 @@ def test_issued_forecast_watermark_survives_api_clock_rollback(repository, tmp_p
     assert invalid.status_code == 422
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_legacy_null_location_index_recovers_after_same_content_recollection(repository, tmp_path):
     from sqlalchemy import select
 
@@ -1287,6 +1295,7 @@ def test_expired_cursor_returns_410_without_success_or_etag(repository, tmp_path
     assert "etag" not in r.headers
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_unready_partial_provider_and_missing_file_never_empty_ok(repository, tmp_path):
     client = _client(repository, tmp_path)
     assert client.get("/v1/service/exports/current", headers=HEADERS).status_code == 503
@@ -1304,6 +1313,7 @@ def test_unready_partial_provider_and_missing_file_never_empty_ok(repository, tm
     assert r.status_code == 503 and "items" not in r.json() and "etag" not in r.headers
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_artifact_read_does_not_hold_pg_connection(repository, tmp_path, monkeypatch):
     from kortravelweather.export_artifacts import ExportArtifactStore
 
@@ -1507,6 +1517,7 @@ def test_location_snapshot_does_not_read_arbitrary_unused_metadata(repository, t
     assert "unused_large" not in r.text
 
 
+@pytest.mark.usefixtures("filesystem_exports")
 def test_forecast_location_with_only_past_targets_is_omitted_instead_of_503(
     repository, tmp_path, monkeypatch
 ):

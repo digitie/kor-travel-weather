@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select, text
 
 from kortravelweather.export_collector import publish_pending_exports
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.repository import WeatherRepository
 
 
@@ -42,7 +43,10 @@ def candidate(repository, root, monkeypatch, *, terminal="success", dagster=Fals
             return original(**kwargs)
 
         monkeypatch.setattr(repository, "begin_export_attempt", begin)
-    return _candidate(repository, root, descriptor or _descriptor(repository), finish=terminal)
+    return _candidate(
+        repository, root, descriptor or _descriptor(repository), finish=terminal,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
 
 
 def state(repository, heads, identity):
@@ -64,7 +68,8 @@ def test_promotion_keeps_confirmed_rejection_distinct_from_pending(
     from test_export_heads import _candidate, _descriptor
 
     heads, identity, capture, *_ = _candidate(
-        publisher_repository, tmp_path, _descriptor(publisher_repository), finish=terminal
+        publisher_repository, tmp_path, _descriptor(publisher_repository), finish=terminal,
+        artifacts=DatabaseExportArtifactStore(publisher_repository),
     )
     assert heads.promote(identity, capture.artifacts) == "REJECTED"
 
@@ -168,15 +173,16 @@ def test_probe_timeout_is_unknown_and_connection_is_released(publisher_repositor
         release.set()
 
 
-def test_missing_file_is_retryable_and_original_bytes_can_recover(publisher_repository, tmp_path,
-                                                              monkeypatch):
+def test_missing_database_artifact_is_retryable_and_original_bytes_can_recover(
+    publisher_repository, tmp_path, monkeypatch,
+):
     heads, identity, *_ = candidate(publisher_repository, tmp_path, monkeypatch)
-    artifact = next(tmp_path.glob("*.jsonl"))
-    saved = artifact.read_bytes()
-    artifact.unlink()
+    from export_database_fixtures import remove_artifact, restore_artifact
+
+    saved = remove_artifact(publisher_repository)
     assert publish_pending_exports(publisher_repository, tmp_path).results == {"NOT_READY": 1}
     assert state(publisher_repository, heads, identity)[0]["status"] == "preparing"
-    artifact.write_bytes(saved)
+    restore_artifact(publisher_repository, saved)
     assert publish_pending_exports(publisher_repository, tmp_path).results == {"PUBLISHED": 1}
 
 

@@ -6,12 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 import test_export_publisher_recovery as fixtures
+from export_database_fixtures import remove_artifact, restore_artifact
 from sqlalchemy import select
 
 from kortravelweather import export_collector as publisher
-from kortravelweather.export_artifacts import ExportArtifactStore, prepare_export_chunk
+from kortravelweather.export_artifacts import prepare_export_chunk
 from kortravelweather.export_daily import KST
 from kortravelweather.export_daily_store import daily_coverage_table, daily_summary_tables
+from kortravelweather.export_database_artifacts import export_artifact_store
 from kortravelweather.export_heads import ExportHeads, ScopeDescriptor
 from kortravelweather.models import WeatherLocation
 
@@ -21,7 +23,7 @@ clear_exports = fixtures.clear_exports
 
 def seed_mixed_approved_metadata(repository, root, *, locations=300):
     """합성 승인 metadata+실제 artifact. 원천 권위/운영 처리율 시험은 아니다."""
-    heads, store = ExportHeads(repository), ExportArtifactStore(root)
+    heads, store = ExportHeads(repository), export_artifact_store(repository, root)
     clock = datetime.now(UTC) - timedelta(minutes=1)
     target = (datetime.now(KST) - timedelta(days=1)).replace(
         hour=6, minute=0, second=0, microsecond=0,
@@ -124,15 +126,13 @@ def test_daily_missing_artifact_stops_without_advancing_checkpoint_and_repairs(
 ):
     repo = publisher_repository
     _, generations, refs = seed_mixed_approved_metadata(repo, tmp_path, locations=3)
-    broken = tmp_path / (refs[0]["artifact_digest"] + ".jsonl")
-    saved = broken.read_bytes()
-    broken.unlink()
+    saved = remove_artifact(repo, refs[0]["artifact_digest"])
     monkeypatch.setattr(publisher, "time", SimpleNamespace(monotonic=lambda: 0))
     assert publisher.refresh_publisher_daily(repo, tmp_path, deadline=4) == {
         "processed": 0, "has_more": True,
     }
     assert checkpoint(repo) is None
-    broken.write_bytes(saved)
+    restore_artifact(repo, saved)
     assert publisher.refresh_publisher_daily(repo, tmp_path, deadline=4)["processed"] == 6
     assert checkpoint(repo)["generation_id"] == generations[-1]["generation_id"]
 
@@ -180,7 +180,9 @@ def test_publisher_tick_prunes_only_long_expired_snapshot_handles(
 
     repo = publisher_repository
     _, generations, _ = seed_mixed_approved_metadata(repo, tmp_path, locations=2)
-    reader = FrozenLocationExports(repo, ExportArtifactStore(tmp_path), signing_key="prune-test")
+    reader = FrozenLocationExports(
+        repo, export_artifact_store(repo, tmp_path), signing_key="prune-test",
+    )
     live, _ = reader.page("locations", limit=1, cursor=None)
     assert live["meta"]["has_more"]
     snapshots, refs = export_snapshot_tables(ExportHeads(repo).metadata)

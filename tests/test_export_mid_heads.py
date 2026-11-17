@@ -11,8 +11,9 @@ from sqlalchemy import select
 from test_export_external import external_repository as external_repository
 from test_export_mid import _source
 
-from kortravelweather.export_artifacts import ExportArtifactError, ExportArtifactStore
+from kortravelweather.export_artifacts import ExportArtifactError
 from kortravelweather.export_collector import KmaNowcastExportCollector
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_heads import ExportHeads, parse_scope_descriptor
 from kortravelweather.export_inventory import export_inventory_table
 from kortravelweather.export_mid import normalize_mid_source
@@ -65,7 +66,7 @@ def test_mid_native_capture_publishes_issued_revision_and_role_inventory(
     )
     assert count == len(values)
     repo.finish_sync_run(run.run_id, status="success", values_loaded=count)
-    assert heads.promote(identity, ExportArtifactStore(tmp_path)) == "PUBLISHED"
+    assert heads.promote(identity, DatabaseExportArtifactStore(repo)) == "PUBLISHED"
     table = export_inventory_table(heads.metadata)
     with repo.engine.connect() as c:
         plan = c.execute(select(heads.plans).where(

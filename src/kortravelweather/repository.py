@@ -86,6 +86,7 @@ from .export_artifacts import (
     prepare_export_chunk,
 )
 from .export_daily_store import daily_summary_tables
+from .export_database_artifacts import export_artifact_table, install_artifact_immutability
 from .export_external_cohorts import external_cohort_table
 from .export_heads import export_head_tables, validate_head_capture
 from .export_inventory import export_inventory_table
@@ -153,6 +154,7 @@ from .partitions import (
     validate_foreign_keys_into_facts,
     write_deferral_mark,
 )
+from .read_deadline import ReadDeadlineQueuePool
 from .retention import (
     MAX_BATCH_SIZE,
     SHORT_FORECAST_CANDIDATES_AFTER_SQL,
@@ -176,6 +178,7 @@ class Base(DeclarativeBase):
 
 # 파생 주소는 원천 주소·좌표와 분리해 같은 소비자 DB에 저장한다.
 reverse_address_tables(Base.metadata)
+export_artifact_table(Base.metadata)
 export_receipt_tables(Base.metadata)
 export_lifecycle_tables(Base.metadata)
 export_head_tables(Base.metadata)
@@ -658,6 +661,10 @@ class SyncRunRow(Base):
     __table_args__ = (
         Index("ix_weather_sync_runs_started", "started_at"),
         Index("ix_weather_sync_runs_heartbeat", "heartbeat_at"),
+        Index(
+            "ix_weather_sync_runs_success_finished", "provider", "dataset_key",
+            text("finished_at DESC"), postgresql_where=text("status = 'success'"),
+        ),
         Index(
             "ix_weather_sync_runs_export_pending", "provider", "started_at", "run_id",
             postgresql_where=text("export_status_pending = true"),
@@ -1409,6 +1416,7 @@ class WeatherRepository:
             pool_size=10,
             max_overflow=10,
             pool_timeout=15,
+            poolclass=ReadDeadlineQueuePool,
             pool_pre_ping=True,
             connect_args={"connect_timeout": 10},
         )
@@ -1427,6 +1435,7 @@ class WeatherRepository:
         install_immutability_triggers(self.engine)
         today = kst_now().date()
         with self.engine.begin() as connection:
+            install_artifact_immutability(connection)
             ensure_default_partition(connection)
             ensure_partitions(
                 connection,
@@ -2579,6 +2588,9 @@ class WeatherRepository:
                                         source_point_counts={
                                             key: len(keys) for key, keys in source_points.items()
                                         })
+                    persist = getattr(export_capture.artifacts, "record_in_transaction", None)
+                    if persist is not None:
+                        persist(session, chunk)
                 if prepared is not None:
                     prepared.append(chunk)
             except Exception:
@@ -2709,8 +2721,11 @@ class WeatherRepository:
             return loaded, prepared[0] if prepared else None
 
         loaded, chunk = self._retry_lock_race(step)
-        if export_capture is not None and chunk is not None:
+        if (export_capture is not None and chunk is not None
+                and not hasattr(export_capture.artifacts, "record_in_transaction")):
             try:
+                # DB 저장소는 fact·receipt와 같은 transaction에서 이미 확정했다.
+                # 직접 파일 저장소를 쓰는 이전 도구·시험의 호환 경로다.
                 # DB commit 뒤 파일을 쓴다. publisher는 receipt와 파일 digest 둘 다 확인해야 한다.
                 export_capture.artifacts.publish(chunk)
             except (OSError, ExportArtifactError):

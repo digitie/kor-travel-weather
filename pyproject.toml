@@ -81,6 +81,7 @@ testpaths = [
 ]
 pythonpath = [
   "src",
+  "tests",
   "packages/kor-travel-weather-api/src",
   "packages/kor-travel-weather-dagster/src",
   # tests/test_export_daily_sources.py가 API 시험의 fixture 모듈(test_all_source_exports)을 쓴다.

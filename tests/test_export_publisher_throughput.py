@@ -15,7 +15,7 @@ import pytest
 import test_export_publisher_recovery as fixtures
 from sqlalchemy import select, text
 
-from kortravelweather import export_artifacts, export_collector
+from kortravelweather import export_collector, export_database_artifacts
 from kortravelweather.export_collector import (
     TickStatusProbe,
     _publisher_terminal,
@@ -23,6 +23,7 @@ from kortravelweather.export_collector import (
     publish_pending_exports,
     retire_settled_attempts,
 )
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_heads import ExportHeads
 
 publisher_repository = fixtures.publisher_repository
@@ -48,7 +49,10 @@ def _same_run_candidates(repo, root, monkeypatch, count, *, orchestrator=None):
         run = repo.start_sync_run(provider="python-kma-api",
                                   dataset_key="kma_ultra_short_nowcast")
         patch.setattr(repo, "start_sync_run", lambda **_: run)
-        made = [_candidate(repo, root, _descriptor(repo), finish=None)[1] for _ in range(count)]
+        made = [_candidate(
+            repo, root, _descriptor(repo), finish=None,
+            artifacts=DatabaseExportArtifactStore(repo),
+        )[1] for _ in range(count)]
     return run, made
 
 
@@ -396,11 +400,10 @@ def test_probe_is_per_tick_and_falls_back_when_the_batch_fails():
     assert fresh.cached("b") == (True, "FAILURE") and fresh.cached("c") == (True, None)
 
 
-def test_promotion_hashes_each_chunk_once_and_parses_each_point_once(
+def test_promotion_checks_database_payload_and_decodes_each_point_once(
     publisher_repository, tmp_path, monkeypatch,
 ):
-    """reconcile은 hash·크기·줄 수만 확인하고 승격 단계는 같은 guard 안에서 hash를
-    다시 계산하지 않는다(운영 A55에서 예보 1건당 검증 CPU의 대부분)."""
+    """DB 행은 매번 무결성을 검증하고 복호한 point만 캐시에서 재사용한다."""
     repo = publisher_repository
     heads, identity, capture, *_ = candidate(repo, tmp_path, monkeypatch)
     with repo.engine.connect() as connection:
@@ -415,30 +418,36 @@ def test_promotion_hashes_each_chunk_once_and_parses_each_point_once(
         counts["loads"] += 1
         return json.loads(line)
 
-    monkeypatch.setattr(export_artifacts, "hashlib", SimpleNamespace(sha256=sha256))
-    monkeypatch.setattr(export_artifacts, "json", SimpleNamespace(loads=loads, dumps=json.dumps))
+    monkeypatch.setattr(export_database_artifacts, "hashlib", SimpleNamespace(sha256=sha256))
+    monkeypatch.setattr(
+        export_database_artifacts, "json", SimpleNamespace(loads=loads, dumps=json.dumps),
+    )
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
-    assert counts == {"sha": 1, "loads": chunk["point_count"]}
-    # guard 밖 read는 아직 믿을 수 없는(방금 쓴) 파일이면 hash를 다시 확인한다. 검증한 같은
-    # 파일의 복호 캐시 hit는 tests/test_export_repeated_work.py가 따로 검사한다.
-    monkeypatch.setattr(export_artifacts, "_RACY_IDENTITY_NS", 10**30, raising=False)
+    assert counts["sha"] >= 1 and counts["loads"] == chunk["point_count"]
+    verified = counts["sha"]
     list(capture.artifacts.read(chunk["artifact_digest"], byte_count=chunk["byte_count"],
                                 point_count=chunk["point_count"]))
-    assert counts["sha"] == 2
+    assert counts == {"sha": verified + 1, "loads": chunk["point_count"]}
 
 
-def test_corrupt_artifact_is_still_rejected_inside_the_guard(
+def test_database_rejects_artifact_tampering_and_publisher_keeps_original_bytes(
     publisher_repository, tmp_path, monkeypatch,
 ):
+    from sqlalchemy.exc import IntegrityError
+
     repo = publisher_repository
     heads, identity, capture, *_ = candidate(repo, tmp_path, monkeypatch)
-    path = next(tmp_path.glob("*.jsonl"))
-    payload = bytearray(path.read_bytes())
-    payload[5] = ord("X") if payload[5] != ord("X") else ord("Y")
-    path.chmod(0o600)
-    path.write_bytes(bytes(payload))
-    assert publish_pending_exports(repo, tmp_path).results == {"NOT_READY": 1}
-    assert state(repo, heads, identity)[0]["status"] == "preparing"
+    table = capture.artifacts.table
+    with repo.engine.connect() as connection:
+        before = dict(connection.execute(select(table)).mappings().one())
+    with pytest.raises(IntegrityError), repo.engine.begin() as connection:
+        connection.execute(table.update().where(table.c.digest == before["digest"]).values(
+            payload=b"corrupted",
+        ))
+    with repo.engine.connect() as connection:
+        assert dict(connection.execute(select(table)).mappings().one()) == before
+    assert publish_pending_exports(repo, tmp_path).results == {"PUBLISHED": 1}
+    assert not list(tmp_path.glob("*.jsonl"))
 
 
 def test_promotion_burst_yields_the_artifact_guard_to_readers_and_writers(
@@ -450,22 +459,20 @@ def test_promotion_burst_yields_the_artifact_guard_to_readers_and_writers(
     하고, 그동안 다른 thread의 shared 읽기와 publish()가 모두 성공해야 한다."""
     from kortravelweather.export_artifacts import (
         ExportArtifactError,
-        ExportArtifactStore,
         prepare_export_chunk,
     )
-
     repo = publisher_repository
     count = 15
     for _ in range(count):
         candidate(repo, tmp_path, monkeypatch)
-    original_lines = ExportArtifactStore._lines
+    original_payload = DatabaseExportArtifactStore._payload
 
-    def slow_lines(self, *args, **kwargs):
+    def slow_payload(self, *args, **kwargs):
         time.sleep(0.08)  # 운영 A55의 검증·digest 한 번에 해당하는 시간 동안 guard를 잡는다.
-        return original_lines(self, *args, **kwargs)
+        return original_payload(self, *args, **kwargs)
 
-    monkeypatch.setattr(ExportArtifactStore, "_lines", slow_lines)
-    store = ExportArtifactStore(tmp_path)
+    monkeypatch.setattr(DatabaseExportArtifactStore, "_payload", slow_payload)
+    store = DatabaseExportArtifactStore(repo)
     chunk = prepare_export_chunk([{"probe": "contention"}], source_collected_at=datetime.now(UTC))
     stop, failures, done = threading.Event(), [], {"read": 0, "write": 0}
 

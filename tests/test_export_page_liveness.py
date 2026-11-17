@@ -361,3 +361,85 @@ def test_install_lock_timeout_bounded_and_atomic(owned):
         assert connection.scalar(text("SELECT to_regclass(:name)"), {"name": TABLE_NAME}) is None
         blocker.rollback()
     install_page_liveness(connection)
+
+
+def test_shared_metadata_keeps_each_engine_schema_despite_other_engine_and_search_path(
+    weather_test_database_url,
+):
+    """같은 metadata를 다른 engine에 생성해도 기존 검증 schema를 덮어쓰지 않는다."""
+    admin = create_engine(weather_test_database_url)
+    schemas = ["liveness_engine_" + uuid.uuid4().hex for _ in range(2)]
+    engines = []
+    try:
+        with admin.begin() as connection:
+            for schema in schemas:
+                connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+        engines = [create_engine(weather_test_database_url) for _ in schemas]
+        with engines[0].begin() as first:
+            first.exec_driver_sql(f'SET LOCAL search_path TO "{schemas[0]}"')
+            metadata, targets = minimal(first)
+            first.execute(delete(targets[0]))
+            assert capture_liveness(first, metadata) == (1, 0, 0)
+        with engines[1].begin() as second:
+            second.exec_driver_sql(f'SET LOCAL search_path TO "{schemas[1]}"')
+            metadata.create_all(second)
+            second.execute(delete(targets[1]))
+            assert capture_liveness(second, metadata) == (0, 1, 0)
+        # 양쪽 engine의 current search_path를 뒤집어도 생성 시 검증한 schema를 쓴다.
+        for engine, shadow, expected in (
+            (engines[0], schemas[1], (1, 0, 0)),
+            (engines[1], schemas[0], (0, 1, 0)),
+        ):
+            with engine.begin() as connection:
+                connection.exec_driver_sql(f'SET LOCAL search_path TO "{shadow}"')
+                assert capture_liveness(connection, metadata) == expected
+        with admin.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA "{schemas[1]}" CASCADE')
+        with engines[0].begin() as connection:
+            assert capture_liveness(connection, metadata) == (1, 0, 0)
+    finally:
+        for engine in engines:
+            engine.dispose()
+        with admin.begin() as connection:
+            for schema in schemas:
+                connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.dispose()
+
+
+def test_shared_runtime_metadata_temporary_engine_does_not_poison_new_public_engine(
+    weather_test_database_url,
+):
+    """실제 Base.metadata를 임시 schema에 생성·삭제한 뒤 새 public engine으로 읽는다."""
+    from kortravelweather.repository import Base, WeatherRepository
+
+    repository = WeatherRepository(weather_test_database_url)
+    temporary = None
+    fresh = None
+    schema = "liveness_runtime_" + uuid.uuid4().hex
+    try:
+        repository.create_schema()
+        with repository.engine.begin() as connection:
+            before = capture_liveness(connection, Base.metadata)
+            connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+        temporary = create_engine(
+            weather_test_database_url, connect_args={"options": f"-csearch_path={schema}"},
+        )
+        with temporary.begin() as connection:
+            Base.metadata.create_all(connection)
+            assert capture_liveness(connection, Base.metadata) == (0, 0, 0)
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
+        fresh = create_engine(weather_test_database_url)
+        with fresh.begin() as connection:
+            assert connection.dialect.default_schema_name == "public"
+            assert capture_liveness(connection, Base.metadata) == before
+        with repository.engine.begin() as connection:
+            assert capture_liveness(connection, Base.metadata) == before
+    finally:
+        if fresh is not None:
+            fresh.dispose()
+        if temporary is not None:
+            temporary.dispose()
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        repository.engine.dispose()

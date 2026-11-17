@@ -11,7 +11,7 @@ from sqlalchemy import select
 from test_airkorea_weather import _EntersAndCloses, _station
 from test_export_external import external_repository as external_repository
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_external_cohorts import external_cohort_table
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_receipts import ExportAttempt
@@ -101,10 +101,10 @@ def test_actual_airkorea_predeclares_before_http_and_keeps_prior_on_native_failu
         assert len(identities) == 2
         for identity in identities:
             assert heads.promote(
-                ExportAttempt(*identity), ExportArtifactStore(tmp_path)
+                ExportAttempt(*identity), DatabaseExportArtifactStore(repo)
             ) == "PUBLISHED"
         reader = FrozenCurrentExports(
-            repo, ExportArtifactStore(tmp_path), signing_key="air-fixture-cursor",
+            repo, DatabaseExportArtifactStore(repo), signing_key="air-fixture-cursor",
             providers=(AIRKOREA_PROVIDER,), source_inventory=True,
             expected_sources=((AIRKOREA_PROVIDER, AIRKOREA_MEASUREMENT_DATASET),),
         )

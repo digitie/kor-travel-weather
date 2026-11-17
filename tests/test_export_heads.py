@@ -165,6 +165,7 @@ def _candidate(
     capture_clock_mutator=None,
     post_bind_record_mutator=None,
     cohort=False,
+    artifacts=None,
 ):
     heads = ExportHeads(repository)
     revision = revision or datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(
@@ -248,7 +249,7 @@ def _candidate(
             if capture_clock_mutator
             else record["fetched_at"]
         },
-        ExportArtifactStore(tmp_path),
+        artifacts if artifacts is not None else ExportArtifactStore(tmp_path),
     )
     loaded = repository.ingest_batch(source_records=[record], values=values, export_capture=capture)
     heads.lifecycle.close_source(identity, descriptor.source_scope, ["one"])

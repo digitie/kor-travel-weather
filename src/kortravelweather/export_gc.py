@@ -59,14 +59,13 @@ _ARTIFACT = re.compile(r"([0-9a-f]{64})\.jsonl")
 _CANDIDATE = re.compile(r"\.candidate-[A-Za-z0-9_]+")
 
 
-def live_artifact_digests(
+def live_artifact_statement(
     repository,
     *,
     now: datetime,
     retention: timedelta,
     digests: Collection[str] | None = None,
-    timeout_seconds: float = GC_REFERENCE_SECONDS,
-) -> set[str]:
+):
     """지우면 안 되는 artifact digest 집합. 하나의 transaction 시점에서 읽는다.
 
     ``digests``를 주면 그 digest만 확인한다(artifact_digest 색인 사용). 짧은 statement·
@@ -86,7 +85,7 @@ def live_artifact_digests(
     cutoff = now - retention
     wanted = None if digests is None else sorted(set(digests))
     if wanted == []:
-        return set()
+        return select(literal_column("NULL")).where(text("false"))
     checkpoint = select(progress).where(progress.c.progress_id == 1).subquery()
     unread = or_(
         ~select(checkpoint.c.progress_id).exists(),
@@ -142,6 +141,21 @@ def live_artifact_digests(
             received.where(chunks.c.artifact_digest == candidates.c.digest).exists(),
             referenced.where(refs.c.artifact_digest == candidates.c.digest).exists(),
         ))
+    return statement
+
+
+def live_artifact_digests(
+    repository,
+    *,
+    now: datetime,
+    retention: timedelta,
+    digests: Collection[str] | None = None,
+    timeout_seconds: float = GC_REFERENCE_SECONDS,
+) -> set[str]:
+    """유한 참조 조회. 명시적인 이전 저장소 이관도 동일 판정식을 재사용한다."""
+    if digests is not None and not digests:
+        return set()
+    statement = live_artifact_statement(repository, now=now, retention=retention, digests=digests)
     with repository._session_factory.begin() as session:
         # 세 참조 종류도 한 문장으로 묶어 3초를 종류마다 다시 쓰지 않는다.
         timeout_ms = max(1, int(min(GC_REFERENCE_SECONDS, timeout_seconds) * 1000))
@@ -169,6 +183,9 @@ class ArtifactGCScan:
         self.exhausted = False
 
     def close(self) -> None:
+        database_scan = getattr(self, "_database_artifact_scan", None)
+        if database_scan is not None:
+            database_scan.close()
         if self.entries is not None:
             self.entries.close()
         self.entries = None
@@ -205,7 +222,7 @@ class ArtifactGCScan:
                 self.pending.append((entry.name, info.st_size))
 
 
-def collect_export_artifacts(
+def collect_legacy_export_artifacts(
     repository,
     artifact_root: Path,
     *,
@@ -321,3 +338,18 @@ def collect_export_artifacts(
     finally:
         if owned:
             scan.close()
+
+
+def collect_export_artifacts(
+    repository, artifact_root: Path, *, mode: str = "dry_run", deadline: float,
+    delete_budget_seconds: float = 1.5, retention: timedelta = DEFAULT_RETENTION,
+    grace: timedelta = DEFAULT_GRACE, now: datetime | None = None,
+    scan: ArtifactGCScan | None = None,
+) -> dict[str, Any]:
+    """서비스 GC는 DB 저장소만 정리한다. 이전 파일 정리는 명시적 도구의 책임이다."""
+    from .export_database_gc import collect_database_export_artifacts
+
+    return collect_database_export_artifacts(
+        repository, mode=mode, deadline=deadline, delete_budget_seconds=delete_budget_seconds,
+        retention=retention, grace=grace, now=now, scan=scan,
+    )

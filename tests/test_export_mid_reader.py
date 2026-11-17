@@ -198,6 +198,9 @@ def test_location_with_only_past_mid_targets_is_omitted_and_page_is_stale():
     frozen["selection"] = handle.selection
     row = {"snapshot_id": "00000000-0000-0000-0000-000000000001", "manifest": frozen,
            "source_collected_at": now, "created_at": now}
+    from kortravelweather.export_heads import _digest
+
+    row["manifest_digest"] = _digest(frozen)
     handle._freeze_forecasts = lambda: row
     handle._health = lambda *_: False
     page, _ = handle.page(limit=5000, cursor=None)

@@ -243,7 +243,7 @@ def test_actual_sdk_capture_native_success_promotes(
 
     from sqlalchemy import select
 
-    from kortravelweather.export_artifacts import ExportArtifactStore
+    from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
     from kortravelweather.export_heads import ExportHeads, parse_scope_descriptor
     from kortravelweather.export_sdk_collector import SdkExportCollector
     from kortravelweather.models import WeatherLocation
@@ -276,7 +276,7 @@ def test_actual_sdk_capture_native_success_promotes(
     assert collector.ingest(prepared, record=source, values=values) == len(values)
     repo.finish_sync_run(run.run_id, status="success", values_loaded=len(values))
     heads = ExportHeads(repo)
-    assert heads.promote(prepared.identity, ExportArtifactStore(tmp_path)) == "PUBLISHED"
+    assert heads.promote(prepared.identity, DatabaseExportArtifactStore(repo)) == "PUBLISHED"
     with repo.engine.connect() as c:
         count = c.scalar(select(heads.generations.c.point_count).join(
             heads.heads, heads.heads.c.generation_id == heads.generations.c.generation_id

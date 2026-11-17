@@ -16,7 +16,7 @@ from test_export_external import (
     external_repository as external_repository,
 )
 
-from kortravelweather.export_artifacts import ExportArtifactStore
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_heads import ExportHeads, parse_scope_descriptor
 from kortravelweather.export_inventory import (
     bootstrap_approved_locations,
@@ -45,7 +45,9 @@ def _publish(repo, root, locations, dataset_key="open_meteo_current"):
             heads.lifecycle.attempts.c.attempt_id, heads.lifecycle.attempts.c.owner_id,
         ).where(heads.lifecycle.attempts.c.run_id == result["run_id"])).all()
     for identity in identities:
-        assert heads.promote(ExportAttempt(*identity), ExportArtifactStore(root)) == "PUBLISHED"
+        assert heads.promote(
+            ExportAttempt(*identity), DatabaseExportArtifactStore(repo),
+        ) == "PUBLISHED"
     with repo.engine.connect() as c:
         return {row["location_id"]: dict(row) for row in read_approved_locations(
             c, heads.metadata, providers=["open_meteo"], dataset_keys=["open_meteo_current"],
@@ -584,7 +586,7 @@ def test_current_inventory_reader_retains_rotation_and_failed_cursor_stays_stale
             ))
         _publish(repo, tmp_path, targets)
         reader = FrozenCurrentExports(
-            repo, ExportArtifactStore(tmp_path), signing_key="inventory-cursor",
+            repo, DatabaseExportArtifactStore(repo), signing_key="inventory-cursor",
             providers=["open_meteo"], source_inventory=True,
             expected_sources=[("open_meteo", "open_meteo_current")],
         )

@@ -32,6 +32,7 @@ from sqlalchemy import (
     String,
     Table,
     delete,
+    func,
     select,
     update,
 )
@@ -50,11 +51,15 @@ from .export_capacity import (
 )
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
 from .export_snapshot_refs import insert_snapshot_refs
+from .read_performance import measured_stage
 
 MAX_SNAPSHOT_LOCATIONS = 5000
 MAX_PAGE_BYTES = 4 * 1024 * 1024
 PAGE_META_RESERVE = 8192
 SNAPSHOT_TTL = timedelta(minutes=15)
+SNAPSHOT_MAX_LIFETIME = timedelta(hours=6)
+MAX_PAGE_ARTIFACTS = 128
+MAX_PAGE_SCOPES = 128
 
 
 def snapshot_expires_at(now):
@@ -215,10 +220,11 @@ class FrozenCurrentExports:
     def __init__(
         self, repository, artifacts: ExportArtifactStore, *, signing_key: str, providers=None,
         source_inventory=False, expected_sources=(), optional_sources=(), selection_cache=None,
-        immutable_reads=False, page_liveness=False,
+        immutable_reads=False, page_liveness=False, snapshot_cache=None,
     ):
         if not signing_key:
             raise ValueError("기존 service token이 필요합니다.")
+        self.snapshot_cache = snapshot_cache
         self.selection_cache = selection_cache
         # 앱 공용 선택은 지금부터 이 초 이상 남은 것만 이어받는다(route가 요청 종류별로 정한다).
         # None이면 이 요청이 시작한 뒤 읽힌 선택만 쓴다(긴 첫 페이지가 60초 전체를 쓰도록).
@@ -324,6 +330,13 @@ class FrozenCurrentExports:
 
         if self.selection_cache is None:
             return read()
+        if getattr(self, "revalidate_first_page", False):
+            # 예보 첫 페이지는 clock 해상도/공용 캐시와 무관하게 새 cohort 실패를 즉시 본다.
+            result = read()
+            deadline = self.selection_checked_after + 60
+            self.selection_deadline = min(self.selection_deadline or deadline, deadline)
+            self.reuse_generations.update(scope.generation_id for scope in result.scopes)
+            return result
         key = self.selection_cache.key(
             connection, locations, self.expected_sources, self.optional_sources,
             health_location_ids,
@@ -357,6 +370,7 @@ class FrozenCurrentExports:
         self.selection_checked_after = monotonic()
         self.reuse_wall_started = datetime.now(UTC)
 
+    @measured_stage("metadata")
     def validate_reusable_page(self):
         """검증한 결과의 작은 DB proof와 실제 사용 파일만 검사한다. 전체 freeze는 하지 않는다."""
         from .export_page_cache import PageReuseExpired
@@ -372,7 +386,7 @@ class FrozenCurrentExports:
                 connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
                 row = connection.execute(select(
                     self.snapshots.c.snapshot_id, self.snapshots.c.manifest_digest,
-                    self.snapshots.c.expires_at,
+                    self.snapshots.c.expires_at, self.snapshots.c.created_at,
                 ).where(
                     self.snapshots.c.snapshot_id == self.reuse_snapshot[0]
                 )).mappings().one_or_none()
@@ -414,8 +428,20 @@ class FrozenCurrentExports:
             # 재사용 응답은 이미 검증한 메모리 페이지다. 파일 유실(GC·삭제)은 숨기지 않도록 매 hit
             # 존재·크기를 확인하지만, 파일 전체를 다시 읽어 hash하지는 않는다(odroid eMMC IO).
             # 내용 손상은 다음 miss의 재구성이 동일 fd hash로 잡는다.
-            for digest, byte_count, _point_count in self.reuse_artifacts:
-                self.artifacts.present(digest, byte_count=byte_count)
+            if not getattr(self.artifacts, "is_database", False):
+                for digest, byte_count, point_count in self.reuse_artifacts:
+                    self.artifacts.verify(
+                        digest, byte_count=byte_count, point_count=point_count,
+                    )
+            present_many = getattr(self.artifacts, "present_many", None)
+            if callable(present_many):
+                present_many([
+                    {"artifact_digest": digest, "byte_count": byte_count}
+                    for digest, byte_count, _point_count in self.reuse_artifacts
+                ])
+            else:
+                for digest, byte_count, _point_count in self.reuse_artifacts:
+                    self.artifacts.present(digest, byte_count=byte_count)
         self.require_current_selection()
         if datetime.now(UTC) >= row["expires_at"]:
             raise PageReuseExpired()
@@ -511,6 +537,7 @@ class FrozenCurrentExports:
             raise ExportSnapshotUnavailable("선택 위치 전체의 성공 head가 준비되지 않았습니다.")
         return descriptors, heads, None, False
 
+    @measured_stage("freeze")
     def _freeze(self):
         # catalog와 head vector를 동일 MVCC에서 읽는다. 파일 I/O는 이 TX 밖이다.
         with (
@@ -688,11 +715,21 @@ class FrozenCurrentExports:
             if self.immutable_reads:
                 with self.artifacts.guard(shared=True):
                     try:
-                        for digest, size in {
-                            (ref["artifact_digest"], ref["byte_count"])
-                            for scope in scopes for ref in scope["refs"]
-                        }:
-                            self.artifacts.present(digest, byte_count=size)
+                        refs = [
+                            {"artifact_digest": digest, "byte_count": size}
+                            for digest, size in {
+                                (ref["artifact_digest"], ref["byte_count"])
+                                for scope in scopes for ref in scope["refs"]
+                            }
+                        ]
+                        present_many = getattr(self.artifacts, "present_many", None)
+                        if callable(present_many):
+                            present_many(refs)
+                        else:
+                            for ref in refs:
+                                self.artifacts.present(
+                                    ref["artifact_digest"], byte_count=ref["byte_count"],
+                                )
                     except ExportArtifactError as exc:
                         # 발급 TX를 되돌리고 ensure_snapshot_files가 새 head로 다시 발급한다.
                         raise AtomicPinMissing() from exc
@@ -749,6 +786,32 @@ class FrozenCurrentExports:
         # commit된 snapshot ref·head·보존 창이 GC에서 지킨다(freeze·health는 DB만 본다).
         return self._page_guarded(resource, limit=limit, cursor=cursor)
 
+    def _read_cursor_snapshot(self, snapshot_id):
+        with self.heads._transaction() as connection:
+            return self._cursor_snapshot_row(connection, snapshot_id)
+
+    @measured_stage("metadata")
+    def _cursor_snapshot_row(self, connection, snapshot_id):
+        def load():
+            row = connection.execute(select(self.snapshots).where(
+                self.snapshots.c.snapshot_id == snapshot_id,
+            )).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+        if self.snapshot_cache is None:
+            return load()
+        header = connection.execute(select(
+            self.snapshots.c.snapshot_id, self.snapshots.c.manifest_digest,
+            self.snapshots.c.expires_at,
+        ).where(self.snapshots.c.snapshot_id == snapshot_id)).mappings().one_or_none()
+        if header is None or header["expires_at"] <= datetime.now(UTC):
+            return None
+        key = (id(self.repository.engine), snapshot_id, header["manifest_digest"])
+        row = self.snapshot_cache.read(key, load)
+        if row is not None:
+            row["expires_at"] = header["expires_at"]
+        return row
+
     def _renew_reused(self, frozen):
         """첫 페이지가 재사용한 기존 handle의 TTL을 연장한다(best-effort).
 
@@ -760,22 +823,30 @@ class FrozenCurrentExports:
         if not frozen.pop("_reused", False):
             return frozen
         now = datetime.now(UTC)
-        # 새 handle은 분 경계까지 여유를 둔다. 충분한 수명이 남았으면 DB 쓰기·잠금이 없다.
-        if frozen["expires_at"] >= now + SNAPSHOT_TTL:
+        if frozen["expires_at"] <= now:
+            return frozen  # 만료된 handle은 UPDATE로 되살리지 않는다.
+        ceiling = frozen["created_at"] + SNAPSHOT_MAX_LIFETIME
+        target = min(snapshot_expires_at(now), ceiling)
+        # 분 단위 coalescing과 총 수명 상한: 같은 분의 page마다 UPDATE하지 않는다.
+        if frozen["expires_at"] >= min(now + SNAPSHOT_TTL, ceiling):
             return frozen
         table = self.snapshots
         try:
             with self.repository.engine.connect() as connection, connection.begin():
                 connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
                 connection.exec_driver_sql("SET LOCAL lock_timeout = '1s'")
+                # 행 잠금을 기다리는 동안 만료될 수 있으므로 잠금 뒤 서버 시각으로 재판정한다.
+                connection.execute(select(table.c.snapshot_id).where(
+                    table.c.snapshot_id == frozen["snapshot_id"],
+                ).with_for_update()).scalar_one_or_none()
                 renewed = connection.execute(
                     update(table)
                     .where(
                         table.c.snapshot_id == frozen["snapshot_id"],
-                        table.c.expires_at > now,
-                        table.c.expires_at < snapshot_expires_at(now),
+                        table.c.expires_at > func.greatest(now, func.clock_timestamp()),
+                        table.c.expires_at < target,
                     )
-                    .values(expires_at=snapshot_expires_at(now))
+                    .values(expires_at=target)
                     .returning(table.c.expires_at)
                 ).scalar_one_or_none()
         except SQLAlchemyError as exc:
@@ -819,19 +890,12 @@ class FrozenCurrentExports:
             state = self._decode(cursor)
             if state["r"] != cursor_resource or state["l"] != limit:
                 raise ExportCursorInvalid("cursor의 resource/limit은 변경할 수 없습니다.")
-            with self.heads._transaction() as session:
-                frozen = (
-                    session.execute(
-                        select(self.snapshots).where(self.snapshots.c.snapshot_id == state["s"])
-                    )
-                    .mappings()
-                    .one_or_none()
+            frozen = self._read_cursor_snapshot(state["s"])
+            if frozen is None or frozen["expires_at"] <= datetime.now(UTC):
+                raise ExportSnapshotExpired(
+                    "snapshot이 만료됐습니다. 첫 페이지부터 다시 요청하세요."
                 )
-                if frozen is None or frozen["expires_at"] <= datetime.now(UTC):
-                    raise ExportSnapshotExpired(
-                        "snapshot이 만료됐습니다. 첫 페이지부터 다시 요청하세요."
-                    )
-                frozen = dict(frozen)
+            frozen = self._renew_reused(dict(frozen, _reused=True))
         else:
             def issue():
                 try:
@@ -881,8 +945,19 @@ class FrozenCurrentExports:
             # 가리키는 세대의 파일을 지우지 않는다. snapshot_refs가 generation 행 삭제도 막는다.
             # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
             # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
+            scope_reads, artifact_reads = 0, 0
             while state["g"] < len(scopes):
                 scope = scopes[state["g"]]
+                if (scope_reads >= MAX_PAGE_SCOPES
+                        or artifact_reads + len(scope["refs"]) > MAX_PAGE_ARTIFACTS):
+                    if not output:
+                        raise ExportSnapshotUnavailable(
+                            "단일 scope가 페이지 읽기 상한을 넘었습니다.",
+                        )
+                    more = True
+                    break
+                scope_reads += 1
+                artifact_reads += len(scope["refs"])
                 points = []
                 selected = set(scope["location_ids"])
                 approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))

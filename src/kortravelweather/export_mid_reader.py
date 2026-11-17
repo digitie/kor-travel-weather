@@ -134,6 +134,9 @@ class FrozenMidForecastExports(FrozenForecastExports):
         ref = _location_ref(scope, key)
         identity = (scope["generation_id"], ref["artifact_digest"])
         if cache.get("identity") != identity:
+            self.reuse_artifacts.add((
+                ref["artifact_digest"], ref["byte_count"], ref["point_count"],
+            ))
             points = defaultdict(list)
             for point in self.artifacts.read_shared(
                 ref["artifact_digest"], byte_count=ref["byte_count"],
@@ -165,6 +168,9 @@ class FrozenMidForecastExports(FrozenForecastExports):
             raise ExportCursorInvalid("중기 위치 cursor의 범위가 올바르지 않습니다.")
         output, size = [], 0
         caches = {"land": {}, "temperature": {}}
+        artifact_reads = 0
+        from .export_snapshots import MAX_PAGE_ARTIFACTS
+
         while state["g"] < len(pairs):
             pair = pairs[state["g"]]
             if self.since is not None and _at(pair["published_at"]) <= self.since:
@@ -173,6 +179,16 @@ class FrozenMidForecastExports(FrozenForecastExports):
             if len(output) >= limit:
                 return output, True
             key = pair["location_id"]
+            needed = [
+                (scopes[pair[part]]["generation_id"],
+                 _location_ref(scopes[pair[part]], key)["artifact_digest"])
+                for part in ("land", "temperature")
+            ]
+            new_reads = sum(caches[part].get("identity") != identity
+                            for part, identity in zip(("land", "temperature"), needed, strict=True))
+            if artifact_reads + new_reads > MAX_PAGE_ARTIFACTS:
+                return output, True
+            artifact_reads += new_reads
             points = [point for part in ("land", "temperature") for point in self._chunk(
                 scopes[pair[part]], key, caches[part],
             )]

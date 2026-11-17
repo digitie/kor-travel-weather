@@ -6,9 +6,9 @@ from export_clock import install_api_clock
 from sqlalchemy import select
 from test_frozen_service_exports import HEADERS, _client, _collect, _collect_forecast, repository
 
-from kortravelweather.export_artifacts import ExportArtifactStore
 from kortravelweather.export_collector import dagster_status_lookup, publish_pending_exports
 from kortravelweather.export_daily_store import refresh_daily_summaries
+from kortravelweather.export_database_artifacts import export_artifact_store
 from kortravelweather.export_heads import ExportHeads, ScopeDescriptor
 
 # sibling fixture를 명시 export한다. 본 시험은 같은 격리 DB fixture만 사용한다.
@@ -41,7 +41,7 @@ def test_confirmed_dagster_failure_keeps_old_pages_stale_and_invalidates_healthy
     checks = [(f"/v1/service/exports/{resource}",
                {"limit": 1, **({"style": "ultra_short"} if resource == "forecasts" else {})})]
     if resource == "current":
-        refresh_daily_summaries(repository, ExportArtifactStore(tmp_path))
+        refresh_daily_summaries(repository, export_artifact_store(repository, tmp_path))
         checks.append(("/v1/service/exports/daily-summaries", {"limit": 1}))
     before = [client.get(url, params=params, headers=HEADERS) for url, params in checks]
     assert all(r.status_code == 200 and r.json()["meta"]["source_status"] == "ok"
