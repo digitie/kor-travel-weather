@@ -19,7 +19,8 @@ export function sanitizeLocalPath(value: unknown, fallback = "/"): string {
   }
   try {
     const parsed = new URL(candidate, "http://weather.local");
-    if (parsed.origin !== "http://weather.local") return fallback;
+    // The other copies of this helper also require the normalised path to stay a single-slash local path.
+    if (parsed.origin !== "http://weather.local" || parsed.pathname.startsWith("//")) return fallback;
     return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return fallback;

@@ -14,6 +14,12 @@ describe("sanitizeLocalPath", () => {
     expect(sanitizeLocalPath("https://evil.example/login")).toBe("/");
   });
 
+  it("requires the normalised path to stay local, like the shared helper", () => {
+    expect(sanitizeLocalPath("/a/..//outside.invalid")).toBe("/");
+    expect(sanitizeLocalPath("/.//outside.invalid")).toBe("/");
+    expect(sanitizeLocalPath("/a/../b?x=1")).toBe("/b?x=1");
+  });
+
   it("rejects backslash and non-string values", () => {
     expect(sanitizeLocalPath("/\\\\evil.example")).toBe("/");
     expect(sanitizeLocalPath(null)).toBe("/");
