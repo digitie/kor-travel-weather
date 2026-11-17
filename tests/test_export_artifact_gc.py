@@ -12,7 +12,12 @@ from kortravelweather import export_gc
 from kortravelweather.export_artifacts import ExportArtifactStore
 from kortravelweather.export_collector import retire_settled_attempts
 from kortravelweather.export_daily_store import daily_summary_tables
-from kortravelweather.export_gc import collect_export_artifacts, live_artifact_digests
+from kortravelweather.export_gc import (
+    collect_legacy_export_artifacts as collect_export_artifacts,
+)
+from kortravelweather.export_gc import (
+    live_artifact_digests,
+)
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_inventory import export_inventory_table
 from kortravelweather.export_snapshots import export_snapshot_tables

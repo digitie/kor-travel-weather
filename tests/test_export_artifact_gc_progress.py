@@ -15,7 +15,12 @@ from sqlalchemy.exc import DBAPIError
 
 from kortravelweather import export_gc
 from kortravelweather.export_artifacts import ExportArtifactStore
-from kortravelweather.export_gc import ArtifactGCScan, collect_export_artifacts
+from kortravelweather.export_gc import (
+    ArtifactGCScan,
+)
+from kortravelweather.export_gc import (
+    collect_legacy_export_artifacts as collect_export_artifacts,
+)
 from kortravelweather.export_heads import ExportHeads
 
 publisher_repository = fixtures.publisher_repository
