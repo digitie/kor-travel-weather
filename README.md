@@ -172,7 +172,7 @@ GPL-3.0-or-later. Provider 원천 데이터와 API 응답은 각 기관의 이�
 
 ### 프론트엔드 필수 검증
 
-루트 .nvmrc의 Node22.23.1과 private frontend의 npm12.0.1을 선택한 뒤 실행한다.
+루트 .nvmrc의 Node26.13.1과 private frontend의 npm12.0.1을 선택한 뒤 실행한다.
 다음 명령은 실제 설치·품질 검증용이며 문서에 적었다는 사실은 통과 증거가 아니다.
 
 ```bash

@@ -1,3 +1,7 @@
+## 2026-11-18 — Node 26.13.1 축 이동(Common T-029)
+
+소유자 결정(2026-11-17)에 따라 프론트엔드 Node 축을 22.23.1에서 26.13.1(최신 LTS)로 옮겼다. npm은 12.0.1 그대로다. 공통 guard 호출 SHA와 `common-ref`를 두 workflow(`ci.yml`·`common-frontend-policy.yml`) 모두 T-029 채택 커밋 `0dec9543c8c8730ce7b05837f2fbe6c31d4ede65`로 올렸다. `.nvmrc`·관리자 frontend `engines.node`·lock root engines·CI `setup-node`·`deploy/Dockerfile.web`의 두 Node `FROM`(기존과 같은 alpine 변형, 공식 multi-arch index digest `sha256:6bd9ab43…`, amd64·arm64 포함)·빌드 계약 검사(`scripts/weather-build-contract.py`의 런타임 버전)를 맞췄다. 각 Node stage는 계속 npm 12.0.1을 명시 설치한다(Node 26 동봉 npm은 11.20.0). 의존성 graph·vendor는 바뀌지 않았다. 웹 이미지는 다음 배포 때 다시 빌드되며 이 작업에서 배포·운영 변경은 0이다.
+
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
 kor-travel-common이 다섯 저장소를 다시 조사해 계획을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, 적대 리뷰 2회 반영, Weather 조사 기준 `e68f16a7`). Weather 몫은 Common `T-465`·`T-466`·`T-467`·`T-468`·`T-481a`이며 `docs/tasks.md`에 포인터 한 항목만 뒀다. 관리자 부품 묶음은 선택형 패키지로 나오므로 채택 시점은 Weather가 정한다. 회수 sensor의 새 cursor 기능(Common `T-314`)은 켜야만 적용되고 핀만 올려서는 바뀌지 않는다. 문서 전용이고 코드·운영 변경은 0이다.

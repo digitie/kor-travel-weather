@@ -149,7 +149,7 @@ const fs=require('node:fs'),crypto=require('node:crypto'),cp=require('node:child
 const data=JSON.parse(fs.readFileSync(0,'utf8'));
 const hash=b=>crypto.createHash('sha256').update(b).digest('hex');
 const check=(v)=>{if(!v)throw new Error('runtime-contract');};
-check(process.getuid()===1000 && process.version==='v22.23.1');
+check(process.getuid()===1000 && process.version==='v26.13.1');
 check(cp.execFileSync('npm',['--version'],{encoding:'utf8'}).trim()==='12.0.1');
 let count=0;
 for(const [pkg,files] of Object.entries(data.common))
