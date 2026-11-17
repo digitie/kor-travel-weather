@@ -1,6 +1,6 @@
 ## 2026-11-17 — 읽기 성능 계획(세 서비스 공통)
 
-- [ ] **READ-PLAN-20261117** — Map 저장소의 [읽기 성능 계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md) §8.5가 weather 쪽 요청 `T-READ-WEA-01`~`04`(공개 읽기 시간 상한·단계별 지표, export의 싼 304와 페이지 고정 비용, cursor 페이지의 snapshot 만료 연장, 특보 최신성 조회의 색인 또는 상태 행)의 정본이다. 내부 개선의 정본은 그대로 [실사용 성능 개선안](design/weather-performance-use-cases-20261109.md)과 `W-EXPORT-SLOW-20261108`이며 겹치는 부분은 그쪽이 우선한다. 운영 PinVi는 날씨를 Map의 Valkey 표면으로 읽고 이 서비스를 직접 부르는 곳은 특보(`/v1/weather/markers`)뿐이므로, 이 저장소에서의 우선순위는 Map 적재의 완주와 odroid 부하다. 착수할 때 항목마다 이 원장에 개별 task로 옮긴다. Map PR이 머지되기 전에는 Map 브랜치 `docs/read-performance-plan-20261117`에서 읽는다.
+- [ ] **READ-PLAN-20261117** — Map 저장소의 [읽기 성능 계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md) §8(단계 순 작업 목록)이 weather 쪽 요청 `T-READ-WEA-01`~`04`(공개 읽기 시간 상한·단계별 지표, export의 싼 304와 페이지 고정 비용, cursor 페이지의 snapshot 만료 연장, 특보 최신성 조회의 색인 또는 상태 행)의 정본이다. 내부 개선의 정본은 그대로 [실사용 성능 개선안](design/weather-performance-use-cases-20261109.md)과 `W-EXPORT-SLOW-20261108`이며 겹치는 부분은 그쪽이 우선한다. 운영 PinVi는 날씨를 Map의 Valkey 표면으로 읽고 이 서비스를 직접 부르는 곳은 특보(`/v1/weather/markers`)뿐이므로, 이 저장소에서의 우선순위는 Map 적재의 완주와 odroid 부하다. 착수할 때 항목마다 이 원장에 개별 task로 옮긴다. Map PR이 머지되기 전에는 Map 브랜치 `docs/read-performance-plan-20261117`에서 읽는다.
 
 ## 2026-11-15 — Dagster 운영 수용 후속
 
