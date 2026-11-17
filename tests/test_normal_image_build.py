@@ -645,7 +645,8 @@ class RealVendorTests(unittest.TestCase):
     def test_actual_c11_vendor_sri_and_file_inventory(self):
         files = contract.common_manifest(ROOT)
         self.assertEqual(set(files), contract.COMMON_PACKAGES)
-        self.assertEqual(sum(len(x) for x in files.values()), 263)
+        # 후보12: vworld-map-web 1.0.4가 dist/src vworldTileRequest 3파일을 더했다(263 -> 266).
+        self.assertEqual(sum(len(x) for x in files.values()), 266)
 
 
 

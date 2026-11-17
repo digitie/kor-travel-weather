@@ -1,6 +1,9 @@
 ## 2026-11-17 — 읽기 성능 계획 포인터
 
 Map 저장소가 Map·weather·transport의 읽기 경로 검토와 작업 목록을 한 문서로 정리했고, weather 쪽 요청 네 건(`T-READ-WEA-01`~`04`)을 `docs/tasks.md`의 `READ-PLAN-20261117`로 가리킨다. 코드는 main `e68f16a7`을 읽기만 했다. odroid에서는 2026-11-17 03:38~03:46Z에 읽기 전용으로 부하·mount·`/health` 3회·위치 목록 1건만 확인했다 — CPU idle 0%(Dagster run 작업), export artifact volume은 eMMC, PG 데이터가 있는 NVMe의 남은 공간 1.9 GB. 한 시점의 표본이며 지속 여부는 확인하지 않았다. 제품 코드·설정·운영 변경0. [계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md).
+## 2026-11-17 — 관리자 로컬 경로 정규화 검사 정렬
+
+관리자 프론트 서버 쪽 `lib/navigation.ts`의 `sanitizeLocalPath`에 공통 `@kor-travel/ui/navigation`과 Transport 사본이 이미 갖고 있는 검증 하나를 더해 세 사본의 판정을 맞췄다. 수정 전 실패하는 단위 시험 한 건을 추가했다. 호출부·세션·화면은 바꾸지 않았다. 운영 이미지·수집·DB 변경0이며 반영에는 Weather 관리자 이미지 배포가 필요하다. 다음 한 작업은 바뀌지 않는다.
 
 ## 2026-11-16 — 로드 완료 후 마커 물음표 수정
 

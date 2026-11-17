@@ -1,6 +1,6 @@
 # 공용 UI 고정 산출물
 
-현재 참조/원장은 아래 **2026-11-11 공통 Radix·VirtualTable 후보** 절을 따른다. 앞선 절은 보존한 이력이다.
+현재 참조/원장은 아래 **2026-11-17 공통 후보12** 절을 따른다. 앞선 절은 보존한 이력이다.
 
 토큰 원천: [kor-travel-common](https://github.com/digitie/kor-travel-common/tree/50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3), commit `50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3`.
 `npm run build` 후 `npm pack ./packages/tokens`, `npm pack ./packages/ui`로 생성했다.
@@ -48,7 +48,7 @@ JS가 로드되지 않으면 폼이 계속 비활성이다. dev.6~dev.8은 이�
 
 ## 2026-11-11 공통 Radix·VirtualTable 후보
 
-현재 참조는 UI `0.2.0`, tokens `0.1.1`, 지도 web `1.0.3`·core `1.0.0`이다.
+당시 참조는 UI `0.2.0`, tokens `0.1.1`, 지도 web `1.0.3`·core `1.0.0`이다.
 이번 root artifacts의 **동일 bytes**를 복사하며 실제 원장은 frontend `common-artifacts.json`이다.
 과거 dev 산출물은 이력으로 보존하고 package.json/lock이 참조하지 않는다.
 
@@ -73,3 +73,25 @@ npm run check:dependencies
 `app`, `components`, `lib`를 모두 지정한다. 선언/실제 lock 버전·필수 라이브러리·금지된
 중복 표/overlay·tgz 원장/실제 bytes/lock integrity를 검사하며 CI의 필수 단계다.
 React Doctor `0.9.22 --scope full --blocking warning`과 ESLint `10.14.0`도 별도 CI gate다.
+
+## 2026-11-17 공통 후보12
+
+현재 참조는 UI `0.2.1`, tokens `0.1.2`, 지도 web `1.0.4`·core `1.0.1`이다. rn `1.0.2`는 원장과 맞춰 vendor에만 두며
+package.json은 선언하지 않는다. UI·tokens는 Common main `97f8ed98360518e7afc96e89a5b45a6a478ac955`(#58) push CI artifact
+`common-release-packs-97f8ed98360518e7afc96e89a5b45a6a478ac955`의 동일 tgz다(제품 source
+`938d1db701286414113324da714132db62e3311e`, #57). 지도 web·rn은 maplibre-vworld-react main
+`79b70997de8dd4a6bcc9630233f14f273cb27991` pack이며 PinVi #763과 같은 bytes다. web `1.0.4`는 `vworld://` 스킴을
+문자열로 https로 바꾼다(upstream #33). 원장은 Common `frontend-artifacts.json` 정본(쓰지 않는 toast 제외)과 같다.
+
+| 산출물 | SHA-256 |
+|---|---|
+| kor-travel-tokens-0.1.2.tgz | `c6e2e27d716d5db7c9157f412cfd28d941536c032ce702a8cceb32f2a0c16253` |
+| kor-travel-ui-0.2.1.tgz | `f1a8212bef2b171c0f7a209d2ee893750cb74f6cb8a89766bd6a62c73d62de6c` |
+| vworld-map-web-1.0.4.tgz | `aa6a24de87676643eff5a6e8ccc4c8a3a1421cdd0bd462c5a23432c5f51d6970` |
+| vworld-map-rn-1.0.2.tgz | `70a7434814ed824695c5ee442be34c70f5322e0e7453f100daed07fb0e725fce` |
+
+```bash
+# npm 12.0.1 · Node 22.23.1. 부모가 동결한 tgz를 복사한 뒤 lock만 다시 만든다.
+npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+npm run check:dependencies
+```
