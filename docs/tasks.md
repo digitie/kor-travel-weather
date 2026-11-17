@@ -1,6 +1,6 @@
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
-- [ ] **COMMON-PLAN-20261117 / P2** — kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`) 가운데 Weather가 실행하는 task를 추적한다. 선행 없음: Common `T-468`(`components/ui/*` 순수 재수출 shim 13개를 공통 경로 직접 import로, 릴리스 불필요), `T-465`(관리자 프론트 `lib/navigation.ts`의 판정 본체를 공통 `sanitizeLocalPath` 호출로 바꾸는 중복 제거. 구현 간 검증 차이는 #244로 이미 맞췄다. `%20`이 든 경로처럼 결과가 달라지는 입력이 있어 받아들일지 먼저 정한다). Common 작업 뒤: `T-467`(guard 호출 SHA를 Common이 지정한 채택 커밋으로, `T-024` 뒤), `T-466`(선택형 패키지 `@kor-travel/admin-kit` 채택, `T-221` 뒤), `T-481a`(로컬 수집 결과 tag 함수를 공통 구현으로, `T-313` 뒤, 급하지 않다). 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다. 시점은 Weather 유지 팀이 정한다.
+- [ ] **COMMON-PLAN-20261117 / P2** — kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`) 가운데 Weather가 실행하는 task를 추적한다. 선행 없음: Common `T-468`(`components/ui/*` 순수 재수출 shim 13개를 공통 경로 직접 import로, 릴리스 불필요), `T-465`(관리자 프론트 `lib/navigation.ts`의 판정 본체를 공통 `sanitizeLocalPath` 호출로 바꾸는 중복 제거. 구현 간 검증 차이는 #244로 이미 맞췄다. `%20`이 든 경로처럼 결과가 달라지는 입력이 있어 받아들일지 먼저 정한다). Common 작업 뒤: `T-467`(guard 호출 SHA를 Common이 지정한 채택 커밋으로, `T-024` 뒤), `T-466`(선택형 패키지 `@kor-travel/admin-kit` 채택, `T-221` 뒤), `T-481a`(로컬 수집 결과 tag 함수를 공통 구현으로, `T-313` 뒤, 급하지 않다). Common `T-025`(ui·tokens patch 릴리스) 전에 `T-467`이 병합되지 않으면 그날 ui·tokens를 재vendor해야 한다(Common은 릴리스 전에 이 팀의 확인을 받는다). `T-466`은 새 guard를 쓰고 있으면 첫 단계로 호출 SHA를 Common이 지정한 admin-kit 채택 커밋으로 올리고 ui·tokens를 재vendor한다. 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다. 시점은 Weather 유지 팀이 정한다.
 
 ## 2026-11-17 — 읽기 성능 계획(세 서비스 공통)
 
