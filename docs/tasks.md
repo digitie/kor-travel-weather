@@ -119,12 +119,13 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
   2026-11-02 #196 배포 뒤 재측정(12:00Z~): current part는 3~11분, forecast part는 여전히 길다(open_meteo
   forecast tick 11:17 겹침 skip, inventory p50 5.3h; openweathermap forecast 마지막 10:57, p50 1.9h). export 첫 페이지
   freeze는 slow lane 한가할 때 current 27·short 118·external 89초, 동시 진행 때 46·196·149초(journal 11-03).
-- [ ] **W-EXP-GC-01 / P1 (목표 2026-11-03)** — PR #176 artifact GC를 `dry_run`으로 약 1주 관찰한 뒤
-  `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`로 바꾼다. 볼 것: `ktw_export_artifact_gc_reclaimable_bytes`
-  추이와 publisher sensor skip 메시지의 `stages=…gc:<초>`. 전환 조건은 배타 guard 안 참조 재확인이
-  2초보다 충분히 짧게 유지되는 것이다. `dry_run`은 guard 안 재확인을 실행하지 않으므로, 관찰 기간에는
-  guard 밖 전체 참조 조회(재확인은 그 digest 부분집합)를 상한 대리값으로 보고 `delete` 첫 tick들에서
-  실제 재확인 시간을 다시 확인한다. 디스크 여유 약 187 GB(2026-10-27)라 1주 대기에 여유가 있다.
+- [ ] **W-EXP-GC-01 / P1 (2026-11-17 보완)** — 운영 artifact 볼륨 약 72.36GB에서 GC가
+  여전히 dry_run이며 전체 참조 조회 timeout과 매 tick flat 디렉터리 재시작이 관측됐다.
+  제품 기본을 delete로 바꾸고 후보 digest별 참조 확인·tick 간 탐색 재개를 적용했다.
+  운영의 명시 dry_run은 정상 release 적용 시 별도 조정해야 한다. 부모의 파일 정리와
+  동시 수동 unlink/GC 호출은 하지 않는다. 실제 deleted counter·볼륨 변화·참조 안전성을
+  확인하기 전까지 운영 해결 완료로 표시하지 않는다. GC의 제한된 eligible byte를 72GB
+  전체 회수량으로 읽지 않는다. 의존성/GDAL/BuildKit cache 정리는 이 작업 범위가 아니다.
 - [ ] **W-OPS-ODROID-01 / P2 (Codex 합의 필요)** — odroid에 현재 weather release 기록이 없어 최신
   `images.yml` 없이 재생성하면 조용히 옛 이미지로 돌아간다(2026-10-27 weather173/176 배포가 엇갈림).
   `/srv/ktdm-releases/weather-current` 표지와 runbook 문구를 [제안](reports/2026-10-27-odroid-weather-current-release-pointer.md)했다.

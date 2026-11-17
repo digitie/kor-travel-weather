@@ -26,12 +26,14 @@ import os
 import re
 import stat
 import time
+from collections import deque
 from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import literal_column, select, text, tuple_, union
+from sqlalchemy import String, column, literal_column, or_, select, text, tuple_, union, values
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore
 
@@ -46,8 +48,10 @@ LATEST_SNAPSHOTS = 64
 UNLINK_BATCH = 256
 #: 한 번의 GC가 지우는 파일 상한. 넘는 나머지는 다음 주기에 본다(complete=False).
 MAX_UNLINKS = 20000
+#: 파일 수와 무관하게 한 번에 기억하는 오래된 후보 수. 나머지는 열린 iterator에서 이어간다.
+MAX_SCAN_CANDIDATES = 20000
+GC_REFERENCE_SECONDS = 3.0
 #: 참조 조회 transaction의 상한. publisher tick 상한 안에서 GC의 최악 시간을 묶는다.
-GC_STATEMENT_TIMEOUT = "3s"
 GC_LOCK_TIMEOUT = "1s"
 #: 지우기 묶음마다 배타 guard를 기다리는 상한(초).
 GC_GUARD_TIMEOUT_SECONDS = 1.0
@@ -61,6 +65,7 @@ def live_artifact_digests(
     now: datetime,
     retention: timedelta,
     digests: Collection[str] | None = None,
+    timeout_seconds: float = GC_REFERENCE_SECONDS,
 ) -> set[str]:
     """지우면 안 되는 artifact digest 집합. 하나의 transaction 시점에서 읽는다.
 
@@ -82,55 +87,116 @@ def live_artifact_digests(
     wanted = None if digests is None else sorted(set(digests))
     if wanted == []:
         return set()
+    checkpoint = select(progress).where(progress.c.progress_id == 1).subquery()
+    unread = or_(
+        ~select(checkpoint.c.progress_id).exists(),
+        tuple_(generations.c.created_at, generations.c.generation_id) > tuple_(
+            select(checkpoint.c.published_at).scalar_subquery(),
+            select(checkpoint.c.generation_id).scalar_subquery(),
+        ),
+    )
+    latest = select(snapshots.c.snapshot_id).order_by(
+        snapshots.c.issue_order.desc(),
+    ).limit(LATEST_SNAPSHOTS)
+    # 후보 digest 색인에서 시작해 그 generation의 보호 사유만 확인한다. 운영의 수십만
+    # generation/inventory 전체 UNION을 먼저 만들지 않는다. 보호 종류는 이전과 동일하다.
+    protected = or_(
+        generations.c.created_at > cutoff,
+        unread,
+        select(heads.heads.c.generation_id).where(
+            heads.heads.c.generation_id == generations.c.generation_id,
+        ).exists(),
+        select(inventory.c.generation_id).where(
+            inventory.c.generation_id == generations.c.generation_id,
+        ).exists(),
+        select(snapshot_refs.c.generation_id).join(
+            snapshots, snapshots.c.snapshot_id == snapshot_refs.c.snapshot_id,
+        ).where(
+            snapshot_refs.c.generation_id == generations.c.generation_id,
+            or_(snapshots.c.expires_at > cutoff, snapshots.c.snapshot_id.in_(latest)),
+        ).exists(),
+    )
+    referenced = select(refs.c.artifact_digest).join(
+        generations, generations.c.generation_id == refs.c.generation_id,
+    ).where(protected)
+    received = select(chunks.c.artifact_digest).join(
+        attempts, attempts.c.attempt_id == chunks.c.attempt_id,
+    ).where(
+        attempts.c.status.in_([literal_column("'preparing'"), literal_column("'sealed'")]),
+        attempts.c.published_at.is_(None),
+    )
+    pinned = select(pins.c.artifact_digest)
+    if wanted is None:
+        statement = union(referenced, received, pinned)
+    else:
+        candidates = values(column("digest", String(64)), name="gc_candidates").data(
+            [(digest,) for digest in wanted],
+        )
+        # 같은 내용 파일이 수십만 generation에 재사용돼도 첫 live 참조에서 끝낸다.
+        # digest별 EXISTS이므로 전체 일치 행을 읽어 Python set으로 줄이지 않는다.
+        statement = select(candidates.c.digest).where(or_(
+            pinned.where(pins.c.artifact_digest == candidates.c.digest).exists(),
+            received.where(chunks.c.artifact_digest == candidates.c.digest).exists(),
+            referenced.where(refs.c.artifact_digest == candidates.c.digest).exists(),
+        ))
     with repository._session_factory.begin() as session:
-        session.execute(text(f"SET LOCAL statement_timeout = '{GC_STATEMENT_TIMEOUT}'"))
+        # 세 참조 종류도 한 문장으로 묶어 3초를 종류마다 다시 쓰지 않는다.
+        timeout_ms = max(1, int(min(GC_REFERENCE_SECONDS, timeout_seconds) * 1000))
+        session.execute(text(f"SET LOCAL statement_timeout = '{timeout_ms}ms'"))
         session.execute(text(f"SET LOCAL lock_timeout = '{GC_LOCK_TIMEOUT}'"))
-        checkpoint = session.execute(
-            select(progress.c.published_at, progress.c.generation_id).where(
-                progress.c.progress_id == 1,
-            )
-        ).first()
-        unread = select(generations.c.generation_id)
-        if checkpoint is not None:
-            unread = unread.where(
-                tuple_(generations.c.created_at, generations.c.generation_id)
-                > tuple_(checkpoint.published_at, checkpoint.generation_id)
-            )
-        latest = (
-            select(snapshots.c.snapshot_id)
-            .order_by(snapshots.c.issue_order.desc())
-            .limit(LATEST_SNAPSHOTS)
-            .subquery()
-        )
-        live_generations = union(
-            select(heads.heads.c.generation_id),
-            select(inventory.c.generation_id),
-            select(generations.c.generation_id).where(generations.c.created_at > cutoff),
-            select(snapshot_refs.c.generation_id)
-            .join(snapshots, snapshots.c.snapshot_id == snapshot_refs.c.snapshot_id)
-            .where(snapshots.c.expires_at > cutoff),
-            select(snapshot_refs.c.generation_id).where(
-                snapshot_refs.c.snapshot_id.in_(select(latest.c.snapshot_id))
-            ),
-            unread,
-        ).subquery()
-        referenced = select(refs.c.artifact_digest).where(
-            refs.c.generation_id.in_(select(live_generations.c.generation_id))
-        )
-        pending = select(attempts.c.attempt_id).where(
-            attempts.c.status.in_([literal_column("'preparing'"), literal_column("'sealed'")]),
-            attempts.c.published_at.is_(None),
-        )
-        received = select(chunks.c.artifact_digest).where(chunks.c.attempt_id.in_(pending))
-        pinned = select(pins.c.artifact_digest)
-        if wanted is not None:
-            referenced = referenced.where(refs.c.artifact_digest.in_(wanted))
-            received = received.where(chunks.c.artifact_digest.in_(wanted))
-            pinned = pinned.where(pins.c.artifact_digest.in_(wanted))
-        live = set(session.scalars(referenced))
-        live.update(session.scalars(received))
-        live.update(session.scalars(pinned))
-    return live
+        return set(session.scalars(statement))
+
+
+class ArtifactGCScan:
+    """publisher 프로세스가 tick 사이에 보유하는 한 root의 유한 탐색 위치.
+
+    디스크 cursor/목록 파일을 만들지 않는다. 재시작하면 처음부터 다시 읽어도 안전하고,
+    같은 프로세스에서는 긴 live/최근 파일 앞부분을 tick마다 재탐색하지 않는다.
+    참조 조회 실패·취소 때 pending을 남겨 다음 실행이 파일을 재검사하게 한다.
+    호출자는 기존 publisher의 단일 tick slot 안에서만 같은 scan을 사용한다.
+    """
+
+    def __init__(self) -> None:
+        self.root: Path | None = None
+        self.entries = None
+        self.pending: deque[tuple[str, int]] = deque()
+        self.exhausted = False
+
+    def close(self) -> None:
+        if self.entries is not None:
+            self.entries.close()
+        self.entries = None
+        self.root = None
+        self.pending.clear()
+        self.exhausted = False
+
+    def read(self, root: Path, *, deadline: float, cut: float, report: dict[str, Any]) -> None:
+        if root != self.root:
+            self.close()
+            self.root = root
+            self.entries = os.scandir(root)
+        # 먼저 지난 실행이 아직 처리하지 못한 묶음을 비운다.
+        if self.pending or self.exhausted:
+            return
+        while len(self.pending) < MAX_SCAN_CANDIDATES and time.monotonic() < deadline:
+            try:
+                entry = next(self.entries)
+            except StopIteration:
+                self.entries.close()
+                self.entries = None
+                self.exhausted = True
+                break
+            report["visited"] += 1
+            match = _ARTIFACT.fullmatch(entry.name)
+            if match is None and _CANDIDATE.fullmatch(entry.name) is None:
+                continue
+            report["scanned"] += int(match is not None)
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_mtime < cut:
+                self.pending.append((entry.name, info.st_size))
 
 
 def collect_export_artifacts(
@@ -143,11 +209,13 @@ def collect_export_artifacts(
     retention: timedelta = DEFAULT_RETENTION,
     grace: timedelta = DEFAULT_GRACE,
     now: datetime | None = None,
+    scan: ArtifactGCScan | None = None,
 ) -> dict[str, Any]:
-    """참조가 없는 오래된 artifact를 지운다(``dry_run``은 세기만 한다).
+    """유한 후보 묶음의 참조만 확인하고 기존 guard 안에서 오래된 비참조 파일을 지운다.
 
-    ``deadline``은 목록 단계의 ``time.monotonic()`` 협력 예산이고, 지우기 단계는 시작부터
-    ``delete_budget_seconds``를 따로 쓴다. 넘으면 다음 주기에 이어간다(complete=False).
+    deadline은 목록 예산이다. 참조/guard 대기(최대 4초)는 삭제 IO 예산과 분리하고,
+    각 문장의 timeout도 남은 처리 예산보다 작게 둔다. publisher는 scan을 재사용한다.
+    독립 호출의 기본 dry_run과 알 수 없는 파일·symlink 보존은 유지한다.
     """
     if mode not in GC_MODES:
         raise ValueError("artifact GC mode는 dry_run 또는 delete입니다.")
@@ -156,87 +224,91 @@ def collect_export_artifacts(
     if not 0 < delete_budget_seconds <= 30:
         raise ValueError("artifact 삭제 예산이 올바르지 않습니다.")
     store = ExportArtifactStore(artifact_root)
-    root = store.root
     report: dict[str, Any] = {
-        "mode": mode, "scanned": 0, "live": 0, "eligible": 0, "eligible_bytes": 0,
-        "deleted": 0, "deleted_bytes": 0, "errors": 0, "complete": True,
+        "mode": mode, "visited": 0, "scanned": 0, "live": 0, "eligible": 0,
+        "eligible_bytes": 0, "deleted": 0, "deleted_bytes": 0, "errors": 0,
+        "complete": False, "pending": 0,
     }
-    if not root.is_dir():
+    if not store.root.is_dir():
+        if scan is not None:
+            scan.close()
+        report["complete"] = True
         return report
+    owned = scan is None
+    scan = scan if scan is not None else ArtifactGCScan()
     clock = now or datetime.now(UTC)
-    live = live_artifact_digests(repository, now=clock, retention=retention)
     cut = (clock - grace).timestamp()
-    eligible: list[tuple[str, int]] = []
-    with os.scandir(root) as entries:
-        for entry in entries:
-            match = _ARTIFACT.fullmatch(entry.name)
-            if match is None and _CANDIDATE.fullmatch(entry.name) is None:
-                # lock 파일과 알 수 없는 이름은 건드리지 않는다.
-                continue
-            if match is not None:
-                report["scanned"] += 1
-                if match.group(1) in live:
-                    report["live"] += 1
-                    continue
-            try:
-                info = entry.stat(follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            if stat.S_ISREG(info.st_mode) and info.st_mtime < cut:
-                eligible.append((entry.name, info.st_size))
-            if time.monotonic() >= deadline:
-                report["complete"] = False
-                break
-    report["eligible"] = len(eligible)
-    report["eligible_bytes"] = sum(size for _, size in eligible)
-    if mode == "dry_run":
-        return report
-    if len(eligible) > MAX_UNLINKS:
-        report["complete"] = False
-        eligible = eligible[:MAX_UNLINKS]
-    delete_deadline = time.monotonic() + delete_budget_seconds
-    for start in range(0, len(eligible), UNLINK_BATCH):
-        if time.monotonic() >= delete_deadline:
-            report["complete"] = False
-            break
-        batch = eligible[start:start + UNLINK_BATCH]
-        batch_digests = [
-            match.group(1) for name, _ in batch
-            if (match := _ARTIFACT.fullmatch(name)) is not None
-        ]
-        try:
-            with store.guard(timeout_seconds=GC_GUARD_TIMEOUT_SECONDS, holder="gc"):
-                # 승격·collector 쓰기는 같은 guard 안에서 commit한다. reader는 commit 뒤 공유
-                # guard 안에서 ref 파일 존재를 확인한다(ensure_snapshot_files).
-                # 배타 guard를 잡은 뒤 이 묶음의 digest만 참조를 다시 읽는다.
-                rechecked = live_artifact_digests(
-                    repository, now=clock, retention=retention, digests=batch_digests,
-                )
-                for name, _ in batch:
-                    match = _ARTIFACT.fullmatch(name)
-                    if match is not None and match.group(1) in rechecked:
-                        continue
-                    path = root / name
-                    try:
-                        info = os.lstat(path)
-                        # guard 대기 중 같은 digest를 다시 쓴 파일은 mtime이 새것이다.
-                        if not stat.S_ISREG(info.st_mode) or info.st_mtime >= cut:
-                            continue
-                        os.unlink(path)
-                    except FileNotFoundError:
-                        continue
-                    except OSError:
-                        report["errors"] += 1
-                        continue
-                    report["deleted"] += 1
-                    report["deleted_bytes"] += info.st_size
-        except ExportArtifactError:
-            # reader·승격이 guard를 잡고 있다. 남은 파일은 다음 주기에 본다.
-            report["complete"] = False
-            break
-    if report["deleted"] or report["errors"]:
-        logger.info(
-            "weather_export_artifact_gc deleted=%s bytes=%s errors=%s complete=%s",
-            report["deleted"], report["deleted_bytes"], report["errors"], report["complete"],
+    try:
+        scan.read(store.root, deadline=deadline, cut=cut, report=report)
+        processing_deadline = (
+            time.monotonic() + delete_budget_seconds + GC_REFERENCE_SECONDS
+            + GC_GUARD_TIMEOUT_SECONDS
         )
-    return report
+        attempted = 0
+        while scan.pending and time.monotonic() < processing_deadline:
+            batch = list(islice(scan.pending, UNLINK_BATCH))
+            digests = [match.group(1) for name, _ in batch
+                       if (match := _ARTIFACT.fullmatch(name)) is not None]
+            if mode == "dry_run":
+                live = live_artifact_digests(
+                    repository, now=clock, retention=retention, digests=digests,
+                    timeout_seconds=processing_deadline - time.monotonic(),
+                )
+                for name, size in batch:
+                    match = _ARTIFACT.fullmatch(name)
+                    if match is not None and match.group(1) in live:
+                        report["live"] += 1
+                    else:
+                        report["eligible"] += 1
+                        report["eligible_bytes"] += size
+                    scan.pending.popleft()
+                continue
+            if attempted >= MAX_UNLINKS:
+                break
+            try:
+                with store.guard(
+                    timeout_seconds=min(
+                        GC_GUARD_TIMEOUT_SECONDS, max(0, processing_deadline - time.monotonic()),
+                    ), holder="gc",
+                ):
+                    # 참조를 guard 밖에서 미리 전부 읽지 않는다. 각 후보의 유일한 판정은
+                    # 삭제 직전 guard 안에서 새 DB snapshot으로 한다. 오류면 이 묶음은 남긴다.
+                    live = live_artifact_digests(
+                        repository, now=clock, retention=retention, digests=digests,
+                        timeout_seconds=processing_deadline - time.monotonic(),
+                    )
+                    for name, size in batch:
+                        match = _ARTIFACT.fullmatch(name)
+                        if match is not None and match.group(1) in live:
+                            report["live"] += 1
+                        else:
+                            report["eligible"] += 1
+                            report["eligible_bytes"] += size
+                    for name, _ in batch:
+                        if attempted >= MAX_UNLINKS or time.monotonic() >= processing_deadline:
+                            break
+                        match = _ARTIFACT.fullmatch(name)
+                        if match is None or match.group(1) not in live:
+                            path = store.root / name
+                            try:
+                                info = os.lstat(path)
+                                if stat.S_ISREG(info.st_mode) and info.st_mtime < cut:
+                                    attempted += 1
+                                    os.unlink(path)
+                                    report["deleted"] += 1
+                                    report["deleted_bytes"] += info.st_size
+                            except FileNotFoundError:
+                                pass
+                            except OSError:
+                                report["errors"] += 1
+                        scan.pending.popleft()
+            except ExportArtifactError:
+                break  # guard가 바쁘면 pending을 보존하고 다음 tick에 재확인한다.
+        report["pending"] = len(scan.pending)
+        report["complete"] = scan.exhausted and not scan.pending
+        if report["complete"]:
+            scan.close()
+        return report
+    finally:
+        if owned:
+            scan.close()
