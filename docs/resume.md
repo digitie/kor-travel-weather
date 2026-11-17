@@ -1,6 +1,7 @@
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
-kor-travel-common이 다섯 저장소를 다시 조사해 계획 초안을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, Weather 조사 기준 `e68f16a7`). Weather 몫은 Common `T-465`·`T-481a`·`T-466`이며 `docs/tasks.md`에 포인터 한 항목만 뒀다. `T-465`는 관리자 프론트 `lib/navigation.ts`의 판정 본체를 공통 `sanitizeLocalPath` 호출로 바꾸는 중복 제거다(구현 간 검증 차이는 #244로 이미 맞췄다). 문서 전용이고 코드·운영 변경은 0이다. Common 계획은 독립 리뷰 전 초안이다.
+kor-travel-common이 다섯 저장소를 다시 조사해 계획을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, 적대 리뷰 2회 반영, Weather 조사 기준 `e68f16a7`). Weather 몫은 Common `T-465`·`T-466`·`T-467`·`T-468`·`T-481a`이며 `docs/tasks.md`에 포인터 한 항목만 뒀다. 관리자 부품 묶음은 선택형 패키지로 나오므로 채택 시점은 Weather가 정한다. 회수 sensor의 새 cursor 기능(Common `T-314`)은 켜야만 적용되고 핀만 올려서는 바뀌지 않는다. 문서 전용이고 코드·운영 변경은 0이다.
+
 ## 2026-11-17 — 관리자 로컬 경로 정규화 검사 정렬
 
 관리자 프론트 서버 쪽 `lib/navigation.ts`의 `sanitizeLocalPath`에 공통 `@kor-travel/ui/navigation`과 Transport 사본이 이미 갖고 있는 검증 하나를 더해 세 사본의 판정을 맞췄다. 수정 전 실패하는 단위 시험 한 건을 추가했다. 호출부·세션·화면은 바꾸지 않았다. 운영 이미지·수집·DB 변경0이며 반영에는 Weather 관리자 이미지 배포가 필요하다. 다음 한 작업은 바뀌지 않는다.
