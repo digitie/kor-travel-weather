@@ -1,3 +1,7 @@
+## 2026-11-17 — 읽기 성능 계획 포인터
+
+Map 저장소가 Map·weather·transport의 읽기 경로 검토와 작업 목록을 한 문서로 정리했고, weather 쪽 요청 네 건(`T-READ-WEA-01`~`04`)을 `docs/tasks.md`의 `READ-PLAN-20261117`로 가리킨다. 코드는 main `e68f16a7`을 읽기만 했다. odroid에서는 2026-11-17 03:38~03:46Z에 읽기 전용으로 부하·mount·`/health` 3회·위치 목록 1건만 확인했다 — CPU idle 0%(Dagster run 작업), export artifact volume은 eMMC, PG 데이터가 있는 NVMe의 남은 공간 1.9 GB. 한 시점의 표본이며 지속 여부는 확인하지 않았다. 제품 코드·설정·운영 변경0. [계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md).
+
 ## 2026-11-16 — 로드 완료 후 마커 물음표 수정
 
 실황에 기온·무강수(PTY=0)만 있고 현재 시간대 SKY가 예보 배열에 있는 실제 응답에서 마커가 `?`로 남는 경로를 재현했다. 실황 상태를 판단할 수 없을 때에만 현재 시간대의 맑음·구름 SKY를 보완하며 접근성 이름에 예보임을 표시한다. 실황 강수·기온, 미래 예보 제외와 자료 미제공 판정은 유지한다. WSL/Docker 각각61개·타입·lint·의존성·전체 Doctor를 통과했다. 다음 한 작업은 정확 후보 CI·소스 PR 정산이다. 운영 이미지·수집·DB 변경0. [근거](reports/2026-11-16-weather-marker-unknown.md).
