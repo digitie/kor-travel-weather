@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from threading import Lock
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import (
     BigInteger,
@@ -29,6 +31,30 @@ TABLE_NAME = "weather_page_liveness_epochs"
 FUNCTION_NAME = "weather_page_liveness_bump"
 TRIGGER_NAME = "weather_page_liveness_changed"
 _TARGET_CHECK = "target_name IN (" + ", ".join(repr(name) for name in TARGETS) + ")"
+# 같은 metadata를 여러 DB/schema에 생성해도 검증 결과를 다른 engine에 전파하지 않는다.
+# engine과 Table 모두 약한 참조라 시험·단기 engine의 수명을 늘리지 않는다.
+_schema_anchors = WeakKeyDictionary()
+_schema_anchor_lock = Lock()
+
+
+def _remember_schema(connection: Connection, table: Table, schema: str) -> None:
+    with _schema_anchor_lock:
+        anchors = _schema_anchors.get(connection.engine)
+        if anchors is None:
+            anchors = WeakKeyDictionary()
+            _schema_anchors[connection.engine] = anchors
+        anchors[table] = schema
+
+
+def _trusted_schema(connection: Connection, table: Table) -> str:
+    if table.schema is not None:
+        return table.schema
+    with _schema_anchor_lock:
+        anchors = _schema_anchors.get(connection.engine)
+        schema = anchors.get(table) if anchors is not None else None
+    # 읽기 시점의 search_path 대신 생성 시 검증한 schema 또는 연결의 초기 schema를 쓴다.
+    return schema if schema is not None else connection.dialect.default_schema_name
+
 
 
 def _qualified(connection: Connection, schema: str, name: str) -> str:
@@ -173,7 +199,6 @@ def register_page_liveness(metadata: MetaData, targets: Sequence[Table]) -> Tabl
         with status_transaction(connection):
             actual = _targets(connection, targets)
             schema, owner = actual[0]["schema"], actual[0]["owner"]
-            table.info["page_liveness_schema"] = schema
             counter, function = (_qualified(connection, schema, name)
                                  for name in (TABLE_NAME, FUNCTION_NAME))
             if _function(connection, schema) is not None or any(connection.execute(text(
@@ -199,6 +224,7 @@ def register_page_liveness(metadata: MetaData, targets: Sequence[Table]) -> Tabl
                     f"ON {target_name} FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
                 )
             _verify(connection, actual)
+        _remember_schema(connection, table, schema)
 
     def dropping(table, connection, **kwargs):
         if connection.dialect.name == "postgresql":
@@ -257,8 +283,7 @@ def capture_liveness(connection: Connection, metadata: MetaData) -> tuple[int, i
     table = metadata.tables.get(key)
     if table is None:
         raise ExportArtifactError("완료 페이지 생존 검산 schema가 등록되지 않았습니다.")
-    schema = (table.schema or table.info.get("page_liveness_schema")
-              or connection.dialect.default_schema_name)
+    schema = _trusted_schema(connection, table)
     counter = _qualified(connection, schema, TABLE_NAME)
     try:
         rows = connection.execute(text(

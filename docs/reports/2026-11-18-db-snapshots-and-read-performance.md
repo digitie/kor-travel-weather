@@ -48,13 +48,21 @@ odroid CPU·I/O·메모리·DB pool 비용을 함께 확인한다. Map 운영을
 
 ## 현재 검증과 남은 수용
 
-핵심 PostgreSQL 시험10건이 통과했다. 파일 없는 DB 저장, 중복 방지, 반환값 수정 격리,
-rollback, 다른 엔진 간 advisory guard, fact·receipt·snapshot 원자성, 실패 시 원본 보존,
-live 파일만 명시 이관, 점검 모드 무변경을 포함한다. 기존 파일 GC 관련26건은 앞 시점의
-핵심8건을 포함한 묶음이며10+26으로 고유 시험 수를 합산하지 않는다.
+DB 저장소·원자적 capture·보호 참조·GC·이관·읽기 예산·실제 pool 고갈을 PostgreSQL에서
+시험했다. 읽기 관련 API249건과 별도 수집·일별·publisher170건도 통과했다. 범위가 겹치는
+시험 수는 합산하지 않는다.
 
-기존 reader/guard 호환20건은 별도 범위다. 전체 통합·migration·CI·운영 속도 개선 수용은
-아직 남아 있다. 완료 전에는1초·p95 목표나 DB 전환 배포를 달성했다고 표시하지 않는다.
+전체2,113건 실행에서2,106건이 통과했고7건은 같은 schema 상태 누수로 실패했다.
+임시 schema를 생성하는 engine이 공용 metadata의 schema 기억값을 덮어써 이후 public
+engine이 삭제된 schema를 참조하는 문제다. 검증된 schema를 engine/Table별 약한 참조에
+보관하도록 수정하며, search_path를 바꿔도 검증된 schema를 쓰는 기존 방어를 유지한다.
+서로 다른 engine·schema와 임시 schema 삭제 뒤 새 public engine의 회귀 시험을 추가했다.
+관련76건과 기존 실패를 재현한 순서의308건이 통과했다. 수정 뒤 전체 CI 통과를 병합 조건으로 한다.
+
+배포에는 canonical migration0042(DB artifacts)와0043(최신 성공 부분 인덱스),
+현재 live 파일만의 prefix별 재개 가능한 이관, 최종 delta 확인이 필요하다. 기존 GDAL·Python·npm
+빌드 캐시를 재사용하며, 원본 데이터 백업이나 불필요한 전체 파일 복제를 추가하지 않는다.
+운영 SDK 적용과 화면·API·성능·새 JSONL 생성0 확인은 아직 남아 있다.
 
 최종 PR에는 실제 시험 결과와 source/image·schema·이관 개수·파일 잔여량·전후 성능을 갱신한다.
 Weather를 먼저 빌드·SDK 배포·검증하고 Transport 성능 변경을 이어 배포한다.
