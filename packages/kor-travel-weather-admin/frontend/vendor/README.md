@@ -91,7 +91,7 @@ package.json은 선언하지 않는다. UI·tokens는 Common main `97f8ed9836051
 | vworld-map-rn-1.0.2.tgz | `70a7434814ed824695c5ee442be34c70f5322e0e7453f100daed07fb0e725fce` |
 
 ```bash
-# npm 12.0.1 · Node 22.23.1. 부모가 동결한 tgz를 복사한 뒤 lock만 다시 만든다.
+# npm 12.0.1 · Node 26.13.1. 부모가 동결한 tgz를 복사한 뒤 lock만 다시 만든다.
 npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 npm run check:dependencies
 ```

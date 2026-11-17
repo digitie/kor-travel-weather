@@ -10,9 +10,9 @@ permissions:
 
 jobs:
   common-policy:
-    uses: digitie/kor-travel-common/.github/workflows/frontend-consumer-guard.yml@e18d1892dcc3915a5e6e57ccad550a852b793780
+    uses: digitie/kor-travel-common/.github/workflows/frontend-consumer-guard.yml@0dec9543c8c8730ce7b05837f2fbe6c31d4ede65
     with:
-      common-ref: e18d1892dcc3915a5e6e57ccad550a852b793780
+      common-ref: 0dec9543c8c8730ce7b05837f2fbe6c31d4ede65
       frontends: >-
         [{"package":"packages/kor-travel-weather-admin/frontend/package.json","lock":"packages/kor-travel-weather-admin/frontend/package-lock.json","workspace":"","profile":"web"}]
       toolchain-manifests: '[]'
@@ -91,7 +91,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.23.1"
+          node-version: "26.13.1"
           cache: npm
           cache-dependency-path: packages/kor-travel-weather-admin/frontend/package-lock.json
       - run: |
