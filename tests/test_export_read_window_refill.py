@@ -142,7 +142,7 @@ def test_current_one_scope_refills_from_actual_ref_offset_and_preserves_etag(
     assert store.engine.pool.checkedout() == 0
 
 
-def test_forecast_refills_byte_limited_window_without_singleton_fallback(store, monkeypatch):
+def test_forecast_refills_byte_limited_pages_without_singleton_fallback(store, monkeypatch):
     import hashlib
     import json
 
@@ -167,11 +167,15 @@ def test_forecast_refills_byte_limited_window_without_singleton_fallback(store, 
 
     monkeypatch.setattr(store, "read_shared", forbidden)
     state = {"g": 0, "p": 0}
-    with Reads(store) as reads:
-        rows, more = reader._page_items({"scopes": [scope]}, state, 200, now)
-    assert reads.sizes == [1, 1, 1] and not more
-    assert [item["location_id"] for item in rows] == ["0", "1", "2"]
-    assert set(reads.digests) == {
+    all_rows, all_digests = [], []
+    for i in range(3):
+        with Reads(store) as reads:
+            rows, more = reader._page_items({"scopes": [scope]}, state, 200, now)
+        assert reads.sizes == [1] and more == (i < 2)
+        all_rows.extend(rows)
+        all_digests.extend(reads.digests)
+    assert [item["location_id"] for item in all_rows] == ["0", "1", "2"]
+    assert set(all_digests) == {
         hashlib.sha256((json.dumps(point, sort_keys=True, separators=(",", ":")) + "\n").encode())
         .hexdigest() for point in points
     }

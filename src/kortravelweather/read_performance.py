@@ -17,11 +17,20 @@ class ReadTrace:
     page: str
     timings: list = field(default_factory=list)
     artifact_read_calls: int = 0
+    forecast_input_bytes: int = 0
+    forecast_input_refs: int = 0
 
     def finish(self, *, not_modified=False, outcome="ok"):
         page = "304" if not_modified else self.page
         for stage, duration in self.timings:
             observe_read_stage(self.resource, page, stage, outcome, duration)
+
+
+def record_verified_forecast_input(byte_count: int) -> None:
+    trace = _TRACE.get()
+    if trace is not None and trace.resource == "forecasts":
+        trace.forecast_input_bytes += byte_count
+        trace.forecast_input_refs += 1
 
 
 @contextmanager

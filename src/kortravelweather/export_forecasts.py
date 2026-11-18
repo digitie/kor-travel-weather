@@ -19,6 +19,7 @@ from .export_capacity import (
     bounded_manifest_digest,
     read_generation_refs,
 )
+from .export_database_artifacts import MAX_ARTIFACT_READ_BYTES
 from .export_heads import ScopeDescriptor, _digest
 from .export_inventory_selection import catalog_source_projection
 from .export_read_window import ArtifactReadWindow, forecast_candidates
@@ -36,6 +37,8 @@ from .export_snapshots import (
     snapshot_expires_at,
 )
 from .read_performance import measured_stage, read_stage
+
+MAX_PAGE_INPUT_BYTES = MAX_ARTIFACT_READ_BYTES
 
 
 def _freshness(heads, now):
@@ -480,7 +483,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         artifact_window = ArtifactReadWindow(self.artifacts, fields=(
             "provider", "forecast_style", "location_id", "target_at",
             "metric_key", "value_number", "value_text", "known_at",
-        ))
+        ), max_bytes=MAX_PAGE_INPUT_BYTES)
         while state["g"] < len(scopes):
             if scope_reads >= MAX_PAGE_SCOPES or len(output) >= limit:
                 return output, True
@@ -504,7 +507,8 @@ class FrozenForecastExports(FrozenCurrentExports):
                 if len(output) >= limit:
                     return output, True
                 if cached_ref != ref["artifact_digest"]:
-                    if artifact_reads >= MAX_PAGE_ARTIFACTS:
+                    if (artifact_reads >= MAX_PAGE_ARTIFACTS
+                            or not artifact_window.can_read(ref)):
                         return output, True
                     # 같은 scope 안에서도 현재 ref부터 소진된 window를 보충한다.
                     artifact_window.prepare(

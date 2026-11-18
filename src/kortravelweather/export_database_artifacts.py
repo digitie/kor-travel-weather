@@ -267,6 +267,9 @@ class DatabaseExportArtifactStore:
             raise ExportArtifactError("DB export artifact 내용이 손상됐습니다.")
         if len(payload.splitlines()) != point_count:
             raise ExportArtifactError("DB export artifact point 수가 다릅니다.")
+        from .read_performance import record_verified_forecast_input
+
+        record_verified_forecast_input(len(payload))
         return payload
 
     def verify(self, digest, *, byte_count, point_count):

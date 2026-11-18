@@ -66,6 +66,13 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
     assert first.status_code == 200, first.text
     assert first.headers["x-export-read-trace"] == "1"
     assert int(first.headers["x-export-artifact-read-calls"]) > 0
+    if forecast:
+        assert first.headers["x-export-forecast-input-trace"] == "db-verified-v1"
+        assert first.headers["x-export-forecast-input-budget-bytes"] == str(8 * 1024 * 1024)
+        assert 0 < int(first.headers["x-export-forecast-input-bytes"]) <= 8 * 1024 * 1024
+        assert int(first.headers["x-export-forecast-input-refs"]) > 0
+    else:
+        assert "x-export-forecast-input-trace" not in first.headers
 
     def forbidden(*args, **kwargs):
         pytest.fail("304 must use metadata proof, not read artifact payload")
@@ -79,6 +86,9 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
     assert not repeated.content
     assert repeated.headers["x-export-read-trace"] == "1"
     assert repeated.headers["x-export-artifact-read-calls"] == "0"
+    if forecast:
+        assert repeated.headers["x-export-forecast-input-bytes"] == "0"
+        assert repeated.headers["x-export-forecast-input-refs"] == "0"
     assert not list(tmp_path.glob("*.jsonl"))
 
 
@@ -417,3 +427,39 @@ def test_public_pool_wait_uses_deadline_without_changing_collector_pool(reposito
     assert repository.engine.pool.checkedout() == 0
     assert repository.engine.pool.timeout() == 15
     assert client.get("/v1/weather/regions").status_code == 200
+
+
+def test_forecast_input_headers_show_single_oversized_progress_cursor_and_reused_304(
+    repository, tmp_path, monkeypatch,
+):
+    from kortravelweather import export_forecasts
+
+    _collect_forecast(repository, tmp_path)
+    monkeypatch.setattr(export_forecasts, "MAX_PAGE_INPUT_BYTES", 1)
+    client = _client(repository, tmp_path)
+    path, params = "/v1/service/exports/forecasts", {"style": "ultra_short", "limit": 2000}
+    first = client.get(path, params=params, headers=HEADERS)
+    assert first.status_code == 200, first.text
+    assert first.headers.get("x-export-forecast-input-trace") == "db-verified-v1"
+    assert first.headers["x-export-forecast-input-budget-bytes"] == "1"
+    assert int(first.headers["x-export-forecast-input-bytes"]) > 1
+    assert first.headers["x-export-forecast-input-refs"] == "1"
+    assert first.json()["meta"]["has_more"]
+    following = client.get(path, params={
+        **params, "cursor": first.json()["meta"]["next_cursor"],
+    }, headers=HEADERS)
+    assert following.status_code == 200, following.text
+    assert following.headers["x-export-forecast-input-refs"] == "1"
+    assert following.headers["x-export-forecast-input-budget-bytes"] == "1"
+    assert int(following.headers["x-export-forecast-input-bytes"]) > 1
+    assert not following.json()["meta"]["has_more"]
+    keys = [p["location_id"] for p in first.json()["items"] + following.json()["items"]]
+    assert sorted(keys) == ["a", "b", "c"]
+    repeated = client.get(path, params=params, headers={
+        **HEADERS, "if-none-match": first.headers["etag"],
+    })
+    assert repeated.status_code == 304 and repeated.content == b""
+    assert repeated.headers["x-export-forecast-input-trace"] == "db-verified-v1"
+    assert repeated.headers["x-export-forecast-input-bytes"] == "0"
+    assert repeated.headers["x-export-forecast-input-refs"] == "0"
+    assert repeated.headers["x-export-forecast-input-budget-bytes"] == "1"
