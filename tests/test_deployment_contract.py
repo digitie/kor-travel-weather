@@ -638,6 +638,12 @@ def test_web_public_dagster_url_is_baked_before_next_build() -> None:
     public_url = web["environment"]["NEXT_PUBLIC_DAGSTER_URL"]
     assert web["build"]["args"]["NEXT_PUBLIC_DAGSTER_URL"] == public_url
     source = (REPO_ROOT / "deploy" / "Dockerfile.web").read_text()
-    assert source.index("ARG NEXT_PUBLIC_DAGSTER_URL=") < source.index(
+    instructions = re.sub(r"\\\r?\n", " ", source)
+    build = re.search(
+        r"(?m)^[ \t]*RUN[ \t]+(?:--mount=\S+[ \t]+)*npm[ \t]+run[ \t]+build[ \t]*$",
+        instructions,
+    )
+    assert build is not None, "Next build RUN instruction is missing"
+    assert instructions.index("ARG NEXT_PUBLIC_DAGSTER_URL=") < instructions.index(
         "ENV NEXT_PUBLIC_DAGSTER_URL=$NEXT_PUBLIC_DAGSTER_URL"
-    ) < source.index("RUN npm run build")
+    ) < build.start()

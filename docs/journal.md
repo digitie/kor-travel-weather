@@ -1,3 +1,14 @@
+## 2026-11-18 — Common 표 너비 수정 정본 채택과 빌드 캐시 후속
+
+- [Common PR68](https://github.com/digitie/kor-travel-common/pull/68)의 모바일 표 min-width 수정이 포함된 UI0.2.2·tokens0.1.3을 채택한다. Geo는 toast0.1.2도 같은 producer 산출물로 맞춘다. 각 앱이 기존에 쓰던 Common 패키지를 갱신했다.
+- 실제 main-push producer `706aaa7821588dfca72f660c9161f56be2d0445f` / [CI44313659808](https://github.com/digitie/kor-travel-common/actions/runs/44313659808)의 artifact14430019630 원본을 사용했다. ZIP SHA256 `f6f8d7832426a6b5a76c6a300583550fe56fb6be7d8d6738397c4fbf29322700`, SOURCE_SHA·각 pack SHA256/SRI·내장 policy를 대조했다. vendor 출처는 각 `vendor/COMMON-RELEASE.md`와 `common-artifacts.json`에 연결한다.
+- guard/catalog는 불변 candidate `5c1b3857e9af060d30ec776157760fb9e9c13ded`로 맞췄다. 이 catalog의 main 편입 확인 전에는 소비자 merge·배포를 진행하지 않는다. package/lock은 Node26.13.1/npm12.0.1로 갱신했고 실제 canonical dependency guard가 통과했다. lock-only 작업의 ignore-scripts는 설치·실행 검증을 대신하지 않는다.
+- Weather는 현재 배포43507989와 새 성능 개선이 머지된 e6a56761을 구분한다. projected 캐시는 디코드/CPU 개선이며 payload DB 읽기량 감소나 운영 지연 목표 달성을 주장하지 않는다.
+- npm 다운로드 캐시 `kor-travel-web-npm-v2`와 앱별 Next 캐시 mount를 정상 Dockerfile build RUN에 추가했다. `--prefer-offline`·engine-strict를 사용하고 설치 lifecycle을 실행한다. Geo의 실제 ARM 무네트워크509개 설치·495개 해시·전용 Next24개 검증은 완료됐고, 이 소비자 커밋의 실제 이미지/native 검증은 다음 단계다. 다른 앱의 빈 Next 캐시는 첫 빌드부터 자체 결과를 축적한다.
+- 실제 PR CI와 수동 정책 workflow의 common uses/common-ref를 함께 맞췄다. 최초 CI는 수동 workflow만 갱신된 상태에서 옛 정책으로 검사해 실패했으며, 전체 frontend guard 호출의 pin 일치를 확인했다.
+- 전체 CI에서 기존 Docker URL 순서 시험 1건이 캐시 mount의 다중행 RUN 표기를 찾지 못해 실패했다. 기존 시험을 논리 명령 기준으로 갱신하고 실제 cache RUN·기존 RUN 모두 통과, ENV를 build 뒤로 옮긴 변형과 주석만 있는 변형은 거부함을 직접 확인했다. 실제 기존 시험 본문을 실행한 근거이며 전체 pytest 재실행 결과로 집계하지 않는다.
+- 다음 검증: 정확한 PR CI, 정상 캐시 이미지 빌드·native 검사, SDK 배포, 실제 모바일/PC 표 너비·수평 스크롤·지도·인증 수용. 이번 소스 채택만으로 새 이미지 적용 완료를 표시하지 않는다.
+
 ## 2026-11-18 — forecast projection cache decode 비용 축소 후보
 
 0ff 기반에서 전체 decoded cache가 projection 순회에도 원본 무게로 eviction하는 경로를

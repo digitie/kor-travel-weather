@@ -1,3 +1,7 @@
+## 2026-11-18 — 공통 표 수정 산출물 채택 후속
+
+Common main `706aaa7821588dfca72f660c9161f56be2d0445f`의 UI0.2.2·tokens0.1.3(Geo toast0.1.2)을 vendor·원장·npm lock에 맞추고 canonical guard를 통과했다. 출처·검증 경계는 [최신 journal](journal.md)에 기록했다. catalog `5c1b3857e9af060d30ec776157760fb9e9c13ded`의 main 편입 확인, PR CI, 정상 캐시/native 이미지와 실제 화면 수용을 이어간다. Weather는 현재 배포43507989와 새 성능 개선이 머지된 e6a56761을 구분한다. projected 캐시는 디코드/CPU 개선이며 payload DB 읽기량 감소나 운영 지연 목표 달성을 주장하지 않는다.
+
 ## 2026-11-18 — forecast projection cache decode 비용 축소 후보
 
 0ff 기반에서 전체 decoded cache가 projection 순회에도 원본 무게로 eviction하는 경로를

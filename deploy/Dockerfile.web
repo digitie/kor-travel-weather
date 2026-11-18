@@ -5,7 +5,8 @@ COPY packages/kor-travel-weather-admin/frontend/package.json \
      packages/kor-travel-weather-admin/frontend/package-lock.json \
      packages/kor-travel-weather-admin/frontend/.npmrc ./
 COPY packages/kor-travel-weather-admin/frontend/vendor ./vendor
-RUN npm ci --engine-strict --ignore-scripts --no-audit --no-fund
+RUN --mount=type=cache,id=kor-travel-web-npm-v2,target=/root/.npm,sharing=locked \
+    npm ci --engine-strict --prefer-offline --no-audit --no-fund
 
 FROM dependencies AS builder
 COPY packages/kor-travel-weather-admin/frontend ./
@@ -17,7 +18,8 @@ ENV NEXT_PUBLIC_VWORLD_API_KEY=$NEXT_PUBLIC_VWORLD_API_KEY
 # 공개 Dagster 링크도 Next.js 브라우저 번들 생성 시점에 고정한다.
 ARG NEXT_PUBLIC_DAGSTER_URL=https://weather-dagster.digitie.mywire.org
 ENV NEXT_PUBLIC_DAGSTER_URL=$NEXT_PUBLIC_DAGSTER_URL
-RUN npm run build
+RUN --mount=type=cache,id=kor-travel-weather-next-v2,target=/app/.next/cache,sharing=locked \
+    npm run build
 
 FROM node:26.13.1-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS runner
 RUN npm install --global npm@12.0.1
