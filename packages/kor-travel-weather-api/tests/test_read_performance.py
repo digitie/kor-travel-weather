@@ -69,6 +69,7 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
         pytest.fail("304 must use metadata proof, not read artifact payload")
 
     monkeypatch.setattr(DatabaseExportArtifactStore, "_payload", forbidden)
+    monkeypatch.setattr(DatabaseExportArtifactStore, "read_many", forbidden)
     repeated = client.get(url, params=params, headers={
         **HEADERS, "if-none-match": first.headers["etag"],
     })

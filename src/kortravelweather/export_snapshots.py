@@ -50,6 +50,7 @@ from .export_capacity import (
     read_generation_refs,
 )
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
+from .export_read_window import ArtifactReadWindow, current_candidates
 from .export_snapshot_refs import insert_snapshot_refs
 from .read_performance import measured_stage
 
@@ -946,6 +947,7 @@ class FrozenCurrentExports:
             # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
             # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
             scope_reads, artifact_reads = 0, 0
+            artifact_window = ArtifactReadWindow(self.artifacts)
             while state["g"] < len(scopes):
                 scope = scopes[state["g"]]
                 if (scope_reads >= MAX_PAGE_SCOPES
@@ -956,8 +958,17 @@ class FrozenCurrentExports:
                         )
                     more = True
                     break
+                remaining_reads = MAX_PAGE_ARTIFACTS - artifact_reads
                 scope_reads += 1
                 artifact_reads += len(scope["refs"])
+                if scope["refs"]:
+                    artifact_window.prepare(
+                        scope["refs"][0],
+                        lambda scope_reads=scope_reads: current_candidates(
+                            scopes, state["g"], points=limit - len(output) + state["p"],
+                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1,
+                        ), remaining_reads=remaining_reads,
+                    )
                 points = []
                 selected = set(scope["location_ids"])
                 approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
@@ -965,11 +976,7 @@ class FrozenCurrentExports:
                     self.reuse_artifacts.add((
                         ref["artifact_digest"], ref["byte_count"], ref["point_count"],
                     ))
-                    for point in self.artifacts.read_shared(
-                        ref["artifact_digest"],
-                        byte_count=ref["byte_count"],
-                        point_count=ref["point_count"],
-                    ):
+                    for point in artifact_window.read(ref):
                         if (
                             point["provider"] != scope.get("provider", "python-kma-api")
                             or point["forecast_style"] != scope.get("forecast_style", "nowcast")

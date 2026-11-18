@@ -282,6 +282,19 @@ READ_STAGE_DURATION = Histogram(
     registry=_INSTRUMENTATION_REGISTRY,
 )
 
+EXPORT_DATABASE_PAYLOAD_READS = Counter(
+    "ktw_export_database_payload_reads_total", "Actual database payload SELECT calls.",
+    ("mode",), registry=_INSTRUMENTATION_REGISTRY,
+)
+EXPORT_DATABASE_PAYLOAD_CHUNKS = Counter(
+    "ktw_export_database_payload_chunks_total", "Actual payload rows fetched before validation.",
+    ("mode",), registry=_INSTRUMENTATION_REGISTRY,
+)
+EXPORT_DATABASE_PAYLOAD_BYTES = Counter(
+    "ktw_export_database_payload_bytes_total", "Actual canonical payload bytes fetched.",
+    ("mode",), registry=_INSTRUMENTATION_REGISTRY,
+)
+
 HTTP_IN_FLIGHT = Gauge(
     "ktw_http_requests_in_flight",
     "HTTP requests currently being processed.",
@@ -940,3 +953,14 @@ def observe_read_stage(resource, page, stage, outcome, duration):
         outcome if outcome in {"ok", "timeout", "error"} else "other",
     )
     _safe("read_stage", lambda: READ_STAGE_DURATION.labels(*labels).observe(max(0, duration)))
+
+
+def observe_database_payload_read(mode, rows):
+    mode = mode if mode in {"single", "batch"} else "other"
+
+    def observe():
+        EXPORT_DATABASE_PAYLOAD_READS.labels(mode=mode).inc()
+        EXPORT_DATABASE_PAYLOAD_CHUNKS.labels(mode=mode).inc(len(rows))
+        EXPORT_DATABASE_PAYLOAD_BYTES.labels(mode=mode).inc(sum(len(row.payload) for row in rows))
+
+    _safe("database_payload_read", observe)

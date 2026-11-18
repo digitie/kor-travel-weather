@@ -20,6 +20,7 @@ from .export_capacity import (
 )
 from .export_heads import ScopeDescriptor, _digest
 from .export_inventory_selection import catalog_source_projection
+from .export_read_window import ArtifactReadWindow, forecast_candidates
 from .export_snapshots import (
     MAX_PAGE_ARTIFACTS,
     MAX_PAGE_BYTES,
@@ -451,6 +452,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         if state["g"] > len(scopes):
             raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
         scope_reads, artifact_reads = 0, 0
+        artifact_window = ArtifactReadWindow(self.artifacts)
         while state["g"] < len(scopes):
             if scope_reads >= MAX_PAGE_SCOPES or len(output) >= limit:
                 return output, True
@@ -462,8 +464,17 @@ class FrozenForecastExports(FrozenCurrentExports):
             keys = scope["location_ids"]
             if state["p"] > len(keys):
                 raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
-            # 하나의 chunk를 최대 한 번 읽고 그 안의 소수 위치만 묶는다.
-            # chunk당 <=5,000 point이며 전체 격자 값을 유지하지 않는다.
+            # 전체 snapshot 대신 실제 다음 출력 구간의 최대8개/8MiB만 미리 읽는다.
+            if state["p"] < len(keys):
+                first_refs = [r for r in scope["refs"] if keys[state["p"]] in r["location_ids"]]
+                if len(first_refs) == 1:
+                    artifact_window.prepare(
+                        first_refs[0],
+                        lambda scope_reads=scope_reads: forecast_candidates(
+                            scopes, state["g"], state["p"], locations=limit - len(output),
+                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1, since=self.since,
+                        ), remaining_reads=MAX_PAGE_ARTIFACTS - artifact_reads,
+                    )
             cached_ref, cached = None, None
             while state["p"] < len(keys):
                 key = keys[state["p"]]
@@ -483,11 +494,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                         ref["artifact_digest"], ref["byte_count"], ref["point_count"],
                     ))
                     cached = defaultdict(list)
-                    for point in self.artifacts.read_shared(
-                        ref["artifact_digest"],
-                        byte_count=ref["byte_count"],
-                        point_count=ref["point_count"],
-                    ):
+                    for point in artifact_window.read(ref):
                         if (
                             point["provider"] != scope.get("provider", "python-kma-api")
                             or point["forecast_style"]
