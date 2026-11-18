@@ -125,3 +125,35 @@ def test_waiter_reads_itself_when_owner_fails_instead_of_masking_it_as_busy():
             first.result()
         assert second.result() == ({"own": 1}, "etag")
     assert not cache.inflight
+
+
+@pytest.mark.parametrize("failure", ["metadata", "expired-proof"])
+def test_completed_first_forecast_never_serves_old_body_without_current_proof(failure):
+    clock = [0]
+    cache = ExportPageCache(clock=lambda: clock[0])
+    old = reader()
+    old.revalidate_first_page = True
+    old.page_valid_until = 80
+
+    def load():
+        clock[0] = 59
+        return ({"value": 1}, "same-etag")
+
+    cache.read("forecast", old, load)
+    assert cache.entries["forecast"].deadline == 80
+    clock[0] = 64
+    current = reader()
+    current.revalidate_first_page = True
+
+    def proof(_cached):
+        if failure == "metadata":
+            raise ExportArtifactError("fresh source proof failed")
+        return SimpleNamespace(selection_deadline=63)  # actual proof is already expired
+
+    def fail_rebuild():
+        raise ExportArtifactError("do not use an old successful response")
+
+    current.validate_cached_first_page = proof
+    with pytest.raises(ExportArtifactError):
+        cache.read("forecast", current, fail_rebuild)
+    assert not cache.entries and not cache.inflight

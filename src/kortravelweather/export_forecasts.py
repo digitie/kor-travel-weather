@@ -4,6 +4,7 @@ import json
 from collections import defaultdict
 from copy import copy
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -379,6 +380,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 "p": 0,
             }
         manifest, now = frozen["manifest"], datetime.now(UTC)
+        read_started = monotonic()
         if manifest["selection"] != self.selection:
             raise ExportCursorInvalid("cursor의 예보 selection이 다릅니다.")
         self.reuse_snapshot = (frozen["snapshot_id"], frozen["manifest_digest"])
@@ -388,9 +390,9 @@ class FrozenForecastExports(FrozenCurrentExports):
         output, more = self._page_items(manifest, state, limit, now)
         targets = [datetime.fromisoformat(target)
                    for item in output for target in item["target_at"]]
-        if targets:
-            from time import monotonic
-            self.page_valid_until = monotonic() + max(0, (min(targets) - now).total_seconds())
+        # wall/monotonic을 payload 읽기 전에 묶어 느린 생성이 실제 경계를 뒤로 밀지 않게 한다.
+        boundary = min([frozen["expires_at"], *targets])
+        self.page_valid_until = read_started + max(0, (boundary - now).total_seconds())
         stale = (
             self._expired_omitted
             or bool(manifest.get("capacity_limited"))
@@ -422,6 +424,7 @@ class FrozenForecastExports(FrozenCurrentExports):
 
         fresh = copy(self)
         fresh.reuse_generations, fresh.reuse_namespaces, fresh.reuse_artifacts = set(), set(), set()
+        fresh.selection_deadline = fresh.reuse_snapshot = fresh.reuse_liveness = None
         fresh.begin_page_reuse()
         def issue():
             try:
@@ -440,6 +443,14 @@ class FrozenForecastExports(FrozenCurrentExports):
                              or frozen["manifest"].get("capacity_limited")) else "ok"
         if status != cached.cached_source_status:
             raise PageReuseExpired()
+        # 새 source/health 판정 뒤에도 기존 본문의 snapshot·삭제 epoch·실제 ref를 모두 검산한다.
+        # cached 자체를 갱신하지 않아 실패/경합/만료에서 이전 proof 수명을 연장하지 않는다.
+        proof = copy(cached)
+        proof.selection_checked_after = fresh.selection_checked_after
+        proof.reuse_wall_started = fresh.reuse_wall_started
+        proof.selection_deadline = fresh.selection_deadline
+        proof.validate_reusable_page()
+        return proof
 
     def _prepare_manifest(self, manifest):
         """특수 source 조합도 완결을 검증한 뒤 불변 manifest로 보존한다."""
