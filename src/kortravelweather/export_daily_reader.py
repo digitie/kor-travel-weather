@@ -1,6 +1,7 @@
 """사전 계산 summary만 조회한다. fact와 비공개 winner JSON은 읽지 않는다."""
 
 import json
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -30,6 +31,9 @@ from .export_snapshots import (
     snapshot_expires_at,
 )
 from .read_performance import measured_stage
+
+# 한 번에 최대 8위치×31일×3구간 scalar만 읽는다. 원본 hourly_winners는 고르지 않는다.
+_SUMMARY_LOCATION_BATCH = 8
 
 
 class DailySummaryExports(FrozenCurrentExports):
@@ -404,24 +408,32 @@ class DailySummaryExports(FrozenCurrentExports):
         keys, output, size = manifest["locations"], [], 0
         if state["g"] > len(keys) or state["p"] > len(positions):
             raise ExportCursorInvalid("요약 cursor 위치가 올바르지 않습니다.")
-        # scalar summary만 선택한다. 한 위치의 최대 31일×3구간만 메모리에 유지한다.
+        # 같은 RR에서 필요한 위치만 작은 묶음으로 읽고 frozen roster/slot 순서대로 낸다.
+        # 조회 수가 위치 수에 비례하지 않도록 하되 scalar 메모리는 최대 8위치로 한정한다.
         with self._daily_transaction() as s:
+            batch, batch_end = {}, state["g"]
             while state["g"] < len(keys):
-                key = keys[state["g"]]
-                rows = {
-                    (r.date, r.slot): r.summary
-                    for r in s.execute(
-                        select(
-                            self.table.c.date,
-                            self.table.c.slot,
-                            self.table.c.summary,
-                        ).where(
-                            self.table.c.location_id == key,
-                            self.table.c.date >= first,
-                            self.table.c.date <= last,
-                        )
+                if state["g"] >= batch_end:
+                    remaining = max(1, limit - len(output) + state["p"])
+                    count = min(
+                        _SUMMARY_LOCATION_BATCH,
+                        (remaining + len(positions) - 1) // len(positions),
                     )
-                }
+                    selected = keys[state["g"]:state["g"] + count]
+                    batch_end = state["g"] + len(selected)
+                    batch = defaultdict(dict)
+                    for row in s.execute(select(
+                        self.table.c.location_id, self.table.c.date,
+                        self.table.c.slot, self.table.c.summary,
+                    ).where(
+                        any_of(self.table.c.location_id, selected)
+                        if s.dialect.name == "postgresql" else
+                        self.table.c.location_id.in_(selected),
+                        self.table.c.date >= first, self.table.c.date <= last,
+                    )):
+                        batch[row.location_id][row.date, row.slot] = row.summary
+                key = keys[state["g"]]
+                rows = batch.get(key, {})
                 while state["p"] < len(positions):
                     day, slot = positions[state["p"]]
                     item = dict(
