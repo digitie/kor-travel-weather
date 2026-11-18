@@ -1,3 +1,11 @@
+## 2026-11-18 — 첫 forecast fresh metadata 중복 축소 후보
+
+435 기반 로컬 조건부304에서 freeze/health의 중복 bulk 선택을 요청별 proof로 줄였다.
+신선도·만료 경계와 fallback은 full-health로 돌아가며 TTL/STALE/삭제·GC 검산을 유지한다.
+최종 관련64PASS/60.16초, 같은 PG fixture7쌍의 SQL38→27·중앙50.27→34.62ms다.
+운영45SQL/6~9초 개선은 미검증이며 다음 단계는 정확 후보 PR CI와 부모 수용이다.
+[원인·검증·남은 비용](reports/2026-11-18-forecast-fresh-metadata-proof.md). 운영 호출·빌드·배포0.
+
 ## 2026-11-18 — Node 26.13.1 축 이동(Common T-029)
 
 소유자 결정(2026-11-17)에 따라 프론트엔드 Node 축을 22.23.1에서 26.13.1(최신 LTS)로 옮겼다. npm은 12.0.1 그대로다. 공통 guard 호출 SHA와 `common-ref`를 두 workflow(`ci.yml`·`common-frontend-policy.yml`) 모두 T-029 채택 커밋 `0dec9543c8c8730ce7b05837f2fbe6c31d4ede65`로 올렸다. `.nvmrc`·관리자 frontend `engines.node`·lock root engines·CI `setup-node`·`deploy/Dockerfile.web`의 두 Node `FROM`(기존과 같은 alpine 변형, 공식 multi-arch index digest `sha256:6bd9ab43…`, amd64·arm64 포함)·빌드 계약 검사(`scripts/weather-build-contract.py`의 런타임 버전)를 맞췄다. 각 Node stage는 계속 npm 12.0.1을 명시 설치한다(Node 26 동봉 npm은 11.20.0). 의존성 graph·vendor는 바뀌지 않았다. 웹 이미지는 다음 배포 때 다시 빌드되며 이 작업에서 배포·운영 변경은 0이다.
