@@ -44,10 +44,10 @@ class ArtifactReadWindow:
         )
 
 
-def current_candidates(scopes, start, *, points, max_scopes):
+def current_candidates(scopes, start, *, points, max_scopes, ref_start=0):
     observed = 0
-    for scope in scopes[start:start + max_scopes]:
-        for ref in scope["refs"]:
+    for offset, scope in enumerate(scopes[start:start + max_scopes]):
+        for ref in scope["refs"][ref_start if offset == 0 else 0:]:
             yield ref
             observed += ref["point_count"]
         if observed >= points:

@@ -464,17 +464,6 @@ class FrozenForecastExports(FrozenCurrentExports):
             keys = scope["location_ids"]
             if state["p"] > len(keys):
                 raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
-            # 전체 snapshot 대신 실제 다음 출력 구간의 최대8개/8MiB만 미리 읽는다.
-            if state["p"] < len(keys):
-                first_refs = [r for r in scope["refs"] if keys[state["p"]] in r["location_ids"]]
-                if len(first_refs) == 1:
-                    artifact_window.prepare(
-                        first_refs[0],
-                        lambda scope_reads=scope_reads: forecast_candidates(
-                            scopes, state["g"], state["p"], locations=limit - len(output),
-                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1, since=self.since,
-                        ), remaining_reads=MAX_PAGE_ARTIFACTS - artifact_reads,
-                    )
             cached_ref, cached = None, None
             while state["p"] < len(keys):
                 key = keys[state["p"]]
@@ -489,6 +478,14 @@ class FrozenForecastExports(FrozenCurrentExports):
                 if cached_ref != ref["artifact_digest"]:
                     if artifact_reads >= MAX_PAGE_ARTIFACTS:
                         return output, True
+                    # 같은 scope 안에서도 현재 ref부터 소진된 window를 보충한다.
+                    artifact_window.prepare(
+                        ref,
+                        lambda scope_reads=scope_reads: forecast_candidates(
+                            scopes, state["g"], state["p"], locations=limit - len(output),
+                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1, since=self.since,
+                        ), remaining_reads=MAX_PAGE_ARTIFACTS - artifact_reads,
+                    )
                     artifact_reads += 1
                     self.reuse_artifacts.add((
                         ref["artifact_digest"], ref["byte_count"], ref["point_count"],

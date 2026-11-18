@@ -5,7 +5,6 @@
 """
 
 import hashlib
-import json
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -408,26 +407,26 @@ def test_promotion_checks_database_payload_and_decodes_each_point_once(
     heads, identity, capture, *_ = candidate(repo, tmp_path, monkeypatch)
     with repo.engine.connect() as connection:
         chunk = connection.execute(select(heads.lifecycle.chunks)).mappings().one()
-    counts = {"sha": 0, "loads": 0}
+    counts = {"sha": 0, "decodes": 0}
+    decode_json_line = export_database_artifacts._decode_json_line
 
     def sha256(data=b""):
         counts["sha"] += 1
         return hashlib.sha256(data)
 
-    def loads(line):
-        counts["loads"] += 1
-        return json.loads(line)
+    def decode(line):
+        counts["decodes"] += 1
+        return decode_json_line(line)
 
     monkeypatch.setattr(export_database_artifacts, "hashlib", SimpleNamespace(sha256=sha256))
-    monkeypatch.setattr(
-        export_database_artifacts, "json", SimpleNamespace(loads=loads, dumps=json.dumps),
-    )
+    # parser 선택과 독립인 실제 행별 진입점을 센다. 원래 decoder를 그대로 실행한다.
+    monkeypatch.setattr(export_database_artifacts, "_decode_json_line", decode)
     assert heads.promote(identity, capture.artifacts) == "PUBLISHED"
-    assert counts["sha"] >= 1 and counts["loads"] == chunk["point_count"]
+    assert counts["sha"] >= 1 and counts["decodes"] == chunk["point_count"]
     verified = counts["sha"]
     list(capture.artifacts.read(chunk["artifact_digest"], byte_count=chunk["byte_count"],
                                 point_count=chunk["point_count"]))
-    assert counts == {"sha": verified + 1, "loads": chunk["point_count"]}
+    assert counts == {"sha": verified + 1, "decodes": chunk["point_count"]}
 
 
 def test_database_rejects_artifact_tampering_and_publisher_keeps_original_bytes(

@@ -961,18 +961,17 @@ class FrozenCurrentExports:
                 remaining_reads = MAX_PAGE_ARTIFACTS - artifact_reads
                 scope_reads += 1
                 artifact_reads += len(scope["refs"])
-                if scope["refs"]:
-                    artifact_window.prepare(
-                        scope["refs"][0],
-                        lambda scope_reads=scope_reads: current_candidates(
-                            scopes, state["g"], points=limit - len(output) + state["p"],
-                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1,
-                        ), remaining_reads=remaining_reads,
-                    )
                 points = []
                 selected = set(scope["location_ids"])
                 approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
-                for ref in scope["refs"]:
+                for ref_index, ref in enumerate(scope["refs"]):
+                    artifact_window.prepare(
+                        ref,
+                        lambda scope_reads=scope_reads, ref_index=ref_index: current_candidates(
+                            scopes, state["g"], points=limit - len(output) + state["p"],
+                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1, ref_start=ref_index,
+                        ), remaining_reads=remaining_reads - ref_index,
+                    )
                     self.reuse_artifacts.add((
                         ref["artifact_digest"], ref["byte_count"], ref["point_count"],
                     ))

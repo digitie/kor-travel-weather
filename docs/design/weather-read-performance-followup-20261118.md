@@ -65,3 +65,78 @@ payload 왕복 감소만으로 없어지지 않으며 현재 운영 성능 수�
 잘못된 SHA·line count, batch 개수/byte 초과의 SQL 전 거절, shared guard와 GC exclusive
 경합, window 내 receipt 재검증을 시험한다. 기존 page proof/liveness, TTL과 만료 cursor,
 새 source prepare/cohort 실패 직후의 200/stale 계약도 기존 assertion 그대로 검증한다.
+
+## 단일 scope window 보충 후속 수정
+
+기준 main은 배포된 PR252 merge `cb7ac7fb`다. cb7 배포 후 current 첫 페이지는
+17.134초, 재사용 304는 49.692ms였으나 forecast limit=200은 client 60초 timeout이었다.
+이 수치는 부모 QA 근거이며 이번 수정 후 운영 수용 결과가 아니다.
+
+추가 관측은 export GET 없이 기존 metrics 두 번과 작은 읽기 전용 pg_activity 표본만
+사용했다. 관측 구간에서 export counter 변화는 0, GET in-flight는 metrics 자신을 포함한
+1이었으며 마지막 activity 표본에 활성 쿼리가 없었다. 누적 전체 payload 계수는 batch
+69회/524 chunk, single 3회/3 chunk다. 원천별 귀속이 없는 전역 계수이므로 특정 forecast
+요청의 single 비중으로 환산하지 않는다. batch가 이미 대부분이므로 아래 재현된 갭만으로
+운영 forecast timeout 해결을 보증하지 않는다. 실패 first-page metric의 artifact 합계는
+65.732초, 전체 SQL 합계는 8.701초, freeze는 8.243초, queue는 13ms다. 단계는 중첩될 수
+있으며 SQL hook 범위 밖의 fetch/decode/복사 비용을 이번 관측만으로 분리할 수 없다.
+
+- cb7의 forecast는 scope 진입 때만 window를 준비했다. 한 scope에 256 ref가 있는 PG
+  fixture에서 처음 128 chunk를 읽을 때 실제 SELECT는 첫 batch 1회와 singleton 120회,
+  합계 121회였다. 기존 915-scope × 1-ref fixture가 놓친 경로다.
+- 현재 위치 g/p/ref에서 새 chunk를 읽기 직전에 window를 보충한다. 같은 fixture의 첫
+  페이지와 g=0/p=128 continuation 모두 128 chunk/16 SELECT로 처리하며 출력·state가 같다.
+  limit 17은 17 chunk/3 SELECT, limit 200/2000은 기존 128-chunk 상한을 유지한다.
+- current도 각 ref 앞에서 보충한다. 후보 generator에 첫 scope의 ref offset을 전달해
+  이미 소비한 앞부분을 다시 읽지 않는다. 128-ref scope에서 실제 chunk 128개/SELECT
+  16회와 고정 clock의 body·ETag·source_status·as_of·cursor·순서 동등성을 검사한다.
+- canonical 8MiB를 두 chunk가 넘는 실제 PG payload fixture에서도 singleton fallback
+  없이 크기 제한된 batch를 보충한다. 8-chunk/8MiB window와 128-chunk page 상한, receipt,
+  SHA/byte/point count 검산, GC guard, fixed metadata TTL/source-health 규칙은 유지한다.
+- 로컬 재현·집중 회귀 134개가 128.21초에 통과했다(Ruff/diff 검사 포함).
+  전체 검증은 새 PR의 CI에 맡기며 중복 장기
+  로컬 전체 pytest, 추가 운영 export 요청, DDL 또는 이미지 배포는 하지 않는다.
+
+## 실제 canonical chunk의 로컬 CPU 후속 분석
+
+운영에서는 기존 PK 순서의 metadata 최대 64개만 확인하고 불변 payload **1개**를 읽었다.
+1,641,070바이트·1,888-point chunk의 SHA/byte/line count를 확인해 비공개 로컬 파일로
+보존했다. export GET과 운영 CPU/대형 SQL 프로파일은 추가하지 않았다. 아래 수치는 모두
+이 동일 chunk를 로컬에서 측정한 결과이며 운영 forecast 전체의 남은 57초를 분해한 결과가 아니다.
+
+모든 point에 nested `observation_evidence`가 있어 기존 cache의 flat=false 경로는
+point 전체를 deepcopy했다. 5회 cProfile에서 deepcopy cumulative는 0.569초,
+cold 경로 전체는 0.682초였고, json.loads cumulative는 0.088초였다. 프로파일러 오버헤드가
+있으므로 이 시간으로 운영 지연을 외삽하지 않는다. validation/grouping 별도 median은
+약 1.35ms였으므로 이번 변경에서 membership·ref 탐색 알고리즘은 추가 변경하지 않았다.
+
+검증된 수정은 두 가지다. 기존 의존성인 pydantic-core의 행별 `from_json(cache_strings="keys")`
+을 사용하고, cache miss 때 mutable 값의 key를 기록해 반환 시 그 값만 stdlib deepcopy한다.
+immutable JSON scalar와 key는 공유해도 변경할 수 없으며 top-level dict는 항상 새 객체다.
+UTF-16/BOM·surrogate 등 parser가 지원하지 않는 기존 유효 입력은 json.loads로 fallback한다.
+Python 정수 자릿수 정책이 기본값과 다르면 기존 parser를 사용한다. 행을 큰 array로 합치지
+않아 잘못된 JSONL 행을 우연히 정상 JSON으로 받아들이는 문제도 피한다.
+
+전후 코드를 별도 engine/cache로 격리하고 순서를 교대로 바꾼 15회 median:
+
+| 로컬 1-chunk 비용 | 기존 | 수정 | 범위 |
+| --- | ---: | ---: | --- |
+| cold decode + cache 저장 + 반환 복사 | 36.57ms | 15.64ms | SHA/DB I/O 별도 |
+| warm 반환 복사 | 20.65ms | 5.33ms | 실제 DB payload 검증은 계속 필요 |
+| cache + 반환 객체의 traced Python retained allocations | 9,212,494B | 6,347,182B | tracemalloc, RSS 아님 |
+
+같은 실제 chunk에서 top-level key 객체는 기존 49,088개, 키 cache 사용 시 26개였다.
+SHA/byte/line count 검증 시간은 별도 약 1.4ms였으며 검증을 생략하지 않는다.
+원본 값·토큰·DSN은 보고서나 코드에 저장하지 않는다. 실제 payload는 private 로컬에만 있다.
+새 의존성·새 cache 예산·RSS 보장은 추가하지 않는다. 기존 64MiB LRU와 8MiB window는
+여전히 canonical wire-byte 기준이다.
+
+회귀 범위는 기존 유효/무효 JSONL·NaN/Infinity·float 경계·duplicate keys·인코딩·빈 chunk,
+비객체 point 거절, Python 정수 한도, 5,000-point chunk의 cold/warm nested copy 독립성,
+SHA/byte/point/GC 및 기존 API/ETag/source-health 계약이다. 운영 전체 응답시간과 RSS 수용은
+부모의 배포 후 실제 검증으로 남긴다.
+
+추가 수정의 최종 집중 회귀는 서로 다른 두 시험 묶음 74개 + 91개, 총 **165개 통과**다.
+로컬 전체 suite는 반복하지 않고 PR253 새 head의 CI를 실행한다. 화면 QA에서는 위치 카탈로그
+대기 중/정보없음 마커를 콘텐츠 로딩 완료로 판정하지 않는다. 다음 배포에서는 카탈로그가
+안정될 때까지 기다리거나 데이터 timeout으로 명시하고 별도로 콘텐츠 상태를 기록해야 한다.
