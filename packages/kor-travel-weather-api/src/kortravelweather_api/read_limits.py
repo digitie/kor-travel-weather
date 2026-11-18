@@ -32,18 +32,14 @@ def install_public_read_limits(engine):
     @event.listens_for(engine, "before_cursor_execute")
     def before(connection, cursor, statement, parameters, context, executemany):
         deadline = _DEADLINE.get()
-        if deadline is None:
-            return
-        remaining = deadline - monotonic()
-        if remaining <= 0:
-            raise PublicReadTimeout("공개 읽기 마감이 지났습니다.")
-        # 같은 transaction의 모든 문장에 남은 시간을 다시 적용한다. SQL/바인드는 기록하지 않는다.
-        timeout_ms = max(1, int(remaining * 1000))
-        # SET 명령이므로 뒤따르는 SET TRANSACTION의 first-query 조건도 침해하지 않는다.
-        # streaming SELECT의 ServerCursor에 SET을 보내면 DECLARE ... FOR SET이 된다.
-        # 같은 연결의 일반 cursor로 transaction-local 설정만 실행한다.
-        with cursor.connection.cursor() as settings_cursor:
-            settings_cursor.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
+        if deadline is not None:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise PublicReadTimeout("공개 읽기 마감이 지났습니다.")
+            # timeout 설정과 SQL 관측은 독립이다. service export는 자체 transaction 예산을 쓴다.
+            timeout_ms = max(1, int(remaining * 1000))
+            with cursor.connection.cursor() as settings_cursor:
+                settings_cursor.execute(f"SET LOCAL statement_timeout = '{timeout_ms}ms'")
         context._weather_read_stage = read_stage("sql")
         context._weather_read_stage.__enter__()
 
