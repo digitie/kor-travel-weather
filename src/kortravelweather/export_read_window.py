@@ -5,24 +5,37 @@ from .export_database_artifacts import MAX_ARTIFACT_READ_BATCH, MAX_ARTIFACT_REA
 
 
 class ArtifactReadWindow:
-    def __init__(self, artifacts, *, fields=None):
+    def __init__(self, artifacts, *, fields=None, max_bytes=None):
         self.artifacts = artifacts
         self.bulk = getattr(artifacts, "read_many", None)
         self.fields = fields if getattr(artifacts, "is_database", False) else None
         self.points = {}
         self.receipts = {}
+        self.max_bytes, self.bytes_read = max_bytes, 0
+
+    def can_read(self, ref):
+        # 선읽기한 ref는 추가 I/O 없이 소비한다. 첫 단일 artifact는 진행을 허용한다.
+        return (self.max_bytes is None or ref["artifact_digest"] in self.points
+                or self.bytes_read == 0
+                or self.bytes_read + ref["byte_count"] <= self.max_bytes)
 
     def prepare(self, first, candidates, *, remaining_reads):
         if (not callable(self.bulk) or first["artifact_digest"] in self.points
-                or remaining_reads <= 0):
+                or remaining_reads <= 0 or not self.can_read(first)):
             return
         refs, seen, size = [], set(), 0
+        byte_limit = MAX_ARTIFACT_READ_BYTES
+        if self.max_bytes is not None:
+            byte_limit = min(byte_limit, self.max_bytes - self.bytes_read)
         for ref in candidates():
             digest = ref["artifact_digest"]
             if digest in seen:
                 continue
-            if (len(refs) >= min(MAX_ARTIFACT_READ_BATCH, remaining_reads)
-                    or size + ref["byte_count"] > MAX_ARTIFACT_READ_BYTES):
+            if len(refs) >= min(MAX_ARTIFACT_READ_BATCH, remaining_reads):
+                break
+            if size + ref["byte_count"] > byte_limit and (
+                refs or self.bytes_read or ref["byte_count"] > MAX_ARTIFACT_READ_BYTES
+            ):
                 break
             refs.append(ref)
             seen.add(digest)
@@ -35,6 +48,8 @@ class ArtifactReadWindow:
             )
             self.receipts.update({ref["artifact_digest"]: (ref["byte_count"], ref["point_count"])
                                   for ref in refs})
+            # 검산된 실제 payload 크기와 같은 receipt를 선읽기 전체에 대해 센다.
+            self.bytes_read += size
 
     def read(self, ref):
         digest = ref["artifact_digest"]
@@ -42,9 +57,13 @@ class ArtifactReadWindow:
             if self.receipts[digest] != (ref["byte_count"], ref["point_count"]):
                 raise ExportArtifactError("같은 artifact의 receipt가 서로 다릅니다.")
             return self.points[digest]
-        return self.artifacts.read_shared(
+        if not self.can_read(ref):
+            raise ExportArtifactError("페이지 artifact 입력 byte 상한을 넘었습니다.")
+        points = self.artifacts.read_shared(
             digest, byte_count=ref["byte_count"], point_count=ref["point_count"],
         )
+        self.bytes_read += ref["byte_count"]
+        return points
 
 
 def current_candidates(scopes, start, *, points, max_scopes, ref_start=0):
