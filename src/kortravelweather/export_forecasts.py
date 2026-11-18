@@ -426,19 +426,31 @@ class FrozenForecastExports(FrozenCurrentExports):
         fresh.reuse_generations, fresh.reuse_namespaces, fresh.reuse_artifacts = set(), set(), set()
         fresh.selection_deadline = fresh.reuse_snapshot = fresh.reuse_liveness = None
         fresh.begin_page_reuse()
+        fresh._capture_forecast_health = True
         def issue():
+            fresh._fresh_forecast_health = None
             try:
                 return fresh._freeze_forecasts()
             except ExportCapacityExceeded:
+                fresh._fresh_forecast_health = None
                 return fresh._capacity_fallback(fresh._previous_forecasts())
             except ExportSnapshotUnavailable:
+                fresh._fresh_forecast_health = None
                 return fresh._previous_forecasts()
 
         with read_stage("metadata"):
             frozen = ensure_snapshot_files(fresh.artifacts, issue)
             if (frozen["snapshot_id"], frozen["manifest_digest"]) != cached.reuse_snapshot:
                 raise PageReuseExpired()
-            stale = fresh._health(frozen["manifest"], frozen, datetime.now(UTC))
+            now = datetime.now(UTC)
+            health = fresh._fresh_forecast_health
+            if (health is not None and health[0] is not None and now >= health[0]
+                    and (health[1] is None or now < health[1])):
+                # 이번 RR freeze가 head/owner/run/cohort와 모든 위치의 건강도를 이미 읽었다.
+                # 시간 경계 전의 같은 판정만 사용하며 fallback·경계 통과는 기존 전체 health다.
+                stale = health[2]
+            else:
+                stale = fresh._health(frozen["manifest"], frozen, now)
         status = "stale" if (stale or cached._expired_omitted
                              or frozen["manifest"].get("capacity_limited")) else "ok"
         if status != cached.cached_source_status:

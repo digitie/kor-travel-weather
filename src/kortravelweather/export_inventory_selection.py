@@ -170,6 +170,9 @@ class ApprovedSelection:
     unconfirmed: bool
     #: 만료로 뺀 (provider, dataset_key, location_id). 미확인이 아니라 coverage 공백이다.
     expired: frozenset[tuple[str, str, str]] = frozenset()
+    #: 한 요청의 fresh freeze 판정만 재사용한다. 공용 캐시의 TTL을 늘리지 않는다.
+    health_checked_at: datetime | None = None
+    health_recheck_at: datetime | None = None
 
 
 #: attempt별 불변 plan의 해석 결과. descriptor 열은 insert 뒤 바뀌지 않으므로(export_heads는
@@ -378,6 +381,7 @@ def _latest_cohort_runs(connection, runs, sources):
 
 def approved_source_selection(
     connection, metadata, locations, *, expected, optional=(), health_location_ids=None,
+    health_proof=False,
 ):
     """caller가 RR/5s 상한을 소유한다. 이력/fact/SDK/파일/네트워크를 조회하지 않는다."""
     expected, optional = set(expected), set(optional)
@@ -601,6 +605,22 @@ def approved_source_selection(
         ))
     if not scopes or len(scopes) > MAX_SOURCE_SCOPES:
         raise ExportArtifactError("승인 source vector가 비었거나 상한을 넘었습니다.")
+    recheck_at = None
+    if health_proof:
+        # health/coverage 판정이 시간만으로 달라질 최초 경계다. scope의 대표 시각이 아니라
+        # 선택에 사용한 모든 위치 행을 보므로 회전 수집의 서로 다른 시각도 놓치지 않는다.
+        recheck_at = min((
+            boundary
+            for row in valid.values()
+            for boundary in (
+                row["source_collected_at"] + source_expiry(row["dataset_key"]),
+                row["source_collected_at"] + FRESHNESS_WINDOW,
+                row["source_collected_at"] + source_max_age(row["dataset_key"]),
+                row["data_revision_at"] + source_max_age(row["dataset_key"]),
+            )
+            if boundary >= now
+        ), default=None)
     return ApprovedSelection(
         tuple(scopes), unconfirmed, frozenset(key[:3] for key in expired_parts),
+        health_checked_at=now if health_proof else None, health_recheck_at=recheck_at,
     )

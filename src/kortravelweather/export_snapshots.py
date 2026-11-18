@@ -323,11 +323,17 @@ class FrozenCurrentExports:
             self.reuse_liveness = capture_liveness(connection, self.heads.metadata)
 
         def read():
-            return approved_source_selection(
+            capture_health = getattr(self, "_capture_forecast_health", False)
+            result = approved_source_selection(
                 connection, self.heads.metadata, locations,
                 expected=self.expected_sources, optional=self.optional_sources,
-                health_location_ids=health_location_ids,
+                health_location_ids=health_location_ids, health_proof=capture_health,
             )
+            if capture_health:
+                self._fresh_forecast_health = (
+                    result.health_checked_at, result.health_recheck_at, result.unconfirmed,
+                )
+            return result
 
         if self.selection_cache is None:
             return read()
