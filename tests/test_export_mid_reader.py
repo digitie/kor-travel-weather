@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 
 from kortravelweather.export_mid_reader import FrozenMidForecastExports, paired_locations
-from kortravelweather.export_snapshots import ExportCursorInvalid, ExportSnapshotUnavailable
+from kortravelweather.export_snapshots import (
+    ExportCursorInvalid,
+    ExportSnapshotUnavailable,
+    snapshot_expires_at,
+)
 
 NOW = datetime(2026, 10, 23, 10, tzinfo=UTC)
 ISSUED = NOW - timedelta(hours=1)
@@ -197,7 +201,7 @@ def test_location_with_only_past_mid_targets_is_omitted_and_page_is_stale():
     assert state["g"] == 2 and handle._expired_omitted
     frozen["selection"] = handle.selection
     row = {"snapshot_id": "00000000-0000-0000-0000-000000000001", "manifest": frozen,
-           "source_collected_at": now, "created_at": now}
+           "source_collected_at": now, "created_at": now, "expires_at": snapshot_expires_at(now)}
     from kortravelweather.export_heads import _digest
 
     row["manifest_digest"] = _digest(frozen)

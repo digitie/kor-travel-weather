@@ -11,6 +11,7 @@ from kortravelweather.export_database_artifacts import DatabaseExportArtifactSto
 from kortravelweather.export_forecasts import FrozenForecastExports
 from kortravelweather.export_heads import ExportHeads
 from kortravelweather.export_sdk_collector import SdkExportCollector, sdk_descriptor
+from kortravelweather.export_snapshots import snapshot_expires_at
 from kortravelweather.export_source_cohorts import declare_source_cohort
 from kortravelweather.providers.khoa import (
     KHOA_BEACH_INDEX_DATASET,
@@ -136,7 +137,7 @@ def test_location_with_only_past_targets_is_omitted_and_page_is_stale():
         "snapshot_id": "00000000-0000-0000-0000-000000000002",
         "manifest": {"selection": reader.selection, "as_of": now.isoformat(), "scopes": [scope],
                      "next_since": now.isoformat(), "unconfirmed_sources": False},
-        "source_collected_at": now, "created_at": now,
+        "source_collected_at": now, "created_at": now, "expires_at": snapshot_expires_at(now),
     }
     from kortravelweather.export_heads import _digest
 
