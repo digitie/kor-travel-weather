@@ -463,7 +463,12 @@ class FrozenForecastExports(FrozenCurrentExports):
         if state["g"] > len(scopes):
             raise ExportCursorInvalid("cursor 위치가 올바르지 않습니다.")
         scope_reads, artifact_reads = 0, 0
-        artifact_window = ArtifactReadWindow(self.artifacts)
+        # forecast는 evidence 등 미출력 필드의 mutable 복사가 필요 없다.
+        # DB reader는 projection 전에 chunk 전체의 무결성과 JSON 형식을 검증한다.
+        artifact_window = ArtifactReadWindow(self.artifacts, fields=(
+            "provider", "forecast_style", "location_id", "target_at",
+            "metric_key", "value_number", "value_text", "known_at",
+        ))
         while state["g"] < len(scopes):
             if scope_reads >= MAX_PAGE_SCOPES or len(output) >= limit:
                 return output, True
