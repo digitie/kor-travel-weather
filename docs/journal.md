@@ -1,3 +1,12 @@
+## 2026-11-18 — forecast projection cache decode 비용 축소 후보
+
+0ff 기반에서 전체 decoded cache가 projection 순회에도 원본 무게로 eviction하는 경로를
+확인하고 기존 LRU 예산 안에 fieldset별 projection을 보관했다. 작은 동일 비율 fixture의
+반복hit0→16·144.21→48.18ms이며 SQL2/payload15,431,360B는 그대로다.
+관련106+별도 승인 변경1=107PASS, 중복 합산 없음. cold123MB 운영 I/O/timeout 해결은 미검증이다.
+[원인·검증·한계](reports/2026-11-18-projected-artifact-cache.md). 다음 단계는 정확 PR CI와 부모 수용이며
+운영 호출·빌드·배포0, 기존 frozen ops 변경0이다.
+
 ## 2026-11-18 — 첫 forecast fresh metadata 중복 축소 후보
 
 435 기반 로컬 조건부304에서 freeze/health의 중복 bulk 선택을 요청별 proof로 줄였다.
