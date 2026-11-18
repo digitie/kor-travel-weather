@@ -1,4 +1,4 @@
-"""API 소유 검증 완료 페이지 재사용. 승인 시점의 60초 수명과 매 요청 무결성을 지킨다."""
+"""검증 완료 페이지 재사용. 첫 예보 본문 보관과 매 hit의 fresh 승인 proof를 구분한다."""
 
 import json
 import threading
@@ -45,15 +45,24 @@ class ExportPageCache:
         deadline = reader.selection_deadline
         if deadline is None:
             return result, None
-        # 생성 중 plan/head 삭제도 놓치지 않는다. PostgreSQL에서는 작은 변경 번호와
-        # snapshot proof만 확인하고, 파일의 동일 FD hash/count는 여전히 확인한다.
-        reader.validate_reusable_page()
-        deadline = min(deadline, reader.selection_checked_after + 60,
-                       getattr(reader, "page_valid_until", float("inf")))
-        if self.clock() >= deadline:
-            raise ExportGuardTimeout("페이지 생성 중 승인 상태의 60초 수명이 끝났습니다.")
+        # 본문 생성 시간이 승인 proof 수명을 다 쓴 첫 예보는 payload 대신 새 metadata로 검산한다.
+        fresh_first = getattr(reader, "revalidate_first_page", False)
+        if fresh_first and self.clock() >= min(deadline, reader.selection_checked_after + 60):
+            proof = reader.validate_cached_first_page(reader)
+            reader.selection_deadline = proof.selection_deadline
+            reader.selection_checked_after = proof.selection_checked_after
+            reader.reuse_wall_started = proof.reuse_wall_started
+        else:
+            reader.validate_reusable_page()
         size = len(json.dumps(result, ensure_ascii=False, default=str).encode())
         size += reader.reusable_page_size()
+        # 첫 예보는 hit마다 새 source/health proof를 얻으므로 본문만 완성 뒤 60초 보관한다.
+        # current/daily/cursor의 승인 수명은 기존 기준 그대로다. hit로 보관 기한은 늘리지 않는다.
+        deadline = (self.clock() + 60 if fresh_first else
+                    min(deadline, reader.selection_checked_after + 60))
+        deadline = min(deadline, getattr(reader, "page_valid_until", float("inf")))
+        if self.clock() >= deadline:
+            raise ExportGuardTimeout("페이지 생성 중 재사용 또는 business 경계가 지났습니다.")
         entry = None
         if size <= self.max_entry_bytes:
             entry = _Entry(result, reader, deadline, size)
@@ -92,12 +101,15 @@ class ExportPageCache:
         if entry is not None:
             try:
                 # 파일·DB 유실을 60초 캐시로 감추지 않는다. 이 검산은 snapshot 재구성이 아니다.
-                entry.reader.validate_reusable_page()
                 if getattr(reader, "revalidate_first_page", False):
-                    reader.validate_cached_first_page(entry.reader)
-                if self.clock() >= entry.deadline:
+                    proof = reader.validate_cached_first_page(entry.reader)
+                    deadline = min(entry.deadline, proof.selection_deadline)
+                else:
+                    entry.reader.validate_reusable_page()
+                    deadline = entry.deadline
+                if self.clock() >= deadline:
                     raise PageReuseExpired()
-                reader.selection_deadline = entry.deadline
+                reader.selection_deadline = deadline
                 reader.page_reuse_status = "reused"
                 return entry.result
             except PageReuseExpired:
