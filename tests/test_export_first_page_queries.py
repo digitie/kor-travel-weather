@@ -202,3 +202,78 @@ def test_current_address_array_keeps_status_coordinate_and_latest_input_checks(a
     assert next(item for item in latest["manifest"]["locations"]
                 if item["location_id"] == keys[0])["legal_dong_code"] == "2222000000"
     assert latest["manifest_digest"] != first["manifest_digest"]
+
+
+@pytest.mark.parametrize("kind", ["progress", "catalog", "declared-target"])
+def test_daily_first_metadata_is_read_once_in_its_rr(approved_catalog, kind):
+    from kortravelweather.export_selection_cache import ExportSelectionCache
+
+    repo, store, keys = approved_catalog
+    reader = daily_reader(repo, store, selection_cache=ExportSelectionCache())
+    calls = []
+
+    def capture(_c, _cursor, statement, parameters, _context, _many):
+        if statement.startswith("SELECT"):
+            calls.append((statement, parameters))
+
+    event.listen(repo.engine, "before_cursor_execute", capture)
+    try:
+        page, _ = reader.page(limit=200, cursor=None)
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", capture)
+    assert len(page["items"]) == 200
+    if kind == "progress":
+        assert sum("FROM weather_daily_summary_progress" in sql for sql, _ in calls) == 1
+    elif kind == "catalog":
+        assert sum("FROM weather_locations " in sql for sql, _ in calls) == 1
+    else:
+        declared = [params for sql, params in calls if "daily_target" in sql]
+        assert len(declared) == 1
+        groups = [value for value in declared[0].values() if isinstance(value, list)]
+        assert len(groups) == 1 and set(groups[0]) == set(keys)
+    assert getattr(reader, "_daily_progress_memo", None) is None
+    assert getattr(reader, "_daily_catalog_memo", None) is None
+
+
+def test_daily_cursor_and_fallback_read_own_checkpoint(approved_catalog):
+    from kortravelweather.export_selection_cache import ExportSelectionCache
+
+    repo, store, _keys = approved_catalog
+    reader = daily_reader(repo, store, selection_cache=ExportSelectionCache())
+    first, _ = reader.page(limit=1, cursor=None)
+    calls = []
+
+    def capture(_c, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("SELECT") and "FROM weather_daily_summary_progress" in statement:
+            calls.append(1)
+
+    event.listen(repo.engine, "before_cursor_execute", capture)
+    try:
+        cursor, _ = reader.page(limit=1, cursor=first["meta"]["next_cursor"])
+        assert len(calls) == 1 and cursor["meta"]["snapshot_id"] == first["meta"]["snapshot_id"]
+        with repo.engine.begin() as c:
+            c.execute(reader.coverage.delete())
+        calls.clear()
+        fallback, _ = reader.page(limit=1, cursor=None)
+        assert fallback["meta"]["source_status"] == "stale"
+        assert len(calls) == 2  # 실패한 freeze의 row를 성공 checkpoint로 보관하지 않는다.
+    finally:
+        event.remove(repo.engine, "before_cursor_execute", capture)
+    assert getattr(reader, "_daily_progress_memo", None) is None
+    assert getattr(reader, "_daily_catalog_memo", None) is None
+
+
+def test_daily_reader_does_not_keep_checkpoint_after_request_or_error(approved_catalog):
+    from kortravelweather.export_selection_cache import ExportSelectionCache
+    from kortravelweather.export_snapshots import ExportSnapshotUnavailable
+
+    repo, store, _keys = approved_catalog
+    reader = daily_reader(repo, store, selection_cache=ExportSelectionCache())
+    first, _ = reader.page(limit=1, cursor=None)
+    with repo.engine.begin() as c:
+        c.execute(reader.progress.delete())
+    for cursor in (first["meta"]["next_cursor"], None):
+        with pytest.raises(ExportSnapshotUnavailable):
+            reader.page(limit=1, cursor=cursor)
+        assert getattr(reader, "_daily_progress_memo", None) is None
+        assert getattr(reader, "_daily_catalog_memo", None) is None

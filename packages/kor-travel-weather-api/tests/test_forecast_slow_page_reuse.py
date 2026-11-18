@@ -17,7 +17,10 @@ def test_slow_first_forecast_reuses_same_handle_etag_without_payload_after_proof
 ):
     _collect_forecast(repository, tmp_path)
     client = _client(repository, tmp_path)
-    origin, clock = datetime.now(UTC), [0.0]
+    # 유효한 첫 시간대 capture는 유지하고, 그 target 뒤에서 TTL만 검산한다.
+    # 다음 미래 target까지 최소55분이 남아 완료+60초와 실제 시간 경계가 섞이지 않는다.
+    origin = (datetime.now(UTC) + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
+    clock = [0.0]
 
     class Clock(datetime):
         @classmethod
@@ -39,7 +42,7 @@ def test_slow_first_forecast_reuses_same_handle_etag_without_payload_after_proof
         result = page_items(self, *args)
         clock[0] += build_seconds
         if change_source:
-            _collect_forecast(repository, tmp_path)  # a new head while the old body was building
+            _collect_forecast(repository, tmp_path)
         return result
 
     def slow_metadata(self):
@@ -72,6 +75,7 @@ def test_slow_first_forecast_reuses_same_handle_etag_without_payload_after_proof
     assert response.headers["etag"] == first.headers["etag"]
     assert response.headers["x-export-read"] == "reused"
     assert len(builds) == 1
+    assert entry.reader.page_valid_until > completed_at + 60
     assert entry.deadline == completed_at + 60  # hits never slide the completed-body TTL
     assert repository.engine.pool.checkedout() == 0
 
