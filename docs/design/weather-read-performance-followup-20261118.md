@@ -166,3 +166,9 @@ SELECT는 양쪽 모두 16회였다. SQL 수·payload 전송량 감소나 운영
 cold/warm mutable 격리, corrupt tail, JSON codec, API ETag/만료·head 삭제 및 GC 경합을
 확인했다. 루트 Ruff와 diff 검사도 통과했다. 전체 suite와 frontend 검증은 PR CI에 맡기며
 중복 로컬 전체 시험이나 운영 요청·배포는 실행하지 않았다.
+
+### 요청 단위 artifact 읽기 귀속
+
+전역 payload counter는 다른 요청의 읽기도 포함한다. 운영33b의 current304가266ms·reused·artifact stage0이어도 같은 구간의 global counter가8chunks 증가했으므로 이를 해당304 또는 이전 UI 요청에 귀속하지 않았다.
+
+기존 요청별 ReadTrace에 artifact 호출 진입 횟수를 기록하고 정상200/304에 `x-export-read-trace: 1`, `x-export-artifact-read-calls`를 제공한다. 지연된 generator 종료 전에도 호출 진입을 세며, ContextVar로 다른 worker의 호출과 분리한다. 이는 호출 수이며 chunk 수·bytes·전역 zero-read를 의미하지 않는다. 오류 응답에0을 꾸며 넣지 않고, 기존 global counter와 fresh proof·원문 무결성 검사는 유지한다. 운영 수용은 새 이미지에서 요청별 marker와 첫 페이지의 양수 호출, 조건부304의0을 함께 확인한다.

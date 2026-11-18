@@ -16,6 +16,7 @@ class ReadTrace:
     resource: str
     page: str
     timings: list = field(default_factory=list)
+    artifact_read_calls: int = 0
 
     def finish(self, *, not_modified=False, outcome="ok"):
         page = "304" if not_modified else self.page
@@ -35,6 +36,8 @@ def read_trace(trace):
 @contextmanager
 def read_stage(stage):
     trace = _TRACE.get()
+    if trace is not None and stage == "artifact":
+        trace.artifact_read_calls += 1
     started = monotonic()
     try:
         yield

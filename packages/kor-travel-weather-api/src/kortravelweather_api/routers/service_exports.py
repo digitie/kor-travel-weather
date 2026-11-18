@@ -477,6 +477,9 @@ async def _frozen_response(
         else:
             trace.finish(not_modified=payload is None)
         reader.require_current_selection()
+        # Counts belong to this worker/request; global metrics can include other readers.
+        headers["x-export-read-trace"] = "1"
+        headers["x-export-artifact-read-calls"] = str(trace.artifact_read_calls)
         if resource in {"current", "daily-summaries", "forecasts"}:
             headers["x-export-read"] = reader.page_reuse_status
     except ExportCursorInvalid as exc:

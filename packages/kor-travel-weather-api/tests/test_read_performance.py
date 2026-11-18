@@ -64,6 +64,8 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
     params = {"limit": 1, **({"style": "ultra_short"} if forecast else {})}
     first = client.get(url, params=params, headers=HEADERS)
     assert first.status_code == 200, first.text
+    assert first.headers["x-export-read-trace"] == "1"
+    assert int(first.headers["x-export-artifact-read-calls"]) > 0
 
     def forbidden(*args, **kwargs):
         pytest.fail("304 must use metadata proof, not read artifact payload")
@@ -75,6 +77,8 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
     })
     assert repeated.status_code == 304, repeated.text
     assert not repeated.content
+    assert repeated.headers["x-export-read-trace"] == "1"
+    assert repeated.headers["x-export-artifact-read-calls"] == "0"
     assert not list(tmp_path.glob("*.jsonl"))
 
 
