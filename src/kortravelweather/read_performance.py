@@ -58,7 +58,14 @@ class MeasuredArtifacts:
         self.store = store
 
     def __getattr__(self, name):
-        return getattr(self.store, name)
+        value = getattr(self.store, name)
+        if name == "read_many":
+            @wraps(value)
+            def measured(*args, **kwargs):
+                with read_stage("artifact"):
+                    return value(*args, **kwargs)
+            return measured
+        return value
 
     def read(self, *args, **kwargs):
         with read_stage("artifact"):

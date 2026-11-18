@@ -292,7 +292,7 @@ def _parse_cohort_descriptors(row):
     ) for item in row["targets"]]
 
 
-def _active_scope_states(connection, metadata, source_scopes):
+def _active_scope_states(connection, metadata, source_scopes, *, known_publications=None):
     """같은 MVCC의 소유·시도·공개 증거·run 상태를 시도별 한 행으로 읽는다.
 
     owner_epochs 원본 JSON은 PostgreSQL jsonb로 강제 변환하지 않는다. 예를 들어 1e0은
@@ -316,11 +316,18 @@ def _active_scope_states(connection, metadata, source_scopes):
     selected_attempts = {row.attempt_id: row for row in connection.execute(select(
         attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
     ).where(any_of(attempts.c.attempt_id, attempt_ids)))}
+    # inventory 검산이 같은 RR에서 이미 읽은 generation을 재사용한다. attempt_id는
+    # UNIQUE이므로 알려진 시도에 다른 publication이 추가될 수 없다. 새 owner의 시도만 조회한다.
     publications = defaultdict(list)
-    for row in connection.execute(select(
-        generations.c.attempt_id, generations.c.generation_id,
-    ).where(any_of(generations.c.attempt_id, sorted(selected_attempts)))):
-        publications[row.attempt_id].append(row.generation_id)
+    for attempt_id, generation_id in (known_publications or {}).items():
+        if attempt_id in selected_attempts:
+            publications[attempt_id].append(generation_id)
+    missing_publications = sorted(set(selected_attempts) - publications.keys())
+    if missing_publications:
+        for row in connection.execute(select(
+            generations.c.attempt_id, generations.c.generation_id,
+        ).where(any_of(generations.c.attempt_id, missing_publications))):
+            publications[row.attempt_id].append(row.generation_id)
     run_ids = sorted({row.run_id for row in selected_attempts.values() if row.run_id is not None})
     selected_runs = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
         any_of(runs.c.run_id, run_ids),
@@ -502,7 +509,11 @@ def approved_source_selection(
     source_scopes = {row["source_scope"] for row in health_rows}
     # 시도 유실은 INNER JOIN 누락 → 개수/cohort 대조에서 미확인이다. 공개 세대는
     # attempt 이력과 독립인 성공 증거이며, 같은 RR에서 원본 epoch·native 상태를 대조한다.
-    active = _active_scope_states(connection, metadata, source_scopes)
+    active = _active_scope_states(
+        connection, metadata, source_scopes,
+        known_publications={row["plan_attempt_id"]: row["generation_id"]
+                            for row in approved.values()},
+    )
     unconfirmed |= len(active) != len(source_scopes) or any(
         attempt == "failed" or native_status not in {"running", "success"}
         or native_status == "success" and generation is None

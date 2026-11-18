@@ -44,6 +44,8 @@ from .export_artifacts import (
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _LOCK_NAMESPACE = 1465017671
 _LOCK_KEY = 42
+MAX_ARTIFACT_READ_BATCH = 8
+MAX_ARTIFACT_READ_BYTES = MAX_CHUNK_BYTES
 _context = threading.local()
 _sqlite_lock = threading.RLock()
 _cache_registry = WeakKeyDictionary()
@@ -51,6 +53,8 @@ _cache_registry_lock = threading.Lock()
 
 
 class _DecodedCache:
+    """bytes는 원본 canonical 길이의 합이다. Python heap/RSS 상한이 아니다."""
+
     def __init__(self):
         self.entries = OrderedDict()
         self.bytes = 0
@@ -239,6 +243,13 @@ class DatabaseExportArtifactStore:
             row = connection.execute(select(
                 self.table.c.payload, self.table.c.byte_count, self.table.c.point_count,
             ).where(self.table.c.digest == digest)).one_or_none()
+        from .metrics import observe_database_payload_read
+
+        observe_database_payload_read("single", [] if row is None else [row])
+        return self._verify_payload_row(row, digest, byte_count, point_count)
+
+    @staticmethod
+    def _verify_payload_row(row, digest, byte_count, point_count):
         if row is None or row.byte_count != byte_count or row.point_count != point_count:
             raise ExportArtifactError("DB export artifact가 없거나 손상됐습니다.")
         payload = bytes(row.payload)
@@ -283,6 +294,9 @@ class DatabaseExportArtifactStore:
 
     def read(self, digest, *, byte_count, point_count):
         payload = self._payload(digest, byte_count=byte_count, point_count=point_count)
+        yield from self._decoded_points(digest, payload, byte_count)
+
+    def _decoded_points(self, digest, payload, byte_count):
         from .export_artifacts import _DECODED_ARTIFACT_BYTES, _DECODED_ARTIFACT_ENTRIES
 
         cache = self._decoded
@@ -309,6 +323,42 @@ class DatabaseExportArtifactStore:
                     cache.bytes -= removed[2]
         for item in entry[0]:
             yield dict(item) if entry[1] else deepcopy(item)
+
+    def read_many(self, refs):
+        """실제 요청 창의 최대8개/8MiB만 같은 연결·guard에서 읽고 모두 검산한다.
+
+        cache hit도 실제 DB payload의 SHA/bytes/point count를 확인한다. 전체 manifest를
+        미리 읽거나 DB 불변성 검사를 metadata 존재 확인으로 대체하지 않는다.
+        """
+        expected = {}
+        for ref in refs:
+            digest, size, count = (
+                ref["artifact_digest"], ref["byte_count"], ref["point_count"],
+            )
+            self._validate(digest, size, count)
+            if digest in expected and expected[digest] != (size, count):
+                raise ExportArtifactError("같은 artifact의 receipt가 서로 다릅니다.")
+            expected[digest] = size, count
+            if (len(expected) > MAX_ARTIFACT_READ_BATCH
+                    or sum(size for size, _ in expected.values()) > MAX_ARTIFACT_READ_BYTES):
+                raise ExportArtifactError("artifact batch 읽기 상한을 넘었습니다.")
+        if not expected:
+            return {}
+        with self.guard(shared=True), self._connection() as connection:
+            rows = {row.digest: row for row in connection.execute(select(
+                self.table.c.digest, self.table.c.payload,
+                self.table.c.byte_count, self.table.c.point_count,
+            ).where(self.table.c.digest.in_(list(expected))))}
+            from .metrics import observe_database_payload_read
+
+            observe_database_payload_read("batch", list(rows.values()))
+            if rows.keys() != expected.keys():
+                raise ExportArtifactError("DB export artifact가 없거나 손상됐습니다.")
+            result = {}
+            for digest, (size, count) in expected.items():
+                payload = self._verify_payload_row(rows[digest], digest, size, count)
+                result[digest] = list(self._decoded_points(digest, payload, size))
+            return result
 
     def read_shared(self, digest, *, byte_count, point_count):
         with self.guard(shared=True):
