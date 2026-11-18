@@ -1,6 +1,7 @@
 """사전 계산 summary만 조회한다. fact와 비공개 winner JSON은 읽지 않는다."""
 
 import json
+from collections import defaultdict
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -30,6 +31,9 @@ from .export_snapshots import (
     snapshot_expires_at,
 )
 from .read_performance import measured_stage
+
+# 한 번에 최대 8위치×31일×3구간 scalar만 읽는다. 원본 hourly_winners는 고르지 않는다.
+_SUMMARY_LOCATION_BATCH = 8
 
 
 class DailySummaryExports(FrozenCurrentExports):
@@ -143,8 +147,11 @@ class DailySummaryExports(FrozenCurrentExports):
             raise PageReuseExpired()
         return super().validate_reusable_page()
 
-    def _inventory_coverage(self, connection, keys, rows):
-        """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
+    def _inventory_catalog(self, connection):
+        # 전체 anchor는 같은 RR 안에서만 공유한다. 다른 요청/connection의 값은 잇지 않는다.
+        memo = getattr(self, "_daily_catalog_memo", None)
+        if memo is not None and memo[0] is connection:
+            return memo[1]
         catalog = self.heads.metadata.tables["weather_locations"]
         source_from, source_columns = catalog_source_projection(catalog)
         locations = connection.execute(select(
@@ -157,6 +164,13 @@ class DailySummaryExports(FrozenCurrentExports):
         )).mappings().all()
         if len(locations) > MAX_SNAPSHOT_LOCATIONS:
             raise ExportSnapshotUnavailable("활성 catalog 상한을 넘었습니다.")
+        if connection is getattr(self, "_daily_connection", None):
+            self._daily_catalog_memo = connection, locations
+        return locations
+
+    def _inventory_coverage(self, connection, keys, rows):
+        """실제 승인 관측별 reducer 진도를 확인하고 예보 전용 위치와 구분한다."""
+        locations = self._inventory_catalog(connection)
         if self.location_id is None:
             # cursor roster는 고정하되 새 실제 관측 source의 미처리를 건강도로 숨기지 않는다.
             keys = [row["location_id"] for row in locations]
@@ -204,7 +218,8 @@ class DailySummaryExports(FrozenCurrentExports):
             cohorts.c.provider, cohorts.c.dataset_key, target_key,
         ).select_from(cohorts).where(
             tuple_(cohorts.c.provider, cohorts.c.dataset_key).in_(self.expected_sources),
-            target_key.in_(keys),
+            any_of(target_key, sorted(keys)) if connection.dialect.name == "postgresql"
+            else target_key.in_(keys),
         ).distinct().limit(MAX_SELECTED_ROWS + 1)))
         if len(declared) > MAX_SELECTED_ROWS:
             raise ExportSnapshotUnavailable("사전 관측 source metadata 상한을 넘었습니다.")
@@ -284,13 +299,17 @@ class DailySummaryExports(FrozenCurrentExports):
             ready = c.execute(select(self.progress)).mappings().one_or_none()
             if ready is None or ready["source_collected_at"] is None:
                 raise ExportSnapshotUnavailable("승인된 관측 요약이 아직 없습니다.")
-            catalog = self.heads.metadata.tables["weather_locations"]
-            query = select(catalog.c.location_id).where(catalog.c.enabled.is_(True))
-            if self.location_id:
-                query = query.where(catalog.c.location_id == self.location_id)
-            keys = list(
-                c.scalars(query.order_by(catalog.c.location_id).limit(MAX_SNAPSHOT_LOCATIONS + 1))
-            )
+            if self.source_inventory:
+                keys = [row["location_id"] for row in self._inventory_catalog(c)
+                        if self.location_id is None or row["location_id"] == self.location_id]
+            else:
+                catalog = self.heads.metadata.tables["weather_locations"]
+                query = select(catalog.c.location_id).where(catalog.c.enabled.is_(True))
+                if self.location_id:
+                    query = query.where(catalog.c.location_id == self.location_id)
+                keys = list(c.scalars(query.order_by(catalog.c.location_id).limit(
+                    MAX_SNAPSHOT_LOCATIONS + 1,
+                )))
             if not keys or len(keys) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("선택 위치 집합이 준비되지 않았습니다.")
             coverage, _ = self._selected_coverage(c, keys)
@@ -322,6 +341,8 @@ class DailySummaryExports(FrozenCurrentExports):
                 existing is not None and existing["manifest_digest"] == digest
                 and existing["expires_at"] > now
             ):
+                if c is getattr(self, "_daily_connection", None):
+                    self._daily_progress_memo = c, ready
                 return {**existing, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
@@ -340,6 +361,8 @@ class DailySummaryExports(FrozenCurrentExports):
                 "expires_at": snapshot_expires_at(now),
             }
             c.execute(self.snapshots.insert().values(**row))
+            if c is getattr(self, "_daily_connection", None):
+                self._daily_progress_memo = c, ready
             return row
 
     def page(self, *, limit, cursor):
@@ -364,10 +387,12 @@ class DailySummaryExports(FrozenCurrentExports):
         with self._daily_transaction() as connection:
             self._daily_connection = connection
             self._daily_coverage_memo = None
+            self._daily_progress_memo = self._daily_catalog_memo = None
             try:
                 return self._daily_page(limit=limit, cursor=cursor)
             finally:
                 self._daily_coverage_memo = None
+                self._daily_progress_memo = self._daily_catalog_memo = None
                 self._daily_connection = None
 
     def _daily_page(self, *, limit, cursor):
@@ -404,24 +429,32 @@ class DailySummaryExports(FrozenCurrentExports):
         keys, output, size = manifest["locations"], [], 0
         if state["g"] > len(keys) or state["p"] > len(positions):
             raise ExportCursorInvalid("요약 cursor 위치가 올바르지 않습니다.")
-        # scalar summary만 선택한다. 한 위치의 최대 31일×3구간만 메모리에 유지한다.
+        # 같은 RR에서 필요한 위치만 작은 묶음으로 읽고 frozen roster/slot 순서대로 낸다.
+        # 조회 수가 위치 수에 비례하지 않도록 하되 scalar 메모리는 최대 8위치로 한정한다.
         with self._daily_transaction() as s:
+            batch, batch_end = {}, state["g"]
             while state["g"] < len(keys):
-                key = keys[state["g"]]
-                rows = {
-                    (r.date, r.slot): r.summary
-                    for r in s.execute(
-                        select(
-                            self.table.c.date,
-                            self.table.c.slot,
-                            self.table.c.summary,
-                        ).where(
-                            self.table.c.location_id == key,
-                            self.table.c.date >= first,
-                            self.table.c.date <= last,
-                        )
+                if state["g"] >= batch_end:
+                    remaining = max(1, limit - len(output) + state["p"])
+                    count = min(
+                        _SUMMARY_LOCATION_BATCH,
+                        (remaining + len(positions) - 1) // len(positions),
                     )
-                }
+                    selected = keys[state["g"]:state["g"] + count]
+                    batch_end = state["g"] + len(selected)
+                    batch = defaultdict(dict)
+                    for row in s.execute(select(
+                        self.table.c.location_id, self.table.c.date,
+                        self.table.c.slot, self.table.c.summary,
+                    ).where(
+                        any_of(self.table.c.location_id, selected)
+                        if s.dialect.name == "postgresql" else
+                        self.table.c.location_id.in_(selected),
+                        self.table.c.date >= first, self.table.c.date <= last,
+                    )):
+                        batch[row.location_id][row.date, row.slot] = row.summary
+                key = keys[state["g"]]
+                rows = batch.get(key, {})
                 while state["p"] < len(positions):
                     day, slot = positions[state["p"]]
                     item = dict(
@@ -447,7 +480,9 @@ class DailySummaryExports(FrozenCurrentExports):
                 if state["p"] < len(positions):
                     break
                 state["g"], state["p"] = state["g"] + 1, 0
-            ready = s.execute(select(self.progress)).mappings().one_or_none()
+            progress = getattr(self, "_daily_progress_memo", None)
+            ready = (progress[1] if progress is not None and progress[0] is s else
+                     s.execute(select(self.progress)).mappings().one_or_none())
             try:
                 coverage, unconfirmed = self._selected_coverage(s, keys)
             except ExportSnapshotUnavailable:

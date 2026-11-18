@@ -20,6 +20,20 @@ class ReadTrace:
     forecast_input_bytes: int = 0
     forecast_input_refs: int = 0
 
+    def server_timing(self) -> str:
+        """이 요청의 완료 단계만 고정7종으로 낸다. 중첩 시간은 전체 wall로 합산하지 않는다."""
+        totals = {stage: [0, 0.0] for stage in (
+            "worker_queue", "pool_admission", "sql", "freeze", "metadata", "artifact", "render",
+        )}
+        for stage, duration in self.timings:
+            if stage in totals:
+                totals[stage][0] += 1
+                totals[stage][1] += max(0.0, duration) * 1000
+        return ", ".join(
+            f'{stage};dur={duration:.3f};desc="count={count}"'
+            for stage, (count, duration) in totals.items()
+        )
+
     def finish(self, *, not_modified=False, outcome="ok"):
         page = "304" if not_modified else self.page
         for stage, duration in self.timings:

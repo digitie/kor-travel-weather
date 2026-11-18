@@ -66,6 +66,16 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
     assert first.status_code == 200, first.text
     assert first.headers["x-export-read-trace"] == "1"
     assert int(first.headers["x-export-artifact-read-calls"]) > 0
+    import re
+
+    def stage(response, name):
+        value = re.search(rf'(?:^|, ){name};dur=([0-9.]+);desc="count=(\d+)"',
+                          response.headers["server-timing"])
+        assert value is not None
+        return float(value[1]), int(value[2])
+
+    assert stage(first, "sql")[1] > 0 and stage(first, "freeze")[1] > 0
+    assert stage(first, "artifact")[1] == int(first.headers["x-export-artifact-read-calls"])
     if forecast:
         assert first.headers["x-export-forecast-input-trace"] == "db-verified-v1"
         assert first.headers["x-export-forecast-input-budget-bytes"] == str(8 * 1024 * 1024)
@@ -86,6 +96,10 @@ def test_conditional_page_reuse_reads_no_artifact(repository, tmp_path, monkeypa
     assert not repeated.content
     assert repeated.headers["x-export-read-trace"] == "1"
     assert repeated.headers["x-export-artifact-read-calls"] == "0"
+    assert stage(repeated, "sql")[1] > 0
+    assert stage(repeated, "artifact") == (0.0, 0)
+    if not forecast:
+        assert stage(repeated, "freeze") == (0.0, 0)
     if forecast:
         assert repeated.headers["x-export-forecast-input-bytes"] == "0"
         assert repeated.headers["x-export-forecast-input-refs"] == "0"

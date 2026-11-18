@@ -635,6 +635,8 @@ class FrozenCurrentExports:
                     ).where(
                         entries.c.provider_id == VworldKakaoAddressResolver.provider_id,
                         entries.c.status.in_(["ok", "error"]),
+                        any_of(entries.c.target_key, [row["location_id"] for row in locations])
+                        if connection.dialect.name == "postgresql" else
                         entries.c.target_key.in_([row["location_id"] for row in locations]),
                     )
                 ).mappings()
