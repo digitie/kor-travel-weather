@@ -195,3 +195,49 @@ def test_first_oversized_progress_does_not_bypass_hard_artifact_bounds(store, mo
     with pytest.raises(ExportArtifactError):
         reader(store)._page_items(frozen, {"g": 0, "p": 0}, 200, NOW)
     assert reads == []
+
+
+def test_verified_input_trace_counts_prefetch_and_isolates_parallel_workers(store):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from kortravelweather.export_read_window import ArtifactReadWindow
+    from kortravelweather.read_performance import ReadTrace, read_trace
+
+    refs = manifest(store, [1024] * 10)["scopes"][0]["refs"]
+    own, other = ReadTrace("forecasts", "first"), ReadTrace("forecasts", "first")
+    barrier = Barrier(2, timeout=10)
+
+    def worker(trace, prefetch):
+        with read_trace(trace):
+            barrier.wait()
+            if prefetch:
+                window = ArtifactReadWindow(store, max_bytes=8 * 1024)
+                window.prepare(refs[0], lambda: iter(refs), remaining_reads=128)
+                window.read(refs[0])  # 1개만 소비해도 선읽기8개 전부를 trace에 센다.
+            else:
+                store.read_many(refs[8:])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = pool.submit(worker, own, True), pool.submit(worker, other, False)
+        a.result()
+        b.result()
+    assert getattr(own, "forecast_input_bytes", 0) == 8 * 1024
+    assert getattr(own, "forecast_input_refs", 0) == 8
+    assert getattr(other, "forecast_input_bytes", 0) == 2 * 1024
+    assert getattr(other, "forecast_input_refs", 0) == 2
+    store.read_many(refs[:1])  # trace 밖의 동시/후속 읽기는 귀속되지 않는다.
+    assert own.forecast_input_bytes == 8 * 1024 and own.forecast_input_refs == 8
+
+
+def test_verified_input_trace_counts_single_reads_only_after_receipt_checks(store):
+    from kortravelweather.read_performance import ReadTrace, read_trace
+
+    ref = manifest(store, [1024])["scopes"][0]["refs"][0]
+    trace = ReadTrace("forecasts", "first")
+    with read_trace(trace):
+        store.read_shared(ref["artifact_digest"], byte_count=1024, point_count=1)
+        with pytest.raises(ExportArtifactError):
+            store.read_shared(ref["artifact_digest"], byte_count=1024, point_count=2)
+    assert getattr(trace, "forecast_input_bytes", 0) == 1024
+    assert getattr(trace, "forecast_input_refs", 0) == 1

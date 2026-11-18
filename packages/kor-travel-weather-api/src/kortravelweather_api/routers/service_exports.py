@@ -19,6 +19,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
+from kortravelweather import export_forecasts as forecast_exports
 from kortravelweather.export_artifacts import (
     ExportArtifactError,
     ExportGuardTimeout,
@@ -480,6 +481,14 @@ async def _frozen_response(
         # Counts belong to this worker/request; global metrics can include other readers.
         headers["x-export-read-trace"] = "1"
         headers["x-export-artifact-read-calls"] = str(trace.artifact_read_calls)
+        if (resource == "forecasts" and style != "mid"
+                and getattr(reader.artifacts, "is_database", False)):
+            headers["x-export-forecast-input-trace"] = "db-verified-v1"
+            headers["x-export-forecast-input-bytes"] = str(trace.forecast_input_bytes)
+            headers["x-export-forecast-input-refs"] = str(trace.forecast_input_refs)
+            headers["x-export-forecast-input-budget-bytes"] = str(
+                forecast_exports.MAX_PAGE_INPUT_BYTES,
+            )
         if resource in {"current", "daily-summaries", "forecasts"}:
             headers["x-export-read"] = reader.page_reuse_status
     except ExportCursorInvalid as exc:
