@@ -65,3 +65,34 @@ payload 왕복 감소만으로 없어지지 않으며 현재 운영 성능 수�
 잘못된 SHA·line count, batch 개수/byte 초과의 SQL 전 거절, shared guard와 GC exclusive
 경합, window 내 receipt 재검증을 시험한다. 기존 page proof/liveness, TTL과 만료 cursor,
 새 source prepare/cohort 실패 직후의 200/stale 계약도 기존 assertion 그대로 검증한다.
+
+## 단일 scope window 보충 후속 수정
+
+기준 main은 배포된 PR252 merge `cb7ac7fb`다. cb7 배포 후 current 첫 페이지는
+17.134초, 재사용 304는 49.692ms였으나 forecast limit=200은 client 60초 timeout이었다.
+이 수치는 부모 QA 근거이며 이번 수정 후 운영 수용 결과가 아니다.
+
+추가 관측은 export GET 없이 기존 metrics 두 번과 작은 읽기 전용 pg_activity 표본만
+사용했다. 관측 구간에서 export counter 변화는 0, GET in-flight는 metrics 자신을 포함한
+1이었으며 마지막 activity 표본에 활성 쿼리가 없었다. 누적 전체 payload 계수는 batch
+69회/524 chunk, single 3회/3 chunk다. 원천별 귀속이 없는 전역 계수이므로 특정 forecast
+요청의 single 비중으로 환산하지 않는다. batch가 이미 대부분이므로 아래 재현된 갭만으로
+운영 forecast timeout 해결을 보증하지 않는다. 실패 first-page metric의 artifact 합계는
+65.732초, 전체 SQL 합계는 8.701초, freeze는 8.243초, queue는 13ms다. 단계는 중첩될 수
+있으며 SQL hook 범위 밖의 fetch/decode/복사 비용을 이번 관측만으로 분리할 수 없다.
+
+- cb7의 forecast는 scope 진입 때만 window를 준비했다. 한 scope에 256 ref가 있는 PG
+  fixture에서 처음 128 chunk를 읽을 때 실제 SELECT는 첫 batch 1회와 singleton 120회,
+  합계 121회였다. 기존 915-scope × 1-ref fixture가 놓친 경로다.
+- 현재 위치 g/p/ref에서 새 chunk를 읽기 직전에 window를 보충한다. 같은 fixture의 첫
+  페이지와 g=0/p=128 continuation 모두 128 chunk/16 SELECT로 처리하며 출력·state가 같다.
+  limit 17은 17 chunk/3 SELECT, limit 200/2000은 기존 128-chunk 상한을 유지한다.
+- current도 각 ref 앞에서 보충한다. 후보 generator에 첫 scope의 ref offset을 전달해
+  이미 소비한 앞부분을 다시 읽지 않는다. 128-ref scope에서 실제 chunk 128개/SELECT
+  16회와 고정 clock의 body·ETag·source_status·as_of·cursor·순서 동등성을 검사한다.
+- canonical 8MiB를 두 chunk가 넘는 실제 PG payload fixture에서도 singleton fallback
+  없이 크기 제한된 batch를 보충한다. 8-chunk/8MiB window와 128-chunk page 상한, receipt,
+  SHA/byte/point count 검산, GC guard, fixed metadata TTL/source-health 규칙은 유지한다.
+- 로컬 재현·집중 회귀 134개가 128.21초에 통과했다(Ruff/diff 검사 포함).
+  전체 검증은 새 PR의 CI에 맡기며 중복 장기
+  로컬 전체 pytest, 추가 운영 export 요청, DDL 또는 이미지 배포는 하지 않는다.
