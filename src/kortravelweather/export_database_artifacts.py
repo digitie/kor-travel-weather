@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -17,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from weakref import WeakKeyDictionary
 
+from pydantic_core import from_json
 from sqlalchemy import (
     CheckConstraint,
     Column,
@@ -50,6 +52,14 @@ _context = threading.local()
 _sqlite_lock = threading.RLock()
 _cache_registry = WeakKeyDictionary()
 _cache_registry_lock = threading.Lock()
+
+
+def _decode_json_line(line):
+    # 행 경계는 그대로 검증한다. UTF-16/BOM·surrogate 등 기존 허용 입력은 stdlib로 보존한다.
+    try:
+        return from_json(line, cache_strings="keys")
+    except ValueError:
+        return json.loads(line)
 
 
 class _DecodedCache:
@@ -305,12 +315,17 @@ class DatabaseExportArtifactStore:
             if entry is not None:
                 cache.entries.move_to_end(digest)
         if entry is None:
-            items = tuple(json.loads(line) for line in payload.splitlines())
+            # pydantic-core의 기본 정수 한도와 다른 Python 정책은 기존 parser를 따른다.
+            parse = (_decode_json_line if sys.get_int_max_str_digits()
+                     == sys.int_info.default_max_str_digits else json.loads)
+            items = tuple(parse(line) for line in payload.splitlines())
             if any(not isinstance(item, dict) for item in items):
                 raise ExportArtifactError("DB export artifact point 형식이 다릅니다.")
-            flat = all(type(value) in (str, int, float, bool, type(None))
-                       for item in items for value in item.values())
-            entry = (items, flat, byte_count)
+            nested_keys = tuple(
+                tuple(key for key, value in item.items() if isinstance(value, (dict, list)))
+                for item in items
+            )
+            entry = (items, nested_keys, byte_count)
             with cache.lock:
                 previous = cache.entries.pop(digest, None)
                 if previous is not None:
@@ -321,8 +336,12 @@ class DatabaseExportArtifactStore:
                                          or len(cache.entries) > _DECODED_ARTIFACT_ENTRIES):
                     _, removed = cache.entries.popitem(last=False)
                     cache.bytes -= removed[2]
-        for item in entry[0]:
-            yield dict(item) if entry[1] else deepcopy(item)
+        for item, nested_keys in zip(entry[0], entry[1], strict=True):
+            # JSON scalar/key는 immutable이다. mutable 값만 복사해 cache와 응답을 격리한다.
+            point = dict(item)
+            for key in nested_keys:
+                point[key] = deepcopy(item[key])
+            yield point
 
     def read_many(self, refs):
         """실제 요청 창의 최대8개/8MiB만 같은 연결·guard에서 읽고 모두 검산한다.

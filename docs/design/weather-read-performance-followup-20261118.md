@@ -96,3 +96,47 @@ payload 왕복 감소만으로 없어지지 않으며 현재 운영 성능 수�
 - 로컬 재현·집중 회귀 134개가 128.21초에 통과했다(Ruff/diff 검사 포함).
   전체 검증은 새 PR의 CI에 맡기며 중복 장기
   로컬 전체 pytest, 추가 운영 export 요청, DDL 또는 이미지 배포는 하지 않는다.
+
+## 실제 canonical chunk의 로컬 CPU 후속 분석
+
+운영에서는 기존 PK 순서의 metadata 최대 64개만 확인하고 불변 payload **1개**를 읽었다.
+1,641,070바이트·1,888-point chunk의 SHA/byte/line count를 확인해 비공개 로컬 파일로
+보존했다. export GET과 운영 CPU/대형 SQL 프로파일은 추가하지 않았다. 아래 수치는 모두
+이 동일 chunk를 로컬에서 측정한 결과이며 운영 forecast 전체의 남은 57초를 분해한 결과가 아니다.
+
+모든 point에 nested `observation_evidence`가 있어 기존 cache의 flat=false 경로는
+point 전체를 deepcopy했다. 5회 cProfile에서 deepcopy cumulative는 0.569초,
+cold 경로 전체는 0.682초였고, json.loads cumulative는 0.088초였다. 프로파일러 오버헤드가
+있으므로 이 시간으로 운영 지연을 외삽하지 않는다. validation/grouping 별도 median은
+약 1.35ms였으므로 이번 변경에서 membership·ref 탐색 알고리즘은 추가 변경하지 않았다.
+
+검증된 수정은 두 가지다. 기존 의존성인 pydantic-core의 행별 `from_json(cache_strings="keys")`
+을 사용하고, cache miss 때 mutable 값의 key를 기록해 반환 시 그 값만 stdlib deepcopy한다.
+immutable JSON scalar와 key는 공유해도 변경할 수 없으며 top-level dict는 항상 새 객체다.
+UTF-16/BOM·surrogate 등 parser가 지원하지 않는 기존 유효 입력은 json.loads로 fallback한다.
+Python 정수 자릿수 정책이 기본값과 다르면 기존 parser를 사용한다. 행을 큰 array로 합치지
+않아 잘못된 JSONL 행을 우연히 정상 JSON으로 받아들이는 문제도 피한다.
+
+전후 코드를 별도 engine/cache로 격리하고 순서를 교대로 바꾼 15회 median:
+
+| 로컬 1-chunk 비용 | 기존 | 수정 | 범위 |
+| --- | ---: | ---: | --- |
+| cold decode + cache 저장 + 반환 복사 | 36.57ms | 15.64ms | SHA/DB I/O 별도 |
+| warm 반환 복사 | 20.65ms | 5.33ms | 실제 DB payload 검증은 계속 필요 |
+| cache + 반환 객체의 traced Python retained allocations | 9,212,494B | 6,347,182B | tracemalloc, RSS 아님 |
+
+같은 실제 chunk에서 top-level key 객체는 기존 49,088개, 키 cache 사용 시 26개였다.
+SHA/byte/line count 검증 시간은 별도 약 1.4ms였으며 검증을 생략하지 않는다.
+원본 값·토큰·DSN은 보고서나 코드에 저장하지 않는다. 실제 payload는 private 로컬에만 있다.
+새 의존성·새 cache 예산·RSS 보장은 추가하지 않는다. 기존 64MiB LRU와 8MiB window는
+여전히 canonical wire-byte 기준이다.
+
+회귀 범위는 기존 유효/무효 JSONL·NaN/Infinity·float 경계·duplicate keys·인코딩·빈 chunk,
+비객체 point 거절, Python 정수 한도, 5,000-point chunk의 cold/warm nested copy 독립성,
+SHA/byte/point/GC 및 기존 API/ETag/source-health 계약이다. 운영 전체 응답시간과 RSS 수용은
+부모의 배포 후 실제 검증으로 남긴다.
+
+추가 수정의 최종 집중 회귀는 서로 다른 두 시험 묶음 74개 + 91개, 총 **165개 통과**다.
+로컬 전체 suite는 반복하지 않고 PR253 새 head의 CI를 실행한다. 화면 QA에서는 위치 카탈로그
+대기 중/정보없음 마커를 콘텐츠 로딩 완료로 판정하지 않는다. 다음 배포에서는 카탈로그가
+안정될 때까지 기다리거나 데이터 timeout으로 명시하고 별도로 콘텐츠 상태를 기록해야 한다.
