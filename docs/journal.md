@@ -1,3 +1,8 @@
+## 2026-11-19 — 호환 전이 의존성 정렬
+
+- MapLibre GL6.17의 geojson-vt를 호환 범위 안의 6.3.1로 고정하고 기존 Concierge와 registry SRI를 맞췄다. 직접 라이브러리 버전·Common 산출물·RN exact style-spec은 유지한다.
+- Node26.13.1/npm12.0.1 lock-only와 고정 Common canonical/toolchain guard를 확인했다. 전체 설치·빌드·운영 적용은 하지 않았고 정확 PR CI는 별도다.
+
 ## 2026-11-18 — Common 표 너비 수정 정본 채택과 빌드 캐시 후속
 
 - [Common PR68](https://github.com/digitie/kor-travel-common/pull/68)의 모바일 표 min-width 수정이 포함된 UI0.2.2·tokens0.1.3을 채택한다. Geo는 toast0.1.2도 같은 producer 산출물로 맞춘다. 각 앱이 기존에 쓰던 Common 패키지를 갱신했다.
