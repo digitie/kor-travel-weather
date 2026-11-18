@@ -140,3 +140,29 @@ SHA/byte/point/GC 및 기존 API/ETag/source-health 계약이다. 운영 전체 
 로컬 전체 suite는 반복하지 않고 PR253 새 head의 CI를 실행한다. 화면 QA에서는 위치 카탈로그
 대기 중/정보없음 마커를 콘텐츠 로딩 완료로 판정하지 않는다. 다음 배포에서는 카탈로그가
 안정될 때까지 기다리거나 데이터 timeout으로 명시하고 별도로 콘텐츠 상태를 기록해야 한다.
+
+## forecast 반환 필드 복사 축소
+
+기준 main은 PR254 merge 33b34533da9f19cf80d1b1d5d669993a0c52ef81이다.
+limit은 point가 아니라 위치 수다. 각 위치의 chunk 전체를 검산한 뒤 미래 target을
+선별하고 중복 metric의 마지막 값·target 정렬·전체 point의 known_at 최댓값을 구한다.
+전역 정렬 때문에 128 chunk를 선적재하는 구조는 아니지만, 현재 metadata만으로 chunk
+안의 만료 point를 미리 제외할 수는 없다. corrupt tail 검증도 생략하지 않는다.
+
+DB batch reader에 검산·전체 JSON decode 이후의 선택적 필드 복사를 추가했다. forecast는
+출력과 scope 검증에 필요한 8개 필드만 복사해 미사용 observation_evidence의 deepcopy를
+제거한다. 원본 decoded cache와 기본 전체 읽기, 선택된 mutable 값의 반환 객체 격리,
+SHA/bytes/point count·모든 JSON 행·provider/style/location 검증과 GC shared guard는 유지한다.
+파일 backend, DTO, cursor, ETag, TTL, cache 예산, schema와 의존성은 바꾸지 않는다.
+
+로컬 SQLite의 실제 DB artifact store와 publisher 형태의 합성 fixture로 비교했다.
+128 chunk·147,200 point·canonical 123,450,880바이트·limit=200을 사용했고, cache를
+비운 뒤 기존 전체 복사와 선택적 복사를 교대 실행해 각각 3회 측정했다. 페이지 조립 중앙값은
+1.631초에서 1.193초로 줄었다. 6회 모두 응답 SHA와 cursor state가 동일했으며 payload
+SELECT는 양쪽 모두 16회였다. SQL 수·payload 전송량 감소나 운영 PG 성능으로 해석하지 않는다.
+운영 forecast의 60초 timeout이 해결됐다는 증거는 아직 없으며 실제 배포 후 수용이 필요하다.
+
+새 회귀 12개와 기존 관련 68개, 총 80개가 통과했다. 데이터·중복/정렬·만료/cursor 동등성,
+cold/warm mutable 격리, corrupt tail, JSON codec, API ETag/만료·head 삭제 및 GC 경합을
+확인했다. 루트 Ruff와 diff 검사도 통과했다. 전체 suite와 frontend 검증은 PR CI에 맡기며
+중복 로컬 전체 시험이나 운영 요청·배포는 실행하지 않았다.

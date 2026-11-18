@@ -306,7 +306,7 @@ class DatabaseExportArtifactStore:
         payload = self._payload(digest, byte_count=byte_count, point_count=point_count)
         yield from self._decoded_points(digest, payload, byte_count)
 
-    def _decoded_points(self, digest, payload, byte_count):
+    def _decoded_points(self, digest, payload, byte_count, *, fields=None):
         from .export_artifacts import _DECODED_ARTIFACT_BYTES, _DECODED_ARTIFACT_ENTRIES
 
         cache = self._decoded
@@ -338,16 +338,21 @@ class DatabaseExportArtifactStore:
                     cache.bytes -= removed[2]
         for item, nested_keys in zip(entry[0], entry[1], strict=True):
             # JSON scalar/key는 immutable이다. mutable 값만 복사해 cache와 응답을 격리한다.
-            point = dict(item)
+            # projection도 모든 JSON 행의 parsing·형식 검증 뒤 수행한다.
+            point = dict(item) if fields is None else {
+                key: item[key] for key in fields if key in item
+            }
             for key in nested_keys:
-                point[key] = deepcopy(item[key])
+                if key in point:
+                    point[key] = deepcopy(item[key])
             yield point
 
-    def read_many(self, refs):
+    def read_many(self, refs, *, fields=None):
         """실제 요청 창의 최대8개/8MiB만 같은 연결·guard에서 읽고 모두 검산한다.
 
         cache hit도 실제 DB payload의 SHA/bytes/point count를 확인한다. 전체 manifest를
         미리 읽거나 DB 불변성 검사를 metadata 존재 확인으로 대체하지 않는다.
+        fields는 검산·decode 이후 복사할 필드만 제한하며 원본 cache는 축소하지 않는다.
         """
         expected = {}
         for ref in refs:
@@ -376,7 +381,7 @@ class DatabaseExportArtifactStore:
             result = {}
             for digest, (size, count) in expected.items():
                 payload = self._verify_payload_row(rows[digest], digest, size, count)
-                result[digest] = list(self._decoded_points(digest, payload, size))
+                result[digest] = list(self._decoded_points(digest, payload, size, fields=fields))
             return result
 
     def read_shared(self, digest, *, byte_count, point_count):

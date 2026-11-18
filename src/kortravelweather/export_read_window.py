@@ -5,9 +5,10 @@ from .export_database_artifacts import MAX_ARTIFACT_READ_BATCH, MAX_ARTIFACT_REA
 
 
 class ArtifactReadWindow:
-    def __init__(self, artifacts):
+    def __init__(self, artifacts, *, fields=None):
         self.artifacts = artifacts
         self.bulk = getattr(artifacts, "read_many", None)
+        self.fields = fields if getattr(artifacts, "is_database", False) else None
         self.points = {}
         self.receipts = {}
 
@@ -29,7 +30,9 @@ class ArtifactReadWindow:
         self.points.clear()
         self.receipts.clear()
         if refs:
-            self.points.update(self.bulk(refs))
+            self.points.update(
+                self.bulk(refs) if self.fields is None else self.bulk(refs, fields=self.fields)
+            )
             self.receipts.update({ref["artifact_digest"]: (ref["byte_count"], ref["point_count"])
                                   for ref in refs})
 

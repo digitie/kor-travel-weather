@@ -183,7 +183,8 @@ def test_read_window_limits_canonical_bytes_without_claiming_a_python_heap_budge
     assert sum(r["byte_count"] for r in captured[0]) <= MAX_ARTIFACT_READ_BYTES
 
 
-def test_batch_shared_guard_blocks_gc_until_hash_and_decode_complete(store, monkeypatch):
+@pytest.mark.parametrize("fields", [None, ("n",)])
+def test_batch_shared_guard_blocks_gc_until_hash_and_decode_complete(store, monkeypatch, fields):
     import threading
 
     from kortravelweather.export_artifacts import ExportGuardTimeout
@@ -202,7 +203,7 @@ def test_batch_shared_guard_blocks_gc_until_hash_and_decode_complete(store, monk
 
     def read():
         try:
-            results.append(store.read_many(refs))
+            results.append(store.read_many(refs, fields=fields))
         except BaseException as error:
             failures.append(error)
 
@@ -225,7 +226,7 @@ def test_batch_shared_guard_blocks_gc_until_hash_and_decode_complete(store, monk
         )
     assert len(deleted) == 2
     with pytest.raises(ExportArtifactError):
-        store.read_many(refs)
+        store.read_many(refs, fields=fields)
 
 
 def test_window_rechecks_receipt_when_reusing_an_already_buffered_digest():
