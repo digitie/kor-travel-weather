@@ -63,7 +63,7 @@ def _decode_json_line(line):
 
 
 class _DecodedCache:
-    """bytes는 원본 canonical 길이의 합이다. Python heap/RSS 상한이 아니다."""
+    """무게는 전체 canonical 또는 보관 projection의 JSON 길이다. heap/RSS 상한은 아니다."""
 
     def __init__(self):
         self.entries = OrderedDict()
@@ -309,42 +309,57 @@ class DatabaseExportArtifactStore:
     def _decoded_points(self, digest, payload, byte_count, *, fields=None):
         from .export_artifacts import _DECODED_ARTIFACT_BYTES, _DECODED_ARTIFACT_ENTRIES
 
+        fields = None if fields is None else tuple(fields)
+        # engine별 기존 예산을 함께 쓴다. 다른 fieldset이나 전체 읽기를 대체하지 않는다.
+        key = digest if fields is None else (digest, frozenset(fields))
         cache = self._decoded
         with cache.lock:
-            entry = cache.entries.get(digest)
+            entry = cache.entries.get(key)
             if entry is not None:
-                cache.entries.move_to_end(digest)
+                cache.entries.move_to_end(key)
         if entry is None:
-            # pydantic-core의 기본 정수 한도와 다른 Python 정책은 기존 parser를 따른다.
+            # projection 여부와 무관하게 첫 읽기는 모든 JSON 행·point 형식을 검증한다.
             parse = (_decode_json_line if sys.get_int_max_str_digits()
                      == sys.int_info.default_max_str_digits else json.loads)
             items = tuple(parse(line) for line in payload.splitlines())
             if any(not isinstance(item, dict) for item in items):
                 raise ExportArtifactError("DB export artifact point 형식이 다릅니다.")
+            weight = byte_count
+            if fields is not None:
+                items = tuple(
+                    {name: item[name] for name in fields if name in item} for item in items
+                )
+                try:
+                    # ASCII escape 길이는 UTF-8 원문보다 보수적이다. fieldset key도 예산에 센다.
+                    weight = (len(json.dumps(items, ensure_ascii=True, separators=(",", ":")))
+                              + len(json.dumps((digest, fields), ensure_ascii=True)))
+                except (TypeError, ValueError, OverflowError, RecursionError):
+                    weight = None  # 보관 크기를 셀 수 없어도 기존 읽기·복사 계약은 유지한다.
             nested_keys = tuple(
-                tuple(key for key, value in item.items() if isinstance(value, (dict, list)))
+                tuple(name for name, value in item.items() if isinstance(value, (dict, list)))
                 for item in items
             )
-            entry = (items, nested_keys, byte_count)
-            with cache.lock:
-                previous = cache.entries.pop(digest, None)
-                if previous is not None:
-                    cache.bytes -= previous[2]
-                cache.entries[digest] = entry
-                cache.bytes += byte_count
-                while cache.entries and (cache.bytes > _DECODED_ARTIFACT_BYTES
-                                         or len(cache.entries) > _DECODED_ARTIFACT_ENTRIES):
-                    _, removed = cache.entries.popitem(last=False)
-                    cache.bytes -= removed[2]
+            entry = (items, nested_keys, weight)
+            if weight is not None:
+                with cache.lock:
+                    previous = cache.entries.pop(key, None)
+                    if previous is not None:
+                        cache.bytes -= previous[2]
+                    cache.entries[key] = entry
+                    cache.bytes += weight
+                    while cache.entries and (cache.bytes > _DECODED_ARTIFACT_BYTES
+                                             or len(cache.entries) > _DECODED_ARTIFACT_ENTRIES):
+                        _, removed = cache.entries.popitem(last=False)
+                        cache.bytes -= removed[2]
         for item, nested_keys in zip(entry[0], entry[1], strict=True):
-            # JSON scalar/key는 immutable이다. mutable 값만 복사해 cache와 응답을 격리한다.
-            # projection도 모든 JSON 행의 parsing·형식 검증 뒤 수행한다.
+            # 반환 순서·mutable 격리를 유지한다.
+            # payload SHA/bytes/count는 cache hit도 앞서 검산한다.
             point = dict(item) if fields is None else {
-                key: item[key] for key in fields if key in item
+                name: item[name] for name in fields if name in item
             }
-            for key in nested_keys:
-                if key in point:
-                    point[key] = deepcopy(item[key])
+            for name in nested_keys:
+                if name in point:
+                    point[name] = deepcopy(item[name])
             yield point
 
     def read_many(self, refs, *, fields=None):
@@ -352,7 +367,7 @@ class DatabaseExportArtifactStore:
 
         cache hit도 실제 DB payload의 SHA/bytes/point count를 확인한다. 전체 manifest를
         미리 읽거나 DB 불변성 검사를 metadata 존재 확인으로 대체하지 않는다.
-        fields는 검산·decode 이후 복사할 필드만 제한하며 원본 cache는 축소하지 않는다.
+        fields는 전체 검산·decode 뒤 보관할 projection을 지정한다. SQL/payload 검산은 줄이지 않는다.
         """
         expected = {}
         for ref in refs:
