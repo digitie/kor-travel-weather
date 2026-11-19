@@ -24,7 +24,7 @@ describe("지역 대표 카드의 화면 충돌", () => {
   type Rect = { left: number; top: number; width: number; height: number };
   const layout = new Function(`${ts.transpileModule(node.getText(tree).replace("export ", ""), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}; return layoutWeatherRegionCards;`)() as
     (cards: Rect[], width: number, height: number, reserved: Rect[]) => { x: number; y: number; placed: boolean }[];
-  it.each([[1120, 832], [351, 787]])("%sx%s에서도 상세/통계를 피하고 공간 부족을 목록에 알린다", (width, height) => {
+  it.each([[1120, 832], [351, 787]])("%sx%s에서도 상세/통계를 피하고 공간이 없으면 배치하지 않는다", (width, height) => {
     const cards = Array.from({ length: 29 }, () => ({ left: 200, top: 240, width: 132, height: 48 }));
     const obstacle = width > 400 ? { left: width - 360, top: 8, width: 350, height: height - 16 }
       : { left: 8, top: 8, width: width - 16, height: 100 };
@@ -43,7 +43,9 @@ describe("지역 대표 카드의 화면 충돌", () => {
     else expect(placed).toHaveLength(cards.length);
     expect(cards.every(card => card.left === 200 && card.top === 240)).toBe(true);
   });
-  it("같은 effect에서 목록을 접으면 mutation/resize가 다시 열지 않고 새 화면에서는 다시 자동 연다", () => {
+  // 지역 목록(「지역 날씨 모두 보기」)은 2026-11-19 삭제했다. 자리가 없어 숨긴 카드는 키보드에서도 빠지고,
+  // 그 안에 있던 포커스는 아직 보이는 지역 카드로, 없으면 지도 캔버스로 옮긴다.
+  it.each([["보이는 지역 카드", true], ["지도 캔버스", false]] as const)("숨겨진 카드의 포커스를 %s로 옮긴다", (_target, hasVisible) => {
     let effect: ts.Expression | undefined;
     function find(node: ts.Node) {
       if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect" && node.arguments[0]?.getText(tree).includes("const offsets = layoutWeatherRegionCards")) effect = node.arguments[0];
@@ -52,28 +54,34 @@ describe("지역 대표 카드의 화면 충돌", () => {
     find(tree);
     if (!effect) throw new Error("실제 지역 배치 effect가 필요합니다.");
     const frames: (() => void)[] = [];
-    const mutations: (() => void)[] = [];
-    class Observer { constructor(callback: () => void) { mutations.push(callback); } observe() {} disconnect() {} }
-    const setOpen = vi.fn();
+    class Observer { observe() {} disconnect() {} }
     const button = { offsetWidth: 130, offsetHeight: 130, tabIndex: 0 };
+    const attributes = new Map<string, string>();
     const host = { getBoundingClientRect: () => ({ left: 0, top: 0 }), querySelector: (selector: string) => selector.includes("button") ? button : null,
-      style: { setProperty() {} }, dataset: {}, setAttribute() {}, removeAttribute() {}, contains: () => false };
-    const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }), querySelectorAll: () => [host], closest: () => null };
+      style: { setProperty() {} }, dataset: {} as Record<string, string>, setAttribute: (key: string, value: string) => attributes.set(key, value),
+      removeAttribute: (key: string) => attributes.delete(key), contains: () => true };
+    const visible = { focus: vi.fn() };
+    const canvas = { focus: vi.fn() };
+    const queried: string[] = [];
+    const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }), querySelectorAll: () => [host], closest: () => null,
+      querySelector: (selector: string) => { queried.push(selector); return hasVisible ? visible : null; } };
     const code = ts.transpileModule(`const effect = ${effect.getText(tree)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    const run = () => new Function("map", "mapReady", "mode", "regionLevel", "markers", "setRegionListOpen", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
-      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1], setOpen, layout,
-      (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Observer, Observer, { activeElement: null },
+    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
+      { current: { getContainer: () => root, getCanvas: () => canvas, on() {}, off() {} } }, true, "map", "sido", [1], layout,
+      (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Observer, Observer, { activeElement: {} },
     ) as () => void;
-    const cleanup = run(); frames.shift()!();
-    expect(setOpen.mock.calls).toEqual([[true]]);
-    setOpen(false);
-    mutations[0](); frames.shift()!();
-    mutations[1](); frames.shift()!();
-    expect(setOpen.mock.calls).toEqual([[true], [false]]);
-    cleanup(); const cleanupNext = run(); frames.shift()!();
-    expect(setOpen.mock.calls.at(-1)).toEqual([true]); cleanupNext();
+    try {
+      frames.shift()!();
+      expect(host.dataset.regionOverflow).toBe("true");
+      expect(button.tabIndex).toBe(-1);
+      expect(attributes.get("aria-hidden")).toBe("true");
+      frames.shift()!();
+      expect(queried).toEqual(['.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button']);
+      expect(visible.focus).toHaveBeenCalledTimes(hasVisible ? 1 : 0);
+      expect(canvas.focus).toHaveBeenCalledTimes(hasVisible ? 0 : 1);
+    } finally { cleanup(); }
   });
-  it("형제인 지역 목록 높이가 바뀌면 같은 effect에서 이동한 접기 버튼을 피해 다시 배치한다", () => {
+  it("지도 통계 요약 높이가 바뀌면 같은 effect에서 이동한 요약을 피해 다시 배치한다", () => {
     let effect: ts.Expression | undefined;
     function find(node: ts.Node) {
       if (ts.isCallExpression(node) && node.expression.getText(tree) === "useEffect" && node.arguments[0]?.getText(tree).includes("const offsets = layoutWeatherRegionCards")) effect = node.arguments[0];
@@ -87,29 +95,25 @@ describe("지역 대표 카드의 화면 충돌", () => {
     class Mutation { observe() {} disconnect() {} }
     class Resize { constructor(callback: () => void) { resized = callback; } observe(target: unknown) { observed.add(target); } disconnect() {} }
     const offsets = new Map<string, string>();
-    const access = {};
     let controlTop = 100;
     const control = { getBoundingClientRect: () => ({ left: 8, top: controlTop, width: 180, height: 44 }) };
-    const stage = { querySelectorAll: (selector: string) => selector.includes(".weather-region-access > button") ? [control]
-      : selector.includes(".weather-region-access") ? [access] : [] };
+    const stage = { querySelectorAll: (selector: string) => selector.includes(".kt-map-stage-summary") ? [control] : [] };
     const button = { offsetWidth: 120, offsetHeight: 48, tabIndex: 0 };
     const host = { getBoundingClientRect: () => ({ left: 10, top: 300 }), querySelector: (selector: string) => selector.includes("button") ? button : null,
       style: { setProperty: (key: string, value: string) => offsets.set(key, value) }, dataset: {}, setAttribute() {}, removeAttribute() {}, contains: () => false };
     const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 351, height: 400 }), querySelectorAll: () => [host], closest: () => stage };
-    const setOpen = vi.fn();
     const code = ts.transpileModule(`const effect = ${effect.getText(tree)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "setRegionListOpen", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
-      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1], setOpen, layout,
+    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
+      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1], layout,
       (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Mutation, Resize, { activeElement: null },
     ) as () => void;
     try {
       frames.shift()!(); expect(offsets.get("--weather-region-y")).toBe("0px");
-      // 목록은 map container의 형제이므로 높이 변경은 관찰 대상에 포함됐을 때만 콜백을 보낸다.
+      // 요약은 map container의 형제이므로 높이 변경은 관찰 대상에 포함됐을 때만 콜백을 보낸다.
       controlTop = 300;
-      if (observed.has(access)) resized();
+      if (observed.has(control)) resized();
       expect(frames).toHaveLength(1); frames.shift()!();
       expect(Number.parseFloat(offsets.get("--weather-region-y")!)).toBeLessThan(0);
-      expect(setOpen).not.toHaveBeenCalled();
     } finally { cleanup(); }
   });
   it("portal 자식이 제거된 빈 marker host를 건너뛰고 남은 정상 카드의 측정과 배치를 유지한다", () => {
@@ -131,8 +135,8 @@ describe("지역 대표 카드의 화면 충돌", () => {
       style: { setProperty: validWrite } };
     const root = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 351, height: 400 }), querySelectorAll: () => [stale, valid], closest: () => null };
     const code = ts.transpileModule(`const effect = ${effect.getText(tree)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "setRegionListOpen", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
-      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1, 2], vi.fn(), layout,
+    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers", "layoutWeatherRegionCards", "requestAnimationFrame", "cancelAnimationFrame", "MutationObserver", "ResizeObserver", "document", `${code}; return effect();`)(
+      { current: { getContainer: () => root, on() {}, off() {} } }, true, "map", "sido", [1, 2], layout,
       (callback: () => void) => { frames.push(callback); return frames.length; }, () => {}, Observer, Observer, { activeElement: null },
     ) as () => void;
     try {
@@ -160,11 +164,11 @@ it("카탈로그가 같은 지점의 좌표를 바꾸면 이전 행정 도형을
   expect(evaluateModelExpression(expression, { mode: "list", boundaryRequest: request, model: { detailOpen: true, selected: request } })).toBeNull();
 });
 
-describe("지도와 대체 목록의 같은 날씨 표시", () => {
+describe("지도 마커의 날씨 표시", () => {
   const source = readFileSync(new URL("./vworld-map-view.tsx", import.meta.url), "utf8");
   const ast = ts.createSourceFile("map.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const node = ast.statements.find(statement => ts.isFunctionDeclaration(statement) && statement.name?.text === "WeatherMarkerLabel");
-  if (!node) throw new Error("지도와 목록에서 공유할 표시 컴포넌트가 필요합니다.");
+  if (!node) throw new Error("지도 마커 표시 컴포넌트가 필요합니다.");
   const code = ts.transpileModule(node.getText(ast), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const label = new Function("require", "weatherConditionIcon", "weatherConditionLabel", "abbreviateWeatherRegionName", `const exports = {}; ${code}; return exports.WeatherMarkerLabel;`)(
     () => jsxRuntime, () => "?", () => "정보 없음", abbreviateWeatherRegionName,

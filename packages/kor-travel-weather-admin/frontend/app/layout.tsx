@@ -1,7 +1,7 @@
 /**
  * Next.js 16 App Router 루트 레이아웃 — kor-travel-map admin `src/app/layout.tsx`와 같은 구조.
  *
- * - 셸(AdminShell)은 페이지마다 감싼다(map과 같은 방식). 로그인 화면은 셸 없이 렌더한다.
+ * - 셸(components/admin-shell.tsx → @kor-travel/ui AdminShell)은 페이지마다 감싼다. 로그인 화면은 셸 없이 렌더한다.
  * - 서체: 본문/UI = Pretendard Variable(@kor-travel/tokens/font.css), mono = Geist Mono(next/font).
  */
 
@@ -23,11 +23,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: {
-    default: "Weather Scraper Admin UI",
-    template: "%s · Weather Scraper Admin UI",
-  },
-  description: "Weather Scraper 운영·수집 관리 화면",
+  // 관리자 화면은 셸이 "날씨 - <페이지>"(formatAdminTitle)로 document.title을 맞춘다.
+  title: "날씨",
+  description: "날씨 데이터 운영·수집 관리 화면",
 };
 
 interface RootLayoutProps {

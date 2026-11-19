@@ -117,11 +117,10 @@ export default function ProviderSettingsPage() {
       actions={
         <Button loading={loading} type="button" variant="outline" onClick={() => void refresh()}>
           <RotateCcwIcon data-icon="inline-start" />
-          새로고침
+          <span className="max-sm:sr-only">새로고침</span>
         </Button>
       }
       description="제공처 API 키를 암호화해서 저장하고 관리합니다. 한 번 저장한 키는 원문으로 다시 보여주지 않습니다."
-      section="시스템"
       title="제공처 API 키"
     >
       <div className="flex flex-col gap-6">

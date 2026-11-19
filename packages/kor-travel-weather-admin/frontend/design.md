@@ -1,20 +1,24 @@
-# Weather Scraper Admin UI
+# 날씨 관리자 UI
 
-The operator console follows the current `kor-travel-map` admin shell and
-component contract. The weather domain changes only the content and primary
-accent hue; navigation, spacing, controls, surfaces, and responsive behavior
-remain shared.
+The operator console uses the shared `@kor-travel/ui` admin shell
+(`AdminShell` + `AppMenu`, 0.2.3). The weather domain changes only the content
+and primary accent hue; navigation, spacing, controls, surfaces, and responsive
+behavior remain shared.
 
 ## Shared shell
 
-- Rail-workbench layout: a 16rem sticky rail on desktop and a horizontal rail
-  strip below 62rem; the desktop rail collapses to 4rem and remembers the
-  choice in local storage.
-- Navigation uses the same grouped rows, 30px row height, 2px active mark,
-  focus ring, and logout footer as `kor-travel-map`.
-- The header is a flush border band (20px/24px/16px padding) with a section
-  label, title, description, and right-aligned actions. Content uses 24px
-  gutters and 24px vertical rhythm.
+- `components/admin-shell.tsx` wraps the common `AdminShell` per page. Desktop
+  (lg, 1024px+) shows a 16rem left rail that collapses to 4rem and remembers
+  the choice under `kor-travel-weather:sidebar-collapsed`. Below lg the menu
+  folds into a left drawer opened from the top bar menu button.
+- The top bar is one line (~48px) on PC and mobile: the title is
+  "날씨 - <page>" only (no app tagline/wordmark), and the page description sits
+  next to it in small, truncated text. Actions stay at the right; on mobile they
+  are icon buttons (labels become screen-reader text).
+- Focus is one 2px outline with a 2px offset (`--kt-focus`) issued by the
+  `:focus-visible` rule in `@layer base`. Do not add unlayered `button`/`a`
+  element or state rules: they beat Tailwind utilities and doubled the button
+  border/ring before 2026-11-19.
 
 ## Tokens
 
@@ -41,5 +45,6 @@ npm run type-check
 npm run build
 ```
 
-The layout must remain contained at 320px, 375px, 414px, and 768px. Only the
-mobile navigation strip may scroll horizontally.
+The layout must remain contained at 320px, 375px, 414px, and 768px without
+horizontal page scroll. `e2e/admin-shell.spec.ts` covers the drawer, the
+one-line title, the single focus outline, and the removed region list.

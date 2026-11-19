@@ -61,7 +61,6 @@ export default function DatasetsPage() {
   return (
     <AdminShell
       description="각 데이터 제공처가 어떤 데이터를 얼마나 자주 보내주는지 정리한 목록입니다."
-      section="수집 파이프라인"
       title="데이터셋"
     >
       <div className="flex flex-col gap-6">

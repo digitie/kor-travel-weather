@@ -1,7 +1,6 @@
 "use client";
 
 import { RefreshCwIcon } from "lucide-react";
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AdminShell } from "@/components/admin-shell";
@@ -11,7 +10,6 @@ import { StatStrip, type StatStripItem } from "@/components/stat-strip";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent } from "@/components/ui/card";
 import { getHealth, getLocations, getPublicLocations, getSyncRuns, syncRunStatusLabel } from "@/lib/api";
 import { type CardState, type HomeFetchers, type HomeSummary, loadingSummary, startHomeSummary } from "@/lib/home-summary";
@@ -137,18 +135,11 @@ export default function HomePage() {
           {/* 걸린 요청이 있어도 다시 누를 수 있다. 이전 요청의 늦은 응답은 무시된다. */}
           <Button onClick={refresh} type="button" variant="outline">
             <RefreshCwIcon className={loading ? "animate-spin" : undefined} data-icon="inline-start" />
-            새로고침
+            <span className="max-sm:sr-only">새로고침</span>
           </Button>
-          <Link className={buttonVariants({ variant: "outline" })} href="/weather">
-            날씨 지도
-          </Link>
-          <Link className={buttonVariants({ variant: "outline" })} href="/sync-runs">
-            수집 실행
-          </Link>
         </>
       }
       description="날씨 데이터 수집 현황과 공개 API 상태를 한눈에 확인합니다."
-      section="개요"
       title="운영 홈"
     >
       <div className="space-y-6">

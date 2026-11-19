@@ -248,7 +248,6 @@ export default function SyncRunsPage() {
   return (
     <AdminShell
       description="예약 일정에 따라 날씨 데이터를 가져온 결과입니다. 실패한 항목은 표에서 바로 보이고, 행을 펼치면 실패 원인과 어떤 원본 데이터를 가져왔는지 확인할 수 있습니다."
-      section="수집 파이프라인"
       title="수집 실행"
     >
       <Card size="sm">
