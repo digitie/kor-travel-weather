@@ -99,6 +99,10 @@ def test_slow_forecast_completion_does_not_move_absolute_business_boundary(
                        for p in (json.loads(line) for line in payload.splitlines())
                        if datetime.fromisoformat(p["target_at"]) > origin)
         origin = earliest - timedelta(seconds=30)
+    else:
+        # snapshot 만료만 검증한다. 실제 시각이 정각 직전이면 더 이른 target이
+        # 올바르게 기한을 줄이므로 다음 시간대 05분에서 target 경계를 분리한다.
+        origin = (origin + timedelta(hours=1)).replace(minute=5, second=0, microsecond=0)
     clock = [0.0]
 
     class Clock(datetime):

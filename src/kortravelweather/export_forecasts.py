@@ -367,6 +367,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         return self._page_guarded(limit=limit, cursor=cursor)
 
     def _page_guarded(self, *, limit, cursor):
+        fresh_health = None
         if cursor:
             state = self._decode(cursor)
             if state["r"] != self.resource or state["l"] != limit:
@@ -377,14 +378,25 @@ class FrozenForecastExports(FrozenCurrentExports):
             frozen = self._renew_reused(dict(row, _reused=True))
         else:
             def issue():
+                self._fresh_forecast_health = None
+                capture = getattr(self, "_capture_forecast_health", False)
+                self._capture_forecast_health = capture or (
+                    getattr(self, "revalidate_first_page", False)
+                    and self.style in {"short", "ultra_short"}
+                )
                 try:
                     return self._freeze_forecasts()
                 except ExportCapacityExceeded:
+                    self._fresh_forecast_health = None
                     return self._capacity_fallback(self._previous_forecasts())
                 except ExportSnapshotUnavailable:
+                    self._fresh_forecast_health = None
                     return self._previous_forecasts()
+                finally:
+                    self._capture_forecast_health = capture
 
             frozen = ensure_snapshot_files(self.artifacts, issue)
+            fresh_health = self._fresh_forecast_health
             frozen = self._renew_reused(frozen)
             state = {
                 "v": 1,
@@ -411,7 +423,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         stale = (
             self._expired_omitted
             or bool(manifest.get("capacity_limited"))
-            or self._health(manifest, frozen, now)
+            or self._health_after_freeze(manifest, frozen, now, fresh_health)
         )
         status = "stale" if stale else "ok"
         self.cached_source_status = status
@@ -458,14 +470,9 @@ class FrozenForecastExports(FrozenCurrentExports):
             if (frozen["snapshot_id"], frozen["manifest_digest"]) != cached.reuse_snapshot:
                 raise PageReuseExpired()
             now = datetime.now(UTC)
-            health = fresh._fresh_forecast_health
-            if (health is not None and health[0] is not None and now >= health[0]
-                    and (health[1] is None or now < health[1])):
-                # 이번 RR freeze가 head/owner/run/cohort와 모든 위치의 건강도를 이미 읽었다.
-                # 시간 경계 전의 같은 판정만 사용하며 fallback·경계 통과는 기존 전체 health다.
-                stale = health[2]
-            else:
-                stale = fresh._health(frozen["manifest"], frozen, now)
+            stale = fresh._health_after_freeze(
+                frozen["manifest"], frozen, now, fresh._fresh_forecast_health,
+            )
         status = "stale" if (stale or cached._expired_omitted
                              or frozen["manifest"].get("capacity_limited")) else "ok"
         if status != cached.cached_source_status:
@@ -478,6 +485,15 @@ class FrozenForecastExports(FrozenCurrentExports):
         proof.selection_deadline = fresh.selection_deadline
         proof.validate_reusable_page()
         return proof
+
+    def _health_after_freeze(self, manifest, frozen, now, health):
+        # 같은 요청의 RR freeze에서 모든 위치·head/owner/run/cohort를 이미 확인했다.
+        # 본문 생성 뒤 실제 clock이 경계를 넘거나 fallback이면 기존 전체 health로 돌아간다.
+        checked_now = datetime.now(UTC)
+        if (health is not None and health[0] is not None and checked_now >= health[0]
+                and (health[1] is None or checked_now < health[1])):
+            return health[2]
+        return self._health(manifest, frozen, now)
 
     def _prepare_manifest(self, manifest):
         """특수 source 조합도 완결을 검증한 뒤 불변 manifest로 보존한다."""
