@@ -42,12 +42,15 @@ from .export_artifacts import (
     ExportGuardTimeout,
     PreparedExportChunk,
 )
+from .export_capacity import any_of
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _LOCK_NAMESPACE = 1465017671
 _LOCK_KEY = 42
 MAX_ARTIFACT_READ_BATCH = 8
 MAX_ARTIFACT_READ_BYTES = MAX_CHUNK_BYTES
+# digest/정수만 읽는 존재 검산이다. 큰 payload나 JSON buffer의 크기는 늘리지 않는다.
+MAX_ARTIFACT_METADATA_BATCH = 1024
 _context = threading.local()
 _sqlite_lock = threading.RLock()
 _cache_registry = WeakKeyDictionary()
@@ -233,7 +236,9 @@ class DatabaseExportArtifactStore:
         connection = session.connection()
         if self.engine.dialect.name == "postgresql":
             deadline = time.monotonic() + 1.0
-            statement = text("SELECT pg_try_advisory_xact_lock(:namespace, :key)")
+            # 불변 행의 INSERT는 읽기·다른 INSERT와 공존할 수 있다. 같은 digest의
+            # 경합은 PK/ON CONFLICT가 다룬다. GC의 배타 guard는 commit까지 계속 막는다.
+            statement = text("SELECT pg_try_advisory_xact_lock_shared(:namespace, :key)")
             while not connection.scalar(
                 statement, {"namespace": _LOCK_NAMESPACE, "key": _LOCK_KEY},
             ):
@@ -286,14 +291,20 @@ class DatabaseExportArtifactStore:
 
     def present_many(self, refs):
         refs = list(refs)
-        for start in range(0, len(refs), 256):
-            batch = refs[start:start + 256]
+        postgres = self.engine.dialect.name == "postgresql"
+        batch_size = MAX_ARTIFACT_METADATA_BATCH if postgres else 256
+        for start in range(0, len(refs), batch_size):
+            batch = refs[start:start + batch_size]
             for ref in batch:
                 self._validate(ref["artifact_digest"], ref["byte_count"])
+            digests = [ref["artifact_digest"] for ref in batch]
             with self._connection() as connection:
                 actual = dict(connection.execute(select(
                     self.table.c.digest, self.table.c.byte_count,
-                ).where(self.table.c.digest.in_([r["artifact_digest"] for r in batch]))).all())
+                ).where(
+                    any_of(self.table.c.digest, digests) if postgres
+                    else self.table.c.digest.in_(digests),
+                )).all())
             if any(actual.get(r["artifact_digest"]) != r["byte_count"] for r in batch):
                 raise ExportArtifactError("DB export artifact가 없거나 손상됐습니다.")
 
