@@ -84,7 +84,7 @@ try {
   const runner = start([
     "node_modules/@playwright/test/cli.js",
     "test",
-    ...(tileFixture ? ["map-tile-recovery.spec.ts"] : process.argv.length > 2 ? process.argv.slice(2) : ["common-unification.spec.ts", "shared-map-ui.spec.ts", "compact-map-ui.spec.ts", "map-workspace-ui.spec.ts"]),
+    ...(tileFixture ? ["map-tile-recovery.spec.ts"] : process.argv.length > 2 ? process.argv.slice(2) : ["common-unification.spec.ts", "shared-map-ui.spec.ts", "compact-map-ui.spec.ts", "map-workspace-ui.spec.ts", "admin-shell.spec.ts"]),
     "--workers=1",
   ]);
   const [code] = await once(runner, "exit");

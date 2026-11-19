@@ -10,7 +10,7 @@ import {
   Timer,
 } from "lucide-react";
 import type { Map as MapLibreMap } from "maplibre-gl";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MapDetailOverlay,
   MapFilterBar,
@@ -44,7 +44,6 @@ import {
   VWorldMapView,
   VWorldWeatherClusters,
   VWorldWeatherMarker,
-  WeatherMarkerLabel,
 } from "@/components/vworld-map-view";
 import {
   weatherRepresentatives,
@@ -461,8 +460,6 @@ function useWeatherMapModel({
 }: WeatherMapProps) {
   const map = useRef<MapLibreMap | null>(null);
   const [mapReady, setMapReady] = useState(false);
-  const [regionListOpen, setRegionListOpen] = useState(false);
-  const regionListId = useId();
   const [selectedId, setSelectedId] = useState(locations[0]?.location_id ?? "");
   const [boundaryRequest, setBoundaryRequest] = useState<BoundaryRequest | null>(null);
   const [values, setValues] = useState<WeatherValue[]>([]);
@@ -738,7 +735,6 @@ function useWeatherMapModel({
     const root = instance.getContainer();
     let frame = 0;
     let focusFrame = 0;
-    let overflowOpened = false;
     const position = () => {
       frame = 0;
       const bounds = root.getBoundingClientRect();
@@ -766,7 +762,7 @@ function useWeatherMapModel({
         root
           .closest(".weather-region-stage")
           ?.querySelectorAll<HTMLElement>(
-            ".kt-map-detail, .kt-map-stage-summary, .weather-region-access > button, .maplibregl-ctrl-top-right, .maplibregl-ctrl-bottom-right",
+            ".kt-map-detail, .kt-map-stage-summary, .maplibregl-ctrl-top-right, .maplibregl-ctrl-bottom-right",
           ) ?? [];
       const reserved = [...controls]
         .map((control) => {
@@ -797,11 +793,11 @@ function useWeatherMapModel({
           if (host.contains(document.activeElement)) {
             cancelAnimationFrame(focusFrame);
             focusFrame = requestAnimationFrame(() => {
-              if (host.contains(document.activeElement))
-                root
-                  .closest(".weather-region-stage")
-                  ?.querySelector<HTMLElement>(".weather-region-access-list")
-                  ?.focus();
+              if (!host.contains(document.activeElement)) return;
+              const visible = root.querySelector<HTMLElement>(
+                '.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button',
+              );
+              (visible ?? instance.getCanvas()).focus();
             });
           }
         }
@@ -809,10 +805,6 @@ function useWeatherMapModel({
         line?.setAttribute("x2", String(offset.x));
         line?.setAttribute("y2", String(offset.y));
       });
-      if (!overflowOpened && offsets.some((offset) => !offset.placed)) {
-        overflowOpened = true;
-        setRegionListOpen(true);
-      }
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(position);
@@ -824,7 +816,7 @@ function useWeatherMapModel({
     root
       .closest(".weather-region-stage")
       ?.querySelectorAll<HTMLElement>(
-        ".kt-map-detail, .kt-map-stage-summary, .weather-region-access",
+        ".kt-map-detail, .kt-map-stage-summary",
       )
       .forEach((control) => resize.observe(control));
     instance.on("resize", schedule);
@@ -1120,9 +1112,6 @@ function useWeatherMapModel({
     onRetryCatalog,
     map,
     setMapReady,
-    regionListOpen,
-    setRegionListOpen,
-    regionListId,
     selectedId,
     setSelectedId,
     values,
@@ -1583,53 +1572,6 @@ function weatherFilterLabel(
     .join(" · ");
 }
 
-function WeatherRegionAccess({ model }: { model: WeatherMapModel }) {
-  const { regionLevel, markers, regionListOpen, setRegionListOpen, regionListId } = model;
-  return (regionLevel && markers.length ? (
-              <section
-                className="weather-region-access"
-                aria-label="지역별 대표 날씨"
-              >
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-expanded={regionListOpen}
-                  aria-controls={regionListId}
-                  onClick={() => setRegionListOpen((open) => !open)}
-                >
-                  {regionListOpen
-                    ? "지역 날씨 접기"
-                    : `지역 날씨 모두 보기 (${markers.length})`}
-                </Button>
-                {regionListOpen ? (
-                  <div
-                    id={regionListId}
-                    className="weather-region-access-list"
-                    role="region"
-                    aria-label="모든 지역 대표 날씨"
-                    tabIndex={0}
-                  >
-                    {markers.map((marker) => (
-                      <button
-                        key={marker.id}
-                        type="button"
-                        className={`vworld-weather-marker-button vworld-weather-marker weather-marker-${marker.condition}`}
-                        aria-pressed={marker.selected}
-                        onClick={marker.onClick}
-                      >
-                        <WeatherMarkerLabel {...marker} />
-                        <span className="sr-only">
-                          {marker.title} 날씨 보기
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-            ) : null);
-}
-
 export function WeatherMap(props: WeatherMapProps) {
   const model = useWeatherMapModel(props);
   const {
@@ -1774,7 +1716,6 @@ export function WeatherMap(props: WeatherMapProps) {
                   ))
                 : null}
             </VWorldMapView>
-            <WeatherRegionAccess model={model} />
           </MapStage>
         </MapTabPanel>
         <MapTabPanel

@@ -10,32 +10,14 @@ import {
   KeyRoundIcon,
   LogOutIcon,
   MapPinIcon,
-  PanelLeftCloseIcon,
-  PanelLeftOpenIcon,
   WorkflowIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { AppMenu, type AppMenuLinkProps } from "@kor-travel/ui/app-menu";
 import { usePathname } from "next/navigation";
-import {
-  Fragment,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { useRef, useState, type ReactNode } from "react";
+import { AdminShell as CommonAdminShell } from "@kor-travel/ui/admin-shell";
+import { AppMenu, type AppMenuLinkProps } from "@kor-travel/ui/app-menu";
 
-import { withOccurrenceKeys } from "@/lib/occurrence-key";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import { buttonVariants } from "@/components/ui/button-variants";
 import { HelpTip } from "@/components/help-tip";
 import {
   beginAdminLogout,
@@ -44,19 +26,17 @@ import {
 } from "@/lib/admin-auth-events";
 import { cn } from "@/lib/utils";
 
+/** 상단 바 제목의 영역 이름. 제목은 "날씨 - <페이지>" 한 줄이다. */
+export const ADMIN_AREA = "날씨";
+
 /**
- * 작업 지향 nav 그룹 (§1) — nav·섹션 라벨·브레드크럼 라벨의 단일 정본.
+ * 작업 지향 nav 그룹 — 메뉴 라벨의 단일 정본.
  * 그룹 헤더는 비링크이며 href는 존치하는 canonical 화면만 가리킨다.
  */
 const NAV_GROUPS = [
-  {
-    group: null,
-    section: "개요",
-    items: [{ href: "/", label: "홈", icon: HomeIcon }],
-  },
+  { group: null, items: [{ href: "/", label: "홈", icon: HomeIcon }] },
   {
     group: "날씨",
-    section: "날씨",
     items: [
       { href: "/weather", label: "날씨 지도", icon: CloudSunIcon },
       { href: "/locations", label: "위치 카탈로그", icon: MapPinIcon },
@@ -65,7 +45,6 @@ const NAV_GROUPS = [
   },
   {
     group: "수집 파이프라인",
-    section: "수집 파이프라인",
     items: [
       { href: "/sync-runs", label: "수집 실행", icon: ActivityIcon },
       { href: "/admin/dagster", label: "Dagster", icon: WorkflowIcon },
@@ -73,7 +52,6 @@ const NAV_GROUPS = [
   },
   {
     group: "설정·도구",
-    section: "설정·도구",
     items: [
       { href: "/settings/providers", label: "API 키 설정", icon: KeyRoundIcon },
       { href: "/api-test", label: "API 테스트", icon: CodeIcon },
@@ -81,11 +59,11 @@ const NAV_GROUPS = [
   },
 ] as const;
 
-function MapMenuLink(props: AppMenuLinkProps) {
+function WeatherMenuLink(props: AppMenuLinkProps) {
   return <Link {...props} />;
 }
 
-const COMMON_MENU_GROUPS = NAV_GROUPS.map((group) => ({
+const MENU_GROUPS = NAV_GROUPS.map((group) => ({
   id: group.group ?? "root",
   label: group.group ?? undefined,
   items: group.items.map(({ href, label, icon: Icon }) => ({
@@ -96,364 +74,114 @@ const COMMON_MENU_GROUPS = NAV_GROUPS.map((group) => ({
   })),
 }));
 
-const navItems = NAV_GROUPS.flatMap((group) =>
-  group.items.map((item) => ({ ...item, section: group.section })),
+const NAV_HREFS: readonly string[] = NAV_GROUPS.flatMap((group) =>
+  group.items.map((item) => item.href),
 );
 
-const SIDEBAR_COLLAPSED_KEY = "kor-travel-weather:sidebar-collapsed";
-const MAIN_CONTENT_ID = "main-content";
-
-function isActive(pathname: string, href: string) {
-  if (href === "/") {
-    return pathname === "/";
-  }
-  return pathname === href || pathname.startsWith(`${href}/`);
+/** 가장 긴 접두로 현재 메뉴를 고른다(`/` 는 정확히 일치할 때만). */
+function activeHref(pathname: string) {
+  return (
+    NAV_HREFS.filter((href) =>
+      href === "/"
+        ? pathname === "/"
+        : pathname === href || pathname.startsWith(`${href}/`),
+    ).sort((a, b) => b.length - a.length)[0] ?? null
+  );
 }
 
-/**
- * Rail nav row / footer row 레시피 (design.md §Macrostructure N3 · M9).
- * flat row · 30px · 500 · hover paper-2 · pressed rules 색 · focus = 단일 outline 레시피.
- * active 는 색만이 아니라 좌측 2px brand mark + `aria-current="page"`(M11).
- */
-const railRowClass =
-  "relative flex h-control-sm shrink-0 items-center gap-2.5 rounded-control px-3 text-xs font-medium whitespace-nowrap text-text-secondary transition-[color,background-color] duration-fast ease-out hover:bg-surface-subtle hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus active:bg-surface-muted";
-
-const railRowCollapsedClass =
-  "lg:size-control lg:justify-center lg:gap-0 lg:px-0";
-
-export type AdminBreadcrumb = { label: string; href?: string };
+const SIDEBAR_COLLAPSED_KEY = "kor-travel-weather:sidebar-collapsed";
 
 export type AdminShellProps = {
+  /** 페이지 이름. 상단 바에 "날씨 - {title}"로 한 줄 표시한다. */
   title: string;
+  /** 상단 바 제목 옆의 작은 한 줄 설명(좁으면 말줄임, 전체 문장은 title 속성). */
   description?: string;
-  /** 명시 오버라이드 — 생략 시 NAV_GROUPS longest-prefix로 유도(§1). breadcrumbs 가 없을 때만 h1 위 한 줄 라벨로 렌더. */
-  section?: string;
-  breadcrumbs?: AdminBreadcrumb[];
+  /** 제목 옆 도움말 팝오버 본문. 상단 바 동작 영역의 첫 아이콘 버튼이 된다. */
   help?: ReactNode;
   helpVariant?: "help" | "info";
-  /** 지도처럼 작업면을 먼저 보여야 하는 화면의 세로 여백만 줄인다. */
-  compact?: boolean;
+  /** 상단 바 오른쪽 동작. 모바일 폭에서는 아이콘 버튼 1~2개로 둔다. */
+  actions?: ReactNode;
   /**
-   * 본문이 뷰포트의 남은 높이를 채운다(날씨 지도 작업면). header 아래 본문을 세로 flex로 만들어
-   * 자식이 `flex-1`로 남은 높이를 받게 한다. 본문이 넘치면 본문 안에서만 스크롤한다.
+   * 본문이 뷰포트의 남은 높이를 채운다(날씨 지도 작업면). 본문을 세로 flex로 만들어 자식이
+   * `flex-1`로 남은 높이를 받고, 넘치면 본문 안에서만 스크롤한다.
    */
   fillViewport?: boolean;
-  /**
-   * h1 아래 한 줄 메타(상태·갱신 시각·건수 등). text-secondary 텍스트 한 줄로만 렌더한다 —
-   * 제목을 반복하는 badge 는 넣지 않는다(M30/M31). 구분자는 `·`.
-   */
-  meta?: ReactNode;
-  /** 헤더 밴드 액션 슬롯 — primary ≤ 1 + secondary ≤ 2 (design.md). 나머지 cross-link 는 rail/breadcrumb 로. */
-  actions?: ReactNode;
   children: ReactNode;
 };
 
-/** 본문 높이 방식 — 분기를 한곳에 모아 셸 컴포넌트의 조건문을 줄인다. */
-const SHELL_LAYOUT = {
-  flow: {
-    root: "min-h-dvh",
-    grid: "min-h-dvh",
-    column: "",
-    main: "",
-  },
-  fill: {
-    root: "h-dvh overflow-hidden",
-    grid: "h-full grid-rows-[auto_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]",
-    column: "min-h-0",
-    main: "flex min-h-0 flex-col overflow-y-auto",
-  },
-} as const;
-
-function subscribeSidebar(listener: () => void) {
-  window.addEventListener("storage", listener);
-  window.addEventListener("weather-sidebar-preference", listener);
-  return () => {
-    window.removeEventListener("storage", listener);
-    window.removeEventListener("weather-sidebar-preference", listener);
-  };
-}
-const readSidebar = () =>
-  window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
-const serverSidebar = () => false;
-
+/**
+ * 날씨 관리자 화면 셸 — @kor-travel/ui `AdminShell` + `AppMenu`.
+ * lg(1024px) 이상은 좌측 rail(접힘 4rem), 미만은 상단 바 메뉴 버튼으로 여는 좌측 drawer다.
+ * 페이지 제목·설명·동작은 한 줄 상단 바에만 둔다(페이지 h1은 상단 바가 유일하다).
+ */
 export function AdminShell({
   title,
   description,
-  section,
-  breadcrumbs,
   help,
   helpVariant,
-  compact = false,
-  fillViewport = false,
-  meta,
   actions,
+  fillViewport = false,
   children,
 }: AdminShellProps) {
   const pathname = usePathname();
-  const menuContainerRef = useRef<HTMLDivElement | null>(null);
-  const sidebarCollapsed = useSyncExternalStore(
-    subscribeSidebar,
-    readSidebar,
-    serverSidebar,
-  );
-  const activeItem = navItems
-    .filter((item) => isActive(pathname, item.href))
-    .sort((a, b) => b.href.length - a.href.length)[0];
-  const activeHref = activeItem?.href;
-  const sectionLabel = section ?? activeItem?.section;
-  const hasBreadcrumbs = Boolean(breadcrumbs && breadcrumbs.length > 0);
-  const layout = SHELL_LAYOUT[fillViewport ? "fill" : "flow"];
-
-  useEffect(() => {
-    if (typeof window === "undefined" || window.innerWidth >= 1024) return;
-    // M14: reduced-motion 이면 smooth scroll 대신 즉시 이동.
-    const reduceMotion = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
-    menuContainerRef.current
-      ?.querySelector("[aria-current=page]")
-      ?.scrollIntoView({
-        behavior: reduceMotion ? "auto" : "smooth",
-        block: "nearest",
-        inline: "center",
-      });
-  }, [activeHref]);
-
-  const toggleSidebar = () => {
-    window.localStorage.setItem(
-      SIDEBAR_COLLAPSED_KEY,
-      sidebarCollapsed ? "0" : "1",
-    );
-    window.dispatchEvent(new Event("weather-sidebar-preference"));
-  };
-
-  function renderAdminShellState() {
-    return hasBreadcrumbs && breadcrumbs ? (
-      <Breadcrumb>
-        <BreadcrumbList className="text-xs">
-          {withOccurrenceKeys(breadcrumbs, (crumb) =>
-            JSON.stringify([crumb.href ?? null, crumb.label]),
-          ).map(({ key, value: crumb }, index) => (
-            <Fragment key={key}>
-              {index > 0 ? <BreadcrumbSeparator /> : null}
-              <BreadcrumbItem>
-                {crumb.href ? (
-                  <BreadcrumbLink href={crumb.href}>
-                    {crumb.label}
-                  </BreadcrumbLink>
-                ) : index === breadcrumbs.length - 1 ? (
-                  <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
-                ) : (
-                  <span>{crumb.label}</span>
-                )}
-              </BreadcrumbItem>
-            </Fragment>
-          ))}
-        </BreadcrumbList>
-      </Breadcrumb>
-    ) : sectionLabel ? (
-      <p className="text-2xs font-medium text-text-secondary">{sectionLabel}</p>
-    ) : null;
-  }
-  function renderAdminShellDiv1() {
-    return (
-      <div className={cn("flex min-w-0 flex-col", layout.column)}>
-        {/* Flush header band: breadcrumb/section → h1(+help) + actions 한 baseline → meta → description, 아래 hairline(M9/M30/m1). */}
-        <header
-          className={cn(
-            "border-b border-border px-6",
-            compact ? "py-3" : "pt-5 pb-4",
-          )}
-          data-slot="admin-shell-header"
-        >
-          <div className="flex min-w-0 flex-col gap-1">
-            {renderAdminShellState()}
-            <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-6">
-              <div className="flex min-w-0 items-center gap-2">
-                <h1 className="text-xl leading-tight font-bold tracking-tight text-text-primary">
-                  {title}
-                </h1>
-                {help ? (
-                  <HelpTip label={title} variant={helpVariant}>
-                    {help}
-                  </HelpTip>
-                ) : null}
-              </div>
-              {actions ? (
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  {actions}
-                </div>
-              ) : null}
-            </div>
-            {meta ? (
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-secondary">
-                {meta}
-              </div>
-            ) : null}
-            {description ? (
-              <p className="max-w-3xl text-xs text-text-secondary">
-                {description}
-              </p>
-            ) : null}
-          </div>
-        </header>
-        {/*
-            M11: <main> 은 children 만 감싼다(aside/header 밖). skip link 대상.
-            `focus-visible:outline-0` — design.md §Focus 닫힌 목록 4번. skip link(Enter)로
-            프로그램 포커스를 받으면 마지막 입력이 키보드라 `:focus-visible`이 매칭돼 **페이지 폭
-            2px 링**이 본문 전체에 그려진다. 사용자가 키로 이동한 요소가 아니라 링이 "어디로
-            갔는지"를 알리지 못하고, 도착 사실은 스크롤 점프와 본문 첫 heading 이 알린다.
-            `outline-none` 은 금지(§금지 패턴 6 — v4에서 `--tw-outline-style: none` 이 안쪽 컨트롤
-            까지 오염) — 폭만 0으로 끄는 `outline-0` 이라야 자식 컨트롤 링이 살아 있다.
-          */}
-        <main
-          className={cn(
-            "min-w-0 flex-1 px-6 focus-visible:outline-0",
-            compact ? "py-3" : "py-6",
-            layout.main,
-          )}
-          data-slot="admin-shell-main"
-          id={MAIN_CONTENT_ID}
-          tabIndex={-1}
-        >
-          {children}
-        </main>
-      </div>
-    );
-  }
+  const helpTip = help ? (
+    <HelpTip label={title} variant={helpVariant}>
+      {help}
+    </HelpTip>
+  ) : null;
   return (
-    <div className={cn("bg-surface-page text-text-primary", layout.root)}>
-      {/* M11: skip link — rail 19개 항목을 건너뛰어 <main> 으로. nav 밖(링크 수 보존). */}
-      <a
-        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-control focus:border focus:border-border focus:bg-card focus:px-3 focus:py-2 focus:text-xs focus:font-medium focus:text-text-primary focus:shadow-elevated focus:outline-2 focus:outline-offset-2 focus:outline-focus"
-        href={`#${MAIN_CONTENT_ID}`}
-      >
-        본문으로 건너뛰기
-      </a>
-      <div
-        className={cn(
-          "grid min-w-0",
-          layout.grid,
-          sidebarCollapsed
-            ? "lg:grid-cols-[4rem_minmax(0,1fr)]"
-            : "lg:grid-cols-[16rem_minmax(0,1fr)]",
-        )}
-      >
-        {/* Rail (N3): paper-2 위 hairline 분리, rest shadow 없음. lg 에서 sticky 전체 높이. */}
-        <aside
-          className="min-w-0 border-b border-border bg-card lg:sticky lg:top-0 lg:h-dvh lg:self-start lg:border-r lg:border-b-0"
-          data-slot="admin-shell-rail"
-        >
-          <div className="flex h-full min-w-0 flex-col">
-            <div
-              className={cn(
-                "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border px-4",
-                sidebarCollapsed &&
-                  "lg:h-auto lg:flex-col lg:justify-center lg:gap-1 lg:px-0 lg:py-2",
-              )}
-            >
-              {/* 타이포 워드마크 — 아이콘 타일 없음(M9). 접힘 시 축약형 `ktm`. */}
-              <Link
-                aria-label="Weather Scraper Admin UI"
-                className={cn(
-                  "flex min-w-0 items-baseline gap-1.5 rounded-control text-text-primary no-underline hover:no-underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
-                  sidebarCollapsed && "lg:justify-center",
-                )}
-                href="/"
-              >
-                <span
-                  className={cn(
-                    "truncate text-sm font-semibold tracking-tight",
-                    sidebarCollapsed && "lg:hidden",
-                  )}
-                >
-                  Weather Scraper
-                </span>
-                <span
-                  className={cn(
-                    "text-2xs font-medium text-text-tertiary",
-                    sidebarCollapsed && "lg:hidden",
-                  )}
-                >
-                  admin
-                </span>
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "hidden text-xs font-semibold tracking-tight",
-                    sidebarCollapsed && "lg:inline",
-                  )}
-                >
-                  WS
-                </span>
-              </Link>
-              <div className="flex shrink-0 items-center gap-1">
-                <ButtonLogout className="lg:hidden" iconOnly />
-                <button
-                  aria-label={
-                    sidebarCollapsed ? "좌측 메뉴 펼치기" : "좌측 메뉴 접기"
-                  }
-                  className={cn(
-                    buttonVariants({ variant: "ghost", size: "icon-sm" }),
-                    "hidden lg:inline-flex",
-                  )}
-                  title={
-                    sidebarCollapsed ? "좌측 메뉴 펼치기" : "좌측 메뉴 접기"
-                  }
-                  type="button"
-                  onClick={toggleSidebar}
-                >
-                  {sidebarCollapsed ? (
-                    <PanelLeftOpenIcon aria-hidden="true" />
-                  ) : (
-                    <PanelLeftCloseIcon aria-hidden="true" />
-                  )}
-                </button>
-              </div>
-            </div>
-            <div
-              ref={menuContainerRef}
-              data-collapsed={sidebarCollapsed}
-              className="map-common-menu map-common-surface min-h-0 max-w-full overflow-x-auto px-2 py-2 lg:flex-1 lg:overflow-x-hidden lg:overflow-y-auto"
-            >
-              <AppMenu
-                groups={COMMON_MENU_GROUPS}
-                activeItemId={activeHref ?? null}
-                pathname={pathname}
-                label="주요 메뉴"
-                linkComponent={MapMenuLink}
-                testId="weather-common-menu"
-              />
-            </div>
-            {/* 로그아웃 = rail footer 의 plain row(M9). <lg 에서는 상단 워드마크 행의 아이콘 버튼이 대신한다. */}
-            <div
-              className={cn(
-                "hidden shrink-0 border-t border-border p-2 lg:block",
-                sidebarCollapsed && "lg:flex lg:justify-center",
-              )}
-            >
-              <ButtonLogout collapsed={sidebarCollapsed} />
-            </div>
-          </div>
-        </aside>
-        {renderAdminShellDiv1()}
-      </div>
-    </div>
+    <CommonAdminShell
+      actions={
+        helpTip || actions ? (
+          <>
+            {helpTip}
+            {actions}
+          </>
+        ) : undefined
+      }
+      area={ADMIN_AREA}
+      brand={({ collapsed }) =>
+        collapsed ? null : (
+          <Link
+            className="rounded-control text-text-primary no-underline"
+            href="/"
+          >
+            {ADMIN_AREA}
+          </Link>
+        )
+      }
+      collapsedStorageKey={SIDEBAR_COLLAPSED_KEY}
+      description={description}
+      fillViewport={fillViewport}
+      mainClassName={
+        fillViewport
+          ? "flex min-h-0 flex-col overflow-y-auto p-3"
+          : "px-4 py-5 lg:px-6 lg:py-6"
+      }
+      menu={
+        <AppMenu
+          activeItemId={activeHref(pathname)}
+          groups={MENU_GROUPS}
+          label="주요 메뉴"
+          linkComponent={WeatherMenuLink}
+          pathname={pathname}
+          testId="weather-common-menu"
+        />
+      }
+      navigationKey={pathname}
+      railFooter={({ collapsed }) => <ButtonLogout iconOnly={collapsed} />}
+      testId="weather-admin-shell"
+      title={title}
+    >
+      {children}
+    </CommonAdminShell>
   );
 }
 
-function ButtonLogout({
-  collapsed = false,
-  iconOnly = false,
-  className,
-}: {
-  /** lg rail 접힘 — 라벨을 lg 에서만 숨긴다. */
-  collapsed?: boolean;
-  /** 모든 breakpoint 에서 아이콘만(<lg 상단 행). */
-  iconOnly?: boolean;
-  className?: string;
-}) {
-  const labelHidden = iconOnly || collapsed;
+const railRowClass =
+  "relative flex h-control-sm w-full shrink-0 items-center gap-2.5 rounded-control px-3 text-xs font-medium whitespace-nowrap text-text-secondary transition-[color,background-color] duration-fast ease-out hover:bg-surface-subtle hover:text-text-primary active:bg-surface-muted";
+
+function ButtonLogout({ iconOnly = false }: { iconOnly?: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
@@ -483,14 +211,9 @@ function ButtonLogout({
       <button
         aria-busy={busy}
         aria-disabled={busy}
-        aria-label={labelHidden ? "로그아웃" : undefined}
-        className={cn(
-          railRowClass,
-          iconOnly ? "size-control-sm justify-center gap-0 px-0" : "w-full",
-          !iconOnly && collapsed && railRowCollapsedClass,
-          className,
-        )}
-        title={labelHidden ? "로그아웃" : undefined}
+        aria-label={iconOnly ? "로그아웃" : undefined}
+        className={cn(railRowClass, iconOnly && "justify-center gap-0 px-0")}
+        title={iconOnly ? "로그아웃" : undefined}
         type="button"
         onClick={() => void logout()}
       >
@@ -498,9 +221,7 @@ function ButtonLogout({
           aria-hidden="true"
           className="size-4 shrink-0 text-icon-default"
         />
-        <span className={cn(iconOnly ? "sr-only" : collapsed && "lg:hidden")}>
-          로그아웃
-        </span>
+        <span className={cn(iconOnly && "sr-only")}>로그아웃</span>
       </button>
       {error ? (
         <p role="alert" className="px-2 text-xs text-destructive">

@@ -1,3 +1,10 @@
+## 2026-11-19 — 관리자 셸 @kor-travel/ui 0.2.3 채택과 버튼 테두리 정리
+
+- Common PR70/71(`0e2a3f5`·`d644632`)의 UI0.2.3·tokens0.1.4를 artifact 원본(SRI 대조)으로 vendor·원장·lock에 넣고 ci/정책 workflow common-ref를 `d644632`로 맞췄다.
+- 자체 rail 셸을 공용 AdminShell+AppMenu로 바꿨다: 모바일 좌측 drawer, 상단 바 한 줄 "날씨 - <페이지>"+작은 설명, 앱 설명 워드마크 삭제. 날씨 지도의 "지역 날씨 모두 보기"와 지역 목록을 지웠다(마커 키보드 접근 유지).
+- 버튼 테두리 원인을 수정 전·후 상태별 스크린샷·computed style로 확인했다: 로컬 `outline-solid`(기본 3px 상시), unlayered `button:focus-visible` border 색 변경(이중 링), `button:hover/active`(brand 배경·2px 이동). [원인·검증](reports/2026-11-19-admin-shell-0.2.3.md)
+- 배포는 하지 않았다(odroid, Codex 담당).
+
 ## 2026-11-19 — fact 저장 COPY 최적화 후보
 
 표시된 완전한 1,000행 fact INSERT에만 공개 SQLAlchemy 이벤트의 psycopg COPY를 적용한다. 오류·트랜잭션·계측·lineage·멱등성·current projection은 유지하며 schema 번역/default·RETURNING 등의 예외는 기존 dialect에 맡긴다. 실제 PostgreSQL 신규16건 통과. 동일 합성 1,000행 저장의 5교대 쌍은 중앙304.25→102.21ms/CPU29.69→16.59ms이며 전체 운영 수집·API 개선율은 미검증이다. [검증과 경계](reports/2026-11-19-fact-copy.md). 정확 PR CI·머지·실제 캐시 이미지/운영 검증은 후속이다.
