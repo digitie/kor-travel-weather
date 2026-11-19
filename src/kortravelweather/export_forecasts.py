@@ -92,6 +92,18 @@ class FrozenForecastExports(FrozenCurrentExports):
                 self.selection["provider_signature"] = _digest(self.current_providers)
         self.resource = f"forecasts:{style}:{_digest(self.selection)}"
 
+    def _catalog_source(self, catalog):
+        # KMA 단기/초단기 anchor는 좌표와 grid만 쓴다. SDK/mid JSON은 그대로 둔다.
+        expected = {("python-kma-api", self.dataset)}
+        if (
+            self.source_inventory and self.style in {"short", "ultra_short"}
+            and self.current_providers == ("python-kma-api",)
+            and set(self.expected_sources) == expected
+            and set(self.optional_sources).issubset(expected)
+        ):
+            return catalog, []
+        return catalog_source_projection(catalog)
+
     @measured_stage("freeze")
     def _freeze_forecasts(self):
         now = datetime.now(UTC)
@@ -111,7 +123,7 @@ class FrozenForecastExports(FrozenCurrentExports):
                 raise ExportCursorInvalid("아직 발급되지 않은 publication watermark입니다.")
             catalog = self.heads.metadata.tables["weather_locations"]
             source_from, source_columns = (
-                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+                self._catalog_source(catalog) if self.source_inventory else (catalog, [])
             )
             roster = c.execute(
                 select(
@@ -686,7 +698,7 @@ class FrozenForecastExports(FrozenCurrentExports):
         ):
             c.execute(text("SET LOCAL statement_timeout = '5s'"))
             catalog = self.heads.metadata.tables["weather_locations"]
-            source_from, source_columns = catalog_source_projection(catalog)
+            source_from, source_columns = self._catalog_source(catalog)
             locations = c.execute(select(
                 catalog.c.location_id, catalog.c.latitude, catalog.c.longitude,
                 catalog.c.nx, catalog.c.ny, *source_columns,
