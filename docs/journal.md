@@ -4,7 +4,7 @@
 
 동일 Python3.13의 driver 제어는 3.3.9에서22건 통과했고, adapter 회귀3건은 3.3.6에서2FAIL/1PASS→3.3.9에서3PASS였다. 별도 동일 b5e6 코드·실제 로컬 PG fixture의 24개 reader 표본은 본문·ETag·SQL·304가 같았다. 중앙 시간은 current200 345.36→350.65ms, current2000 348.30→338.83ms, forecasts200 401.59→394.32ms, forecasts2000 408.13→436.67ms로 일관된 속도 개선은 입증하지 못했다. 운영 cold33.5초의 해결을 주장하지 않는다.
 
-Common의 기존 버전 registry를 따르며 exact selected-driver strict guard는 producer의 최종 불변 SHA가 나온 뒤 채택한다. 운영 pip 설치·이미지 변경·배포는 하지 않았다.
+독립 backend-dependency-policy CI job에서 Common strict checker를 검증된 불변 후보 e2899128f78c9622ec3ef79674cff8d1c3aec6f9로 고정했다. 소비자와 Common은 형제 checkout으로 분리하고 Weather root의 pyproject.toml·uv.lock을 기본 discovery로 검사한다(별도 constraints 없음). frontend guard/catalog d644·UI producer0e2·vendor packs와 기존 job 순서는 유지한다. 실제 형제 checkout의 job CLI는 정상4OK/exit0, 옛3.3.6 선언·lock 변형은4불일치/exit1이며 JSON exit도 일치했다. 소비자 merge는 Common73 실제 merge 및 e289의 main 조상 관계 확인 뒤에만 진행한다. 운영 설치본 검증이나 pip 설치·이미지 변경·배포는 하지 않았다.
 
 ## 2026-11-19 — 최초 capture 실패의 비밀 없는 타입/코드 기록
 
