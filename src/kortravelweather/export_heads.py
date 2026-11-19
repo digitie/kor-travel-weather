@@ -801,11 +801,12 @@ class ExportHeads:
             )
 
     def promote(self, identity, artifacts, *, dagster_status=None) -> str:
-        """검증(파일 hash·해석·digest)은 guard 밖, 배타 guard는 최종 head CAS에만 잡는다.
+        """검증(hash·해석·digest)은 guard 밖, GC guard는 최종 head CAS에만 잡는다.
 
         검증 중 파일은 GC가 지우지 않는다: 후보는 미공개 attempt의 receipt가, 후보·직전 head
         파일은 두 번째 transaction이 commit한 승격 pin이 지킨다(export_gc). 그래서 reader를
-        막는 배타 구간은 파일 존재 확인과 작은 metadata transaction뿐이다. 2026-11-03 운영:
+        막는 구간은 파일 존재 확인과 작은 metadata transaction뿐이다. DB 불변 payload는
+        읽기와 공존하는 공유 guard, 파일은 기존 배타 guard를 쓴다. 2026-11-03 운영:
         승격 전체를 배타로 잡아 reader 503(``ExportGuardTimeout``)이 12시간 190건 났다.
         """
         with artifacts.verifying():
@@ -980,10 +981,14 @@ class ExportHeads:
                 # 0026에서 승인된 파일은 위치 index가 NULL이다. 같은 bytes를
                 # 재사용하면서 실제 파일에서 index만 복구해 재수집 후 공개가 재개된다.
                 r["location_ids"] = sorted(parent_locations)
-        with (
-            artifacts.exclusive(holder="promotion_cas"),
-            self._transaction() as session,
-        ):
+        # DB payload는 불변이며 owner/head/공개 clock 행 잠금이 CAS를 조정한다.
+        # 읽기와 공존하면서 GC의 삭제는 metadata commit 뒤까지 막는다.
+        publication_guard = (
+            artifacts.guard(shared=True, holder="promotion_cas")
+            if getattr(artifacts, "is_database", False)
+            else artifacts.exclusive(holder="promotion_cas")
+        )
+        with publication_guard, self._transaction() as session:
             committed = (
                 session.execute(
                     select(self.generations).where(
@@ -998,6 +1003,17 @@ class ExportHeads:
                     raise ExportArtifactError("확정 원장의 실행·봉인 증거가 다릅니다.")
                 return "ALREADY_COMMITTED"
             run, attempt = self.lifecycle._locked(session, identity)
+            # Shared guard에서는 위 조회 뒤 같은 시도의 다른 publisher가 commit할 수 있다.
+            # 시도 행 잠금을 얻은 뒤 그 성공을 확인해 기존 멱등 결과를 유지한다.
+            if attempt["published_at"] is not None:
+                committed = session.execute(select(self.generations).where(
+                    self.generations.c.attempt_id == identity.attempt_id,
+                )).mappings().one_or_none()
+                if committed is not None:
+                    if (committed["owner_id"] != identity.owner_id
+                            or committed["seal_digest"] != token):
+                        raise ExportArtifactError("확정 원장의 실행·봉인 증거가 다릅니다.")
+                    return "ALREADY_COMMITTED"
             _current_owners(session, self.metadata, attempt)
             if (
                 run["status"] != "success"
