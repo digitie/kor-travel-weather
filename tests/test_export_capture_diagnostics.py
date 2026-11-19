@@ -17,6 +17,12 @@ from kortravelweather.repository import Base, WeatherRepository, WeatherValueRow
 SECRET = "PRIVATE_SENTINEL_DO_NOT_LOG"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_repository_logger(monkeypatch):
+    """앞선 Alembic fileConfig의 disabled 상태를 이 시험 안에서만 격리·복원한다."""
+    monkeypatch.setattr(module.logger, "disabled", False)
+
+
 class DriverFailure(Exception):
     sqlstate = "55P03"
 
