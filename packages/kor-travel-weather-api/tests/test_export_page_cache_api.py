@@ -258,10 +258,10 @@ def test_cache_never_returns_old_response_past_selection_deadline(
     assert expired.status_code == 503 and "etag" not in expired.headers
 
 
-def test_page_miss_does_not_inherit_another_pages_expiring_selection(
+def test_current_cross_limit_inherits_original_lease_without_second_selection(
     repository, tmp_path, monkeypatch,
 ):
-    """첫 페이지 miss는 승인 선택을 항상 새로 읽는다(다른 페이지의 만료 직전 수명을 잇지 않는다)."""
+    """같은 CURRENT의 다른 limit은 기존 lease 안에서만 검증한 전체 snapshot을 잇는다."""
     from kortravelweather import export_inventory_selection
 
     _collect(repository, tmp_path)
@@ -279,7 +279,7 @@ def test_page_miss_does_not_inherit_another_pages_expiring_selection(
     assert len(loads) == 1  # 같은 요청의 재확인은 방금 읽은 선택을 쓴다
     second = client.get("/v1/service/exports/current?limit=2", headers=HEADERS)
     assert second.status_code == 200 and second.headers["x-export-read"] == "generated"
-    assert len(loads) == 2
+    assert len(loads) == 1
 
 
 def test_cursor_pages_reuse_the_app_selection_read_by_the_first_page(

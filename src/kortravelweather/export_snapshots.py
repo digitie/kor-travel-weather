@@ -12,6 +12,7 @@ import logging
 import re
 from collections import defaultdict
 from contextlib import nullcontext
+from copy import copy, deepcopy
 from datetime import UTC, datetime, timedelta
 from time import monotonic
 from uuid import uuid4
@@ -237,6 +238,8 @@ class FrozenCurrentExports:
         self.reuse_namespaces = set()
         self.reuse_artifacts = set()
         self.reuse_snapshot = None
+        self.reuse_snapshot_expires_at = None
+        self._current_seed_eligible = False
         self.immutable_reads = immutable_reads
         self.page_liveness = page_liveness
         self.reuse_liveness = None
@@ -315,6 +318,7 @@ class FrozenCurrentExports:
     def _approved_selection(self, connection, locations, *, health_location_ids=None):
         from .export_inventory_selection import approved_source_selection
 
+        self._check_current_seed_deadline()
         if self.page_liveness and self.reuse_liveness is None:
             from .export_page_liveness import capture_liveness
 
@@ -348,18 +352,24 @@ class FrozenCurrentExports:
             connection, locations, self.expected_sources, self.optional_sources,
             health_location_ids,
         )
-        result, deadline = self.selection_cache.read(
-            key, read, checked_after=self.selection_checked_after,
-            validate=lambda selection: self._validate_cached_selection(connection, selection),
-            min_deadline=(
-                self.selection_checked_after + 60
-                if self.selection_min_remaining is None
-                else self.selection_cache.clock() + self.selection_min_remaining
-            ),
-            # 같은 삭제 변경 번호(page liveness)에서 읽힌 선택만 잇는다. 사이에 head·plan 삭제가
-            # 있었다면 다시 읽어 stale/유실 판정을 이 요청의 transaction에서 한다.
-            token=None if self.reuse_liveness is None else tuple(self.reuse_liveness[:3]),
-        )
+        try:
+            result, deadline = self.selection_cache.read(
+                key, read, checked_after=self.selection_checked_after,
+                validate=lambda selection: self._validate_cached_selection(connection, selection),
+                min_deadline=(
+                    self.selection_checked_after + 60
+                    if self.selection_min_remaining is None
+                    else self.selection_cache.clock() + self.selection_min_remaining
+                ),
+                # 같은 삭제 변경 번호(page liveness)에서 읽힌 선택만 잇는다. 사이에 head·plan 삭제가
+                # 있었다면 다시 읽어 stale/유실 판정을 이 요청의 transaction에서 한다.
+                token=None if self.reuse_liveness is None else tuple(self.reuse_liveness[:3]),
+            )
+        except ExportGuardTimeout:
+            # 이 함수의 승인-cache deadline 만료만 seed expiry로 구별한다.
+            # 실제 SQL/무결성 예외는 이 분기로 들어오지 않는다.
+            self._check_current_seed_deadline()
+            raise
         # 이 요청의 다음 호출(health 재확인 등)은 방금 읽은 선택을 그대로 쓴다.
         self.selection_min_remaining = 0.0
         self.selection_deadline = min(self.selection_deadline or deadline, deadline)
@@ -374,8 +384,98 @@ class FrozenCurrentExports:
         """API worker가 실제 miss 읽기를 시작할 때만 호출한다. 기존 lease는 연장하지 않는다."""
         if self.selection_deadline is not None or self.reuse_snapshot is not None:
             raise RuntimeError("이미 읽은 페이지의 승인 수명을 다시 시작할 수 없습니다.")
+        seed = self.__dict__.pop("_current_page_seed", None)
+        if seed is not None and self._seed_current_snapshot(*seed):
+            return
         self.selection_checked_after = monotonic()
         self.reuse_wall_started = datetime.now(UTC)
+
+    def _seed_current_snapshot(self, cached, deadline):
+        """원래 lease/절대 만료 안에서만 전체 manifest를 잇는다. 값·건강도는 다시 읽는다."""
+        from .export_page_cache import PageReuseExpired
+
+        if (type(self) is not FrozenCurrentExports or type(cached) is not FrozenCurrentExports
+                or not cached._current_seed_eligible
+                or self.repository.engine is not cached.repository.engine
+                or self.key != cached.key or self.current_selection != cached.current_selection
+                or self.expected_sources != cached.expected_sources
+                or self.optional_sources != cached.optional_sources
+                or cached.reuse_snapshot_expires_at is None):
+            return False
+        now, wall = monotonic(), datetime.now(UTC)
+        deadline = min(
+            deadline, cached.selection_deadline, cached.selection_checked_after + 60,
+            now + (cached.reuse_wall_started + timedelta(seconds=60) - wall).total_seconds(),
+            now + (cached.reuse_snapshot_expires_at - wall).total_seconds(),
+        )
+        if now >= deadline:
+            return False
+        proof = copy(self)
+        for name in ("reuse_generations", "reuse_namespaces", "reuse_artifacts"):
+            setattr(proof, name, set(getattr(cached, name)))
+        proof.reuse_snapshot = cached.reuse_snapshot
+        proof.reuse_liveness = deepcopy(cached.reuse_liveness)
+        proof.selection_checked_after = cached.selection_checked_after
+        proof.selection_deadline = deadline
+        proof.selection_min_remaining = 0.0
+        proof.reuse_wall_started = cached.reuse_wall_started
+        proof.reuse_snapshot_expires_at = cached.reuse_snapshot_expires_at
+        proof._current_seed_expiry = cached.reuse_snapshot_expires_at
+        proof._current_seed_deadline = deadline
+        try:
+            proof.validate_reusable_page()
+            frozen = proof._read_cursor_snapshot(cached.reuse_snapshot[0])
+            if frozen is None or frozen["expires_at"] <= datetime.now(UTC):
+                return False
+            if (frozen["manifest_digest"] != cached.reuse_snapshot[1]
+                    or frozen["manifest"].get("selection") != self.current_selection):
+                raise ExportArtifactError(
+                    "재사용할 current snapshot의 선택 또는 무결성이 다릅니다."
+                )
+            if frozen["manifest"].get("capacity_limited"):
+                return False
+            proof.require_current_selection()
+        except PageReuseExpired:
+            return False
+        for name in (
+            "reuse_generations", "reuse_namespaces", "reuse_artifacts", "reuse_snapshot",
+            "reuse_liveness", "selection_checked_after", "selection_deadline",
+            "selection_min_remaining", "reuse_wall_started", "reuse_snapshot_expires_at",
+            "_current_seed_expiry", "_current_seed_deadline",
+        ):
+            setattr(self, name, getattr(proof, name))
+        frozen = deepcopy(frozen)
+        frozen["expires_at"] = min(frozen["expires_at"], self._current_seed_expiry)
+        self._current_seed_frozen = frozen
+        return True
+
+    def _current_seed_expired(self):
+        deadline = getattr(self, "_current_seed_deadline", None)
+        return deadline is not None and (
+            monotonic() >= deadline
+            or datetime.now(UTC) >= self._current_seed_expiry
+            or datetime.now(UTC) - self.reuse_wall_started >= timedelta(seconds=60)
+        )
+
+    def _check_current_seed_deadline(self):
+        if self._current_seed_expired():
+            from .export_page_cache import PageReuseExpired
+
+            raise PageReuseExpired("원래 current seed lease가 끝났습니다.")
+
+    def _restart_expired_current_seed(self):
+        if not self._current_seed_expired():
+            return False
+        # 새 +60초는 다음 load의 실제 full freeze가 새 proof를 만든 뒤에만 얻는다.
+        self.selection_deadline = None
+        self.selection_min_remaining = None
+        self.reuse_generations, self.reuse_namespaces, self.reuse_artifacts = set(), set(), set()
+        self.reuse_snapshot = self.reuse_snapshot_expires_at = self.reuse_liveness = None
+        self._current_seed_eligible = False
+        for name in ("_current_seed_expiry", "_current_seed_deadline", "_current_seed_frozen",
+                     "_current_page_seed"):
+            self.__dict__.pop(name, None)
+        return True
 
     @measured_stage("metadata")
     def validate_reusable_page(self):
@@ -473,6 +573,7 @@ class FrozenCurrentExports:
 
     def require_current_selection(self):
         # 파일 검사·페이지 DB 조회·직렬화가 길어져도 만료 캐시로 200/304를 만들지 않는다.
+        self._check_current_seed_deadline()
         if self.selection_cache is not None and self.selection_deadline is not None:
             self.selection_cache.require_current(self.selection_deadline)
 
@@ -829,6 +930,10 @@ class FrozenCurrentExports:
         REPEATABLE READ freeze가 끝난 뒤 짧은 READ COMMITTED transaction에서 갱신해
         동시 reader끼리 직렬화 충돌(40001)을 만들지 않는다. 실패하면 원래 row를 쓴다.
         """
+        if getattr(self, "_current_seed_expiry", None) is not None:
+            frozen.pop("_reused", None)
+            frozen["expires_at"] = min(frozen["expires_at"], self._current_seed_expiry)
+            return frozen
         if not frozen.pop("_reused", False):
             return frozen
         now = datetime.now(UTC)
@@ -914,8 +1019,15 @@ class FrozenCurrentExports:
                 except ExportSnapshotUnavailable:
                     return self._previous_success()
 
-            frozen = ensure_snapshot_files(self.artifacts, issue)
-            frozen = self._renew_reused(frozen)
+            frozen = (self.__dict__.pop("_current_seed_frozen", None)
+                      if resource == "current" else None)
+            if frozen is None:
+                frozen = ensure_snapshot_files(self.artifacts, issue)
+                frozen = self._renew_reused(frozen)
+            self._current_seed_eligible = (
+                resource == "current" and not frozen.get("_source_unconfirmed", False)
+                and not frozen["manifest"].get("capacity_limited")
+            )
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],
@@ -926,6 +1038,7 @@ class FrozenCurrentExports:
             }
         manifest = frozen["manifest"]
         self.reuse_snapshot = (frozen["snapshot_id"], frozen["manifest_digest"])
+        self.reuse_snapshot_expires_at = frozen["expires_at"]
         self.reuse_generations.update(scope["generation_id"] for scope in manifest["scopes"])
         self.reuse_namespaces.update(scope["namespace"] for scope in manifest["scopes"])
         output, size = [], 0
