@@ -783,6 +783,8 @@ function useWeatherMapModel({
       );
       offsets.forEach((offset, index) => {
         const { host, button } = entries[index];
+        // visibility:hidden 적용 직후 브라우저가 BODY로 blur할 수 있다.
+        const hadFocus = host.contains(document.activeElement);
         host.style.setProperty("--weather-region-x", `${offset.x}px`);
         host.style.setProperty("--weather-region-y", `${offset.y}px`);
         host.dataset.regionOverflow = String(!offset.placed);
@@ -790,10 +792,12 @@ function useWeatherMapModel({
         if (offset.placed) host.removeAttribute("aria-hidden");
         else {
           host.setAttribute("aria-hidden", "true");
-          if (host.contains(document.activeElement)) {
+          if (hadFocus) {
             cancelAnimationFrame(focusFrame);
             focusFrame = requestAnimationFrame(() => {
-              if (!host.contains(document.activeElement)) return;
+              const active = document.activeElement;
+              // 다른 입력으로 옮긴 사용자의 포커스는 빼앗지 않는다.
+              if (active !== document.body && !host.contains(active)) return;
               const visible = root.querySelector<HTMLElement>(
                 '.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button',
               );
