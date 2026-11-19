@@ -153,11 +153,13 @@ class KmaForecastRow:
         if isinstance(source, Mapping):
             raw = source
 
+        is_mapping = isinstance(raw, Mapping)
+
         def read(*names: str) -> Any:
             for name in names:
-                if isinstance(raw, Mapping) and name in raw and raw[name] is not None:
+                if is_mapping and name in raw and raw[name] is not None:
                     return raw[name]
-                if not isinstance(raw, Mapping) and hasattr(raw, name):
+                if not is_mapping and hasattr(raw, name):
                     value = getattr(raw, name)
                     if value is not None:
                         return value
@@ -190,11 +192,13 @@ class KmaNowcastRow:
         if isinstance(source, Mapping):
             raw = source
 
+        is_mapping = isinstance(raw, Mapping)
+
         def read(*names: str) -> Any:
             for name in names:
-                if isinstance(raw, Mapping) and name in raw and raw[name] is not None:
+                if is_mapping and name in raw and raw[name] is not None:
                     return raw[name]
-                if not isinstance(raw, Mapping) and hasattr(raw, name):
+                if not is_mapping and hasattr(raw, name):
                     value = getattr(raw, name)
                     if value is not None:
                         return value

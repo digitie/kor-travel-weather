@@ -1,3 +1,9 @@
+## 2026-11-19 — KMA 행의 반복 Mapping 판정 축소
+
+운영 단기예보 run의 5초 비중단 샘플에서 `KmaForecastRow.from_raw`의 필드별 Mapping 판정이 반복됐다. raw unwrap 뒤 입력 종류를 행마다 한 번 판정하고 기존 별칭·None fallback·속성 조회·숫자 변환·누락 오류는 유지한다. 예보·실황 두 reader만 바꿨으며 SDK·격자/발표 시각·저장/승인 계약은 바꾸지 않았다.
+
+로컬 동일 960행·2위치(1,920값)의 값·payload·skip 결과가 생성 시각 `collected_at` 외에 일치했다. 4회 반복한 7,680값 정규화를 15개 교대 쌍으로 비교한 중앙 시간은 camel Mapping 163.07→143.56ms(11.96%), raw 객체 152.14→141.64ms(6.91%), 속성 객체 151.21→139.43ms(7.80%)다. 운영 전체 수집 시간·첫 조회 개선율은 미검증이다. 입력 형태·raw 우선순위·별칭·None/0/빈 문자열·오류 계약의 신규22건과 기존 별칭 시험1건이 순수 로컬 선택에서 통과했다. 전체 PostgreSQL CI와 실제 이미지 적용은 별도다.
+
 ## 2026-11-18 — 공통 표 수정 산출물 채택 후속
 
 Common main `706aaa7821588dfca72f660c9161f56be2d0445f`의 UI0.2.2·tokens0.1.3(Geo toast0.1.2)을 vendor·원장·npm lock에 맞추고 canonical guard를 통과했다. 출처·검증 경계는 [최신 journal](journal.md)에 기록했다. catalog `5c1b3857e9af060d30ec776157760fb9e9c13ded`의 main 편입 확인, PR CI, 정상 캐시/native 이미지와 실제 화면 수용을 이어간다. Weather는 현재 배포43507989와 새 성능 개선이 머지된 e6a56761을 구분한다. projected 캐시는 디코드/CPU 개선이며 payload DB 읽기량 감소나 운영 지연 목표 달성을 주장하지 않는다.
