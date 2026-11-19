@@ -1,3 +1,12 @@
+## 2026-11-19 — 최초 capture 실패의 비밀 없는 타입/코드 기록
+
+최초 경고에 검증된 클래스·SQLSTATE·SDK result_code와 attempt/run만 남긴다.
+원문·SQL·파라미터·key·traceback은 제외하고 cleanup 전에 원래 진단을 보존한다.
+공개 capture_failed·schema·fact/receipt 트랜잭션·수집 정책은 유지한다.
+최종 순수17건·신규 PG5건·기존 receipt PG5건과 전체 Ruff·diff 검사가 통과했다.
+기존 capture2건의 최초 원인과 과거 취소6건의 주체를 추정하지 않는다.
+[범위·안전 경계·시험](reports/2026-11-19-capture-failure-diagnostics.md).
+
 ## 2026-11-19 — 보존된 단기예보 최초 행 조회
 
 retained-short 재진입 조회를 한 SELECT의 좁은 PK CTE와 전체 행 결합으로 바꾼다.

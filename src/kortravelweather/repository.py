@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 import time
 import uuid
 from collections import Counter
@@ -21,6 +22,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, TypeVar
 
 from cryptography.fernet import Fernet, InvalidToken
+from kma.exceptions import KmaError
 from kortravelcommon.reverse_address import reverse_address_tables
 from sqlalchemy import (
     JSON,
@@ -191,6 +193,44 @@ external_cohort_table(Base.metadata)
 export_inventory_table(Base.metadata)
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_failure_diagnostics(exc: Exception) -> tuple[str, str, str, str]:
+    """원문 없이 타입·DB/SDK 코드만 읽는다. 고장난 속성·순환 cause도 원래 처리를 막지 않는다."""
+    pending, seen = [exc], set()
+    error_type, cause_type, sqlstate, provider_code = "Exception", "-", "-", "-"
+    for _ in range(8):
+        if not pending:
+            break
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        name = type(current).__name__
+        safe_name = name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else "Exception"
+        if current is exc:
+            error_type = safe_name
+        else:
+            cause_type = safe_name
+        fields = {}
+        for field in ("sqlstate", "result_code", "orig", "__cause__"):
+            try:
+                fields[field] = getattr(current, field, None)
+            except Exception:
+                # 진단용 property의 실패로 cleanup/원본 예외를 바꾸지 않는다.
+                continue
+        state = fields.get("sqlstate")
+        if sqlstate == "-" and type(state) is str and re.fullmatch(r"[0-9A-Z]{5}", state):
+            sqlstate = state
+        code = fields.get("result_code")
+        if (provider_code == "-" and isinstance(current, KmaError)
+                and type(code) is str and re.fullmatch(r"[0-9]{2}", code)):
+            provider_code = code
+        pending.extend(
+            fields[field] for field in ("orig", "__cause__")
+            if isinstance(fields.get(field), Exception)
+        )
+    return error_type, cause_type, sqlstate, provider_code
 
 
 class AwareDateTime(TypeDecorator[datetime]):
@@ -2631,7 +2671,19 @@ class WeatherRepository:
                         persist(session, chunk)
                 if prepared is not None:
                     prepared.append(chunk)
-            except Exception:
+            except Exception as exc:
+                attempt_id = export_capture.attempt.attempt_id
+                run_id = next(iter(run_rows)) if len(run_rows) == 1 else "-"
+                logger.warning(
+                    "weather_export_capture_failed attempt_id=%s run_id=%s "
+                    "error_type=%s cause_type=%s sqlstate=%s provider_result_code=%s",
+                    attempt_id if type(attempt_id) is str and re.fullmatch(
+                        r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt_id,
+                    ) else "-",
+                    run_id if type(run_id) is str and re.fullmatch(r"run_[0-9a-f]{32}", run_id)
+                    else "-",
+                    *_capture_failure_diagnostics(exc),
+                )
                 if not session.is_active:
                     raise
                 try:
@@ -2644,8 +2696,6 @@ class WeatherRepository:
                         raise
                     logger.warning("weather_export_failure_record_unavailable attempt_id=%s",
                                    export_capture.attempt.attempt_id)
-                logger.warning("weather_export_capture_failed attempt_id=%s",
-                               export_capture.attempt.attempt_id)
         # The run row is locked above, so its count moves with the facts in
         # the same commit.  A run published in chunks then reports what it
         # loaded even when something else terminalizes it -- the stale-run
