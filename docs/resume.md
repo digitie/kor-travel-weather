@@ -1,6 +1,6 @@
 ## 2026-11-19 — 일반 예보 첫 페이지의 승인 메타데이터 중복 제거 후보
 
-조건부 응답에서 검증한 요청별 RR health proof를 일반 첫 페이지에 적용한다. issue/retry/fallback마다 폐기·시간 경계/역행 clock·cursor full health·삭제/artifact/deadline 검산을 유지한다. 실제PG45건 통과, 독립A/B 제품/시험 source 리뷰 지적0건이다. 동일1,452위치의 새 API page-cache miss5교대 쌍은 본문/ETag10회 동일, SQL42→31(최초기존43), 중앙HTTP297.245→260.158ms/CPU186.304→155.626ms였다. 운영 전체·첫1초·503·신선도 회복은 미검증이고 현재49dc 배포를 막지 않는다. [검증·초기 실패·한계](reports/2026-11-19-first-forecast-health.md). 정확 PR CI·merge·최신 캐시 이미지/운영 수용을 이어간다.
+조건부 응답에서 검증한 요청별 RR health proof를 API 단기·초단기 첫 페이지에 적용한다. issue/retry/fallback마다 폐기·시간 경계/역행 clock·cursor full health·삭제/artifact/deadline 검산을 유지한다. 실제PG51건 통과(전체 reader 수명 guard6건 포함), 독립A/B 제품/시험 source 리뷰 지적0건이다. 동일1,452위치의 새 API page-cache miss5교대 쌍은 본문/ETag10회 동일, SQL42→31(최초기존43), 중앙HTTP311.106→253.100ms/CPU190.372→161.789ms였다. 운영 전체·첫1초·503·신선도 회복은 미검증이고 현재49dc 배포를 막지 않는다. [검증·초기 실패·한계](reports/2026-11-19-first-forecast-health.md). 정확 PR CI·merge·최신 캐시 이미지/운영 수용을 이어간다.
 
 ## 2026-11-19 — 관리자 셸 0.2.3 채택
 

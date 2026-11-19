@@ -380,7 +380,10 @@ class FrozenForecastExports(FrozenCurrentExports):
             def issue():
                 self._fresh_forecast_health = None
                 capture = getattr(self, "_capture_forecast_health", False)
-                self._capture_forecast_health = True
+                self._capture_forecast_health = capture or (
+                    getattr(self, "revalidate_first_page", False)
+                    and self.style in {"short", "ultra_short"}
+                )
                 try:
                     return self._freeze_forecasts()
                 except ExportCapacityExceeded:
