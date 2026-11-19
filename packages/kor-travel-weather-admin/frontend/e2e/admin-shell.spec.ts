@@ -56,7 +56,7 @@ async function chrome(target: Locator) {
     probe.remove();
     const style = getComputedStyle(element);
     const box = element.getBoundingClientRect();
-    return { focus, focusVisible: element.matches(":focus-visible"), outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, outlineColor: style.outlineColor, borderWidth: style.borderTopWidth, borderColor: style.borderTopColor, boxShadow: style.boxShadow, transform: style.transform, translate: style.translate, y: box.y };
+    return { focus, focusVisible: element.matches(":focus-visible"), outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, outlineColor: style.outlineColor, borderWidth: style.borderTopWidth, borderColor: style.borderTopColor, boxShadow: style.boxShadow, transform: style.transform, y: box.y };
   });
 }
 
@@ -66,6 +66,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
   test("모든 관리자 화면의 한 줄 제목과 작은 설명", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
     // 화면 순회는 fixture 서버의 빈 응답으로 본다(날씨 전용 route는 위치 관리 화면 응답 모양과 다르다).
+    // 주소 갱신 요약은 빈 응답 모양이 맞지 않으므로 조회 실패로 돌려 화면의 오류 안내 경로를 탄다.
+    await page.route("**/api/address-refresh", (route) => route.fulfill({ status: 503, json: { detail: "fixture" } }));
     await login(page, "/");
     for (const [path, label] of ADMIN_PAGES) {
       await page.goto(path);
@@ -111,9 +113,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const pressed = await chrome(button);
     await page.mouse.up();
     expect([pressed.borderWidth, pressed.borderColor]).toEqual([rest.borderWidth, rest.borderColor]);
-    // 공용 Button의 눌림 이동(translate-y-px, CSS `translate`) 1px 하나만 허용한다. 전역 transform이 겹치면 2px가 된다.
+    // 공용 Button의 눌림 이동(translate-y-px, CSS `translate`, 전환 중) 1px까지만 허용한다. 전역 transform이 겹치면 2px가 된다.
     expect(pressed.transform).toBe("none");
-    expect(["none", "0px", "0px 1px"]).toContain(pressed.translate);
     expect(Math.abs(pressed.y - rest.y)).toBeLessThanOrEqual(1);
     if (viewport.width < 1024) {
       const menu = page.locator('[data-slot="admin-shell-menu-button"]');
