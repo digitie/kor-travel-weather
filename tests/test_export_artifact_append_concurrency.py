@@ -77,7 +77,8 @@ def test_gc_exclusive_guard_still_blocks_append(stores):
             _append(writer, chunk)
 
     with collector.guard(holder="gc"), ThreadPoolExecutor(max_workers=1) as executor:
-        executor.submit(blocked).result(timeout=3)
+        # writer의 5초 유한 대기와 스레드 실행 여유를 포함한다.
+        executor.submit(blocked).result(timeout=8)
     with collector.engine.connect() as connection:
         assert connection.scalar(select(collector.table.c.digest)) is None
     _append(writer, chunk)
