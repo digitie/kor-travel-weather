@@ -7,7 +7,7 @@ name = "kor-travel-weather"
 version = "0.1.0.dev0"
 description = "Independent Korean weather data source with KMA, Dagster, REST API and admin UI."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "digitie" }]
 keywords = ["weather", "korea", "kma", "dagster", "fastapi", "data-source"]
@@ -24,11 +24,11 @@ dependencies = [
   "uvicorn[standard]==0.54.0",
   "cryptography>=42",
   "prometheus-client>=0.20,<1",
-  "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@ff80b74bdab507e642bf5deeaa7e89106943c4f4",
+  "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@8d5e65d021a8352ee71341c76a996fd96ab97005",
   "python-airkorea-api",
   "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@9c952bb8613472ccd4e532d1267680ab23d66dbd",
-  "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@270ef7a9884bef1f995e2f8fb43c5fb1e9da7905",
-  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@0fc9da96f2da4b8312244d93254af1fed9f34099",
+  "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@70814c9f21532b931151a0a667cb94a2afa13dd8",
+  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@894ea64faed3a9a0ba9ba11b2a59dc5a0b5e5634",
   "pyproj>=3.5",
 ]
 
