@@ -35,7 +35,25 @@ cleanup 실패 때 최초 진단과 기존 preparing/no-receipt 상태를 확인
 시험 DB는 기존 합성 로컬 PG의 별도 소유 DB만 사용한다. 운영 DB/HTTP/provider/프로파일은
 사용하지 않는다. 전체 저장소 CI와 정상 이미지 적용은 별도 후속이다.
 
-최종 로컬 결과는 순수17건(0.31초), 신규 실제 PG5건(61.65초), 기존 receipt 계약5건
+3d3f 최초 후보의 로컬 결과는 순수17건(0.31초), 신규 실제 PG5건(61.65초), 기존 receipt 계약5건
 (56.03초) 통과다. 전체 Ruff·diff 검사도 통과했다. 첫 실행의 module/function fixture
 scope 오류5건은 시험 fixture를 기존 환경변수 패턴으로 고친 뒤 위 결과로 재검증했고
 초기 로그를 보존했다. 소유 시험 DB는 삭제하고 공용 로컬 fixture container는 보존했다.
+
+## 최초 진단 경계의 P1 수정
+
+3d3f 최초 후보의 독립 A/B 검토는 메타데이터 추출/로그 handler의 일반 예외가 cleanup
+전에 밖으로 나갈 수 있음을 지적했다. 전체 새 진단 블록만 best-effort Exception 경계로
+감싼다. 실패 때 raw fallback 로그를 쓰지 않고 원래 session 검사·실패 표시·반환/전파를
+진행한다. BaseException 취소/중단을 삼키지 않는다.
+
+추가 실제 PG 회귀는 logger.warning RuntimeError, helper RuntimeError, 예외 metaclass의
+타입 이름 접근 실패 모두에서 원래 cleanup1회·capture_failed·fact commit·receipt 없음이
+유지됨을 확인한다. 통제된 inactive Session에서는 logger 실패가 원본 예외 객체를
+대체하지 않고 실제 fact TX가 rollback됨을 확인한다. 이전 리뷰/원시 시험은 보존한다.
+
+
+수정본은 순수17건(0.33초), 추가 P1 실제 PG4건(50.86초), 기존 capture 실제 PG5건
+(57.13초), 합계26건 통과와 전체 Ruff·diff 검사를 확인했다. 최초 후보에서 통과한
+별도 receipt 계약5건은 이 수정에서 재실행하지 않았고 새26건에 중복 합산하지 않는다.
+이전 A/B 리뷰와27건 원시 결과는 원래 상태로 보존했다.

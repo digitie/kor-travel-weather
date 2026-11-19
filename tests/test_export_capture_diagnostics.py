@@ -201,3 +201,116 @@ def test_capture_cleanup_failure_cannot_replace_original_diagnostic(
         assert connection.scalar(select(WeatherValueRow.value_id).where(
             WeatherValueRow.location_id == value.location_id,
         )) is not None
+
+
+@pytest.mark.parametrize("failure", ["logger", "helper", "type_metadata"])
+def test_capture_diagnostic_failure_never_skips_original_cleanup(
+    repository, tmp_path, monkeypatch, caplog, failure,
+):
+    record, value, capture = _setup_capture(repository, tmp_path)
+    original = RuntimeError(SECRET)
+    metadata = {"armed": True}
+    if failure == "type_metadata":
+        class BrokenType(type):
+            def __getattribute__(cls, name):
+                if name == "__name__" and metadata["armed"]:
+                    metadata["armed"] = False
+                    raise RuntimeError(SECRET)
+                return super().__getattribute__(name)
+
+        class CaptureFailure(Exception, metaclass=BrokenType):
+            pass
+
+        original = CaptureFailure(SECRET)
+
+    def fail(session, chunk):
+        raise original
+
+    def diagnostic_fail(*args, **kwargs):
+        raise RuntimeError(SECRET)
+
+    cleanup_calls = []
+    cleanup = repository._fail_export_capture
+
+    def original_cleanup(*args):
+        cleanup_calls.append(args[-1])
+        return cleanup(*args)
+
+    monkeypatch.setattr(capture.artifacts, "record_in_transaction", fail)
+    monkeypatch.setattr(repository, "_fail_export_capture", original_cleanup)
+    if failure == "logger":
+        monkeypatch.setattr(module.logger, "warning", diagnostic_fail)
+    elif failure == "helper":
+        monkeypatch.setattr(module, "_capture_failure_diagnostics", diagnostic_fail)
+    caplog.set_level(logging.WARNING, logger=module.__name__)
+    assert repository.ingest_batch(
+        source_records=[record], values=[value], export_capture=capture,
+    ) == 1
+    assert cleanup_calls == ["capture_failed"]
+    assert SECRET not in caplog.text
+    if failure == "type_metadata":
+        assert metadata["armed"] is False
+    attempts, chunks = export_receipt_tables(Base.metadata)
+    with repository.engine.connect() as connection:
+        state = connection.execute(select(attempts).where(
+            attempts.c.attempt_id == capture.attempt.attempt_id,
+        )).mappings().one()
+        assert state["status"] == "failed" and state["error_code"] == "capture_failed"
+        assert connection.scalar(select(WeatherValueRow.value_id).where(
+            WeatherValueRow.location_id == value.location_id,
+        )) is not None
+        assert connection.execute(select(chunks).where(
+            chunks.c.attempt_id == capture.attempt.attempt_id,
+        )).first() is None
+
+
+def test_capture_diagnostic_failure_does_not_mask_original_inactive_error(
+    repository, tmp_path, monkeypatch, caplog,
+):
+    from sqlalchemy.orm import Session, sessionmaker
+
+    record, value, capture = _setup_capture(repository, tmp_path)
+    original = RuntimeError("original-" + SECRET)
+    sessions = []
+    cleanup_calls = []
+
+    class InactiveAfterDiagnostic(Session):
+        @property
+        def is_active(self):
+            if getattr(self, "_diagnostic_test_inactive", False):
+                return False
+            return super().is_active
+
+    def fail(session, chunk):
+        sessions.append(session)
+        raise original
+
+    def diagnostic_fail(*args, **kwargs):
+        # Savepoint 복구 후 기존 inactive 분기의 원본 재전파를 실제 TX로 확인한다.
+        sessions[-1]._diagnostic_test_inactive = True
+        raise RuntimeError("diagnostic-" + SECRET)
+
+    monkeypatch.setattr(repository, "_session_factory", sessionmaker(
+        repository.engine, class_=InactiveAfterDiagnostic, expire_on_commit=False,
+    ))
+    monkeypatch.setattr(capture.artifacts, "record_in_transaction", fail)
+    monkeypatch.setattr(module.logger, "warning", diagnostic_fail)
+    monkeypatch.setattr(
+        repository, "_fail_export_capture", lambda *args: cleanup_calls.append(args),
+    )
+    with pytest.raises(RuntimeError) as caught:
+        repository.ingest_batch(source_records=[record], values=[value], export_capture=capture)
+    assert caught.value is original
+    assert not cleanup_calls and SECRET not in caplog.text
+    attempts, chunks = export_receipt_tables(Base.metadata)
+    with repository.engine.connect() as connection:
+        state = connection.execute(select(attempts).where(
+            attempts.c.attempt_id == capture.attempt.attempt_id,
+        )).mappings().one()
+        assert state["status"] == "preparing" and state["error_code"] is None
+        assert connection.scalar(select(WeatherValueRow.value_id).where(
+            WeatherValueRow.location_id == value.location_id,
+        )) is None
+        assert connection.execute(select(chunks).where(
+            chunks.c.attempt_id == capture.attempt.attempt_id,
+        )).first() is None

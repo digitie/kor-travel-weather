@@ -2672,18 +2672,22 @@ class WeatherRepository:
                 if prepared is not None:
                     prepared.append(chunk)
             except Exception as exc:
-                attempt_id = export_capture.attempt.attempt_id
-                run_id = next(iter(run_rows)) if len(run_rows) == 1 else "-"
-                logger.warning(
-                    "weather_export_capture_failed attempt_id=%s run_id=%s "
-                    "error_type=%s cause_type=%s sqlstate=%s provider_result_code=%s",
-                    attempt_id if type(attempt_id) is str and re.fullmatch(
-                        r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt_id,
-                    ) else "-",
-                    run_id if type(run_id) is str and re.fullmatch(r"run_[0-9a-f]{32}", run_id)
-                    else "-",
-                    *_capture_failure_diagnostics(exc),
-                )
+                try:
+                    attempt_id = export_capture.attempt.attempt_id
+                    run_id = next(iter(run_rows)) if len(run_rows) == 1 else "-"
+                    logger.warning(
+                        "weather_export_capture_failed attempt_id=%s run_id=%s "
+                        "error_type=%s cause_type=%s sqlstate=%s provider_result_code=%s",
+                        attempt_id if type(attempt_id) is str and re.fullmatch(
+                            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", attempt_id,
+                        ) else "-",
+                        run_id if type(run_id) is str and re.fullmatch(r"run_[0-9a-f]{32}", run_id)
+                        else "-",
+                        *_capture_failure_diagnostics(exc),
+                    )
+                except Exception:
+                    # 진단 실패는 원본 예외·실패 표시·fact commit을 바꾸지 않는다.
+                    pass
                 if not session.is_active:
                     raise
                 try:
