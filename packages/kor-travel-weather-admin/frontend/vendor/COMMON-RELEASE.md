@@ -1,5 +1,16 @@
 # Common 정본 산출물 채택
 
+Pack source: 0e2a3f5aa16323df0d009360802661c9bc496dc6 (PR70), catalog/policy: d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4 (PR71)
+Publication: https://github.com/digitie/kor-travel-common/actions/runs/44459847805 (artifact `common-release-packs-0e2a3f5aa16323df0d009360802661c9bc496dc6`)
+
+- @kor-travel/tokens 0.1.4 sha512-k6StI02tH/iRxKimczN0btU+MS9AvDZLlR/6Bn6xQHhZ5Mb79pkyIALd4RkoLT2GP3qlwR89YEgOaBiBxACDpA==
+- @kor-travel/ui 0.2.3 sha512-upv+JtiVcF+zg3C/KcZy9UQckx0n3vc0n4ANr3/elWM8PQ4srljxgTQmaBK4IxulEj8pd8gc7mnG3M67oFIQUQ==
+
+관리자 셸(AdminShell·AdminTopBar)과 버튼 focus outline 2px 정본을 위해 갱신했다. 의존성 목록은 0.2.2와 같아 lock은 두 항목의
+version·resolved·integrity와 peer tokens만 바뀐다. 0.2.2·0.1.3 tgz는 이력으로 남긴다. toast는 쓰지 않아 원장에서 뺀다.
+
+## 이전(0.2.2·0.1.3)
+
 Pack source: 706aaa7821588dfca72f660c9161f56be2d0445f
 Catalog/policy: 5c1b3857e9af060d30ec776157760fb9e9c13ded
 Publication: https://github.com/digitie/kor-travel-common/actions/runs/44313659808

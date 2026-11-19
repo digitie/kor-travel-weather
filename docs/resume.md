@@ -1,3 +1,7 @@
+## 2026-11-19 — 관리자 셸 0.2.3 채택
+
+관리자 UI가 공용 AdminShell(UI0.2.3·tokens0.1.4, common-ref `d644632`)로 바뀌었고 버튼 테두리 이중화를 고쳤다. 다음은 odroid 배포(Codex)와 실제 PC·모바일 화면 수용이다. [원인·검증](reports/2026-11-19-admin-shell-0.2.3.md)
+
 ## 2026-11-19 — fact 저장 COPY 최적화 후보
 
 표시된 완전한 1,000행 fact INSERT에만 공개 SQLAlchemy 이벤트의 psycopg COPY를 적용한다. 오류·트랜잭션·계측·lineage·멱등성·current projection은 유지하며 schema 번역/default·RETURNING 등의 예외는 기존 dialect에 맡긴다. 실제 PostgreSQL 신규16건 통과. 동일 합성 1,000행 저장의 5교대 쌍은 중앙304.25→102.21ms/CPU29.69→16.59ms이며 전체 운영 수집·API 개선율은 미검증이다. [검증과 경계](reports/2026-11-19-fact-copy.md). 정확 PR CI·머지·실제 캐시 이미지/운영 검증은 후속이다.
