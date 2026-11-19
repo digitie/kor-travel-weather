@@ -65,7 +65,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
   test("모든 관리자 화면의 한 줄 제목과 작은 설명", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
-    await routeWeather(page);
+    // 화면 순회는 fixture 서버의 빈 응답으로 본다(날씨 전용 route는 위치 관리 화면 응답 모양과 다르다).
     await login(page, "/");
     for (const [path, label] of ADMIN_PAGES) {
       await page.goto(path);
@@ -81,6 +81,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       expect((await topBar.boundingBox())!.height).toBeLessThanOrEqual(56);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
+    await routeWeather(page);
     await page.goto("/weather");
     await expect(page.locator('[data-slot="admin-shell-description"]')).toHaveText(`활성 위치 카탈로그 ${SIDO.length}곳`);
     if (viewport.width >= 1024) {
@@ -126,6 +127,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
     await routeWeather(page);
     await login(page, "/weather");
+    // 좁은 화면에서는 첫 위치 상세가 지도 대부분을 덮어 카드 자리가 없다. 닫고 본다.
+    const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
+    if (await detail.isVisible()) await detail.getByRole("button", { name: "상세 닫기", exact: true }).click();
     const placed = page.locator('.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button');
     await expect(placed.first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("button", { name: /지역 날씨/ })).toHaveCount(0);
