@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-from pydantic import field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from pydantic_core import PydanticSerializationError
 
 from kortravelweather import export_heads as heads
@@ -124,12 +124,45 @@ class DiscardSerializationProbe(WeatherValue):
         raise AssertionError("discarded field serializer was called")
 
 
-def test_discarded_payload_and_lineage_are_not_serialized():
+def test_canonical_discarded_payload_is_not_serialized():
     original = model()
-    probe = DiscardSerializationProbe.model_validate(original.model_dump(mode="python"))
-    with pytest.raises(PydanticSerializationError, match="discarded field"):
-        legacy(probe)
-    assert heads._semantic_model_point_digest(probe) == legacy(original)
+    expected = legacy(original)
+    data = original.model_dump(mode="python")
+    # Any payload는 저장할 수 있지만 JSON으로 직렬화할 수 없는 값을 넣는다.
+    data["payload"] = {"must_not_convert": object()}
+    canonical = WeatherValue.model_validate(data)
+    assert type(canonical) is WeatherValue
+    with pytest.raises(PydanticSerializationError):
+        legacy(canonical)
+    assert heads._semantic_model_point_digest(canonical) == expected
+
+
+def test_subclass_keeps_legacy_discarded_serializer_behavior():
+    probe = DiscardSerializationProbe.model_validate(model().model_dump(mode="python"))
+    for digest in (legacy, heads._semantic_model_point_digest):
+        with pytest.raises(PydanticSerializationError, match="discarded field"):
+            digest(probe)
+
+
+class AliasWeatherValue(WeatherValue):
+    model_config = ConfigDict(extra="forbid", serialize_by_alias=True)
+    payload: dict = Field(default_factory=dict, serialization_alias="retained_payload_alias")
+
+
+class OtherAliasModel(BaseModel):
+    model_config = ConfigDict(serialize_by_alias=True)
+    payload: dict = Field(default_factory=dict, serialization_alias="retained_payload_alias")
+
+
+@pytest.mark.parametrize("model_type", [AliasWeatherValue, OtherAliasModel])
+def test_aliased_payload_a_b_keeps_exact_legacy_identity(model_type):
+    data = model().model_dump(mode="python")
+    a = model_type.model_validate({**data, "payload": {"raw": "A"}})
+    b = model_type.model_validate({**data, "payload": {"raw": "B"}})
+    assert a.model_dump(mode="json")["retained_payload_alias"] == {"raw": "A"}
+    assert heads._semantic_model_point_digest(a) == legacy(a)
+    assert heads._semantic_model_point_digest(b) == legacy(b)
+    assert heads._semantic_model_point_digest(a) != heads._semantic_model_point_digest(b)
 
 
 def test_exclusion_is_exact_and_retrieval_metadata_is_ignored():

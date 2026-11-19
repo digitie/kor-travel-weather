@@ -46,7 +46,7 @@ from .export_artifacts import (
 from .export_lifecycle import ExportLifecycle, _current_owners
 from .export_page_liveness import register_page_liveness
 from .export_receipts import ExportAttempt, source_scope_key
-from .models import KST
+from .models import KST, WeatherValue
 
 NOWCAST_REQUIRED_CATEGORIES = frozenset({"T1H", "RN1", "UUU", "VVV", "REH", "PTY", "VEC", "WSD"})
 
@@ -113,7 +113,9 @@ def semantic_point_digest(point: Mapping[str, Any]) -> str:
 
 
 def _semantic_model_point_digest(point: BaseModel) -> str:
-    """버릴 payload·수집 증거는 JSON 변환 전에 빼고 같은 semantic 검산을 쓴다."""
+    """정규 WeatherValue만 선제 제외하고 다른 모델은 emitted key 의미를 보존한다."""
+    if type(point) is not WeatherValue:
+        return semantic_point_digest(point.model_dump(mode="json"))
     return semantic_point_digest(point.model_dump(
         mode="json", exclude=_NON_SEMANTIC_POINT_FIELDS,
     ))
