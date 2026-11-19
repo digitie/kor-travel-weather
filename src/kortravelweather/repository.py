@@ -42,6 +42,7 @@ from sqlalchemy import (
     create_engine,
     delete,
     desc,
+    event,
     false,
     func,
     insert,
@@ -939,8 +940,44 @@ INGEST_LOCK_RETRY_SECONDS = 3.0
 
 #: Rows per set-based projection upsert statement (10 array parameters each).
 PROJECTION_UPSERT_ROWS = 1000
-#: 새 fact bulk INSERT 한 문장의 행 수(executemany, 26열).
+#: 새 fact 배치의 행 수(완전한 psycopg 배치는 COPY, 그 밖은 executemany).
 _FACT_INSERT_ROWS = 1000
+
+
+def _copy_weather_facts(cursor, _statement, parameters, context):
+    """표시한 완전한 fact 배치만 COPY로 보낸다. SQLAlchemy의 오류·계측 경계 안이다."""
+    if context.execution_options.get("weather_fact_copy") is not True:
+        return None
+    compiled = context.compiled
+    table = WeatherValueRow.__table__
+    if (
+        context.dialect.name != "postgresql" or context.dialect.driver != "psycopg"
+        or compiled is None or not compiled.isinsert or compiled.statement.table is not table
+        or compiled.returning or not parameters or len(parameters) > _FACT_INSERT_ROWS
+    ):
+        return None
+    columns = tuple(table.columns.keys())
+    expected = set(columns)
+    if any(not isinstance(row, Mapping) or row.keys() != expected for row in parameters):
+        return None  # default/부분 INSERT는 기존 dialect가 처리한다.
+    if cursor.connection.pgconn.pipeline_status:
+        return None  # 명시 pipeline 안에서는 기존 executemany를 유지한다.
+    translation = context.execution_options.get("schema_translate_map") or {}
+    schema = translation.get(table.schema, table.schema)
+    if table.schema in translation and not schema:
+        return None  # 명시적 기본 schema 번역은 dialect의 해석을 그대로 사용한다.
+    quote = context.dialect.identifier_preparer
+    target = quote.quote(table.name)
+    if schema is not None:
+        target = quote.quote_schema(schema) + "." + target
+    names = ",".join(quote.quote(name) for name in columns)
+    statement = "COPY " + target + " (" + names + ") FROM STDIN"
+    # parameters는 SQLAlchemy가 timezone·JSON 등의 bind processor를 적용한 결과다.
+    # commit/rollback/예외 변환·disconnect 처리는 호출한 Engine/Session에 남긴다.
+    with cursor.copy(statement) as copy:
+        for row in parameters:
+            copy.write_row(tuple(row[name] for name in columns))
+    return True
 
 _T = TypeVar("_T")
 
@@ -1421,6 +1458,7 @@ class WeatherRepository:
             connect_args={"connect_timeout": 10},
         )
 
+        event.listen(self.engine, "do_executemany", _copy_weather_facts)
         self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
 
     def create_schema(self) -> None:
@@ -2631,7 +2669,9 @@ class WeatherRepository:
         session.flush()
         for offset in range(0, len(rows), _FACT_INSERT_ROWS):
             session.execute(
-                insert(WeatherValueRow.__table__),  # type: ignore[arg-type]
+                insert(WeatherValueRow.__table__).execution_options(  # type: ignore[arg-type]
+                    weather_fact_copy=True,
+                ),
                 rows[offset : offset + _FACT_INSERT_ROWS],
             )
 

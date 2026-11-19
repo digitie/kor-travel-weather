@@ -1,3 +1,7 @@
+## 2026-11-19 — fact 저장 COPY 최적화 후보
+
+표시된 완전한 1,000행 fact INSERT에만 공개 SQLAlchemy 이벤트의 psycopg COPY를 적용한다. 오류·트랜잭션·계측·lineage·멱등성·current projection은 유지하며 schema 번역/default·RETURNING 등의 예외는 기존 dialect에 맡긴다. 실제 PostgreSQL 신규16건 통과. 동일 합성 1,000행 저장의 5교대 쌍은 중앙304.25→102.21ms/CPU29.69→16.59ms이며 전체 운영 수집·API 개선율은 미검증이다. [검증과 경계](reports/2026-11-19-fact-copy.md). 정확 PR CI·머지·실제 캐시 이미지/운영 검증은 후속이다.
+
 ## 2026-11-19 — KMA 행의 반복 Mapping 판정 축소
 
 운영 단기예보 run의 5초 비중단 샘플에서 `KmaForecastRow.from_raw`의 필드별 Mapping 판정이 반복됐다. raw unwrap 뒤 입력 종류를 행마다 한 번 판정하고 기존 별칭·None fallback·속성 조회·숫자 변환·누락 오류는 유지한다. 예보·실황 두 reader만 바꿨으며 SDK·격자/발표 시각·저장/승인 계약은 바꾸지 않았다.
