@@ -23,7 +23,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  // 관리자 화면은 셸이 "날씨 - <페이지>"(formatAdminTitle)로 document.title을 맞춘다.
+  // 탭 제목은 영역 이름만 둔다(페이지 제목 "날씨 - <페이지>"는 상단 바 h1).
   title: "날씨",
   description: "날씨 데이터 운영·수집 관리 화면",
 };

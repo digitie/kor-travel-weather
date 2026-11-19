@@ -72,7 +72,6 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
       const topBar = page.locator('[data-slot="admin-shell-header"]');
       await expect(topBar.getByRole("heading", { level: 1 })).toHaveText(`날씨 - ${label}`);
       await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
-      await expect(page).toHaveTitle(`날씨 - ${label}`);
       // 앱 설명 워드마크("Weather Scraper")는 없다.
       await expect(page.getByText(/Weather Scraper/i)).toHaveCount(0);
       const description = topBar.locator('[data-slot="admin-shell-description"]');
@@ -113,7 +112,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect([pressed.borderWidth, pressed.borderColor]).toEqual([rest.borderWidth, rest.borderColor]);
     // 공용 Button의 눌림 이동(translate-y-px, CSS `translate`) 1px 하나만 허용한다. 전역 transform이 겹치면 2px가 된다.
     expect(pressed.transform).toBe("none");
-    expect(["none", "0px 1px"]).toContain(pressed.translate);
+    expect(["none", "0px", "0px 1px"]).toContain(pressed.translate);
     expect(Math.abs(pressed.y - rest.y)).toBeLessThanOrEqual(1);
     if (viewport.width < 1024) {
       const menu = page.locator('[data-slot="admin-shell-menu-button"]');

@@ -14,11 +14,8 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  AdminShell as CommonAdminShell,
-  formatAdminTitle,
-} from "@kor-travel/ui/admin-shell";
+import { useRef, useState, type ReactNode } from "react";
+import { AdminShell as CommonAdminShell } from "@kor-travel/ui/admin-shell";
 import { AppMenu, type AppMenuLinkProps } from "@kor-travel/ui/app-menu";
 
 import { HelpTip } from "@/components/help-tip";
@@ -127,9 +124,6 @@ export function AdminShell({
   children,
 }: AdminShellProps) {
   const pathname = usePathname();
-  useEffect(() => {
-    document.title = formatAdminTitle(ADMIN_AREA, title);
-  }, [title]);
   const helpTip = help ? (
     <HelpTip label={title} variant={helpVariant}>
       {help}
