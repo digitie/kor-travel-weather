@@ -1,3 +1,13 @@
+## 2026-11-19 — 보존된 단기예보 최초 행 조회
+
+retained-short 재진입 조회를 한 SELECT의 좁은 PK CTE와 전체 행 결합으로 바꾼다.
+최초 시각·전체 payload·불변 검증·1,000개 상한·snapshot·GC 계약을 보존한다.
+32 partition/128,000행의 3개 교대 쌍에서 다중 버전 중앙1023.78→101.98ms,
+최근 단일 버전127.22→88.46ms이며 전체 행·순서 해시가 같다.
+최종 실제 PG 5건·순수 보존 단위 71건·전체 Ruff·diff 검사가 통과했다.
+운영 prefix의 오프라인 정확 일치가 대상 경로의 근거이고 운영 전체 지연 개선은 미검증이다.
+[측정과 한계](reports/2026-11-19-retained-short-lookup.md).
+
 ## 2026-11-19 — 관리자 셸 @kor-travel/ui 0.2.3 채택과 버튼 테두리 정리
 
 - Common PR70/71(`0e2a3f5`·`d644632`)의 UI0.2.3·tokens0.1.4를 artifact 원본(SRI 대조)으로 vendor·원장·lock에 넣고 ci/정책 workflow common-ref를 `d644632`로 맞췄다.

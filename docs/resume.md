@@ -1,3 +1,11 @@
+## 2026-11-19 보존된 단기예보 재진입 조회 후속
+
+49dc 기반으로 retained-short 최초 fact만 한 snapshot의 key-first SELECT로 읽는다.
+설정·수집 주기·quota·schema 변경은 없다. 전체 행 동등성과 최초 시각·멱등성·불변 fact
+충돌의 실제 PG 5건과 순수 보존 단위 71건이 통과했다. 비교의 실제 디스크 read0 한계와 운영 미검증을
+[기록](reports/2026-11-19-retained-short-lookup.md)했다.
+정확 CI·정상 이미지·자연 수집의 운영 효과 확인은 후속이다.
+
 ## 2026-11-19 — 관리자 셸 0.2.3 채택
 
 관리자 UI가 공용 AdminShell(UI0.2.3·tokens0.1.4, common-ref `d644632`)로 바뀌었고 버튼 테두리 이중화를 고쳤다. 다음은 odroid 배포(Codex)와 실제 PC·모바일 화면 수용이다. [원인·검증](reports/2026-11-19-admin-shell-0.2.3.md)

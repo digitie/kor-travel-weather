@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select, text, update
+from sqlalchemy import event, func, select, text, update
 
 from kortravelweather import repository as module
 from kortravelweather.models import KST, WeatherLocation, WeatherValue
@@ -12,6 +12,7 @@ from kortravelweather.repository import (
     WeatherCurrentValueRow,
     WeatherRepository,
     WeatherValueRow,
+    _ResolvedFact,
 )
 from kortravelweather.retention import (
     SHORT_FORECAST_PREDICATE,
@@ -317,6 +318,8 @@ def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, 
             # 새 wall clock이나 늦은 replay도 동일 pair를 재사용해야 한다.
             monkeypatch.setattr(module, "kst_now", lambda: now + timedelta(hours=1))
             assert repository.upsert_values([item]) == 0
+            with pytest.raises(ValueError, match="immutable weather fact"):
+                repository.upsert_values([item.model_copy(update={"value_number": 999})])
             with repository._session_factory() as session:
                 rows = session.scalars(select(WeatherValueRow).where(
                     WeatherValueRow.source_record_key == label,
@@ -337,3 +340,85 @@ def test_future_late_reentry_preserves_source_clock_and_replay_pair(repository, 
             if original_floor is not None:
                 add_default_floor(connection, original_floor)
                 validate_default_floor(connection)
+
+@pytest.mark.parametrize(("retained", "versions", "requested"), [
+    (0, 0, 3), (2, 1, 3), (2, 3, 3), (2, 3, 1001),
+])
+def test_retained_lookup_preserves_full_earliest_row_and_missing_batch(
+    repository, monkeypatch, retained, versions, requested,
+):
+    """실제 복합 PK에서 전체행 기준 조회와 동일하며 1000개 경계도 누락하지 않는다."""
+    repository.upsert_location(WeatherLocation(
+        location_id="retention-local", name="최초행조회", latitude=37, longitude=127,
+    ))
+    monkeypatch.setattr(module, "kst_now", lambda: NOW - timedelta(days=1))
+    values = [
+        _value(NOW + timedelta(days=100), source_record_key=f"lookup-{index}",
+               payload={"raw": [index, {"unicode": "단기예보", "pad": "x" * 1024}]})
+        for index in range(retained)
+    ]
+    _record(repository, *values)
+    assert repository.upsert_values(values) == retained
+    with repository._session_factory.begin() as session:
+        originals = session.scalars(select(WeatherValueRow).order_by(
+            WeatherValueRow.value_id,
+        )).all()
+        # 동일 ID의 더 늦은 표현도 있으면 최초 clock의 전체 행만 선택해야 한다.
+        for row in originals:
+            for version in range(1, versions):
+                fields = {column.name: getattr(row, column.name)
+                          for column in WeatherValueRow.__table__.columns}
+                fields["known_at"] = row.known_at + timedelta(days=version)
+                fields["payload"] = {"later": version}
+                session.add(WeatherValueRow(**fields))
+
+    with repository._session_factory() as session:
+        ids = [row.value_id for row in originals]
+        ids += [f"missing-{index:04d}" for index in range(requested - len(ids))]
+        baseline = session.scalars(select(WeatherValueRow).where(
+            WeatherValueRow.value_id.in_(ids),
+        ).distinct(WeatherValueRow.value_id).order_by(
+            WeatherValueRow.value_id, WeatherValueRow.known_at,
+        )).all()
+        expected = {
+            (row.value_id, row.known_at): {
+                column.name: getattr(row, column.name)
+                for column in WeatherValueRow.__table__.columns
+            } for row in baseline
+        }
+        facts = [
+            _ResolvedFact(
+                _value(NOW + timedelta(days=100)), "lookup-source", value_id,
+                NOW + timedelta(days=100), NOW - timedelta(days=20),
+                NOW - timedelta(days=20), True,
+            ) for value_id in ids
+        ]
+        statements = []
+
+        def count_statement(connection, cursor, statement, parameters, context, many):
+            statements.append(statement)
+
+        stored = {}
+        event.listen(repository.engine, "before_cursor_execute", count_statement)
+        try:
+            result = WeatherRepository._readmit_retained_short_session(
+                session, facts, stored, catalog=(None, []),
+                admitted_at=NOW, short_cutoff=NOW - timedelta(hours=6),
+            )
+            actual = {
+                pair: {column.name: getattr(row, column.name)
+                       for column in WeatherValueRow.__table__.columns}
+                for pair, row in stored.items()
+            }
+            # 전체 payload 접근 뒤에도 lazy SELECT가 추가되지 않아야 한다.
+            assert len(statements) == (requested + 999) // 1000
+        finally:
+            event.remove(repository.engine, "before_cursor_execute", count_statement)
+        assert actual == expected
+        assert [fact.value_id for fact in result] == ids
+        by_id = {row.value_id: row for row in baseline}
+        for fact in result:
+            assert fact.known_at == (
+                by_id[fact.value_id].known_at if fact.value_id in by_id
+                else NOW - timedelta(days=20)
+            )

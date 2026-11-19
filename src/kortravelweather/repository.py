@@ -3012,10 +3012,22 @@ class WeatherRepository:
         ids = list(dict.fromkeys(fact.value_id for fact in protected if fact.replayed))
         prior: dict[str, WeatherValueRow] = {}
         for offset in range(0, len(ids), 1000):
+            requested_ids = WeatherValueRow.value_id.in_(ids[offset:offset + 1000])
+            # 먼저 좁은 PK만 정렬한다. 전체 fact/payload는 earliest winner만 읽으며,
+            # 같은 SQL snapshot에서 결합해 보존 정리와의 두 문장 사이 경합을 만들지 않는다.
+            first_keys = (
+                select(WeatherValueRow.value_id, WeatherValueRow.known_at)
+                .where(requested_ids)
+                .distinct(WeatherValueRow.value_id)
+                .order_by(WeatherValueRow.value_id, WeatherValueRow.known_at)
+                .cte("retained_short_first_keys")
+                .prefix_with("MATERIALIZED", dialect="postgresql")
+            )
             rows = session.scalars(
                 select(WeatherValueRow)
-                .where(WeatherValueRow.value_id.in_(ids[offset:offset + 1000]))
-                .distinct(WeatherValueRow.value_id)
+                .join(first_keys, (WeatherValueRow.value_id == first_keys.c.value_id)
+                      & (WeatherValueRow.known_at == first_keys.c.known_at))
+                .where(requested_ids)
                 .order_by(WeatherValueRow.value_id, WeatherValueRow.known_at)
             ).all()
             for row in rows:
