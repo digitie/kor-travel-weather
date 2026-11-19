@@ -1,3 +1,11 @@
+## 2026-11-20 — 지도 마커 포커스 후속
+
+PR274의 390px 키보드 fixture 재실패를 조사해 앱 배치 effect의 실제 Chromium BODY blur를 재현했다. 숨기기 전 포커스 캡처와 다음 RAF의 BODY/기존 카드 한정 복구를 적용했다. 다른 입력 포커스 유지 대조군을 포함한 실제 effect 브라우저 2건과 기존 지도 단위 23건이 통과했다. 기존 상세 표시 단언·시간 제한·공용 pack은 변경하지 않으며, 정확 수정 소스의 빌드·type-check·ESLint·390px 대상1건·전체 fixture32건이 통과했으며 새 head CI가 필요하다. 운영 호출/설치/SDK 변경은 없다.
+
+## 2026-11-20 — psycopg 3.3.9 후속
+
+psycopg[binary]==3.3.9와 core/binary lock 두 패키지를 정렬했다. driver22건 및 Weather fact COPY 오류 보존 회귀3건이 통과했다. 동일 코드의 로컬 reader24표본은 본문/ETag/SQL/304가 같지만 일관된 latency 개선은 없었다. 운영 cold 지연은 미해결이다. Common strict 정책 job을 후보 e2899128의 불변 코드로 추가했다. Common73 실제 merge67efe2e/e289 main 조상·tree 동등성을 확인했다. 정확 새 head CI 전에는 소비자를 merge하지 않는다. frontend/catalog/packs 및 운영 설치·이미지·SDK scope는 유지한다.
+
 ## 2026-11-19 — 최초 capture 실패의 비밀 없는 타입/코드 기록
 
 최초 경고에 검증된 클래스·SQLSTATE·SDK result_code와 attempt/run만 남긴다.

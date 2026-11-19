@@ -19,6 +19,28 @@ jobs:
       node-dockerfiles: >-
         ["deploy/Dockerfile.web"]
 
+  backend-dependency-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: consumer
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: digitie/kor-travel-common
+          ref: e2899128f78c9622ec3ef79674cff8d1c3aec6f9
+          path: common-policy
+          persist-credentials: false
+      - name: Check selected PostgreSQL driver source and lock
+        run: |
+          test "$(git -C common-policy rev-parse HEAD)" = e2899128f78c9622ec3ef79674cff8d1c3aec6f9
+          python3 -B common-policy/tools/check_versions.py "$GITHUB_WORKSPACE/consumer" \
+            --registry "$GITHUB_WORKSPACE/common-policy/versions.json" \
+            --repo kor-travel-weather --strict-psycopg \
+            --json "$RUNNER_TEMP/weather-backend-policy.json" --no-step-summary
+
   python:
     runs-on: ubuntu-latest
     env:

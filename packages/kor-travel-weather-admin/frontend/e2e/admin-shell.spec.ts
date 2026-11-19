@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 // 공용 AdminShell(@kor-travel/ui 0.2.3) 채택 UI 시험. 메모리 fixture API만 쓰며 운영 API·타일과 무관하다.
@@ -177,4 +179,62 @@ test.describe("390px 메뉴 drawer", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("날씨 - 수집 실행");
   });
+});
+
+// 복사한 포커스 분기 대신 실제 배치 effect/배치 함수와 앱 CSS를 Chromium에서 실행한다.
+const markerSource = readFileSync("components/weather-map.tsx", "utf8");
+const markerTree = ts.createSourceFile("weather-map.tsx", markerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let positionEffect: ts.Expression | undefined;
+function findPositionEffect(node: ts.Node) {
+  if (ts.isCallExpression(node) && node.expression.getText(markerTree) === "useEffect"
+    && node.arguments[0]?.getText(markerTree).includes("const offsets = layoutWeatherRegionCards")) positionEffect = node.arguments[0];
+  ts.forEachChild(node, findPositionEffect);
+}
+findPositionEffect(markerTree);
+const layoutNode = markerTree.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "layoutWeatherRegionCards");
+if (!positionEffect || !layoutNode) throw new Error("실제 지역 카드 배치 effect와 함수가 필요합니다.");
+const positionCode = ts.transpileModule("const effect = " + positionEffect.getText(markerTree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const layoutCode = ts.transpileModule(layoutNode.getText(markerTree).replace("export ", ""), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const overflowCSS = readFileSync("app/globals.css", "utf8")
+  .match(/\.weather-region-marker\[data-region-overflow="true"\] \.vworld-weather-marker-button\s*\{[^}]+\}/)?.[0];
+if (!overflowCSS) throw new Error("실제 숨김 CSS가 필요합니다.");
+
+for (const userMoved of [false, true]) test("390px 실제 지역 배치가 숨긴 포커스: " + (userMoved ? "사용자의 다른 입력 유지" : "브라우저 BODY blur 복구"), async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setContent('<style>#map {position:relative;width:200px;height:100px}.weather-region-marker {position:absolute;left:20px;top:20px}.vworld-weather-marker-button {width:150px;height:50px}' + overflowCSS + '</style><div id="map"><div class="weather-region-marker"><button id="visible" class="vworld-weather-marker-button">보이는 지역</button></div><div id="hidden-host" class="weather-region-marker"><button id="hidden" class="vworld-weather-marker-button">공간 부족 지역</button></div><canvas tabindex="0"></canvas></div><input id="user" aria-label="다른 입력"><output id="selected"></output>');
+  const result = await page.evaluate(async ({ positionCode, layoutCode, userMoved }) => {
+    const root = document.querySelector<HTMLElement>("#map")!;
+    const host = document.querySelector<HTMLElement>("#hidden-host")!;
+    const button = document.querySelector<HTMLButtonElement>("#hidden")!;
+    const user = document.querySelector<HTMLInputElement>("#user")!;
+    document.querySelector("#visible")!.addEventListener("click", () => {
+      document.querySelector("#selected")!.textContent = "선택됨";
+    });
+    let browserBlurred = false;
+    const setAttribute = host.setAttribute.bind(host);
+    host.setAttribute = (name, value) => {
+      setAttribute(name, value);
+      if (name !== "aria-hidden" || value !== "true") return;
+      // 실제 visibility 변경의 스타일 계산을 완료시킨다. focus/contains/document는 모의하지 않는다.
+      button.getBoundingClientRect();
+      browserBlurred ||= document.activeElement === document.body;
+      if (userMoved) queueMicrotask(() => user.focus());
+    };
+    button.focus();
+    const hadFocus = document.activeElement === button;
+    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers",
+      layoutCode + "\n" + positionCode + "\nreturn effect();")({
+        current: { getContainer: () => root, getCanvas: () => root.querySelector("canvas"), on() {}, off() {} },
+      }, true, "map", "sido", [1, 2]) as () => void;
+    try {
+      // 첫 frame은 실제 position, 다음 frame은 포커스 handoff를 실행한다.
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      return { hadFocus, browserBlurred, active: document.activeElement?.id, overflow: host.dataset.regionOverflow, tabIndex: button.tabIndex };
+    } finally { cleanup(); }
+  }, { positionCode, layoutCode, userMoved });
+  expect(result).toEqual({ hadFocus: true, browserBlurred: true, active: userMoved ? "user" : "visible", overflow: "true", tabIndex: -1 });
+  if (!userMoved) {
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#selected")).toHaveText("선택됨");
+  }
 });
