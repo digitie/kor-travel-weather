@@ -1,3 +1,11 @@
+## 2026-11-20 — psycopg 3.3.9와 COPY 오류 보존
+
+직접 사용하는 psycopg[binary]를 3.3.9로 정확히 고정하고 uv.lock의 core/binary 두 패키지만 갱신했다. 앱·SQL·schema·TTL·공유 guard는 바꾸지 않는다. upstream #1486의 COPY 종료 오류 보존을 채택하며, Weather fact COPY adapter에서 행 오류/중단과 cleanup 오류가 겹쳐도 원래 예외 객체를 유지하는 회귀를 추가했다. 원래 오류가 없을 때 cleanup 실패는 계속 전파한다.
+
+동일 Python3.13의 driver 제어는 3.3.9에서22건 통과했고, adapter 회귀3건은 3.3.6에서2FAIL/1PASS→3.3.9에서3PASS였다. 별도 동일 b5e6 코드·실제 로컬 PG fixture의 24개 reader 표본은 본문·ETag·SQL·304가 같았다. 중앙 시간은 current200 345.36→350.65ms, current2000 348.30→338.83ms, forecasts200 401.59→394.32ms, forecasts2000 408.13→436.67ms로 일관된 속도 개선은 입증하지 못했다. 운영 cold33.5초의 해결을 주장하지 않는다.
+
+Common의 기존 버전 registry를 따르며 exact selected-driver strict guard는 producer의 최종 불변 SHA가 나온 뒤 채택한다. 운영 pip 설치·이미지 변경·배포는 하지 않았다.
+
 ## 2026-11-19 — 최초 capture 실패의 비밀 없는 타입/코드 기록
 
 최초 경고에 검증된 클래스·SQLSTATE·SDK result_code와 attempt/run만 남긴다.

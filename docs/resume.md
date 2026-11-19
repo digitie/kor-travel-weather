@@ -1,3 +1,7 @@
+## 2026-11-20 — psycopg 3.3.9 후속
+
+psycopg[binary]==3.3.9와 core/binary lock 두 패키지를 정렬했다. driver22건 및 Weather fact COPY 오류 보존 회귀3건이 통과했다. 동일 코드의 로컬 reader24표본은 본문/ETag/SQL/304가 같지만 일관된 latency 개선은 없었다. 운영 cold 지연은 미해결이다. 정확 PR CI와 Common strict producer 불변 SHA 채택을 이어가며 운영 설치·이미지·SDK scope는 유지한다.
+
 ## 2026-11-19 — 최초 capture 실패의 비밀 없는 타입/코드 기록
 
 최초 경고에 검증된 클래스·SQLSTATE·SDK result_code와 attempt/run만 남긴다.
