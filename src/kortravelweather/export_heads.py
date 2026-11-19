@@ -314,14 +314,26 @@ def _normalize(descriptor, record, locations, *, skipped=None):
         "ultra_short": ultra_short_forecast_to_weather_values,
         "short": short_forecast_to_weather_values,
     }[descriptor.forecast_style]
+    template = None
+    skipped_per_location = None
     for location in locations:
-        yield from normalizer(
-            record["payload"]["rows"],
-            location_id=location,
-            source_record_key=record["source_record_key"],
-            known_at=record["fetched_at"],
-            skipped=skipped,
-        )
+        if template is None:
+            # 첫 위치만 정규화한다. 빈 template도 완결된 결과이며 다시 해석하지 않는다.
+            before = skipped.copy() if skipped is not None else None
+            template = normalizer(
+                record["payload"]["rows"],
+                location_id=location,
+                source_record_key=record["source_record_key"],
+                known_at=record["fetched_at"],
+                skipped=skipped,
+            )
+            if skipped is not None:
+                skipped_per_location = skipped - before
+        elif skipped is not None:
+            # 빈 결과·결측·범위 오류도 기존처럼 소비된 위치 수만큼 집계한다.
+            skipped.update(skipped_per_location)
+        # collector와 같은 위치 복제를 사용하며 전체 fanout 목록은 만들지 않는다.
+        yield from (value.model_copy(update={"location_id": location}) for value in template)
 
 
 def _announced_kma_base(dataset_key, meta, rows) -> tuple[str, str]:
