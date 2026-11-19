@@ -19,3 +19,9 @@ Publication: https://github.com/digitie/kor-travel-common/actions/runs/443136598
 - @kor-travel/ui 0.2.2 sha512-/odxLZlFlMj0IB8oPMyjE77kj1MtZO46m/lyHiCTW/gYFq7o6XUSrSPOC7rm7cyEpbjD8dAnCqcz7zmE2GWF+Q==
 
 기존 의존성만 갱신했다. npm lock 재생성과 소비자 guard 검증은 별도로 수행한다.
+
+## 원본 파일 검증 범위
+
+UI 0.2.3은 96개, tokens 0.1.4는 25개 정규 파일로 합계 121개다.
+기존 나머지 pack을 포함한 전체 C11 inventory는 268개이며 SRI·per-pack 검사를 유지한다.
+중앙 producer artifact `14500111373`의 원본 bytes를 사용하고 소비자가 재pack하지 않는다.
