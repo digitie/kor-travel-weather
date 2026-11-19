@@ -331,6 +331,11 @@
     @apply bg-surface-page font-sans text-sm text-text-primary antialiased;
   }
 
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
   /* prose links only — button-styled <Link className=…> is unaffected */
   a:not([class]),
   .prose a,
@@ -479,78 +484,20 @@
   --kt-brand: var(--brand);
   --kt-brand-tint: var(--brand-tint);
   --kt-focus: var(--focus);
+  /* 공용 셸(z-kt-nav·overlay·modal·toast)의 층 순서. @kor-travel/tokens/tokens.css와 같은 값이며
+     이 앱은 그 파일을 import하지 않아 여기서 정의한다(없으면 z-index가 auto가 되어 상단 바·skip link가 가려진다). */
+  --kt-z-nav: 30;
+  --kt-z-panel: 40;
+  --kt-z-overlay: 50;
+  --kt-z-modal: 60;
+  --kt-z-toast: 70;
 }
-
-/* ===== weather 고유 화면 규칙 (map과 겹치지 않는 셀렉터만) ===== */
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-a:not([class]):hover,
-.link:hover {
-  text-decoration: underline;
-}
-
-button:hover {
-  background: var(--brand-hover);
-}
-
-button:active {
-  transform: translateY(1px);
-}
-
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-button.secondary,
-.button.secondary {
-  border-color: var(--control-line);
-  background: var(--card);
-  color: var(--text-primary);
-}
-
-button.secondary:hover,
-.button.secondary:hover {
-  background: var(--surface-subtle);
-}
-
-button.ghost,
-.button.ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-secondary);
-}
-
-button.ghost:hover,
-.button.ghost:hover {
-  background: var(--surface-subtle);
-  color: var(--text-primary);
-}
-
-button.danger,
-.button.danger {
-  border-color: var(--destructive);
-  background: var(--destructive);
-}
-
-.button {
-  align-items: center;
-  display: inline-flex;
-  height: var(--control-h);
-  min-height: var(--control-h);
-  justify-content: center;
-  gap: 0.5rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  padding: 0 1rem;
-  font-size: 0.875rem;
-  font-weight: 600;
-  line-height: 1;
-  white-space: nowrap;
-}
+/* ===== weather 고유 화면 규칙 (map과 겹치지 않는 셀렉터만) =====
+   버튼·링크의 요소/상태 규칙은 여기(unlayered)에 두지 않는다. unlayered 규칙은 Tailwind
+   utilities 층을 특이도와 무관하게 이겨서, 공용 Button의 hover·focus·active를 덮어쓴다
+   (2026-11-19 버튼 테두리 이중화: `button:focus-visible{border-color}` + `button:active{transform}`
+   + `button:hover{background}`). 요소 기본값은 위 `@layer base`, 포커스 링은 base의
+   `:focus-visible` 하나만 발행한다. */
 
 input:hover,
 select:hover,
@@ -558,14 +505,19 @@ textarea:hover {
   background: var(--surface-subtle);
 }
 
+/* 입력 컨트롤 포커스는 공용 0.2.3에서 바뀌지 않았다 — 앱 규칙을 그대로 유지한다. */
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible,
-button:focus-visible,
-a:focus-visible {
+textarea:focus-visible {
   border-color: var(--focus);
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* 날씨 소스 필터(raw button)는 전역 button:disabled 대신 자기 범위에서 비활성 모양을 갖는다. */
+.kt-map-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 input::placeholder,
@@ -2403,20 +2355,6 @@ body:has([data-slot="map-workspace"][data-expanded="true"]) [data-slot="admin-sh
 .weather-region-link line { stroke:currentColor; stroke-width:1; }
 
 .weather-region-origin { width:var(--space-xs); height:var(--space-xs); border-radius:50%; background:var(--text-primary); translate:-50% -50%; }
-
-.weather-region-access { position:absolute; left:var(--space-sm); right:var(--space-sm); bottom:var(--space-xl); z-index:5; width:fit-content; max-width:calc(100% - 2 * var(--space-sm)); display:grid; gap:var(--space-xs); }
-
-.weather-region-access > button { min-height:var(--control-h-sm); padding:var(--space-xs) var(--space-sm); border:1px solid var(--border); border-radius:var(--radius-control); background:var(--card); color:var(--text-primary); }
-
-.weather-region-access-list { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:var(--space-sm); max-height:min(50dvh, 24rem); overflow:auto; overscroll-behavior:contain; padding:var(--space-sm); border:1px solid var(--border); border-radius:var(--radius-panel); background:var(--card); box-shadow:var(--shadow-map); }
-
-.weather-region-access-list > button { min-width:0; height:100%; white-space:normal; }
-
-.weather-region-access-list .vworld-weather-marker-copy { min-width:0; overflow-wrap:anywhere; }
-
-@media (pointer:coarse) {
-.weather-region-access > button { min-height:44px; }
-}
 
 .measurement-point,
 .alert-panel {

@@ -77,7 +77,6 @@ export default function ApiTestPage() {
     <AdminShell
       actions={<Badge variant="success">연결됨</Badge>}
       description="로그인한 관리자 세션으로 API를 직접 호출해서 응답을 확인하는 도구입니다."
-      section="시스템"
       title="API 테스트"
     >
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(16rem,20rem)_minmax(0,1fr)]">

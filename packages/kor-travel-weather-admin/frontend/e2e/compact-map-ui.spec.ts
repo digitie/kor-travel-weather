@@ -32,10 +32,12 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(width === 375);
   await expect(pageInfo).toHaveCSS("width", "24px");
   await expect(pageInfo.locator("svg")).toHaveAttribute("width", "24");
-  // 공통 상단 바 한 줄 안에 제목·메타·도움말을 둔다.
-  await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("border-top-width", "0px");
-  await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("min-height", "48px");
-  await expect(page.locator('[data-slot="admin-shell-header"] p.max-w-3xl')).toHaveCount(0);
+  // 공용 AdminShell(@kor-travel/ui 0.2.3) 상단 바: 한 줄(약 48px)에 "날씨 - 날씨 지도"와 작은 설명만 둔다.
+  const topBar = page.locator('[data-slot="admin-shell-header"]');
+  await expect(topBar).toHaveCSS("border-top-width", "0px");
+  await expect(topBar.getByRole("heading", { level: 1 })).toHaveText("날씨 - 날씨 지도");
+  await expect(topBar.locator('[data-slot="admin-shell-description"]')).toHaveText("활성 위치 카탈로그 1곳");
+  expect((await topBar.boundingBox())!.height).toBeLessThanOrEqual(56);
   await pageInfo.focus();
   await page.keyboard.press("Enter");
   // Radix PopoverContent(role=dialog)는 접근성 이름이 없으므로 본문으로 찾는다.

@@ -101,7 +101,6 @@ export default function DagsterPage() {
   return (
     <AdminShell
       description="매시간 날씨를 자동으로 가져오는 작업이 잘 돌고 있는지 보여줍니다. 실패하거나 멈춘 작업을 여기서 확인하세요."
-      section="시스템"
       title="Dagster 운영"
     >
       <div className="flex flex-col gap-6">

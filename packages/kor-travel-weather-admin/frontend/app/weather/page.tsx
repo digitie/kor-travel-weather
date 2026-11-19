@@ -41,10 +41,10 @@ export default function WeatherPage() {
     return () => catalogRequest.current?.abort();
   }, [loadLocations]);
 
-  // 메타 줄은 로딩·실패 중에도 한 줄을 유지해 카탈로그 응답 전후 작업면이 밀리지 않게 한다.
+  // 상단 바 설명은 로딩·실패 중에도 한 줄을 유지한다(한 줄 상단 바라 작업면 높이가 바뀌지 않는다).
   return (
     <AdminShell
-      compact
+      description={loading ? "활성 위치 카탈로그 확인 중" : error ? "활성 위치 카탈로그 확인 실패" : `활성 위치 카탈로그 ${locations.length}곳`}
       fillViewport
       help={
         <>
@@ -53,8 +53,6 @@ export default function WeatherPage() {
         </>
       }
       helpVariant="info"
-      meta={loading ? "활성 위치 카탈로그 확인 중" : error ? "활성 위치 카탈로그 확인 실패" : `활성 위치 카탈로그 ${locations.length}곳`}
-      section="날씨 탐색"
       title="날씨 지도"
     >
       <WeatherMap locations={locations} regionProjection={regionProjection} catalogLoading={loading} catalogError={error} onRetryCatalog={loadLocations} />

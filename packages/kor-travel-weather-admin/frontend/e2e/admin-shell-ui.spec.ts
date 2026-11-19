@@ -8,7 +8,7 @@ async function login(page: Page) {
   await page.locator('input[name="password"]').fill(process.env.E2E_UI_PASSWORD!);
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   await expect(page).toHaveURL(/\/locations$/, { timeout: 30_000 });
-  await expect(page.locator('[data-slot="admin-shell-header"] h1')).toHaveText("날씨 탐색 - 위치 카탈로그");
+  await expect(page.locator('[data-slot="admin-shell-header"] h1')).toHaveText("날씨 - 위치 카탈로그");
 }
 
 for (const width of [320, 375]) test(`공통 왼쪽 drawer·초점·이동·로그아웃 ${width}px`, async ({ page }) => {
@@ -16,7 +16,7 @@ for (const width of [320, 375]) test(`공통 왼쪽 drawer·초점·이동·로�
   await page.setViewportSize({ width, height: 812 });
   await login(page);
   const trigger = page.locator('[data-slot="admin-shell-menu-button"]');
-  const drawer = page.getByRole("dialog", { name: "주요 메뉴", exact: true });
+  const drawer = page.getByRole("dialog", { name: "메뉴", exact: true });
   await expect(page.locator('[data-slot="admin-shell-rail"]')).not.toBeVisible();
   await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCount(1);
   await trigger.click();
@@ -43,7 +43,7 @@ for (const width of [320, 375]) test(`공통 왼쪽 drawer·초점·이동·로�
   await drawer.getByRole("link", { name: "데이터셋", exact: true }).click();
   await expect(page).toHaveURL(/\/datasets$/);
   await expect(drawer).toHaveCount(0);
-  await expect(page.locator('[data-slot="admin-shell-header"] h1')).toHaveText("수집 파이프라인 - 데이터셋");
+  await expect(page.locator('[data-slot="admin-shell-header"] h1')).toHaveText("날씨 - 데이터셋");
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   expect(overflow).toBeLessThanOrEqual(1);
 
@@ -71,12 +71,12 @@ test("PC 세로 레일 접힘은 기존 저장 키에서 복원한다", async ({
   await expect(rail).toBeVisible();
   await expect(page.locator('[data-slot="admin-shell-menu-button"]')).not.toBeVisible();
   const before = (await rail.boundingBox())!.width;
-  await rail.getByRole("button", { name: "좌측 메뉴 접기", exact: true }).click();
+  await rail.getByRole("button", { name: "메뉴 접기", exact: true }).click();
   await expect(rail).toHaveAttribute("data-collapsed", "true");
   expect((await rail.boundingBox())!.width).toBeLessThan(before);
   await page.reload();
   await expect(rail).toHaveAttribute("data-collapsed", "true");
-  await rail.getByRole("button", { name: "좌측 메뉴 펼치기", exact: true }).click();
+  await rail.getByRole("button", { name: "메뉴 펼치기", exact: true }).click();
   await expect(rail).not.toHaveAttribute("data-collapsed", "true");
   const links = rail.getByRole("navigation", { name: "주요 메뉴", exact: true }).getByRole("link");
   expect((await links.nth(1).boundingBox())!.y).toBeGreaterThan((await links.nth(0).boundingBox())!.y);
