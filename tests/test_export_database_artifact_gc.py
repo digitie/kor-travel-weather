@@ -249,7 +249,7 @@ def postgres_gc_repo(weather_test_database_url):
 
 
 @contextmanager
-def _slow_real_gc(repository, monkeypatch, mode):
+def _slow_real_gc(repository, monkeypatch, mode, *, delay=1.35):
     """기존3초 reference 창 안의 정상 GC를 다른 실제 DB 연결에서 실행한다."""
     from threading import Event, Thread
 
@@ -260,7 +260,8 @@ def _slow_real_gc(repository, monkeypatch, mode):
     def slow_reference(*args, **kwargs):
         assert kwargs["timeout_seconds"] == 3
         entered.set()
-        time.sleep(1.35)
+        assert 0 < delay < kwargs["timeout_seconds"]
+        time.sleep(delay)
         return original(*args, **kwargs)
 
     monkeypatch.setattr(gc, "live_artifact_digests", slow_reference)
@@ -295,16 +296,14 @@ def test_postgresql_gc_capture_mode_preserves_live_pin_and_transaction(
     payload = b'{"cold_capture":true}\n'
     chunk = PreparedExportChunk(payload, hashlib.sha256(payload).hexdigest(), 1, NOW)
     with _slow_real_gc(repository, monkeypatch, mode) as (reports, finished):
-        if mode == "delete":
-            # DELETE 배타성/기존1초 fail-closed 계약은 dry-run 수정에서 바꾸지 않는다.
-            with pytest.raises(ExportGuardTimeout), repository._session_factory.begin() as session:
-                store.record_in_transaction(session, chunk)
+        with repository._session_factory.begin() as session:
+            store.record_in_transaction(session, chunk)
+        if mode == "dry_run":
+            assert not finished.is_set(), "공유 관측은 capture를 막지 않는다"
         else:
-            with repository._session_factory.begin() as session:
-                store.record_in_transaction(session, chunk)
-        assert not finished.is_set(), "capture 결과는 GC가 guard를 가진 동안 확인한다"
+            assert finished.wait(2), "배타 GC가 끝난 뒤 capture가 기록된다"
     assert reports[0]["live"] == 1 and reports[0]["deleted"] == 0
-    assert (chunk.digest in present(repository)) == (mode == "dry_run")
+    assert chunk.digest in present(repository)
     assert pinned in present(repository)
     with repository.engine.connect() as connection:
         assert connection.scalar(select(pins.c.artifact_digest)) == pinned
