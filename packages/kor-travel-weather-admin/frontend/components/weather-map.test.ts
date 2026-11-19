@@ -75,7 +75,7 @@ describe("지역 대표 카드의 화면 충돌", () => {
       expect(host.dataset.regionOverflow).toBe("true");
       expect(button.tabIndex).toBe(-1);
       expect(attributes.get("aria-hidden")).toBe("true");
-      frames.shift()!();
+      expect(frames).toHaveLength(0); // 다음 frame까지 BODY에 방치하지 않는다.
       expect(queried).toEqual(['.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button']);
       expect(visible.focus).toHaveBeenCalledTimes(hasVisible ? 1 : 0);
       expect(canvas.focus).toHaveBeenCalledTimes(hasVisible ? 0 : 1);

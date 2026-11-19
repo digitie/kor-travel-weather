@@ -130,7 +130,9 @@ def collect_database_export_artifacts(
             if mode == "delete" and attempted + len(batch) > MAX_UNLINKS:
                 break
             try:
-                with store.guard(timeout_seconds=GC_GUARD_TIMEOUT_SECONDS, holder="gc"):
+                with store.guard(
+                    timeout_seconds=GC_GUARD_TIMEOUT_SECONDS, shared=mode == "dry_run", holder="gc",
+                ):
                     live = live_artifact_digests(
                         repository, now=clock, retention=retention,
                         digests=[digest for digest, _ in batch],

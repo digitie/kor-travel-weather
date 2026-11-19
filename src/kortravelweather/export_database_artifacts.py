@@ -235,7 +235,8 @@ class DatabaseExportArtifactStore:
         """fact·receipt·snapshot bytes를 같은 DB commit으로 확정한다."""
         connection = session.connection()
         if self.engine.dialect.name == "postgresql":
-            deadline = time.monotonic() + 1.0
+            # GC의 3초 참조 조회와 짧은 삭제를 기다리되 일반 artifact guard와 같은 5초로 제한한다.
+            deadline = time.monotonic() + 5.0
             # 불변 행의 INSERT는 읽기·다른 INSERT와 공존할 수 있다. 같은 digest의
             # 경합은 PK/ON CONFLICT가 다룬다. GC의 배타 guard는 commit까지 계속 막는다.
             statement = text("SELECT pg_try_advisory_xact_lock_shared(:namespace, :key)")

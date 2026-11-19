@@ -734,7 +734,6 @@ function useWeatherMapModel({
       return;
     const root = instance.getContainer();
     let frame = 0;
-    let focusFrame = 0;
     const position = () => {
       frame = 0;
       const bounds = root.getBoundingClientRect();
@@ -781,10 +780,10 @@ function useWeatherMapModel({
         bounds.height,
         reserved,
       );
+      // visibility:hidden이 브라우저의 포커스를 BODY로 옮기기 전에 기억한다.
+      const focusedHost = entries.find(({ host }) => host.contains(document.activeElement))?.host;
       offsets.forEach((offset, index) => {
         const { host, button } = entries[index];
-        // visibility:hidden 적용 직후 브라우저가 BODY로 blur할 수 있다.
-        const hadFocus = host.contains(document.activeElement);
         host.style.setProperty("--weather-region-x", `${offset.x}px`);
         host.style.setProperty("--weather-region-y", `${offset.y}px`);
         host.dataset.regionOverflow = String(!offset.placed);
@@ -792,23 +791,22 @@ function useWeatherMapModel({
         if (offset.placed) host.removeAttribute("aria-hidden");
         else {
           host.setAttribute("aria-hidden", "true");
-          if (hadFocus) {
-            cancelAnimationFrame(focusFrame);
-            focusFrame = requestAnimationFrame(() => {
-              const active = document.activeElement;
-              // 다른 입력으로 옮긴 사용자의 포커스는 빼앗지 않는다.
-              if (active !== document.body && !host.contains(active)) return;
-              const visible = root.querySelector<HTMLElement>(
-                '.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button',
-              );
-              (visible ?? instance.getCanvas()).focus();
-            });
-          }
         }
         const line = host.querySelector(".weather-region-link line");
         line?.setAttribute("x2", String(offset.x));
         line?.setAttribute("y2", String(offset.y));
       });
+      if (focusedHost?.dataset.regionOverflow === "true") {
+        const active = document.activeElement;
+        // markers/viewport 변경의 effect cleanup이 다음 frame의 복구를 취소하기 전에 끝낸다.
+        // 다른 입력으로 옮긴 사용자의 포커스는 유지한다.
+        if (active === document.body || focusedHost.contains(active)) {
+          const visible = root.querySelector<HTMLElement>(
+            '.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button',
+          );
+          (visible ?? instance.getCanvas()).focus();
+        }
+      }
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(position);
@@ -830,7 +828,6 @@ function useWeatherMapModel({
       resize.disconnect();
       instance.off("resize", schedule);
       cancelAnimationFrame(frame);
-      cancelAnimationFrame(focusFrame);
     };
   }, [mapReady, mode, regionLevel, markers, mapViewport, detailOpen]);
   const selectedSummary =

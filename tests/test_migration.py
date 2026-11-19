@@ -115,7 +115,7 @@ def test_alembic_postgresql_schema_has_shared_safety_contract(monkeypatch) -> No
             if item["name"] == "ix_weather_locations_enabled_name_id"
         )
         assert catalog_index["column_names"] == ["name", "location_id"]
-        assert set(catalog_index["include_columns"]) == {
+        assert set(catalog_index["dialect_options"]["postgresql_include"]) == {
             "latitude",
             "longitude",
             "nx",

@@ -1,3 +1,15 @@
+## 2026-11-20 — 기본 DELETE GC와 capture의 유한 writer 예산 정렬
+
+capture의 shared advisory 대기만1초에서 일반 artifact guard와 같은5초로 변경했다. 정상 GC가 기존3초 reference 창을 쓰고 짧게 삭제하는 동안1초 writer가 먼저 실패하는 경합을 다룬다. reader·GC guard/참조 예산, statement/lock_timeout, TTL·신선도·live/pin 판정, polling 방식은 유지한다. queue/SAVEPOINT 구조는 추가하지 않았다.
+
+실제PG에서2.7초 reference 뒤 GC가 비참조 old digest를 삭제하면 capture가 동일 bytes를 다시 기록하고 native row와 함께 commit함을 확인했다. 원본 writer1초는 같은 시험에서 ExportGuardTimeout(RED),5초 후보는 기존GC와 신규5건 합계20건 PASS다.5초 초과 경합은 같은 타입으로 유한 종료하며 outer native TX의 조회·추가 기록·commit이 가능했다. caller rollback의 artifact/native 비공개·rollback,25ms statement timeout 원래57014/전체TX rollback, 대기 중 CancelledError 원본 전파 및 다른 holder 비취소도 확인했다.
+
+운영12건은 ExportGuardTimeout class만 확인됐고 특정 GC holder 원인은 UNKNOWN이다. 이번 로컬 통과를 운영12건 해결이나 실제성능 수용으로 보고하지 않는다. 기존 dry-run 공유 guard commit을 보존하며 dependency 정렬 후보는 포함하지 않는다.
+
+## 2026-11-20 — DB artifact GC dry-run의 공유 guard
+
+삭제하지 않는 dry-run도 exclusive guard를 보유하여, 기존3초 reference 창 안의 정상 GC가 capture1초 guard를 막을 수 있었다. dry-run만 기존 shared guard로 관측하도록 변경했다. DELETE의 배타성·fresh 재검사·1초 capture 대기·retention/TTL은 유지한다. 실제PG 새 회귀는 원본1실패/2통과에서 수정 후 기존GC포함15통과(10.16초)이며, capture와 관측 공존·경합DELETE 차단·pin/bytes/transaction 보존을 확인했다. 기본 운영모드 DELETE의 경합은 별도 후속이다. 운영12건은 ExportGuardTimeout class만 확인되어 GC holder 원인은 아직 미확정이다. 버전 정렬 후보·운영 SDK에는 섞지 않는다.
+
 ## 2026-11-20 — 지도 마커 포커스 후속
 
 PR274의 390px 키보드 fixture 재실패를 조사해 앱 배치 effect의 실제 Chromium BODY blur를 재현했다. 숨기기 전 포커스 캡처와 다음 RAF의 BODY/기존 카드 한정 복구를 적용했다. 다른 입력 포커스 유지 대조군을 포함한 실제 effect 브라우저 2건과 기존 지도 단위 23건이 통과했다. 기존 상세 표시 단언·시간 제한·공용 pack은 변경하지 않으며, 정확 수정 소스의 빌드·type-check·ESLint·390px 대상1건·전체 fixture32건이 통과했으며 새 head CI가 필요하다. 운영 호출/설치/SDK 변경은 없다.
@@ -914,3 +926,17 @@ root 11:58:07 UTC RO는 API8d2777b·CS8cdb78d healthy/restart0/OOMfalse·점검9
 이미 있는 adapter/sampling/recovery/retention을 재구현하지 않는다. daemon 자동 복구/스케줄 start·새 SQL/DDL·초기정리 반복0. 별도 수집 재개 승인 뒤 장시간 자원·단일 retry 소유권·정기 처리량을 수용한다.
 
 이전 백로그와 당시 상태는 deploy/n150.md에 그대로 남기며 vendored provider 문서는 편집하지 않는다. 이번 docs4개 commit은 사용자 승인 [skip ci]이고 full suite/새 build·live UI0, 독립2문서 리뷰 후 root merge한다.
+
+
+## 2026-11-20 공용 application Python 버전 정렬
+
+SQLAlchemy2.1.9, FastAPI0.165.0, Pydantic2.14.4/core2.50.5, settings2.16.3, Alembic1.20.1, Uvicorn0.54.0, httpx0.28.1을 실제 사용하는 root/API/Dagster 선언과 uv.lock에 고정했다. Psycopg/binary3.3.9, Dagster1.13.24/PG0.29.24, CS Psycopg2 2.9.13은 유지한다. 미사용 asyncpg는 추가하지 않는다. Common Python67efe는 이전aa232와 전체 패키지 바이트가 같으며, health 시험의 기대 커밋도 실제 선언에 맞춘다. 기존 backend-dependency-policy job은 병합된 Common74의 immutable b566 및 strict application 검사로 확장한다.
+
+로컬: lock offline 확인, 설치103개 dependency graph/lock 대조, Common18개 Python 원본 바이트, Ruff, 직렬화·liveness·첫 예보/시각 경계/fallback·cross-limit·auth/gzip/cursor 58건 PASS(34.62초). 이전 묶음 시험의600초 중단/41개 진행 표시는 PASS로 취급하지 않는다. 정상 이미지 설치는 기존 locked uv sync 경로를 사용한다. 전체 CI와 merged source의 실제 image/native/공식 배포는 별도 확인하며, 버전 정렬만으로 운영 지연 개선을 주장하지 않는다. UI/DB schema/수집 정책/TTL/공용 host daemon은 이 변경 범위 밖이다.
+
+
+## 2026-11-20 지역 마커 배치 cleanup 전 포커스 복구
+
+마커/viewport/상세 변경으로 배치 effect가 다시 실행될 때, 숨김 직후 다음 frame에 예약한 포커스 복구가 cleanup에서 취소되면 BODY에 남았다. 모든 카드 배치/숨김을 끝낸 같은 callback에서 최종 보이는 마커 또는 지도 캔버스로 복구하고, 다른 입력으로 이미 옮긴 포커스는 유지한다. 별도 focus RAF를 제거했다.
+
+실제 앱 effect/layout AST와 실제 CSS를 native Chromium RAF에서 실행한 회귀: 기존1c79는 cleanup 경계1건 FAIL·다른 입력 유지1건 PASS, 수정 뒤4건 PASS. 전체 프런트엔드202개 추적 파일이 후보와 같은 바이트인 기존 캐시 환경에서 unit507개·fixture34개·의존성/lint/ReactDoctor/typecheck/build PASS(빌드55.055초). 임시 검증용 소스3개는 원래 바이트로 복구했다. 기존 CI의 드문390px 마커 실패 원인 전체를 이 기전 하나로 확정하지는 않는다. 최신 source의 exact CI 및 실제 UI 이미지·화면 수용은 병합 후 확인한다.
