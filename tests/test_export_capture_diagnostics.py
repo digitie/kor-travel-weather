@@ -314,3 +314,26 @@ def test_capture_diagnostic_failure_does_not_mask_original_inactive_error(
         assert connection.execute(select(chunks).where(
             chunks.c.attempt_id == capture.attempt.attempt_id,
         )).first() is None
+
+
+def test_safe_capture_fields_reject_type_name_string_subclass_in_logger(caplog):
+    class SecretName(str):
+        def __str__(self):
+            return SECRET
+
+    class NameMetadata(type):
+        def __getattribute__(cls, name):
+            if name == "__name__":
+                return SecretName("OrdinaryError")
+            return super().__getattribute__(name)
+
+    class CaptureFailure(Exception, metaclass=NameMetadata):
+        pass
+
+    fields = module._capture_failure_diagnostics(CaptureFailure())
+    caplog.set_level(logging.WARNING, logger=module.__name__)
+    module.logger.warning("error_type=%s", fields[0])
+    assert SECRET not in caplog.text
+    assert fields == ("Exception", "-", "-", "-")
+    assert type(fields[0]) is str
+    assert caplog.records[-1].getMessage() == "error_type=Exception"

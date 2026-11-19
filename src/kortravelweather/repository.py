@@ -207,7 +207,9 @@ def _capture_failure_diagnostics(exc: Exception) -> tuple[str, str, str, str]:
             continue
         seen.add(id(current))
         name = type(current).__name__
-        safe_name = name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,79}", name) else "Exception"
+        safe_name = name if type(name) is str and re.fullmatch(
+            r"[A-Za-z_][A-Za-z0-9_]{0,79}", name,
+        ) else "Exception"
         if current is exc:
             error_type = safe_name
         else:
