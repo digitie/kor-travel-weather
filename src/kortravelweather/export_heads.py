@@ -46,13 +46,18 @@ from .export_artifacts import (
 from .export_lifecycle import ExportLifecycle, _current_owners
 from .export_page_liveness import register_page_liveness
 from .export_receipts import ExportAttempt, source_scope_key
-from .models import KST
+from .models import KST, WeatherValue
 
 NOWCAST_REQUIRED_CATEGORIES = frozenset({"T1H", "RN1", "UUU", "VVV", "REH", "PTY", "VEC", "WSD"})
 
 MAX_PROMOTION_CHUNKS = 64
 MAX_PROMOTION_BYTES = 128 * 1024 * 1024
 MAX_FORECAST_POINTS = 100_000
+
+_NON_SEMANTIC_POINT_FIELDS = {
+    "value_id", "source_record_key", "known_at", "collected_at",
+    "payload", "observation_evidence",
+}
 
 
 def _digest(value: Any) -> str:
@@ -93,15 +98,7 @@ def semantic_point_digest(point: Mapping[str, Any]) -> str:
     result = {
         k: v
         for k, v in point.items()
-        if k
-        not in {
-            "value_id",
-            "source_record_key",
-            "known_at",
-            "collected_at",
-            "payload",
-            "observation_evidence",
-        }
+        if k not in _NON_SEMANTIC_POINT_FIELDS
     }
     if result.get("value_number") is not None:
         result["value_number"] = canonical_export_number(Decimal(str(result["value_number"])))
@@ -113,6 +110,15 @@ def semantic_point_digest(point: Mapping[str, Any]) -> str:
                 raise ExportArtifactError("semantic point 시각에는 timezone이 필요합니다.")
             result[key] = at.astimezone(UTC).isoformat()
     return _digest(result)
+
+
+def _semantic_model_point_digest(point: BaseModel) -> str:
+    """정규 WeatherValue만 선제 제외하고 다른 모델은 emitted key 의미를 보존한다."""
+    if type(point) is not WeatherValue:
+        return semantic_point_digest(point.model_dump(mode="json"))
+    return semantic_point_digest(point.model_dump(
+        mode="json", exclude=_NON_SEMANTIC_POINT_FIELDS,
+    ))
 
 
 class ScopeDescriptor(BaseModel):
@@ -448,9 +454,9 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
     if descriptor.forecast_style != "nowcast":
         # 위치별 bounded capture를 허용한다. 빠진 위치/metric, 중복 chunk는 승격 시
         # 전체 정규화 digest와 대조하므로 부분 성공 head가 될 수 없다.
-        wanted = {semantic_point_digest(v.model_dump(mode="json")) for v in values}
+        wanted = {_semantic_model_point_digest(v) for v in values}
         expected = {
-            semantic_point_digest(v.model_dump(mode="json"))
+            _semantic_model_point_digest(v)
             for v in _normalize(descriptor, records[0], sorted({v.location_id for v in values}))
         }
         if not wanted or len(wanted) != len(values) or not wanted.issubset(expected):
@@ -458,7 +464,7 @@ def validate_head_capture(session, metadata, attempt, records, values, observed)
         return
     if (
         len(values) != plan["expected_point_count"]
-        or _digest(sorted(semantic_point_digest(v.model_dump(mode="json")) for v in values))
+        or _digest(sorted(_semantic_model_point_digest(v) for v in values))
         != plan["normalization_digest"]
     ):
         raise ExportArtifactError("공개 normalizer가 검증한 전체 point와 capture가 다릅니다.")
@@ -635,7 +641,7 @@ class ExportHeads:
             # 원천 normalizer의 명시 결측/이상값 분류도 함께 보존한다.
             expected, skipped = [], Counter()
             expected.extend(
-                semantic_point_digest(v.model_dump(mode="json"))
+                _semantic_model_point_digest(v)
                 for v in _normalize(descriptor, record, descriptor.location_ids, skipped=skipped)
             )
             if not expected:
@@ -730,7 +736,7 @@ class ExportHeads:
     def _bind_replayed_response(self, identity, record, descriptor, *, values, revision, policy):
         expected = []
         for value in values:
-            expected.append(semantic_point_digest(value.model_dump(mode="json")))
+            expected.append(_semantic_model_point_digest(value))
             if len(expected) > MAX_FORECAST_POINTS:
                 raise ExportArtifactError("원천 정규화 point 상한을 넘었습니다.")
         if not expected:
