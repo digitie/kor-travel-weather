@@ -183,6 +183,17 @@ def test_boundary_crossing_and_clock_rollback_keep_full_health_read(
     )
     calls = []
 
+    approvals = []
+    selection = export_inventory_selection.approved_source_selection
+
+    def observed_selection(*args, **kwargs):
+        result = selection(*args, **kwargs)
+        if kwargs.get("health_proof"):
+            approvals.append(result)
+        return result
+
+    monkeypatch.setattr(export_inventory_selection, "approved_source_selection", observed_selection)
+
     def move_after_freeze(self):
         result = freeze(self)
         clock[0] += timedelta(seconds=-1 if boundary == "backwards" else 2)
@@ -202,8 +213,16 @@ def test_boundary_crossing_and_clock_rollback_keep_full_health_read(
     baseline = conditional(old, path, first, monkeypatch, original_health=True)
     clock[0] = start
     calls.clear()
+    approvals.clear()
     actual = conditional(new, path, first, monkeypatch)
-    assert calls, "crossed temporal proof must not bypass the full health read"
+    # snapshot 교체로 cold 재발급한 경우 경계 뒤의 새 full 승인이 proof를 만든다.
+    # 이전 경계 전 proof를 재사용하거나, clock rollback을 무시해서는 안 된다.
+    assert calls or boundary != "backwards" and any(
+        result.health_checked_at is not None
+        and start + timedelta(seconds=2) <= result.health_checked_at <= clock[0]
+        and (result.health_recheck_at is None or clock[0] < result.health_recheck_at)
+        for result in approvals
+    ), "crossed temporal proof requires full health or a new post-boundary approval"
     assert actual.status_code == baseline.status_code
     if actual.status_code == 200:
         # 경계 시험은 baseline도 새 snapshot을 발급한다. 새 UUID 대신 데이터/상태와

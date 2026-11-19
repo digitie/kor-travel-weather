@@ -8,6 +8,10 @@ retained-short 재진입 조회를 한 SELECT의 좁은 PK CTE와 전체 행 결
 운영 prefix의 오프라인 정확 일치가 대상 경로의 근거이고 운영 전체 지연 개선은 미검증이다.
 [측정과 한계](reports/2026-11-19-retained-short-lookup.md).
 
+## 2026-11-19 — 일반 예보 첫 페이지의 승인 메타데이터 중복 제거 후보
+
+조건부 응답에서 검증한 요청별 RR health proof를 API 단기·초단기 첫 페이지에 적용한다. issue/retry/fallback마다 폐기·시간 경계/역행 clock·cursor full health·삭제/artifact/deadline 검산을 유지한다. 실제PG51건 통과(전체 reader 수명 guard6건 포함), 독립A/B 제품/시험 source 리뷰 지적0건이다. 동일1,452위치의 새 API page-cache miss5교대 쌍은 본문/ETag10회 동일, SQL42→31(최초기존43), 중앙HTTP311.106→253.100ms/CPU190.372→161.789ms였다. 운영 전체·첫1초·503·신선도 회복은 미검증이고 현재49dc 배포를 막지 않는다. [검증·초기 실패·한계](reports/2026-11-19-first-forecast-health.md). 두 번째 전체CI의 기존 정각/시계 fixture2건 실패를 baseline과 후보 모두에서 재현하고 시험 시계만 수정했다. 최종 전체API/관련root290+별도 공용시계 소비자47=337건 통과, 두 fixture delta A/B PASS다. 제품 cb3330…은 불변이며 새 정확 PR CI·merge·최신 캐시 이미지/운영 수용을 이어간다.
+
 ## 2026-11-19 — 관리자 셸 @kor-travel/ui 0.2.3 채택과 버튼 테두리 정리
 
 - Common PR70/71(`0e2a3f5`·`d644632`)의 UI0.2.3·tokens0.1.4를 artifact 원본(SRI 대조)으로 vendor·원장·lock에 넣고 ci/정책 workflow common-ref를 `d644632`로 맞췄다.
