@@ -484,6 +484,13 @@
   --kt-brand: var(--brand);
   --kt-brand-tint: var(--brand-tint);
   --kt-focus: var(--focus);
+  /* 공용 셸(z-kt-nav·overlay·modal·toast)의 층 순서. @kor-travel/tokens/tokens.css와 같은 값이며
+     이 앱은 그 파일을 import하지 않아 여기서 정의한다(없으면 z-index가 auto가 되어 상단 바·skip link가 가려진다). */
+  --kt-z-nav: 30;
+  --kt-z-panel: 40;
+  --kt-z-overlay: 50;
+  --kt-z-modal: 60;
+  --kt-z-toast: 70;
 }
 /* ===== weather 고유 화면 규칙 (map과 겹치지 않는 셀렉터만) =====
    버튼·링크의 요소/상태 규칙은 여기(unlayered)에 두지 않는다. unlayered 규칙은 Tailwind
@@ -505,6 +512,12 @@ textarea:focus-visible {
   border-color: var(--focus);
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* 날씨 소스 필터(raw button)는 전역 button:disabled 대신 자기 범위에서 비활성 모양을 갖는다. */
+.kt-map-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 input::placeholder,

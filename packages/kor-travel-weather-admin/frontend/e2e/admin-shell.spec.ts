@@ -34,7 +34,8 @@ async function login(page: Page, destination: string) {
   await page.locator('input[name="username"]').fill("admin");
   await page.locator('input[name="password"]').fill(process.env.E2E_UI_PASSWORD!);
   await page.getByRole("button", { name: "로그인", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`${destination === "/" ? "" : destination}/?$`), { timeout: 30_000 });
+  // `/login?next=/`도 "/"로 끝나므로 경로를 정확히 비교한다.
+  await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).toBe(destination);
 }
 
 async function tabTo(page: Page, target: Locator) {
@@ -55,7 +56,7 @@ async function chrome(target: Locator) {
     probe.remove();
     const style = getComputedStyle(element);
     const box = element.getBoundingClientRect();
-    return { focus, focusVisible: element.matches(":focus-visible"), outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, outlineColor: style.outlineColor, borderWidth: style.borderTopWidth, borderColor: style.borderTopColor, boxShadow: style.boxShadow, transform: style.transform, y: box.y };
+    return { focus, focusVisible: element.matches(":focus-visible"), outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, outlineColor: style.outlineColor, borderWidth: style.borderTopWidth, borderColor: style.borderTopColor, boxShadow: style.boxShadow, transform: style.transform, translate: style.translate, y: box.y };
   });
 }
 
@@ -110,7 +111,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     const pressed = await chrome(button);
     await page.mouse.up();
     expect([pressed.borderWidth, pressed.borderColor]).toEqual([rest.borderWidth, rest.borderColor]);
+    // 공용 Button의 눌림 이동(translate-y-px, CSS `translate`) 1px 하나만 허용한다. 전역 transform이 겹치면 2px가 된다.
     expect(pressed.transform).toBe("none");
+    expect(["none", "0px 1px"]).toContain(pressed.translate);
     expect(Math.abs(pressed.y - rest.y)).toBeLessThanOrEqual(1);
     if (viewport.width < 1024) {
       const menu = page.locator('[data-slot="admin-shell-menu-button"]');
@@ -142,7 +145,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 });
 
 test.describe("390px 메뉴 drawer", () => {
-  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  // 위치 측정이 열림 애니메이션 시점에 좌우되지 않게 한다.
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, contextOptions: { reducedMotion: "reduce" } });
   test("좌측 drawer로 메뉴를 열고 이동하면 닫힌다", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
     await routeWeather(page);
