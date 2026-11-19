@@ -209,3 +209,115 @@ def test_actual_postgresql_live_reference_and_guard_transaction():
         with admin.begin() as connection:
             connection.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
         admin.dispose()
+
+@pytest.fixture
+def postgres_gc_repo(weather_test_database_url):
+    """기존 global guard와 실제 live predicate를 쓰는 전용 PostgreSQL schema."""
+    from kortravelweather.export_daily_store import daily_summary_tables
+    from kortravelweather.export_heads import ExportHeads
+    from kortravelweather.export_inventory import export_inventory_table
+    from kortravelweather.export_snapshots import export_snapshot_tables
+    from kortravelweather.repository import Base
+
+    admin = create_engine(weather_test_database_url)
+    schema = "gc_capture_" + uuid.uuid4().hex
+    with admin.begin() as connection:
+        connection.exec_driver_sql(f"CREATE SCHEMA {schema}")
+    engine = create_engine(
+        weather_test_database_url, pool_size=3, max_overflow=0,
+        connect_args={"options": f"-csearch_path={schema}"},
+    )
+    repository = SimpleNamespace(engine=engine, _session_factory=sessionmaker(engine))
+    try:
+        heads = ExportHeads(repository)
+        daily_summary_tables(Base.metadata)
+        export_inventory_table(Base.metadata)
+        export_snapshot_tables(Base.metadata)
+        Base.metadata.create_all(engine)
+        digest, _ = put(repository, 71)
+        with engine.begin() as connection:
+            connection.execute(heads.pins.insert().values(
+                attempt_id=str(uuid.uuid4()), chunk_key="d" * 64,
+                artifact_digest=digest, created_at=NOW,
+            ))
+        yield repository, digest, heads.pins
+    finally:
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE")
+        admin.dispose()
+
+
+@contextmanager
+def _slow_real_gc(repository, monkeypatch, mode, *, delay=1.35):
+    """기존3초 reference 창 안의 정상 GC를 다른 실제 DB 연결에서 실행한다."""
+    from threading import Event, Thread
+
+    entered, finished = Event(), Event()
+    report, errors = [], []
+    original = gc.live_artifact_digests
+
+    def slow_reference(*args, **kwargs):
+        assert kwargs["timeout_seconds"] == 3
+        entered.set()
+        assert 0 < delay < kwargs["timeout_seconds"]
+        time.sleep(delay)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gc, "live_artifact_digests", slow_reference)
+
+    def run():
+        try:
+            report.append(collect(repository, mode=mode))
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    worker = Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(5), "GC가 실제 reference 구간에 도달해야 한다"
+        yield report, finished
+    finally:
+        worker.join(8)
+        assert not worker.is_alive()
+        assert not errors, [type(error).__name__ for error in errors]
+
+
+@pytest.mark.parametrize("mode", ["dry_run", "delete"])
+def test_postgresql_gc_capture_mode_preserves_live_pin_and_transaction(
+    postgres_gc_repo, monkeypatch, mode,
+):
+    from kortravelweather.export_artifacts import PreparedExportChunk
+
+    repository, pinned, pins = postgres_gc_repo
+    store = DatabaseExportArtifactStore(repository)
+    payload = b'{"cold_capture":true}\n'
+    chunk = PreparedExportChunk(payload, hashlib.sha256(payload).hexdigest(), 1, NOW)
+    with _slow_real_gc(repository, monkeypatch, mode) as (reports, finished):
+        with repository._session_factory.begin() as session:
+            store.record_in_transaction(session, chunk)
+        if mode == "dry_run":
+            assert not finished.is_set(), "공유 관측은 capture를 막지 않는다"
+        else:
+            assert finished.wait(2), "배타 GC가 끝난 뒤 capture가 기록된다"
+    assert reports[0]["live"] == 1 and reports[0]["deleted"] == 0
+    assert chunk.digest in present(repository)
+    assert pinned in present(repository)
+    with repository.engine.connect() as connection:
+        assert connection.scalar(select(pins.c.artifact_digest)) == pinned
+
+
+def test_postgresql_dry_run_shared_guard_still_excludes_deletion(
+    postgres_gc_repo, monkeypatch,
+):
+    repository, pinned, _pins = postgres_gc_repo
+    store = DatabaseExportArtifactStore(repository)
+    with (
+        _slow_real_gc(repository, monkeypatch, "dry_run"),
+        pytest.raises(ExportGuardTimeout),
+        store.guard(timeout_seconds=.05, holder="competing-delete"),
+    ):
+        pytest.fail("관측 중인 artifact를 삭제할 배타 guard가 열리면 안 된다")
+    assert pinned in present(repository)

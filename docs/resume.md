@@ -1,3 +1,15 @@
+## 2026-11-20 — 기본 DELETE GC와 capture의 유한 writer 예산 정렬
+
+capture의 shared advisory 대기만1초에서 일반 artifact guard와 같은5초로 변경했다. 정상 GC가 기존3초 reference 창을 쓰고 짧게 삭제하는 동안1초 writer가 먼저 실패하는 경합을 다룬다. reader·GC guard/참조 예산, statement/lock_timeout, TTL·신선도·live/pin 판정, polling 방식은 유지한다. queue/SAVEPOINT 구조는 추가하지 않았다.
+
+실제PG에서2.7초 reference 뒤 GC가 비참조 old digest를 삭제하면 capture가 동일 bytes를 다시 기록하고 native row와 함께 commit함을 확인했다. 원본 writer1초는 같은 시험에서 ExportGuardTimeout(RED),5초 후보는 기존GC와 신규5건 합계20건 PASS다.5초 초과 경합은 같은 타입으로 유한 종료하며 outer native TX의 조회·추가 기록·commit이 가능했다. caller rollback의 artifact/native 비공개·rollback,25ms statement timeout 원래57014/전체TX rollback, 대기 중 CancelledError 원본 전파 및 다른 holder 비취소도 확인했다.
+
+운영12건은 ExportGuardTimeout class만 확인됐고 특정 GC holder 원인은 UNKNOWN이다. 이번 로컬 통과를 운영12건 해결이나 실제성능 수용으로 보고하지 않는다. 기존 dry-run 공유 guard commit을 보존하며 dependency 정렬 후보는 포함하지 않는다.
+
+## 2026-11-20 — DB artifact GC dry-run의 공유 guard
+
+삭제하지 않는 dry-run도 exclusive guard를 보유하여, 기존3초 reference 창 안의 정상 GC가 capture1초 guard를 막을 수 있었다. dry-run만 기존 shared guard로 관측하도록 변경했다. DELETE의 배타성·fresh 재검사·1초 capture 대기·retention/TTL은 유지한다. 실제PG 새 회귀는 원본1실패/2통과에서 수정 후 기존GC포함15통과(10.16초)이며, capture와 관측 공존·경합DELETE 차단·pin/bytes/transaction 보존을 확인했다. 기본 운영모드 DELETE의 경합은 별도 후속이다. 운영12건은 ExportGuardTimeout class만 확인되어 GC holder 원인은 아직 미확정이다. 버전 정렬 후보·운영 SDK에는 섞지 않는다.
+
 ## 2026-11-20 — 지도 마커 포커스 후속
 
 PR274의 390px 키보드 fixture 재실패를 조사해 앱 배치 effect의 실제 Chromium BODY blur를 재현했다. 숨기기 전 포커스 캡처와 다음 RAF의 BODY/기존 카드 한정 복구를 적용했다. 다른 입력 포커스 유지 대조군을 포함한 실제 effect 브라우저 2건과 기존 지도 단위 23건이 통과했다. 기존 상세 표시 단언·시간 제한·공용 pack은 변경하지 않으며, 정확 수정 소스의 빌드·type-check·ESLint·390px 대상1건·전체 fixture32건이 통과했으며 새 head CI가 필요하다. 운영 호출/설치/SDK 변경은 없다.
