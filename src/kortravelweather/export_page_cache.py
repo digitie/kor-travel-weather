@@ -42,6 +42,9 @@ class ExportPageCache:
 
     def _prepare(self, reader, load):
         result = load()
+        seed_check = getattr(reader, "_check_current_seed_deadline", None)
+        if seed_check is not None:
+            seed_check()
         deadline = reader.selection_deadline
         if deadline is None:
             return result, None
@@ -61,6 +64,8 @@ class ExportPageCache:
         deadline = (self.clock() + 60 if fresh_first else
                     min(deadline, reader.selection_checked_after + 60))
         deadline = min(deadline, getattr(reader, "page_valid_until", float("inf")))
+        if seed_check is not None:
+            seed_check()
         if self.clock() >= deadline:
             raise ExportGuardTimeout("페이지 생성 중 재사용 또는 business 경계가 지났습니다.")
         entry = None
@@ -86,6 +91,7 @@ class ExportPageCache:
                 if old is not None:
                     self.bytes -= old.size
         now = self.clock()
+        seed = None
         with self.lock:
             for old_key, old in list(self.entries.items()):
                 if now >= old.deadline:
@@ -98,6 +104,17 @@ class ExportPageCache:
             if owner:
                 event = threading.Event()
                 self.inflight[key] = event
+                # limit만 다른 CURRENT 첫 페이지의 완료 proof만 빌린다.
+                # 본문/key는 재사용하지 않는다.
+                if (not force and isinstance(key, tuple) and len(key) == 12
+                        and key[1] == "current" and key[3] is None):
+                    for old_key, old in reversed(self.entries.items()):
+                        if (isinstance(old_key, tuple) and len(old_key) == len(key)
+                                and old_key[:2] == key[:2] and old_key[3:] == key[3:]
+                                and old_key[2] != key[2]
+                                and getattr(old.reader, "_current_seed_eligible", False)):
+                            seed = (old_key, old)
+                            break
         if entry is not None:
             try:
                 # 파일·DB 유실을 60초 캐시로 감추지 않는다. 이 검산은 snapshot 재구성이 아니다.
@@ -126,10 +143,24 @@ class ExportPageCache:
             return self.read(key, reader, load)
         try:
             reader.page_reuse_status = "generated"
-            result, entry = self._prepare(reader, load)
+            if seed is not None:
+                reader._current_page_seed = (seed[1].reader, seed[1].deadline)
+            try:
+                result, entry = self._prepare(reader, load)
+            except PageReuseExpired:
+                restart = getattr(reader, "_restart_expired_current_seed", None)
+                if restart is None or not restart():
+                    raise
+                # 원래 seed lease가 끝난 경우만 한 번 정상 cold freeze를 한다.
+                # 두 번째 생성의 실패나 hash/삭제/SQL 오류는 재시도하지 않는다.
+                result, entry = self._prepare(reader, load)
             if entry is not None:
                 self._put(key, entry)
             return result
+        except BaseException:
+            if seed is not None:
+                self._evict(*seed)
+            raise
         finally:
             with self.lock:
                 self.inflight.pop(key).set()

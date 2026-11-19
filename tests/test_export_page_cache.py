@@ -157,3 +157,36 @@ def test_completed_first_forecast_never_serves_old_body_without_current_proof(fa
     with pytest.raises(ExportArtifactError):
         cache.read("forecast", current, fail_rebuild)
     assert not cache.entries and not cache.inflight
+
+
+@pytest.mark.parametrize("index", [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+def test_current_cross_limit_seed_does_not_cross_other_key_dimensions(index):
+    cache = ExportPageCache(clock=lambda: 0)
+    key = (1, "current", 200, None, None, "short", None, 14, None,
+           ("python-kma-api",), "/artifact-root", b"token-digest")
+    first = reader()
+    first._current_seed_eligible = True
+    cache.read(key, first, lambda: ({}, "old"))
+    other = list(key)
+    other[2] = 2000
+    other[index] = ("different", index)
+    target = reader()
+    def load():
+        assert not hasattr(target, "_current_page_seed")
+        return ({}, "new")
+    cache.read(tuple(other), target, load)
+
+
+def test_current_cross_limit_seed_is_pending_only_for_new_current_limit():
+    cache = ExportPageCache(clock=lambda: 0)
+    key = (1, "current", 200, None, None, "short", None, 14, None,
+           ("python-kma-api",), "/artifact-root", b"token-digest")
+    first = reader()
+    first._current_seed_eligible = True
+    cache.read(key, first, lambda: ({"first": True}, "old"))
+    target = reader()
+    other = key[:2] + (2000,) + key[3:]
+    def load():
+        assert target._current_page_seed == (first, 60)
+        return ({"new": True}, "new")
+    assert cache.read(other, target, load) == ({"new": True}, "new")
