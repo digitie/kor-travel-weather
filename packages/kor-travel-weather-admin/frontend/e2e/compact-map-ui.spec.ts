@@ -32,9 +32,9 @@ for (const width of [375, 1440]) test.describe(`${width}px 입력 환경`, () =>
   expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(width === 375);
   await expect(pageInfo).toHaveCSS("width", "24px");
   await expect(pageInfo.locator("svg")).toHaveAttribute("width", "24");
-  // kor-travel-map AdminShell compact header: border-b only, py-3 (0.75rem) top padding, no description line.
+  // 공통 상단 바 한 줄 안에 제목·메타·도움말을 둔다.
   await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("border-top-width", "0px");
-  await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("padding-top", "12px");
+  await expect(page.locator('[data-slot="admin-shell-header"]')).toHaveCSS("min-height", "48px");
   await expect(page.locator('[data-slot="admin-shell-header"] p.max-w-3xl')).toHaveCount(0);
   await pageInfo.focus();
   await page.keyboard.press("Enter");

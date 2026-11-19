@@ -67,7 +67,7 @@ for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 568 }
     const metrics = await layoutMetrics(page);
     await testInfo.attach("초기 초점 이동 전 지도 치수", { body: JSON.stringify(metrics), contentType: "application/json" });
     await page.screenshot({ path: `test-results/weather-workspace-${testInfo.project.name}-${viewport.width}-${viewport.height}-initial.png`, fullPage: true });
-    // map 최신 셸의 모바일 상단(워드마크 행·그룹 메뉴·페이지 헤더)이 지도 위에 쌓인다. 지도는 첫 화면 안에서 시작하면 된다.
+    // 공통 모바일 상단 바 아래에서 지도가 첫 화면 안에 시작한다.
     if (viewport.width === 375) expect(metrics.stage.y).toBeLessThan(viewport.height * 0.6);
     if (viewport.width === 1440) expect(Math.abs(viewport.height - metrics.stage.bottom)).toBeLessThanOrEqual(24);
     expect(metrics.stage.height).toBeGreaterThan(100);
@@ -260,7 +260,7 @@ test.describe("작은 화면 글자 확대", () => {
     await page.keyboard.press("Enter");
     await expect(workspace).toHaveAttribute("data-expanded", "true");
     await expect(page.locator('[data-slot="admin-shell-rail"]')).not.toBeVisible();
-    await expect(page.getByRole("heading", { name: "날씨 지도", exact: true })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "날씨 탐색 - 날씨 지도", exact: true })).not.toBeVisible();
     expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
     const expanded = await layoutMetrics(page);
     await testInfo.attach("320px 글자200% 확장 지도", { body: JSON.stringify(expanded), contentType: "application/json" });
@@ -307,7 +307,9 @@ test.describe("작은 화면 글자 확대", () => {
     await page.keyboard.press("Escape");
     await expect(workspace).toHaveAttribute("data-expanded", "false");
     await expect(expand).toBeFocused();
-    await expect(page.locator('[data-slot="admin-shell-rail"]')).toBeVisible();
+    // 모바일에서는 확대 해제 뒤 공통 메뉴 버튼이 돌아오며 PC 전용 rail은 계속 숨는다.
+    await expect(page.locator('[data-slot="admin-shell-menu-button"]')).toBeVisible();
+    await expect(page.locator('[data-slot="admin-shell-rail"]')).not.toBeVisible();
     await expect(page.locator(".kt-map-coordinates")).toHaveText(camera);
     expect(await canvas!.evaluate((element) => element.isConnected)).toBe(true);
     await expand.click();

@@ -480,11 +480,6 @@
   --kt-brand-tint: var(--brand-tint);
   --kt-focus: var(--focus);
 }
-@media (min-width: 1024px) {
-  .map-common-menu[data-collapsed="true"] [data-slot="app-menu-group-label"],
-  .map-common-menu[data-collapsed="true"] [data-slot="app-menu-link"] > span:not([aria-hidden]) { display: none; }
-  .map-common-menu[data-collapsed="true"] [data-slot="app-menu-link"] { padding-inline: 0; justify-content: center; }
-}
 
 /* ===== weather 고유 화면 규칙 (map과 겹치지 않는 셀렉터만) ===== */
 a {
@@ -1034,10 +1029,6 @@ tbody tr:hover {
 body:has([data-slot="map-workspace"][data-expanded="true"]) [data-slot="admin-shell-rail"],
 body:has([data-slot="map-workspace"][data-expanded="true"]) [data-slot="admin-shell-header"] {
   display: none;
-}
-body:has([data-slot="map-workspace"][data-expanded="true"]) div:has(> [data-slot="admin-shell-rail"]) {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
 }
 
 /* 날씨 지도 줌 버튼은 터치 기기에서 44px 접근 크기를 지킨다(원본 weather-shell 규칙의 작업면 범위 버전). */

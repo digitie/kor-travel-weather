@@ -2,7 +2,7 @@
 
 # 공용 UI 고정 산출물
 
-현재 참조/원장은 아래 **2026-11-17 공통 후보12** 절을 따른다. 앞선 절은 보존한 이력이다.
+현재 참조/원장은 위 **COMMON-RELEASE.md**를 따른다. 아래 절은 보존한 이력이다.
 
 토큰 원천: [kor-travel-common](https://github.com/digitie/kor-travel-common/tree/50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3), commit `50d2db4c7c7e0154dd863defb62d4b9fa3b5bec3`.
 `npm run build` 후 `npm pack ./packages/tokens`, `npm pack ./packages/ui`로 생성했다.

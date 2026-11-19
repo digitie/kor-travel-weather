@@ -7,14 +7,21 @@ import { waitForFixtureServer } from "./wait-for-fixture-server.mjs";
 
 const tileFixture = process.argv.includes("--tile-fixture");
 const children = new Set();
-const backend = createServer((request, response) => {
+// 실제 logout replay 검증을 위해 이 fixture 프로세스 안에서만 revocation을 기억한다.
+const revokedSessions = new Set();
+const backend = createServer(async (request, response) => {
   const path = new URL(request.url, "http://localhost").pathname;
+  if (path.startsWith("/v1/admin/session-revocations/")) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const { session } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (path.endsWith("/revoke")) revokedSessions.add(session);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ revoked: revokedSessions.has(session) }));
+    return;
+  }
   const reply =
-    path.endsWith("/check") && path.includes("session-revocations")
-      ? { revoked: false }
-      : path.endsWith("/revoke")
-        ? { revoked: true }
-        : path.endsWith("/success")
+    path.endsWith("/success")
           ? { cleared: true }
           : path.includes("login-rate-limit")
             ? { allowed: true, retry_after: null }
