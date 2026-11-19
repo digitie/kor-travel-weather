@@ -940,3 +940,14 @@ SQLAlchemy2.1.9, FastAPI0.165.0, Pydantic2.14.4/core2.50.5, settings2.16.3, Alem
 마커/viewport/상세 변경으로 배치 effect가 다시 실행될 때, 숨김 직후 다음 frame에 예약한 포커스 복구가 cleanup에서 취소되면 BODY에 남았다. 모든 카드 배치/숨김을 끝낸 같은 callback에서 최종 보이는 마커 또는 지도 캔버스로 복구하고, 다른 입력으로 이미 옮긴 포커스는 유지한다. 별도 focus RAF를 제거했다.
 
 실제 앱 effect/layout AST와 실제 CSS를 native Chromium RAF에서 실행한 회귀: 기존1c79는 cleanup 경계1건 FAIL·다른 입력 유지1건 PASS, 수정 뒤4건 PASS. 전체 프런트엔드202개 추적 파일이 후보와 같은 바이트인 기존 캐시 환경에서 unit507개·fixture34개·의존성/lint/ReactDoctor/typecheck/build PASS(빌드55.055초). 임시 검증용 소스3개는 원래 바이트로 복구했다. 기존 CI의 드문390px 마커 실패 원인 전체를 이 기전 하나로 확정하지는 않는다. 최신 source의 exact CI 및 실제 UI 이미지·화면 수용은 병합 후 확인한다.
+
+
+## 2026-11-20 — projection FK plan 성능 후보
+
+projection의 기존 UPSERT/FK를 유지하면서 그 구간만 LOCAL generic plan을 사용하고
+정상 종료 때 이전 값을 복원한다. 오류는 원형 전파하고 TX/savepoint rollback이 설정과
+데이터를 복원한다. 로컬 5-grid 실제 ingest 3쌍 median 3.055→2.426초(-20.6%),
+raw/lineage/current pointer SHA·5,360 저장 계수 동일. 새 guard13+retention10은
+23 PASS(12.73초), 기존 ingest/core/GC39 PASS. 운영 latency는 미검증이다.
+65f(base, canonical merge1f368과 tree 동일)에서 분리했으며 parent의 fullshared/provider
+정렬과 하나의 후속 PR로 통합한다. 별도 중간 PR/운영 변경은 하지 않는다.

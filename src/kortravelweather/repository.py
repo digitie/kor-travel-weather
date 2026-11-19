@@ -3231,6 +3231,9 @@ class WeatherRepository:
             if previous is None or fact.revision_order > previous.revision_order:
                 newest_by_key[key] = fact
         winners = list(newest_by_key.values())
+        # partitioned fact FK의 행별 custom plan 재작성을 피하되 검증 자체는 유지한다.
+        previous_plan_mode = session.scalar(text("SHOW plan_cache_mode"))
+        session.execute(text("SET LOCAL plan_cache_mode = 'force_generic_plan'"))
         for offset in range(0, len(winners), PROJECTION_UPSERT_ROWS):
             chunk = winners[offset : offset + PROJECTION_UPSERT_ROWS]
             session.execute(
@@ -3248,6 +3251,11 @@ class WeatherRepository:
                     "source_record_keys": [fact.source_key for fact in chunk],
                 },
             )
+        # 실패는 원래 예외로 TX 소유자에게 전파한다. rollback도 LOCAL 설정을 복원한다.
+        session.execute(
+            text("SELECT set_config('plan_cache_mode', :mode, true)"),
+            {"mode": previous_plan_mode},
+        )
 
     def _current_value_models_many(
         self,

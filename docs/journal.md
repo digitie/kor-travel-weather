@@ -1443,3 +1443,28 @@ SQLAlchemy2.1.9, FastAPI0.165.0, Pydantic2.14.4/core2.50.5, settings2.16.3, Alem
 마커/viewport/상세 변경으로 배치 effect가 다시 실행될 때, 숨김 직후 다음 frame에 예약한 포커스 복구가 cleanup에서 취소되면 BODY에 남았다. 모든 카드 배치/숨김을 끝낸 같은 callback에서 최종 보이는 마커 또는 지도 캔버스로 복구하고, 다른 입력으로 이미 옮긴 포커스는 유지한다. 별도 focus RAF를 제거했다.
 
 실제 앱 effect/layout AST와 실제 CSS를 native Chromium RAF에서 실행한 회귀: 기존1c79는 cleanup 경계1건 FAIL·다른 입력 유지1건 PASS, 수정 뒤4건 PASS. 전체 프런트엔드202개 추적 파일이 후보와 같은 바이트인 기존 캐시 환경에서 unit507개·fixture34개·의존성/lint/ReactDoctor/typecheck/build PASS(빌드55.055초). 임시 검증용 소스3개는 원래 바이트로 복구했다. 기존 CI의 드문390px 마커 실패 원인 전체를 이 기전 하나로 확정하지는 않는다. 최신 source의 exact CI 및 실제 UI 이미지·화면 수용은 병합 후 확인한다.
+
+
+## 2026-11-20 — current projection의 FK plan 재사용
+
+완료 KMA SHORT run의 기존 output/materialization metadata는 publish 8,013.528초,
+전체 8,050.080초였다. fetch/normalize는 겹치는 누적 wall이므로 HTTP wire나 CPU로
+해석하지 않는다. 격리 로컬 PG의 실제 raw·SDK MockTransport·normalizer·fanout·fact/
+receipt/artifact·finish/publication 경로에서 1/5/20 grid는 선형이었고, 큰 비용은
+current projection이었다. 동일 1,000-point INSERT의 fact FK 검증은 auto plan에서
+119–148ms, generic plan에서 20–24ms였으며 FK를 그대로 실행하고 모든 행이 같았다.
+
+projection 구간만 transaction-local force_generic_plan을 사용하고 성공 시 호출자의
+기존 plan_cache_mode를 복원한다. 실패는 원래 예외를 전파하며 transaction 또는
+savepoint rollback이 LOCAL 설정과 저장을 함께 복원한다. FK·revision tie-break·legacy
+NULL source fallback·SQL/lock/statement 예산·수집 clock·retention·schema는 유지한다.
+
+동일 5-grid/5,360 facts·pointers/5 sources의 3쌍 전체 ingest A/B median은
+3.055→2.426초(-20.6%), process CPU 1.351→1.249초(-7.6%)였다. raw/lineage/current
+pointer 의미 SHA가 모두 같았다. 각 독립 수집의 실제 fetched clock은 조작하지 않았다.
+새 PG guard 13건과 retention 10건은 23 PASS(12.73초), 변경 없는 기존 ingest/core/GC
+39건도 통과했다. 최초 묶음은 취소 시 SQLAlchemy가 폐기한 연결의 재연결 기본값을
+잘못 기대한 1실패를 보존했으며, 원래 CancelledError 객체·실제 연결 폐기와 새 기본값을
+확인하도록 시험만 교정했다. FK 오류 23503·이전 설정 3종·savepoint/outer rollback·
+일반 오류·취소·legacy fallback을 확인했다. 로컬 CPU/메모리 fixture 결과이며 운영
+134분 run이나 신규 runtime의 latency 개선을 입증하지 않는다.
