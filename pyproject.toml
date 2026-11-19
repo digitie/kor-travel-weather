@@ -12,16 +12,16 @@ license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "digitie" }]
 keywords = ["weather", "korea", "kma", "dagster", "fastapi", "data-source"]
 dependencies = [
-  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@aa232ad5f255233184de80eceaab2e9b6ccb00c9#subdirectory=packages/py/kor-travel-common",
-  "pydantic>=2.7",
-  "pydantic-settings>=2.4",
-  "sqlalchemy>=2.0",
-  "alembic>=1.13,<2",
+  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@67efe2e546ecef41e54a866bf4862d608ace343d#subdirectory=packages/py/kor-travel-common",
+  "pydantic==2.14.4",
+  "pydantic-settings==2.16.3",
+  "sqlalchemy==2.1.9",
+  "alembic==1.20.1",
   "psycopg[binary]==3.3.9",
   "anyio>=4,<5",
-  "fastapi>=0.115",
-  "httpx>=0.27,<1",
-  "uvicorn[standard]>=0.30",
+  "fastapi==0.165.0",
+  "httpx==0.28.1",
+  "uvicorn[standard]==0.54.0",
   "cryptography>=42",
   "prometheus-client>=0.20,<1",
   "python-kma-api @ git+https://github.com/digitie/python-kma-api.git@ff80b74bdab507e642bf5deeaa7e89106943c4f4",
@@ -36,7 +36,7 @@ dependencies = [
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
-  "httpx>=0.27,<1",
+  "httpx==0.28.1",
   "ruff>=0.9",
   "mypy>=1.13",
   # tests/test_deployment_contract.py parses the compose files; do not rely on
@@ -52,7 +52,7 @@ dev = [
 # version bump done together with the shared host, never a side effect.
 # dagster-graphql/-pipes/-shared follow from dagster's own ``==`` requirements.
 dagster = [
-  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@aa232ad5f255233184de80eceaab2e9b6ccb00c9#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@67efe2e546ecef41e54a866bf4862d608ace343d#subdirectory=packages/py/kor-travel-common",
   "dagster==1.13.24",
   "dagster-webserver==1.13.24",
   "croniter>=6,<7",

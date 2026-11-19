@@ -1417,3 +1417,10 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
   원본 bounded 저장만 계속한다.1,001곳42,042값 포함 집중9건/Ruff PASS.
 - 빈 응답 재확인 추가 후 관련PG12건25.38초 PASS도 확인했다. 새 범위 분리와 최종
   선행155수정 통합 후 실제PG를 다시 확인하고 정확 CI/리뷰를 수용한다.
+
+
+## 2026-11-20 공용 application Python 버전 정렬
+
+SQLAlchemy2.1.9, FastAPI0.165.0, Pydantic2.14.4/core2.50.5, settings2.16.3, Alembic1.20.1, Uvicorn0.54.0, httpx0.28.1을 실제 사용하는 root/API/Dagster 선언과 uv.lock에 고정했다. Psycopg/binary3.3.9, Dagster1.13.24/PG0.29.24, CS Psycopg2 2.9.13은 유지한다. 미사용 asyncpg는 추가하지 않는다. Common Python67efe는 이전aa232와 전체 패키지 바이트가 같으며, health 시험의 기대 커밋도 실제 선언에 맞춘다. 기존 backend-dependency-policy job은 병합된 Common74의 immutable b566 및 strict application 검사로 확장한다.
+
+로컬: lock offline 확인, 설치103개 dependency graph/lock 대조, Common18개 Python 원본 바이트, Ruff, 직렬화·liveness·첫 예보/시각 경계/fallback·cross-limit·auth/gzip/cursor 58건 PASS(34.62초). 이전 묶음 시험의600초 중단/41개 진행 표시는 PASS로 취급하지 않는다. 정상 이미지 설치는 기존 locked uv sync 경로를 사용한다. 전체 CI와 merged source의 실제 image/native/공식 배포는 별도 확인하며, 버전 정렬만으로 운영 지연 개선을 주장하지 않는다. UI/DB schema/수집 정책/TTL/공용 host daemon은 이 변경 범위 밖이다.

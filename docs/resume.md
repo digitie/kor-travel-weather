@@ -914,3 +914,10 @@ root 11:58:07 UTC RO는 API8d2777b·CS8cdb78d healthy/restart0/OOMfalse·점검9
 이미 있는 adapter/sampling/recovery/retention을 재구현하지 않는다. daemon 자동 복구/스케줄 start·새 SQL/DDL·초기정리 반복0. 별도 수집 재개 승인 뒤 장시간 자원·단일 retry 소유권·정기 처리량을 수용한다.
 
 이전 백로그와 당시 상태는 deploy/n150.md에 그대로 남기며 vendored provider 문서는 편집하지 않는다. 이번 docs4개 commit은 사용자 승인 [skip ci]이고 full suite/새 build·live UI0, 독립2문서 리뷰 후 root merge한다.
+
+
+## 2026-11-20 공용 application Python 버전 정렬
+
+SQLAlchemy2.1.9, FastAPI0.165.0, Pydantic2.14.4/core2.50.5, settings2.16.3, Alembic1.20.1, Uvicorn0.54.0, httpx0.28.1을 실제 사용하는 root/API/Dagster 선언과 uv.lock에 고정했다. Psycopg/binary3.3.9, Dagster1.13.24/PG0.29.24, CS Psycopg2 2.9.13은 유지한다. 미사용 asyncpg는 추가하지 않는다. Common Python67efe는 이전aa232와 전체 패키지 바이트가 같으며, health 시험의 기대 커밋도 실제 선언에 맞춘다. 기존 backend-dependency-policy job은 병합된 Common74의 immutable b566 및 strict application 검사로 확장한다.
+
+로컬: lock offline 확인, 설치103개 dependency graph/lock 대조, Common18개 Python 원본 바이트, Ruff, 직렬화·liveness·첫 예보/시각 경계/fallback·cross-limit·auth/gzip/cursor 58건 PASS(34.62초). 이전 묶음 시험의600초 중단/41개 진행 표시는 PASS로 취급하지 않는다. 정상 이미지 설치는 기존 locked uv sync 경로를 사용한다. 전체 CI와 merged source의 실제 image/native/공식 배포는 별도 확인하며, 버전 정렬만으로 운영 지연 개선을 주장하지 않는다. UI/DB schema/수집 정책/TTL/공용 host daemon은 이 변경 범위 밖이다.
