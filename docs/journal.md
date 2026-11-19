@@ -1,3 +1,7 @@
+## 2026-11-20 — DB artifact GC dry-run의 공유 guard
+
+삭제하지 않는 dry-run도 exclusive guard를 보유하여, 기존3초 reference 창 안의 정상 GC가 capture1초 guard를 막을 수 있었다. dry-run만 기존 shared guard로 관측하도록 변경했다. DELETE의 배타성·fresh 재검사·1초 capture 대기·retention/TTL은 유지한다. 실제PG 새 회귀는 원본1실패/2통과에서 수정 후 기존GC포함15통과(10.16초)이며, capture와 관측 공존·경합DELETE 차단·pin/bytes/transaction 보존을 확인했다. 기본 운영모드 DELETE의 경합은 별도 후속이다. 운영12건은 ExportGuardTimeout class만 확인되어 GC holder 원인은 아직 미확정이다. 버전 정렬 후보·운영 SDK에는 섞지 않는다.
+
 ## 2026-11-20 — 숨긴 지도 마커의 키보드 포커스 복구
 
 지역 카드 배치가 visibility:hidden을 적용하면 Chromium이 포커스를 BODY로 먼저 옮길 수 있었다. 숨기기 전 포커스를 기록하고 다음 RAF에서 BODY 또는 기존 카드 내부에 있을 때만 보이는 카드/캔버스로 복구한다. 사용자가 다른 입력으로 옮긴 포커스는 유지한다. 실제 배치 effect·배치 함수·앱 CSS를 실행한 브라우저 회귀는 수정 전 BODY 잔류 1실패/대조군 1통과, 수정 후 2통과이며 기존 지도 단위 23건도 통과했다. 이 재현은 앱의 결함을 증명하지만 앞선 CI 실패 전체의 단일 원인까지 확정하지 않는다. 기존 390px 상세 열기 단언·5초 제한과 Common 패키지는 유지한다. 정확 후보의 캐시 빌드·type-check·ESLint와 390px 대상1건, 전체 fixture32건(기존30+신규2)이 통과했다. 임시 검증 작업공간의 두 source 파일은 원본 SHA로 복구했다.

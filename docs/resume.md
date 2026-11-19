@@ -1,3 +1,7 @@
+## 2026-11-20 — DB artifact GC dry-run의 공유 guard
+
+삭제하지 않는 dry-run도 exclusive guard를 보유하여, 기존3초 reference 창 안의 정상 GC가 capture1초 guard를 막을 수 있었다. dry-run만 기존 shared guard로 관측하도록 변경했다. DELETE의 배타성·fresh 재검사·1초 capture 대기·retention/TTL은 유지한다. 실제PG 새 회귀는 원본1실패/2통과에서 수정 후 기존GC포함15통과(10.16초)이며, capture와 관측 공존·경합DELETE 차단·pin/bytes/transaction 보존을 확인했다. 기본 운영모드 DELETE의 경합은 별도 후속이다. 운영12건은 ExportGuardTimeout class만 확인되어 GC holder 원인은 아직 미확정이다. 버전 정렬 후보·운영 SDK에는 섞지 않는다.
+
 ## 2026-11-20 — 지도 마커 포커스 후속
 
 PR274의 390px 키보드 fixture 재실패를 조사해 앱 배치 effect의 실제 Chromium BODY blur를 재현했다. 숨기기 전 포커스 캡처와 다음 RAF의 BODY/기존 카드 한정 복구를 적용했다. 다른 입력 포커스 유지 대조군을 포함한 실제 effect 브라우저 2건과 기존 지도 단위 23건이 통과했다. 기존 상세 표시 단언·시간 제한·공용 pack은 변경하지 않으며, 정확 수정 소스의 빌드·type-check·ESLint·390px 대상1건·전체 fixture32건이 통과했으며 새 head CI가 필요하다. 운영 호출/설치/SDK 변경은 없다.
