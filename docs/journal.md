@@ -1,3 +1,13 @@
+## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
+
+완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.
+
+5격자·10위치·5360 fact/최신 포인터를 여섯 번 교대로 적재한 로컬 비교는 wall 중앙값3.055→2.426초(-20.6%), CPU1.351→1.249초(-7.56%)였다. raw·lineage·포인터 비교는 같고 각 실행의 실제 수집 시각을 바꾸지 않았다. 실제 운영134분 전체를 같은 비율로 줄인다는 증거는 아니다. 신규13건은 호출자3가지 mode, FK 원래23503, 전체TX/savepoint rollback, 취소에 의한 물리 연결 폐기, 빈 입력·legacy NULL을 검증한다. 기존39건과 보존10건을 합쳐 서로 다른62건이 통과했고, 최신 의존성과 결합한 projection/보존/API auth·gzip·cursor·cross-limit25건도15.99초에 통과했다. 실패했던 초기 취소 테스트의 원본도 외부 작업 기록에 보존했다.
+
+직접 축에 한정하지 않고 실제 uv.lock107패키지를 전체 갱신했다. 중앙 공유 catalog와 교차하는95종 잠금값이 일치하며 미사용 라이브러리를 직접 의존성으로 추가하지 않는다. 로컬103개 설치본의 pip check·Ruff와 실제 설치 공유93종 대조가 통과했다. Dagster1.13.24/0.29.24는 공유 host와의 호환 범위를 유지한다. pyproj3.8.0의 Python>=3.12 요구에 맞춰 앱 root/API/Dagster 배포 metadata만>=3.12로 올렸고 기존 normal Python3.12 이미지와 Common SDK 최소 지원은 유지한다.
+
+Git SDK도 확인해 KREX894ea64, 산림70814c9, KMA8d5e65d의 불변 source를 사용한다. KMA 새 main은 이전ff80과 전체 repository tree가 같고, 산림은 표준데이터의 좁은 header/body envelope 지원 수정이다. KHOA9c952bb와 동봉 AirKorea8a43798은 main과 같다. 전체 의존성 후보의 기존 호환127건(47.18초), 새 SDK 적용 뒤 지역 수집/배포 계약62건(14.87초)이 통과했다. 중앙 strict job은 전체 사용 공유 잠금값과 canonical Git source를 검사하며 frontend 정책·Common Python package tree87951·UI0.2.3/tokens0.1.4 정본 바이트는 유지한다. 실제 정상 이미지·native·운영 배포·첫 요청 속도 수용은 별도이며, 이 로컬 통과만으로 완료로 처리하지 않는다.
+
 ## 2026-11-20 — 기본 DELETE GC와 capture의 유한 writer 예산 정렬
 
 capture의 shared advisory 대기만1초에서 일반 artifact guard와 같은5초로 변경했다. 정상 GC가 기존3초 reference 창을 쓰고 짧게 삭제하는 동안1초 writer가 먼저 실패하는 경합을 다룬다. reader·GC guard/참조 예산, statement/lock_timeout, TTL·신선도·live/pin 판정, polling 방식은 유지한다. queue/SAVEPOINT 구조는 추가하지 않았다.

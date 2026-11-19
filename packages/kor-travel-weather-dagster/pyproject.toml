@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "kor-travel-weather-dagster"
 version = "0.1.0.dev0"
 description = "Dagster KMA ingestion assets for kor-travel-weather."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
   "kor-travel-common[dagster,grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@67efe2e546ecef41e54a866bf4862d608ace343d#subdirectory=packages/py/kor-travel-common",
   "kor-travel-weather",
