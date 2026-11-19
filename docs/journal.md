@@ -1436,3 +1436,10 @@ W-OPS-01 최근 native 실행·run-source 연결을 읽기 전용으로 대조�
 SQLAlchemy2.1.9, FastAPI0.165.0, Pydantic2.14.4/core2.50.5, settings2.16.3, Alembic1.20.1, Uvicorn0.54.0, httpx0.28.1을 실제 사용하는 root/API/Dagster 선언과 uv.lock에 고정했다. Psycopg/binary3.3.9, Dagster1.13.24/PG0.29.24, CS Psycopg2 2.9.13은 유지한다. 미사용 asyncpg는 추가하지 않는다. Common Python67efe는 이전aa232와 전체 패키지 바이트가 같으며, health 시험의 기대 커밋도 실제 선언에 맞춘다. 기존 backend-dependency-policy job은 병합된 Common74의 immutable b566 및 strict application 검사로 확장한다.
 
 로컬: lock offline 확인, 설치103개 dependency graph/lock 대조, Common18개 Python 원본 바이트, Ruff, 직렬화·liveness·첫 예보/시각 경계/fallback·cross-limit·auth/gzip/cursor 58건 PASS(34.62초). 이전 묶음 시험의600초 중단/41개 진행 표시는 PASS로 취급하지 않는다. 정상 이미지 설치는 기존 locked uv sync 경로를 사용한다. 전체 CI와 merged source의 실제 image/native/공식 배포는 별도 확인하며, 버전 정렬만으로 운영 지연 개선을 주장하지 않는다. UI/DB schema/수집 정책/TTL/공용 host daemon은 이 변경 범위 밖이다.
+
+
+## 2026-11-20 지역 마커 배치 cleanup 전 포커스 복구
+
+마커/viewport/상세 변경으로 배치 effect가 다시 실행될 때, 숨김 직후 다음 frame에 예약한 포커스 복구가 cleanup에서 취소되면 BODY에 남았다. 모든 카드 배치/숨김을 끝낸 같은 callback에서 최종 보이는 마커 또는 지도 캔버스로 복구하고, 다른 입력으로 이미 옮긴 포커스는 유지한다. 별도 focus RAF를 제거했다.
+
+실제 앱 effect/layout AST와 실제 CSS를 native Chromium RAF에서 실행한 회귀: 기존1c79는 cleanup 경계1건 FAIL·다른 입력 유지1건 PASS, 수정 뒤4건 PASS. 전체 프런트엔드202개 추적 파일이 후보와 같은 바이트인 기존 캐시 환경에서 unit507개·fixture34개·의존성/lint/ReactDoctor/typecheck/build PASS(빌드55.055초). 임시 검증용 소스3개는 원래 바이트로 복구했다. 기존 CI의 드문390px 마커 실패 원인 전체를 이 기전 하나로 확정하지는 않는다. 최신 source의 exact CI 및 실제 UI 이미지·화면 수용은 병합 후 확인한다.

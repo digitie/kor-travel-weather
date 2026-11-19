@@ -199,10 +199,10 @@ const overflowCSS = readFileSync("app/globals.css", "utf8")
   .match(/\.weather-region-marker\[data-region-overflow="true"\] \.vworld-weather-marker-button\s*\{[^}]+\}/)?.[0];
 if (!overflowCSS) throw new Error("실제 숨김 CSS가 필요합니다.");
 
-for (const userMoved of [false, true]) test("390px 실제 지역 배치가 숨긴 포커스: " + (userMoved ? "사용자의 다른 입력 유지" : "브라우저 BODY blur 복구"), async ({ page }) => {
+for (const cleanupBetween of [false, true]) for (const userMoved of [false, true]) test("390px 실제 지역 배치가 숨긴 포커스: " + (cleanupBetween ? "다음 frame 전 effect cleanup · " : "") + (userMoved ? "사용자의 다른 입력 유지" : "브라우저 BODY blur 복구"), async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.setContent('<style>#map {position:relative;width:200px;height:100px}.weather-region-marker {position:absolute;left:20px;top:20px}.vworld-weather-marker-button {width:150px;height:50px}' + overflowCSS + '</style><div id="map"><div class="weather-region-marker"><button id="visible" class="vworld-weather-marker-button">보이는 지역</button></div><div id="hidden-host" class="weather-region-marker"><button id="hidden" class="vworld-weather-marker-button">공간 부족 지역</button></div><canvas tabindex="0"></canvas></div><input id="user" aria-label="다른 입력"><output id="selected"></output>');
-  const result = await page.evaluate(async ({ positionCode, layoutCode, userMoved }) => {
+  const result = await page.evaluate(async ({ positionCode, layoutCode, userMoved, cleanupBetween }) => {
     const root = document.querySelector<HTMLElement>("#map")!;
     const host = document.querySelector<HTMLElement>("#hidden-host")!;
     const button = document.querySelector<HTMLButtonElement>("#hidden")!;
@@ -222,16 +222,23 @@ for (const userMoved of [false, true]) test("390px 실제 지역 배치가 숨�
     };
     button.focus();
     const hadFocus = document.activeElement === button;
-    const cleanup = new Function("map", "mapReady", "mode", "regionLevel", "markers",
+    const startEffect = () => new Function("map", "mapReady", "mode", "regionLevel", "markers",
       layoutCode + "\n" + positionCode + "\nreturn effect();")({
         current: { getContainer: () => root, getCanvas: () => root.querySelector("canvas"), on() {}, off() {} },
       }, true, "map", "sido", [1, 2]) as () => void;
+    let cleanup = startEffect();
     try {
-      // 첫 frame은 실제 position, 다음 frame은 포커스 handoff를 실행한다.
-      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      // 같은 첫 frame에서 position 다음에 React cleanup→새 effect가 올 수 있다.
+      await new Promise<void>(resolve => requestAnimationFrame(() => {
+        if (cleanupBetween) {
+          cleanup();
+          cleanup = startEffect();
+        }
+        requestAnimationFrame(() => resolve());
+      }));
       return { hadFocus, browserBlurred, active: document.activeElement?.id, overflow: host.dataset.regionOverflow, tabIndex: button.tabIndex };
     } finally { cleanup(); }
-  }, { positionCode, layoutCode, userMoved });
+  }, { positionCode, layoutCode, userMoved, cleanupBetween });
   expect(result).toEqual({ hadFocus: true, browserBlurred: true, active: userMoved ? "user" : "visible", overflow: "true", tabIndex: -1 });
   if (!userMoved) {
     await page.keyboard.press("Enter");
