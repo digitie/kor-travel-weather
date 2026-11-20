@@ -870,6 +870,11 @@ def publish_pending_exports(
     own = tally is None
     tally = tally or PublisherTally()
     before_results, before_reasons = Counter(tally.results), Counter(tally.reasons)
+    # generation.attempt_id는 UNIQUE다. 후보마다 이 키로 존재 여부를 조회해
+    # 한 페이지를 읽을 때 publication 이력 전체를 merge scan하지 않는다.
+    published_generation = select(literal_column("1")).where(
+        heads.generations.c.attempt_id == attempts.c.attempt_id,
+    ).correlate(attempts).scalar_subquery()
     with heads._transaction() as session:
         query = (
             select(*_candidate_columns(heads))
@@ -877,7 +882,7 @@ def publish_pending_exports(
                 attempts.outerjoin(heads.plans, heads.plans.c.attempt_id == attempts.c.attempt_id)
                 .outerjoin(runs, runs.c.run_id == attempts.c.run_id)
             )
-            .where(*_pending(attempts), _no_generation(heads))
+            .where(*_pending(attempts), published_generation.is_(None))
         )
         if cursor:
             query = query.where(attempts.c.attempt_id > cursor)
