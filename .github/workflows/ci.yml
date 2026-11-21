@@ -128,6 +128,6 @@ jobs:
       # `vitest run`, not watch mode: the script exits with the suite's result.
       - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps --only-shell chromium
       - run: npm run test:e2e:fixtures
       - run: npm run test:e2e:tiles
