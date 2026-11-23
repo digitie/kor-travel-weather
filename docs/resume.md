@@ -1,3 +1,6 @@
+## 2026-11-24 — 지역별 특보 발표 관측 수집 복구(배포 대기)
+
+`kma_regional_alert_events_job`을 한 요청 수집·행 격리·연속 실패 차단기·coalescing으로 바꿨다(journal 같은 날짜). 다음 한 작업: odroid weather Dagster code-server를 이 PR 이후 이미지로 배포하고, 5분 run 실패 0·`quarantined_rows`(당진 발표가 창에 있을 때만 양수)·run 간격 5분을 확인한다. 당진(L1031200) 이중 지역명 묶음을 격리 대신 결정적으로 고를지는 소유자 결정 후보다.
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.

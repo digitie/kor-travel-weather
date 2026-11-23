@@ -1,4 +1,11 @@
-"""공개 SDK의 getPwnCd 페이지를 완결 검사한 뒤 짧은 transaction으로 게시한다."""
+"""공개 SDK의 getPwnCd 응답을 완결 검사한 뒤 짧은 transaction으로 게시한다.
+
+한 번의 요청(pageNo=1, numOfRows=ALERT_MAX_ROWS)으로 요청 구간 전체를 받는다.
+2026-11-24 실측: getPwnCd는 같은 발표 시각(tmFc) 행 사이의 순서가 요청마다 고정되지 않아
+100행 페이지로 나누면 페이지 경계의 행이 다음 페이지에 다시 나오고 그만큼 다른 행이 빠졌다
+(381행 중 33행 반복·33행 누락). 한 페이지 요청은 같은 구간에서 381행을 중복 없이 모두
+돌려줬다. 페이지 경계 반복을 병합만 하면 누락이 숨으므로 페이지 분할 자체를 하지 않는다.
+"""
 
 from __future__ import annotations
 
@@ -16,19 +23,24 @@ from kma.exceptions import KmaError
 
 from kortravelweather.alert_events import (
     ALERT_DATASET,
+    ALERT_MAX_ROWS,
     ALERT_PROVIDER,
     ALERT_SAFE_ERROR_CODES,
     ALERT_VERSION,
     canonical_hash,
-    normalize_alert,
+    quarantine_limit,
+    reconcile_alert_rows,
 )
-from kortravelweather.metrics import observe_alert_cleanup_failure
+from kortravelweather.metrics import observe_alert_cleanup_failure, observe_alert_rows_reconciled
 from kortravelweather.models import KST, kst_now
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 
-PAGE_SIZE = 100
-MAX_PAGES = 100
+#: 한 요청의 numOfRows. 요청 구간 전체가 한 페이지에 들어와야 한다(모듈 설명).
+PAGE_SIZE = ALERT_MAX_ROWS
 MAX_BYTES = 8 * 1024 * 1024
+#: 격리한 특보구역 코드를 metadata에 남길 때의 상한(관리자 화면용 요약).
+QUARANTINE_AREA_SAMPLE = 20
+_AREA_CODE = re.compile(r"[LS][0-9]{7}")
 COLLECTION_TIMEOUT_SECONDS = 180
 CLEANUP_TIMEOUT_SECONDS = 5
 TERMINAL_TIMEOUT_MS = 5000
@@ -52,6 +64,7 @@ class AlertCollectionError(RuntimeError):
         numeric = {
             "requested_page", "returned_page", "page_size", "total_count",
             "expected_rows", "returned_rows", "requests_fetched", "http_status",
+            "quarantined_rows", "quarantine_limit",
         }
         self.diagnostics: dict[str, str | int | bool] = {"error_code": code}
         for key, value in (diagnostics or {}).items():
@@ -70,6 +83,10 @@ class AlertCollection:
     requests_fetched: int
     observations: int
     unknown_observations: int
+    duplicates_merged: int = 0
+    quarantined_events: int = 0
+    quarantined_rows: int = 0
+    quarantined_area_codes: tuple[str, ...] = ()
 
 
 def _integer(raw: object, *, field: str) -> int:
@@ -109,7 +126,9 @@ def _page(body: Mapping[str, Any], page_no: int) -> tuple[list[dict[str, Any]], 
     }
     if returned_page != page_no or size != PAGE_SIZE and not (total == 0 and size == 0):
         raise AlertCollectionError("ALERT_PAGE_METADATA", diagnostics=metadata)
-    if total > PAGE_SIZE * MAX_PAGES:
+    if total > PAGE_SIZE:
+        # 두 번째 페이지는 요청하지 않는다. 원천 순서가 고정되지 않아 페이지를 나누면
+        # 행이 반복·누락된다(모듈 설명). 상한을 넘으면 일부만 게시하지 않고 실패한다.
         raise AlertCollectionError("ALERT_TOO_MANY_ROWS", diagnostics=metadata)
     raw = items.get("item") if isinstance(items, Mapping) else None
     if raw in (None, "") or raw == {}:
@@ -120,10 +139,9 @@ def _page(body: Mapping[str, Any], page_no: int) -> tuple[list[dict[str, Any]], 
         rows = [dict(row) for row in raw]
     else:
         raise AlertCollectionError("ALERT_PAGE_ROWS", diagnostics=metadata)
-    expected = min(PAGE_SIZE, max(0, total - (page_no - 1) * PAGE_SIZE))
-    if len(rows) != expected:
+    if len(rows) != total:
         raise AlertCollectionError("ALERT_PAGE_ROWS", diagnostics={
-            **metadata, "expected_rows": expected, "returned_rows": len(rows),
+            **metadata, "expected_rows": total, "returned_rows": len(rows),
         })
     return rows, total
 
@@ -143,85 +161,9 @@ async def collect_alert_pages(
         "fromTmFc": (when - timedelta(days=3)).strftime("%Y%m%d"),
         "toTmFc": when.strftime("%Y%m%d"),
     }
-    records = []
-    first_fingerprint = None
-    expected_total = None
-    seen = set()
-    bytes_seen = 0
-    unknown = 0
-    requests = 0
-    for page_no in range(1, MAX_PAGES + 1):
-        if heartbeat:
-            await heartbeat()
-        try:
-            body, _metadata = await client.request_with_metadata(
-                "WthrWrnInfoService",
-                "getPwnCd",
-                query,
-                page_no=page_no,
-                num_of_rows=PAGE_SIZE,
-            )
-        except KmaError as exc:
-            raise AlertCollectionError(safe_collection_error(exc), diagnostics={
-                "stage": "page_request", "requested_page": page_no,
-                "requests_fetched": requests,
-                **({"http_status": exc.status_code} if type(exc.status_code) is int else {}),
-                **_rate_limit_diagnostics(exc),
-            }) from None
-        requests += 1
-        progress = {
-            "stage": "page_validation", "requested_page": page_no,
-            "requests_fetched": requests,
-        }
-        try:
-            rows, total = _page(body, page_no)
-        except AlertCollectionError as exc:
-            raise AlertCollectionError(exc.code, diagnostics={
-                **exc.diagnostics, "requested_page": page_no, "requests_fetched": requests,
-            }) from None
-        if expected_total is not None and total != expected_total:
-            raise AlertCollectionError("ALERT_PAGE_TOTAL_CHANGED", diagnostics={
-                **progress, "total_count": total,
-            })
-        expected_total = total
-        fingerprint = sorted(canonical_hash(row) for row in rows)
-        if page_no == 1:
-            first_fingerprint = fingerprint
-        payload = {
-            "rows": rows,
-            "request": {**query, "pageNo": page_no, "numOfRows": PAGE_SIZE},
-            "pagination": {"totalCount": total, "pageNo": page_no, "numOfRows": PAGE_SIZE},
-            "normalization_version": ALERT_VERSION,
-        }
-        bytes_seen += len(json.dumps(payload, ensure_ascii=False, allow_nan=False).encode())
-        if bytes_seen > MAX_BYTES:
-            raise AlertCollectionError("ALERT_RESPONSE_TOO_LARGE", diagnostics=progress)
-        for raw in rows:
-            event = normalize_alert(raw)
-            if event.event_id in seen:
-                raise AlertCollectionError("ALERT_PAGE_DUPLICATE", diagnostics={
-                    **progress, "returned_rows": len(rows), "total_count": total,
-                })
-            seen.add(event.event_id)
-            unknown += event.action == "unknown"
-        records.append(
-            {
-                "source_record_key": "was_" + canonical_hash(payload),
-                "provider": ALERT_PROVIDER,
-                "dataset_key": ALERT_DATASET,
-                "source_entity_type": "weather_response",
-                "source_entity_id": "getPwnCd:108",
-                "payload": payload,
-                "fetched_at": kst_now(),
-            }
-        )
-        if len(seen) == total:
-            break
-    else:
-        raise AlertCollectionError("ALERT_TOO_MANY_ROWS")
-    if len(records) > 1:
-        if heartbeat:
-            await heartbeat()
+    if heartbeat:
+        await heartbeat()
+    try:
         body, _metadata = await client.request_with_metadata(
             "WthrWrnInfoService",
             "getPwnCd",
@@ -229,17 +171,64 @@ async def collect_alert_pages(
             page_no=1,
             num_of_rows=PAGE_SIZE,
         )
-        requests += 1
+    except KmaError as exc:
+        raise AlertCollectionError(safe_collection_error(exc), diagnostics={
+            "stage": "page_request", "requested_page": 1, "requests_fetched": 0,
+            **({"http_status": exc.status_code} if type(exc.status_code) is int else {}),
+            **_rate_limit_diagnostics(exc),
+        }) from None
+    progress = {"stage": "page_validation", "requested_page": 1, "requests_fetched": 1}
+    try:
         rows, total = _page(body, 1)
-        if (
-            total != expected_total
-            or sorted(canonical_hash(row) for row in rows) != first_fingerprint
-        ):
-            raise AlertCollectionError("ALERT_FIRST_PAGE_CHANGED", diagnostics={
-                "stage": "page_validation", "requested_page": 1,
-                "requests_fetched": requests, "total_count": total,
-            })
-    return AlertCollection(records, requests, len(seen), unknown)
+    except AlertCollectionError as exc:
+        raise AlertCollectionError(exc.code, diagnostics={
+            **exc.diagnostics, "requested_page": 1, "requests_fetched": 1,
+        }) from None
+    reconciled = reconcile_alert_rows(rows)
+    limit = quarantine_limit(len(rows))
+    if reconciled.quarantined_rows > limit:
+        # 일부 격리는 정상 진행하지만, 이만큼 충돌하면 원천 응답 자체를 믿을 수 없다.
+        raise AlertCollectionError("ALERT_QUARANTINE_LIMIT", diagnostics={
+            **progress, "total_count": total, "returned_rows": len(rows),
+            "quarantined_rows": reconciled.quarantined_rows, "quarantine_limit": limit,
+        })
+    payload = {
+        "rows": reconciled.accepted,
+        # 게시하지 않은 원천 행을 그대로 남긴다(격리 기록). 게시는 ``rows``만 읽는다.
+        "quarantined": [
+            {"event_id": group.event_id, "rows": list(group.rows)}
+            for group in reconciled.quarantined
+        ],
+        "duplicates_merged": reconciled.duplicates_merged,
+        "request": {**query, "pageNo": 1, "numOfRows": PAGE_SIZE},
+        "pagination": {"totalCount": total, "pageNo": 1, "numOfRows": PAGE_SIZE},
+        "normalization_version": ALERT_VERSION,
+    }
+    if len(json.dumps(payload, ensure_ascii=False, allow_nan=False).encode()) > MAX_BYTES:
+        raise AlertCollectionError("ALERT_RESPONSE_TOO_LARGE", diagnostics=progress)
+    record = {
+        "source_record_key": "was_" + canonical_hash(payload),
+        "provider": ALERT_PROVIDER,
+        "dataset_key": ALERT_DATASET,
+        "source_entity_type": "weather_response",
+        "source_entity_id": "getPwnCd:108",
+        "payload": payload,
+        "fetched_at": kst_now(),
+    }
+    areas = sorted({
+        group.area_code for group in reconciled.quarantined
+        if _AREA_CODE.fullmatch(group.area_code)
+    })
+    return AlertCollection(
+        [record],
+        1,
+        len(reconciled.events),
+        sum(event.action == "unknown" for event in reconciled.events),
+        duplicates_merged=reconciled.duplicates_merged,
+        quarantined_events=len(reconciled.quarantined),
+        quarantined_rows=reconciled.quarantined_rows,
+        quarantined_area_codes=tuple(areas[:QUARANTINE_AREA_SAMPLE]),
+    )
 
 
 def safe_collection_error(exc: Exception) -> str:
@@ -268,6 +257,22 @@ def _rate_limit_diagnostics(exc: KmaError) -> dict[str, str | bool]:
         "retryable": not daily,
         "recovery_hint": "WAIT_QUOTA_RESET" if daily else "RETRY_AFTER_BACKOFF",
     }
+
+
+def _report_reconciliation(collected: AlertCollection) -> None:
+    """게시가 커밋된 뒤의 관측만 남긴다. 실패해도 커밋된 성공을 뒤집지 않는다."""
+    with suppress(Exception):
+        observe_alert_rows_reconciled(
+            merged=collected.duplicates_merged, quarantined=collected.quarantined_rows,
+        )
+    if collected.quarantined_rows:
+        with suppress(Exception):
+            logger.warning(
+                "ALERT_ROWS_QUARANTINED events=%d rows=%d areas=%s",
+                collected.quarantined_events,
+                collected.quarantined_rows,
+                ",".join(collected.quarantined_area_codes),
+            )
 
 
 def _cleanup_notice(stage: str) -> None:
@@ -341,6 +346,7 @@ async def run_alert_event_sync_async(
             source_records=collected.records,
             requests_fetched=collected.requests_fetched,
         )
+        _report_reconciliation(collected)
         return {
             "status": finished.status,
             "run_id": finished.run_id,
@@ -349,6 +355,14 @@ async def run_alert_event_sync_async(
             "unknown_observations": collected.unknown_observations,
             "requests_fetched": collected.requests_fetched,
             "pages_complete": True,
+            "duplicates_merged": collected.duplicates_merged,
+            "quarantined_events": collected.quarantined_events,
+            "quarantined_rows": collected.quarantined_rows,
+            # 고정 형식의 특보구역 코드만 남긴다(원천 지역명·원문 없음).
+            "quarantined_area_codes": ",".join(collected.quarantined_area_codes),
+            "collection_warning": (
+                "ALERT_ROWS_QUARANTINED" if collected.quarantined_rows else ""
+            ),
         }
     except asyncio.CancelledError:
         # DB 시작 thread는 task 취소로 중단되지 않는다. 결과 회수 뒤 실행을 봉인한다.

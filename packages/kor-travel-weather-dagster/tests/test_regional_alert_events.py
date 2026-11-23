@@ -28,7 +28,7 @@ def raw_row(seq=1, **changes):
     }
 
 
-def body(rows, *, page=1, total=None, size=100):
+def body(rows, *, page=1, total=None, size=module.PAGE_SIZE):
     return {
         "items": {"item": rows},
         "pageNo": page,
@@ -74,67 +74,129 @@ def repo(weather_test_database_url):
         result.engine.dispose()
 
 
-async def test_actual_public_sdk_collects_all_pages_and_rechecks_first():
+async def test_actual_public_sdk_collects_whole_window_in_one_request():
     calls = []
     rows = [raw_row(i) for i in range(1, 102)]
 
     def handler(request):
         assert request.url.path.endswith("/WthrWrnInfoService/getPwnCd")
         assert request.url.params["stnId"] == "108"
-        assert request.url.params["numOfRows"] == "100"
+        assert request.url.params["numOfRows"] == str(module.PAGE_SIZE) == "10000"
         page = int(request.url.params["pageNo"])
         calls.append(page)
-        return response(body(rows[:100] if page == 1 else rows[100:], page=page, total=101))
+        return response(body(rows))
 
     async with sdk(handler) as client:
         result = await module.collect_alert_pages(client)
-    assert calls == [1, 2, 1]
-    assert result.observations == 101 and result.requests_fetched == 3
-    assert len(result.records) == 2 and result.unknown_observations == 0
+    # 페이지를 나누지 않으므로 두 번째 페이지·첫 페이지 재대조 요청이 없다.
+    assert calls == [1]
+    assert result.observations == 101 and result.requests_fetched == 1
+    assert len(result.records) == 1 and result.unknown_observations == 0
+    assert result.duplicates_merged == result.quarantined_rows == 0
     assert "fixture-only-key" not in str(result.records)
+
+
+def _conflicting_pairs(count):
+    rows = []
+    for seq in range(1, count + 1):
+        rows += [raw_row(seq), raw_row(seq, areaName="다른 이름")]
+    return rows
 
 
 @pytest.mark.parametrize(
     ("kind", "code"),
     [
         ("short", "ALERT_PAGE_ROWS"),
-        ("total", "ALERT_PAGE_TOTAL_CHANGED"),
-        ("duplicate", "ALERT_PAGE_DUPLICATE"),
-        ("changed", "ALERT_FIRST_PAGE_CHANGED"),
         ("over", "ALERT_TOO_MANY_ROWS"),
         ("badmeta", "ALERT_PAGE_METADATA"),
+        ("capped", "ALERT_PAGE_METADATA"),
+        ("conflicts", "ALERT_QUARANTINE_LIMIT"),
     ],
 )
-async def test_incomplete_or_mutating_provider_never_publishes(repo, kind, code):
-    calls = []
-    rows = [raw_row(i) for i in range(1, 103)]
+async def test_incomplete_or_untrustworthy_provider_never_publishes(repo, kind, code):
+    rows = [raw_row(i) for i in range(1, 102)]
 
     def handler(request):
-        page = int(request.url.params["pageNo"])
-        calls.append(page)
-        data = rows[:100] if page == 1 else rows[100:101]
-        total = 101
-        if kind == "short" and page == 1:
-            data = data[:-1]
-        if kind == "total" and page == 2:
-            total, data = 102, rows[100:102]
-        if kind == "duplicate" and page == 2:
-            data = rows[:1]
-        if kind == "changed" and len(calls) == 3:
-            data = [raw_row(9999), *data[1:]]
+        data, total, size = rows, 101, module.PAGE_SIZE
+        if kind == "short":
+            data = rows[:-1]
         if kind == "over":
-            total = 10001
-        value = body(data, page=page, total=total)
+            total = module.PAGE_SIZE + 1
+        if kind == "capped":
+            # 원천이 numOfRows를 몰래 줄이면 한 페이지가 전체라는 전제가 깨진다.
+            size = 100
+        if kind == "conflicts":
+            # 상한(최소 10행) 바로 위: 6쌍 = 12행 격리.
+            data = [*rows[50:], *_conflicting_pairs(6)]
+            total = len(data)
+        value = body(data, total=total, size=size)
         if kind == "badmeta":
             value["pageNo"] = True
         return response(value)
 
-    with pytest.raises(module.AlertCollectionError, match=code):
+    with pytest.raises(module.AlertCollectionError, match=code) as caught:
         async with sdk(handler) as client:
             await module.run_alert_event_sync_async(repository=repo, client=client)
     run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
     assert run.status == "failed" and run.error == code
     assert repo.list_sync_run_sources(run.run_id) == []
+    if kind == "conflicts":
+        assert caught.value.diagnostics["quarantined_rows"] == 12
+        assert caught.value.diagnostics["quarantine_limit"] == 10
+
+
+def _stored_events(repo):
+    from sqlalchemy import text
+
+    with repo.engine.connect() as connection:
+        return set(connection.scalars(text("SELECT event_id FROM weather_alert_events")))
+
+
+def _stored_payload(repo, run_id):
+    (key,) = repo.list_sync_run_sources(run_id)
+    return repo.get_source_record(key)["payload"]
+
+
+async def test_exact_duplicate_rows_are_merged_and_published_once(repo):
+    from kortravelweather.alert_events import normalize_alert
+
+    first, second = raw_row(1), raw_row(2)
+    async with sdk(lambda _: response(body([first, second, dict(first)]))) as client:
+        result = await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert result["status"] == "success" and result["events_loaded"] == 2
+    assert result["duplicates_merged"] == 1 and result["quarantined_rows"] == 0
+    assert result["collection_warning"] == ""
+    assert _stored_events(repo) == {
+        normalize_alert(first).event_id, normalize_alert(second).event_id,
+    }
+    payload = _stored_payload(repo, result["run_id"])
+    assert payload["rows"] == [first, second] and payload["duplicates_merged"] == 1
+    assert payload["quarantined"] == []
+
+
+async def test_conflicting_rows_are_quarantined_and_the_rest_is_published(repo, caplog):
+    from kortravelweather.alert_events import normalize_alert
+    from kortravelweather.metrics import ALERT_ROWS_RECONCILED
+
+    clean = raw_row(1)
+    left = raw_row(2, areaCode="L1031200", areaName="당진시")
+    right = raw_row(2, areaCode="L1031200", areaName="당진군")
+    before = ALERT_ROWS_RECONCILED.labels(outcome="quarantined")._value.get()
+    async with sdk(lambda _: response(body([left, clean, right]))) as client:
+        result = await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert result["status"] == "success" and result["events_loaded"] == 1
+    assert result["observations"] == 1
+    assert result["quarantined_events"] == 1 and result["quarantined_rows"] == 2
+    assert result["quarantined_area_codes"] == "L1031200"
+    assert result["collection_warning"] == "ALERT_ROWS_QUARANTINED"
+    assert _stored_events(repo) == {normalize_alert(clean).event_id}
+    payload = _stored_payload(repo, result["run_id"])
+    assert payload["rows"] == [clean]
+    assert payload["quarantined"] == [
+        {"event_id": normalize_alert(left).event_id, "rows": [left, right]}
+    ]
+    assert ALERT_ROWS_RECONCILED.labels(outcome="quarantined")._value.get() == before + 2
+    assert "ALERT_ROWS_QUARANTINED events=1 rows=2 areas=L1031200" in caplog.text
 
 
 async def test_zero_success_is_fresh_without_inventing_clear(repo):
@@ -186,7 +248,7 @@ def test_metadata_failure_carries_safe_stage_and_actual_counts():
         module._page(body([], total=1, page=2), 1)
     assert caught.value.diagnostics == {
         "error_code": "ALERT_PAGE_METADATA", "stage": "page_validation",
-        "requested_page": 1, "returned_page": 2, "page_size": 100, "total_count": 1,
+        "requested_page": 1, "returned_page": 2, "page_size": 10000, "total_count": 1,
     }
 
 
@@ -309,14 +371,14 @@ async def test_collection_wall_clock_timeout_is_bounded(repo, monkeypatch):
     assert run.error == "ALERT_TIMEOUT" and run.status == "failed" and client.closed
 
 
-async def test_recovery_between_pages_fences_future_publication(repo):
+async def test_recovery_during_request_fences_publication(repo):
     rows = [raw_row(i) for i in range(1, 102)]
 
     def handler(request):
         assert int(request.url.params["pageNo"]) == 1
         run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
         repo.finish_sync_run(run.run_id, status="failed", error="recovered_elsewhere")
-        return response(body(rows[:100], total=101))
+        return response(body(rows))
 
     with pytest.raises(module.AlertCollectionError, match="ALERT_RUN_OWNERSHIP_LOST"):
         async with sdk(handler) as client:

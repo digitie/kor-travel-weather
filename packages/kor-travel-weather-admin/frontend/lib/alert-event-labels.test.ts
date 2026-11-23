@@ -10,6 +10,12 @@ describe("지역별 특보 실행의 상세 원인", () => {
     expect(syncRunErrorText(REGIONAL_ALERT_DATASET, "ALERT_PROVIDER_AUTH"))
       .toContain("ALERT_PROVIDER_AUTH");
   });
+  it("격리 상한 초과를 원인과 코드로 구분한다", () => {
+    const result = syncRunErrorText(REGIONAL_ALERT_DATASET, "ALERT_QUARANTINE_LIMIT");
+    expect(result).toContain("격리 상한");
+    expect(result).toContain("ALERT_QUARANTINE_LIMIT");
+    expect(result).not.toContain("원인을 확인할 수 없습니다");
+  });
   it("특보 작업의 알 수 없는 원문 URL이나 credential을 표시하지 않는다", () => {
     const result = syncRunErrorText(REGIONAL_ALERT_DATASET, "https://example.invalid/?serviceKey=fixture-only-key");
     expect(result).toContain("원인을 확인할 수 없습니다");

@@ -16,7 +16,6 @@ from dagster import (
     Definitions,
     Failure,
     MetadataValue,
-    ScheduleDefinition,
     asset,
     define_asset_job,
     in_process_executor,
@@ -54,6 +53,7 @@ from kortravelweather.settings import WeatherSettings
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
 from .alert_events import AlertCollectionError, run_alert_event_sync
+from .alert_schedule import build_regional_alert_events_schedule
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -718,6 +718,11 @@ def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, 
         result["collection_outcome"] = (
             "deferred" if result.get("status") == "skipped" else result.get("status", "unknown")
         )
+        if result.get("quarantined_rows"):
+            context.log.warning(
+                f"ALERT_ROWS_QUARANTINED events={result['quarantined_events']} "
+                f"rows={result['quarantined_rows']} areas={result['quarantined_area_codes']}"
+            )
         context.add_output_metadata(result)
         _record_collection_outcome(context, result["collection_outcome"])
         return result
@@ -1735,13 +1740,10 @@ hourly_kma_weather_alerts_schedule = _weather_schedule(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다.
-regional_alert_events_schedule = ScheduleDefinition(
-    name="regional_alert_events_every_five_minutes",
-    cron_schedule="*/5 * * * *",
-    job=kma_regional_alert_events_job,
-    execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
+# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다. 이전 실행이 남아 있으면
+# tick을 합치고, 같은 오류로 연속 실패하면 간격을 늘린다(alert_schedule).
+regional_alert_events_schedule = build_regional_alert_events_schedule(
+    kma_regional_alert_events_job
 )
 
 # :35, after the nowcast (see the ultra-short schedules above).  It is also
