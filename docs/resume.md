@@ -2,8 +2,8 @@
 
 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md`)의 단기예보 항목 후속이다. 운영
 storage 읽기 전용 14일: 성공 75회 step p50 8,165초·p90 9,665초·최대 10,736초, 실패 11회 중 6회가 상한 회수,
-취소 10회는 전부 배포·수동 강제 취소(상한 무관). step의 약 83%가 fact 게시(`publish_ms` 5.5~7.9천 초)이고
-정규화는 원인이 아니다(로컬 격자당 약 50ms). 수집 경로에서 확실히 줄일 비용은 찾지 못해 상한을 4시간으로
+취소 10회는 전부 배포·수동 강제 취소(상한 무관). step의 약 90%(p50)가 fact 게시(`publish_ms` p50 7,347초)이고
+정규화·요청 속도는 원인이 아니다(로컬 격자당 약 50ms, 0.04 req/s). 수집 경로에서 확실히 줄일 비용은 찾지 못해 상한을 4시간으로
 올리고 근거를 [kma-short-forecast-runtime.md](kma-short-forecast-runtime.md)에 남겼다. 3시간을 넘긴 회차 동안
 다음 tick은 coalescing으로 합쳐짐을 실제 schedule 평가 테스트로 고정했다.
 
