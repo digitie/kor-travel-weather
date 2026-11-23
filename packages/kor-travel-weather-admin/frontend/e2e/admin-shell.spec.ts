@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-// 공용 AdminShell(@kor-travel/ui 0.2.3) 채택 UI 시험. 메모리 fixture API만 쓰며 운영 API·타일과 무관하다.
+// 공용 AdminShell(@kor-travel/ui 0.2.5) 채택 UI 시험. 메모리 fixture API만 쓰며 운영 API·타일과 무관하다.
 const ADMIN_PAGES = [
   ["/", "운영 홈"],
   ["/weather", "날씨 지도"],

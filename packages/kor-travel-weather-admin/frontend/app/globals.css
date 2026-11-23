@@ -505,7 +505,7 @@ textarea:hover {
   background: var(--surface-subtle);
 }
 
-/* 입력 컨트롤 포커스는 공용 0.2.3에서 바뀌지 않았다 — 앱 규칙을 그대로 유지한다. */
+/* Weather 입력 컨트롤의 포커스 색상은 앱 토큰을 사용한다. */
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {

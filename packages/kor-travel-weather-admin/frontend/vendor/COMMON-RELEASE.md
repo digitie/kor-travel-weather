@@ -1,5 +1,17 @@
 # Common 정본 산출물 채택
 
+Pack source는 `fe141143cc8ba75e8fd0b6134e1c9e518e294fa2`이며 중앙 원장은 Common PR #82의
+[0.2.5 산출물 카탈로그](https://github.com/digitie/kor-travel-common/blob/ade7b3eb50c0197caad4a1c98fcb97cffbc2a8a4/docs/evidence/releases/field-focus-ui-0.2.5-catalog.md)다.
+중앙 CI 산출물 `14782962353`의 원본 bytes를 사용한다.
+
+- @kor-travel/tokens `0.1.6` `sha512-y9uEIo9dTG/XlohG+kQs9goL10tsEVgHLwUA81XMskts1oZJaim+7UBsG773l/Q1W54MUOFWF1BLsmlFNjGrAA==`
+- @kor-travel/ui `0.2.5` `sha512-GKICXj4/I4pZQHvbrLy4qL7Bbtn757soe7g8M9phZrNXOsSXtU5bFhharNAWpjD6/qXxSyVWtfTxrZqsgAk2hA==`
+
+입력·선택·탭의 공용 키보드 포커스 스타일과 토큰을 갱신한다.
+생산 이미지 검증은 원장의 SRI와 설치된 공용 6패키지 268개 파일을 비교한다.
+
+## 이전 (UI 0.2.3·tokens 0.1.4)
+
 Pack source: 0e2a3f5aa16323df0d009360802661c9bc496dc6 (PR70), catalog/policy: d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4 (PR71)
 Publication: https://github.com/digitie/kor-travel-common/actions/runs/44459847805 (artifact `common-release-packs-0e2a3f5aa16323df0d009360802661c9bc496dc6`)
 
