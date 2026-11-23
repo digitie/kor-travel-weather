@@ -31,6 +31,7 @@ from kortravelweather.metrics import start_metrics_server
 from kortravelweather.models import kst_now
 from kortravelweather.providers import (
     PROVIDER_CATALOG,
+    ProviderError,
     ProviderLocation,
     create_configured_provider,
     provider_spec,
@@ -795,11 +796,12 @@ EXTERNAL_SLOW_RUN_GROUP = "external_weather_slow"
 #:   (2026-10-21 관측 약 9분), 늦어지면 openweathermap이 그 뒤에서 기다린다. 세 sweep의
 #:   관측 합(약 9 + 30 + 73~90분)은 3시간 주기 안이다.
 #:
-#: 나머지 provider는 기본 location 상한이 없다. 기본 설정에서 그들의 run이 빠른 것은
-#: 꺼져 있거나(visual_crossing, wttr_in) credential이 없어 skip하기 때문이다. 하나를
-#: 켜면(env 또는 admin UI의 DB credential — 코드 변경 없이 가능) catalog 전체(약
-#: 1,400곳)를 sweep한다. 태그는 정의 시점에 정해지므로 런타임 credential로 분류할 수
-#: 없다: **켜기 전에** 이 집합에 추가하는 변경이 먼저 배포돼야 한다(runbook
+#: 나머지 provider는 기본 location 상한이 없다. 그들은 schedule이 없다
+#: (``SCHEDULED_EXTERNAL_COLLECTIONS``) — 예전에는 schedule이 있어 꺼져 있거나
+#: (visual_crossing, wttr_in) credential이 없어 skip하는 run만 3시간마다 만들었고, admin UI에
+#: DB credential을 넣기만 해도 catalog 전체(약 1,400곳)를 상한 없이 sweep할 수 있었다.
+#: 태그는 정의 시점에 정해지므로 런타임 credential로 분류할 수 없다: **켜기 전에** 이 집합에
+#: 추가하는 변경이 먼저 배포돼야 하고, 그 변경이 schedule도 만든다(runbook
 #: docs/runbooks/dagster-recovery.md). 위치 상한을 env로 풀 때도 같다.
 #: tests/test_definitions.py가 기본 상한이 있는 provider는 모두 여기 있음을 고정한다.
 SLOW_EXTERNAL_PROVIDER_KEYS = frozenset({"open_meteo", "openweathermap", "weatherapi"})
@@ -1100,9 +1102,18 @@ def _make_external_provider_asset(collection: ExternalCollection):
         results: list[dict[str, object]] = []
         failed: list[dict[str, object]] = []
         skipped_datasets: list[dict[str, object]] = []
+        rate_limited: list[dict[str, object]] = []
         abandoned = False
         try:
             for dataset in datasets:
+                if rate_limited:
+                    # 같은 provider·key의 다음 dataset도 같은 한도에 걸린다. 한도를 더
+                    # 쓰지 않고 다음 주기(3시간 뒤)에 맡긴다.
+                    skipped_datasets.append({
+                        "provider": provider_key, "dataset_key": dataset.key,
+                        "skipped": True, "reason": "rate_limited",
+                    })
+                    continue
                 try:
                     results.append(
                         run_external_weather_sync(
@@ -1135,20 +1146,32 @@ def _make_external_provider_asset(collection: ExternalCollection):
                     # 다음 dataset/close와 경합시키지 않고 이 worker 실행을 끝낸다.
                     abandoned = True
                     raise
-                except Exception as exc:
-                    failed.append(
-                        {
-                            "provider": provider_key,
-                            "dataset_key": dataset.key,
-                            "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
-                        }
+                except ProviderError as exc:
+                    if exc.code != "rate_limit":
+                        failed.append(_external_failure(provider_key, dataset.key, exc))
+                        continue
+                    # 429는 provider가 지금 그만 물으라는 뜻이다. sweep이 그 앞까지 게시한
+                    # batch는 남는다(수집 기록은 failed로 닫혀 승격되지 않는다). 빨간 run이
+                    # 아니라 "갱신 대기"로 남기고 다음 주기에 다시 묻는다.
+                    rate_limited.append({
+                        "provider": provider_key,
+                        "dataset_key": dataset.key,
+                        "retry_after_seconds": exc.retry_after_seconds,
+                    })
+                    context.log.warning(
+                        f"{provider_key}/{dataset.key}: provider rate limit(429)으로 이번 주기 "
+                        f"수집을 멈춥니다(Retry-After {exc.retry_after_seconds})"
                     )
+                except Exception as exc:
+                    failed.append(_external_failure(provider_key, dataset.key, exc))
         finally:
             close = getattr(provider, "close", None)
             if callable(close) and not abandoned:
                 close()
         if failed:
             status = "partial"
+        elif rate_limited:
+            status = "deferred"
         elif skipped_datasets and not results:
             status = "skipped"
         else:
@@ -1158,11 +1181,14 @@ def _make_external_provider_asset(collection: ExternalCollection):
             "status": status,
             "datasets": results,
             "failed_datasets": failed,
+            "rate_limited_datasets": rate_limited,
             "skipped_datasets": skipped_datasets,
             "locations_total": len(targets),
             "locations_available": len(catalog_targets),
         }
         context.add_output_metadata(result)
+        if status in {"partial", "deferred"}:
+            _record_collection_outcome(context, status)
         if failed and not results:
             # Nothing was collected. The old shared asset reported this as a
             # green "partial" because some *other* provider had succeeded;
@@ -1175,6 +1201,14 @@ def _make_external_provider_asset(collection: ExternalCollection):
         return result
 
     return _external_provider_sync
+
+
+def _external_failure(provider_key: str, dataset_key: str, exc: Exception) -> dict[str, object]:
+    return {
+        "provider": provider_key,
+        "dataset_key": dataset_key,
+        "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
+    }
 
 
 EXTERNAL_COLLECTIONS = _external_collections()
@@ -1782,6 +1816,18 @@ _EXTERNAL_PHASE_MINUTES = {
 }
 # 분리한 provider(W-EXP-SPLIT-01)의 current는 provider phase 그대로, forecast는
 # ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 뒤(기존 20분 간격 phase 사이의 빈 10분 자리)다.
+#
+# schedule은 실제로 sweep하는(slow 그룹의) provider에만 만든다. 나머지 여섯(visual_crossing·
+# tomorrow_io·weatherbit·weatherstack·accuweather·wttr_in)은 운영에서 credential이 없거나
+# 기본 비활성이라 3시간마다 3~4초짜리 skip run만 만들었다(14일 약 635 run, 감사 §2.5 P2·§4 #12).
+# 켜려면 위 SLOW 집합에 먼저 넣어야 하고(위치 상한 없는 전국 sweep 방지), 그 변경이 schedule도
+# 만든다. job은 그대로 두어 관리자 수동 실행은 가능하다. wttr_in은 key가 필요 없지만
+# 자원봉사 서비스라 기본 비활성이다(settings.enabled_providers 주석).
+SCHEDULED_EXTERNAL_COLLECTIONS = tuple(
+    collection
+    for collection in EXTERNAL_COLLECTIONS
+    if collection.provider_key in SLOW_EXTERNAL_PROVIDER_KEYS
+)
 external_weather_schedules = [
     _weather_schedule(
         name=collection.schedule_name,
@@ -1792,7 +1838,7 @@ external_weather_schedules = [
         execution_timezone="Asia/Seoul",
         default_status=DefaultScheduleStatus.RUNNING,
     )
-    for collection in EXTERNAL_COLLECTIONS
+    for collection in SCHEDULED_EXTERNAL_COLLECTIONS
 ]
 
 

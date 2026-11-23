@@ -1,3 +1,10 @@
+## 2026-11-24 — 외부 provider schedule 정리·429 다음 주기
+
+sweep하지 않는 외부 provider 여섯의 schedule을 없애(3시간마다 skip run 제거) slow 집합에 넣을 때만
+schedule이 생기게 했고, 429는 짧은 `Retry-After`만 한 번 기다린 뒤 "갱신 대기"로 다음 주기에 넘긴다.
+다음은 odroid weather code-server 배포(Codex)와 배포 뒤 외부 schedule 6개만 남았는지 확인이다.
+[상세](journal.md)
+
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.

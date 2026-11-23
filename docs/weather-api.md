@@ -104,13 +104,16 @@ real 단기예보 publish times), `kma_mid_forecast_publish_hours` (`30 6,18 * *
 AirKorea's station catalog and measurements independently at `35 * * * *`. The
 ultra-short forecast, nowcast and AirKorea take turns because they lock the same
 station anchors; see [Dagster boundary](architecture/dagster-boundary.md#매시-station-lock-job의-시간-분리).
-A `three_hourly_<provider>_weather`
-schedule per external provider then collects every enabled non-KMA provider from the
-latest enabled AirKorea station anchors. An AirKorea quota or provider outage must
-not prevent already-known anchors from receiving external updates. Providers
-with no configured key (for example Open-Meteo and wttr.in) remain keyless;
-keyed providers are skipped with an auditable run result until their admin
-credential is configured.
+A `three_hourly_<provider>_<part>_weather`
+schedule per sweeping external provider (Open-Meteo, OpenWeatherMap, WeatherAPI; current and
+forecast each) then collects from the latest enabled AirKorea station anchors. An AirKorea
+quota or provider outage must not prevent already-known anchors from receiving external
+updates. The other external providers (Visual Crossing, Tomorrow.io, Weatherbit, Weatherstack,
+AccuWeather, wttr.in) keep their jobs for manual runs but have no schedule until they are added
+to the slow sweep group (`SLOW_EXTERNAL_PROVIDER_KEYS`), which also creates their schedules.
+wttr.in needs no key but is off by default. A 429 waits once for a `Retry-After` of 30 s or
+less; otherwise the run stops that provider's sweep and records it as deferred for the next
+three-hourly cycle.
 
 ## Regional observation networks
 

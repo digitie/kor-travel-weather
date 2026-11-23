@@ -1,3 +1,27 @@
+## 2026-11-24 — 외부 provider: sweep하지 않는 provider의 schedule 제거·429는 다음 주기로
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #12·P2, §4 #12) 대응.
+
+- **schedule**: 외부 provider schedule은 실제로 sweep하는 slow 그룹(open_meteo·openweathermap·
+  weatherapi, current/forecast 각각 → 6개)에만 만든다. visual_crossing·tomorrow_io·weatherbit·
+  weatherstack·accuweather·wttr_in 여섯은 운영에서 credential이 없거나 기본 비활성이라 3시간마다
+  3~4초 skip run만 만들었다(14일 각 104~108 run, 약 635 run). 켜려면 이미 `SLOW_EXTERNAL_PROVIDER_KEYS`에
+  먼저 넣어 배포해야 했으므로(위치 상한 없는 전국 sweep 방지) 그 변경이 schedule도 만들게 했다.
+  admin UI에 DB credential만 넣어 상한 없는 sweep이 시작되던 길도 함께 닫힌다. job은 남겨 수동 실행은
+  가능하다. wttr_in은 key가 필요 없지만(`auth_required=False`) 자원봉사 서비스라 기본 비활성이다.
+- **429**: `request_json`이 `Retry-After`(초 또는 HTTP-date)를 읽는다. 30초 이하면 그만큼 한 번만
+  기다렸다 다시 묻고, 없거나 길면 기다리지 않고 `ProviderError(code="rate_limit",
+  retry_after_seconds=...)`로 끝낸다. 예전에는 값을 무시하고 0.5·1·2초 뒤 같은 요청을 세 번 더
+  보냈다(provider_retries=3). 외부 자산은 429를 실패가 아니라 `deferred`로 기록하고
+  (`rate_limited_datasets`, `kortravel/collection-outcome=deferred` → 관리자 화면 "갱신 대기"),
+  같은 run의 나머지 dataset은 묻지 않는다. 그 앞까지 게시한 batch는 남는다. 일부 dataset 실패는
+  `partial` 태그로 드러낸다.
+
+시험: `test_external_schedule_and_rate_limit.py`(schedule 집합, wttr_in 무키·기본 비활성, 429 deferred·
+나머지 dataset 생략, 다른 오류는 그대로 실패, partial 태그), `tests/test_external_providers.py`
+(짧은 Retry-After 1회 대기, 두 번째 429·값 없음·긴 값·잘못된 값은 재시도 없음, HTTP-date 해석).
+배포 뒤 옛 여섯 `three_hourly_*_weather` instigator 행은 고아로 남는다(동작 없음).
+
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.

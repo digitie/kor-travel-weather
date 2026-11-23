@@ -395,7 +395,7 @@ def test_every_instigator_declares_its_expected_default_state_in_code() -> None:
 
     repository = defs.get_repository_def()
     schedules = list(repository.schedule_defs)
-    assert len(schedules) >= 17
+    assert len(schedules) >= 16
     for schedule in schedules:
         assert schedule.default_status == DefaultScheduleStatus.RUNNING, schedule.name
     for sensor in repository.sensor_defs:
@@ -420,8 +420,8 @@ def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_bo
     start = datetime(2026, 10, 31, tzinfo=ZoneInfo("Asia/Seoul"))
     end = start + timedelta(days=2)
     launches = []
-    # 9 provider + 분리한 3 provider의 forecast schedule(W-EXP-SPLIT-01).
-    assert len(external_weather_schedules) == 12
+    # sweep하는 3 provider × current/forecast(W-EXP-SPLIT-01). 나머지 여섯은 schedule이 없다.
+    assert len(external_weather_schedules) == 6
     for schedule in external_weather_schedules:
         times = []
         for tick in schedule_execution_time_iterator(
