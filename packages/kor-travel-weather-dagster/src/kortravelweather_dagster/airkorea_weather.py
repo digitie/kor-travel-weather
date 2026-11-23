@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,9 +19,9 @@ from kortravelweather.providers.airkorea import (
     fetch_station_catalog,
     fetch_station_measurement,
     measurement_point_metadata,
+    measurement_sido_names,
     measurement_source_record,
     measurement_to_weather_values,
-    normalize_sido_name,
 )
 from kortravelweather.providers.base import redact_secrets
 from kortravelweather.repository import WeatherRepository
@@ -28,6 +29,16 @@ from kortravelweather.repository import WeatherRepository
 from .chunked_publish import chunk_publications, uncited_sources
 
 logger = logging.getLogger(__name__)
+
+#: 측정소 실패 사유. 요청 오류만 일시적이고(client가 이미 재시도함) 나머지는 같은 입력이면
+#: 다음 run에도 같은 결과가 나오는 결정적 실패다.
+NOT_IN_RESPONSE = "not_in_response"
+AMBIGUOUS_NAME = "ambiguous_name"
+REQUEST_ERROR = "request_error"
+NORMALIZE_ERROR = "normalize_error"
+TRANSIENT_REASONS = frozenset({REQUEST_ERROR})
+FAILED_SAMPLE_SIZE = 20
+
 
 def run_airkorea_weather_sync(
     *,
@@ -170,8 +181,15 @@ async def _run_airkorea_weather_sync(
                 export_collector = None
         sources: list[dict[str, Any]] = []
         values: list[WeatherValue] = []
-        failed_stations: list[str] = []
+        # location_id -> 첫 실패 사유. 다른 묶음에서 맞춘 측정소는 끝에서 빠진다.
+        failures: dict[str, str] = {}
         failure_types: set[str] = set()
+
+        def fail(location_id: str, reason: str, exc: BaseException | None = None) -> None:
+            failures.setdefault(location_id, reason)
+            if exc is not None and len(failure_types) < 8:
+                failure_types.add(type(exc).__name__)
+
         fetched_at = datetime.now(UTC)
         request_count = 0
 
@@ -205,11 +223,10 @@ async def _run_airkorea_weather_sync(
         for location in active_locations:
             point = measurement_point_metadata(location) or {}
             station_name = str(point.get("station_name") or location.name).strip()
-            sido = normalize_sido_name(
-                str(point.get("sido_name") or point.get("address") or "")
-            )
-            if bulk_available and sido:
-                grouped.setdefault(sido, {}).setdefault(station_name, []).append(location)
+            sidos = measurement_sido_names(point)
+            if bulk_available and sidos:
+                for sido in sidos:
+                    grouped.setdefault(sido, {}).setdefault(station_name, []).append(location)
             else:
                 fallback_locations.append(location)
 
@@ -231,13 +248,9 @@ async def _run_airkorea_weather_sync(
                 request_count += 1
             except Exception as exc:
                 request_count += 1
-                failed_stations.extend(
-                    location.location_id
-                    for candidates in locations_by_name.values()
-                    for location in candidates
-                )
-                if len(failure_types) < 8:
-                    failure_types.add(type(exc).__name__)
+                for candidates in locations_by_name.values():
+                    for location in candidates:
+                        fail(location.location_id, REQUEST_ERROR, exc)
                 continue
 
             for measurement in measurements:
@@ -247,11 +260,13 @@ async def _run_airkorea_weather_sync(
                     # A duplicate station name cannot be safely identified by the
                     # current upstream API.  Quarantine instead of cross-wiring
                     # the observation to an arbitrary anchor.
-                    failed_stations.extend(location.location_id for location in candidates)
-                    if candidates and len(failure_types) < 8:
-                        failure_types.add("AmbiguousStationName")
+                    for location in candidates:
+                        fail(location.location_id, AMBIGUOUS_NAME)
                     continue
                 location = candidates[0]
+                if location.location_id in matched_locations:
+                    # 통합 주소 측정소는 두 묶음에 들어 있다. 이미 맞춘 관측을 두 번 쓰지 않는다.
+                    continue
                 try:
                     append_measurement(location, measurement)
                 except ValueError as exc:
@@ -263,14 +278,10 @@ async def _run_airkorea_weather_sync(
                             error=str(redact_secrets(str(exc)))[:1000],
                         )
                         raise
-                    failed_stations.append(location.location_id)
-                    if len(failure_types) < 8:
-                        failure_types.add(type(exc).__name__)
+                    fail(location.location_id, NORMALIZE_ERROR, exc)
                     continue
                 except Exception as exc:
-                    failed_stations.append(location.location_id)
-                    if len(failure_types) < 8:
-                        failure_types.add(type(exc).__name__)
+                    fail(location.location_id, NORMALIZE_ERROR, exc)
                     continue
                 matched_locations.add(location.location_id)
                 keep_alive(measurement_run.run_id)
@@ -299,9 +310,7 @@ async def _run_airkorea_weather_sync(
                 request_count += 1
             except Exception as exc:
                 request_count += 1
-                failed_stations.append(location.location_id)
-                if len(failure_types) < 8:
-                    failure_types.add(type(exc).__name__)
+                fail(location.location_id, REQUEST_ERROR, exc)
                 continue
             if response is None:
                 continue
@@ -320,13 +329,15 @@ async def _run_airkorea_weather_sync(
             matched_locations.add(location.location_id)
             keep_alive(measurement_run.run_id)
 
-        missing_locations = [
-            location.location_id
-            for location in active_locations
-            if location.location_id not in matched_locations
-            and location.location_id not in failed_stations
-        ]
-        failed_stations.extend(missing_locations)
+        # 응답에 없던 측정소도 실패다. 다른 묶음에서 맞춘 측정소의 앞선 실패는 지운다.
+        for location in active_locations:
+            if location.location_id not in matched_locations:
+                failures.setdefault(location.location_id, NOT_IN_RESPONSE)
+        failed_stations = {
+            location_id: reason for location_id, reason in failures.items()
+            if location_id not in matched_locations
+        }
+        failure_reasons = dict(sorted(Counter(failed_stations.values()).items()))
         try:
             # Stations publish in short location chunks (``chunked_publish``),
             # off the event loop since a lock race retries with a blocking
@@ -365,8 +376,10 @@ async def _run_airkorea_weather_sync(
                 grids_fetched=0,
                 requests_fetched=request_count,
                 error=(
-                    f"{len(failed_stations)}개 측정소 요청 실패"
-                    f" ({', '.join(sorted(failure_types))})"
+                    f"{len(failed_stations)}개 측정소 수집 실패 ("
+                    + ", ".join(f"{key}={count}" for key, count in failure_reasons.items())
+                    + (f"; {', '.join(sorted(failure_types))}" if failure_types else "")
+                    + ")"
                     if failed_stations
                     else None
                 ),
@@ -381,9 +394,14 @@ async def _run_airkorea_weather_sync(
                 error=str(redact_secrets(str(exc)))[:1000],
             )
             raise
+        transient = sum(
+            count for key, count in failure_reasons.items() if key in TRANSIENT_REASONS
+        )
+        # native run은 success로 둔다(측정한 측정소는 그대로 승격돼야 한다). 일부 측정소를
+        # 못 받은 run은 Dagster 결과에서만 partial로 드러낸다.
         return {
             "provider": AIRKOREA_PROVIDER,
-            "status": finished.status,
+            "status": "partial" if failed_stations else finished.status,
             "station_count": len(catalog_entries),
             "active_station_count": len(active_locations),
             "catalog_run_id": catalog_run.run_id,
@@ -391,4 +409,8 @@ async def _run_airkorea_weather_sync(
             "requests_fetched": catalog_requests + request_count,
             "values_loaded": loaded,
             "stations_failed": len(failed_stations),
+            "stations_failed_transient": transient,
+            "stations_failed_deterministic": len(failed_stations) - transient,
+            "station_failure_reasons": failure_reasons,
+            "failed_station_sample": sorted(failed_stations)[:FAILED_SAMPLE_SIZE],
         }

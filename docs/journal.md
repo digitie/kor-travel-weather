@@ -1,3 +1,11 @@
+## 2026-11-24 — AirKorea 광주 통합 주소 측정소 13곳 누락과 partial 노출
+
+감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #10, §4 #17): `airkorea_weather_job`이 매 run 13개 측정소를 못 받고도 SUCCESS로 끝났다(302회 중 301회). odroid 읽기 전용 조회로 원인을 확인했다. 13곳은 모두 광주 도심 측정소(두암동·건국동·주월동·운암동·우산동(광주)·서석동·노대동·농성동·유촌동·치평동·오선동·일곡동·평동)이고, 측정소 목록의 주소 첫 토큰이 `전남광주통합특별시`라 `normalize_sido_name`이 `전남`으로 묶었다. 전남 시도별 bulk 응답에는 이들이 없어 `not_in_response`로 빠졌다. 2026-10-14 첫 수집부터 측정 원천에 `sidoName=광주` 행은 0건이다 — 폐쇄 측정소도 일시 오류도 아닌 결정적 매핑 결함이다(오류 문자열의 예외 종류가 비어 있던 이유).
+
+수정: 통합 주소(`전남광주…`) 측정소는 `광주`·`전남` 두 bulk 묶음을 모두 묻고 이름으로만 맞춘다(`measurement_sido_names`). 두 응답에 모두 나오면 한 번만 쓴다. 저장된 anchor metadata(`sido_name`)는 바꾸지 않는다. 측정소 실패는 사유(`not_in_response`·`ambiguous_name`·`request_error`·`normalize_error`)별로 세어 결과 metadata(`station_failure_reasons`, 일시/결정적 개수, 표본 20개)와 sync run 오류 문자열에 남기고, Dagster 결과 status와 `kortravel/collection-outcome` run tag를 `partial`로 올린다. native `weather_sync_runs`는 success로 둬 받은 측정소의 승격은 그대로다. 요청 오류 재시도는 client의 기존 3회 이상 재시도로 둔다.
+
+남은 확인: 실제 AirKorea가 `sidoName=광주` 묶음에 이 13곳을 돌려주는지는 배포 뒤 첫 run에서 본다(운영 key로 외부 호출을 하지 않았다). 여전히 `not_in_response`면 partial로 드러난다.
+
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.
