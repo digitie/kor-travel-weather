@@ -1168,7 +1168,8 @@ def _make_external_provider_asset(collection: ExternalCollection):
             close = getattr(provider, "close", None)
             if callable(close) and not abandoned:
                 close()
-        if failed:
+        if failed or any(entry.get("locations_failed") for entry in results):
+            # 한 위치의 응답 실패는 그 위치만 건너뛰었다(external_weather). 부분 완료로 드러낸다.
             status = "partial"
         elif rate_limited:
             status = "deferred"

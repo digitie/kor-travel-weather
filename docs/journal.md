@@ -17,7 +17,15 @@
   같은 run의 나머지 dataset은 묻지 않는다. 그 앞까지 게시한 batch는 남는다. 일부 dataset 실패는
   `partial` 태그로 드러낸다.
 
-시험: `test_external_schedule_and_rate_limit.py`(schedule 집합, wttr_in 무키·기본 비활성, 429 deferred·
+- **위치별 격리**: weatherapi 전 dataset 실패 7건(11-10~21, odroid `weather_sync_runs.error`
+  "provider client 오류입니다.", 150곳 sweep의 1~136번째 요청)은 한 위치의 HTTP 4xx가 sweep 전체를
+  실패로 만든 것이었다(나머지 4건은 디스크 가득·worker 종료 회수). 이제 한 위치의
+  client·schema·server·network 오류는 그 위치만 건너뛰고(export attempt는 `SOURCE_LOCATION_FAILED`로
+  reject) sweep을 잇는다. 연속 5곳 실패(장애)나 실패 비율 20% 초과면 그대로 실패, 인증·rate limit은
+  즉시 멈춘다. 건너뛴 위치는 `locations_failed`·`location_failure_counts`와 `partial` 태그로 드러난다.
+
+시험: `tests/test_external_location_isolation.py`(실제 PG: 한 위치 건너뛰기·연속 실패 중단·비율 초과·
+인증/429 즉시 중단), `test_external_schedule_and_rate_limit.py`(schedule 집합, wttr_in 무키·기본 비활성, 429 deferred·
 나머지 dataset 생략, 다른 오류는 그대로 실패, partial 태그), `tests/test_external_providers.py`
 (짧은 Retry-After 1회 대기, 두 번째 429·값 없음·긴 값·잘못된 값은 재시도 없음, HTTP-date 해석).
 배포 뒤 옛 여섯 `three_hourly_*_weather` instigator 행은 고아로 남는다(동작 없음).

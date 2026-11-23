@@ -12,7 +12,12 @@ from typing import Any
 from kortravelcommon.deadline import call_with_deadline
 
 from kortravelweather.metrics import provider_request
-from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
+from kortravelweather.providers import (
+    ProviderError,
+    ProviderLocation,
+    WeatherProvider,
+    redact_secrets,
+)
 from kortravelweather.repository import WeatherRepository
 
 from .chunked_publish import chunk_publications, uncited_sources
@@ -29,6 +34,16 @@ _PUBLISH_BATCH_VALUES = 5_000
 _PUBLISH_BATCH_SOURCES = 25
 _PUBLISH_BATCH_PAYLOAD_BYTES = 10_000_000
 logger = logging.getLogger(__name__)
+
+#: 한 위치의 응답만 잘못된 provider 오류. 그 위치를 건너뛰고 sweep을 잇는다.
+#: weatherapi는 2026-11-10~21 odroid에서 150곳 sweep 중 한 위치의 HTTP 4xx
+#: ("provider client 오류입니다.", 1~136번째 요청)로 이미 게시한 batch까지 실패 run이 됐다(7건).
+#: 인증·rate limit·credential은 provider 전체의 문제라 여기 없다 — 바로 sweep을 멈춘다.
+LOCATION_SCOPED_PROVIDER_ERRORS = frozenset({"client", "schema", "server", "network"})
+#: 연속으로 이만큼 위치가 실패하면 위치 문제가 아니라 장애다. sweep을 멈춘다.
+MAX_CONSECUTIVE_LOCATION_FAILURES = 5
+#: 전체 대상 중 실패 위치 비율이 이를 넘으면 실패 run이다(부분 게시는 남는다).
+MAX_FAILED_LOCATION_RATIO = 0.2
 
 
 def _bounded_payload_size(payload: Any, *, max_bytes: int) -> int:
@@ -135,6 +150,8 @@ def run_external_weather_sync(
     normalized_values_total = 0
     staged_payload_bytes = 0
     sent_at: float | None = None
+    failed_locations: dict[str, int] = {}
+    consecutive_failures = 0
     export_collector, prepared = None, None
     if exports_requested:
         try:
@@ -175,13 +192,31 @@ def run_external_weather_sync(
                 if idle > 0:
                     time.sleep(idle)
             sent_at = time.monotonic()
-            with provider_request(provider.provider_key, dataset_key):
-                response = _fetch_with_deadline(
-                    provider,
-                    target,
-                    dataset_key=dataset_key,
-                    timeout_seconds=fetch_timeout_seconds,
+            try:
+                with provider_request(provider.provider_key, dataset_key):
+                    response = _fetch_with_deadline(
+                        provider,
+                        target,
+                        dataset_key=dataset_key,
+                        timeout_seconds=fetch_timeout_seconds,
+                    )
+            except ProviderError as exc:
+                if exc.code not in LOCATION_SCOPED_PROVIDER_ERRORS:
+                    raise
+                code = f"{exc.code}:{exc.status_code}" if exc.status_code else exc.code
+                failed_locations[code] = failed_locations.get(code, 0) + 1
+                consecutive_failures += 1
+                if prepared is not None:
+                    export_collector._reject(prepared.identity, "SOURCE_LOCATION_FAILED")
+                    prepared = None
+                if consecutive_failures >= MAX_CONSECUTIVE_LOCATION_FAILURES:
+                    raise
+                logger.warning(
+                    "external_location_skipped provider=%s dataset=%s location=%s code=%s",
+                    provider.provider_key, dataset_key, target.location_id, code,
                 )
+                continue
+            consecutive_failures = 0
             if response.provider != provider.provider_key or response.dataset_key != dataset_key:
                 raise ValueError("provider 응답의 provider/dataset 계약이 요청과 다릅니다.")
             if response.response_rows > max_response_rows:
@@ -238,6 +273,13 @@ def run_external_weather_sync(
                 staged_sources = []
                 staged_values = []
                 staged_payload_bytes = 0
+        failed_total = sum(failed_locations.values())
+        if failed_total > len(target_list) * MAX_FAILED_LOCATION_RATIO:
+            raise ProviderError(
+                f"위치 {failed_total}/{len(target_list)}곳의 응답이 실패했습니다: "
+                f"{dict(sorted(failed_locations.items()))}",
+                code="locations_failed",
+            )
         for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
             published_values += repository.ingest_batch(source_records=chunk_sources, values=chunk)
         # The finish carries only responses that produced no fact, so it
@@ -272,5 +314,7 @@ def run_external_weather_sync(
         "targets": len(target_list),
         "requests_fetched": len(target_list),
         "values_loaded": loaded,
+        "locations_failed": sum(failed_locations.values()),
+        "location_failure_counts": dict(sorted(failed_locations.items())),
         "source_record_keys": source_record_keys,
     }
