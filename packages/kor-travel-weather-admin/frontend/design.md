@@ -1,7 +1,7 @@
 # 날씨 관리자 UI
 
 The operator console uses the shared `@kor-travel/ui` admin shell
-(`AdminShell` + `AppMenu`, 0.2.3). The weather domain changes only the content
+(`AdminShell` + `AppMenu`, 0.2.5). The weather domain changes only the content
 and primary accent hue; navigation, spacing, controls, surfaces, and responsive
 behavior remain shared.
 
