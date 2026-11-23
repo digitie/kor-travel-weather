@@ -47,9 +47,22 @@ async function login(page: Page) {
   await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).toBe("/admin/dagster");
 }
 
+// 실행 표는 가상 목록이라 화면 밖 행은 그리지 않는다. 앞 패널이 모두 보이도록 높은 화면을 쓴다.
+test.use({ viewport: { width: 1280, height: 2400 } });
+
+// 실패하면 CI 로그만으로 원인을 볼 수 있게 화면 글자 일부를 남긴다(산출물 업로드가 없다).
+test.afterEach(async ({ page }, info) => {
+  if (info.status !== info.expectedStatus) {
+    console.log((await page.locator("body").innerText().catch(() => "")).slice(0, 3000));
+  }
+});
+
 test("지역 원천 job은 원천 이름으로 보이고 실패 원인이 그 원천에 붙는다", async ({ page }) => {
   await routeDagster(page);
   await login(page);
+  const runs = page.getByRole("heading", { name: /최근 실행/ });
+  await expect(runs).toBeVisible({ timeout: 30_000 });
+  await runs.scrollIntoViewIfNeeded();
   const failed = page.getByRole("button", { name: /실행 상세: 고속도로 휴게소 날씨 수집/ });
   await expect(failed.first()).toBeVisible({ timeout: 30_000 });
   // 묶음 job 이름(분리 전)은 새 실행 목록 어디에도 없다.
