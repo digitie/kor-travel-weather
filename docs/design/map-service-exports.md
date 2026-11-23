@@ -303,8 +303,9 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 > run 상태)을 snapshot_id·manifest digest·reader 설정마다 앱에서 한 번 계산해 cursor 페이지가 나눠
 > 쓴다. 첫 페이지는 manifest를 만든 freeze RR 안에서 계산한다. 이어지는 페이지는 같은 RR에서
 > head·generation·plan의 삭제 변경 번호(page liveness 3행)를 읽어 판정 때와 같고, 판정의 남은
-> 수명이 10초 이상일 때만 잇는다. 삭제(유실)는 번호가 바뀌어 다음 페이지에서 바로 stale이 되고,
-> 수집 실패·승인 변경은 최대60초 안에 반영된다. 판정 수명은 그 판정에 쓴 승인 선택의 수명을
+> 수명이 20초 이상일 때만 잇는다. 이 세 표의 삭제(유실)는 번호가 바뀌어 다음 페이지에서 바로
+> stale이 된다. 그 밖의 변화 — 수집 실패, 승인 변경, catalog 위치 활성·좌표 변경, 소유·시도·run
+> 행 변경·이력 정리 — 는 최대60초 안에 반영된다. 판정 수명은 그 판정에 쓴 승인 선택의 수명을
 > 넘지 않으며, 응답 직전의 60초 검사(`require_current_selection`)도 그대로다. 응답 header
 > `x-export-status-proof`가 `frozen`·`reused`·`computed`로 출처를 알린다.
 

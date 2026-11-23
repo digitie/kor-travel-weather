@@ -10,12 +10,15 @@ head⋈generation·owner⋈attempt⋈run⋈generation 상태 조회를 반복했
 - 상태 판정(`_current_state_stale`)을 snapshot_id·manifest digest·reader 설정마다 앱 공용
   (`ExportSelectionCache.status_proofs`)으로 한 번 계산한다. 첫 페이지는 manifest를 만든 freeze RR
   안에서 같은 승인 선택과 그 scope 상태를 그대로 써서 계산한다. cursor 페이지는 같은 RR에서 page
-  liveness 3행만 읽어 판정 때와 같고 남은 수명이 10초 이상이면 잇는다. 삭제는 번호가 바뀌어 다음
-  페이지에 바로 드러나고, 수집 실패·승인 변경은 기존 계약대로 최대60초 안에 반영된다. 첫 페이지와
+  liveness 3행만 읽어 판정 때와 같고 남은 수명이 20초 이상이면 잇는다. head·generation·plan
+  삭제는 번호가 바뀌어 다음 페이지에 바로 드러나고, 수집 실패·승인 변경·catalog·소유/시도/run 행
+  변경은 기존 계약대로 최대60초 안에 반영된다. 판정을 새로 계산할 때 같은 RR에서 방금 읽은 승인
+  선택의 scope 상태는 다시 조회하지 않는다. 첫 페이지와
   cross-limit seed는 공용 판정을 읽지 않는다(Map의 304 판단 기준). header `x-export-status-proof`.
 - 상태 조회 자체도 줄였다. head는 generation FK라 heads⋈generations JOIN을 heads 단독 조회로,
   4표 JOIN은 승인 선택과 같은 분해 조회(`_active_scope_states`)로 바꿨다.
 - current 페이지 scope·artifact 상한 128→512(`MAX_CURRENT_PAGE_*`, 예보·중기는 128 그대로).
+  입력 artifact byte는 페이지당 32MiB에서 scope 경계로 끊는다(`MAX_CURRENT_PAGE_INPUT_BYTES`).
   DB artifact를 한 왕복 64개씩 읽는다(byte 상한 8MiB 그대로, 예보·중기는 8개 그대로).
 - 30초 잔여 규칙(`_CURSOR_SELECTION_MIN_REMAINING`)은 판정을 새로 계산하는 드문 경로에만 남는다.
 

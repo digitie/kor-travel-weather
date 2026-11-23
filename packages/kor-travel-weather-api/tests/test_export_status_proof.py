@@ -2,6 +2,7 @@
 
 import pytest
 from kortravelweather_dagster.kma_weather import KmaAllGridsFailedError
+from sqlalchemy import event
 from test_all_source_exports import _selection_clock
 from test_frozen_service_exports import HEADERS, _client, _collect
 from test_frozen_service_exports import repository as repository
@@ -45,7 +46,21 @@ def test_cursor_walk_computes_the_state_once_in_the_freeze_transaction(
     first = client.get(URL, params={"limit": 1}, headers=HEADERS)
     assert first.status_code == 200 and first.json()["meta"]["source_status"] == "ok"
     assert first.headers["x-export-status-proof"] == "frozen"
-    pages = _walk(client, first)
+    statements = []
+
+    def capture(_c, _cursor, sql, *_rest):
+        statements.append(sql)
+
+    event.listen(repository.engine, "before_cursor_execute", capture)
+    try:
+        pages = _walk(client, first)
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", capture)
+    # cursor 페이지는 큰 소유·시도·세대·plan·inventory 표와 catalog를 읽지 않는다.
+    heavy = ("weather_export_scope_owners", "weather_export_attempts",
+             "weather_export_generations", "weather_export_scope_plans",
+             "weather_export_approved_locations", "weather_locations", "weather_sync_runs")
+    assert not [sql for sql in statements if any(table in sql for table in heavy)]
     assert len(pages) == 24  # 3위치 × 8지표, limit 1
     assert {page.json()["meta"]["snapshot_id"] for page in pages} == {
         first.json()["meta"]["snapshot_id"]
@@ -70,7 +85,7 @@ def test_failed_collection_reaches_cursor_pages_within_the_approved_sixty_second
     with pytest.raises(KmaAllGridsFailedError):
         _collect(repository, tmp_path, failed=True)
     # 수집 실패는 삭제가 아니다. 소유자가 허용한 최대 60초 안에서는 같은 판정을 잇는다.
-    clock[0] += 49
+    clock[0] += 60 - export_snapshots.STATUS_PROOF_MIN_REMAINING - 1
     third = client.get(URL, params={
         "limit": 1, "cursor": second.json()["meta"]["next_cursor"],
     }, headers=HEADERS)
@@ -78,7 +93,7 @@ def test_failed_collection_reaches_cursor_pages_within_the_approved_sixty_second
     assert third.headers["x-export-status-proof"] == "reused"
     assert third.json()["meta"]["source_status"] == "ok"
     # 남은 수명이 STATUS_PROOF_MIN_REMAINING보다 짧으면 다시 계산해 실패를 드러낸다.
-    clock[0] += 11
+    clock[0] += 2
     fourth = client.get(URL, params={
         "limit": 1, "cursor": third.json()["meta"]["next_cursor"],
     }, headers=HEADERS)
@@ -147,6 +162,20 @@ def test_current_page_scope_cap_is_separate_from_the_forecast_cap(
     assert sorted(
         (row["location_id"], row["metric_key"]) for row in first["items"] + following["items"]
     ) == sorted((row["location_id"], row["metric_key"]) for row in whole["items"])
+    # 입력 byte 상한도 scope 경계에서 끊고 이어 읽는다(첫 scope는 상한과 무관하게 읽는다).
+    monkeypatch.setattr(export_snapshots, "MAX_CURRENT_PAGE_SCOPES", 512)
+    monkeypatch.setattr(export_snapshots, "MAX_CURRENT_PAGE_INPUT_BYTES", 1)
+    page = client.get(URL, params={"limit": 4998}, headers=HEADERS).json()
+    rows = list(page["items"])
+    assert page["meta"]["has_more"] is True
+    while page["meta"]["next_cursor"]:
+        page = client.get(URL, params={
+            "limit": 4998, "cursor": page["meta"]["next_cursor"],
+        }, headers=HEADERS).json()
+        rows.extend(page["items"])
+    assert sorted((row["location_id"], row["metric_key"]) for row in rows) == sorted(
+        (row["location_id"], row["metric_key"]) for row in whole["items"]
+    )
 
 
 def test_status_proof_cache_needs_same_epoch_and_enough_remaining_lifetime():

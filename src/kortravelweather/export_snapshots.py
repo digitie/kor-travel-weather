@@ -69,6 +69,9 @@ MAX_PAGE_SCOPES = 128
 # byte 예산이 있어 위의 128을 그대로 쓴다.
 MAX_CURRENT_PAGE_SCOPES = 512
 MAX_CURRENT_PAGE_ARTIFACTS = 512
+# 한 current 페이지가 읽고 검산하는 artifact 입력 byte 상한. 선택 위치가 artifact 일부뿐이면
+# 출력보다 입력이 커질 수 있어 scope 경계에서 끊는다(첫 scope는 freeze의 scope당 16MiB 상한).
+MAX_CURRENT_PAGE_INPUT_BYTES = 32 * 1024 * 1024
 # current DB artifact를 한 왕복에 읽는 개수(byte 상한 8MiB는 그대로).
 CURRENT_ARTIFACT_READ_BATCH = MAX_ARTIFACT_READ_BATCH_LIMIT
 
@@ -80,8 +83,9 @@ def snapshot_expires_at(now):
 
 SOURCE_MAX_AGE = timedelta(hours=3)
 # 앱 공용 상태 판정을 이어받는 최소 남은 수명(초). 판정은 페이지의 마지막 DB 단계라 뒤에는
-# 완료 페이지 검산·직렬화만 남는다. 승인 선택 자체를 이어받는 cursor 기준(30초)보다 짧다.
-STATUS_PROOF_MIN_REMAINING = 10.0
+# 완료 페이지 검산(공유 guard 대기 최대5초 + 5초 상한 문장)과 직렬화만 남는다. 그 최악보다
+# 넉넉하고, 승인 선택 자체를 이어받는 cursor 기준(30초)보다는 짧다.
+STATUS_PROOF_MIN_REMAINING = 20.0
 # 만료 뒤 이만큼 지난 handle만 publisher tick이 지운다. 유효 cursor(만료 전)는 대상이 아니다.
 SNAPSHOT_PRUNE_RETAIN = timedelta(hours=6)
 # current handle 하나에 scope ref가 수천 행이라 CASCADE까지 5초 statement 상한 안에 끝나도록
@@ -345,6 +349,8 @@ class FrozenCurrentExports:
                 expected=self.expected_sources, optional=self.optional_sources,
                 health_location_ids=health_location_ids, health_proof=capture_health,
             )
+            # 이 연결(RR)에서 새로 읽은 선택이다. 같은 RR의 상태 판정이 scope 상태를 다시 쓴다.
+            self._selection_read_in = (connection, result)
             if capture_health:
                 self._fresh_forecast_health = (
                     result.health_checked_at, result.health_recheck_at, result.unconfirmed,
@@ -890,12 +896,16 @@ class FrozenCurrentExports:
         """승인 inventory 경로의 freeze RR 안에서 상태 판정과 그 근거(epoch·수명)를 만든다."""
         cache = self._state_proof_cache()
         selection = self.__dict__.pop("_freeze_selection", None)
+        self.__dict__.pop("_selection_read_in", None)
         if cache is None or selection is None or started is None:
             return None
         from .export_page_liveness import capture_liveness
 
         token = capture_liveness(connection, self.heads.metadata)
-        if token is None or self.selection_deadline is None:
+        if (token is None or self.selection_deadline is None
+                or (self.reuse_liveness is not None and tuple(self.reuse_liveness) != token)):
+            # 선택을 고른 삭제 변경 번호(이전 발급 시도의 RR일 수 있다)와 지금 RR의 번호가 다르면
+            # 판정을 남기지 않는다. 이 요청은 아래 일반 경로에서 새 RR로 판정한다.
             return None
         stale = self._compute_state_stale(connection, manifest, selection=selection)
         return stale, min(self.selection_deadline, started + 60), token
@@ -918,6 +928,7 @@ class FrozenCurrentExports:
         계산한다(cross-limit seed도 건강도는 다시 읽는다). 계산 결과는 이어지는 cursor에 남긴다.
         """
         self.__dict__.pop("_freeze_selection", None)
+        self.__dict__.pop("_selection_read_in", None)
         cache = self._state_proof_cache()
         key = (id(self.repository.engine), self._state_signature(),
                frozen["snapshot_id"], frozen["manifest_digest"])
@@ -1001,6 +1012,9 @@ class FrozenCurrentExports:
                     latest = self._approved_selection(
                         session, [row._mapping for row in roster],
                     )
+                    fresh = self.__dict__.pop("_selection_read_in", None)
+                    if fresh is not None and fresh[0] is session and fresh[1] is latest:
+                        selection = latest  # 같은 RR에서 방금 읽었다(캐시 hit가 아니다).
                     stale |= latest.unconfirmed or {
                         (item.descriptor.namespace, item.location_ids) for item in latest.scopes
                     } != {
@@ -1059,18 +1073,32 @@ class FrozenCurrentExports:
         # 소유 시도·시도·공개 세대·run 상태. 4표 JOIN은 운영 부하에서 5초 statement 상한의
         # 1위 원인이었다(2026-11-24 odroid, 2,925 scope). 승인 선택과 같은 분해 조회로 읽는다
         # (run은 서로 다른 run_id만, 공개 세대는 시도 PK 배열 한 번).
-        # freeze가 manifest를 만든 승인 선택의 scope 상태는 다시 찾지 않는다. 그 선택은 이 요청이
-        # 시작된 뒤 읽힌 것만 쓰인다(첫 페이지 min_deadline). cursor·seed 경로(selection=None)는
-        # 공용 캐시의 과거 상태를 쓰지 않고 지금 RR에서 읽는다.
-        from .export_inventory_selection import _active_scope_states
-
+        # 승인 선택이 읽은 scope 상태는 다시 찾지 않는다: freeze가 manifest를 만든 선택(이 요청
+        # 시작 뒤 읽힌 것만 쓰인다, 첫 페이지 min_deadline)과 이 RR에서 방금 새로 읽은 선택.
+        # 공용 캐시에서 온 과거 선택의 상태는 쓰지 않고 지금 RR에서 읽는다(seed·cursor 재계산).
         source_scopes = {scope["source_scope"] for scope in manifest["scopes"]}
-        known = getattr(selection, "state_scopes", frozenset()) & source_scopes
-        active = [row for row in getattr(selection, "scope_states", ()) if row[0] in known]
-        if source_scopes - known:
-            active += _active_scope_states(
-                session, self.heads.metadata, source_scopes - known,
-            )
+        if session.dialect.name != "postgresql":
+            owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
+            runs = self.heads.metadata.tables["weather_sync_runs"]
+            active = [(None, None, None, attempt, generation, run, None)
+                      for attempt, run, generation in session.execute(
+                select(attempts.c.status, runs.c.status, self.heads.generations.c.generation_id)
+                .select_from(
+                    owners.join(attempts, owners.c.active_attempt_id == attempts.c.attempt_id)
+                    .join(runs, runs.c.run_id == attempts.c.run_id)
+                    .outerjoin(self.heads.generations,
+                               self.heads.generations.c.attempt_id == attempts.c.attempt_id)
+                ).where(owners.c.source_scope.in_(sorted(source_scopes)))
+            ).all()]
+        else:
+            from .export_inventory_selection import _active_scope_states
+
+            known = getattr(selection, "state_scopes", frozenset()) & source_scopes
+            active = [row for row in getattr(selection, "scope_states", ()) if row[0] in known]
+            if source_scopes - known:
+                active += _active_scope_states(
+                    session, self.heads.metadata, source_scopes - known,
+                )
         stale |= len(active) != len(source_scopes) or any(
             attempt == "failed"
             or run not in {"running", "success"}
@@ -1299,7 +1327,7 @@ class FrozenCurrentExports:
             # 가리키는 세대의 파일을 지우지 않는다. snapshot_refs가 generation 행 삭제도 막는다.
             # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
             # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
-            scope_reads, artifact_reads = 0, 0
+            scope_reads, artifact_reads, input_bytes = 0, 0, 0
             artifact_window = ArtifactReadWindow(
                 self.artifacts, batch=CURRENT_ARTIFACT_READ_BATCH
                 if getattr(self.artifacts, "is_database", False) else MAX_ARTIFACT_READ_BATCH,
@@ -1314,6 +1342,11 @@ class FrozenCurrentExports:
                         )
                     more = True
                     break
+                scope_bytes = sum(ref["byte_count"] for ref in scope["refs"])
+                if output and input_bytes + scope_bytes > MAX_CURRENT_PAGE_INPUT_BYTES:
+                    more = True
+                    break
+                input_bytes += scope_bytes
                 remaining_reads = MAX_CURRENT_PAGE_ARTIFACTS - artifact_reads
                 scope_reads += 1
                 artifact_reads += len(scope["refs"])

@@ -190,7 +190,8 @@ def walk(args) -> None:
                              "heavy": sum(any(t in s for t in HEAVY_TABLES) for s in data),
                              "items": len(body["items"]),
                              "bytes": len(response.content),
-                             "status": body["meta"]["source_status"]})
+                             "status": body["meta"]["source_status"],
+                             "proof": response.headers.get("x-export-status-proof", "-")})
                 cursor, first = body["meta"]["next_cursor"], False
             run_wall = time.monotonic() - run_started
         finally:
@@ -215,6 +216,7 @@ def walk(args) -> None:
             "items": sum(r["items"] for r in rows),
             "max_page_bytes": max(r["bytes"] for r in rows),
             "statuses": sorted({r["status"] for r in rows}),
+            "cursor_proofs": sorted({r["proof"] for r in cursor_rows}),
         }, ensure_ascii=False), flush=True)
     if args.output:
         Path(args.output).write_text(json.dumps(results, ensure_ascii=False, indent=1))
