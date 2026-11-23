@@ -133,7 +133,10 @@ def test_current_one_scope_refills_from_actual_ref_offset_and_preserves_etag(
         with Reads(store) as reads:
             result = batched._page_guarded("current", limit=limit, cursor=cursor)
         assert result == original  # body/ETag/cursor/source_status/as_of/order
-        assert len(reads.sizes) == 16, reads.sizes
+        # current 창은 작은 artifact를 왕복 64개씩 읽는다(byte 상한은 그대로).
+        assert reads.sizes == [export_snapshots.CURRENT_ARTIFACT_READ_BATCH] * (
+            MAX_PAGE_ARTIFACTS // export_snapshots.CURRENT_ARTIFACT_READ_BATCH
+        ), reads.sizes
         assert sum(reads.sizes) == MAX_PAGE_ARTIFACTS
         assert set(reads.digests) == {ref["artifact_digest"] for ref in scope["refs"]}
         all_keys.extend(item["location_id"] for item in result[0]["items"])

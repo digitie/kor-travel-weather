@@ -1,3 +1,45 @@
+## 2026-11-24 — current cursor 페이지의 상태 판정 공유·페이지 상한 512·artifact 묶음 읽기
+
+운영 odroid(2,925 scope)에서 Map의 current 순회가 cursor 페이지마다 활성 roster·승인 선택(무결성 2문장)·
+head⋈generation·owner⋈attempt⋈run⋈generation 상태 조회를 반복했다. 결과는 같은 snapshot이면 매 페이지
+같았다. 최근 72시간 API 로그의 export 503 실패 위치는 `_page_guarded:1264`(상태 4표 JOIN) 76건,
+`_active_scope_states:319` 36건, `approved_source_selection:414` 32건 순이며 모두 statement_timeout이다.
+읽기 전용 EXPLAIN(ANALYZE, BUFFERS)에서 2,925키 attempt·generation 조회는 디스크 읽기 없이 shared hit
+1.2만 buffer에 1.4~1.6초였다(CPU 포화). 큰 표 조회의 **횟수**가 원인이다.
+
+- 상태 판정(`_current_state_stale`)을 snapshot_id·manifest digest·reader 설정마다 앱 공용
+  (`ExportSelectionCache.status_proofs`)으로 한 번 계산한다. 첫 페이지는 manifest를 만든 freeze RR
+  안에서 같은 승인 선택과 그 scope 상태를 그대로 써서 계산한다. cursor 페이지는 같은 RR에서 page
+  liveness 3행만 읽어 판정 때와 같고 남은 수명이 20초 이상이면 잇는다. head·generation·plan
+  삭제는 번호가 바뀌어 다음 페이지에 바로 드러나고, 수집 실패·승인 변경·catalog·소유/시도/run 행
+  변경은 기존 계약대로 최대60초 안에 반영된다. 판정을 새로 계산할 때 같은 RR에서 방금 읽은 승인
+  선택의 scope 상태는 다시 조회하지 않는다. 첫 페이지와
+  cross-limit seed는 공용 판정을 읽지 않는다(Map의 304 판단 기준). header `x-export-status-proof`.
+- 상태 조회 자체도 줄였다. head는 generation FK라 heads⋈generations JOIN을 heads 단독 조회로,
+  4표 JOIN은 승인 선택과 같은 분해 조회(`_active_scope_states`)로 바꿨다.
+- current 페이지 scope·artifact 상한 128→512(`MAX_CURRENT_PAGE_*`, 예보·중기는 128 그대로).
+  입력 artifact byte는 페이지당 32MiB에서 scope 경계로 끊는다(`MAX_CURRENT_PAGE_INPUT_BYTES`).
+  DB artifact를 한 왕복 64개씩 읽는다(byte 상한 8MiB 그대로, 예보·중기는 8개 그대로).
+- 30초 잔여 규칙(`_CURSOR_SELECTION_MIN_REMAINING`)은 판정을 새로 계산하는 드문 경로에만 남는다.
+
+로컬 PostgreSQL 16(tmpfs)에 실제 수집·publisher 경로로 grid 2,925·위치 3,434·point 27,472를 만들고
+(`benchmarks/export_current_pages.py`) Map과 같은 limit 2000 순회를 3회씩 비교했다(새 앱=빈 캐시).
+
+| 지표 (중앙값) | 전 (origin/main e18f809) | 후 |
+| --- | ---: | ---: |
+| 페이지 수 | 23 | 14 |
+| 첫 페이지 SQL(전체 문장) | 96 | 48 |
+| cursor 페이지당 SQL(전체 문장) | 78.7 | 28.5 |
+| 순회 전체 SQL | 1,827 | 419 |
+| 큰 표 조회(attempt·generation·plan·owner·inventory) | 97 | 5 (첫 페이지만) |
+| 최대 페이지 bytes | 264,539 | 415,599 |
+| cursor 페이지 wall p50 | 0.257초 | 0.121초 |
+| 순회 wall | 7.37초 | 2.70초 |
+
+wall은 로컬 tmpfs 값이라 운영 배율로 옮기지 않는다. 운영 odroid는 CPU 포화에서 큰 표 조회 하나가
+1.4초 이상이었다. limit 5000이면 6페이지·최대 1,019,839 bytes(4MiB 상한 안)다. Map의
+`kor_travel_weather_page_size`(2000)는 W1·W2·W5가 함께 쓰므로 바꾸지 않았고, 바꾸지 않아도
+페이지 수는 23→14다.
 ## 2026-11-24 — AirKorea 광주 통합 주소 측정소 13곳 누락과 partial 노출
 
 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #10, §4 #17): `airkorea_weather_job`이 매 run 13개 측정소를 못 받고도 SUCCESS로 끝났다(302회 중 301회). odroid 읽기 전용 조회로 원인을 확인했다. 13곳은 모두 광주 도심 측정소(두암동·건국동·주월동·운암동·우산동(광주)·서석동·노대동·농성동·유촌동·치평동·오선동·일곡동·평동)이고, 측정소 목록의 주소 첫 토큰이 `전남광주통합특별시`라 `normalize_sido_name`이 `전남`으로 묶었다. 전남 시도별 bulk 응답에는 이들이 없어 `not_in_response`로 빠졌다. 2026-10-14 첫 수집부터 측정 원천에 `sidoName=광주` 행은 0건이다 — 폐쇄 측정소도 일시 오류도 아닌 결정적 매핑 결함이다(오류 문자열의 예외 종류가 비어 있던 이유).

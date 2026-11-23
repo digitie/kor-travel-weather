@@ -173,6 +173,11 @@ class ApprovedSelection:
     #: 한 요청의 fresh freeze 판정만 재사용한다. 공용 캐시의 TTL을 늘리지 않는다.
     health_checked_at: datetime | None = None
     health_recheck_at: datetime | None = None
+    #: 선택을 읽은 RR의 (source_scope, attempt_id, run_id, 시도 상태, 공개 세대, run 상태,
+    #: epoch 일치) 행. 신선도 창 안 승인 scope(``state_scopes``)만 담는다. export 상태 판정이
+    #: 같은 scope의 큰 attempt·generation 표를 다시 찾지 않도록 넘긴다(선택과 같은 수명).
+    scope_states: tuple = ()
+    state_scopes: frozenset[str] = frozenset()
 
 
 #: attempt별 불변 plan의 해석 결과. descriptor 열은 insert 뒤 바뀌지 않으므로(export_heads는
@@ -623,4 +628,5 @@ def approved_source_selection(
     return ApprovedSelection(
         tuple(scopes), unconfirmed, frozenset(key[:3] for key in expired_parts),
         health_checked_at=now if health_proof else None, health_recheck_at=recheck_at,
+        scope_states=tuple(active), state_scopes=frozenset(source_scopes),
     )
