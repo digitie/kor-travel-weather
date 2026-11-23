@@ -1,3 +1,34 @@
+## 2026-11-24 — 지역 수집 원천별 job 분리·일시 네트워크 오류 재시도·보충 tick
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P0 #3, §4 #6) 대응.
+2026-11-22 20:30Z `regional_weather_job`의 `krex_restarea_sync` 한 step이
+`KrexConnectionError: [Errno -5] No address associated with hostname`(odroid DNS)으로 실패해
+run이 FAILURE가 됐고, export 승격은 run SUCCESS에서만 일어나므로(`export_collector._lock_free_verdict`,
+`export_lifecycle.reconcile`) 성공한 해수욕장·산악·청정넷까지 `CONFIRMED_TERMINAL`로 퇴역돼
+24시간 공개되지 못했다. 재시도도 없었고 다음 tick은 12시간 뒤였다.
+
+- **원천별 job**: 네 자산을 `krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·
+  `krforest_dust_job`으로 나눴다(W-EXP-SPLIT-01과 같은 규칙 — step 단위 승격은 만들지 않고 run을 나눈다).
+  한 원천의 실패는 그 원천만 막는다. 실행기는 다른 단일 자산 job처럼 in-process, 상한은 기본 7200초
+  (실측 step 최대 1110초). 시작 분은 :30/:40/:45/:50으로 흩었다(14일 step p50/최대: 산악 646/1110초,
+  청정넷 345/478, 휴게소 371/599, 해수욕장 129/221).
+- **일시 네트워크 오류 op 재시도**: `transient_retry.retries_transient_network`가 DNS·연결·timeout 계열
+  (`socket.gaierror`·`ConnectionError`·`TimeoutError`·`httpx.TransportError`·`KrexNetworkError`·
+  산림 `failure_kind="network"`·KHOA transport 오류, 원인 사슬 포함)만 `RetryRequested`로 바꾼다.
+  최대 3회, 대기 60·120·240초 상한의 equal jitter(절반 고정+절반 무작위), 600초 cap. 인증·쿼터·파싱·
+  차단(`UpstreamBlocked`)·의도적 `Failure`는 그대로 실패한다. 실패한 시도의 수집 기록은 이미 `failed`로
+  닫혀 승격되지 않고, 재시도 성공 run이 SUCCESS면 새 attempt가 승격된다.
+- **보충 tick**: schedule cron에 정규(05·17시) 뒤 +1h·+3h(06·08·18·20시)를 더하고, 보충 tick은
+  정규 tick 시각 이후 그 job의 SUCCESS run이 없을 때만 run을 만든다(`_regional_catch_up_gate`).
+  /status의 다음 예정 시각은 정규 cron으로만 계산한다(`schedule_with_export_status(status_cron_schedule=)`).
+- 관리자 Dagster 화면의 job 이름 번역을 원천별로 추가하고 옛 묶음 job은 "(분리 전)"으로 남겼다.
+
+시험: `test_regional_split.py`(분리·cron·status scope·보충 gate 실제 run storage·오류 분류·backoff·
+in-process executor에서 실제 RetryRequested 재실행 성공), `test_export_schedule_status.py` 보충 cron 제외,
+기존 job 수 22→25 갱신, admin vitest·fixture e2e `dagster-regional-jobs.spec.ts`.
+배포 뒤 옛 `twice_daily_regional_weather` instigator 행은 고아로 남는다(동작 없음). 새 schedule 네 개는
+기본 RUNNING이다.
+
 ## 2026-11-24 — AirKorea 광주 통합 주소 측정소 13곳 누락과 partial 노출
 
 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #10, §4 #17): `airkorea_weather_job`이 매 run 13개 측정소를 못 받고도 SUCCESS로 끝났다(302회 중 301회). odroid 읽기 전용 조회로 원인을 확인했다. 13곳은 모두 광주 도심 측정소(두암동·건국동·주월동·운암동·우산동(광주)·서석동·노대동·농성동·유촌동·치평동·오선동·일곡동·평동)이고, 측정소 목록의 주소 첫 토큰이 `전남광주통합특별시`라 `normalize_sido_name`이 `전남`으로 묶었다. 전남 시도별 bulk 응답에는 이들이 없어 `not_in_response`로 빠졌다. 2026-10-14 첫 수집부터 측정 원천에 `sidoName=광주` 행은 0건이다 — 폐쇄 측정소도 일시 오류도 아닌 결정적 매핑 결함이다(오류 문자열의 예외 종류가 비어 있던 이유).
@@ -5,6 +36,7 @@
 수정: 통합 주소(`전남광주…`) 측정소는 `광주`·`전남` 두 bulk 묶음을 모두 묻고 이름으로만 맞춘다(`measurement_sido_names`). 두 응답에 모두 나오면 한 번만 쓴다. 저장된 anchor metadata(`sido_name`)는 바꾸지 않는다. 측정소 실패는 사유(`not_in_response`·`ambiguous_name`·`request_error`·`normalize_error`)별로 세어 결과 metadata(`station_failure_reasons`, 일시/결정적 개수, 표본 20개)와 sync run 오류 문자열에 남기고, Dagster 결과 status와 `kortravel/collection-outcome` run tag를 `partial`로 올린다. native `weather_sync_runs`는 success로 둬 받은 측정소의 승격은 그대로다. 요청 오류 재시도는 client의 기존 3회 이상 재시도로 둔다.
 
 남은 확인: 실제 AirKorea가 `sidoName=광주` 묶음에 이 13곳을 돌려주는지는 배포 뒤 첫 run에서 본다(운영 key로 외부 호출을 하지 않았다). 여전히 `not_in_response`면 partial로 드러난다.
+
 
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 

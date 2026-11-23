@@ -5,8 +5,9 @@ import os
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from functools import cache
+from typing import Any
 
 from dagster import (
     AssetExecutionContext,
@@ -36,9 +37,10 @@ from kortravelweather.providers import (
     provider_spec,
     redact_secrets,
 )
-from kortravelweather.providers.khoa import KHOA_PROVIDER
-from kortravelweather.providers.krex import KREX_PROVIDER, UpstreamBlocked
-from kortravelweather.providers.krforest import KRFOREST_PROVIDER
+from kortravelweather.providers.khoa import KHOA_BEACH_INDEX_DATASET, KHOA_PROVIDER
+from kortravelweather.providers.krex import KREX_PROVIDER, KREX_RESTAREA_DATASET, UpstreamBlocked
+from kortravelweather.providers.krforest import KRFOREST_MOUNTAIN_DATASET, KRFOREST_PROVIDER
+from kortravelweather.providers.krforest_dust import KRFOREST_DUST_DATASET
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.retention import (
@@ -88,6 +90,7 @@ from .resources import (
 )
 from .retention import FORWARD_PARTITION_ALERT_DAYS, run_weather_retention_purge
 from .sync_recovery import terminal_worker, weather_sync_recovery_sensor
+from .transient_retry import retries_transient_network
 
 logger = logging.getLogger(__name__)
 
@@ -931,8 +934,6 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
         if job_name.startswith(tuple(_external_slug(key) for key in EXTERNAL_PROVIDER_KEYS))
         else 7200
     )
-    if job_name == "regional_weather_job":
-        seconds = 21600
     if job_name == "kma_short_forecast_job":
         # 300격자 단기예보 한 회차는 2026-10-24..26 50~70분이었으나 CPU가 포화된 odroid에서
         # 10-27부터 2시간을 넘겨 7200초 상한에 거의 매번 회수됐다(10-29 07:13 뒤 성공 0).
@@ -976,10 +977,11 @@ def schedule_status_sources(job_name: str, settings: WeatherSettings):
         ) else ()
     if job_name == "airkorea_weather_job":
         return status_scopes(enabled & {"python-airkorea-api"})
-    if job_name == "regional_weather_job":
-        return status_scopes(enabled & {
-            "python-khoa-api", "python-krforest-api", "python-krex-api",
-        })
+    regional = _REGIONAL_COLLECTIONS_BY_JOB.get(job_name)
+    if regional is not None:
+        return dataset_scopes(regional.provider_key, {regional.dataset_key}) if (
+            regional.provider_key in enabled
+        ) else ()
     collection = _EXTERNAL_COLLECTIONS_BY_JOB.get(job_name)
     if collection is None or collection.provider_key not in enabled:
         return ()
@@ -1203,6 +1205,7 @@ _EXTERNAL_PROVIDER_ASSETS = tuple(
     required_resource_keys={"khoa_client", "weather_repository"},
     description="국립해양조사원 해수욕장 해양지수(파고·수온·기온·풍속)를 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1242,6 +1245,7 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림청 산악기상관측망 관측값을 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1269,6 +1273,7 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림 청정넷(AICAN) 미세먼지 PM10·PM2.5·PM1.0과 기상값을 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1307,6 +1312,7 @@ def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krex_client", "weather_repository"},
     description="한국도로공사 고속도로 휴게소 기상 관측값을 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1347,6 +1353,125 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
         )
     context.add_output_metadata(result)
     return result
+
+
+#: 지역 수집의 정규 시각(KST). 하루 두 번이면 충분하다(아래 schedule 주석).
+REGIONAL_REGULAR_HOURS = (5, 17)
+#: 정규 tick 뒤 보충 tick까지의 시간. 보충 tick은 정규 tick 뒤로 그 job의 SUCCESS run이
+#: 없을 때만 run을 만든다. 정규 run이 실패하면 다음 기회가 12시간 뒤가 아니라 1·3시간 뒤다.
+REGIONAL_CATCH_UP_DELAYS_HOURS = (1, 3)
+
+
+@dataclass(frozen=True, slots=True)
+class RegionalCollection:
+    """지역 원천 하나 — asset·job·schedule이 한 벌씩 붙는다.
+
+    네 원천은 한 job(``regional_weather_job``)의 네 step이었다. export 승격은 run 전체가
+    SUCCESS일 때만 일어나므로(W-EXP-SPLIT-01과 같은 규칙, step 단위 승격 없음) 한 원천의
+    실패가 나머지 셋의 승격까지 막았다 — 2026-11-22 20:30Z krex DNS 오류 하나로 해수욕장·
+    산악·청정넷이 성공했는데도 24시간 공개되지 못했다. 그래서 외부 provider처럼 run을 나눈다.
+    """
+
+    asset: Any
+    provider_key: str
+    dataset_key: str
+    #: 정규·보충 tick의 분. 네 원천의 시작을 흩어 CPU가 포화된 호스트에 한꺼번에 몰리지
+    #: 않게 한다. 실측(2026-11-09..23) step p50/최대: 산악 646/1110초, 청정넷 345/478초,
+    #: 휴게소 371/599초, 해수욕장 129/221초 — 가장 긴 산악을 먼저 띄운다.
+    minute: int
+
+    @property
+    def slug(self) -> str:
+        return self.asset.key.path[-1].removesuffix("_sync")
+
+    @property
+    def job_name(self) -> str:
+        return f"{self.slug}_job"
+
+    @property
+    def schedule_name(self) -> str:
+        return f"twice_daily_{self.slug}"
+
+    @property
+    def regular_cron_schedule(self) -> str:
+        hours = ",".join(str(hour) for hour in REGIONAL_REGULAR_HOURS)
+        return f"{self.minute} {hours} * * *"
+
+    @property
+    def cron_schedule(self) -> str:
+        hours = sorted(
+            {*REGIONAL_REGULAR_HOURS}
+            | {
+                (hour + delay) % 24
+                for hour in REGIONAL_REGULAR_HOURS
+                for delay in REGIONAL_CATCH_UP_DELAYS_HOURS
+            }
+        )
+        return f"{self.minute} {','.join(str(hour) for hour in hours)} * * *"
+
+
+REGIONAL_COLLECTIONS = (
+    RegionalCollection(
+        krforest_mountain_sync, KRFOREST_PROVIDER, KRFOREST_MOUNTAIN_DATASET, minute=30
+    ),
+    RegionalCollection(khoa_beach_index_sync, KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET, minute=40),
+    RegionalCollection(krex_restarea_sync, KREX_PROVIDER, KREX_RESTAREA_DATASET, minute=45),
+    RegionalCollection(krforest_dust_sync, KRFOREST_PROVIDER, KRFOREST_DUST_DATASET, minute=50),
+)
+_REGIONAL_COLLECTIONS_BY_JOB = {
+    collection.job_name: collection for collection in REGIONAL_COLLECTIONS
+}
+
+
+def last_regular_tick(local: datetime, minute: int) -> datetime:
+    """``local``(KST, aware) 이전·같은 가장 최근 정규 tick 시각."""
+    candidates = [
+        (local - timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        for days in (0, 1)
+        for hour in REGIONAL_REGULAR_HOURS
+    ]
+    return max(candidate for candidate in candidates if candidate <= local)
+
+
+def _regional_catch_up_gate(collection: RegionalCollection):
+    """정규 tick은 항상, 보충 tick은 정규 tick 뒤 SUCCESS run이 없을 때만 실행한다."""
+    from zoneinfo import ZoneInfo
+
+    from dagster import DagsterRunStatus, RunsFilter
+
+    seoul = ZoneInfo("Asia/Seoul")
+
+    def should_execute(context) -> bool:
+        try:
+            scheduled = context.scheduled_execution_time
+        except Exception:
+            scheduled = None
+        if scheduled is None:
+            # 시각 없는 수동 평가는 정규 tick처럼 다룬다.
+            return True
+        local = scheduled.astimezone(seoul)
+        if local.hour in REGIONAL_REGULAR_HOURS:
+            return True
+        regular = last_regular_tick(local, collection.minute)
+        succeeded = context.instance.get_runs(
+            filters=RunsFilter(
+                job_name=collection.job_name,
+                statuses=[DagsterRunStatus.SUCCESS],
+                # 정규 tick의 run은 tick 시각 직후에 만들어진다. 앞선 주기의 run을
+                # 섞지 않도록 정규 tick 시각부터 센다.
+                created_after=regular.astimezone(UTC),
+            ),
+            limit=1,
+        )
+        if succeeded:
+            return False
+        context.log.info(
+            "%s: 정규 실행(%s) 뒤 성공한 run이 없어 보충 실행합니다",
+            collection.job_name, regular.isoformat(),
+        )
+        return True
+
+    return should_execute
 
 
 #: Days a retention run missed but could not mark on their table (the
@@ -1604,16 +1729,14 @@ _unresolved_short_retention_job = define_asset_job(
     selection=[weather_short_forecast_retention],
     tags=_job_tags("weather_short_forecast_retention_job"),
 )
-_unresolved_regional_job = define_asset_job(
-    "regional_weather_job",
-    selection=[
-        khoa_beach_index_sync,
-        krforest_mountain_sync,
-        krforest_dust_sync,
-        krex_restarea_sync,
-    ],
-    tags=_job_tags("regional_weather_job"),
-)
+_unresolved_regional_jobs = {
+    collection.job_name: define_asset_job(
+        collection.job_name,
+        selection=[collection.asset],
+        tags=_job_tags(collection.job_name),
+    )
+    for collection in REGIONAL_COLLECTIONS
+}
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
 # ``UnresolvedAssetJobDefinition`` directly emits a deprecation warning today
@@ -1668,9 +1791,9 @@ external_weather_jobs = {
 }
 weather_retention_job = _resolve_job(_unresolved_retention_job)
 weather_short_forecast_retention_job = _resolve_job(_unresolved_short_retention_job)
-regional_weather_job = _resolve_job(
-    _unresolved_regional_job, executor_def=_BOUNDED_MULTIPROCESS_EXECUTOR
-)
+regional_weather_jobs = {
+    name: _resolve_job(unresolved) for name, unresolved in _unresolved_regional_jobs.items()
+}
 
 # The three hourly jobs that publish into the AirKorea station anchors run one
 # after another, not together: 초단기예보 at :00, 초단기실황 at :20, AirKorea at
@@ -1808,17 +1931,23 @@ external_weather_schedules = [
 ]
 
 
-# Twice a day, on the half hour so it never collides with the hourly
-# ingests.  These three sources publish a few times a day at most; asking
-# hourly would multiply an already 3M-fact-per-day pipeline for readings
-# that have not changed.
-regional_weather_schedule = _weather_schedule(
-    name="twice_daily_regional_weather",
-    cron_schedule="30 5,17 * * *",
-    job=regional_weather_job,
-    execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
+# Twice a day.  These three sources publish a few times a day at most; asking
+# hourly would multiply an already 3M-fact-per-day pipeline for readings that
+# have not changed.  Each source is its own job (see ``RegionalCollection``):
+# one source's failure no longer holds back the others' promotion.  The
+# catch-up hours run only when the regular tick left no SUCCESS behind.
+regional_weather_schedules = [
+    _weather_schedule(
+        name=collection.schedule_name,
+        cron_schedule=collection.cron_schedule,
+        status_cron_schedule=collection.regular_cron_schedule,
+        job=regional_weather_jobs[collection.job_name],
+        should_execute=_regional_catch_up_gate(collection),
+        execution_timezone="Asia/Seoul",
+        default_status=DefaultScheduleStatus.RUNNING,
+    )
+    for collection in REGIONAL_COLLECTIONS
+]
 
 # 01:45 KST는 기존 실측(2026-10-04..07)의 저부하 시각으로 유지한다.
 # 외부 수집의 phase 분산 후에는 이 시간에도 실행이 시작될 수 있다.
@@ -1851,7 +1980,7 @@ _COLLECTION_JOBS = [
     kma_regional_alert_events_job,
     airkorea_job,
     *external_weather_jobs.values(),
-    regional_weather_job,
+    *regional_weather_jobs.values(),
     weather_retention_job,
     weather_short_forecast_retention_job,
 ]
@@ -1869,7 +1998,7 @@ defs = Definitions(
         regional_alert_events_schedule,
         hourly_airkorea_weather_schedule,
         *external_weather_schedules,
-        regional_weather_schedule,
+        *regional_weather_schedules,
         daily_weather_retention_schedule,
         short_forecast_retention_schedule,
     ],

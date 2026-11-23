@@ -114,8 +114,12 @@ credential is configured.
 
 ## Regional observation networks
 
-Collected on their own schedule, `twice_daily_regional_weather` (05:30 and 17:30
-Asia/Seoul):
+Collected twice a day (05·17시 Asia/Seoul), one job and schedule per source so one
+source's failure does not hold back the others' promotion: `twice_daily_krforest_mountain`
+(:30), `twice_daily_khoa_beach_index` (:40), `twice_daily_krex_restarea` (:45),
+`twice_daily_krforest_dust` (:50). Each schedule also ticks 1 and 3 hours later, and those
+catch-up ticks run only when the regular tick left no successful run. DNS·connection·timeout
+errors are retried in the same run (up to 3 times, 60–240 s with jitter).
 
 | Provider | Dataset | What |
 | --- | --- | --- |
