@@ -98,6 +98,69 @@ def test_reconciliation_merges_page_boundary_repeats_but_cannot_restore_dropped_
     assert len(single - {event.event_id for event in result.events}) > 0
 
 
+NOV10 = json.loads(
+    (Path(__file__).parent / "fixtures" / "kma_getpwncd_20261107_20261110.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+def test_nov10_episode_boundary_fell_inside_one_announcement():
+    """2026-11-06..10 ALERT_PAGE_DUPLICATE(837건)의 조건: 100행 경계가 한 tmFc 묶음 안이었다.
+
+    그 구간에는 당진 같은 내용 충돌이 없었다. 실패는 원천 순서가 흔들린 run에서만 났고
+    (같은 날에도 성공이 섞였다) 경계가 묶음 밖으로 나가거나 순서가 우연히 맞으면 멎었다.
+    """
+    rows = NOV10["single_page"]["rows"]
+    assert len(rows) == NOV10["single_page"]["totalCount"] == 174
+    assert rows[99]["tmFc"] == rows[100]["tmFc"]
+    result = reconcile_alert_rows(rows)
+    assert result.quarantined == [] and result.duplicates_merged == 0
+
+
+async def test_nov10_episode_is_one_request_and_publishes_every_row(repo):
+    rows = NOV10["single_page"]["rows"]
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.params["pageNo"])
+        return httpx.Response(200, json={"response": {
+            "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
+            "body": {"items": {"item": rows}, "pageNo": 1, "numOfRows": module.PAGE_SIZE,
+                     "totalCount": len(rows)},
+        }})
+
+    async with sdk(handler) as client:
+        result = await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert calls == ["1"]
+    assert result["status"] == "success" and result["events_loaded"] == 174
+    assert result["quarantined_rows"] == result["duplicates_merged"] == 0
+
+
+@pytest.mark.parametrize("format", ["json", "xml"])
+async def test_nov14_window_without_alerts_is_an_empty_success(repo, format):
+    """2026-11-14 15:03Z~11-15 03:30Z ALERT_PAGE_METADATA(152건)의 응답.
+
+    KST 자정에 요청 창(11-12..11-15)에 발표가 하나도 없어지자 원천이 NO_DATA(resultCode 03)를
+    돌려줬고, SDK가 pageNo/numOfRows 없는 빈 body로 정규화했다. #239가 이 모양을 빈 성공으로
+    받기 시작한 03:30Z 배포 뒤 멎었다. 한 요청 수집에서도 같은 응답은 빈 성공이다.
+    """
+    def handler(_request):
+        if format == "xml":
+            return httpx.Response(200, text=(
+                "<OpenAPI_ServiceResponse><cmmMsgHeader><resultCode>03</resultCode>"
+                "<resultMsg>NODATA_ERROR</resultMsg></cmmMsgHeader></OpenAPI_ServiceResponse>"
+            ), headers={"content-type": "application/xml"})
+        return httpx.Response(200, json={"response": {
+            "header": {"resultCode": "03", "resultMsg": "NODATA_ERROR"},
+        }})
+
+    async with sdk(handler) as client:
+        result = await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert result["status"] == "success" and result["observations"] == 0
+    assert result["requests_fetched"] == 1 and result["quarantined_rows"] == 0
+
+
 async def test_real_response_publishes_all_but_the_quarantined_observations(repo):
     calls = []
 

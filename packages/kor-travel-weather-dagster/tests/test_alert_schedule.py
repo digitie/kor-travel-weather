@@ -116,6 +116,12 @@ class Repository:
         return self.runs
 
 
+@pytest.fixture(autouse=True)
+def frozen_clock(monkeypatch):
+    # NOW는 수집 시점에 정해진다. 전체 suite에서는 평가까지 수십 분이 지나므로 고정한다.
+    monkeypatch.setattr(module, "kst_now", lambda: NOW)
+
+
 def evaluate(repository, *, active=False):
     schedule = module.build_regional_alert_events_schedule(alert_job)
     resource = SimpleNamespace(create_repository=lambda: repository)
