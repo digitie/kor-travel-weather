@@ -492,6 +492,10 @@ async def _frozen_response(
             )
         if resource in {"current", "daily-summaries", "forecasts"}:
             headers["x-export-read"] = reader.page_reuse_status
+        if resource == "current":
+            # 상태 판정의 출처: frozen(첫 페이지 freeze RR)·reused(앱 공용 판정)·computed(새 계산).
+            # 완료 페이지 재사용(x-export-read=reused)이면 이 요청은 판정을 하지 않았다(none).
+            headers["x-export-status-proof"] = getattr(reader, "page_status_proof", "none")
     except ExportCursorInvalid as exc:
         _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")

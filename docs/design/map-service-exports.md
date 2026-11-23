@@ -298,6 +298,16 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 잘못된 최신 상태를 숨기지 못하게 한다. 데이터 generation은 고정해도 health는 현재 상태임을
 명시하고, Map은 페이지 중간 failed/stale가 나오면 새 generation publish를 보류한다.
 
+> **current의 상태 판정 공유(2026-11-24).** "현재 상태"는 소유자가 승인한 상태 반영 지연(최대60초)
+> 안의 값이다. current는 고정 snapshot 하나의 DB 상태 판정(catalog·승인 선택·현재 head·소유 시도·
+> run 상태)을 snapshot_id·manifest digest·reader 설정마다 앱에서 한 번 계산해 cursor 페이지가 나눠
+> 쓴다. 첫 페이지는 manifest를 만든 freeze RR 안에서 계산한다. 이어지는 페이지는 같은 RR에서
+> head·generation·plan의 삭제 변경 번호(page liveness 3행)를 읽어 판정 때와 같고, 판정의 남은
+> 수명이 10초 이상일 때만 잇는다. 삭제(유실)는 번호가 바뀌어 다음 페이지에서 바로 stale이 되고,
+> 수집 실패·승인 변경은 최대60초 안에 반영된다. 판정 수명은 그 판정에 쓴 승인 선택의 수명을
+> 넘지 않으며, 응답 직전의 60초 검사(`require_current_selection`)도 그대로다. 응답 header
+> `x-export-status-proof`가 `frozen`·`reused`·`computed`로 출처를 알린다.
+
 forecast는 **각 응답 시점의 지금 이후 target만** 내보낸다. 고정 snapshot_as_of가 과거였다는
 이유로 이미 지난 target을 보내고 Map에 prune 책임을 넘기지 않는다. snapshot artifact의 logical
 내용은 고정하되 응답의 temporal projection을 별도로 정의한다. `next_change_at`은 현재 페이지
