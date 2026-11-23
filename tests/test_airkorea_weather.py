@@ -465,7 +465,11 @@ def test_merged_gwangju_stations_are_matched_from_either_group(monkeypatch) -> N
             return len(values)
 
         def publish_and_finish(self, *, run_id, source_records, values, error=None, **kwargs):
-            self.ingested_sources.extend(record["source_entity_id"] for record in source_records)
+            # catalog run의 source는 측정 기록이 아니므로 measurement run만 센다.
+            if run_id == "run-airkorea_realtime_measurement":
+                self.ingested_sources.extend(
+                    record["source_entity_id"] for record in source_records
+                )
             self.published.append(error)
             return kwargs.get("values_loaded_offset", 0), SimpleNamespace(status="success")
 
