@@ -76,8 +76,13 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_sync_runs_overlap_skipped_total{provider,dataset}` — 같은 provider/dataset의 살아 있는 run(heartbeat가 3시간 lease 안)이 있어서 SUCCESS(skip)로 끝낸 시작 수. 실패가 아니며 `ktw_sync_runs_finished_total`에도 들어가지 않는다. 꾸준히 늘면 run이 자기 스케줄 간격보다 오래 걸린다는 뜻이다. lease가 만료된 앞 run과 겹치면 지금처럼 실패한다
 - `ktw_forward_partition_days`, `ktw_oldest_partition_age_days` — API `/metrics` scrape 때 카탈로그에서 읽는다(API만 내보낸다). 앞의 것은 오늘 이후 날짜 파티션 일수(`KorTravelWeatherForwardPartitionsLow`, 3일 이하), 뒤의 것은 가장 오래된 날짜 파티션의 첫날부터 오늘까지 일수로 보존 정리의 정체 신호다(야간 정리 직후 `RETENTION_DAYS`, 다음 정리 직전 +1). `KorTravelWeatherRetentionStale`은 9(운영 7일 + 2, 2026-10-13부터; 이전 16일 + 2 = 18) 초과가 30분 이어지면 울린다 — 정리가 이틀 연속 하루도 지우지 못했다는 뜻이다. API는 `RETENTION_DAYS`를 갖지 않으므로 임계값은 규칙에 있고 `tests/test_metrics.py`가 고정한다. 카탈로그 읽기가 실패하면 둘 다 빠지고 `KorTravelWeatherForwardPartitionsUnknown`이 울린다
 - `ktw_export_artifact_gc_deleted_files_total`, `ktw_export_artifact_gc_deleted_bytes_total`,
-  `ktw_export_artifact_gc_reclaimable_bytes` — `weather_export_publisher` sensor가 10분마다
-  참조 없는 export artifact를 정리한 결과(code-server만 의미 있다). 현재 head·승인 inventory·
+  `ktw_export_artifact_gc_reclaimable_bytes` — 매시 :52 `weather_export_maintenance_job`이
+  참조 없는 export artifact를 정리한 결과(code-server만 의미 있다; 2026-11-24 전에는
+  `weather_export_publisher` sensor가 10분마다 돌았다). job은 publisher sensor가 RUNNING이고
+  export가 켜진 곳에서만 run을 만들며, 일괄 퇴역(CONFIRMED_TERMINAL·SUPERSEDED)도 같은 run이
+  한다. 정리가 실패하면 run 실패로 보인다. publisher sensor는 승격·일별 집계만 하고, 단계
+  실패가 3 tick 연속이거나 DB 장애로 후보 처리가 멈추면 tick이 실패로 끝난다(한 번의 일시
+  문장 초과는 skip 사유에 분류만 남긴다). 현재 head·승인 inventory·
   공개 전 receipt·승격 pin·유효하거나 최근인 frozen snapshot·일별 집계가 아직 읽지 않은 세대·
   보존 창(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS`, 기본 24) 안의 세대는
   지우지 않는다. 활성 publisher의 기본 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`는
@@ -85,7 +90,7 @@ rule·알람을 새 이름으로 함께 전환한다.
   명시 `dry_run`은 세기만 하고 `off`는 GC를 실행하지 않는다. 알 수 없는 설정은 계속
   `dry_run`으로 보정한다. 기존 운영에 명시된 `dry_run`은 코드 배포만으로 바뀌지 않는다.
   참조 조회는 후보 묶음별 EXISTS로 끝내며 전체 live set을 먼저 읽지 않는다. code-server는
-  열린 디렉터리 iterator와 최대 20,000개 후보만 tick 사이에 보관한다. 새 파일·live 파일·
+  한 run 안에서 2,000행 page를 차례로 읽는다(run 사이에는 아무것도 보관하지 않는다). 새 파일·live 파일·
   알 수 없는 이름도 목록 예산에 포함하며, DB 실패/취소 후에는 같은 미처리 후보를 재확인한다.
   재시작하면 처음부터 돌아도 안전하다. 전환은 기존 정상 release 절차로 배포와 함께 조정한다.
   reclaimable은 **마지막 제한된 패스**가 찾은 대상 중 아직 디스크에 남은 byte이며,

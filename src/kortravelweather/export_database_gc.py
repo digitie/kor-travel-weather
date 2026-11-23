@@ -25,9 +25,23 @@ from .export_gc import (
 
 
 class DatabaseArtifactGCScan:
-    """프로세스 메모리의 bounded cursor. 실패한 batch는 다음 tick에 재판정한다."""
+    """프로세스 메모리의 bounded cursor. 실패한 batch는 다음 tick에 재판정한다.
 
-    def __init__(self) -> None:
+    ``page_size``·``statement_seconds``는 목록 한 번의 행 수와 문장 상한이다. 기본값은
+    예전 sensor 경로 그대로다. 정리 job은 작은 page와 긴 문장 상한으로 여러 page를 읽는다
+    (odroid 2026-11-23 실측: 20,000행 목록 한 번 6.7초 — sensor의 1.5초 안에 끝나지 못했다).
+    """
+
+    def __init__(
+        self, *, page_size: int | None = None,
+        statement_seconds: float = GC_REFERENCE_SECONDS,
+    ) -> None:
+        # 기본 page는 호출 시점의 모듈 상한을 읽는다(시험이 상한을 줄여 keyset을 본다).
+        page_size = MAX_SCAN_CANDIDATES if page_size is None else page_size
+        if not 1 <= page_size <= MAX_SCAN_CANDIDATES or not 0 < statement_seconds <= 60:
+            raise ValueError("artifact GC 목록 page 설정이 올바르지 않습니다.")
+        self.page_size = page_size
+        self.statement_seconds = statement_seconds
         self.engine = None
         self.after: tuple[datetime, str] | None = None
         self.pending: deque[tuple[str, int]] = deque()
@@ -53,13 +67,13 @@ class DatabaseArtifactGCScan:
                 tuple_(table.c.created_at, table.c.digest) > self.after,
             )
         statement = statement.order_by(table.c.created_at, table.c.digest).limit(
-            MAX_SCAN_CANDIDATES,
+            self.page_size,
         )
         with repository.engine.begin() as connection:
             if connection.dialect.name == "postgresql":
                 connection.execute(text("SET TRANSACTION READ ONLY"))
                 timeout_ms = max(1, int(min(
-                    GC_REFERENCE_SECONDS, max(0, deadline - time.monotonic()),
+                    self.statement_seconds, max(0, deadline - time.monotonic()),
                 ) * 1000))
                 connection.execute(text(f"SET LOCAL statement_timeout = '{timeout_ms}ms'"))
                 connection.execute(text("SET LOCAL lock_timeout = '1s'"))
@@ -69,7 +83,7 @@ class DatabaseArtifactGCScan:
         if rows:
             self.after = (rows[-1].created_at, rows[-1].digest)
             self.pending.extend((row.digest, row.byte_count) for row in rows)
-        self.exhausted = len(rows) < MAX_SCAN_CANDIDATES
+        self.exhausted = len(rows) < self.page_size
         report["visited"] += len(rows)
         report["scanned"] += len(rows)
 

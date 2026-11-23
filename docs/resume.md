@@ -1,3 +1,24 @@
+## 2026-11-24 — export publisher의 정리를 매시 job으로 분리하고 실패를 tick 실패로
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.6 #5)의 후속이다. odroid
+`weather_export_publisher` sensor 48시간(11-21 21:4xZ~11-23 21:4xZ, 2,845 tick, job_ticks 읽기 전용)
+실측: tick 평균 32.4초·p50 34.7·p95 39.2·최대 49.2초. 단계 평균은 fresh 20.2초(p50 22.7)·sweep 6.2·
+daily 2.9·퇴역 4.2(돈 tick 561회 중 303회가 5초 문장 상한)·GC 3.1(571회 중 344회가 1.5초 목록 상한).
+GC 목록 20,000행은 EXPLAIN ANALYZE 6.7초라 sensor 예산에 들어갈 수 없었고, tick마다 새 repository를
+만들어 process 안의 목록 cursor가 매번 버려졌다. 승격은 48시간 70,743세대(2,597 tick에서 승격 발생)로
+거의 매 tick 일이 있어 sensor에 남긴다 — job으로 옮기면 하루 1,440 run이 생긴다.
+
+- `weather_export_maintenance_job`(매시 :52, max_runtime 900초, in_process)이 일괄 퇴역(문장 상한 30초,
+  예산 60초 안에서 반복)과 artifact GC(2,000행 page·문장 15초, 배타 guard를 잡는 삭제는 호출당 1.5초 뒤 0.25초 양보, 전체 300초)를 돈다.
+  schedule은 기본 RUNNING이지만 publisher sensor가 저장소에 RUNNING이고 export가 켜진 곳에서만 run을
+  만든다(freeze·운영 정지로 publisher를 멈추면 정리도 멈춘다). 실패는 run 실패다.
+- sensor tick 상한 45→40초. GC 예약(10초)이 빠져 source 예산은 모든 tick에서 30초 그대로다.
+- 오류: lease 경합·평가 중·비활성은 skip. 단계(fresh·sweep·daily) 실패는 1~2 tick은 skip(분류만),
+  3 tick 연속이면 tick 실패. DB 장애로 후보 처리가 멈춘 tick과 repository·lease 단계 예외는 즉시
+  실패. 메시지는 분류만 남기고 원 예외 연결을 끊는다. 실패 tick은 cursor가 저장되지 않는다.
+- `refresh_publisher_daily`는 실패 분류를 `error`로 돌려준다. `retire_settled_attempts`에 문장 상한
+  재정의, `DatabaseArtifactGCScan`에 page·문장 상한 인자를 더했다(기본값은 기존 그대로).
+
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.
