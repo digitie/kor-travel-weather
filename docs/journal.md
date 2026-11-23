@@ -1,3 +1,12 @@
+## 2026-11-24 — KMA 단기예보 run 상한 10,800→14,400초
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md`)의 단기예보 항목 후속이다. 운영
+storage 읽기 전용 14일: 성공 75회 step p50 8,165초·p90 9,665초·최대 10,736초, 실패 11회 중 6회가 상한 회수,
+취소 10회는 전부 배포·수동 강제 취소(상한 무관). step의 약 83%가 fact 게시(`publish_ms` 5.5~7.9천 초)이고
+정규화는 원인이 아니다(로컬 격자당 약 50ms). 수집 경로에서 확실히 줄일 비용은 찾지 못해 상한을 4시간으로
+올리고 근거를 [kma-short-forecast-runtime.md](kma-short-forecast-runtime.md)에 남겼다. 3시간을 넘긴 회차 동안
+다음 tick은 coalescing으로 합쳐짐을 실제 schedule 평가 테스트로 고정했다.
+
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.

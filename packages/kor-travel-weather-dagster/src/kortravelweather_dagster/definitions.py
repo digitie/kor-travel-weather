@@ -924,9 +924,13 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
     if job_name == "kma_short_forecast_job":
         # 300격자 단기예보 한 회차는 2026-10-24..26 50~70분이었으나 CPU가 포화된 odroid에서
         # 10-27부터 2시간을 넘겨 7200초 상한에 거의 매번 회수됐다(10-29 07:13 뒤 성공 0).
-        # 같은 일을 끝내도록 발표 주기(3시간)까지 둔다. 다음 회차는 작업별 동시 1 제한으로
-        # 대기열에서 기다리므로 겹치지 않는다.
-        seconds = 10800
+        # 2026-11-09..23(14일) 성공 75회 step p50 8,165초·p90 9,665초·최대 10,736초로 10800초에
+        # 붙어 있고, 실패 11회 중 6회가 상한 회수(DagsterExecutionInterruptedError, run 10,955~
+        # 11,432초)였다 — 3시간 일을 다 하고 승격 없이 버렸다. 시간의 83%는 fact 게시(timed_publish,
+        # 384~441천 fact)다(docs/kma-short-forecast-runtime.md). 상한을 4시간으로 둔다. 3시간을
+        # 넘긴 회차 동안 다음 tick은 coalescing으로 합쳐지고 작업별 동시 1 제한도 그대로라
+        # 겹치지 않는다. 넘긴 회차는 회수 대신 끝까지 게시되어 다음 회차보다 먼저 최신이 된다.
+        seconds = 14400
     if job_name == "kma_regional_alert_events_job":
         seconds = 300
     if job_name == "address_refresh_job":
