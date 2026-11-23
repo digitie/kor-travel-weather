@@ -5052,6 +5052,7 @@ class WeatherRepository:
             "cutoff": cutoff.isoformat(), "matched_in_batch": 0,
             "pointers_deleted": 0, "facts_deleted": 0,
             "remaining": None, "deferred": False, "last_key": None, "error_class": None,
+            "deferred_reason": None,
         }
         try:
             with self._session_factory.begin() as session:
@@ -5062,7 +5063,9 @@ class WeatherRepository:
                 if not dry_run and not session.scalar(text(
                     "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
                 )):
+                    # 일별 이력 정리(weather_retention_job)가 같은 표를 정리하는 중이다.
                     report["deferred"] = True
+                    report["deferred_reason"] = "history_purge_running"
                     report["elapsed_seconds"] = time.monotonic() - started
                     return report
                 statement = SHORT_FORECAST_CANDIDATES_SQL
@@ -5129,6 +5132,7 @@ class WeatherRepository:
                 matched_in_batch=0, pointers_deleted=0, facts_deleted=0,
                 remaining=None, deferred=True, last_key=None,
                 error_class=type(exc.orig).__name__,
+                deferred_reason=type(exc.orig).__name__,
             )
         report["elapsed_seconds"] = time.monotonic() - started
         return report

@@ -1,3 +1,9 @@
+## 2026-11-24 — 단기예보 정리 일시 연기 경고화
+
+단기예보 정리의 "진척 없음" 31건(14일)은 일별 이력 정리와의 advisory lock 양보(18)와 CPU 포화 시 첫 선택
+timeout(13)으로, 모두 다음 실행에서 회복됐다. 이제 연속 3회(30분)부터 실패이고 lock 양보는 세지 않으며,
+연기 실행은 이어 읽을 위치를 보존한다. 다음은 odroid weather code-server 배포(Codex). [상세](journal.md)
+
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 
 완료된 KMA 단기 실행300격자의8050.080초 중 timed_publish는8013.528초였다. fetch891.694초·normalize574.579초는 prefetch와 겹치는 누적값으로, 외부 HTTP 시간이나 총 wall에 더하지 않는다. 로컬 재현에서 최신값 포인터의 partitioned fact FK가 행별 custom plan을 반복 생성하는 비용을 확인했다. projection에서만 기존 plan_cache_mode를 읽어 LOCAL generic plan을 사용하고 성공 시 원래 값을 복원한다. FK·동일 TX·UPSERT·정규화·보존·캡처·원천 시각은 유지하며, 실패는 원래 오류와 rollback 경계로 전파한다.

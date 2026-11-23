@@ -229,8 +229,13 @@ JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서�
    넘을 때 크게 준다. 시간 단위로 보아 줄면 따라잡는 중이며 `lag_stall_runs`는 0~5 사이를 오간다.
    BATCH_COMMITTED observation의 `elapsed_seconds` 증가 폭이 batch 시간이다. 하루 한 번은
    `resume_discarded=periodic_head_sweep`인 머리 훑기 run이다(`head_sweep_timed_out=true`면 위치에서 이어 정리).
-4. Failure는 두 경우뿐이다. 진척0(`facts_deleted=0`, `error_class`로 잠금/timeout 구분)과, 24시간 넘게
-   뒤처진 채 7회(약70분) 연속 줄지 않음(`lag_stall_runs>=7`, 처리량 부족 — 예산을 올리거나 부하를 확인).
+4. Failure는 두 경우뿐이다. 진척0이 **연속 3회**(`no_progress_runs>=3`, 약30분, `deferred_reason`·
+   `error_class`로 잠금/timeout 구분)와, 24시간 넘게 뒤처진 채 7회(약70분) 연속 줄지 않음
+   (`lag_stall_runs>=7`, 처리량 부족 — 예산을 올리거나 부하를 확인).
+   (2026-11-24 변경: 그 전에는 진척0 한 번이 곧 Failure였다. 14일 31건이 모두 다음 실행에서 회복된 일시
+   연기 — 일별 이력 정리와의 advisory lock 양보(`deferred_reason=history_purge_running`, 세지 않음)와
+   CPU 포화 시 첫 선택 timeout — 였다. 연기 실행은 SUCCESS + `kortravel/collection-outcome=deferred`이고
+   이어 읽을 위치·머리 훑기 시각·지연 기준을 앞 실행 것 그대로 materialization에 넘긴다.)
 
 ### 남은 한계
 

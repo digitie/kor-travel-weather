@@ -42,9 +42,12 @@ from kortravelweather.providers.krforest import KRFOREST_PROVIDER
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.retention import (
+    NO_PROGRESS_ALERT_RUNS,
+    RESUME_METADATA_KEYS,
     backlog_stalled,
     lag_stall_runs,
     made_progress,
+    no_progress_runs,
     resume_position,
     run_short_forecast_retention,
     short_forecast_cutoff,
@@ -1469,14 +1472,31 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
     # 정책·DB·시계가 달라 위치를 버렸으면 앞 지연·연속 횟수도 같은 기준이 아니므로 새로 센다.
     baseline = {} if result.get("resume_discarded") in _UNTRUSTED_HISTORY else previous
     result["lag_stall_runs"] = lag_stall_runs(baseline, result)
+    result[_NO_PROGRESS_KEY] = no_progress_runs(_previous_no_progress_runs(previous), result)
+    if not made_progress(result):
+        # 진척이 없으면 다음 실행의 출발점(이어 읽을 위치·머리 훑기 시각·지연 기준)을 앞 실행의
+        # 것 그대로 넘긴다. 이 실행의 materialization이 위치를 비우면(주기 머리 훑기 중 연기)
+        # 다음 실행이 저장 위치 없이 머리부터 다시 훑어 같은 timeout을 반복한다.
+        result.update({key: baseline[key] for key in _CARRIED_ON_NO_PROGRESS if key in baseline})
     context.add_output_metadata(result)
     if not made_progress(result):
-        # 진척 0(연기·잠금/timeout·머리 탐색 실패)이면 실패다. raise 뒤 STEP_OUTPUT이
-        # 없어도 Failure 이벤트 자체에 결과 metadata를 남긴다.
-        raise Failure(
-            description="단기예보 정리가 이번 실행에서 진척 없이 끝났습니다.",
-            metadata=result,
+        # 진척 0(연기·잠금/timeout·머리 탐색 실패). 연속 횟수는 이 실행의 materialization에 남는다.
+        if result[_NO_PROGRESS_KEY] >= NO_PROGRESS_ALERT_RUNS:
+            # raise 뒤 STEP_OUTPUT이 없어도 Failure 이벤트 자체에 결과 metadata를 남긴다.
+            raise Failure(
+                description=(
+                    f"단기예보 정리가 {result[_NO_PROGRESS_KEY]}회 연속 진척 없이 끝났습니다."
+                ),
+                metadata=result,
+            )
+        context.log.warning(
+            "단기예보 정리 연기 status=%s deferred_reason=%s error_class=%s "
+            "no_progress_runs=%s (연속 %s회부터 실패)",
+            result["status"], result.get("deferred_reason"), result.get("error_class"),
+            result[_NO_PROGRESS_KEY], NO_PROGRESS_ALERT_RUNS,
         )
+        _record_collection_outcome(context, "deferred")
+        return result
     if backlog_stalled(result):
         # 지운 행은 있지만 backlog가 24시간 넘게 뒤처진 채 연속으로 줄지 않는다. 다음 실행이
         # 위치와 연속 횟수를 이어받도록 materialization을 먼저 남기고 실패로 알린다.
@@ -1498,6 +1518,25 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
             result["lag_stall_runs"], result.get("error_class"),
         )
     return result
+
+
+_NO_PROGRESS_KEY = "no_progress_runs"
+#: 진척 없는 실행이 앞 실행에서 그대로 넘기는 metadata
+#: (``resume_position``·``lag_stall_runs``의 입력).
+_CARRIED_ON_NO_PROGRESS = (
+    *RESUME_METADATA_KEYS, "resume_policy", "resume_database", "head_scan_at",
+    "backlog_lag_seconds", "lag_stall_runs",
+)
+
+
+def _previous_no_progress_runs(previous: Mapping[str, object]) -> int:
+    """앞 실행 materialization이 남긴 연속 무진척 횟수. 없거나 이상하면 0.
+
+    진척 없는 실행도 materialization을 남기므로(출발점은 앞 실행 것 그대로) 횟수가 이어진다.
+    실패로 끝난 실행은 materialization이 없어 다음 실행도 같은 횟수에서 다시 센다.
+    """
+    count = previous.get(_NO_PROGRESS_KEY)
+    return count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0
 
 
 #: 앞 실행의 지연 기준을 이어 쓰지 않는 위치 폐기 사유(주기 머리 훑기는 같은 기준이라 제외).
