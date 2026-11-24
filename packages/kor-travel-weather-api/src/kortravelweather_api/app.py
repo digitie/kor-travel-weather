@@ -37,7 +37,7 @@ from kortravelweather.repository import WeatherRepository, repository_from_setti
 from kortravelweather.settings import WeatherSettings, get_settings
 
 from . import __version__
-from .db_errors import is_connection_loss, sqlstate
+from .db_errors import driver_error_name, is_connection_loss, sqlstate
 from .read_limits import PublicReadTimeout, install_public_read_limits, public_read_deadline
 from .response import Problem, request_id
 from .routers.alert_events import router as alert_event_router
@@ -205,12 +205,14 @@ def create_app(
             code = "READ_TIMEOUT"
         elif is_connection_loss(exc):
             # 연결 단절·DB 재시작(08xxx, 57P01~03, SQLSTATE 없는 단절)도 같은 요청을 다시 보내면
-            # pool이 새 연결로 처리할 수 있다. 원인 문장·SQL·주소는 응답과 로그에 넣지 않는다.
+            # pool이 새 연결로 처리할 수 있다. 인증·없는 DB 같은 접속 설정 오류는 여기 오지 않고
+            # 500(traceback)으로 남는다. 원인 문장·SQL·주소는 응답과 이 로그에 넣지 않고,
+            # 운영자가 지연·거부·종료를 구분하도록 DBAPI 예외 class 이름만 남긴다.
             code = "DB_UNAVAILABLE"
             request.state.public_read_outcome = "error"
             logger.warning(
-                "weather_public_read_db_unavailable path_kind=public sqlstate=%s type=%s",
-                sqlstate(exc) or "-", type(exc).__name__,
+                "weather_public_read_db_unavailable path_kind=public sqlstate=%s type=%s driver=%s",
+                sqlstate(exc) or "-", type(exc).__name__, driver_error_name(exc),
             )
         else:
             raise exc
