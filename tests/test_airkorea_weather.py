@@ -698,16 +698,46 @@ def test_same_name_stations_in_both_sidos_bind_to_their_own_anchor(monkeypatch) 
     assert result["stations_failed"] == 0
 
 
-def test_plain_anchor_rejects_row_with_other_sido(monkeypatch) -> None:
-    # 통합 주소가 아니어도 원천 행의 시도가 anchor와 다르면 붙이지 않는다.
-    locations = [_anchor(0, "중구", "서울특별시 중구 덕수궁길 15")]
+@pytest.mark.parametrize(
+    ("address", "sido", "row_sido"),
+    [
+        # 통합 뒤 원천이 전남 묶음 행의 sidoName을 통합 명칭으로 바꿔도 통합 주소가 아닌 전남
+        # anchor는 그대로 붙는다. 시도 전체가 sido_mismatch로 멈추지 않는다.
+        ("전라남도 목포시 어딘가 1", "전남", _MERGED),
+        ("광주광역시 북구 어딘가 1", "광주", _MERGED),
+        # 묶음 하나에만 든 anchor는 요청한 묶음의 시도로 판단한다(시도별 bulk 응답 계약).
+        ("서울특별시 중구 덕수궁길 15", "서울", "부산"),
+    ],
+)
+def test_plain_anchor_is_judged_by_requested_sido(
+    monkeypatch, address, sido, row_sido
+) -> None:
+    locations = [_anchor(0, "중구", address)]
     result, repository = _run_bulk_sync(monkeypatch, locations, {
-        "서울": [_row("중구", "부산", 40.0)],
+        sido: [_row("중구", row_sido, 40.0)],
     })
 
-    assert repository.pm10_by_location() == {}
-    assert result["station_failure_reasons"] == {"sido_mismatch": 1}
-    assert result["stations_failed_deterministic"] == 1
+    assert repository.pm10_by_location() == {"airkorea-0": 40.0}
+    assert result["status"] == "success"
+    assert result["stations_failed"] == 0
+
+
+def test_same_name_plain_and_merged_anchors_with_merged_row_sido(monkeypatch) -> None:
+    # 전남 묶음 행이 통합 명칭을 달고 와도 통합 주소가 아닌 전남 anchor는 묶음으로 받는다.
+    # 같은 이름의 광주(통합 주소) anchor는 행 시도로 가리므로 그 행을 받지 않고, 광주 묶음의
+    # 제 행을 받는다.
+    locations = [
+        _anchor(0, "같은이름", "전라남도 순천시 어딘가 1"),
+        _anchor(1, "같은이름", f"{_MERGED} 북구 어딘가 2"),
+    ]
+    result, repository = _run_bulk_sync(monkeypatch, locations, {
+        "광주": [_row("같은이름", "광주", 11.0)],
+        "전남": [_row("같은이름", _MERGED, 22.0)],
+    })
+
+    assert repository.pm10_by_location() == {"airkorea-0": 22.0, "airkorea-1": 11.0}
+    assert result["status"] == "success"
+    assert result["stations_failed"] == 0
 
 
 @pytest.mark.parametrize(

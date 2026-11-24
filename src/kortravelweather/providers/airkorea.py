@@ -110,12 +110,14 @@ def measurement_sido_names(point: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def anchor_sido_names(point: Mapping[str, Any]) -> tuple[str, ...]:
-    """anchor가 속한 시도 기대값. 원천 행의 ``sidoName``은 이 안에 있어야 붙일 수 있다.
+    """anchor가 속한 시도 기대값. 두 묶음을 묻는 통합 주소 anchor는 원천 행의 ``sidoName``이
+    이 안에 있어야 붙일 수 있다.
 
     통합 주소는 두 번째 토큰으로 시도 하나를 가린다. 가리지 못하면 통합 전 후보 시도
     전부를 돌려준다(이때는 호출부가 묶음 응답 사이의 같은 이름을 대조한다). 통합 주소가
-    아니면 ``measurement_sido_names``와 같다. 저장된 ``sido_name`` metadata는 통합 주소에서
-    첫 토큰 접두어로 정해진 값이라 쓰지 않는다.
+    아니면 ``measurement_sido_names``와 같다. 이때 bulk 호출부는 행 시도를 대조하지 않고
+    요청한 묶음의 시도로 판단한다. 저장된 ``sido_name`` metadata는 통합 주소에서 첫 토큰
+    접두어로 정해진 값이라 쓰지 않는다.
     """
     tokens = str(point.get("address") or "").split()
     token = tokens[0] if tokens else ""

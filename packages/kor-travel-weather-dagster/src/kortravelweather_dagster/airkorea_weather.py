@@ -224,15 +224,21 @@ async def _run_airkorea_weather_sync(
         # rather than silently attaching a row to the wrong anchor.
         bulk_available = callable(getattr(client, "sido_measurements", None))
         grouped: dict[str, dict[str, list[Any]]] = {}
-        # location_id -> (묻는 bulk 묶음들, 원천 행 sidoName과 대조할 anchor 시도 기대값)
-        anchor_sidos: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+        # location_id -> (묻는 bulk 묶음들, 원천 행 sidoName과 대조할 anchor 시도 기대값).
+        # 기대값은 두 묶음 이상을 묻는 anchor(통합 주소)만 갖는다. 묶음 하나만 묻는 anchor는
+        # None이고 요청한 묶음의 시도로 판단한다. 시도별 bulk 응답은 요청한 시도의 행이라
+        # 행 시도 대조가 더하는 보호가 거의 없고, 원천 sidoName 표기가 바뀌면 그 시도의
+        # anchor 전체가 멈추기 때문이다.
+        anchor_sidos: dict[str, tuple[tuple[str, ...], tuple[str, ...] | None]] = {}
         fallback_locations: list[Any] = []
         for location in active_locations:
             point = measurement_point_metadata(location) or {}
             station_name = str(point.get("station_name") or location.name).strip()
             sidos = measurement_sido_names(point)
             if bulk_available and sidos:
-                anchor_sidos[location.location_id] = (sidos, anchor_sido_names(point))
+                anchor_sidos[location.location_id] = (
+                    sidos, anchor_sido_names(point) if len(sidos) > 1 else None,
+                )
                 for sido in sidos:
                     grouped.setdefault(sido, {}).setdefault(station_name, []).append(location)
             else:
@@ -272,14 +278,19 @@ async def _run_airkorea_weather_sync(
                 named = locations_by_name.get(measurement.station_name.strip(), [])
                 if not named:
                     continue
-                # 원천 행의 시도(sidoName)를 anchor의 시도와 대조한다. 같은 이름의 다른 시도
-                # 측정소 관측을 붙이지 않는다. 행에 시도가 없으면 요청한 묶음의 시도로 본다
-                # (시도별 bulk 응답 계약).
+                # 두 묶음 이상을 묻는 anchor(통합 주소)는 원천 행의 시도(sidoName)를 anchor의
+                # 시도와 대조해 같은 이름의 다른 시도 측정소 관측을 붙이지 않는다. 행에 시도가
+                # 없으면 요청한 묶음의 시도로 본다(시도별 bulk 응답 계약). 묶음 하나만 묻는
+                # anchor는 행 시도를 보지 않고 요청한 묶음의 시도로 받는다.
                 row_sido = measurement_sido_name(measurement) or sido
-                candidates = [
-                    location for location in named
-                    if row_sido in anchor_sidos[location.location_id][1]
-                ]
+                # (anchor, 그 anchor가 이 행을 받은 시도)
+                candidates: list[tuple[Any, str]] = []
+                for location in named:
+                    expected = anchor_sidos[location.location_id][1]
+                    if expected is None:
+                        candidates.append((location, sido))
+                    elif row_sido in expected:
+                        candidates.append((location, row_sido))
                 if not candidates:
                     for location in named:
                         fail(location.location_id, SIDO_MISMATCH)
@@ -288,13 +299,13 @@ async def _run_airkorea_weather_sync(
                     # A duplicate station name cannot be safely identified by the
                     # current upstream API.  Quarantine instead of cross-wiring
                     # the observation to an arbitrary anchor.
-                    for location in candidates:
+                    for location, _ in candidates:
                         fail(location.location_id, AMBIGUOUS_NAME)
                         ambiguous.add(location.location_id)
                     continue
-                location = candidates[0]
+                location, bound_sido = candidates[0]
                 # 통합 주소 측정소는 두 묶음에 들어 있을 수 있다. 같은 시도 행은 처음 것만 쓴다.
-                bindings.setdefault(location.location_id, {}).setdefault(row_sido, measurement)
+                bindings.setdefault(location.location_id, {}).setdefault(bound_sido, measurement)
                 bound_locations[location.location_id] = location
 
         matched_locations: set[str] = set()
@@ -306,7 +317,7 @@ async def _run_airkorea_weather_sync(
                 # 시도를 가리지 못한 anchor가 서로 다른 시도 응답에서 같은 이름을 찾았다.
                 fail(location_id, AMBIGUOUS_NAME)
                 continue
-            if len(expected) > 1 and failed_sidos.intersection(queried):
+            if expected is not None and len(expected) > 1 and failed_sidos.intersection(queried):
                 # 못 받은 묶음에도 같은 이름이 있었는지 알 수 없어 붙이지 않는다. 그 묶음의
                 # request_error가 이미 남아 있다.
                 continue
