@@ -185,7 +185,7 @@ describe("마커 모델 참조 보존", () => {
     if (!markerMemo) throw new Error("marker 모델의 useMemo가 필요합니다.");
     const render = new Function(
       "regionLevel", "regional", "useMemo", "mapLocations", "selectedId", "summaries", "setSelectedId",
-      "markerState", "markerTemperature", "markerCondition", "markerRefreshRef", "providerFilter", "refreshToken", "kindFilter", "setDetailOpen", "requestAnimationFrame", "detailRef",
+      "markerState", "markerTemperature", "markerCondition", "setDetailOpen", "requestAnimationFrame", "detailRef",
       "markerBoundaryLevel", "setBoundaryRequest", "setDetailCollapsed",
       ts.transpileModule("return " + markerMemo.getText(tree), {
         compilerOptions: { target: ts.ScriptTarget.ES2022 },
@@ -212,7 +212,7 @@ describe("마커 모델 참조 보존", () => {
       null, emptyRegions, memoize, points, selectedId, summaries, select,
       () => ({ kind: "clear", label: "맑음" }),
       (summary: { temperature?: number } | undefined) => summary?.temperature ?? null,
-      (kind: string) => kind, { current: JSON.stringify([0, undefined, undefined]) }, undefined, 0, undefined, vi.fn(), vi.fn(), { current: null },
+      (kind: string) => kind, vi.fn(), vi.fn(), { current: null },
       "sigungu", boundary, collapse,
     ) as Array<{
       id: string; selected: boolean; temperature: number | null;
@@ -298,7 +298,7 @@ describe("대표 캐시 로딩 오류 회귀", () => {
     const selected = modelVariable("selected")?.initializer;
     if (!selected || !ts.isCallExpression(selected)) throw new Error("실제 선택 표현식이 필요합니다");
     const scope = { regionProjection, visibleLocations, selectedId: "a", locations: [],
-      sourceCatalog: { locations: visibleLocations }, resolveSelection: resolve, ...state };
+      heldSourceLocations: visibleLocations, resolveSelection: resolve, ...state };
     const loading = modelVariable("selectionLoading")?.initializer?.getText(tree)
       ?? selected.arguments[2].getText(tree);
     return evaluateModelExpression(selected.getText(tree), {

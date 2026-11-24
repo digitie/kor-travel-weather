@@ -29,17 +29,20 @@ import {
   FORECAST_DETAIL_LIMIT,
   forecastWindowEnd,
   forecastWindowStart,
-  getAllPublicLocations,
+  getCompactMarkers,
   getForecast,
   getLatest,
-  getMarkerSummaries,
   getProviders,
   Location,
-  WeatherMarker,
   WeatherKind,
   WeatherValue,
+  type WeatherMarkerCompact,
+  type WeatherMarkerValue,
   type WeatherRegionProjection,
 } from "@/lib/api";
+import { useLocationCatalog } from "@/lib/location-catalog";
+import { createMarkerQueue, markerFetchOrder, type MarkerQueue } from "@/lib/weather-marker-queue";
+import { estimateViewport, viewportCenter, type MapViewport } from "@/lib/weather-viewport";
 import {
   VWorldMapView,
   VWorldWeatherClusters,
@@ -173,7 +176,7 @@ type MarkerState = {
   label: string;
 };
 
-function numericCode(value: WeatherValue): number | null {
+function numericCode(value: WeatherMarkerValue): number | null {
   const candidate =
     value.value_number ?? (value.value_text ? Number(value.value_text) : NaN);
   return Number.isFinite(candidate) ? candidate : null;
@@ -181,7 +184,7 @@ function numericCode(value: WeatherValue): number | null {
 
 function classifyProviderCode(
   provider: string,
-  value: WeatherValue,
+  value: WeatherMarkerValue,
 ): MarkerState["kind"] | null {
   const rawText = (value.value_text ?? value.metric_name ?? "")
     .trim()
@@ -254,30 +257,8 @@ function classifyProviderCode(
   return null;
 }
 
-// Keep repeated location_id query strings below common proxy request-line
-// limits.  The API accepts up to 500 ids, but a 500-id URL can exceed an
-// nginx/HAProxy URI limit once station ids are included.  Sixty IDs keeps the
-// URL small while avoiding unnecessary request waves on a nationwide catalog.
-const MARKER_BATCH_SIZE = 60;
-const MARKER_BATCH_CONCURRENCY = 2;
-
-type MarkerQueue = {
-  cancelled: boolean;
-  controller: AbortController;
-  ids: string[];
-  pending: Set<string>;
-  failed: Set<string>;
-  active: number;
-  retryToken: number;
-  pump: () => void;
-};
-
-type MapViewport = {
-  west: number;
-  east: number;
-  south: number;
-  north: number;
-};
+// 마커 묶음 크기·동시 수·실패 재시도는 lib/weather-marker-queue.ts가 소유한다. 묶음 60곳은
+// location_id 반복 query가 proxy request-line 상한 아래에 머물게 하려는 값이다(API 상한 500).
 
 function viewportFromMap(instance: MapLibreMap): MapViewport | null {
   try {
@@ -314,7 +295,7 @@ function isInViewport(location: Location, viewport: MapViewport) {
   );
 }
 
-function markerValues(summary: WeatherMarker): WeatherValue[] {
+function markerValues(summary: WeatherMarkerCompact): WeatherMarkerValue[] {
   // 현재값이 있으면 미래 예보의 강수·온도를 섞지 않는다.
   if (summary.latest.length) return summary.latest;
   const forecast = summary.forecast ?? [];
@@ -325,7 +306,7 @@ function markerValues(summary: WeatherMarker): WeatherValue[] {
 }
 
 function markerState(
-  summary: WeatherMarker | undefined,
+  summary: WeatherMarkerCompact | undefined,
   referenceTime = Date.now(),
 ): MarkerState {
   if (!summary) return { kind: "unknown", glyph: "·", label: "날씨 정보 없음" };
@@ -397,7 +378,7 @@ function markerCondition(kind: MarkerState["kind"]): WeatherCondition {
   return "unknown";
 }
 
-function markerTemperature(summary: WeatherMarker | undefined): number | null {
+function markerTemperature(summary: WeatherMarkerCompact | undefined): number | null {
   if (!summary) return null;
   const row = markerValues(summary).find((value) =>
     ["T1H", "TMP", "TEMP", "temperature", "temperature_2m", "temp_c"].includes(
@@ -428,6 +409,8 @@ function includesCurrentKind(kinds: WeatherKind[] | undefined) {
 }
 
 const DEFAULT_CENTER: [number, number] = [127.8, 36.2];
+const NO_LOCATIONS: Location[] = [];
+const NO_SUMMARIES: Record<string, WeatherMarkerCompact> = {};
 const SELECTED_ZOOM = 7.2;
 
 // 필터 결과를 불러오는 동안(목록이 잠시 빈 동안)은 보던 위치를 이전 목록에서 그대로 쓴다.
@@ -451,6 +434,154 @@ function resolveSelection<T extends { location_id: string }>(
   return visible[0];
 }
 
+/**
+ * 필터 조건의 위치 목록. 조건별로 캐시한다([제공처, 종류]의 sourceKey가 query key, 호출 검토 B12).
+ * 같은 조건으로 돌아오면 다시 받지 않고, 다른 조건을 받는 동안 이전 조건의 목록은 선택 유지
+ * (`heldSourceLocations`)에만 쓴다.
+ */
+function useSourceCatalog(
+  selectedSources: string[] | null,
+  kindFilter: WeatherKind[] | undefined,
+  selectedKindCount: number,
+  needsSourceCatalog: boolean,
+) {
+  const wanted = needsSourceCatalog && selectedSources?.length !== 0 && selectedKindCount > 0;
+  const sourceQuery = useLocationCatalog({
+    providers: selectedSources,
+    kinds: kindFilter,
+    enabled: wanted,
+    keepPrevious: true,
+  });
+  const sourceLocations = sourceQuery.data && !sourceQuery.isPlaceholderData
+    ? sourceQuery.data.locations
+    : null;
+  const sourceError = needsSourceCatalog && sourceQuery.isError
+    ? "선택한 소스의 위치를 불러오지 못했습니다. 다시 선택해 주세요."
+    : "";
+  return {
+    sourceLocations,
+    heldSourceLocations: sourceQuery.data?.locations ?? NO_LOCATIONS,
+    sourceError,
+    sourceLoading: wanted && sourceLocations === null && !sourceError,
+  };
+}
+
+/** 지도 load 전 화면 범위 추정용 컨테이너 크기(호출 검토 B7). load 뒤에는 관찰하지 않는다. */
+function useMapLoadViewport(
+  mapReady: boolean,
+  initialCamera: { center: [number, number]; zoom: number },
+) {
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const [containerSize, setContainerSize] = useState<{ width: number; height: number } | null>(null);
+  useEffect(() => {
+    const element = mapContainerRef.current;
+    if (mapReady || !element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setContainerSize((previous) =>
+        previous?.width === width && previous.height === height ? previous : { width, height });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [mapReady]);
+  const estimatedViewport = useMemo(
+    () => containerSize
+      ? estimateViewport(initialCamera.center, initialCamera.zoom, containerSize.width, containerSize.height)
+      : null,
+    [containerSize, initialCamera],
+  );
+  return { mapContainerRef, estimatedViewport };
+}
+
+/**
+ * 화면 범위의 마커 값(호출 검토 B6·B8·B12). 요청·재시도는 lib/weather-marker-queue.ts가 하고 여기서는
+ * 필터 범위·새로고침 세대와 화면 범위를 큐에 이어 준다.
+ */
+function useMarkerSummaries({
+  mode,
+  refreshToken,
+  providerFilter,
+  kindFilter,
+  mapLocations,
+  effectiveViewport,
+  markerRetryToken,
+}: {
+  mode: "map" | "list";
+  refreshToken: number;
+  providerFilter: string[] | undefined;
+  kindFilter: WeatherKind[] | undefined;
+  mapLocations: Location[];
+  effectiveViewport: MapViewport | null;
+  markerRetryToken: number;
+}) {
+  const [markerError, setMarkerError] = useState("");
+  const markerQueueRef = useRef<MarkerQueue | null>(null);
+  const [summaries, setSummaries] = useState<Record<string, WeatherMarkerCompact>>({});
+  const summariesRef = useRef<Record<string, WeatherMarkerCompact>>({});
+  // 마커 값의 필터 범위(제공처·종류). 새로고침은 범위가 같아 그린 마커를 지우지 않고 다시 받는다.
+  const markerScopeRef = useRef("");
+  // 이번 새로고침 세대에 이미 받은 위치. 지도↔목록 전환으로 큐를 다시 만들어도 다시 받지 않는다.
+  const markerFreshRef = useRef<{ generation: string; ids: Set<string> }>({ generation: "", ids: new Set() });
+
+  useEffect(() => {
+    if (mode !== "map") return;
+    // 필터 범위가 바뀌면 이전 값을 지운다. 새로고침(refreshToken)은 범위가 같아 그린 마커를 남긴 채
+    // 새 세대로 다시 받아 도착한 위치부터 바꾼다.
+    const scope = JSON.stringify([providerFilter, kindFilter]);
+    if (markerScopeRef.current !== scope) {
+      markerScopeRef.current = scope;
+      summariesRef.current = {};
+      setSummaries({});
+    }
+    const generation = JSON.stringify([refreshToken, providerFilter, kindFilter]);
+    if (markerFreshRef.current.generation !== generation) {
+      markerFreshRef.current = { generation, ids: new Set() };
+    }
+    const queue = createMarkerQueue({
+      fetchBatch: (ids, signal) => getCompactMarkers(
+        ids,
+        signal,
+        providerFilter,
+        kindFilter ?? WEATHER_KINDS.map((kind) => kind.value),
+      ),
+      cache: summariesRef,
+      fresh: markerFreshRef.current.ids,
+      onData: (cache) => setSummaries({ ...cache }),
+      onError: setMarkerError,
+    });
+    markerQueueRef.current = queue;
+    return () => {
+      queue.cancel();
+      if (markerQueueRef.current === queue) markerQueueRef.current = null;
+    };
+  }, [mode, refreshToken, providerFilter, kindFilter]);
+
+  // react-doctor-disable-next-line react-doctor/no-event-handler -- 외부 지도 viewport·비동기 카탈로그·재시도를 같은 요청 큐와 동기화한다.
+  useEffect(() => {
+    const queue = markerQueueRef.current;
+    if (!queue || mode !== "map") return;
+    // 같은 필터 범위에서는 지도 이동 중인 batch를 이어받는다. 다음 배정만 현재 범위로 좁히고
+    // 화면 중심에서 가까운 위치부터 보낸다.
+    queue.update(
+      markerFetchOrder(mapLocations, viewportCenter(effectiveViewport)),
+      markerRetryToken,
+    );
+  }, [
+    mapLocations,
+    effectiveViewport,
+    mode,
+    refreshToken,
+    providerFilter,
+    kindFilter,
+    markerRetryToken,
+  ]);
+
+  // 다른 필터 범위의 값은 쓰지 않는다(범위가 바뀐 첫 렌더는 effect가 비우기 전이다). 같은 범위의
+  // 새로고침 중에는 이전 값을 그대로 그린다.
+  const current = markerScopeRef.current === JSON.stringify([providerFilter, kindFilter]);
+  return { summaries: current ? summaries : NO_SUMMARIES, markerError };
+}
+
 function useWeatherMapModel({
   locations,
   regionProjection,
@@ -472,22 +603,12 @@ function useWeatherMapModel({
   const [forecastMessage, setForecastMessage] = useState("");
   const [message, setMessage] = useState("");
   const [mapError, setMapError] = useState("");
-  const [markerError, setMarkerError] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
   const [markerRetryToken, setMarkerRetryToken] = useState(0);
-  const markerQueueRef = useRef<MarkerQueue | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
-  const [summaries, setSummaries] = useState<Record<string, WeatherMarker>>({});
-  const summariesRef = useRef<Record<string, WeatherMarker>>({});
-  const markerRefreshRef = useRef("");
   const [viewport, setViewport] = useState<MapViewport | null>(null);
   const [sourceOptions, setSourceOptions] = useState<SourceOption[]>([]);
-  const [sourceError, setSourceError] = useState("");
   const [sourceListError, setSourceListError] = useState("");
-  const [sourceCatalog, setSourceCatalog] = useState<{
-    key: string;
-    locations: Location[];
-  } | null>(null);
   const [selectedKinds, setSelectedKinds] = useState<WeatherKind[]>(() =>
     WEATHER_KINDS.map((kind) => kind.value),
   );
@@ -505,7 +626,6 @@ function useWeatherMapModel({
   const searchRef = useRef<HTMLInputElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const providerFilter = selectedSources ?? undefined;
-  const sourceKey = JSON.stringify([selectedSources, kindFilter]);
   const needsSourceCatalog =
     selectedSources !== null || kindFilter !== undefined;
   const [datasetLabels, setDatasetLabels] = useState<Map<string, string>>(
@@ -541,54 +661,16 @@ function useWeatherMapModel({
       );
   }, []);
 
-  useEffect(() => {
-    setSourceError("");
-    if (
-      !needsSourceCatalog ||
-      selectedSources?.length === 0 ||
-      selectedKinds.length === 0
-    )
-      return;
-    const controller = new AbortController();
-    void getAllPublicLocations(
-      selectedSources ?? undefined,
-      controller.signal,
-      false,
-      kindFilter,
-    )
-      .then((next) => {
-        if (!controller.signal.aborted)
-          setSourceCatalog({ key: sourceKey, locations: next });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted)
-          setSourceError(
-            "선택한 소스의 위치를 불러오지 못했습니다. 다시 선택해 주세요.",
-          );
-      });
-    return () => controller.abort();
-  }, [
-    selectedSources,
-    sourceKey,
-    kindFilter,
-    selectedKinds.length,
-    needsSourceCatalog,
-  ]);
-  const sourceLoading =
-    needsSourceCatalog &&
-    selectedSources?.length !== 0 &&
-    selectedKinds.length > 0 &&
-    sourceCatalog?.key !== sourceKey &&
-    !sourceError;
+  const { sourceLocations, heldSourceLocations, sourceError, sourceLoading } = useSourceCatalog(
+    selectedSources, kindFilter, selectedKinds.length, needsSourceCatalog,
+  );
   const selectionLoading = weatherSelectionLoading({ needsSourceCatalog, sourceLoading, catalogLoading, query, catalogError, regionProjection });
   const visibleLocations = useMemo(() => {
     const catalog = !needsSourceCatalog
       ? locations
       : selectedSources?.length === 0 || selectedKinds.length === 0
-        ? []
-        : sourceCatalog?.key === sourceKey
-          ? sourceCatalog.locations
-          : [];
+        ? NO_LOCATIONS
+        : sourceLocations ?? NO_LOCATIONS;
     const normalized = query.trim().toLocaleLowerCase();
     return normalized
       ? catalog.filter((location) =>
@@ -602,15 +684,14 @@ function useWeatherMapModel({
     query,
     selectedSources,
     selectedKinds.length,
-    sourceCatalog,
-    sourceKey,
+    sourceLocations,
     needsSourceCatalog,
   ]);
   const selected = resolveSelection(
     visibleLocations,
     selectedId,
     selectionLoading,
-    [sourceCatalog?.locations ?? [], locations, regionProjection?.items.map(row => row.location) ?? []],
+    [heldSourceLocations, locations, regionProjection?.items.map(row => row.location) ?? []],
   );
   const selectedLocationId = selected?.location_id;
   // VWorldMapView treats a changed center/zoom prop as an explicit recenter
@@ -632,6 +713,10 @@ function useWeatherMapModel({
   const zoomOnFirstMoveRef = useRef(initialCamera.zoom < SELECTED_ZOOM);
   const automaticSelectionRef = useRef<string | null>(null);
   const selectedPositionRef = useRef<[number, number] | null>(null);
+  // 지도 load 전에는 첫 카메라와 컨테이너 크기로 범위를 추정해 마커 요청을 타일 load와 함께
+  // 시작한다(호출 검토 B7). load 뒤에는 실제 범위(viewport)만 쓴다.
+  const { mapContainerRef, estimatedViewport } = useMapLoadViewport(mapReady, initialCamera);
+  const effectiveViewport = viewport ?? (mapReady ? null : estimatedViewport);
   const regionLevel = weatherRegionLevel(mapViewport?.zoom ?? initialCamera.zoom);
   const markerBoundaryLevel = boundaryLevel(mapViewport?.zoom ?? initialCamera.zoom);
   const regional = useMemo(() => {
@@ -641,14 +726,14 @@ function useWeatherMapModel({
       (catalogLoading || Boolean(catalogError)) && !needsSourceCatalog && !query.trim() ? regionProjection : null);
   }, [catalogLoading, catalogError, needsSourceCatalog, query, regionProjection, visibleLocations, regionLevel]);
   const mapLocations = useMemo(() => {
-    if (!viewport) return selected ? [selected] : [];
+    if (!effectiveViewport) return selected ? [selected] : [];
     const candidates = weatherRegionLevel(
       mapViewport?.zoom ?? initialCamera.zoom,
     )
       ? regional.map((r) => r.location)
       : visibleLocations;
     const inViewport = candidates.filter((location) =>
-      isInViewport(location, viewport),
+      isInViewport(location, effectiveViewport),
     );
     if (
       !selected ||
@@ -661,12 +746,15 @@ function useWeatherMapModel({
     return [selected, ...inViewport];
   }, [
     selected,
-    viewport,
+    effectiveViewport,
     visibleLocations,
     regional,
     mapViewport?.zoom,
     initialCamera.zoom,
   ]);
+  const { summaries, markerError } = useMarkerSummaries({
+    mode, refreshToken, providerFilter, kindFilter, mapLocations, effectiveViewport, markerRetryToken,
+  });
   // 상세·제공처 상태만 바뀐 렌더는 동일한 GeoJSON을 다시 만들지 않는다.
   const markers = useMemo(
     () =>
@@ -679,11 +767,7 @@ function useWeatherMapModel({
             ),
         )
         .map((location) => {
-          const summary =
-            markerRefreshRef.current ===
-            JSON.stringify([refreshToken, providerFilter, kindFilter])
-              ? summaries[location.location_id]
-              : undefined;
+          const summary = summaries[location.location_id];
           const state = markerState(summary);
           return {
             id: location.location_id,
@@ -714,9 +798,6 @@ function useWeatherMapModel({
       mapLocations,
       selectedId,
       summaries,
-      providerFilter,
-      kindFilter,
-      refreshToken,
       regionLevel,
       regional,
       markerBoundaryLevel,
@@ -830,11 +911,7 @@ function useWeatherMapModel({
       cancelAnimationFrame(frame);
     };
   }, [mapReady, mode, regionLevel, markers, mapViewport, detailOpen]);
-  const selectedSummary =
-    markerRefreshRef.current ===
-      JSON.stringify([refreshToken, providerFilter, kindFilter]) && selected
-      ? summaries[selected.location_id]
-      : undefined;
+  const selectedSummary = selected ? summaries[selected.location_id] : undefined;
   const groupedForecast = useMemo(() => forecastGroups(forecast), [forecast]);
   const latestCollectedAt = useMemo(() => {
     const timestamps = values
@@ -1010,96 +1087,6 @@ function useWeatherMapModel({
   ]);
 
   useEffect(() => {
-    if (mode !== "map") return;
-    const cacheKey = JSON.stringify([refreshToken, providerFilter, kindFilter]);
-    if (markerRefreshRef.current !== cacheKey) {
-      markerRefreshRef.current = cacheKey;
-      summariesRef.current = {};
-      setSummaries({});
-    }
-    const queue: MarkerQueue = {
-      cancelled: false,
-      controller: new AbortController(),
-      ids: [],
-      pending: new Set(),
-      failed: new Set(),
-      active: 0,
-      retryToken: -1,
-      pump: () => {},
-    };
-    queue.pump = () => {
-      if (queue.cancelled) return;
-      setMarkerError(
-        queue.ids.some((id) => queue.failed.has(id))
-          ? "일부 위치의 날씨를 불러오지 못했습니다."
-          : "",
-      );
-      while (queue.active < MARKER_BATCH_CONCURRENCY) {
-        const chunk = queue.ids
-          .filter(
-            (id) =>
-              !summariesRef.current[id] &&
-              !queue.pending.has(id) &&
-              !queue.failed.has(id),
-          )
-          .slice(0, MARKER_BATCH_SIZE);
-        if (!chunk.length) break;
-        chunk.forEach((id) => queue.pending.add(id));
-        queue.active += 1;
-        void getMarkerSummaries(
-          chunk,
-          queue.controller.signal,
-          providerFilter,
-          kindFilter ?? WEATHER_KINDS.map((kind) => kind.value),
-        )
-          .then((response) => {
-            if (queue.cancelled) return;
-            for (const item of response.data)
-              summariesRef.current[item.location_id] = item;
-            // 빈/부분 응답도 자동 재요청 루프로 만들지 않는다. 수동 재조회 때 다시 허용한다.
-            for (const id of chunk)
-              if (!summariesRef.current[id]) queue.failed.add(id);
-            setSummaries({ ...summariesRef.current });
-          })
-          .catch(() => {
-            if (!queue.cancelled) chunk.forEach((id) => queue.failed.add(id));
-          })
-          .finally(() => {
-            chunk.forEach((id) => queue.pending.delete(id));
-            queue.active -= 1;
-            queue.pump();
-          });
-      }
-    };
-    markerQueueRef.current = queue;
-    return () => {
-      queue.cancelled = true;
-      queue.controller.abort();
-      if (markerQueueRef.current === queue) markerQueueRef.current = null;
-    };
-  }, [mode, refreshToken, providerFilter, kindFilter]);
-
-  // react-doctor-disable-next-line react-doctor/no-event-handler -- 외부 지도 viewport·비동기 카탈로그·재시도를 같은 요청 큐와 동기화한다.
-  useEffect(() => {
-    const queue = markerQueueRef.current;
-    if (!queue || mode !== "map") return;
-    // 같은 필터 범위에서는 지도 이동 중인 batch를 이어받는다. 다음 배정만 현재 범위로 좁힌다.
-    queue.ids = mapLocations.map((location) => location.location_id);
-    if (queue.retryToken !== markerRetryToken) {
-      queue.retryToken = markerRetryToken;
-      for (const id of queue.ids) queue.failed.delete(id);
-    }
-    queue.pump();
-  }, [
-    mapLocations,
-    mode,
-    refreshToken,
-    providerFilter,
-    kindFilter,
-    markerRetryToken,
-  ]);
-
-  useEffect(() => {
     if (mode !== "map" || !map.current) return;
     requestAnimationFrame(() => map.current?.resize());
   }, [mode]);
@@ -1112,6 +1099,7 @@ function useWeatherMapModel({
     catalogError,
     onRetryCatalog,
     map,
+    mapContainerRef,
     setMapReady,
     selectedId,
     setSelectedId,
@@ -1579,6 +1567,7 @@ export function WeatherMap(props: WeatherMapProps) {
     boundaryRequest,
     setBoundaryRequest,
     map,
+    mapContainerRef,
     setMapReady,
     selectedId,
     setSelectedId,
@@ -1689,6 +1678,7 @@ export function WeatherMap(props: WeatherMapProps) {
               className="absolute inset-0 h-full w-full"
               layerType="Base"
               testId="weather-map-canvas-container"
+              containerRef={mapContainerRef}
               onLoad={(instance) => {
                 map.current = instance;
                 setMapReady(true);
