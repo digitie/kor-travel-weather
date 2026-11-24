@@ -10,6 +10,7 @@ from functools import partial
 from time import perf_counter
 from typing import Annotated, Any, Literal
 
+import anyio
 from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -26,6 +27,7 @@ from kortravelweather.repository import (
 
 from ..auth import require_admin
 from ..public_response import PublicRequest, Rendered, read_scope, render, respond
+from ..read_limits import PublicReadBusy
 from ..response import BundleMeta, Envelope, envelope
 
 ProviderFilter = Annotated[
@@ -81,6 +83,8 @@ _NEARBY_ALERT_PER_LOCATION = 20
 # endpoints can disagree about the warning state of the same coordinate.
 _RESOLVE_FORECAST_PER_LOCATION = 2000
 _RESOLVE_ALERT_PER_LOCATION = 40
+#: 마커 자리(``marker_limiter``) 대기 상한(초). 넘으면 503·``retry-after``로 돌려보낸다.
+MARKER_ADMISSION_SECONDS = 3.0
 
 
 def _per_location_rows(count: int, *, budget: int, ceiling: int, floor: int) -> int:
@@ -983,7 +987,15 @@ async def marker_summaries(
     # sends a whole unbounded catalog.  The UI chunks larger maps by request.
     if len(location_ids or []) > 500:
         raise HTTPException(status_code=422, detail="marker location 수는 500개 이하여야 합니다.")
-    async with request.app.state.marker_limiter:
+    limiter = request.app.state.marker_limiter
+    try:
+        # 자리 두 개가 모두 오래 걸리는 묶음에 잡혀 있으면 마감(15초)까지 매달리지 않고
+        # 곧바로 503·retry-after로 돌려보낸다(호출 검토 B11). 브라우저가 다시 보낸다.
+        with anyio.fail_after(MARKER_ADMISSION_SECONDS):
+            await limiter.acquire()
+    except TimeoutError:
+        raise PublicReadBusy("MARKER_BUSY") from None
+    try:
         # 대기하는 사이 지도 이동으로 취소된 요청은 DB 작업을 새로 시작하지 않는다.
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="요청이 취소되었습니다.")
@@ -991,6 +1003,8 @@ async def marker_summaries(
             _marker_summaries, public, repo, location_ids or [],
             providers=providers, kinds=kinds,
         ))
+    finally:
+        limiter.release()
 
 
 def _marker_summaries(

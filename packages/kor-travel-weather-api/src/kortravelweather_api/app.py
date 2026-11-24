@@ -42,6 +42,7 @@ from . import __version__
 from .db_errors import driver_error_name, is_connection_loss, sqlstate
 from .prewarm import ApiPrewarm, PrewarmState, ReadinessOut, RequestActivity, stop_prewarm
 from .read_limits import (
+    PublicReadBusy,
     PublicReadTimeout,
     install_public_read_limits,
     public_read_deadline,
@@ -247,11 +248,15 @@ def create_app(
     )
 
     @api.exception_handler(PublicReadTimeout)
+    @api.exception_handler(PublicReadBusy)
     @api.exception_handler(SQLAlchemyError)
     async def public_read_error(request: Request, exc: Exception) -> JSONResponse:
         if not request.url.path.startswith("/v1/weather/"):
             raise exc
-        if isinstance(exc, PoolTimeoutError):
+        if isinstance(exc, PublicReadBusy):
+            # 마커 입장 대기 상한(B11). DB를 쓰기 전이므로 지연·장애 로그는 남기지 않는다.
+            code = exc.code
+        elif isinstance(exc, PoolTimeoutError):
             code = "POOL_BUSY"
         elif isinstance(exc, PublicReadTimeout) or sqlstate(exc) == "57014":
             code = "READ_TIMEOUT"

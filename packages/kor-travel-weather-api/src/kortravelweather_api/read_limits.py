@@ -47,6 +47,14 @@ class PublicReadTimeout(TimeoutError):
     pass
 
 
+class PublicReadBusy(RuntimeError):
+    """공개 읽기의 입장 대기가 상한을 넘었다. 503과 ``retry-after``로 다시 보내게 한다."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 @contextmanager
 def public_read_deadline(seconds, *, statement_seconds=None, cancelled=None):
     """``seconds`` 뒤를 마감으로 둔다.
