@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -122,9 +124,24 @@ def frozen_clock(monkeypatch):
     monkeypatch.setattr(module, "kst_now", lambda: NOW)
 
 
+@pytest.fixture(autouse=True)
+def isolated_repository_cache():
+    """프로세스 캐시를 시험마다 비운다. 실제 engine은 연결을 닫는다."""
+    module._REPOSITORIES.clear()
+    yield
+    for repository in module._REPOSITORIES.values():
+        repository.engine.dispose()
+    module._REPOSITORIES.clear()
+
+
 def evaluate(repository, *, active=False):
+    # 캐시에 가짜 repository를 넣어 평가가 그것을 읽게 한다(DSN 키는 resource 값).
+    module._REPOSITORIES["fixture-dsn"] = repository
+    return evaluate_with(SimpleNamespace(database_url="fixture-dsn"), active=active)
+
+
+def evaluate_with(resource, *, active=False):
     schedule = module.build_regional_alert_events_schedule(alert_job)
-    resource = SimpleNamespace(create_repository=lambda: repository)
     with DagsterInstance.local_temp() as instance:
         if active:
             instance.create_run_for_job(
@@ -153,10 +170,12 @@ def test_open_breaker_skips_the_tick_and_raises_the_gauge():
     repository = Repository(failures(4, newest=2))
     result = evaluate(repository)
     assert result.run_requests == [] and result.skip_message
-    assert repository.calls == [
-        {"limit": module.HISTORY_LIMIT, "provider": ALERT_PROVIDER, "dataset_key": ALERT_DATASET}
-    ]
-    assert repository.disposed == 1
+    assert repository.calls == [{
+        "limit": module.HISTORY_LIMIT, "provider": ALERT_PROVIDER, "dataset_key": ALERT_DATASET,
+        "timeout_ms": module.HISTORY_TIMEOUT_MS,
+    }]
+    # engine은 tick 사이에 재사용한다(평가마다 만들고 버리지 않는다).
+    assert repository.disposed == 0
     assert ALERT_COLLECTION_BREAKER_OPEN._value.get() == 1
     assert ALERT_COLLECTION_FAILURE_STREAK._value.get() == 4
 
@@ -173,6 +192,107 @@ def test_unreadable_history_does_not_stop_collection():
     repository = Repository(error=RuntimeError("postgresql://secret@db/weather down"))
     result = evaluate(repository)
     assert len(result.run_requests) == 1
+
+
+class StalledRepository(Repository):
+    """연결 뒤 네트워크가 멈춘 것처럼 조회가 돌아오지 않는다."""
+
+    def __init__(self):
+        super().__init__()
+        self.release = threading.Event()
+
+    def list_sync_runs(self, **kwargs):
+        self.calls.append(kwargs)
+        self.release.wait(30)
+        return []
+
+
+def test_stalled_history_read_is_bounded_and_does_not_pile_up_threads(monkeypatch):
+    monkeypatch.setattr(module, "HISTORY_BUDGET_SECONDS", 0.2)
+    repository = StalledRepository()
+    try:
+        started = time.monotonic()
+        first = evaluate(repository)
+        # 멈춘 조회가 끝나지 않아도 예산 안에 실행을 요청한다(fail-open).
+        assert len(first.run_requests) == 1
+        second = evaluate(repository)
+        assert len(second.run_requests) == 1
+        assert time.monotonic() - started < 10
+        # 앞 조회 thread가 slot을 쥐고 있으므로 다음 평가는 조회를 새로 띄우지 않는다.
+        assert len(repository.calls) == 1
+    finally:
+        repository.release.set()
+        assert module._HISTORY_SLOTS.acquire(timeout=5)
+        module._HISTORY_SLOTS.release()
+
+
+@pytest.fixture
+def real_resource(weather_test_database_url, monkeypatch):
+    from kortravelweather_dagster.resources import WeatherRepositoryResource
+
+    from kortravelweather.repository import WeatherRepository
+
+    setup = WeatherRepository(weather_test_database_url)
+    try:
+        setup.create_schema()
+    finally:
+        setup.engine.dispose()
+    # 비운영 환경의 resource는 create_repository에서 create_schema까지 한다.
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_ENV", "development")
+    schema_calls = []
+    monkeypatch.setattr(
+        WeatherRepository, "create_schema", lambda self: schema_calls.append(self),
+    )
+    return WeatherRepositoryResource(database_url=weather_test_database_url), schema_calls
+
+
+def _record_failures(database_url, count, error="ALERT_PAGE_DUPLICATE"):
+    from kortravelweather.repository import WeatherRepository
+
+    repository = WeatherRepository(database_url)
+    try:
+        for _ in range(count):
+            started = repository.start_sync_run(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)
+            repository.finish_sync_run(started.run_id, status="failed", error=error)
+    finally:
+        repository.engine.dispose()
+
+
+def test_real_resource_reads_history_without_schema_ddl_and_reuses_the_engine(real_resource):
+    resource, schema_calls = real_resource
+    _record_failures(resource.database_url, 3)
+    first = evaluate_with(resource)
+    assert first.run_requests == [] and first.skip_message
+    (cached,) = module._REPOSITORIES.values()
+    second = evaluate_with(resource)
+    assert second.run_requests == [] and second.skip_message
+    # tick마다 engine을 만들지 않고, 비운영 환경에서도 trigger DROP/CREATE를 하지 않는다.
+    assert list(module._REPOSITORIES.values()) == [cached]
+    assert schema_calls == []
+    assert ALERT_COLLECTION_FAILURE_STREAK._value.get() == 3
+
+
+def test_history_lock_wait_becomes_fail_open_within_budget(real_resource, monkeypatch):
+    from sqlalchemy import create_engine, text
+
+    resource, _ = real_resource
+    _record_failures(resource.database_url, 3)
+    monkeypatch.setattr(module, "HISTORY_TIMEOUT_MS", 200)
+    blocker = create_engine(resource.database_url)
+    try:
+        with blocker.connect() as connection:
+            transaction = connection.begin()
+            # migration이 표를 잡은 상황: 이력 SELECT는 잠금을 기다린다.
+            connection.execute(text("LOCK TABLE weather_sync_runs IN ACCESS EXCLUSIVE MODE"))
+            started = time.monotonic()
+            result = evaluate_with(resource)
+            elapsed = time.monotonic() - started
+            transaction.rollback()
+    finally:
+        blocker.dispose()
+    # 차단기가 열려 있을 이력(3회 연속 실패)이지만 읽지 못했으므로 실행을 막지 않는다.
+    assert len(result.run_requests) == 1
+    assert elapsed < module.HISTORY_BUDGET_SECONDS
 
 
 def test_queued_or_running_predecessor_coalesces_the_tick_before_reading_history():
