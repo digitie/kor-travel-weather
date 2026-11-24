@@ -79,6 +79,21 @@ class WeatherSettings(BaseSettings):
 
     # 공개 읽기의 SQL/checkout 잔여 시간. 수집·관리자 설정은 변경하지 않는다.
     public_read_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
+    # API 시작 직후 한 번 도는 읽기 전용 warmup(``kortravelweather_api.prewarm``). 비워 두면
+    # production 프로필에서만 켠다(운영 Manager compose가 따로 넘기지 않아도 동작). 시험·로컬
+    # development는 시작 때 DB를 따로 읽지 않도록 꺼진다. true/false로 명시하면 그 값을 쓴다.
+    # 판정은 ``api_prewarm_active``가 한다.
+    api_prewarm_enabled: bool | None = Field(
+        default=None, validation_alias="KOR_TRAVEL_WEATHER_API_PREWARM_ENABLED",
+    )
+
+    @field_validator("api_prewarm_enabled", mode="before")
+    @classmethod
+    def _empty_prewarm_is_default(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     # 성공 projection/비용 gate 수용 전에는 운영에서 켜지 않는다.
     service_exports_enabled: bool = False
     service_export_artifact_root: Path | None = None
@@ -688,6 +703,13 @@ class WeatherSettings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment.lower() in {"prod", "production"}
+
+    @property
+    def api_prewarm_active(self) -> bool:
+        """API 시작 warmup을 돌릴지. 명시값이 없으면 production 프로필에서만 참이다."""
+        if self.api_prewarm_enabled is None:
+            return self.is_production
+        return self.api_prewarm_enabled
 
     def require_admin_token(self) -> str | None:
         """production admin write가 사용할 token을 반환한다."""

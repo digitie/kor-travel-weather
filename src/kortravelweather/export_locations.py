@@ -9,6 +9,7 @@ from kortravelcommon.address_providers import VworldKakaoAddressResolver
 from kortravelcommon.reverse_address import AddressTarget
 from sqlalchemy import select, text
 
+from .export_cancellation import checkpoint
 from .export_heads import _digest
 from .export_snapshots import (
     MAX_PAGE_BYTES,
@@ -192,7 +193,9 @@ class FrozenLocationExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("reference cursor가 만료됐습니다.")
             frozen = dict(row)
         else:
+            checkpoint("freeze")
             frozen = self._renew_reused(self._freeze_locations())
+            checkpoint("freeze")
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],

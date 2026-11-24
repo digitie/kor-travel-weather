@@ -2,10 +2,20 @@
 
 import json
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .export_artifacts import ExportGuardTimeout
+from .export_cancellation import (
+    ExportRequestCancelled,
+    current_cancellation,
+    leading,
+    wait_event,
+)
+
+#: 같은 키 페이지를 만드는 다른 요청을 기다리는 상한(초).
+_INFLIGHT_WAIT_SECONDS = 60
 
 
 class PageReuseExpired(ExportGuardTimeout):
@@ -25,6 +35,9 @@ class ExportPageCache:
 
     페이지와 무결성 proof의 직렬화 크기 기준 64MiB/16항목, 개별 8MiB다. RSS 보장은 아니다.
     동일 키의 동시 첫 요청은 한 작업을 기다리며, 다른 API의 worker/인증 슬롯은 쓰지 않는다.
+    요청자 연결이 끊긴 대기자는 바로 빠지고, 리더는 같은 키 대기자나 export 슬롯을 기다리는
+    같은 키 요청(:meth:`arriving`)이 있는 동안 멈추지 않는다(``export_cancellation``).
+    리더가 멈추거나 실패하면 대기자 하나가 새 리더가 된다.
     """
 
     def __init__(self, *, clock, max_bytes=64 * 1024 * 1024, max_entry_bytes=8 * 1024 * 1024):
@@ -33,7 +46,42 @@ class ExportPageCache:
         self.entries = OrderedDict()
         self.bytes = 0
         self.inflight = {}
+        self.waiting = Counter()
+        #: 아직 ``read``에 들어오지 않은(export 슬롯 대기 중인) 같은 키 요청의 끊김 표시.
+        self.arrivals = {}
         self.lock = threading.Lock()
+
+    def has_waiters(self, key):
+        with self.lock:
+            if self.waiting[key] > 0:
+                return True
+            # 슬롯을 기다리는 같은 키 재시도도 센다. 요청자가 이미 떠난 요청은 세지 않는다.
+            return any(not getattr(request, "disconnected", False)
+                       for request in self.arrivals.get(key, ()))
+
+    @contextmanager
+    def arriving(self, key, request):
+        """``read`` 전(export 슬롯 대기)의 같은 키 요청을 끊긴 리더의 계속 판정에 넣는다.
+
+        export 슬롯이 다른 export로 차 있으면 Map 재시도는 limiter에서 기다려 대기자로 세지
+        않았고, 그 사이 리더가 유예 끝에 멈추면 재시도가 처음부터 다시 만들었다. ``request``는
+        그 요청의 ``ExportCancellation``이다. ``read``에 들어오면(리더·대기자·hit) 여기서 빠진다.
+        """
+        with self.lock:
+            self.arrivals.setdefault(key, set()).add(request)
+        try:
+            yield
+        finally:
+            with self.lock:
+                self._arrived(key, request)
+
+    def _arrived(self, key, request):
+        # self.lock 안에서 부른다. 여러 번 불러도 같다(재귀 read·route 종료).
+        requests = self.arrivals.get(key)
+        if requests is not None:
+            requests.discard(request)
+            if not requests:
+                del self.arrivals[key]
 
     def _evict(self, key, entry):
         with self.lock:
@@ -84,15 +132,21 @@ class ExportPageCache:
                 old_key, old = self.entries.popitem(last=False)
                 self.bytes -= old.size
 
-    def read(self, key, reader, load, *, force=False):
-        if force:
-            with self.lock:
-                old = self.entries.pop(key, None)
-                if old is not None:
-                    self.bytes -= old.size
+    def read(self, key, reader, load):
+        """완성 페이지를 재사용하거나 이 요청이 만든다.
+
+        예보 첫 페이지(``revalidate_first_page``)도 조건부 여부와 관계없이 같은 길을 쓴다.
+        hit마다 새 freeze로 최신 승인·head vector를 확인하고, 같은 snapshot handle·manifest
+        digest·건강도이며 삭제 epoch가 같을 때만 본문을 재사용한다(호출 검토 A5).
+        """
         now = self.clock()
         seed = None
+        waiter = False
+        arrived = current_cancellation()
         with self.lock:
+            if arrived is not None:
+                # 도착 등록에서 대기자 수로 옮기는 틈을 리더가 보지 않게 한 잠금 안에서 한다.
+                self._arrived(key, arrived)
             for old_key, old in list(self.entries.items()):
                 if now >= old.deadline:
                     self.bytes -= self.entries.pop(old_key).size
@@ -101,12 +155,16 @@ class ExportPageCache:
                 self.entries.move_to_end(key)
             event = self.inflight.get(key)
             owner = entry is None and event is None
+            if entry is None and event is not None:
+                # 리더는 이 수가 0이 아닌 동안 요청자 연결이 끊겨도 멈추지 않는다.
+                self.waiting[key] += 1
+                waiter = True
             if owner:
                 event = threading.Event()
                 self.inflight[key] = event
                 # limit만 다른 CURRENT 첫 페이지의 완료 proof만 빌린다.
                 # 본문/key는 재사용하지 않는다.
-                if (not force and isinstance(key, tuple) and len(key) == 12
+                if (isinstance(key, tuple) and len(key) == 12
                         and key[1] == "current" and key[3] is None):
                     for old_key, old in reversed(self.entries.items()):
                         if (isinstance(old_key, tuple) and len(old_key) == len(key)
@@ -132,31 +190,45 @@ class ExportPageCache:
             except PageReuseExpired:
                 self._evict(key, entry)
                 return self.read(key, reader, load)
+            except ExportRequestCancelled:
+                # 요청자가 떠나 검산을 멈췄을 뿐이다. 다른 요청이 쓸 유효 항목은 지우지 않는다.
+                raise
             except BaseException:
                 self._evict(key, entry)
                 raise
         if not owner:
-            if not event.wait(60):
-                raise ExportGuardTimeout("동일 export 페이지 생성 대기 상한을 넘었습니다.")
-            # 소유자가 실패(410/422/503)했거나 캐시하지 않은 결과면 이 요청이 직접 읽는다.
+            try:
+                if not wait_event(event, _INFLIGHT_WAIT_SECONDS, stage="page_wait"):
+                    raise ExportGuardTimeout("동일 export 페이지 생성 대기 상한을 넘었습니다.")
+            finally:
+                if waiter:
+                    with self.lock:
+                        self.waiting[key] -= 1
+                        if self.waiting[key] <= 0:
+                            del self.waiting[key]
+            # 소유자가 실패(410/422/503)·취소했거나 캐시하지 않은 결과면 이 요청이 직접 읽는다.
             # 소유자의 오류를 일시 경합 503으로 바꿔 숨기지 않는다.
             return self.read(key, reader, load)
         try:
             reader.page_reuse_status = "generated"
             if seed is not None:
                 reader._current_page_seed = (seed[1].reader, seed[1].deadline)
-            try:
-                result, entry = self._prepare(reader, load)
-            except PageReuseExpired:
-                restart = getattr(reader, "_restart_expired_current_seed", None)
-                if restart is None or not restart():
-                    raise
-                # 원래 seed lease가 끝난 경우만 한 번 정상 cold freeze를 한다.
-                # 두 번째 생성의 실패나 hash/삭제/SQL 오류는 재시도하지 않는다.
-                result, entry = self._prepare(reader, load)
+            with leading(lambda: self.has_waiters(key)):
+                try:
+                    result, entry = self._prepare(reader, load)
+                except PageReuseExpired:
+                    restart = getattr(reader, "_restart_expired_current_seed", None)
+                    if restart is None or not restart():
+                        raise
+                    # 원래 seed lease가 끝난 경우만 한 번 정상 cold freeze를 한다.
+                    # 두 번째 생성의 실패나 hash/삭제/SQL 오류는 재시도하지 않는다.
+                    result, entry = self._prepare(reader, load)
             if entry is not None:
                 self._put(key, entry)
             return result
+        except ExportRequestCancelled:
+            # seed는 다른 limit의 유효한 완료 proof다. 요청자가 떠났다고 버리지 않는다.
+            raise
         except BaseException:
             if seed is not None:
                 self._evict(*seed)

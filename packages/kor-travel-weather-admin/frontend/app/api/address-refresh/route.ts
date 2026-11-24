@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isAllowedOrigin } from "@/lib/origin";
 import { DAGSTER_LOCATION_NAME, DAGSTER_REPOSITORY_NAME,
   ADDRESS_REFRESH_PREVIOUS_QUERY, ADDRESS_REFRESH_ACTIVE_QUERY, ADDRESS_REFRESH_LAUNCH_MUTATION } from "@/lib/dagster-scope";
-import { adminUsername, checkDurableSession, SESSION_COOKIE, sessionSecret, verifySessionValue } from "@/lib/session";
+import { adminUsername, checkDurableSession, durableSessionCacheAllowed, SESSION_COOKIE, sessionSecret, verifySessionValue } from "@/lib/session";
 
 const headers = { "cache-control": "no-store, private" };
 const reply = (detail: string, status: number) => NextResponse.json({ detail }, { status, headers });
@@ -30,8 +30,9 @@ async function authenticated(request: NextRequest) {
   if (!username || !value) return false;
   try {
     const secret = sessionSecret(username, process.env.WEATHER_UI_PASSWORD ?? "");
+    // 실행 예약(POST)은 캐시된 active 판정을 쓰지 않는다(lib/session.ts durableSessionCacheAllowed).
     return await verifySessionValue(value, secret, request, username) === username
-      && await checkDurableSession(value) === "active";
+      && await checkDurableSession(value, process.env, { fresh: !durableSessionCacheAllowed(request.method) }) === "active";
   } catch { return false; }
 }
 async function graphql(query: string, variables: Record<string, unknown>) {

@@ -230,6 +230,50 @@ this one keeps DEFAULT on purpose (its floor is what lets a partition be created
 without scanning it, and what the replay skip reads). Retention uses a plain
 `DETACH`, one day per transaction.
 
+**지도 읽기를 세우는 구간 줄이기(2026-11-24, Map 호출 검토 L1·L2·L3).** ACCESS EXCLUSIVE 요청이
+대기열에 있는 동안에는 뒤에 온 읽기도 그 뒤에 선다. 그래서 야간 단계는 다음처럼 lock 구간을 줄인다.
+
+1. 첫 시도 앞에서도 조용한 순간을 기다린다(`_await_quiet_tables`, 예전에는 두 번째 시도부터).
+   floor 확인과 SHARE UPDATE EXCLUSIVE의 FK VALIDATE는 수집·읽기와 충돌하지 않아 첫 대기를 건너뛴다.
+2. 표 lock을 `BRIEF_DDL_LOCK_TIMEOUT_MS`(400ms)까지만 기다리고 물러나 다음 조용한 순간에 다시
+   시도한다. 예전에는 `ddl_lock_timeout_ms`(deadlock_timeout의 세 배, 기본 3초)를 시도마다 기다렸다.
+   짧은 대기에 진 뒤 차단자가 autovacuum worker뿐이면 그 lock만 `ddl_lock_timeout_ms`까지 다시
+   기다린다. autovacuum은 대기자가 deadlock_timeout을 넘겨 기다려야 deadlock 검사가 취소하기 때문이다.
+   차단자는 `pg_locks`의 granted 보유자를 충돌표로 거르고 `pg_stat_activity.backend_type`으로 가린다.
+   이때 LOCK 전과 짧은 대기에 진 직후에 한 번씩 보유자를 읽고, 직후의 보유자 중 **LOCK 전부터 같은
+   transaction(`pg_locks.virtualtransaction`)이 쥐고 있던 것과 autovacuum worker만** 센다. 부모에 거는
+   LOCK은 부모를 먼저 잡고 autovacuum이 쥔 파티션에서 기다리므로, 그동안 온 지도 reader·수집은 우리
+   뒤에 줄을 섰다가 savepoint로 되돌리는 순간 lock을 받아 직후의 보유자에 섞인다. 그들까지 세면 읽기가
+   도는 밤에는 autovacuum만 막는 경우를 놓쳐 detach·미래 파티션 생성이 autovacuum을 끝내 이기지 못한다.
+   `pg_stat_activity`는 transaction 안에서 처음 읽은 snapshot에 고정되므로 읽을 때마다
+   `pg_stat_clear_snapshot()`으로 버린다. superuser나 `pg_read_all_stats`가 아닌 role에는 autovacuum의
+   `backend_type`이 NULL로 보여 이 예외가 동작하지 않는다(연기 쪽으로 간다). compose의
+   `POSTGRES_USER`는 superuser다.
+3. 단기예보 보존 검사(최대 5초)를 표 lock 전에 하고, lock 뒤에는 300ms 상한의 재확인만 한다. 떼어낸
+   표의 DROP은 그 표만 SHARE로 잠근 뒤 참조 표 lock 전에 한 번만 검사한다
+   ([단기예보 보존](shortterm-retention.md)).
+
+운영자 DEFAULT 교체 스크립트·migration·수집의 lock 대기는 그대로 `ddl_lock_timeout_ms`다. 로컬
+PostgreSQL 16 시험(`tests/test_retention_under_ingest.py`)은 수집에 진 DDL 시도 뒤에 선 읽기의 가장 긴
+대기가 짧은 상한에서 1.5초 미만이고 예전 상한에서 2초 이상임을 확인한다(2026-11-24 Windows 개발
+PC·WSL docker PostgreSQL 16 로컬 3회: 0.37~0.40초 대 약 2.98초). 운영(야간 유지보수 중 지도 읽기
+p95·lock 대기)은 아직 재지 않았다.
+
+**포인터·원천 정리의 batch(2026-11-24, Map 호출 검토 L4).** 만료 일자를 가리키는 현재값 포인터와
+아무것도 인용하지 않는 만료 원천 기록은 예전에 각각 상한 없는 DELETE 한 문장이었다. 밀린 뒤 첫
+실행이면 수백만 행의 WAL·bloat가 한 transaction에 몰리고, 그동안 같은 포인터 행을 쓰는 수집
+CAS가 그 행 lock 뒤에 섰다. 지금은 기본키 순서의 keyset batch(1,000행)마다 commit하고, batch마다
+`weather_history_purge` advisory lock을 먼저 기다려 잡은 뒤 문장 10초·lock 1초 상한을 건다. 지우는
+대상은 그대로다(보존할 최근6시간·미래 단기예보 포인터, 떼어 두고 아직 못 지운 표가 인용하는 원천은
+남긴다). batch가 lock/문장 상한·deadlock에 지면 같은 위치에서 세 번 더(2·4·8초 뒤) 시도하고, 그래도
+지면 앞 batch의 commit은 둔 채 멈춘다(`pointers_deferred`·`sources_deferred`, 실행은 `deferred`).
+포인터를 끝내지 못한 밤에는 만료 일자를 떼지 않는다: 남은 포인터가 가리키는 fact를 떼면 FK 검증이 그
+포인터를 상한 없는 DELETE(`delete_dangling_projection_rows`)로 지우게 되기 때문이다. 그 날들은
+`partitions_deferred`로 표시되고 다음 밤에도 못 하면 overdue다. 수집 run에 연결된 원천은 지우지
+않으므로 원천 후보는 오래된 원천 이력 거의 전부다. 그래서 원천 단계는 실행당 1,800초 예산만큼 읽고
+멈춘 위치(`sources_resume_after`)를 Dagster 실행 기록으로 다음 실행에 넘겨 이어 읽는다. 원천 batch
+연기가 연속 2회면 실행은 `partial`이다. 자세한 근거는 [쓰기 경로 상한](write-path-bounds.md).
+
 **A replay outlives its first fetch's day.** A response the store already holds
 is replayed with its first fetch time as `known_at`, so an identical re-fetch is
 a no-op instead of a new row. Retention drops days, not responses: an alert in
