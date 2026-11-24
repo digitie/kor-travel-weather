@@ -10,9 +10,11 @@ Map은 ``/v1/service/exports/current?limit=2000``을 매시 :25·:40에 처음�
 1. 짧은 RR 하나에서 **입력 proof**(삭제 epoch 3개·승인 inventory digest·catalog/주소 digest)를
    읽어 builder가 manifest를 만든 RR의 proof와 같은지, 시간 경계(``valid_until``) 전인지 본다.
    같으면 지금 freeze해도 같은 manifest다(아래 "proof가 덮는 것").
-2. handle 수명: 유효 handle은 기존 조건부 갱신을 먼저 시도하고, 그래도 남은 수명이 15분 미만이면
-   같은 manifest로 새 handle을 발급한다. 만료 handle은 연장하지 않는다(새 handle만 발급).
-   새 handle의 snapshot ref가 참조 세대를 GC에서 지킨다. 발급도 못 하면 일시 503이다.
+2. handle 수명: 같은 manifest의 유효 handle은 freeze 재사용과 같은 조건(그 selection의 최근
+   발급)으로 이어 쓴다(build handle이 만료된 뒤 앞 요청이 발급한 handle 포함). 유효 handle은 기존
+   조건부 갱신을 먼저 시도하고, 그래도 남은 수명이 15분 미만이면 아래 검산을 모두 통과한 뒤 같은
+   manifest로 새 handle을 발급한다. 만료 handle은 연장하지 않는다(새 handle만 발급). 새 handle의
+   snapshot ref가 참조 세대를 GC에서 지킨다. 발급을 못 하면 기존 freeze 경로로 간다.
 3. 상태(``source_status``): builder 판정이 60초 승인 수명 안이고 삭제 epoch가 같으면 그 판정을
    쓰고, 아니면 기존 첫 페이지처럼 새로 판정한다. 새 판정의 승인 선택이 manifest와 다르면
    (scope 집합·미확인 여부) 사전 구성을 버리고 기존 freeze로 간다.
@@ -91,6 +93,10 @@ BUILD_BUDGET_SECONDS = 600.0
 STATUS_MAX_AGE = timedelta(seconds=60)
 #: no-op 판정 때 시간 경계까지 이만큼은 남아야 다시 만들지 않는다.
 VALID_UNTIL_MARGIN = timedelta(minutes=5)
+#: builder의 정상 결과. CLI(배포 hook)와 Dagster job이 같은 집합을 쓴다. ``not_ready``는 아직 완결
+#: 승인 집합이 없거나 이전 승인 fallback 상태라 만들 것이 없다는 뜻이다(요청 경로가 기존
+#: fallback·503을 그대로 쓴다). ``unsupported``는 PostgreSQL이 아닌 저장소다.
+SUCCESS_OUTCOMES = frozenset({"built", "unchanged", "disabled", "unsupported", "not_ready"})
 
 
 def export_prebuilt_tables(metadata: MetaData):
@@ -248,6 +254,43 @@ def _build_liveness(build):
     return (build["liveness_plans"], build["liveness_generations"], build["liveness_heads"])
 
 
+def _reusable_handle(connection, reader, build):
+    """build manifest의 handle 중 freeze 재사용과 같은 조건을 만족하는 것(없으면 None).
+
+    조건은 freeze와 같다: 같은 manifest digest의 유효한 handle 중 가장 최근 발급이고, 그 뒤에
+    같은 selection으로 발급된 handle이 없어야 한다. build가 가리키는 handle이 만료된 뒤 앞 요청이
+    같은 manifest로 새 handle을 발급했으면 그것을 이어 쓴다(요청마다 새로 발급하지 않는다).
+    """
+    snapshots = reader.snapshots
+    latest = connection.execute(
+        select(snapshots.c.snapshot_id, snapshots.c.issue_order).where(
+            snapshots.c.manifest_digest == build["manifest_digest"],
+            snapshots.c.expires_at > datetime.now(UTC),
+        ).order_by(snapshots.c.issue_order.desc()).limit(1)
+    ).one_or_none()
+    if latest is None or connection.scalar(select(snapshots.c.issue_order).where(
+        snapshots.c.issue_order > latest.issue_order, *reader._same_selection(),
+    ).limit(1)) is not None:
+        return None
+    return reader._cursor_snapshot_row(connection, latest.snapshot_id)
+
+
+def _carry_status(reader, old, new):
+    """같은 manifest의 새 handle로 옮길 때 방금 만든 공용 상태 판정을 새 key에도 남긴다.
+
+    판정은 manifest와 현재 상태의 함수다(handle id와 무관). 이어지는 cursor 페이지가 새 handle
+    key로 다시 판정하지 않게 한다.
+    """
+    cache = reader._state_proof_cache()
+    if cache is None:
+        return
+    prefix = (id(reader.repository.engine), reader._state_signature())
+    with cache.lock:
+        entry = cache.status_proofs.get((*prefix, old["snapshot_id"], old["manifest_digest"]))
+    if entry is not None:
+        cache.put_status((*prefix, new["snapshot_id"], new["manifest_digest"]), *entry)
+
+
 def prebuilt_first_page(reader, limit):
     """사전 구성된 첫 페이지의 handle·상태를 돌려준다. 쓸 수 없으면 None(기존 freeze 경로).
 
@@ -279,7 +322,10 @@ def prebuilt_first_page(reader, limit):
             if now >= build["valid_until"]:
                 reader.prebuilt_outcome = "expired"
                 return None
-            frozen = reader._cursor_snapshot_row(connection, build["snapshot_id"])
+            # build handle이 만료됐어도 앞 요청이 같은 manifest로 발급한 유효 handle이 있으면 쓴다.
+            frozen = _reusable_handle(connection, reader, build)
+            if frozen is None:
+                frozen = reader._cursor_snapshot_row(connection, build["snapshot_id"])
             if frozen is None:
                 # 만료된 handle도 manifest는 그대로다. 새 handle 발급에만 쓴다(연장하지 않는다).
                 row = connection.execute(select(snapshots).where(
@@ -289,27 +335,28 @@ def prebuilt_first_page(reader, limit):
             if frozen is None or frozen["manifest_digest"] != build["manifest_digest"]:
                 reader.prebuilt_outcome = "missing"
                 return None
-    except SQLAlchemyError as exc:
+    except ExportGuardTimeout:
+        raise
+    except (SQLAlchemyError, ExportArtifactError) as exc:
         # 판정을 못 했을 뿐 사전 구성이 틀린 것은 아니다. 기존 경로가 같은 오류를 분류한다.
+        # 삭제 epoch 조회 실패는 capture_liveness가 ExportArtifactError로 바꿔 올린다.
         logger.warning("weather_export_prebuilt_check_failed reason=%s", type(exc).__name__)
         reader.prebuilt_outcome = "error"
         return None
     token = proof["liveness"]
     frozen = dict(frozen)
-    if frozen["expires_at"] > datetime.now(UTC):
-        frozen = reader._renew_reused(dict(frozen, _reused=True))
-    if frozen["expires_at"] - datetime.now(UTC) < SNAPSHOT_TTL:
-        # 갱신 실패(best-effort)·총 수명 상한·이미 만료: 같은 manifest로 새 handle을 발급한다.
-        try:
-            with reader.heads._transaction() as session:
-                frozen = reader._copy_handle(session, frozen)
-        except SQLAlchemyError as exc:
-            raise ExportGuardTimeout("사전 구성 snapshot handle을 발급하지 못했습니다.") from exc
     refs = [ref for scope in frozen["manifest"]["scopes"] for ref in scope["refs"]]
+    # 검산을 모두 통과한 뒤에만 새 handle을 발급한다(버려질 handle·ref를 남기지 않는다).
+    # 발급 전 이 파일 검산은 기존 재사용 handle과 같다: 같은 proof라 승인 inventory가 build 때와
+    # 같고, inventory가 참조하는 세대는 GC가 지킨다.
     if not reader.artifacts.all_present(refs):
-        # 기존 재사용 handle과 같은 파일 검산이다. 없으면 기존 경로가 새 head로 다시 발급한다.
+        # 없으면 기존 경로가 새 head로 다시 발급한다.
         reader.prebuilt_outcome = "artifacts"
         return None
+    if frozen["expires_at"] > datetime.now(UTC):
+        frozen = reader._renew_reused(dict(frozen, _reused=True))
+    # 갱신 실패(best-effort)·총 수명 상한·이미 만료: 판정 뒤 같은 manifest로 새 handle을 발급한다.
+    needs_handle = frozen["expires_at"] - datetime.now(UTC) < SNAPSHOT_TTL
     remaining = (build["status_checked_at"] + STATUS_MAX_AGE - datetime.now(UTC)).total_seconds()
     builder_status = remaining > STATUS_PROOF_MIN_REMAINING
     reader.__dict__.pop("_state_selection_parity", None)
@@ -332,6 +379,17 @@ def prebuilt_first_page(reader, limit):
             # 지금 승인 선택이 manifest와 다르다. freeze가 새 manifest를 만들게 한다.
             reader.prebuilt_outcome = "selection"
             return None
+    if needs_handle:
+        try:
+            with reader.heads._transaction() as session:
+                issued = reader._copy_handle(session, frozen)
+        except SQLAlchemyError as exc:
+            # 잠금 대기·세대 삭제 FK 등. 사전 구성을 버리고 기존 freeze가 같은 오류를 분류한다.
+            logger.warning("weather_export_prebuilt_handle_failed reason=%s", type(exc).__name__)
+            reader.prebuilt_outcome = "error"
+            return None
+        _carry_status(reader, frozen, issued)
+        frozen = issued
     reader.prebuilt_outcome = "hit"
     return frozen, status
 
@@ -421,7 +479,15 @@ def _builder_reader(repository, settings):
 
 
 def _unchanged(repository, reader, key) -> bool:
-    """마지막 build의 proof가 지금과 같고 시간 경계·handle이 남아 있으면 다시 만들 필요가 없다."""
+    """마지막 build의 proof·승인 선택이 지금과 같고 시간 경계·handle이 남아 있으면 그대로 둔다.
+
+    handle 수명은 보지 않는다. 만료됐으면 첫 요청이 같은 manifest로 새 handle을 한 번 발급하고
+    다음 요청부터는 그 handle을 이어 쓴다(``_reusable_handle``). 시도·run 실패와 복구처럼
+    manifest의 미확인 여부만 바꾸는 변화는 proof에 없으므로, 요청 경로가 builder 판정 수명 뒤에
+    하는 것과 같은 승인 선택 비교(``_state_selection_parity``)를 여기서도 한다. 다르면 다시 만든다.
+    """
+    from .export_selection_cache import ExportSelectionCache
+
     with repository.engine.connect().execution_options(
         isolation_level="REPEATABLE READ",
     ) as connection, connection.begin():
@@ -433,9 +499,21 @@ def _unchanged(repository, reader, key) -> bool:
         if (proof is None or proof["digest"] != build["proof_digest"]
                 or proof["liveness"] != _build_liveness(build)):
             return False
-        return connection.scalar(select(reader.snapshots.c.snapshot_id).where(
+        manifest = connection.scalar(select(reader.snapshots.c.manifest).where(
             reader.snapshots.c.snapshot_id == build["snapshot_id"],
-        )) is not None
+        ))
+        if manifest is None:
+            return False
+        reader.selection_cache = ExportSelectionCache()
+        reader.selection_min_remaining = None
+        reader.selection_deadline = None
+        reader.reuse_liveness = None
+        reader.selection_checked_after = monotonic()
+        reader.__dict__.pop("_state_selection_parity", None)
+        reader._compute_state_stale(connection, manifest)
+        reader.__dict__.pop("_selection_read_in", None)
+        parity = reader.__dict__.pop("_state_selection_parity", None)
+        return parity == (bool(manifest.get("unconfirmed_sources")), True)
 
 
 def build_current_profile(
@@ -540,22 +618,35 @@ def build_current_profile(
         **report, "outcome": "built", "build_id": build_id,
         "snapshot_id": frozen["snapshot_id"], "pages": len(rows), "items": items_total,
         "bytes": total, "status": "stale" if stale else "ok", "removed_builds": removed,
-        "valid_until": health[1].isoformat(), "seconds": round(clock() - started, 3),
+        "valid_until": health[1].isoformat(),
+        # 시간 경계(가장 이른 health_recheck_at)까지 남은 초. 여러 provider가 순환 수집하는 운영에서
+        # 이 값이 Map 도착(:25·:40)보다 짧으면 요청이 ``expired``로 기존 경로를 쓴다.
+        "valid_for_seconds": round((health[1] - checked_at).total_seconds(), 1),
+        "seconds": round(clock() - started, 3),
     }
 
 
 def main(argv: list[str] | None = None) -> int:
-    """배포 hook·수동 실행용. 결과 JSON 한 줄을 내고 실패면 1을 돌려준다(배포는 경고만)."""
+    """배포 hook·수동 실행용. 결과 JSON 한 줄을 내고 정상 결과가 아니면 1을 돌려준다(배포는 경고만).
+
+    정상 결과는 Dagster job과 같은 ``SUCCESS_OUTCOMES``다(``not_ready``도 정상 상태다).
+    """
     from .repository import WeatherRepository
     from .settings import get_settings
 
     parser = argparse.ArgumentParser(description="Map 표준 프로필 export 페이지를 사전 구성한다.")
     parser.add_argument("--limit", type=int, default=PROFILE_LIMIT)
+    # 페이지 조립 사이에서만 확인하는 예산이다. 배포 hook은 프로세스 자체도 timeout으로 끊는다.
+    parser.add_argument("--budget-seconds", type=float, default=BUILD_BUDGET_SECONDS)
     args = parser.parse_args(argv)
+    if not 0 < args.budget_seconds <= BUILD_BUDGET_SECONDS:
+        parser.error(f"--budget-seconds는 0 초과 {BUILD_BUDGET_SECONDS:g} 이하여야 합니다.")
     settings = get_settings()
     repository = WeatherRepository(settings.database_url)
     try:
-        report = build_current_profile(repository, settings, limit=args.limit)
+        report = build_current_profile(
+            repository, settings, limit=args.limit, budget_seconds=args.budget_seconds,
+        )
     except (ExportArtifactError, SQLAlchemyError, OSError) as exc:
         from .export_collector import failure_reason
 
@@ -565,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         repository.engine.dispose()
     print(json.dumps(report, ensure_ascii=False, default=str))
-    return 0 if report["outcome"] in {"built", "unchanged", "disabled"} else 1
+    return 0 if report["outcome"] in SUCCESS_OUTCOMES else 1
 
 
 if __name__ == "__main__":

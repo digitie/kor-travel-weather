@@ -4,11 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from kortravelweather_dagster.kma_weather import KmaAllGridsFailedError
-from sqlalchemy import event, select, text, update
+from sqlalchemy import delete, event, func, select, text, update
 from test_frozen_service_exports import HEADERS, TOKEN, _client, _collect
 from test_frozen_service_exports import repository as repository
 
 from kortravelweather import export_prebuilt
+from kortravelweather.export_artifacts import ExportArtifactError
+from kortravelweather.export_database_artifacts import DatabaseExportArtifactStore
 from kortravelweather.export_prebuilt import build_current_profile, export_prebuilt_tables
 from kortravelweather.export_snapshots import SNAPSHOT_TTL, export_snapshot_tables
 from kortravelweather.repository import Base
@@ -166,6 +168,19 @@ def test_old_builder_status_is_recomputed_and_a_new_failure_falls_back(
     # 실패가 승인 선택을 미확인으로 바꿨다. 사전 구성 manifest(확인됨)를 버리고 freeze한다.
     assert failed.headers["x-export-prebuilt"] == "selection"
     assert failed.json()["meta"]["source_status"] == "stale"
+    # 실패는 proof(inventory·catalog·epoch)를 바꾸지 않는다. builder는 요청과 같은 승인 선택
+    # 비교로 다시 만든다(다음 승격까지 사전 구성이 쓸모없어지지 않게).
+    rebuilt = _build(repository, tmp_path)
+    assert rebuilt["outcome"] == "built", rebuilt
+    with repository.engine.begin() as connection:
+        # 새 판정을 강제해 manifest와 지금 승인 선택(미확인)이 같은지를 요청이 다시 보게 한다.
+        connection.execute(update(builds).where(
+            builds.c.build_id == rebuilt["build_id"],
+        ).values(status_checked_at=datetime.now(UTC) - timedelta(seconds=90)))
+    again = _app(repository, tmp_path).get(URL, params={"limit": LIMIT}, headers=HEADERS)
+    assert again.headers["x-export-prebuilt"] == "hit"
+    assert again.json()["meta"]["source_status"] == "stale"
+    assert _build(repository, tmp_path)["outcome"] == "unchanged"
 
 
 def test_expired_handle_is_not_extended_and_a_new_handle_is_issued(repository, tmp_path):
@@ -198,6 +213,171 @@ def test_expired_handle_is_not_extended_and_a_new_handle_is_issued(repository, t
     assert pages[0].headers["x-export-read"] == "reused"
     assert first.headers["x-export-prebuilt-pages"] == "1"
     assert sum(int(page.headers["x-export-prebuilt-pages"]) for page in pages[1:]) == 4
+
+
+def _snapshot_count(repository):
+    snapshots, refs = export_snapshot_tables(Base.metadata)
+    with repository.engine.connect() as connection:
+        return (connection.scalar(select(func.count()).select_from(snapshots)),
+                connection.scalar(select(func.count()).select_from(refs)))
+
+
+def test_a_handle_issued_for_an_expired_build_handle_is_reused(repository, tmp_path):
+    """build handle이 만료된 뒤 첫 요청만 새 handle을 발급하고 다음 첫 페이지들은 그것을 쓴다."""
+    snapshots, _ = export_snapshot_tables(Base.metadata)
+    _collect(repository, tmp_path)
+    report = _build(repository, tmp_path)
+    with repository.engine.begin() as connection:
+        connection.execute(update(snapshots).where(
+            snapshots.c.snapshot_id == report["snapshot_id"],
+        ).values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    before = _snapshot_count(repository)
+    issued = []
+    for _ in range(3):
+        # 새 앱마다(빈 완료 페이지 캐시) 첫 페이지 판정을 다시 한다.
+        first = _app(repository, tmp_path).get(URL, params={"limit": LIMIT}, headers=HEADERS)
+        assert first.headers["x-export-prebuilt"] == "hit"
+        issued.append(first.json()["meta"]["snapshot_id"])
+    assert len(set(issued)) == 1 and issued[0] != report["snapshot_id"]
+    after = _snapshot_count(repository)
+    _, refs = export_snapshot_tables(Base.metadata)
+    with repository.engine.connect() as connection:
+        per_handle = connection.scalar(select(func.count()).select_from(refs).where(
+            refs.c.snapshot_id == issued[0],
+        ))
+    assert per_handle > 0
+    # 세 요청을 합쳐 handle 하나와 그 scope ref만 더 생겼다.
+    assert after == (before[0] + 1, before[1] + per_handle)
+    # builder는 handle 수명 때문에 다시 만들지 않는다(요청이 이어 쓰는 handle이 있다).
+    assert _build(repository, tmp_path)["outcome"] == "unchanged"
+
+
+def test_build_past_its_time_boundary_falls_back(repository, tmp_path):
+    builds, _ = export_prebuilt_tables(Base.metadata)
+    _collect(repository, tmp_path)
+    baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
+    _build(repository, tmp_path)
+    with repository.engine.begin() as connection:
+        connection.execute(update(builds).values(
+            valid_until=datetime.now(UTC) - timedelta(seconds=1),
+        ))
+    pages = _walk(_app(repository, tmp_path))
+    assert pages[0].headers["x-export-prebuilt"] == "expired"
+    assert _items(pages) == baseline
+    # 첫 페이지는 기존 freeze가 manifest를 정한다(본문은 그 manifest digest로 찾는다).
+    # 시간 경계를 지난 build는 builder가 다시 만든다.
+    assert _build(repository, tmp_path)["outcome"] == "built"
+
+
+def test_a_delete_epoch_change_falls_back(repository, tmp_path):
+    _collect(repository, tmp_path)
+    baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
+    _build(repository, tmp_path)
+    with repository.engine.begin() as connection:
+        # head 삭제가 올리는 번호다. 삭제 자체 없이 번호만 올려도 proof가 달라야 한다.
+        connection.execute(text(
+            "UPDATE weather_page_liveness_epochs SET epoch = epoch + 1 "
+            "WHERE target_name = 'weather_export_heads'"
+        ))
+    pages = _walk(_app(repository, tmp_path))
+    assert pages[0].headers["x-export-prebuilt"] == "changed"
+    assert _items(pages) == baseline
+
+
+def test_missing_artifacts_fall_back_to_the_regular_path(
+    repository, tmp_path, monkeypatch,
+):
+    snapshots, _ = export_snapshot_tables(Base.metadata)
+    _collect(repository, tmp_path)
+    baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
+    report = _build(repository, tmp_path)
+    with repository.engine.begin() as connection:
+        connection.execute(update(snapshots).where(
+            snapshots.c.snapshot_id == report["snapshot_id"],
+        ).values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    original = DatabaseExportArtifactStore.all_present
+    calls = []
+
+    def first_missing(self, refs):
+        # 사전 구성 검산(첫 호출)만 파일이 없다고 본다. 기존 경로는 실제 검산을 한다.
+        calls.append(1)
+        return False if len(calls) == 1 else original(self, refs)
+
+    monkeypatch.setattr(DatabaseExportArtifactStore, "all_present", first_missing)
+    before = _snapshot_count(repository)[0]
+    pages = _walk(_app(repository, tmp_path))
+    assert pages[0].headers["x-export-prebuilt"] == "artifacts"
+    assert _items(pages) == baseline
+    # 새 handle은 기존 freeze가 발급한 하나뿐이다.
+    assert _snapshot_count(repository)[0] == before + 1
+
+
+def test_a_failed_handle_copy_falls_back_instead_of_503(repository, tmp_path, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    from kortravelweather.export_snapshots import FrozenCurrentExports
+
+    snapshots, _ = export_snapshot_tables(Base.metadata)
+    _collect(repository, tmp_path)
+    baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
+    report = _build(repository, tmp_path)
+    with repository.engine.begin() as connection:
+        connection.execute(update(snapshots).where(
+            snapshots.c.snapshot_id == report["snapshot_id"],
+        ).values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+
+    def locked(self, session, frozen):
+        raise OperationalError("INSERT", {}, Exception("lock timeout"))
+
+    monkeypatch.setattr(FrozenCurrentExports, "_copy_handle", locked)
+    pages = _walk(_app(repository, tmp_path))
+    # 발급 실패는 사전 구성만 버린다. 기존 freeze가 새 handle로 같은 항목을 낸다.
+    assert pages[0].headers["x-export-prebuilt"] == "error"
+    assert _items(pages) == baseline
+
+
+def test_a_failed_proof_read_falls_back_instead_of_failing(repository, tmp_path, monkeypatch):
+    from kortravelweather import export_page_liveness
+
+    _collect(repository, tmp_path)
+    _build(repository, tmp_path)
+    original = export_page_liveness.capture_liveness
+    calls = []
+
+    def first_fails(connection, metadata):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ExportArtifactError("완료 페이지 생존 검산을 확인할 수 없습니다.")
+        return original(connection, metadata)
+
+    monkeypatch.setattr(export_page_liveness, "capture_liveness", first_fails)
+    first = _app(repository, tmp_path).get(URL, params={"limit": LIMIT}, headers=HEADERS)
+    assert first.status_code == 200, first.text
+    assert first.headers["x-export-prebuilt"] == "error"
+
+
+def test_cursor_pages_after_the_build_is_removed_use_the_regular_assembly(
+    repository, tmp_path,
+):
+    builds, _ = export_prebuilt_tables(Base.metadata)
+    _collect(repository, tmp_path)
+    baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
+    _build(repository, tmp_path)
+    client = _app(repository, tmp_path)
+    first = client.get(URL, params={"limit": LIMIT}, headers=HEADERS)
+    assert first.headers["x-export-prebuilt"] == "hit"
+    assert first.headers["x-export-prebuilt-pages"] == "1"
+    with repository.engine.begin() as connection:
+        connection.execute(delete(builds))
+    pages = [first]
+    while pages[-1].json()["meta"]["next_cursor"]:
+        page = client.get(URL, params={
+            "limit": LIMIT, "cursor": pages[-1].json()["meta"]["next_cursor"],
+        }, headers=HEADERS)
+        assert page.status_code == 200, page.text
+        pages.append(page)
+    assert _items(pages) == baseline
+    assert {page.headers["x-export-prebuilt-pages"] for page in pages[1:]} == {"0"}
 
 
 def test_handle_at_its_total_lifetime_ceiling_gets_a_new_handle(repository, tmp_path):

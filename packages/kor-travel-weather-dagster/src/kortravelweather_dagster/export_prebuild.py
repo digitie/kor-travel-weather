@@ -27,7 +27,11 @@ from dagster import (
 )
 from kortravelcommon.dagster import RecoveryPolicy, coalescing_schedule
 
-from kortravelweather.export_prebuilt import build_current_profile, prebuild_enabled
+from kortravelweather.export_prebuilt import (
+    SUCCESS_OUTCOMES,
+    build_current_profile,
+    prebuild_enabled,
+)
 from kortravelweather.settings import WeatherSettings
 
 JOB_NAME = "weather_export_prebuild_job"
@@ -37,9 +41,8 @@ LOCATION_NAME = "kortravelweather_dagster.definitions"
 CRON_SCHEDULE = "23,38 * * * *"
 #: builder 예산(600초)에 마지막 저장 문장(30초)과 여유를 더한 run 상한.
 MAX_RUNTIME_SECONDS = 900
-#: 정상 결과. ``not_ready``는 아직 완결 승인 집합이 없거나 이전 승인 fallback 상태라 만들 것이
-#: 없다는 뜻이다(요청 경로가 기존 fallback·503을 그대로 쓴다).
-_SUCCESS = frozenset({"built", "unchanged", "disabled", "unsupported", "not_ready"})
+#: 정상 결과. 배포 hook CLI와 같은 집합이다(``export_prebuilt.SUCCESS_OUTCOMES`` 설명 참고).
+_SUCCESS = SUCCESS_OUTCOMES
 
 _POLICY = RecoveryPolicy(MAX_RUNTIME_SECONDS, idempotent=True, infrastructure_retries=1)
 
