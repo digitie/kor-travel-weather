@@ -1,0 +1,78 @@
+# 2026-11-24 — 390px 관리자 셸 마커 키보드 선택 간헐 실패 원인
+
+## 증상
+
+`e2e/admin-shell.spec.ts`의 "390px 관리자 셸 › 지역 날씨 모두 보기 버튼과 목록이 없고 지도 마커는 키보드로 고른다"가
+PR #287 CI run 45278951416의 1·2차 시도에서 연속 실패했다(job 138062474152 6.6초, job 138074949974 6.7초).
+두 번 모두 Enter 뒤 `getByRole('complementary', { name: '선택한 위치 상세' })`가 5초 동안 `element(s) not found`였다.
+같은 시각 다른 PR run과 3차 재시도는 통과했다. CI는 Playwright trace를 artifact로 올리지 않아 로컬에서 재현했다.
+
+## 원인: 첫 위치 자동 이동 중에 카드를 고른 시험 경합
+
+카탈로그가 도착하면 지도는 기본 카메라(전국, zoom 6)에서 첫 위치로 한 번 자동 이동한다
+(`components/weather-map.tsx`의 선택 이동 effect, `easeTo` 500ms, 첫 이동은 zoom 7.2). 이동 전에는 전국 범위에
+16개 시도 카드가 모두 놓이고, 이동이 끝난 `moveend`에서 `syncViewport`가 좌표 표시와 카드 범위를 함께 바꿔
+새 범위 밖 카드를 DOM에서 뺀다(390px fixture에서는 16곳 → 3곳).
+
+시험은 `placed.first()`가 보이자마자 카드를 고르는데, 그 시점이 바로 이 전국 배치 구간이었다. 첫 카드(강원)에
+포커스한 직후 이동이 끝나면 그 카드가 사라져 포커스가 BODY로 떨어지고, Enter는 아무 위치도 고르지 않는다.
+상세는 열린 적이 없으므로 CI와 같은 `element(s) not found`가 된다.
+
+검토한 다른 가설은 근거가 없었다.
+
+- (a) `detail.isVisible()` 즉시 판정 경합: 상세는 사용자가 위치를 고를 때만 열린다(`detailOpen` 초기값 false,
+  자동 선택은 상세를 열지 않음). 모든 진단 실행에서 `isVisible()`은 false였고, 닫기 분기는 실행되지 않는 코드였다.
+- (b) `visibleLocations` effect가 카탈로그 도착 때 막 연 상세를 닫음: 이 fixture는 대표 지역 응답이 `ready`가 아니라
+  카탈로그 전에는 카드가 없다. 실패 재현에서 Enter의 대상은 BODY였고 click·상세 열림/닫힘이 한 번도 없었다.
+
+## 재현(로컬 Windows, Chromium headless shell, fixture 서버)
+
+임시 진단 시험(커밋하지 않음)으로 focusin/focusout/keydown/click, 상세 존재, 배치 카드 수를 페이지 안에서 기록했다.
+
+| 조건 | 결과 |
+|---|---|
+| CDP `Emulation.setCPUThrottlingRate` 2배·3배, 기존 절차 각 8회 | 16/16 통과. 매번 `placed.first()`가 16곳 배치 구간에 잡혔고 약 120~350ms 뒤 3곳으로 줄었다. 포커스는 축소 뒤에 일어나 통과 |
+| 경합 강제: 16곳 배치 구간에 포커스, 이동이 끝난 뒤 Enter(기존 절차) | 5/5 실패. `focusout 강원 → null`, `keydown Enter on BODY`, 상세 미표시(CI와 같은 신호) |
+| 같은 강제 경합 + 수정 절차(이동 완료 뒤 고르기) | 5/5 통과. 이전 포커스는 BODY로 떨어졌지만 이동 뒤 카드(대구)에서 Enter |
+| 수정 절차, CPU 4배·6배 각 6회 | 12/12 통과 |
+
+자연 발생 확률은 포커스와 Enter 사이(약 30ms)가 이동 종료(약 500ms 구간의 끝)에 걸쳐야 해서 낮다. 느린 CI에서
+연속 실패한 것은 그 구간 정렬이 반복된 것으로 보이며, 이 비율을 로컬에서 측정하지는 않았다.
+
+## 수정
+
+- 시험은 좌표 표시(`.kt-map-coordinates`)가 fixture 첫 위치 중심을 보일 때까지 기다린 뒤 카드를 고른다
+  (`waitForFirstSelectionCamera`). 좌표 표시는 `moveend`에서만 바뀌고 같은 `syncViewport` 반영에서 카드 범위도 바뀌므로,
+  첫 위치 중심이 보이면 자동 이동과 범위 갱신이 끝난 것이다. 재시도·skip·timeout 연장은 쓰지 않았다.
+- 실행되지 않던 `if (await detail.isVisible())` 닫기 분기를 "자동 선택은 상세를 열지 않는다" 단언으로 바꿨다.
+- 회귀 시험 "첫 위치 자동 이동을 알리는 좌표 표시와 카드 범위는 같은 반영에서 바뀐다"(1280·390)를 더했다. 모든 DOM
+  변경 직후의 (좌표 표시, 카드 위치 이름)을 MutationObserver로 기록해, 좌표가 첫 위치를 처음 보인 반영에서 이미 범위 밖
+  카드가 빠져 있는지 시간 대기 없이 본다. `syncViewport`의 카드 범위 갱신만 300ms 늦추는 변이를 넣으면 두 폭 모두
+  `nationwide 16 / settled 16`으로 실패하고, 되돌리면 통과한다.
+- 대기의 다른 전제인 "정착 뒤 고르기 전까지 놓인 카드가 DOM에서 빠지지 않는다"는 키보드 선택 시험이 같은 기록기로
+  `marker.focus()` 직전에 본다. 정착 반영의 카드 이름이 이후 모든 반영에 남아 있어야 하며, 빠지면 Enter 뒤
+  "상세 없음" 대신 어느 반영에서 어떤 카드가 빠졌는지로 실패한다. 정착 직후 기록을 바로 읽던 회귀 시험의 "이후
+  반영에서 카드가 다시 생기지 않는다" 루프는 정착 스냅샷 하나만 보는 자명한 단언이고 방향(새로 생김)도 맞지 않아 지웠다.
+  변이 확인: 정착 직후 카드 하나를 DOM에서 빼면 두 폭 모두 이 단언에서 실패한다(1280 `settledCards` 6곳 → 5곳,
+  390 3곳 → 2곳).
+
+다른 e2e의 `isVisible()` 분기(`map-workspace-ui` 82·378행, `shared-map-ui` 29행)는 CSS 중단점으로 정해지는 필터 버튼
+표시 여부라 비동기 상태 경합이 아니다. 지도 카드를 직접 고르는 e2e는 이 시험 하나다(나머지는 목록 행으로 고른다).
+
+## 남은 것: 범위 밖으로 빠진 카드의 포커스 복구(후속 제품 변경)
+
+이 PR은 시험 수정과 기록만 담는다. 아래 제품 공백은 이 PR이 만든 것이 아니라 원래 있던 것이며, 마지막 문서 정리 PR에서
+`docs/tasks.md` 후속 항목으로 옮긴다(이 저장소는 GitHub issue 대신 `docs/tasks.md`로 후속 작업을 추적한다).
+
+- 증상: 포커스한 지역 카드가 카메라 이동으로 범위를 벗어나 DOM에서 빠지면 포커스가 BODY로 떨어지고 복구되지 않는다.
+  위 경합 강제 재현의 `focusout 강원 → null`, `keydown Enter on BODY`가 이 경로다.
+- 원인: `components/weather-map.tsx`의 지역 카드 배치 effect는 포커스 위치를 아직 DOM에 있는 카드에서만 찾는다
+  (`const focusedHost = entries.find(({ host }) => host.contains(document.activeElement))?.host`). 복구도
+  `focusedHost?.dataset.regionOverflow === "true"`일 때만 하므로, 자리가 없어 숨긴 카드(#274/#277)만 보이는 첫 카드나
+  캔버스로 옮긴다. `mapLocations`의 `isInViewport` 필터에서 빠진 카드는 `entries`에 없어 `focusedHost`가 비고 복구를 타지 않는다.
+- 영향: 실제 사용자는 지도 로드 뒤 약 500ms 안에 Tab으로 카드에 닿기 어렵다. 카드 포커스 중 마우스 휠·끌기로 범위를 바꾸는
+  혼합 입력에서만 생긴다. 복구도 다음 frame 비동기라 시험 경합을 없애지 못하므로 시험 수정과는 별개다.
+- 후속 변경안: 범위 갱신 전에 포커스한 카드의 `location_id`를 기억하고, 다음 배치(`position()`)에서
+  `document.activeElement === document.body`이고 그 카드가 DOM에 없으면 보이는 첫 카드(없으면 캔버스)로 포커스를 옮긴다.
+  사용자가 다른 입력으로 옮긴 포커스는 지금처럼 유지한다. 회귀 시험은 카드에 포커스한 채 카메라를 옮겨 그 카드를 범위
+  밖으로 보낸 뒤 포커스가 보이는 카드나 캔버스에 있는지 본다.
