@@ -658,7 +658,7 @@ def _ready_check(
     가짜 시계는 date 호출마다 30초씩 간다(첫 호출이 마감 기준). ``body``는 작은따옴표 없는 JSON.
     """
     script = (REPO_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
-    block = script[script.index("ready_deadline="):]
+    block = script[script.index("ready_deadline="):script.index(_PREBUILD_MARKER)]
     prelude = "\n".join([
         "set -euo pipefail",
         "probe=127.0.0.1:14101",
@@ -729,6 +729,48 @@ def test_the_deploy_script_only_warns_when_ready_stays_unavailable(
     assert result.returncode == 0, result.stderr
     assert f"/ready did not answer 200 within 60s (last status {statuses[0]})" in result.stderr
     assert "ready:" not in result.stdout
+
+
+#: deploy.sh에서 /ready 확인 뒤 사전 구성 hook이 시작하는 줄(호출 검토 A3).
+_PREBUILD_MARKER = "# Map 표준 프로필(current limit 2000) export 페이지 사전 구성"
+
+
+def _prebuild_hook(code: int, output: str) -> subprocess.CompletedProcess[str]:
+    """deploy.sh의 사전 구성 hook을 가짜 timeout·docker로 돌린다(실제 compose를 부르지 않는다)."""
+    script = (REPO_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+    block = script[script.index(_PREBUILD_MARKER):]
+    prelude = "\n".join([
+        "set -euo pipefail",
+        "timeout() { shift; \"$@\"; }",
+        f"docker() {{ echo 'ignored'; echo '{output}'; return {code}; }}",
+        "",
+    ])
+    return subprocess.run(
+        ["bash", "-s"], input=prelude + block, capture_output=True, text=True,
+        encoding="utf-8", check=False,
+    )
+
+
+def test_the_deploy_script_runs_the_export_prebuild_once_in_the_api_container() -> None:
+    script = (REPO_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+    hook = script[script.index(_PREBUILD_MARKER):]
+    # /ready 확인 뒤, 새 API와 같은 설정을 가진 api 컨테이너에서 한 번만 돈다.
+    assert script.index("ready_deadline=") < script.index(_PREBUILD_MARKER)
+    assert "docker compose exec -T api" in hook
+    assert "python -m kortravelweather.export_prebuilt" in hook
+    assert "timeout 300" in hook
+    result = _prebuild_hook(0, '{"outcome":"unchanged"}')
+    assert result.returncode == 0, result.stderr
+    assert 'export prebuild: {"outcome":"unchanged"}' in result.stdout
+    assert "warning" not in result.stderr
+
+
+def test_a_failed_export_prebuild_only_warns() -> None:
+    """사전 구성은 Map 첫 페이지를 빠르게 할 뿐이다. 실패해도 배포를 실패로 만들지 않는다."""
+    result = _prebuild_hook(1, '{"outcome":"failed","reason":"OperationalError"}')
+    assert result.returncode == 0, result.stderr
+    assert "warning: export prebuild did not finish" in result.stderr
+    assert '"reason":"OperationalError"' in result.stderr
 
 
 def test_the_api_service_enables_the_startup_warmup() -> None:
