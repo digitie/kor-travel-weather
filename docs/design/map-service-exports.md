@@ -456,6 +456,11 @@ pointer를 직접 읽어 성공 head를 덮지 않으며 zero-new-row 재관측�
 일반 forecast·alert가 최신 대표를 차지하지 않게 필터한다. 동일 target revision은 기존 compare-and-set
 우선순위를 그대로 쓰며 value_id+known_at 복합 PK로 필요한 fact만 읽는다.
 
+Map 표준 프로필(`limit=2000`, provider 필터 없음)은 publisher 뒤 별도 job이 manifest와 모든 페이지
+본문을 DB에 미리 만든다(호출 검토 A3). 요청은 입력 proof·handle 수명·상태만 검산하고 envelope를
+결합하며, 미준비·proof 불일치면 위 freeze 경로 그대로다. 응답 본문·ETag 의미는 같다. 계약·수명·
+측정은 `docs/export-prebuilt-pages.md`.
+
 ### W3 `GET /forecasts?style=ultra_short|short|mid|external&provider=&since=`
 
 group item은 `{location_id, provider, forecast_style, known_at, target_at:[], metrics:{metric:[...]}}`.

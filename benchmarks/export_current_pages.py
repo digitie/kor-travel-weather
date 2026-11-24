@@ -6,6 +6,10 @@
     uv run python benchmarks/export_current_pages.py seed
     # 2) Map과 같은 순서로 첫 페이지 + 모든 cursor 페이지를 읽고 표를 낸다.
     uv run python benchmarks/export_current_pages.py walk --limit 2000 --repeat 3
+    # 3) 사전 구성(호출 검토 A3) 전후: off(기존 freeze) → prebuild → on(사전 구성 본문).
+    uv run python benchmarks/export_current_pages.py walk --prebuilt off
+    uv run python benchmarks/export_current_pages.py prebuild
+    uv run python benchmarks/export_current_pages.py walk --prebuilt on
 
 DB는 ``KOR_TRAVEL_WEATHER_TEST_DATABASE_URL``(없으면 ``KOR_TRAVEL_WEATHER_DATABASE_URL``)이다.
 seed는 그 DB의 weather 표를 비운다. 실제 수집 경로(``run_weather_sync`` + mock KMA HTTP)와
@@ -148,21 +152,37 @@ def seed(args) -> None:
                       "points": len(targets) * len(METRICS)}))
 
 
+def _settings(args):
+    from kortravelweather.settings import WeatherSettings
+
+    return WeatherSettings(
+        environment="development", admin_token=TOKEN, enabled_providers=["python-kma-api"],
+        service_exports_enabled=True, service_export_artifact_root=Path(args.artifact_root),
+        service_export_prebuild_enabled=args.prebuilt == "on",
+    )
+
+
+def prebuild(args) -> None:
+    """Dagster job·배포 hook과 같은 builder를 한 번 돌린다(호출 검토 A3)."""
+    from kortravelweather.export_prebuilt import build_current_profile
+
+    repository = _repository()
+    started = time.monotonic()
+    report = build_current_profile(repository, _settings(args), limit=args.limit)
+    report["wall_s"] = round(time.monotonic() - started, 3)
+    print(json.dumps(report, ensure_ascii=False, default=str), flush=True)
+
+
 def walk(args) -> None:
     from fastapi.testclient import TestClient
     from kortravelweather_api.app import create_app
     from sqlalchemy import event
 
-    from kortravelweather.settings import WeatherSettings
-
     repository = _repository()
     results = []
     for attempt in range(args.repeat):
         # 매 회 새 앱(빈 프로세스 캐시)으로 Map run 하나를 흉내 낸다.
-        client = TestClient(create_app(WeatherSettings(
-            environment="development", admin_token=TOKEN, enabled_providers=["python-kma-api"],
-            service_exports_enabled=True, service_export_artifact_root=Path(args.artifact_root),
-        ), repository))
+        client = TestClient(create_app(_settings(args), repository))
         statements = []
 
         def capture(_c, _cur, sql, *_rest, statements=statements):
@@ -191,7 +211,10 @@ def walk(args) -> None:
                              "items": len(body["items"]),
                              "bytes": len(response.content),
                              "status": body["meta"]["source_status"],
-                             "proof": response.headers.get("x-export-status-proof", "-")})
+                             "proof": response.headers.get("x-export-status-proof", "-"),
+                             "prebuilt": response.headers.get("x-export-prebuilt", "-"),
+                             "prebuilt_pages": int(response.headers.get(
+                                 "x-export-prebuilt-pages", "0"))})
                 cursor, first = body["meta"]["next_cursor"], False
             run_wall = time.monotonic() - run_started
         finally:
@@ -216,7 +239,10 @@ def walk(args) -> None:
             "items": sum(r["items"] for r in rows),
             "max_page_bytes": max(r["bytes"] for r in rows),
             "statuses": sorted({r["status"] for r in rows}),
+            "first_proof": rows[0]["proof"],
             "cursor_proofs": sorted({r["proof"] for r in cursor_rows}),
+            "first_prebuilt": rows[0]["prebuilt"],
+            "prebuilt_pages": sum(r["prebuilt_pages"] for r in rows),
         }, ensure_ascii=False), flush=True)
     if args.output:
         Path(args.output).write_text(json.dumps(results, ensure_ascii=False, indent=1))
@@ -233,12 +259,17 @@ def main() -> None:
     walking.add_argument("--limit", type=int, default=2000)
     walking.add_argument("--repeat", type=int, default=3)
     walking.add_argument("--output")
-    for command in (seeding, walking):
+    building = commands.add_parser("prebuild")
+    building.add_argument("--limit", type=int, default=2000)
+    for command in (walking, building):
+        # off는 사전 구성을 읽지 않는 기존 freeze 경로다(전후 비교용).
+        command.add_argument("--prebuilt", choices=("on", "off"), default="on")
+    for command in (seeding, walking, building):
         command.add_argument("--artifact-root", default=str(Path(tempfile.gettempdir())
                                                            / "weather-export-bench"))
     args = parser.parse_args()
     Path(args.artifact_root).mkdir(parents=True, exist_ok=True)
-    {"seed": seed, "walk": walk}[args.command](args)
+    {"seed": seed, "walk": walk, "prebuild": prebuild}[args.command](args)
 
 
 if __name__ == "__main__":
