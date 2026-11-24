@@ -316,3 +316,44 @@ weather의 긴 sweep(측정상 ~13시간인 weatherapi 등 외부 provider 전�
 중간에 취소될 수 있다. 긴 수집은 asset graph가 아니라 이름 붙은 job
 (`<provider>_weather_job`, `kma_*_job`, `airkorea_weather_job` 등)의 Launchpad로 띄운다.
 짧은 단건 재적재는 asset graph로 띄워도 된다.
+
+## 공용 queue 우선순위(`dagster/priority`)
+
+공용 Dagster(odroid)는 transport·weather·geo가 instance queue 하나를 나눠 쓴다
+(`max_concurrent_runs` 5). Dagster 1.13.24 `QueuedRunCoordinatorDaemon`은 dequeue 전에
+run tag `dagster/priority`(정수 문자열, 클수록 먼저, 없으면 0, 같은 값은 FIFO)로 정렬하므로
+이 값은 **instance 전체**의 순서다. 세 테넌트가 같은 규칙을 쓴다(소유자 결정 2026-11-24, 정본
+[kor-travel-docker-manager `docs/dagster-tenant-fairness.md`](https://github.com/digitie/kor-travel-docker-manager/blob/main/docs/dagster-tenant-fairness.md),
+Manager 쪽 PR 머지 전에는 링크가 비어 있을 수 있다).
+
+| 값 | 기준 | weather job |
+| --- | --- | --- |
+| 10 | 1시간 미만 주기의 정기 수집·상태 적재 | `kma_regional_alert_events_job`(5분) |
+| 5 | 1시간 이상·하루 미만 주기의 정기 수집 | 매시: `kma_ultra_short_forecast_job`·`kma_weather_alerts_job`·`kma_ultra_short_nowcast_job`·`airkorea_weather_job` / 3시간: `kma_short_forecast_job`, schedule 있는 외부 provider 6개(`{open_meteo,openweathermap,weatherapi}_{current,forecast}_weather_job`) / 12시간: `kma_mid_forecast_job`, 지역 원천 4개(`krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·`krforest_dust_job`) |
+| 0 | 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
+
+- 정본은 `definitions.py`의 `JOB_PRIORITIES` 한 표다. `_job_tags`가 job tags에 값을 실으므로(export
+  정리 job은 `export_maintenance.py`가 같은 값을 job 정의에 직접 단다 — 순환 import)
+  schedule·sensor·Launchpad·관리자 콘솔 launch·재실행(native retry, common infra retry)이 만드는
+  run이 모두 같은 값을 받는다(소유자 지시: job 정의의 tags에 달아 모든 경로에 들어가게 한다).
+- 정본의 0 기준은 "수동·관리자 **일괄** 실행"이다. weather에서는 수동 전용 job(schedule 없는
+  외부 provider, 주소 갱신)이 여기에 든다. 정기 수집 job을 사람이 Launchpad·관리자 콘솔·
+  Re-execute로 단건 다시 띄운 run은 정본대로 그 job의 값(5·10)을 그대로 받는다. 예: Launchpad로 띄운 외부 sweep 재적재는 5다. 이런
+  run을 0으로 낮추려면 별도 결정과 common 변경이 먼저다 — 관리자 콘솔 launch가 거치는 common
+  `dagster_webserver`(고정 커밋 `ec5e168`)는 `dagster/code_location` 외의 `dagster/*` tag를
+  conflict로 거부한다. Dagster UI의 Launchpad·Re-execute는 코드로 막을 수 없다.
+- native auto-retry(`use_parent_run_tags`)는 parent의 값을 이어받는다. 분류를 바꾸면 옛 parent의
+  재시도 run은 옛 값을 쓴다. 배포 시점에 이미 QUEUED인 run은 tag가 없어 0이다(일시적).
+- `_job_tags`를 거치는 job은 분류가 없으면 import 시점에 거부된다. tags를 직접 쓰는 job까지
+  포함해 정의된 모든 job과 표의 일치는 시험이 확인한다. 음수·10 초과는 쓰지 않는다(다른
+  테넌트를 굶기지 않는다).
+- schedule 없는 외부 provider를 slow 집합에 넣으면 schedule이 생기고 값도 함께 5가 된다(위 표의
+  provider 수는 그때 바뀐다).
+- `address_refresh_job`과 그 sensor는 common `address_refresh_definitions`가 만들어 이 저장소가
+  tag를 달 수 없다. 생략 = 0이라 규칙과 같다.
+- asset graph의 **Materialize**(`__ASSET_JOB`) run은 job tag를 받지 않아 0이다(수동 실행과 같다).
+- `packages/kor-travel-weather-dagster/tests/test_run_priority.py`가 표·job tag·실제 schedule 주기(지역 원천은 정규 cron)·schedule tick의
+  RunRequest(하루치 tick, 지역 보충 tick·특보 차단기 probe 포함)·infra retry child tag를 대조한다.
+- `tag_concurrency_limits`(project 6·job별 1·`kortravelweather/run_group`; 이 저장소
+  `deploy/dagster.yaml`, 공용 instance는 Manager 설정)는 그대로다. 우선순위는 dequeue 순서만
+  바꾼다. 상한에 걸린 run은 값이 높아도 QUEUED로 남고 그 뒤 run의 dequeue를 막지 않는다.

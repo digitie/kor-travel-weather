@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import cache
+from types import MappingProxyType
 from typing import Any
 
 from dagster import (
@@ -973,7 +974,17 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
 
 
 def _job_tags(job_name: str) -> dict[str, str]:
-    return _job_policy(job_name).tags(project="weather", job_name=job_name)
+    try:
+        priority = JOB_PRIORITIES[job_name]
+    except KeyError:
+        # 분류 없이 job을 추가하면 import가 실패한다(공용 queue에서 조용히 0이 되지 않게).
+        raise RuntimeError(
+            f"{job_name}의 {RUN_PRIORITY_TAG} 분류가 없습니다. JOB_PRIORITIES에 추가합니다."
+        ) from None
+    return {
+        **_job_policy(job_name).tags(project="weather", job_name=job_name),
+        RUN_PRIORITY_TAG: str(priority),
+    }
 
 
 _KMA_STATUS_DATASETS = {
@@ -1259,6 +1270,17 @@ _EXTERNAL_COLLECTIONS_BY_JOB = {
 }
 _EXTERNAL_PROVIDER_ASSETS = tuple(
     _make_external_provider_asset(collection) for collection in EXTERNAL_COLLECTIONS
+)
+# schedule은 실제로 sweep하는(slow 그룹의) provider에만 만든다. 나머지 여섯(visual_crossing·
+# tomorrow_io·weatherbit·weatherstack·accuweather·wttr_in)은 운영에서 credential이 없거나
+# 기본 비활성이라 3시간마다 3~4초짜리 skip run만 만들었다(14일 약 635 run, 감사 §2.5 P2·§4 #12).
+# 켜려면 위 SLOW 집합에 먼저 넣어야 하고(위치 상한 없는 전국 sweep 방지), 그 변경이 schedule도
+# 만든다. job은 그대로 두어 관리자 수동 실행은 가능하다. wttr_in은 key가 필요 없지만
+# 자원봉사 서비스라 기본 비활성이다(settings.enabled_providers 주석).
+SCHEDULED_EXTERNAL_COLLECTIONS = tuple(
+    collection
+    for collection in EXTERNAL_COLLECTIONS
+    if collection.provider_key in SLOW_EXTERNAL_PROVIDER_KEYS
 )
 
 
@@ -1829,6 +1851,68 @@ def _short_retention_previous_metadata(context: AssetExecutionContext) -> dict[s
     }
 
 
+#: Dagster ``QueuedRunCoordinatorDaemon``의 dequeue 순서 tag(정수 문자열, 클수록 먼저, 없으면
+#: 0, 같은 값은 FIFO). 공용 Dagster(odroid: transport·weather·geo가 instance queue 하나를
+#: 나눠 쓴다)에서는 instance 전체의 순서라 다른 테넌트와 같은 척도로 비교된다.
+RUN_PRIORITY_TAG = "dagster/priority"
+#: 공통 규칙(소유자 결정 2026-11-24, 정본 kor-travel-docker-manager
+#: ``docs/dagster-tenant-fairness.md``). 음수·10 초과는 두지 않는다(다른 테넌트를 굶기지 않는다).
+#:
+#: - 10: 1시간 미만 주기의 정기 수집·상태 적재(지금 상황을 사용자에게 보여 주는 것).
+#: - 5: 1시간 이상·하루 미만 주기의 정기 수집.
+#: - 0: 하루 이상 주기, backfill·전체 재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행.
+PRIORITY_REALTIME = 10
+PRIORITY_HOURLY = 5
+PRIORITY_BATCH = 0
+#: 정의한 모든 job의 분류 — 이 표가 정본이다. 값은 job tags에 실려 schedule·sensor·Launchpad·
+#: 재실행(native·infra retry) 모든 경로의 run tag가 된다 — 정기 수집 job을 사람이 다시 띄운 run도
+#: 그 job의 값이다. ``_job_tags``는 분류 없는 job을 import 시점에 거부하고,
+#: tests/test_run_priority.py가 정의된 모든 job과 표, 실제 schedule 주기와 값을 대조한다.
+JOB_PRIORITIES: Mapping[str, int] = MappingProxyType({
+    # 10 — 지역별 특보 발표 관측, 5분(*/5). 연속 실패 차단기가 열리면 간격만 늘어난다.
+    "kma_regional_alert_events_job": PRIORITY_REALTIME,
+    # 5 — 매시: 초단기예보(:00)·특보(:05)·초단기실황(:20)·AirKorea(:35).
+    "kma_ultra_short_forecast_job": PRIORITY_HOURLY,
+    "kma_weather_alerts_job": PRIORITY_HOURLY,
+    "kma_ultra_short_nowcast_job": PRIORITY_HOURLY,
+    "airkorea_weather_job": PRIORITY_HOURLY,
+    # 5 — 단기예보 3시간(발표 8회/일), 중기예보 12시간(06/18).
+    "kma_short_forecast_job": PRIORITY_HOURLY,
+    "kma_mid_forecast_job": PRIORITY_HOURLY,
+    # 5 — 지역 원천 넷, 12시간(05/17 정규 + 실패 때만 보충 tick).
+    **{collection.job_name: PRIORITY_HOURLY for collection in REGIONAL_COLLECTIONS},
+    # 외부 provider: schedule이 있는(sweep하는) 것은 3시간 → 5, schedule 없는 나머지는 관리자
+    # 수동 실행만 가능하므로 0. slow 집합에 넣어 schedule이 생기면 함께 5가 된다.
+    **{
+        collection.job_name: (
+            PRIORITY_HOURLY
+            if collection in SCHEDULED_EXTERNAL_COLLECTIONS
+            else PRIORITY_BATCH
+        )
+        for collection in EXTERNAL_COLLECTIONS
+    },
+    # 0 — 정리: 일별 보존(01:45), 단기예보 정리(10분 주기지만 수집이 아닌 정리).
+    "weather_retention_job": PRIORITY_BATCH,
+    "weather_short_forecast_retention_job": PRIORITY_BATCH,
+    # 0 — export 일괄 퇴역·artifact GC(매시 :52지만 정리). tag는 export_maintenance가 job 정의에
+    # 직접 단다(이 모듈을 import할 수 없다) — 이 값과의 일치는 시험이 본다.
+    weather_export_maintenance_job.name: PRIORITY_BATCH,
+    # 0 — 6개월 주소 갱신(10분 sensor가 대상 유무만 본다). job·sensor는 common
+    # ``address_refresh_definitions``가 만들어 여기서 tag를 달 수 없다 — tag 생략 = 0이다.
+    "address_refresh_job": PRIORITY_BATCH,
+})
+#: tag를 이 저장소가 달지 않는 job(common 소유). 표 값은 생략과 같은 0이어야 한다.
+COMMON_OWNED_JOBS = frozenset({"address_refresh_job"})
+if not set(JOB_PRIORITIES.values()) <= {PRIORITY_BATCH, PRIORITY_HOURLY, PRIORITY_REALTIME}:
+    raise RuntimeError(f"{RUN_PRIORITY_TAG}는 0·5·10만 씁니다: {dict(JOB_PRIORITIES)}")
+if any(JOB_PRIORITIES[name] != PRIORITY_BATCH for name in COMMON_OWNED_JOBS):
+    raise RuntimeError("common 소유 job은 tag를 달 수 없으므로 0으로만 분류합니다.")
+if weather_export_maintenance_job.tags.get(RUN_PRIORITY_TAG) != str(
+    JOB_PRIORITIES[weather_export_maintenance_job.name]
+):
+    raise RuntimeError("export 정리 job의 dagster/priority가 JOB_PRIORITIES와 다릅니다.")
+
+
 #: 모든 작업이 같은 asset graph를 사용하도록 자산을 한 번만 선언한다.
 _ASSETS = [
     kma_ultra_short_nowcast_sync,
@@ -2085,18 +2169,7 @@ _EXTERNAL_PHASE_MINUTES = {
 }
 # 분리한 provider(W-EXP-SPLIT-01)의 current는 provider phase 그대로, forecast는
 # ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 뒤(기존 20분 간격 phase 사이의 빈 10분 자리)다.
-#
-# schedule은 실제로 sweep하는(slow 그룹의) provider에만 만든다. 나머지 여섯(visual_crossing·
-# tomorrow_io·weatherbit·weatherstack·accuweather·wttr_in)은 운영에서 credential이 없거나
-# 기본 비활성이라 3시간마다 3~4초짜리 skip run만 만들었다(14일 약 635 run, 감사 §2.5 P2·§4 #12).
-# 켜려면 위 SLOW 집합에 먼저 넣어야 하고(위치 상한 없는 전국 sweep 방지), 그 변경이 schedule도
-# 만든다. job은 그대로 두어 관리자 수동 실행은 가능하다. wttr_in은 key가 필요 없지만
-# 자원봉사 서비스라 기본 비활성이다(settings.enabled_providers 주석).
-SCHEDULED_EXTERNAL_COLLECTIONS = tuple(
-    collection
-    for collection in EXTERNAL_COLLECTIONS
-    if collection.provider_key in SLOW_EXTERNAL_PROVIDER_KEYS
-)
+# schedule은 ``SCHEDULED_EXTERNAL_COLLECTIONS``(slow 그룹)에만 만든다 — 정의부 주석.
 external_weather_schedules = [
     _weather_schedule(
         name=collection.schedule_name,
