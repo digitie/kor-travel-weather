@@ -28,7 +28,7 @@ Map export(`/v1/service/exports/*`)는 이 warmup으로 거의 풀리지 않는�
 | 2 | `session_check` | `is_admin_session_revoked`(무작위 값, `auth_limiter` 공유). BFF가 모든 관리 요청마다 5초 fail-closed로 부르는 경로 |
 | 3 | `regions` | `region_locations()` 읽기만. 쓰기 `refresh_region_locations`는 부르지 않는다 |
 | 4 | `locations` | `list_locations(limit=1000, include_metadata=False)`·`count_locations`·`public_location_regions` (`GET /v1/weather/locations?limit=1000`과 같다) |
-| 5 | `markers` | 앞쪽 위치 60곳 × 최대 2묶음 `get_locations_by_ids` + `marker_values_many(limit_per_location=80, kinds=6종 전체)`. 사용자 마커와 같은 `marker_limiter`(2)를 나눠 쓴다 |
+| 5 | `markers` | 앞쪽 위치 60곳 × 최대 2묶음 `get_locations_by_ids` + `marker_values_many(limit_per_location=80, kinds=6종 전체)`. 사용자 마커와 같은 `marker_limiter`(2)에서 한 자리를 쓰고, 자리 대기도 남은 예산까지만 한다 |
 | 6 | `location_detail` | 첫 위치의 `get_location`·`latest_values(limit=200)`·`timeline(현재 시 정각~모레 0시 KST, limit=5000, exclude_alerts)` |
 
 안전 장치:
@@ -41,11 +41,16 @@ Map export(`/v1/service/exports/*`)는 이 warmup으로 거의 풀리지 않는�
   건다. pool 대기도 남은 예산으로 줄어든다(`ReadDeadlineQueuePool`). 예산이 끝나면 다음 문장은
   보내지 않는다.
 - **사용자 우선.** 처리 중인 사용자 요청(`/v1/*`, 점검·문서 경로 제외)이 2건 이상이면 남은 단계를
-  생략한다(`RequestContextMiddleware`가 센다). 단계 사이와 마커 묶음 사이에서 확인한다.
+  생략한다(`RequestContextMiddleware`가 센다). 단계 사이와 마커 묶음 사이, 마커 자리를 얻은
+  직후에 확인한다. 자리를 기다리는 사이 사용자 요청이 몰렸으면 묶음을 보내지 않고 자리를 돌려준다.
 - **예외는 로그·지표만.** 단계가 실패하면 다음 단계로 간다. 단, 첫 단계(연결)가 실패하면 나머지는
   보내지 않는다(`reason=error`). 실패 로그는 원문(SQL·주소가 들어갈 수 있다) 대신 예외 형식·
   SQLSTATE·driver 예외 이름만 남기고, DB 밖 예외(코드 결함)만 traceback을 남긴다.
-- **종료.** lifespan 종료 때 task를 취소하고 최대 6초 기다린다. 실행 중이던 문장은 5초 상한이 끝낸다.
+- **종료.** lifespan 종료 때 task를 취소하고 최대 6초 기다린다. asyncio 취소는 worker thread를
+  멈추지 못하므로(anyio `to_thread`) 취소 신호(`threading.Event`)를 thread에도 보낸다. thread는
+  다음 문장을 보내지 않고(`read_limits`의 `before_cursor_execute`가 거절), task는 실행 중이던
+  문장(5초 상한)이 끝나 thread가 돌아온 뒤 끝난다. pool 대기·연결 수립처럼 문장이 아닌 대기가
+  길어지면 6초 안에 종료를 계속하고, 그 thread도 다음 문장은 보내지 않는다.
 - 지도 엔드포인트에는 결과 캐시가 없으므로 warmup이 오래된 응답을 남기지 않는다.
 
 ## 설정
@@ -74,6 +79,13 @@ double을 넘기면 설정과 무관하게 끈다. 저장소 `compose.yaml`의 a
 `ReadinessOut`, 관리 웹 TS 타입은 `lib/api.ts`의 `ApiReadiness`·`getReadiness()`다.
 uvicorn worker가 여럿이면 `/ready`는 요청을 받은 worker 하나의 상태다.
 
+공개 범위: `/ready`는 `/health`·`/version`처럼 토큰 없이 공개 base URL에서 열린다. 본문은 단계
+이름·결과·시간과 생략 이유뿐이고 SQL·주소·호스트·예외 원문은 담지 않는다. 기동 직후 DB 연결
+실패(`reason=error`, `connections`=`failed`)와 기동 시각이 익명에게 보이는 것은 의도한 선택이다.
+배포 확인(`deploy.sh`, 이후 Manager verify)이 metrics token 없이 이 신호를 받아야 하기 때문이다.
+같은 단계 지표(`ktw_api_prewarm_step_duration_seconds`)를 포함한 나머지 운영 지표는 `/metrics`가
+계속 전용 token으로 보호한다.
+
 ## 관측
 
 - 지표 `ktw_api_prewarm_step_duration_seconds{step,outcome}`(histogram, 기동마다 단계당 1회).
@@ -88,6 +100,9 @@ uvicorn worker가 여럿이면 `/ready`는 요청을 받은 worker 하나의 상
 - `deploy/deploy.sh`는 `/version` commit 확인 뒤 `/ready`를 2초 간격으로 최대 60초 본다. 200이면
   본문을 출력하고, 끝내 200이 아니어도 경고만 남기고 배포는 성공으로 끝낸다. warmup은 첫 요청을
   빠르게 할 뿐이고 트래픽 차단 여부는 HAProxy/Manager가 정한다.
+- 200 본문에 실패 단계(`"outcome":"failed"`)나 연결 실패(`"reason":"error"`)가 있으면 stderr에
+  경고 한 줄을 더 남긴다. `/version`·`/health`는 DB를 보지 않으므로 새 배포에서 DB 도달 여부를
+  알려 주는 신호는 이것뿐이다. 종료 코드는 그대로 0이다.
 - compose `web` 서비스에 healthcheck를 추가했다. 자격증명 없이 `GET /login`만 보내고
   (`redirect: manual`, 200만 정상) 첫 점검이 Next route 모듈·middleware를 올려 둔다. 세션 cookie가
   없으므로 API를 부르지 않는다. interval 30초·timeout 5초·retries 12·start_period 30초.
