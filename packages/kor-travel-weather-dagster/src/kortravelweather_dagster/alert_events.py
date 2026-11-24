@@ -1,10 +1,17 @@
 """공개 SDK의 getPwnCd 응답을 완결 검사한 뒤 짧은 transaction으로 게시한다.
 
-한 번의 요청(pageNo=1, numOfRows=ALERT_MAX_ROWS)으로 요청 구간 전체를 받는다.
+한 번의 요청(pageNo=1, numOfRows=``PAGE_SIZE``)으로 요청 구간 전체를 받는다.
 2026-11-24 실측: getPwnCd는 같은 발표 시각(tmFc) 행 사이의 순서가 요청마다 고정되지 않아
 100행 페이지로 나누면 페이지 경계의 행이 다음 페이지에 다시 나오고 그만큼 다른 행이 빠졌다
-(381행 중 33행 반복·33행 누락). 한 페이지 요청은 같은 구간에서 381행을 중복 없이 모두
-돌려줬다. 페이지 경계 반복을 병합만 하면 누락이 숨으므로 페이지 분할 자체를 하지 않는다.
+(381행 중 33행 반복·33행 누락). numOfRows=1000 한 페이지 요청은 같은 구간에서 381행을
+중복 없이 모두 돌려줬다. 페이지 경계 반복을 병합만 하면 누락이 숨으므로 페이지 분할 자체를
+하지 않는다.
+
+``PAGE_SIZE``는 실측한 1000이다. 원천이 더 큰 numOfRows(예: 10000)를 받아들이는지는 측정하지
+않았다. data.go.kr 서비스는 numOfRows에 상한을 두거나 줄여 돌려주기도 하므로, 측정하지 않은
+값으로 요청하면 행이 몇 건이든 모든 run이 메타데이터 검사에서 실패할 수 있다. 요청 구간이
+1000행을 넘으면 두 번째 페이지를 요청하지 않고 ``ALERT_TOO_MANY_ROWS``로 실패한다(누락을
+숨기지 않는다). 게시 상한 ``ALERT_MAX_ROWS``와는 별개다.
 """
 
 from __future__ import annotations
@@ -23,7 +30,6 @@ from kma.exceptions import KmaError
 
 from kortravelweather.alert_events import (
     ALERT_DATASET,
-    ALERT_MAX_ROWS,
     ALERT_PROVIDER,
     ALERT_SAFE_ERROR_CODES,
     ALERT_VERSION,
@@ -36,7 +42,9 @@ from kortravelweather.models import KST, kst_now
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 
 #: 한 요청의 numOfRows. 요청 구간 전체가 한 페이지에 들어와야 한다(모듈 설명).
-PAGE_SIZE = ALERT_MAX_ROWS
+#: 실측한 값만 쓴다(fixture ``kma_getpwncd_20261120_20261123.json``의 ``single_page``).
+#: 한 요청으로 받은 행은 그대로 게시 대상이 되므로 게시 상한(``ALERT_MAX_ROWS``) 안이어야 한다.
+PAGE_SIZE = 1000
 MAX_BYTES = 8 * 1024 * 1024
 #: 격리한 특보구역 코드를 metadata에 남길 때의 상한(관리자 화면용 요약).
 QUARANTINE_AREA_SAMPLE = 20

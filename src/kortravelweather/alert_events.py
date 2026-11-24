@@ -16,7 +16,8 @@ from pydantic import BaseModel, ConfigDict
 ALERT_DATASET = "kma_regional_alert_events"
 ALERT_PROVIDER = "python-kma-api"
 ALERT_VERSION = "datagokr-pwncd-260601-v1"
-#: 한 실행이 받아 게시할 수 있는 원천 행 상한. 수집은 이 크기의 한 페이지로 요청한다.
+#: 한 실행이 게시할 수 있는 원천 행 상한(게시 경계 검사). 수집 한 요청의 numOfRows는 이와
+#: 별개로 실측한 값(수집 모듈 ``PAGE_SIZE`` = 1000)이며 이 상한보다 작다.
 ALERT_MAX_ROWS = 10_000
 #: 같은 event_id에 내용이 다른 행(격리 대상)이 이 수 또는 전체 행의
 #: ``ALERT_QUARANTINE_MAX_FRACTION`` 중 큰 값을 넘으면 원천 이상으로 보고 실행을 실패시킨다.

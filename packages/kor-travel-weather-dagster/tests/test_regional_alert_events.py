@@ -81,7 +81,8 @@ async def test_actual_public_sdk_collects_whole_window_in_one_request():
     def handler(request):
         assert request.url.path.endswith("/WthrWrnInfoService/getPwnCd")
         assert request.url.params["stnId"] == "108"
-        assert request.url.params["numOfRows"] == str(module.PAGE_SIZE) == "10000"
+        # 실측한 크기만 요청한다(test_alert_events_real_fixture).
+        assert request.url.params["numOfRows"] == str(module.PAGE_SIZE) == "1000"
         page = int(request.url.params["pageNo"])
         calls.append(page)
         return response(body(rows))
@@ -143,6 +144,53 @@ async def test_incomplete_or_untrustworthy_provider_never_publishes(repo, kind, 
     if kind == "conflicts":
         assert caught.value.diagnostics["quarantined_rows"] == 12
         assert caught.value.diagnostics["quarantine_limit"] == 10
+
+
+@pytest.mark.parametrize(
+    ("total", "returned", "size", "code"),
+    [
+        # 한 요청 크기를 한 행이라도 넘으면 두 번째 페이지 없이 실패한다(누락을 숨기지 않음).
+        (1001, 1000, 1000, "ALERT_TOO_MANY_ROWS"),
+        # 원천이 numOfRows를 줄여 돌려주면 한 페이지가 전체라는 전제가 깨진다.
+        (500, 500, 500, "ALERT_PAGE_METADATA"),
+        # 요청보다 큰 numOfRows도 요청과 다른 응답이다.
+        (500, 500, 10000, "ALERT_PAGE_METADATA"),
+    ],
+)
+async def test_page_size_boundary_fails_without_second_request_or_publication(
+    repo, total, returned, size, code,
+):
+    rows = [raw_row(i) for i in range(1, returned + 1)]
+    calls = []
+
+    def handler(request):
+        calls.append((request.url.params["pageNo"], request.url.params["numOfRows"]))
+        return response(body(rows, total=total, size=size))
+
+    with pytest.raises(module.AlertCollectionError, match=code) as caught:
+        async with sdk(handler) as client:
+            await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert calls == [("1", "1000")]
+    assert caught.value.diagnostics["page_size"] == size
+    assert caught.value.diagnostics["total_count"] == total
+    run = repo.list_sync_runs(provider=ALERT_PROVIDER, dataset_key=ALERT_DATASET)[0]
+    assert run.status == "failed" and run.error == code
+    assert repo.list_sync_run_sources(run.run_id) == []
+    assert _stored_events(repo) == set()
+
+
+async def test_a_full_measured_page_is_published_in_one_request(repo):
+    rows = [raw_row(i) for i in range(1, module.PAGE_SIZE + 1)]
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.params["pageNo"])
+        return response(body(rows))
+
+    async with sdk(handler) as client:
+        result = await module.run_alert_event_sync_async(repository=repo, client=client)
+    assert calls == ["1"]
+    assert result["status"] == "success" and result["events_loaded"] == module.PAGE_SIZE
 
 
 def _stored_events(repo):
@@ -248,7 +296,7 @@ def test_metadata_failure_carries_safe_stage_and_actual_counts():
         module._page(body([], total=1, page=2), 1)
     assert caught.value.diagnostics == {
         "error_code": "ALERT_PAGE_METADATA", "stage": "page_validation",
-        "requested_page": 1, "returned_page": 2, "page_size": 10000, "total_count": 1,
+        "requested_page": 1, "returned_page": 2, "page_size": 1000, "total_count": 1,
     }
 
 

@@ -30,16 +30,28 @@ FIXTURE = json.loads(
     )
 )
 ROWS = FIXTURE["single_page"]["rows"]
+#: fixture를 받은 실제 요청의 numOfRows(``_comment``의 ``single_page``). 원천이 이 값으로 요청한
+#: 한 페이지에 모든 행을 돌려준 것만 측정됐다.
+MEASURED_NUM_OF_ROWS = 1000
 
 
 def response(rows):
     return httpx.Response(200, json={"response": {
         "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
         "body": {
-            "items": {"item": rows}, "pageNo": 1, "numOfRows": module.PAGE_SIZE,
+            "items": {"item": rows}, "pageNo": 1, "numOfRows": MEASURED_NUM_OF_ROWS,
             "totalCount": FIXTURE["single_page"]["totalCount"],
         },
     }})
+
+
+def test_collection_requests_only_the_measured_page_size():
+    """측정하지 않은 numOfRows로 요청하면 원천 상한·축소에 모든 run이 걸릴 수 있다."""
+    from kortravelweather.alert_events import ALERT_MAX_ROWS
+
+    assert f"numOfRows={MEASURED_NUM_OF_ROWS} response rows" in FIXTURE["_comment"]
+    assert module.PAGE_SIZE == MEASURED_NUM_OF_ROWS
+    assert module.PAGE_SIZE <= ALERT_MAX_ROWS
 
 
 @asynccontextmanager
@@ -124,9 +136,10 @@ async def test_nov10_episode_is_one_request_and_publishes_every_row(repo):
 
     def handler(request):
         calls.append(request.url.params["pageNo"])
+        assert request.url.params["numOfRows"] == str(MEASURED_NUM_OF_ROWS)
         return httpx.Response(200, json={"response": {
             "header": {"resultCode": "00", "resultMsg": "NORMAL_SERVICE"},
-            "body": {"items": {"item": rows}, "pageNo": 1, "numOfRows": module.PAGE_SIZE,
+            "body": {"items": {"item": rows}, "pageNo": 1, "numOfRows": MEASURED_NUM_OF_ROWS,
                      "totalCount": len(rows)},
         }})
 
@@ -171,6 +184,7 @@ async def test_real_response_publishes_all_but_the_quarantined_observations(repo
     async with sdk(handler) as client:
         result = await module.run_alert_event_sync_async(repository=repo, client=client)
     assert len(calls) == 1 and calls[0]["pageNo"] == "1"
+    assert calls[0]["numOfRows"] == str(MEASURED_NUM_OF_ROWS)
     assert calls[0]["fromTmFc"] < calls[0]["toTmFc"]
     assert result["status"] == "success" and result["events_loaded"] == 268
     assert result["quarantined_events"] == 2 and result["quarantined_rows"] == 4
