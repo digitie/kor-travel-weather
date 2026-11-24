@@ -73,6 +73,30 @@ _MERGED_SIDO_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("전남광주", ("광주", "전남")),
 )
 
+#: 통합 주소 측정소가 실제로 속한 통합 전 시도. 두 묶음을 모두 묻는 것은 그대로 두되,
+#: 이름만으로 맞추면 같은 이름의 다른 시도 측정소 관측이 붙을 수 있다(같은 이름의 짝
+#: anchor가 상한 밖이거나 비활성이면 후보가 하나뿐이라 모호성으로도 걸리지 않는다).
+#: 주소 두 번째 토큰(자치구·시·군)으로 anchor의 시도를 하나로 가리고, 원천 행의
+#: ``sidoName``과 대조한다. 표에 없는 토큰이면 통합 전 후보 시도 전부를 기대값으로 둔다.
+_MERGED_DISTRICT_SIDOS: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
+    "전남광주": (
+        ("광주", frozenset({"동구", "서구", "남구", "북구", "광산구"})),
+        (
+            "전남",
+            frozenset({
+                "목포시", "여수시", "순천시", "나주시", "광양시",
+                "담양군", "곡성군", "구례군", "고흥군", "보성군", "화순군",
+                "장흥군", "강진군", "해남군", "영암군", "무안군", "함평군",
+                "영광군", "장성군", "완도군", "진도군", "신안군",
+            }),
+        ),
+    ),
+}
+
+
+class StationSidoMismatch(ValueError):
+    """원천 측정 행의 시도가 anchor의 시도와 다르다(결정적 대조 실패)."""
+
 
 def measurement_sido_names(point: Mapping[str, Any]) -> tuple[str, ...]:
     """측정소를 찾을 시도별 bulk 묶음들. 알 수 없으면 빈 tuple(개별 조회 경로)."""
@@ -83,6 +107,47 @@ def measurement_sido_names(point: Mapping[str, Any]) -> tuple[str, ...]:
             return names
     sido = normalize_sido_name(str(point.get("sido_name") or address))
     return (sido,) if sido else ()
+
+
+def anchor_sido_names(point: Mapping[str, Any]) -> tuple[str, ...]:
+    """anchor가 속한 시도 기대값. 두 묶음을 묻는 통합 주소 anchor는 원천 행의 ``sidoName``이
+    이 안에 있어야 붙일 수 있다.
+
+    통합 주소는 두 번째 토큰으로 시도 하나를 가린다. 가리지 못하면 통합 전 후보 시도
+    전부를 돌려준다(이때는 호출부가 묶음 응답 사이의 같은 이름을 대조한다). 통합 주소가
+    아니면 ``measurement_sido_names``와 같다. 이때 bulk 호출부는 행 시도를 대조하지 않고
+    요청한 묶음의 시도로 판단한다. 저장된 ``sido_name`` metadata는 통합 주소에서 첫 토큰
+    접두어로 정해진 값이라 쓰지 않는다.
+    """
+    tokens = str(point.get("address") or "").split()
+    token = tokens[0] if tokens else ""
+    for prefix, names in _MERGED_SIDO_PREFIXES:
+        if token.startswith(prefix):
+            district = tokens[1] if len(tokens) > 1 else ""
+            for sido, districts in _MERGED_DISTRICT_SIDOS.get(prefix, ()):
+                if district in districts:
+                    return (sido,)
+            return names
+    return measurement_sido_names(point)
+
+
+def measurement_sido_name(measurement: Any) -> str | None:
+    """원천 측정 행의 시도(``sidoName``)를 짧은 시도명으로. 행에 없으면 None.
+
+    ``python-airkorea-api``는 ``sidoName``을 ``AirQualityMeasurement.sido_name``으로 옮긴다.
+    통합 명칭처럼 한 시도로 줄일 수 없는 값은 그대로 돌려줘 대조 실패로 드러낸다.
+    """
+    value = getattr(measurement, "sido_name", None)
+    if value is None:
+        raw = getattr(measurement, "raw", None)
+        if isinstance(raw, Mapping):
+            value = raw.get("sidoName")
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        return None
+    if any(text.startswith(prefix) for prefix, _ in _MERGED_SIDO_PREFIXES):
+        return text
+    return normalize_sido_name(text) or text
 
 
 def _slug(value: str) -> str:
@@ -374,7 +439,7 @@ async def fetch_station_measurement(
     if expected_sido and measurement.sido_name:
         returned_sido = measurement.sido_name.strip()
         if returned_sido and returned_sido != expected_sido.strip():
-            raise ValueError(
+            raise StationSidoMismatch(
                 "AirKorea 측정소 응답 시도가 요청 anchor와 다릅니다: "
                 f"expected={expected_sido!r} got={returned_sido!r}"
             )
