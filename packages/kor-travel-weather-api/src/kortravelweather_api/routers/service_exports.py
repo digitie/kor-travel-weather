@@ -434,6 +434,9 @@ async def _frozen_response(
         # 첫 페이지 miss(긴 freeze)는 승인 선택을 항상 새로 읽어 60초 전체를 쓴다. 그 결과는
         # 앱 공용 캐시에 남아, 이어지는 cursor 페이지는 30초 이상 남았으면 다시 읽지 않는다.
         # (예전에는 요청마다 빈 캐시를 만들어 공용 캐시가 한 번도 쓰이지 않았다.)
+        # 예보 첫 페이지는 If-None-Match가 없어도 완성 페이지 캐시를 쓴다. hit마다 새 freeze로
+        # 최신 승인·head vector를 확인하고 snapshot·manifest·건강도·삭제 epoch가 같을 때만 본문을
+        # 재사용하므로 "첫 페이지는 바로 반영" 계약은 그대로다(호출 검토 A5).
         reader = make_reader()
         reader.revalidate_first_page = resource == "forecasts" and cursor is None
         reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
@@ -448,8 +451,6 @@ async def _frozen_response(
             read = partial(
                 request.app.state.export_page_cache.read, key, reader,
                 partial(_validated_read, read, _PAGE_MODELS[resource], reader),
-                force=(resource == "forecasts" and cursor is None
-                       and not request.headers.get("if-none-match")),
             )
         elif forecast_reuse:
             # 승인 선택의 60초 수명은 limiter 대기 뒤 실제 읽기부터 센다(현재·일별과 같다).

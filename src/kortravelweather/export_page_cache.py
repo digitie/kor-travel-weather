@@ -84,12 +84,13 @@ class ExportPageCache:
                 old_key, old = self.entries.popitem(last=False)
                 self.bytes -= old.size
 
-    def read(self, key, reader, load, *, force=False):
-        if force:
-            with self.lock:
-                old = self.entries.pop(key, None)
-                if old is not None:
-                    self.bytes -= old.size
+    def read(self, key, reader, load):
+        """완성 페이지를 재사용하거나 이 요청이 만든다.
+
+        예보 첫 페이지(``revalidate_first_page``)도 조건부 여부와 관계없이 같은 길을 쓴다.
+        hit마다 새 freeze로 최신 승인·head vector를 확인하고, 같은 snapshot handle·manifest
+        digest·건강도이며 삭제 epoch가 같을 때만 본문을 재사용한다(호출 검토 A5).
+        """
         now = self.clock()
         seed = None
         with self.lock:
@@ -106,7 +107,7 @@ class ExportPageCache:
                 self.inflight[key] = event
                 # limit만 다른 CURRENT 첫 페이지의 완료 proof만 빌린다.
                 # 본문/key는 재사용하지 않는다.
-                if (not force and isinstance(key, tuple) and len(key) == 12
+                if (isinstance(key, tuple) and len(key) == 12
                         and key[1] == "current" and key[3] is None):
                     for old_key, old in reversed(self.entries.items()):
                         if (isinstance(old_key, tuple) and len(old_key) == len(key)

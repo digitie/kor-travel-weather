@@ -309,6 +309,22 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 > 넘지 않으며, 응답 직전의 60초 검사(`require_current_selection`)도 그대로다. 응답 header
 > `x-export-status-proof`가 `frozen`·`reused`·`computed`로 출처를 알린다.
 
+> **예보 첫 페이지의 완성 페이지 재사용(2026-11-24, 호출 검토 A5).** 예보 첫 페이지는
+> `If-None-Match`가 없어도 앱의 완성 페이지 캐시(완성 뒤 최대60초, target·snapshot 경계 이내)를
+> 쓴다. hit마다 새 RR freeze로 최신 승인 선택과 head vector를 다시 읽어 같은 snapshot handle·
+> manifest digest인지, 새로 계산한 건강도가 같은지, head·generation·plan 삭제 변경 번호가 같은지
+> 확인한 뒤에만 본문을 재사용하고, 하나라도 다르면 새로 만든다. 그래서 "예보 첫 페이지는
+> 승인·실패를 바로 반영한다"는 계약은 그대로이며 줄어드는 것은 artifact 본문 읽기·투영뿐이다
+> (새 freeze 비용은 남는다). 전에는 INM이 없으면 캐시 항목을 강제로 버려(`force`) 예보에 INM을
+> 보내지 않는 Map의 같은 첫 페이지 재요청마다 본문 전체를 다시 읽었다. 이 강제 우회는 #249
+> (`0c3b70e`)가 "본문 읽기 없는 304"만 범위로 잡으며 200 응답은 예전처럼 새로 만들게 남긴 보수적
+> 선택이었고 따로 기록한 이유는 없다. 그 뒤 hit 검산이 완성 본문 기한·target 경계(`dac78d5`)와
+> fresh 건강도(`d7e5d25`)까지 갖춰 비조건부 요청에도 같은 검산을 쓰면 대체된다. #290의 current
+> 상태 판정 공유(최대60초 지연)로 바꾸지는 않았다. 예보 첫 페이지 계약은 즉시 반영이기 때문이다.
+> 재사용 본문의 `meta.as_of`는 그 본문을 투영한 시각이며
+> `generated_at`만 응답마다 새로 쓴다(조건부·current 재사용과 같다). 응답 header
+> `x-export-read`가 `reused`·`generated`로 구분한다.
+
 forecast는 **각 응답 시점의 지금 이후 target만** 내보낸다. 고정 snapshot_as_of가 과거였다는
 이유로 이미 지난 target을 보내고 Map에 prune 책임을 넘기지 않는다. snapshot artifact의 logical
 내용은 고정하되 응답의 temporal projection을 별도로 정의한다. `next_change_at`은 현재 페이지
