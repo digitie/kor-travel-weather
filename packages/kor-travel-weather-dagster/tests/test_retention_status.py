@@ -49,6 +49,18 @@ def test_a_first_miss_is_deferred_not_partial() -> None:
     assert _status(foreign_key_validation_deferred=True) == "deferred"
 
 
+def test_a_purge_batch_that_kept_losing_is_deferred_and_named() -> None:
+    """포인터·원천 정리 batch가 재시도 끝에도 상한에 지면 그 밤은 연기다(2026-11-24 L4)."""
+    assert _status(pointers_deferred=True) == "deferred"
+    assert _status(sources_deferred=True) == "deferred"
+    result = run_weather_retention_purge(
+        repository=_Repository(_report(pointers_deferred=True, pointers_deleted=3)),
+        retention_days=16,
+    )
+    assert result["pointers_deferred"] is True and result["pointers_deleted"] == 3
+    assert result["sources_deferred"] is False
+
+
 def test_an_overdue_partition_with_progress_is_partial() -> None:
     assert (
         _status(

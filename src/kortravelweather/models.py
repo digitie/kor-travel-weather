@@ -306,7 +306,12 @@ class PurgeReport(BaseModel):
     #: Current-value pointers into the dropped days.  A location that stops
     #: reporting loses its current value once its last reading ages out.
     pointers_deleted: int = 0
+    #: 포인터 정리 batch가 재시도 끝에도 lock/문장 상한에 져 끝내지 못했다. 이번 실행은 만료
+    #: 일자를 떼지 않고(``partitions_deferred``) 다음 실행에 맡긴다.
+    pointers_deferred: bool = False
     sources_deleted: int = 0
+    #: 원천 기록 정리 batch가 재시도 끝에도 져서 나머지를 다음 실행에 맡겼다.
+    sources_deferred: bool = False
     alert_events_deleted: int = 0
     #: Rows that landed outside every dated partition, so retention will never
     #: reach them.  Non-zero means a partition was missing when something

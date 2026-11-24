@@ -32,6 +32,10 @@ def retention_status(report: PurgeReport) -> RetentionStatus:
     has now been missed on consecutive nights -- an overdue expired day, or a
     forward window down to the alert threshold -- and ``failed`` when, on top
     of that, this run moved nothing in that direction.
+
+    포인터·원천 정리 batch가 재시도 끝에도 상한에 진 것(``pointers_deferred``·
+    ``sources_deferred``)도 그 자체로는 ``deferred``다. 포인터를 못 끝낸 밤의 만료 일자는
+    ``partitions_deferred``로 표시되므로 연속되면 위 overdue 규칙이 실패로 올린다.
     """
     forward_short = bool(report.partitions_not_created) and (
         report.forward_partition_days is None
@@ -48,6 +52,8 @@ def retention_status(report: PurgeReport) -> RetentionStatus:
         or report.partitions_not_created
         or report.foreign_key_validation_deferred
         or report.partition_ddl_stopped
+        or report.pointers_deferred
+        or report.sources_deferred
     ):
         return "deferred"
     return "ok"
@@ -89,7 +95,9 @@ def run_weather_retention_purge(
         "foreign_key_validation_deferred": report.foreign_key_validation_deferred,
         "partition_ddl_stopped": report.partition_ddl_stopped,
         "pointers_deleted": report.pointers_deleted,
+        "pointers_deferred": report.pointers_deferred,
         "sources_deleted": report.sources_deleted,
+        "sources_deferred": report.sources_deferred,
         "rows_outside_any_partition": report.rows_outside_any_partition,
         "default_floor": report.default_floor.isoformat() if report.default_floor else None,
         "forward_partition_days": report.forward_partition_days,
