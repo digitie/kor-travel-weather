@@ -11,10 +11,11 @@
 - 읽기 전용. 쓰기 함수(``refresh_region_locations`` 등)는 부르지 않는다. 세션 폐기 확인은
   존재할 수 없는 무작위 값으로 해 lazy 삭제 분기에 들어가지 않는다.
 - 동시성 1. 단계를 차례로 한 thread에서 실행하고 마커는 사용자와 같은 ``marker_limiter``,
-  세션 확인은 같은 ``auth_limiter``로 들어간다.
+  세션 확인은 같은 ``auth_limiter``로 들어간다. 마커 자리 대기도 전체 예산 안에서 한다.
 - 문장당 5초·전체 30초. 공개 읽기 마감 장치(:mod:`.read_limits`)로 문장마다
   ``statement_timeout``을 걸고 pool 대기도 남은 시간으로 줄인다.
 - 사용자 요청(``/v1/*``)이 2건 이상 처리 중이면 남은 단계를 생략한다.
+- 종료 시 취소는 worker thread에도 전해 다음 문장을 보내지 않는다.
 - 예외는 로그·지표로만 남기고 앱 기동·요청 처리에 영향을 주지 않는다. 지도 엔드포인트에는
   결과 캐시가 없으므로 warmup이 오래된 데이터를 남기지 않는다.
 """
@@ -29,11 +30,12 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from datetime import time as day_time
+from threading import Event
 from time import monotonic
 from typing import Any, Literal, TypeVar, get_args
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_thread
+from anyio import CapacityLimiter, move_on_after, to_thread
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -65,8 +67,11 @@ DETAIL_LATEST_LIMIT = 200
 DETAIL_FORECAST_LIMIT = 5000
 #: 처리 중인 사용자 요청이 이 수 이상이면 남은 단계를 생략한다.
 BUSY_REQUESTS = 2
-#: 종료 시 취소한 task를 기다리는 상한(초). 실행 중 문장은 5초 상한에 맡긴다.
+#: 종료 시 취소한 task를 기다리는 상한(초).
 SHUTDOWN_GRACE_SECONDS = 6.0
+#: 취소된 단계가 worker thread를 기다리는 상한(초). 실행 중이던 문장(5초 상한)이 끝날 시간이고
+#: ``SHUTDOWN_GRACE_SECONDS``보다 짧아 task가 종료 대기 안에 끝난다.
+THREAD_JOIN_SECONDS = 5.5
 #: 공개 위치·대표 위치 읽기가 함수 안에서 처음 import하는 모듈.
 LAZY_MODULES = ("kortravelcommon.address_providers", "kortravelcommon.reverse_address")
 
@@ -187,6 +192,8 @@ class ApiPrewarm:
         )
         self._deadline = 0.0
         self._locations: list[WeatherLocation] = []
+        # 종료 취소를 worker thread에 전한다. 켜지면 다음 문장을 보내지 않는다.
+        self._cancelled = Event()
 
     def start(self) -> asyncio.Task[None]:
         """상태를 running으로 두고 warmup task를 만든다. 포트 열기를 기다리게 하지 않는다."""
@@ -287,15 +294,36 @@ class ApiPrewarm:
         **kwargs: Any,
     ) -> _T:
         """남은 예산을 마감으로, 5초를 문장 상한으로 걸고 worker thread에서 실행한다."""
+        started, finished = Event(), Event()
 
         def bounded() -> _T:
-            remaining = self._deadline - monotonic()
-            if remaining <= 0:
-                raise PublicReadTimeout("warmup 예산이 끝났습니다.")
-            with public_read_deadline(remaining, statement_seconds=self.statement_seconds):
-                return function(*args, **kwargs)
+            # 취소 확인보다 먼저 켠다. 취소 쪽은 신호를 켠 뒤 이 값을 보므로, 이 thread가 신호를
+            # 놓치고 문장을 보내면 취소 쪽은 반드시 이 thread를 기다린다.
+            started.set()
+            try:
+                if self._cancelled.is_set():
+                    raise PublicReadTimeout("warmup이 취소되었습니다.")
+                remaining = self._deadline - monotonic()
+                if remaining <= 0:
+                    raise PublicReadTimeout("warmup 예산이 끝났습니다.")
+                with public_read_deadline(
+                    remaining, statement_seconds=self.statement_seconds, cancelled=self._cancelled,
+                ):
+                    return function(*args, **kwargs)
+            finally:
+                finished.set()
 
-        return await to_thread.run_sync(bounded, limiter=limiter)
+        try:
+            return await to_thread.run_sync(bounded, limiter=limiter)
+        except asyncio.CancelledError:
+            # asyncio의 task 취소는 기다림만 끝내고 worker thread는 멈추지 못한다(anyio 4.16 실측).
+            # thread에 신호를 보내 다음 문장을 막고, 실행 중이던 문장(5초 상한)이 끝나 thread가
+            # 돌아오길 잠깐 기다린다. 그래야 thread를 남긴 채 종료가 끝나지 않고, 마커 자리도
+            # thread가 돌아온 뒤에 돌려준다.
+            self._cancelled.set()
+            if started.is_set():
+                await asyncio.to_thread(finished.wait, THREAD_JOIN_SECONDS)
+            raise
 
     async def _connections(self) -> StepOutcome:
         await self._call(self._open_connections)
@@ -345,10 +373,24 @@ class ApiPrewarm:
             if self._stop_reason() is not None:
                 break
             # 사용자 마커 묶음과 같은 limiter(2)를 나눠 쓴다. warmup은 한 자리만 쓴다.
-            async with self.marker_limiter:
+            if not await self._acquire_marker_slot():
+                break
+            try:
+                # 자리를 기다리는 사이 사용자 요청이 몰렸으면 묶음을 보내지 않고 자리를 돌려준다.
+                if self._stop_reason() is not None:
+                    break
                 await self._call(self._marker_batch, ids[start:start + MARKER_BATCH_SIZE])
+            finally:
+                self.marker_limiter.release()
             batches += 1
         return "ok" if batches else "skipped"
+
+    async def _acquire_marker_slot(self) -> bool:
+        """마커 자리를 남은 예산 안에서만 기다린다. 예산이 끝나면 거짓이다."""
+        with move_on_after(self._deadline - monotonic()):
+            await self.marker_limiter.acquire()
+            return True
+        return False
 
     def _marker_batch(self, ids: list[str]) -> None:
         # ``GET /v1/weather/markers``가 관리 지도 기본 필터(종류 6개 전체)로 하는 읽기와 같다.
@@ -379,7 +421,11 @@ class ApiPrewarm:
 
 
 async def stop_prewarm(task: asyncio.Task[None]) -> None:
-    """종료 시 warmup task를 취소하고 짧게 기다린다. 남은 문장은 5초 상한이 끝낸다."""
+    """종료 시 warmup task를 취소하고 최대 6초 기다린다.
+
+    취소는 worker thread에도 전해져 다음 문장을 보내지 않고, task는 실행 중이던 문장(5초 상한)이
+    끝나 thread가 돌아온 뒤 끝난다.
+    """
     if task.done():
         return
     task.cancel()
