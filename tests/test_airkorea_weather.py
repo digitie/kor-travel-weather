@@ -5,14 +5,18 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from airkorea.client import parse_measurement
 from airkorea.models import Station
 from kortravelweather_dagster import airkorea_weather
 
 from kortravelweather.models import WeatherLocation, WeatherValue
 from kortravelweather.providers.airkorea import (
+    StationSidoMismatch,
+    anchor_sido_names,
     fetch_sido_measurements,
     fetch_station_catalog,
     fetch_station_measurement,
+    measurement_sido_name,
     measurement_sido_names,
     normalize_sido_name,
     station_location,
@@ -416,7 +420,9 @@ def test_merged_gwangju_stations_are_matched_from_either_group(monkeypatch) -> N
         ("두암동", f"{merged} 북구 군왕로 141번길 6"),  # 광주 묶음에만 응답
         ("중동", f"{merged} 목포시 어딘가 1"),  # 전남 묶음에만 응답
         ("없는곳", f"{merged} 남구 어딘가 2"),  # 어느 응답에도 없음
-        ("겹침", f"{merged} 서구 어딘가 3"),  # 두 응답 모두에 있음
+        # 두 응답 모두에 같은 이름이 있다. 서구는 광주라 광주 행만 붙고 전남 행은 시도
+        # 대조로 거른다(같은 anchor에 한 번만 쓴다).
+        ("겹침", f"{merged} 서구 어딘가 3"),
     )
     locations = [
         WeatherLocation(
@@ -513,6 +519,290 @@ def test_merged_gwangju_stations_are_matched_from_either_group(monkeypatch) -> N
     # 두 응답에 모두 나온 측정소는 한 번만 쓴다.
     assert sorted(repository.ingested_sources) == ["airkorea-0", "airkorea-1", "airkorea-3"]
     assert "not_in_response=1" in (repository.published[-1] or "")
+
+
+_MERGED = "전남광주통합특별시"
+
+
+def test_anchor_sido_names_resolve_merged_district() -> None:
+    # 통합 주소는 두 번째 토큰(자치구·시·군)으로 통합 전 시도 하나를 가린다.
+    assert anchor_sido_names({"address": f"{_MERGED} 북구 군왕로 141번길 6"}) == ("광주",)
+    assert anchor_sido_names({"address": f"{_MERGED} 광산구 어딘가 1"}) == ("광주",)
+    assert anchor_sido_names({"address": f"{_MERGED} 목포시 어딘가 1"}) == ("전남",)
+    assert anchor_sido_names({"address": f"{_MERGED} 화순군 어딘가 1"}) == ("전남",)
+    # 저장된 sido_name(첫 토큰 접두어로 정해진 "전남")은 통합 주소에서 쓰지 않는다.
+    assert anchor_sido_names(
+        {"address": f"{_MERGED} 서구 어딘가 1", "sido_name": "전남"}
+    ) == ("광주",)
+    # 가리지 못하면 통합 전 후보 전부. 묻는 묶음은 가린 뒤에도 그대로 둘이다.
+    assert anchor_sido_names({"address": f"{_MERGED} 미상구 어딘가 1"}) == ("광주", "전남")
+    assert anchor_sido_names({"address": _MERGED}) == ("광주", "전남")
+    assert measurement_sido_names({"address": f"{_MERGED} 북구 어딘가 1"}) == ("광주", "전남")
+    # 통합 주소가 아니면 기존 정규화와 같다.
+    assert anchor_sido_names({"address": "서울특별시 중구", "sido_name": "서울"}) == ("서울",)
+    assert anchor_sido_names({"address": "unknown"}) == ()
+
+
+def test_measurement_sido_name_reads_source_sido_field() -> None:
+    # python-airkorea-api는 원천 ``sidoName``을 ``sido_name``으로 옮긴다.
+    row = parse_measurement({"stationName": "가", "sidoName": " 광주 "})
+    assert measurement_sido_name(row) == "광주"
+    assert measurement_sido_name(parse_measurement({"stationName": "가"})) is None
+    # 모델 속성이 없는 행은 raw의 sidoName을 본다.
+    assert measurement_sido_name(SimpleNamespace(raw={"sidoName": "전남"})) == "전남"
+    assert measurement_sido_name(SimpleNamespace(sido_name="광주광역시", raw={})) == "광주"
+    assert measurement_sido_name(SimpleNamespace(sido_name="", raw={})) is None
+    # 통합 명칭은 어느 한 시도로 줄이지 않는다(대조 실패로 드러난다).
+    assert measurement_sido_name(SimpleNamespace(sido_name=_MERGED, raw={})) == _MERGED
+
+
+def _anchor(index: int, name: str, address: str) -> WeatherLocation:
+    return WeatherLocation(
+        location_id=f"airkorea-{index}",
+        name=name,
+        latitude=35.1 + index / 100,
+        longitude=126.9,
+        metadata={"measurement_point": {
+            "station_name": name,
+            "address": address,
+            # 운영 anchor와 같게 첫 토큰 접두어로 정한 값을 저장해 둔다(통합 주소는 "전남").
+            "sido_name": normalize_sido_name(address),
+        }},
+    )
+
+
+def _row(name: str, sido: str | None, pm10: float) -> object:
+    raw: dict[str, str] = {"stationName": name, "pm10Value": str(pm10)}
+    if sido is not None:
+        raw["sidoName"] = sido
+    return parse_measurement(raw)
+
+
+class _MeasurementRecorder:
+    """측정 run의 적재 값과 오류 문자열만 남기는 repository."""
+
+    def __init__(self, locations: list[WeatherLocation]) -> None:
+        self.locations = locations
+        self.values: list[WeatherValue] = []
+        self.errors: list[str | None] = []
+
+    def start_sync_run(self, *, provider: str, dataset_key: str, locations_total: int):
+        return SimpleNamespace(run_id=f"run-{dataset_key}", status="running")
+
+    def get_location(self, location_id: str):
+        return next(item for item in self.locations if item.location_id == location_id)
+
+    def create_location(self, location):
+        return location
+
+    def heartbeat_sync_run(self, run_id: str) -> bool:
+        return True
+
+    def ingest_batch(self, *, source_records, values):
+        self.values.extend(values)
+        return len(values)
+
+    def publish_and_finish(self, *, run_id, source_records, values, error=None, **kwargs):
+        if run_id == "run-airkorea_realtime_measurement":
+            self.errors.append(error)
+        return kwargs.get("values_loaded_offset", 0), SimpleNamespace(status="success")
+
+    def finish_sync_run(self, *args, **kwargs):
+        raise AssertionError("station-level failures must not abort the run")
+
+    def pm10_by_location(self) -> dict[str, float]:
+        return {
+            value.location_id: float(value.value_number)
+            for value in self.values
+            if value.metric_key == "PM10"
+        }
+
+
+def _run_bulk_sync(
+    monkeypatch,
+    locations: list[WeatherLocation],
+    responses: dict[str, list[object] | Exception],
+) -> tuple[dict, _MeasurementRecorder]:
+    catalog = [
+        (location, {
+            "source_record_key": f"catalog-{location.location_id}",
+            "provider": "python-airkorea-api",
+            "dataset_key": "airkorea_station_catalog",
+            "source_entity_type": "airkorea_station",
+            "source_entity_id": location.location_id,
+            "payload": {},
+            "fetched_at": datetime.now(UTC),
+        })
+        for location in locations
+    ]
+
+    class FakeClient(_EntersAndCloses):
+        async def sido_measurements(self, sido_name: str, *, page_no: int, num_of_rows: int):
+            response = responses.get(sido_name, [])
+            if isinstance(response, Exception):
+                raise response
+            return list(response)
+
+        async def latest_station_measurement(self, station_name: str):
+            raise AssertionError("bulk-capable client must not issue station requests")
+
+    monkeypatch.setattr(
+        airkorea_weather, "fetch_station_catalog", lambda *a, **k: _resolved(catalog)
+    )
+    repository = _MeasurementRecorder(locations)
+    result = airkorea_weather.run_airkorea_weather_sync(
+        repository=repository, client=FakeClient(), max_stations=10, max_values=100
+    )
+    return result, repository
+
+
+@pytest.mark.parametrize("row_sido", ["전남", None])
+def test_merged_anchor_rejects_same_name_row_from_other_sido(monkeypatch, row_sido) -> None:
+    """#282 후속 회귀: 같은 이름의 전남 측정소 anchor가 활성 목록에 없을 때(상한·비활성)
+    전남 묶음의 그 관측이 광주 anchor에 붙으면 안 된다. 행에 시도가 없으면 요청한 묶음의
+    시도로 대조한다."""
+    locations = [
+        _anchor(0, "두암동", f"{_MERGED} 북구 군왕로 141번길 6"),
+        _anchor(1, "같은이름", f"{_MERGED} 서구 어딘가 2"),
+    ]
+    result, repository = _run_bulk_sync(monkeypatch, locations, {
+        # 광주 묶음에는 이번 시각 "같은이름"이 없다.
+        "광주": [_row("두암동", "광주", 31.0)],
+        "전남": [_row("같은이름", row_sido, 99.0)],
+    })
+
+    assert repository.pm10_by_location() == {"airkorea-0": 31.0}
+    assert result["status"] == "partial"
+    assert result["stations_failed"] == 1
+    assert result["station_failure_reasons"] == {"sido_mismatch": 1}
+    assert result["stations_failed_deterministic"] == 1
+    assert result["stations_failed_transient"] == 0
+    assert result["failed_station_sample"] == ["airkorea-1"]
+    assert "sido_mismatch=1" in (repository.errors[-1] or "")
+
+
+def test_same_name_stations_in_both_sidos_bind_to_their_own_anchor(monkeypatch) -> None:
+    # 광주·전남에 같은 이름 측정소가 있고 둘 다 활성이면, 이름만으로는 두 묶음 모두에서
+    # 후보가 둘이라 모두 격리됐다. 행의 sidoName으로 각자 제 관측을 받는다.
+    locations = [
+        _anchor(0, "같은이름", f"{_MERGED} 북구 어딘가 1"),
+        _anchor(1, "같은이름", f"{_MERGED} 목포시 어딘가 2"),
+    ]
+    result, repository = _run_bulk_sync(monkeypatch, locations, {
+        "광주": [_row("같은이름", "광주", 11.0)],
+        "전남": [_row("같은이름", "전남", 22.0)],
+    })
+
+    assert repository.pm10_by_location() == {"airkorea-0": 11.0, "airkorea-1": 22.0}
+    assert result["status"] == "success"
+    assert result["stations_failed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("address", "sido", "row_sido"),
+    [
+        # 통합 뒤 원천이 전남 묶음 행의 sidoName을 통합 명칭으로 바꿔도 통합 주소가 아닌 전남
+        # anchor는 그대로 붙는다. 시도 전체가 sido_mismatch로 멈추지 않는다.
+        ("전라남도 목포시 어딘가 1", "전남", _MERGED),
+        ("광주광역시 북구 어딘가 1", "광주", _MERGED),
+        # 묶음 하나에만 든 anchor는 요청한 묶음의 시도로 판단한다(시도별 bulk 응답 계약).
+        ("서울특별시 중구 덕수궁길 15", "서울", "부산"),
+    ],
+)
+def test_plain_anchor_is_judged_by_requested_sido(
+    monkeypatch, address, sido, row_sido
+) -> None:
+    locations = [_anchor(0, "중구", address)]
+    result, repository = _run_bulk_sync(monkeypatch, locations, {
+        sido: [_row("중구", row_sido, 40.0)],
+    })
+
+    assert repository.pm10_by_location() == {"airkorea-0": 40.0}
+    assert result["status"] == "success"
+    assert result["stations_failed"] == 0
+
+
+def test_same_name_plain_and_merged_anchors_with_merged_row_sido(monkeypatch) -> None:
+    # 전남 묶음 행이 통합 명칭을 달고 와도 통합 주소가 아닌 전남 anchor는 묶음으로 받는다.
+    # 같은 이름의 광주(통합 주소) anchor는 행 시도로 가리므로 그 행을 받지 않고, 광주 묶음의
+    # 제 행을 받는다.
+    locations = [
+        _anchor(0, "같은이름", "전라남도 순천시 어딘가 1"),
+        _anchor(1, "같은이름", f"{_MERGED} 북구 어딘가 2"),
+    ]
+    result, repository = _run_bulk_sync(monkeypatch, locations, {
+        "광주": [_row("같은이름", "광주", 11.0)],
+        "전남": [_row("같은이름", _MERGED, 22.0)],
+    })
+
+    assert repository.pm10_by_location() == {"airkorea-0": 22.0, "airkorea-1": 11.0}
+    assert result["status"] == "success"
+    assert result["stations_failed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_pm10", "expected_reasons"),
+    [
+        # 두 시도 응답 모두에 같은 이름이 있으면 어느 쪽인지 정할 수 없다.
+        (
+            {"광주": [_row("미상", "광주", 1.0)], "전남": [_row("미상", "전남", 2.0)]},
+            {},
+            {"ambiguous_name": 1},
+        ),
+        # 한 시도 응답에만 있으면 붙인다(#282 동작 유지).
+        ({"광주": [], "전남": [_row("미상", "전남", 2.0)]}, {"airkorea-0": 2.0}, {}),
+        # 다른 묶음을 못 받았으면 거기에도 같은 이름이 있었는지 몰라 붙이지 않는다.
+        (
+            {"광주": RuntimeError("timeout"), "전남": [_row("미상", "전남", 2.0)]},
+            {},
+            {"request_error": 1},
+        ),
+    ],
+)
+def test_unresolved_merged_anchor_requires_one_sido(
+    monkeypatch, responses, expected_pm10, expected_reasons
+) -> None:
+    locations = [_anchor(0, "미상", f"{_MERGED} 미상구 어딘가 1")]
+    result, repository = _run_bulk_sync(monkeypatch, locations, responses)
+
+    assert repository.pm10_by_location() == expected_pm10
+    assert result["station_failure_reasons"] == expected_reasons
+
+
+def test_station_fallback_sido_mismatch_is_deterministic(monkeypatch) -> None:
+    # bulk가 없는 client의 측정소별 경로도 시도 대조 실패를 결정적 실패로 남긴다.
+    location = _anchor(0, "종로구", "서울 종로구 종로35가길 19")
+    catalog = [(location, {
+        "source_record_key": "catalog-airkorea-0",
+        "provider": "python-airkorea-api",
+        "dataset_key": "airkorea_station_catalog",
+        "source_entity_type": "airkorea_station",
+        "source_entity_id": location.location_id,
+        "payload": {},
+        "fetched_at": datetime.now(UTC),
+    })]
+
+    class StationOnlyClient(_EntersAndCloses):
+        async def latest_station_measurement(self, station_name: str):
+            return _row(station_name, "부산", 5.0)
+
+    monkeypatch.setattr(
+        airkorea_weather, "fetch_station_catalog", lambda *a, **k: _resolved(catalog)
+    )
+    repository = _MeasurementRecorder([location])
+    result = airkorea_weather.run_airkorea_weather_sync(
+        repository=repository, client=StationOnlyClient(), max_stations=1, max_values=10
+    )
+
+    assert repository.pm10_by_location() == {}
+    assert result["station_failure_reasons"] == {"sido_mismatch": 1}
+    assert result["stations_failed_deterministic"] == 1
+    assert "StationSidoMismatch" in (repository.errors[-1] or "")
+    with pytest.raises(StationSidoMismatch):
+        asyncio.run(fetch_station_measurement(
+            StationOnlyClient(), station_name="종로구", location_id=location.location_id,
+            known_at=datetime.now(UTC), expected_sido="서울",
+        ))
 
 
 def test_airkorea_asset_tags_partial_outcome(monkeypatch) -> None:

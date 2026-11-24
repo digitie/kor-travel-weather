@@ -1,8 +1,14 @@
 import { NextRequest } from "next/server";
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { middleware } from "./middleware";
+import { config, middleware } from "./middleware";
 import { POST as logout } from "./app/api/auth/logout/route";
-import { createSessionValue, SESSION_COOKIE, verifySessionValue } from "./lib/session";
+import {
+  clearDurableSessionCache,
+  createSessionValue,
+  SESSION_COOKIE,
+  verifySessionValue,
+} from "./lib/session";
 
 const secret = "0123456789abcdef0123456789abcdef";
 const origin = "https://weather-admin.example.test";
@@ -29,7 +35,7 @@ beforeEach(async () => {
   cookie = await createSessionValue("admin", secret, new Headers({ "user-agent": agent }));
 });
 
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+afterEach(() => { clearDurableSessionCache(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("session store failure is distinct from invalid credentials", () => {
   it.each(["/api/weather/health", "/admin/dagster", "/login"])("returns 503 without clearing the valid cookie on %s", async (path) => {
@@ -85,5 +91,120 @@ describe("session store failure is distinct from invalid credentials", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
     await expect(verifySessionValue(cookie, secret, new Headers({ "user-agent": agent }), "admin")).resolves.toBeNull();
+  });
+});
+
+describe("durable 확인 캐시와 middleware", () => {
+  const next = (response: Response) => response.headers.get("x-middleware-next");
+
+  it("연속 지도 요청은 확인 한 번의 active 판정을 재사용한다", async () => {
+    const fetcher = vi.fn().mockImplementation(async () => Response.json({ revoked: false }));
+    vi.stubGlobal("fetch", fetcher);
+    const responses = await Promise.all([
+      middleware(request("/api/weather/v1/weather/markers?location_id=a")),
+      middleware(request("/api/weather/v1/weather/markers?location_id=b")),
+      middleware(request("/api/weather/v1/weather/locations/a/latest")),
+    ]);
+    expect(responses.map(next)).toEqual(["1", "1", "1"]);
+    expect((await middleware(request("/weather"))).headers.get("x-middleware-next")).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("로그아웃 요청은 middleware에서 캐시를 지워 다음 요청이 폐기를 바로 본다", async () => {
+    const fetcher = vi.fn().mockImplementationOnce(async () => Response.json({ revoked: false }))
+      .mockImplementation(async () => Response.json({ revoked: true }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(next(await middleware(request()))).toBe("1");
+    expect(next(await middleware(request("/api/auth/logout", "POST")))).toBe("1");
+    expect((await middleware(request())).status).toBe(401);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("재로그인 요청도 기존 쿠키의 캐시를 지운다", async () => {
+    const fetcher = vi.fn().mockImplementationOnce(async () => Response.json({ revoked: false }))
+      .mockImplementation(async () => Response.json({ revoked: true }));
+    vi.stubGlobal("fetch", fetcher);
+    await middleware(request());
+    await middleware(request("/api/auth/login", "POST"));
+    expect((await middleware(request())).status).toBe(401);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("다른 Origin의 로그아웃 시도는 캐시를 건드리지 않는다", async () => {
+    const fetcher = vi.fn().mockImplementation(async () => Response.json({ revoked: false }));
+    vi.stubGlobal("fetch", fetcher);
+    await middleware(request());
+    const crossOrigin = request("/api/auth/logout", "POST");
+    crossOrigin.headers.set("origin", "https://other.example.test");
+    await middleware(crossOrigin);
+    expect(next(await middleware(request()))).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["POST", "PATCH", "PUT", "DELETE"])(
+    "상태 변경 %s는 캐시된 active를 쓰지 않아 다른 replica의 로그아웃을 바로 본다", async (method) => {
+      const fetcher = vi.fn().mockImplementationOnce(async () => Response.json({ revoked: false }))
+        .mockImplementation(async () => Response.json({ revoked: true }));
+      vi.stubGlobal("fetch", fetcher);
+      expect(next(await middleware(request("/api/weather/v1/weather/markers")))).toBe("1");
+      // 다른 replica가 폐기를 기록했다. 같은 쿠키의 GET 캐시는 남아 있어도 write는 거부된다.
+      expect((await middleware(request("/api/weather/v1/admin/locations", method))).status).toBe(401);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect((await middleware(request())).status).toBe(401);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it("상태 변경 요청은 저장소에 매번 묻고 GET 캐시를 채우지 않는다", async () => {
+    const fetcher = vi.fn().mockImplementation(async () => Response.json({ revoked: false }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(next(await middleware(request("/api/weather/v1/admin/locations", "POST")))).toBe("1");
+    expect(next(await middleware(request("/api/weather/v1/admin/locations", "POST")))).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(next(await middleware(request()))).toBe("1");
+    expect(next(await middleware(request()))).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("저장소 장애 503은 캐시하지 않아 회복 즉시 통과한다", async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error("store unavailable"))
+      .mockImplementation(async () => Response.json({ revoked: false }));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await middleware(request())).status).toBe(503);
+    expect(next(await middleware(request()))).toBe("1");
+    expect(next(await middleware(request()))).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("middleware matcher", () => {
+  const matches = (path: string) => unstable_doesMiddlewareMatch({ config, url: path });
+
+  it.each([
+    "/maplibre/maplibre-gl-worker.mjs",
+    "/maplibre/maplibre-gl-shared.mjs",
+    "/_next/static/chunks/main.js",
+    "/favicon.ico",
+  ])("공개 정적 자산 %s에는 인증 확인을 실행하지 않는다", (path) => {
+    expect(matches(path)).toBe(false);
+  });
+
+  it.each([
+    "/",
+    "/weather",
+    "/login",
+    "/admin/dagster",
+    "/api/weather/v1/weather/markers",
+    "/api/weather/v1/admin/locations",
+    "/api/auth/logout",
+    "/api/dagster/graphql",
+    "/api/region-boundary",
+    "/maplibre",
+    "/maplibre-gl-worker.mjs",
+    "/maplibrex/worker.mjs",
+    "/api/maplibre/worker.mjs",
+    "/weather/maplibre/worker.mjs",
+  ])("인증이 필요한 %s는 계속 middleware를 거친다", (path) => {
+    expect(matches(path)).toBe(true);
   });
 });
