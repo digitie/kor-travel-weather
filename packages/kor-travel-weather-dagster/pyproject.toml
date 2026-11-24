@@ -8,7 +8,7 @@ version = "0.1.0.dev0"
 description = "Dagster KMA ingestion assets for kor-travel-weather."
 requires-python = ">=3.12"
 dependencies = [
-  "kor-travel-common[dagster,grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@ec5e16888fd3de069762f34c3cd06fe867e06688#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[dagster,grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@f1faf56365854cefcc9e1f02f51c5b9c7e6a13ae#subdirectory=packages/py/kor-travel-common",
   "kor-travel-weather",
   "dagster>=1.9,<2",
   "dagster-webserver>=1.9,<2",
