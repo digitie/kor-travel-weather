@@ -5,7 +5,7 @@
 
 | # | 위치 | 전 | 후 |
 | --- | --- | --- | --- |
-| L4 | `purge_expired_history` 포인터·원천 정리 | 상한 없는 단일 DELETE 두 문장 | 기본키 keyset batch 1,000행, batch마다 commit·문장 10초·lock 1초 |
+| L4 | `purge_expired_history` 포인터·원천 정리 | 상한 없는 단일 DELETE 두 문장 | 기본키 keyset batch 1,000행, batch마다 commit·문장 10초·lock 1초. 원천은 실행당 1,800초 예산과 다음 실행 이어 읽기 |
 | L5 | 수집 writer transaction | lock 대기 상한만 | 문장 300초·문장 사이 유휴 60초를 그 transaction에만 |
 | L6 | 재수집 판정 조회 | 원천 원문 payload(최대 8MiB)까지 읽어 identity map에 보관 | `defer(SourceRecordRow.payload)` |
 | L7 | `alembic/env.py` | migration 기본 `lock_timeout` 없음 | 연결 시작 옵션 `-c lock_timeout=5s`, migration 자신의 설정이 우선 |
@@ -33,21 +33,51 @@
 대기까지 1초에 끊긴다. 1,000행은 단기예보 정리 batch와 같은 크기다. 그쪽 운영 실측은 약 3초/1,000행
 (`docs/shortterm-retention.md`)이라 10초 안에 든다. 이 두 DELETE의 운영 batch 시간은 재지 않았다.
 
-**keyset을 기본키로 고른 이유.** 두 표 모두 `known_at`·`fetched_at` 단독 인덱스가 없다. 운영 보존은
-7일이라 평소 밤의 만료 행은 표의 약 1/8로 추정하고(운영 분포는 재지 않았다), 그러면 기본키 순서로
-1,000개를 찾는 데 약 8,000개 항목과 그 heap을 읽는다. 새 인덱스는 큰 표의 `CREATE INDEX CONCURRENTLY` migration이 필요해 이 범위에 넣지
-않았다. 밀린 뒤 첫 실행은 만료 행 비율이 높아 batch당 읽는 양이 오히려 준다.
+**keyset을 기본키로 고른 이유.** 두 표 모두 `known_at`·`fetched_at` 단독 인덱스가 없다. 새 인덱스는
+큰 표의 `CREATE INDEX CONCURRENTLY` migration이 필요해 이 범위에 넣지 않았다. 두 표에서 후보 비율은
+다르다(운영 분포는 둘 다 재지 않았다).
+
+- **포인터**는 논리 지점(`target_at` 포함)마다 한 행이라 지난 `target_at`의 포인터가 함께 쌓인다.
+  운영 보존 7일이면 평소 밤의 만료 행은 표의 약 1/8로 추정하고, 그러면 기본키 순서로 1,000개를 찾는
+  데 약 8,000개 항목과 그 heap을 읽는다. 밀린 뒤 첫 실행은 만료 행 비율이 높아 batch당 읽는 양이
+  오히려 준다.
+- **원천**은 이 추정이 맞지 않는다. `PURGE_SOURCE_RECORDS_SQL`은 수집 run에 연결된 원천
+  (`weather_sync_run_sources`)을 지우지 않고, 그 연결 행이나 `weather_sync_runs`를 지우는 코드는
+  없다. Dagster 수집기(KMA·AirKorea·외부·지역 원천)는 모든 원천에 `run_id`를 붙이므로
+  `fetched_at < cutoff` 후보는 보존 기간보다 오래된 원천 이력 **거의 전부**이고, 날마다 늘지만 거의
+  지워지지 않는다. KMA 원천 키는 `sr_` + sha256이라 기본키 순서와 heap 순서가 무관해 후보 하나가
+  heap 임의 읽기 하나다. 예전 단일 DELETE도 밤마다 이 전체를 한 문장으로 훑었다(순차 읽기를 고를 수
+  있었다). batch로 나누면 그 전체를 1,000행 transaction 수천 개로 읽게 되어 `weather_retention_job`의
+  7,200초 실행 상한에 닿을 수 있다.
+
+**원천 정리의 시간 예산과 이어 읽기.** 그래서 원천 단계는 한 실행에 이력 전체를 읽지 않는다.
+`HISTORY_SOURCE_PURGE_BUDGET_SECONDS`(1,800초, 실행 상한의 1/4)가 지나면 batch 하나를 commit한
+경계에서 멈추고, 마지막 후보 키를 `sources_resume_after`로 보고한다. Dagster asset은 이 값을 실행
+기록(파티션 표시를 넘기는 것과 같은 `AssetObservation`)에 남기고 다음 실행이 `sources_after`로 그 뒤부터
+읽는다. 끝에 닿으면 `None`이 되어 다음 실행은 처음부터 다시 훑는다. 위치 앞에 새로 들어온 원천은 다음
+한 바퀴에서 읽으므로 빠지는 것은 없고, 지울 수 있는 원천이 지워지기까지 한 바퀴(이력 크기 ÷ 밤당 읽는
+양)만큼 늦어질 수 있다. 한 실행은 batch 하나는 늘 한다. 예산으로 멈춘 것은 연기가 아니라 정상
+진행이다(`sources_scanned`가 그 실행이 읽은 후보 수다). 1,800초는 재지 않은 값이며, 운영 원천 수와
+batch 시간을 재면 다시 정한다. 후보를 줄이는 근본 방법(오래된 run 연결의 보존 정책, 또는 run 연결
+원천을 후보에서 미리 빼는 조회)은 이 PR 범위 밖이다.
 
 **재시도와 연기.** lock/문장 상한·deadlock(57014·55P03·40P01)에 진 batch는 rollback되고 같은
-위치에서 2·4·8초 뒤 다시 시도한다(모두 4회). 그래도 지면 앞 batch의 commit은 그대로 두고 그 단계를
-멈춘다.
+위치에서 2·4·8초 뒤 다시 시도한다(모두 4회, 위치 하나에 최대 약 54초). 57014도 재시도하는 이유:
+수집 문장(L5)과 달리 이 batch는 짧고 멱등이며, n150처럼 디스크 대기가 몰리는 순간에 한 번 넘긴 문장은
+몇 초 뒤 다시 들어갈 수 있다. 그래도 지면 앞 batch의 commit은 그대로 두고 그 단계를 멈춘다.
 
 - 포인터: `pointers_deferred`. 이번 실행은 **만료 일자를 떼지 않는다.** 남은 포인터가 가리키는 fact를
   떼어 내면 FK 검증이 그 포인터를 상한 없는 DELETE(`delete_dangling_projection_rows`)로 지우게 되기
   때문이다. 그 날들은 할 일을 못 한 것으로 표시되고(`partitions_deferred`) 다음 밤에도 못 하면
-  overdue → `partial`/`failed`다. 이미 떼어 둔 표의 DROP은 계속한다.
-- 원천: `sources_deferred`. 남은 원천은 다음 실행이 지운다.
-- 둘 다 실행 상태는 `deferred`다(Dagster asset metadata에 두 값이 나간다).
+  overdue → `partial`/`failed`다. 이미 떼어 둔 표의 DROP은 계속한다. `failed`의 Failure 설명에 포인터
+  연기가 원인이었음을 덧붙인다. 포인터 표는 실행마다 처음부터 읽는다(만료 일자를 떼기 전에 끝까지
+  해야 하므로).
+- 원천: `sources_deferred`. 진 batch의 시작 위치가 `sources_resume_after`가 되어 다음 실행이 그
+  batch부터 다시 한다. 원천에는 파티션 표시가 없으므로 Dagster asset이 연기가 이어진 실행 수
+  (`sources_deferred_runs`)를 같은 실행 기록으로 넘기고, **연속 2회 이상이면 `partial`**이다
+  (`SOURCES_DEFERRED_PARTIAL_RUNS`). 연기가 없는 실행에서 0으로 돌아간다.
+- 첫 연기는 실행 상태 `deferred`다. asset은 두 연기를 경고 로그로도 남긴다(metadata에 지운 수·연속
+  횟수·위치가 나간다).
 
 **예전과 달라진 점.** 예전에는 한 DELETE가 한 transaction이라 원자적이었다. 이제 batch 사이에 다른
 transaction이 끼어든다: 같은 advisory lock을 try로 잡는 단기예보 정리 batch, 운영자 DEFAULT 교체,
@@ -125,8 +155,10 @@ prefetch는 이미 payload를 빼고 있었다. 새 원천의 INSERT는 그대�
 
 - `tests/test_history_purge_batches.py`: batch마다 advisory lock → 문장 10초 → lock 1초 순서와 별도
   commit, `:after` 이어 읽기, 지우지 않는 보존 후보가 위치를 멈추지 않음, 잠긴 포인터에서 연기되면
-  앞 batch는 남고 만료 일자는 붙은 채 다음 실행이 지움, 원천 batch의 57014 연기와 앞 commit 보존,
-  다른 SQL 오류는 그대로 실패, 후보 조회가 기본키 순서(정렬 없음)로 가능함.
+  앞 batch는 남고 만료 일자는 붙은 채 다음 실행이 지움, 원천 batch의 57014 연기와 앞 commit 보존 및
+  진 batch 위치에서 다음 실행이 이어 지움, 예산 0이면 batch 하나 뒤 멈추고 위치를 넘겨 세 실행에 걸쳐
+  끝까지 읽음(run 연결 원천은 남음), 빈 위치 거절, 다른 SQL 오류는 그대로 실패, 후보 조회가 기본키
+  순서(정렬 없음)로 가능함.
 - `tests/test_ingest_write_limits.py`: 세 writer 경로의 상한(`5min`·`1min`)과 transaction 뒤 원복,
   더 엄격한 연결 설정 유지, export 쪽 `_set_ingest_lock_timeout`은 상한 없음, 유휴 writer가 25P03으로
   끊겨 commit되지 않음, 느린 문장이 57014로 한 번만 실패.
@@ -136,4 +168,6 @@ prefetch는 이미 payload를 빼고 있었다. 새 원천의 INSERT는 그대�
 - `tests/test_migration_lock_timeout.py`: 연결 옵션과 `PGOPTIONS`·URL 순서, `SET LOCAL`·`TO DEFAULT`·
   `RESET` 우선순위, 빈 schema에서 `alembic upgrade head`가 실제로 여는 연결의 `lock_timeout`이 5초이고
   `PGOPTIONS`의 `search_path`도 남음(시험 순서와 무관).
-- `packages/kor-travel-weather-dagster/tests/test_retention_status.py`: 두 연기 값이 `deferred`·metadata로.
+- `packages/kor-travel-weather-dagster/tests/test_retention_status.py`: 두 연기 값이 `deferred`·metadata로,
+  원천 연기 연속 2회는 `partial`이고 끊기면 0, 원천 위치와 연기 횟수가 실패한 실행을 지나서도 실행
+  기록(ephemeral Dagster instance)으로 다음 실행에 넘어감.

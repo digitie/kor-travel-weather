@@ -263,8 +263,10 @@ CAS가 그 행 lock 뒤에 섰다. 지금은 기본키 순서의 keyset batch(1,
 지면 앞 batch의 commit은 둔 채 멈춘다(`pointers_deferred`·`sources_deferred`, 실행은 `deferred`).
 포인터를 끝내지 못한 밤에는 만료 일자를 떼지 않는다: 남은 포인터가 가리키는 fact를 떼면 FK 검증이 그
 포인터를 상한 없는 DELETE(`delete_dangling_projection_rows`)로 지우게 되기 때문이다. 그 날들은
-`partitions_deferred`로 표시되고 다음 밤에도 못 하면 overdue다. 자세한 근거는
-[쓰기 경로 상한](write-path-bounds.md).
+`partitions_deferred`로 표시되고 다음 밤에도 못 하면 overdue다. 수집 run에 연결된 원천은 지우지
+않으므로 원천 후보는 오래된 원천 이력 거의 전부다. 그래서 원천 단계는 실행당 1,800초 예산만큼 읽고
+멈춘 위치(`sources_resume_after`)를 Dagster 실행 기록으로 다음 실행에 넘겨 이어 읽는다. 원천 batch
+연기가 연속 2회면 실행은 `partial`이다. 자세한 근거는 [쓰기 경로 상한](write-path-bounds.md).
 
 **A replay outlives its first fetch's day.** A response the store already holds
 is replayed with its first fetch time as `known_at`, so an identical re-fetch is
