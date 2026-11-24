@@ -80,9 +80,14 @@ publish는 **location chunk 단위의 짧은 transaction**이다: 격자·중기
 
 repository 쪽 ingest transaction은 lock 대기를 `3 × deadlock_timeout`(partition DDL과
 같은 `ddl_lock_timeout_ms`)으로 묶고, lock 경합에서 지면 rollback 뒤 3초 간격으로 최대
-20회 다시 시도한다 — 오래 쥔 holder 뒤에 몇 시간씩 줄 서지 않는다. statement timeout은
-두지 않는다: transaction 길이는 chunk 크기가 묶고, n150처럼 디스크 대기가 큰 호스트에서
-정상 chunk를 거짓 실패시키지 않기 위해서다. location·source advisory lock은
+20회 다시 시도한다 — 오래 쥔 holder 뒤에 몇 시간씩 줄 서지 않는다. 2026-11-24(Map 호출 검토
+L5)부터 원천·fact를 게시하는 transaction(`ingest_batch`·`ingest_skip_locked`·`publish_and_finish`)은
+문장 하나 300초(`INGEST_STATEMENT_TIMEOUT_MS`), 문장 사이 유휴 60초
+(`INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS`) 상한도 그 transaction에만 건다. 문장 상한은 정상
+chunk를 거짓 실패시키지 않도록 크게 잡았다: transaction 길이는 여전히 chunk 크기가 묶고, n150처럼
+디스크 대기가 큰 호스트에서 chunk 하나가 수 분 걸린 적이 있다. 300초는 계획 회귀 같은 병적인
+문장이 location lock을 몇 시간씩 쥐는 것만 끊는다. 상한에 걸리면 재시도하지 않고 그 chunk가
+실패한다(근거와 값은 [쓰기 경로 상한](../write-path-bounds.md)). location·source advisory lock은
 transaction당 한 번만 잡고(예전엔 fact마다 네 번 왕복), replay 확인은 1,000건씩 묶은
 primary-key 조회, current projection 갱신은 `INSERT ... ON CONFLICT DO UPDATE ... WHERE
 newer` 한 문장(1,000행씩)이다 — 비교·교체가 문장 안에서 행 단위로 원자적이다.

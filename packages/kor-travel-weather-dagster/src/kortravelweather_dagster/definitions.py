@@ -936,9 +936,14 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
     if job_name == "kma_short_forecast_job":
         # 300격자 단기예보 한 회차는 2026-10-24..26 50~70분이었으나 CPU가 포화된 odroid에서
         # 10-27부터 2시간을 넘겨 7200초 상한에 거의 매번 회수됐다(10-29 07:13 뒤 성공 0).
-        # 같은 일을 끝내도록 발표 주기(3시간)까지 둔다. 다음 회차는 작업별 동시 1 제한으로
-        # 대기열에서 기다리므로 겹치지 않는다.
-        seconds = 10800
+        # 2026-11-09..23(14일) 성공 75회 step p50 8,165초·p90 9,665초·최대 10,736초로 10800초에
+        # 붙어 있고, 실패 11회 중 6회가 상한 회수(DagsterExecutionInterruptedError, run 10,955~
+        # 11,432초)였다 — 3시간 일을 다 하고 승격 없이 버렸다. 시간의 약 90%는 fact
+        # 게시(timed_publish, 384~441천 fact)다(docs/kma-short-forecast-runtime.md).
+        # 상한을 4시간으로 둔다. 3시간을 넘긴 회차 동안 다음 tick은 coalescing으로
+        # 합쳐지고 작업별 동시 1 제한도 그대로라 겹치지 않는다. 넘긴 회차는 회수 대신
+        # 끝까지 게시되어 다음 회차보다 먼저 최신이 된다.
+        seconds = 14400
     if job_name == "kma_regional_alert_events_job":
         seconds = 300
     if job_name == "address_refresh_job":
@@ -1354,14 +1359,36 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
 #: record -- an asset observation, which needs no table lock and no migration
 #: and is written even when the run then fails -- and handed to the next run.
 _UNMARKED_KEY = "partitions_unmarked"
+#: 원천 정리가 멈춘 keyset 위치와 연기가 이어진 실행 수(2026-11-24 L4). 같은 observation에
+#: 남겨 다음 실행이 이어 읽고 연기를 센다.
+_SOURCES_RESUME_KEY = "sources_resume_after"
+_SOURCES_DEFERRED_RUNS_KEY = "sources_deferred_runs"
 
 
-def _previous_unmarked(context: AssetExecutionContext) -> tuple[str, ...]:
-    """The previous retention run's ``partitions_unmarked``, from its observation."""
+def _previous_retention_record(context: AssetExecutionContext) -> dict[str, object]:
+    """The previous retention run's observation metadata, as plain values."""
     records = context.instance.fetch_observations(context.asset_key, limit=1).records
     observation = records[0].asset_observation if records else None
-    value = observation.metadata.get(_UNMARKED_KEY) if observation else None
-    return tuple(str(name) for name in (getattr(value, "value", None) or ()))
+    if observation is None:
+        return {}
+    return {key: getattr(value, "value", value) for key, value in observation.metadata.items()}
+
+
+def _previous_unmarked(previous: dict[str, object]) -> tuple[str, ...]:
+    """The previous retention run's ``partitions_unmarked``, from its observation."""
+    value = previous.get(_UNMARKED_KEY) or ()
+    return tuple(str(name) for name in value) if isinstance(value, list | tuple) else ()
+
+
+def _previous_sources_after(previous: dict[str, object]) -> str | None:
+    """앞 실행의 원천 정리 위치. 형식이 맞지 않으면 처음부터 읽는다(위치는 성능 힌트일 뿐)."""
+    value = previous.get(_SOURCES_RESUME_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def _previous_sources_deferred_runs(previous: dict[str, object]) -> int:
+    value = previous.get(_SOURCES_DEFERRED_RUNS_KEY)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 @asset(
@@ -1372,12 +1399,16 @@ def _previous_unmarked(context: AssetExecutionContext) -> tuple[str, ...]:
 def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     repository = _run_repository(context)
+    previous = _previous_retention_record(context)
     result = run_weather_retention_purge(
         repository=repository,
         retention_days=runtime.retention_days,
         ahead_days=runtime.retention_ahead_days,
-        prior_unmarked=_previous_unmarked(context),
+        prior_unmarked=_previous_unmarked(previous),
+        sources_after=_previous_sources_after(previous),
+        prior_sources_deferred_runs=_previous_sources_deferred_runs(previous),
     )
+    resume = result[_SOURCES_RESUME_KEY]
     # Recorded before any Failure below: a failed run materializes nothing,
     # and its lost marks must still reach the next run.
     context.log_event(
@@ -1385,6 +1416,12 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
             asset_key=context.asset_key,
             metadata={
                 _UNMARKED_KEY: MetadataValue.json(list(result[_UNMARKED_KEY])),
+                _SOURCES_RESUME_KEY: (
+                    MetadataValue.text(str(resume)) if resume else MetadataValue.null()
+                ),
+                _SOURCES_DEFERRED_RUNS_KEY: MetadataValue.int(
+                    int(result[_SOURCES_DEFERRED_RUNS_KEY])
+                ),
             },
         )
     )
@@ -1421,6 +1458,20 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
             result["partitions_overdue"],
             result["partitions_not_created"],
         )
+    if result["pointers_deferred"] or result["sources_deferred"]:
+        # 정리 batch가 재시도 끝에도 문장/lock 상한에 졌다. 포인터면 그 밤 만료 일자를 떼지
+        # 않았고, 원천이면 진 batch 위치를 다음 실행에 넘겼다(연속이면 partial).
+        context.log.warning(
+            "retention %s: purge batch deferred -- pointers %s (deleted %s), "
+            "sources %s (deleted %s, %s run(s) in a row, resume after %s)",
+            result["status"],
+            result["pointers_deferred"],
+            result["pointers_deleted"],
+            result["sources_deferred"],
+            result["sources_deleted"],
+            result["sources_deferred_runs"],
+            result["sources_resume_after"],
+        )
     if result["status"] == "failed":
         raise Failure(
             description=(
@@ -1428,6 +1479,12 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
                 f"overdue {result['partitions_overdue']}, "
                 f"not created {result['partitions_not_created']} "
                 f"(forward window {days} day(s))"
+                + (
+                    "; the current-value pointer purge was deferred, so no expired "
+                    "day was detached"
+                    if result["pointers_deferred"]
+                    else ""
+                )
             ),
             metadata=result,
         )
