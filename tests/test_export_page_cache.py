@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kortravelweather.export_artifacts import ExportArtifactError
+from kortravelweather.export_conditional import ExportNotModified
 from kortravelweather.export_page_cache import ExportPageCache
 
 
@@ -175,6 +176,31 @@ def test_current_cross_limit_seed_does_not_cross_other_key_dimensions(index):
         assert not hasattr(target, "_current_page_seed")
         return ({}, "new")
     cache.read(tuple(other), target, load)
+
+
+def test_not_modified_is_not_cached_and_keeps_the_cross_limit_seed():
+    """본문 읽기 전 304(``ExportNotModified``)는 오류가 아니다(호출 검토 A2).
+
+    본문을 만들지 않았으니 캐시에 넣지 않고, 빌린 다른 limit의 seed proof도 버리지 않는다.
+    같은 키의 다음 요청은 직접 읽는다.
+    """
+    cache = ExportPageCache(clock=lambda: 0)
+    key = (1, "current", 200, None, None, "short", None, 14, None,
+           ("python-kma-api",), "/artifact-root", b"token-digest")
+    first = reader()
+    first._current_seed_eligible = True
+    cache.read(key, first, lambda: ({"first": True}, "old"))
+    other = key[:2] + (2000,) + key[3:]
+    target = reader()
+
+    def unchanged():
+        assert target._current_page_seed == (first, 60)
+        raise ExportNotModified('W/"same"', "ok")
+
+    with pytest.raises(ExportNotModified):
+        cache.read(other, target, unchanged)
+    assert key in cache.entries and other not in cache.entries and not cache.inflight
+    assert cache.read(other, reader(), lambda: ({"own": 1}, "etag")) == ({"own": 1}, "etag")
 
 
 def test_current_cross_limit_seed_is_pending_only_for_new_current_limit():

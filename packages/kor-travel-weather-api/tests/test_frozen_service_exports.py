@@ -1367,15 +1367,23 @@ def test_new_catalog_reference_is_visible_without_weather_and_existing_cursor_st
     assert all(row["location_id"] != "new" for row in continued.json()["items"])
 
 
-def test_identical_manifest_after_reader_ttl_gets_new_etag_and_usable_cursor(
+def test_identical_manifest_after_reader_ttl_keeps_content_etag_without_body_read(
     repository, tmp_path, monkeypatch
 ):
+    """같은 승인 집합이면 handle TTL이 지나 새 snapshot을 발급해도 ETag가 같다(호출 검토 A2).
+
+    조건부 첫 페이지는 freeze·상태 판정 뒤 artifact 본문을 읽기 전에 304로 끝난다. 조건 없는
+    요청은 새 handle의 snapshot_id·cursor를 같은 ETag로 받는다.
+    """
+    from sqlalchemy import func
+
     from kortravelweather import export_snapshots
 
     _collect(repository, tmp_path)
     client = _client(repository, tmp_path)
     url = "/v1/service/exports/current"
     first = client.get(url, params={"limit": 1}, headers=HEADERS)
+    assert first.status_code == 200 and int(first.headers["x-export-artifact-read-calls"]) > 0
     base = datetime.now(UTC)
 
     class AdvancedClock(datetime):
@@ -1384,10 +1392,24 @@ def test_identical_manifest_after_reader_ttl_gets_new_etag_and_usable_cursor(
             return (base + timedelta(minutes=16)).astimezone(tz or UTC)
 
     monkeypatch.setattr(export_snapshots, "datetime", AdvancedClock)
-    renewed = client.get(
+    snapshots = export_snapshot_tables(Base.metadata)[0]
+    with repository.engine.connect() as c:
+        issued = c.scalar(select(func.count()).select_from(snapshots))
+    unchanged = client.get(
         url, params={"limit": 1}, headers={**HEADERS, "if-none-match": first.headers["etag"]}
     )
-    assert renewed.status_code == 200 and renewed.headers["etag"] != first.headers["etag"]
+    assert unchanged.status_code == 304 and unchanged.content == b""
+    assert unchanged.headers["etag"] == first.headers["etag"]
+    assert unchanged.headers["x-source-status"] == first.json()["meta"]["source_status"] == "ok"
+    # 만료된 handle 대신 새 handle을 발급했지만 본문 artifact는 읽지 않았다.
+    assert unchanged.headers["x-export-artifact-read-calls"] == "0"
+    assert 'render;dur=0.000;desc="count=0"' in unchanged.headers["server-timing"]
+    with repository.engine.connect() as c:
+        assert c.scalar(select(func.count()).select_from(snapshots)) == issued + 1
+    # 304는 페이지 캐시에 남지 않는다. 조건 없는 요청은 같은 ETag로 새 handle의 본문을 받는다.
+    renewed = client.get(url, params={"limit": 1}, headers=HEADERS)
+    assert renewed.status_code == 200 and renewed.headers["etag"] == first.headers["etag"]
+    assert renewed.json()["items"] == first.json()["items"]
     assert renewed.json()["meta"]["snapshot_id"] != first.json()["meta"]["snapshot_id"]
     next_page = client.get(
         url, params={"limit": 1, "cursor": renewed.json()["meta"]["next_cursor"]}, headers=HEADERS
@@ -1399,6 +1421,68 @@ def test_identical_manifest_after_reader_ttl_gets_new_etag_and_usable_cursor(
         ).status_code
         == 410
     )
+
+
+def test_current_new_approved_values_change_the_content_etag(repository, tmp_path, monkeypatch):
+    """내용 ETag도 새 승인 값은 놓치지 않는다. 다른 ETag면 본문 전체를 다시 읽는다."""
+    from test_all_source_exports import _selection_clock
+
+    _collect(repository, tmp_path, hours=1)
+    client = _client(repository, tmp_path)
+    clock = _selection_clock(client, monkeypatch)
+    url = "/v1/service/exports/current"
+    first = client.get(url, params={"limit": 1}, headers=HEADERS)
+    _collect(repository, tmp_path, hours=0, value="20.4")
+    clock[0] += 60  # 승인 상태 반영 지연(최대60초)과 완성 페이지 캐시를 지난다.
+    changed = client.get(
+        url, params={"limit": 1}, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+    )
+    assert changed.status_code == 200 and changed.headers["etag"] != first.headers["etag"]
+    assert int(changed.headers["x-export-artifact-read-calls"]) > 0
+    assert changed.json()["meta"]["snapshot_id"] != first.json()["meta"]["snapshot_id"]
+    # 같은 새 내용은 다시 304다(본문 없이).
+    clock[0] += 60
+    again = client.get(
+        url, params={"limit": 1}, headers={**HEADERS, "if-none-match": changed.headers["etag"]}
+    )
+    assert again.status_code == 304 and again.headers["x-export-artifact-read-calls"] == "0"
+
+
+def test_locations_content_etag_survives_handle_renewal(repository, tmp_path):
+    """위치 목록이 같으면 handle이 만료돼 새로 발급돼도 ETag가 같고, 목록이 바뀌면 바뀐다."""
+    _collect(repository, tmp_path)
+    client = _client(repository, tmp_path)
+    url = "/v1/service/exports/locations"
+    first = client.get(url, params={"limit": 1}, headers=HEADERS)
+    assert first.status_code == 200 and first.json()["meta"]["has_more"]
+    snapshots = export_snapshot_tables(Base.metadata)[0]
+    with repository.engine.begin() as c:
+        c.execute(update(snapshots).values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    unchanged = client.get(
+        url, params={"limit": 1}, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+    )
+    assert unchanged.status_code == 304 and unchanged.content == b""
+    assert unchanged.headers["etag"] == first.headers["etag"]
+    assert unchanged.headers["x-source-status"] == "stale"
+    renewed = client.get(url, params={"limit": 1}, headers=HEADERS)
+    assert renewed.status_code == 200 and renewed.headers["etag"] == first.headers["etag"]
+    assert renewed.json()["items"] == first.json()["items"]
+    assert renewed.json()["meta"]["snapshot_id"] != first.json()["meta"]["snapshot_id"]
+    # 같은 위치의 cursor 페이지도 handle과 무관한 ETag다(cursor 문자열이 아니라 시작 위치).
+    second = client.get(
+        url, params={"limit": 1, "cursor": renewed.json()["meta"]["next_cursor"]}, headers=HEADERS
+    )
+    assert second.status_code == 200 and second.headers["etag"] != first.headers["etag"]
+    catalog = Base.metadata.tables["weather_locations"]
+    with repository.engine.begin() as c:
+        c.execute(catalog.update().where(
+            catalog.c.location_id == first.json()["items"][0]["location_id"],
+        ).values(name="이름 바뀐 위치"))
+    renamed = client.get(
+        url, params={"limit": 1}, headers={**HEADERS, "if-none-match": first.headers["etag"]}
+    )
+    assert renamed.status_code == 200 and renamed.headers["etag"] != first.headers["etag"]
+    assert renamed.json()["items"][0]["name"] == "이름 바뀐 위치"
 
 
 def test_locations_page_byte_cap_preserves_all_valid_unicode_items(

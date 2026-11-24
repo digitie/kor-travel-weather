@@ -51,6 +51,7 @@ from .export_capacity import (
     bounded_manifest_digest,
     read_generation_refs,
 )
+from .export_conditional import ExportNotModified, content_etag, matches_etag
 from .export_database_artifacts import MAX_ARTIFACT_READ_BATCH, MAX_ARTIFACT_READ_BATCH_LIMIT
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
 from .export_read_window import ArtifactReadWindow, current_candidates
@@ -263,6 +264,8 @@ class FrozenCurrentExports:
         self.immutable_reads = immutable_reads
         self.page_liveness = page_liveness
         self.reuse_liveness = None
+        # 요청의 If-None-Match(route가 넣는다). 첫 페이지는 artifact 본문을 읽기 전에 비교한다.
+        self.if_none_match = ""
         self.repository = repository
         self.heads = ExportHeads(repository)
         self.snapshots, self.refs = export_snapshot_tables(self.heads.metadata)
@@ -1305,6 +1308,18 @@ class FrozenCurrentExports:
         self.reuse_snapshot_expires_at = frozen["expires_at"]
         self.reuse_generations.update(scope["generation_id"] for scope in manifest["scopes"])
         self.reuse_namespaces.update(scope["namespace"] for scope in manifest["scopes"])
+        # 페이지 식별은 handle이 아니라 selection·limit·시작 위치다
+        # (cursor 문자열은 snapshot_id를 담는다).
+        page_key = [cursor_resource, limit, cursor is None, [state["g"], state["p"]]]
+        status = None
+        if cursor is None and self.if_none_match:
+            # 첫 페이지 조건부 요청은 상태 판정(freeze RR의 판정을 그대로 쓴다)까지 끝낸 뒤 artifact
+            # 본문을 읽기 전에 비교한다. 같은 manifest면 본문도 같으므로 읽기·검증을 건너뛴다.
+            # cursor 페이지는 공용 판정의 남은 수명(20초 이상)을 본문 읽기 뒤에 쓰도록 예전 순서다.
+            status = self._page_status(frozen, manifest, reuse=False)
+            etag = self._content_etag(frozen, page_key, status)
+            if matches_etag(self.if_none_match, etag):
+                raise ExportNotModified(etag, status)
         output, size = [], 0
         if resource == "locations":
             start = state["p"]
@@ -1415,6 +1430,29 @@ class FrozenCurrentExports:
                     break
                 state["g"] += 1
                 state["p"] = 0
+        if status is None:
+            status = self._page_status(frozen, manifest, reuse=cursor is not None)
+        now = datetime.now(UTC)
+        meta = {
+            "generated_at": now.isoformat(),
+            "source_collected_at": frozen["source_collected_at"].isoformat(),
+            "source_status": status,
+            "item_count": len(output),
+            "snapshot_id": frozen["snapshot_id"],
+            "snapshot_generated_at": frozen["created_at"].isoformat(),
+            "as_of": frozen["created_at"].isoformat(),
+            "next_cursor": self._encode(state) if more else None,
+            "has_more": more,
+        }
+        # generated_at·snapshot handle 값은 ETag에 넣지 않는다.
+        # 데이터/vector/페이지/상태 변화는 포함한다.
+        etag = self._content_etag(frozen, page_key, status)
+        if self.immutable_reads and datetime.now(UTC) >= frozen["expires_at"]:
+            raise ExportSnapshotExpired("읽는 동안 고정 snapshot이 만료됐습니다.")
+        return {"items": output, "meta": meta}, etag
+
+    def _page_status(self, frozen, manifest, *, reuse):
+        """페이지의 ``source_status``. 고정 manifest와 현재 상태만 보며 artifact 본문과 무관하다."""
         now = datetime.now(UTC)
         stale = (
             frozen.get("_source_unconfirmed", False)
@@ -1437,27 +1475,19 @@ class FrozenCurrentExports:
                 for scope in manifest["scopes"]
             )
         stale |= bool(manifest.get("capacity_limited"))
-        stale |= self._current_state_stale(frozen, manifest, reuse=cursor is not None)
-        status = "stale" if stale else "ok"
-        meta = {
-            "generated_at": now.isoformat(),
-            "source_collected_at": frozen["source_collected_at"].isoformat(),
-            "source_status": status,
-            "item_count": len(output),
-            "snapshot_id": frozen["snapshot_id"],
-            "snapshot_generated_at": frozen["created_at"].isoformat(),
-            "as_of": frozen["created_at"].isoformat(),
-            "next_cursor": self._encode(state) if more else None,
-            "has_more": more,
-        }
-        # generated_at은 ETag에 넣지 않는다. 데이터/vector/페이지/상태 변화는 포함한다.
-        etag = (
-            'W/"'
-            + _digest(
-                [frozen["snapshot_id"], frozen["manifest_digest"], resource, limit, cursor, status]
-            )
-            + '"'
+        stale |= self._current_state_stale(frozen, manifest, reuse=reuse)
+        return "stale" if stale else "ok"
+
+    @staticmethod
+    def _content_etag(frozen, page_key, status):
+        """manifest digest + 페이지 식별 + 상태 token. 내용이 같으면 handle이 바뀌어도 같다.
+
+        manifest digest가 승인 head vector·artifact ref·위치·selection을 모두 묶으므로 같은 digest·
+        같은 페이지 식별이면 항목이 같다. ``source_collected_at``은 같은 manifest라도 신선도 창
+        경계에 따라 handle마다 다를 수 있어 상태 token에 넣는다.
+        """
+        collected = frozen["source_collected_at"]
+        return content_etag(
+            frozen["manifest_digest"], page_key, status,
+            collected.isoformat() if collected is not None else None,
         )
-        if self.immutable_reads and datetime.now(UTC) >= frozen["expires_at"]:
-            raise ExportSnapshotExpired("읽는 동안 고정 snapshot이 만료됐습니다.")
-        return {"items": output, "meta": meta}, etag

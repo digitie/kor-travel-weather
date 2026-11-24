@@ -32,6 +32,7 @@ from kortravelweather.export_cancellation import (
     checkpoint,
     export_cancellation,
 )
+from kortravelweather.export_conditional import ExportNotModified, matches_etag
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_database_artifacts import export_artifact_store
 from kortravelweather.export_forecasts import FrozenForecastExports
@@ -185,7 +186,25 @@ router = APIRouter(
             "model": ExportUnavailable,
             "description": "고정 snapshot TTL 만료. 첫 페이지부터 재시작",
         },
-        304: {"description": "데이터/vector/페이지/상태가 변경되지 않음"},
+        304: {
+            "description": (
+                "If-None-Match가 지금 ETag와 같음(본문 없음). locations·current·daily-summaries의 "
+                "ETag는 snapshot handle이 아니라 고정 manifest digest(승인 head vector·artifact "
+                "ref·위치·selection)·페이지 식별(limit·시작 위치)·상태(source_status·"
+                "source_collected_at, daily-summaries는 건강도와 본문 포함)의 약한 validator라 "
+                "handle TTL이 지나 snapshot_id만 바뀌어도 같다. status는 본문 digest이고 "
+                "forecasts는 snapshot_id와 본문을 넣는 기존 ETag다. 304는 이미 가진 본문의 "
+                "항목·상태가 같다는 뜻이며 snapshot_id·next_cursor를 새로 주지 않는다. 이어서 "
+                "순회하려면 조건 없이 첫 페이지를 다시 받는다."
+            ),
+            "headers": {
+                "ETag": {"description": "200과 같은 약한 ETag", "schema": {"type": "string"}},
+                "X-Source-Status": {
+                    "description": "200 meta.source_status와 같은 값",
+                    "schema": {"type": "string"},
+                },
+            },
+        },
         503: {
             "model": ExportUnavailable,
             "description": (
@@ -279,13 +298,6 @@ def _accepts_gzip(header: str) -> bool:
     return False
 
 
-def _matches_etag(header: str, etag: str) -> bool:
-    return any(
-        value.strip().removeprefix("W/") in {etag.removeprefix("W/"), "*"}
-        for value in header.split(",")
-    )
-
-
 def _cause(exc: Exception) -> str:
     # DB 오류는 SQLSTATE 분류(lock_timeout 등), 그 밖은 예외 클래스 이름만 쓴다.
     from kortravelweather.export_collector import failure_reason
@@ -302,6 +314,16 @@ def _log_unavailable(request: Request, resource: str, reason: str) -> None:
     )
 
 
+def _validator_headers(etag: str, source_status: str) -> dict[str, str]:
+    """200과 304가 같이 쓰는 header. 304도 같은 ETag와 상태를 알린다."""
+    return {
+        "etag": etag,
+        "vary": "Accept-Encoding",
+        "cache-control": "private, max-age=0, must-revalidate",
+        "x-source-status": source_status,
+    }
+
+
 def _render_page(
     read: Callable[[], tuple[dict[str, Any], str]],
     model: Any,
@@ -313,20 +335,20 @@ def _render_page(
     """worker thread에서 조회·검증·ETag 비교·직렬화·gzip을 끝낸다.
 
     최대4MiB 페이지의 검증·직렬화·압축이 event loop(일반 API·관리 proxy·health)를
-    막지 않게 한다. 304이면 payload는 None이다.
+    막지 않게 한다. 304이면 payload는 None이다. current·locations 첫 페이지는 reader가 본문을
+    읽기 전에 비교해 :class:`ExportNotModified`로 끝낸다(호출 검토 A2). 그 밖은 여기서 비교한다.
     """
-    page, etag = read()
+    try:
+        page, etag = read()
+    except ExportNotModified as unchanged:
+        # 상태 판정 뒤 본문을 읽기 전에 맞았다. 본문이 없으니 검증·직렬화도 없다.
+        return None, _validator_headers(unchanged.etag, unchanged.source_status)
     # 완성 페이지는 이미 캐시에 있다. 요청자가 떠났으면 검증·직렬화·압축은 하지 않는다.
     checkpoint("render")
     with read_stage("render"):
         body = model.model_validate(page)
-    headers = {
-        "etag": etag,
-        "vary": "Accept-Encoding",
-        "cache-control": "private, max-age=0, must-revalidate",
-        "x-source-status": body.meta.source_status,
-    }
-    if _matches_etag(if_none_match, etag):
+    headers = _validator_headers(etag, body.meta.source_status)
+    if matches_etag(if_none_match, etag):
         return None, headers
     with read_stage("render"):
         body = body.model_copy(update={
@@ -514,6 +536,8 @@ async def _frozen_response(
         # 최신 승인·head vector를 확인하고 snapshot·manifest·건강도·삭제 epoch가 같을 때만 본문을
         # 재사용하므로 "첫 페이지는 바로 반영" 계약은 그대로다(호출 검토 A5).
         reader = make_reader()
+        # current·locations 첫 페이지는 상태 판정 뒤 본문을 읽기 전에 내용 ETag를 비교한다(A2).
+        reader.if_none_match = request.headers.get("if-none-match", "")
         reader.revalidate_first_page = resource == "forecasts" and cursor is None
         reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
         read = page_read(reader)

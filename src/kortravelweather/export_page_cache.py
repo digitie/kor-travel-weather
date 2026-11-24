@@ -13,6 +13,7 @@ from .export_cancellation import (
     leading,
     wait_event,
 )
+from .export_conditional import ExportNotModified
 
 #: 같은 키 페이지를 만드는 다른 요청을 기다리는 상한(초).
 _INFLIGHT_WAIT_SECONDS = 60
@@ -226,8 +227,10 @@ class ExportPageCache:
             if entry is not None:
                 self._put(key, entry)
             return result
-        except ExportRequestCancelled:
-            # seed는 다른 limit의 유효한 완료 proof다. 요청자가 떠났다고 버리지 않는다.
+        except (ExportRequestCancelled, ExportNotModified):
+            # seed는 다른 limit의 유효한 완료 proof다. 요청자가 떠났거나 본문 없는 304로
+            # 끝났다고 버리지 않는다. 304는 본문을 만들지 않아 캐시에도 넣지 않는다
+            # (대기자는 직접 읽는다).
             raise
         except BaseException:
             if seed is not None:

@@ -348,6 +348,59 @@ def test_daily_api_reads_precomputed_rows_auth_etag_pagination_and_empty_slots(
     assert stale.json()["items"] == first.json()["items"]
 
 
+def test_daily_content_etag_survives_handle_renewal(daily_repository, tmp_path, monkeypatch):
+    """요약 값·상태가 같으면 snapshot handle이 만료돼 새로 발급돼도 ETag가 같다(호출 검토 A2)."""
+    from datetime import UTC, timedelta
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from sqlalchemy import func, update
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_collector import publish_pending_exports
+    from kortravelweather.export_snapshots import export_snapshot_tables
+    from kortravelweather.settings import WeatherSettings
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+    _candidate(
+        repository, tmp_path, descriptor, revision=yesterday, value="12", cohort=True,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
+    assert publish_pending_exports(repository, tmp_path, daily_summaries=True).results == {
+        "PUBLISHED": 1
+    }
+    client = TestClient(create_app(WeatherSettings(
+        environment="development", admin_token="daily-test-token",
+        enabled_providers=["python-kma-api"], service_exports_enabled=True,
+        service_export_artifact_root=tmp_path,
+    ), repository))
+    clock = install_api_clock(monkeypatch, client)
+    headers = {"x-admin-token": "daily-test-token"}
+    url, params = "/v1/service/exports/daily-summaries", {"days": 2, "limit": 2}
+    first = client.get(url, params=params, headers=headers)
+    assert first.status_code == 200
+    snapshots = export_snapshot_tables(Base.metadata)[0]
+    with repository.engine.begin() as c:
+        c.execute(update(snapshots).values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+        issued = c.scalar(select(func.count()).select_from(snapshots))
+    clock[0] += 60  # 완성 페이지 캐시와 승인 상태 반영 지연을 지나 새 freeze를 하게 한다.
+    unchanged = client.get(
+        url, params=params, headers={**headers, "if-none-match": first.headers["etag"]}
+    )
+    assert unchanged.status_code == 304 and unchanged.headers["etag"] == first.headers["etag"]
+    with repository.engine.connect() as c:
+        assert c.scalar(select(func.count()).select_from(snapshots)) == issued + 1
+    clock[0] += 60
+    renewed = client.get(url, params=params, headers=headers)
+    assert renewed.status_code == 200 and renewed.headers["etag"] == first.headers["etag"]
+    assert renewed.json()["items"] == first.json()["items"]
+    assert renewed.json()["meta"]["snapshot_id"] != first.json()["meta"]["snapshot_id"]
+
+
 def test_daily_retention_is_bounded_and_keeps_cursor_day_grace(daily_repository):
     from datetime import timedelta
 
