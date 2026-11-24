@@ -12,7 +12,11 @@
   └ Next middleware                durable 세션 확인(GET/HEAD의 active만 10초 캐시, 동시 확인 1회로 합침)
       └ BFF /api/weather/[...path]  모든 GET 헤더 수신 15초 → 504 + retry-after: 1, API retry-after 전달
           └ API /v1/weather/*       DB 마감 15초 → 503 READ_TIMEOUT / POOL_BUSY / DB_UNAVAILABLE
+                                    lock 대기 2초 → 503 LOCK_TIMEOUT, 마커 자리 대기 3초 → 503 MARKER_BUSY
 ```
+
+`LOCK_TIMEOUT`·`MARKER_BUSY`는 공개 읽기 경로 변경(B9·B11)에서 추가했다. 계약은
+[weather-public-read-path.md](weather-public-read-path.md)에 있다.
 
 브라우저 상한(20초)이 BFF 예산(15초)보다 길어 보통은 BFF의 504와 `retry-after`가 먼저 온다.
 BFF 예산은 공개 조회 DB 마감(기본 15초)과 같아서 느린 공개 조회는 API 503 또는 BFF 504로 끝나고
@@ -101,8 +105,8 @@ API 왕복과 `auth_limiter` 대기가 생기고, 저장소가 5초 안에 답�
   넘으면 upstream을 끊고 `504`, `retry-after: 1`, `cache-control: no-store, private`로 끝낸다.
   BFF는 이 504를 다시 보내지 않는다. 재시도는 브라우저가 한다(관리 GET은 위 이유로 다시 보내지 않는다).
 - upstream 응답의 `retry-after`는 `content-type`·`x-request-id`와 함께 그대로 넘긴다. 그래서 API 503
-  (`READ_TIMEOUT`·`POOL_BUSY`·`DB_UNAVAILABLE`, 모두 `retry-after: 1`)의 대기 신호가 브라우저
-  `retryDelayMs`까지 닿는다. upstream에 없으면 만들어 넣지 않는다.
+  (`READ_TIMEOUT`·`POOL_BUSY`·`DB_UNAVAILABLE`·`LOCK_TIMEOUT`·`MARKER_BUSY`, 모두 `retry-after: 1`)의
+  대기 신호가 브라우저 `retryDelayMs`까지 닿는다. upstream에 없으면 만들어 넣지 않는다.
 - 위치 목록·공급자 키 상태의 헤더 전 socket 오류 1회 복구는 그대로이며 같은 15초 안에서 한다.
   이전 20초는 측정 기반 최적값이 아니라 초기 복구 예산이었고(`docs/reviews/2026-10-15-weather-location-proxy-recovery.md`),
   이제 브라우저 재시도가 남은 복구를 맡는다.

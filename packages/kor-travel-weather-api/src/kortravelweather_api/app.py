@@ -41,7 +41,12 @@ from kortravelweather.settings import WeatherSettings, get_settings
 from . import __version__
 from .db_errors import driver_error_name, is_connection_loss, sqlstate
 from .prewarm import ApiPrewarm, PrewarmState, ReadinessOut, RequestActivity, stop_prewarm
-from .read_limits import PublicReadTimeout, install_public_read_limits, public_read_deadline
+from .read_limits import (
+    PublicReadBusy,
+    PublicReadTimeout,
+    install_public_read_limits,
+    public_read_deadline,
+)
 from .response import Problem, request_id
 from .routers.alert_events import router as alert_event_router
 from .routers.service_exports import router as service_export_router
@@ -243,14 +248,21 @@ def create_app(
     )
 
     @api.exception_handler(PublicReadTimeout)
+    @api.exception_handler(PublicReadBusy)
     @api.exception_handler(SQLAlchemyError)
     async def public_read_error(request: Request, exc: Exception) -> JSONResponse:
         if not request.url.path.startswith("/v1/weather/"):
             raise exc
-        if isinstance(exc, PoolTimeoutError):
+        if isinstance(exc, PublicReadBusy):
+            # 마커 입장 대기 상한(B11). DB를 쓰기 전이므로 지연·장애 로그는 남기지 않는다.
+            code = exc.code
+        elif isinstance(exc, PoolTimeoutError):
             code = "POOL_BUSY"
         elif isinstance(exc, PublicReadTimeout) or sqlstate(exc) == "57014":
             code = "READ_TIMEOUT"
+        elif sqlstate(exc) == "55P03":
+            # 공개 읽기 lock_timeout(2초). DDL 같은 lock 대기열 뒤에서 마감을 다 쓰지 않는다.
+            code = "LOCK_TIMEOUT"
         elif is_connection_loss(exc):
             # 연결 단절·DB 재시작(08xxx, 57P01~03, SQLSTATE 없는 단절)도 같은 요청을 다시 보내면
             # pool이 새 연결로 처리할 수 있다. 인증·없는 DB 같은 접속 설정 오류는 여기 오지 않고

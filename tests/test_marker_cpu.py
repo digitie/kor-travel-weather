@@ -1,6 +1,7 @@
 """지도 응답은 요청별 SQL 컴파일과 같은 특보 묶음의 반복 판정을 피한다."""
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -78,7 +79,8 @@ def test_marker_shared_projection_reduces_alerts_once(monkeypatch):
 
     app = SimpleNamespace(state=SimpleNamespace(marker_limiter=CapacityLimiter(2)))
     request = Request({"type": "http", "headers": [], "app": app}, receive=receive)
-    result = asyncio.run(weather.marker_summaries(request, repo, ["one"]))
+    # handler는 worker thread에서 직렬화한 JSON bytes 응답을 돌려준다.
+    result = json.loads(asyncio.run(weather.marker_summaries(request, repo, ["one"])).body)
     assert len(calls) == 1
     assert result["data"][0]["alerts"][0]["value_text"] == "호우주의보 발표"
     assert result["data"][0]["latest"] == []
