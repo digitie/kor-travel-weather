@@ -40,6 +40,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore, ExportGuardTimeout
+from .export_cancellation import checkpoint
 from .export_capacity import (
     MANIFEST_STATE_RESERVE,
     MAX_MANIFEST_BYTES,
@@ -218,12 +219,15 @@ def ensure_snapshot_files(artifacts, issue):
     GC가 이전 generation 파일을 지울 수 있다(24시간 넘게 승격되지 않은 scope + 최근 snapshot에도
     없는 드문 경우). 그러면 한 번 다시 발급하고(이제 새 head를 본다), 그래도 없으면 일시 경합
     503으로 돌려 같은 요청을 다시 받게 한다.
+    요청자 연결이 끊겼으면 발급 앞뒤에서 멈춘다(``export_cancellation``).
     """
     for _ in range(3):
+        checkpoint("freeze")
         try:
             frozen = issue()
         except AtomicPinMissing:
             continue  # pin 직전 GC가 이전 generation 파일을 지웠다. 새 head로 다시 발급한다.
+        checkpoint("freeze")
         # API freeze는 전체 파일의 존재/크기를 GC guard 안에서 검사하고 ref와 함께
         # commit한다. 같은 발급의 DB pin이 이미 파일을 지키므로 다시 stat하지 않는다.
         # 재사용 handle·이전 성공 fallback·SDK 발급은 기존 all_present/재시도를 유지한다.
