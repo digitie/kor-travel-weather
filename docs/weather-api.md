@@ -224,6 +224,27 @@ this one keeps DEFAULT on purpose (its floor is what lets a partition be created
 without scanning it, and what the replay skip reads). Retention uses a plain
 `DETACH`, one day per transaction.
 
+**지도 읽기를 세우는 구간 줄이기(2026-11-24, Map 호출 검토 L1·L2·L3).** ACCESS EXCLUSIVE 요청이
+대기열에 있는 동안에는 뒤에 온 읽기도 그 뒤에 선다. 그래서 야간 단계는 다음처럼 lock 구간을 줄인다.
+
+1. 첫 시도 앞에서도 조용한 순간을 기다린다(`_await_quiet_tables`, 예전에는 두 번째 시도부터).
+   floor 확인과 SHARE UPDATE EXCLUSIVE의 FK VALIDATE는 수집·읽기와 충돌하지 않아 첫 대기를 건너뛴다.
+2. 표 lock을 `BRIEF_DDL_LOCK_TIMEOUT_MS`(400ms)까지만 기다리고 물러나 다음 조용한 순간에 다시
+   시도한다. 예전에는 `ddl_lock_timeout_ms`(deadlock_timeout의 세 배, 기본 3초)를 시도마다 기다렸다.
+   짧은 대기에 진 뒤 충돌하는 보유자가 autovacuum worker뿐이면(`pg_locks`의 granted 보유자를 충돌표로
+   거르고 `pg_stat_activity.backend_type`을 본다) 그 lock만 `ddl_lock_timeout_ms`까지 다시 기다린다.
+   autovacuum은 대기자가 deadlock_timeout을 넘겨 기다려야 deadlock 검사가 취소하기 때문이다.
+   `pg_blocking_pids`는 기다리는 동안에만 답하므로 쓰지 않는다.
+3. 단기예보 보존 검사(최대 5초)를 표 lock 전에 하고, lock 뒤에는 300ms 상한의 재확인만 한다. 떼어낸
+   표의 DROP은 그 표만 SHARE로 잠근 뒤 참조 표 lock 전에 한 번만 검사한다
+   ([단기예보 보존](shortterm-retention.md)).
+
+운영자 DEFAULT 교체 스크립트·migration·수집의 lock 대기는 그대로 `ddl_lock_timeout_ms`다. 로컬
+PostgreSQL 16 시험(`tests/test_retention_under_ingest.py`)은 수집에 진 DDL 시도 뒤에 선 읽기의 가장 긴
+대기가 짧은 상한에서 1.5초 미만이고 예전 상한에서 2초 이상임을 확인한다(2026-11-24 Windows 개발
+PC·WSL docker PostgreSQL 16 로컬 3회: 0.37~0.40초 대 약 2.98초). 운영(야간 유지보수 중 지도 읽기
+p95·lock 대기)은 아직 재지 않았다.
+
 **A replay outlives its first fetch's day.** A response the store already holds
 is replayed with its first fetch time as `known_at`, so an identical re-fetch is
 a no-op instead of a new row. Retention drops days, not responses: an alert in

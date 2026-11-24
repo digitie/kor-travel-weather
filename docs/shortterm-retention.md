@@ -98,7 +98,7 @@ dry-run 기본 matched_in_batch는 최대1000행 표본이며 whole count라고 
 | --- | --- | --- |
 | 수집·재수집 | repository._ingest_batch_session / retention.expired_short_forecast | 지난6시간 밖의 새 fact·replay projection을 제외, source/raw 보존 |
 | 단기예보 정리 | repository.purge_expired_short_forecast / cli / Dagster 전용 job | 엄격 valid_at < cutoff, 정확 복합키 참조 순서 |
-| 전역 일별 정리 | repository.purge_expired_history / _detach_expired / _drop_detached | 최근·미래 단기예보 pointer 보존, fact가 남은 partition DDL 보류 |
+| 전역 일별 정리 | repository.purge_expired_history / _detach_expired / _drop_detached | 최근·미래 단기예보 pointer 보존, fact가 남은 partition DDL 보류(표 lock 전 검사·lock 뒤 짧은 재확인) |
 | 수동 DEFAULT 부분 정리 | default_partition.purge_expired_rows | 같은 미래 fact와 projection을 삭제 대상에서 제외 |
 | 수동 DEFAULT 전체 교체·잔여 DROP | default_partition.swap_default / drop_old_default | 테이블 잠금 후 보존 fact 존재 검사, 있으면 작업 거절 |
 
@@ -109,6 +109,22 @@ partition 보호 조회는 기존 statement_timeout과5초 중 더 작은 문장
 따로 보고한다. 전체 partition이 더 오래 남으므로 그 안의 다른 product가 함께 남을 수 있지만,
 다른 product의 기존 행 삭제 predicate 자체를 늘리거나 줄이지 않는다.
 이미 detached된 과거 데이터의 projection 재구축은 이 변경의 자동 복구 범위가 아니다.
+
+야간 일별 정리의 보호 조회 순서(2026-11-24, Map 호출 검토 L1·L2). 예전에는 `_detach_expired`가
+`weather_values`·`weather_current_values` ACCESS EXCLUSIVE를, `_drop_detached`가 지도 API가 읽는
+`weather_locations` ACCESS EXCLUSIVE를 쥔 채 5초 상한의 조회를 돌려 그동안 지도 읽기를 세웠다.
+
+- `_detach_expired`: 보호 조회를 표 lock 전에 한 번(5초 상한) 한다. 그 날 파티션의 ACCESS SHARE만
+  잡으므로 수집·읽기를 막지 않고, 보존 대상이면 표 lock 없이 끝난다. ACCESS EXCLUSIVE를 쥔 뒤에는
+  같은 조회를 `PARTITION_RECHECK_STATEMENT_TIMEOUT_MS`(300ms) 상한으로 한 번 더 한다. 두 조회 사이에
+  같은 날짜로 보존할 단기예보가 commit되면 이 재확인이 잡아 DETACH를 거절한다. lock을 쥔 뒤에는 그
+  날짜에 새 행이 들어올 수 없어 재확인 결과가 DETACH까지 유지된다. 재확인이 상한을 넘기면 보존 여부를
+  확정하지 못한 것이므로 DDL 없이 rollback하고 lock 경합에 진 시도처럼 다시 시도하거나 다음 실행으로
+  연기한다(`partitions_deferred`, 실패 아님). 표 lock 전 조회의 5초 초과는 예전처럼 실행 실패다.
+- `_drop_detached`: 떼어낸 표에는 수집이 쓰지 않는다. 그 표만 SHARE로 잠가 쓰기를 막은 뒤 참조 표
+  ACCESS EXCLUSIVE 전에 한 번만 조회한다. SHARE는 읽기와 FK 검사(KEY SHARE)를 막지 않는다.
+- 수동 DEFAULT 교체·잔여 DROP(`default_partition`)은 바꾸지 않았다. 운영자가 시점을 고르는 일회성
+  작업이고, 기존 lock 순서 시험이 그 경로를 고정한다.
 
 10분 schedule은 queue 대기·worker 중단·처리량 부족으로 늦어질 수 있어 물리 삭제의
 정확한 wall-clock SLA를 보장하지 않는다. 새 만료 fact 유입 차단과 유한 정리 작업을 함께
