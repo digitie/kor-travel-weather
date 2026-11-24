@@ -328,10 +328,12 @@ Manager 쪽 PR 머지 전에는 링크가 비어 있을 수 있다).
 
 | 값 | 기준 | weather job |
 | --- | --- | --- |
-| 10 | 1시간 미만 주기의 정기 수집·상태 적재 | `kma_regional_alert_events_job`(5분) |
-| 5 | 1시간 이상·하루 미만 주기의 정기 수집 | 매시: `kma_ultra_short_forecast_job`·`kma_weather_alerts_job`·`kma_ultra_short_nowcast_job`·`airkorea_weather_job` / 3시간: `kma_short_forecast_job`, schedule 있는 외부 provider 6개(`{open_meteo,openweathermap,weatherapi}_{current,forecast}_weather_job`) / 12시간: `kma_mid_forecast_job`, 지역 원천 4개(`krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·`krforest_dust_job`) |
-| 0 | 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
+| 10 | 지금 상황(현황·상태)을 1시간 미만 주기로 갱신하는 정기 수집·상태 적재 | `kma_regional_alert_events_job`(5분) |
+| 5 | 1시간 이상·하루 미만 주기로 바뀌는 값(관측·예보 등)의 정기 수집 | 매시: `kma_ultra_short_forecast_job`·`kma_weather_alerts_job`·`kma_ultra_short_nowcast_job`·`airkorea_weather_job` / 3시간: `kma_short_forecast_job`, schedule 있는 외부 provider 6개(`{open_meteo,openweathermap,weatherapi}_{current,forecast}_weather_job`) / 12시간: `kma_mid_forecast_job`, 지역 원천 4개(`krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·`krforest_dust_job`) |
+| 0 | 그 밖 전부: 기준 자료(주기와 무관), 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
 
+- 분류는 자료의 성격 + 주기다. weather에는 기준 자료(목록·지점 catalog)만 받는 job이 없다 — AirKorea는
+  측정소 catalog도 갱신하지만 일의 본체는 매시 관측이라 5다. 기준 자료 job이 생기면 주기와 무관하게 0이다.
 - 정본은 `definitions.py`의 `JOB_PRIORITIES` 한 표다. `_job_tags`가 job tags에 값을 실으므로(export
   정리 job은 `export_maintenance.py`가 같은 값을 job 정의에 직접 단다 — 순환 import)
   schedule·sensor·Launchpad·관리자 콘솔 launch·재실행(native retry, common infra retry)이 만드는
