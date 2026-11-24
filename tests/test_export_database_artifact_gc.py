@@ -139,28 +139,45 @@ def test_reference_is_inside_guard_and_no_tail_batch_starts(repo, monkeypatch):
     scan = gc.DatabaseArtifactGCScan()
     clock = [0.0]
     monkeypatch.setattr(gc.time, "monotonic", lambda: clock[0])
-    guards = [0]
+    held = []
     original = DatabaseExportArtifactStore.guard
     @contextmanager
     def guarded(self, **kwargs):
         with original(self, **kwargs):
-            guards[0] += 1
+            held.append(kwargs.get("shared", False))
             try:
                 yield
             finally:
-                guards[0] -= 1
+                held.pop()
     calls = []
     def live(*a, **kw):
-        assert guards[0] == 1 and kw["timeout_seconds"] == 3
-        calls.append(kw["digests"])
-        clock[0] += 2
+        assert len(held) == 1 and kw["timeout_seconds"] == 3
+        calls.append((held[0], kw["digests"]))
+        clock[0] += 1
         return set()
     monkeypatch.setattr(DatabaseExportArtifactStore, "guard", guarded)
     monkeypatch.setattr(gc, "live_artifact_digests", live)
     result = collect(repo, mode="delete", scan=scan)
-    assert len(calls) == 1 and len(calls[0]) == 256
+    # 공유 guard에서 batch 전체를 판정하고, 지울 대상만 배타 guard 안에서 다시 판정한다.
+    assert [(shared, len(digests)) for shared, digests in calls] == [(True, 256), (False, 256)]
     assert result["deleted"] == 256 and result["pending"] == 1
     assert not result["complete"] and len(present(repo)) == 1
+
+
+def test_protected_batch_never_takes_the_exclusive_guard(repo, monkeypatch):
+    digests = [put(repo, i)[0] for i in range(3)]
+    kinds = []
+    original = DatabaseExportArtifactStore.guard
+    @contextmanager
+    def guarded(self, **kwargs):
+        kinds.append(kwargs.get("shared", False))
+        with original(self, **kwargs):
+            yield
+    monkeypatch.setattr(DatabaseExportArtifactStore, "guard", guarded)
+    monkeypatch.setattr(gc, "live_artifact_digests", lambda *a, **kw: set(digests))
+    result = collect(repo, mode="delete")
+    assert kinds == [True] and result["live"] == 3 and result["deleted"] == 0
+    assert present(repo) == set(digests)
 
 
 @pytest.mark.parametrize("kwargs", [
@@ -298,15 +315,47 @@ def test_postgresql_gc_capture_mode_preserves_live_pin_and_transaction(
     with _slow_real_gc(repository, monkeypatch, mode) as (reports, finished):
         with repository._session_factory.begin() as session:
             store.record_in_transaction(session, chunk)
-        if mode == "dry_run":
-            assert not finished.is_set(), "공유 관측은 capture를 막지 않는다"
-        else:
-            assert finished.wait(2), "배타 GC가 끝난 뒤 capture가 기록된다"
+        # 참조 판정은 delete에서도 공유 guard다. 보호 행뿐인 batch는 capture를 막지 않는다.
+        assert not finished.is_set(), "공유 관측은 capture를 막지 않는다"
     assert reports[0]["live"] == 1 and reports[0]["deleted"] == 0
     assert chunk.digest in present(repository)
     assert pinned in present(repository)
     with repository.engine.connect() as connection:
         assert connection.scalar(select(pins.c.artifact_digest)) == pinned
+
+
+def test_postgresql_delete_rechecks_victims_inside_the_exclusive_guard(
+    postgres_gc_repo, monkeypatch,
+):
+    from kortravelweather import export_database_artifacts as artifacts
+
+    repository, pinned, pins = postgres_gc_repo
+    orphan, _ = put(repository, 72)
+    original = gc.live_artifact_digests
+    seen = []
+
+    def racing(*args, **kwargs):
+        shared = artifacts._context.guards[repository.engine][1]
+        result = original(*args, **kwargs)
+        seen.append((shared, sorted(kwargs["digests"]), sorted(result)))
+        if len(seen) == 1:
+            # 공유 판정 뒤·배타 guard 전에 다른 writer가 orphan을 참조하고 commit했다.
+            with repository.engine.begin() as connection:
+                connection.execute(pins.insert().values(
+                    attempt_id=str(uuid.uuid4()), chunk_key="e" * 64,
+                    artifact_digest=orphan, created_at=NOW,
+                ))
+        return result
+
+    monkeypatch.setattr(gc, "live_artifact_digests", racing)
+    result = collect(repository, mode="delete")
+    assert seen == [
+        (True, sorted([pinned, orphan]), [pinned]),
+        # 배타 guard 안에서 지울 대상만 다시 보고, 새 참조를 찾아 지우지 않는다.
+        (False, [orphan], [orphan]),
+    ]
+    assert result["live"] == 2 and result["eligible"] == 0 and result["deleted"] == 0
+    assert present(repository) == {pinned, orphan}
 
 
 def test_postgresql_dry_run_shared_guard_still_excludes_deletion(
