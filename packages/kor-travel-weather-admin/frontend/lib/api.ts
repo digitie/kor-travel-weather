@@ -245,7 +245,17 @@ function unwrap<T>(response: Response, body: ApiBody<T>): ApiEnvelope<T> {
 }
 
 /**
+ * 시간 초과(504·시도 상한) 뒤에도 다시 보내는 경로. 공개 조회(`/v1/weather/*`)는 API가 DB 마감
+ * (statement_timeout)으로 버려진 조회를 스스로 끝낸다. 관리 GET은 그런 마감이 없어 BFF가 끊어도
+ * API thread가 계속 돌므로, 다시 보내면 같은 느린 조회가 겹쳐 쌓인다.
+ */
+function timeoutRetryAllowed(path: string): boolean {
+  return path.startsWith("/v1/weather/");
+}
+
+/**
  * GET은 시도마다 20초 상한을 두고 502/503/504·네트워크 오류·상한 초과를 최대 2번 다시 보낸다.
+ * 504와 상한 초과는 공개 조회(`/v1/weather/*`)만 다시 보낸다(timeoutRetryAllowed).
  * 호출자 signal 취소는 대기 중에도 즉시 그 취소로 끝낸다. POST/PATCH/PUT/DELETE는 서버가
  * 이미 반영했을 수 있으므로 상한·재전송 없이 한 번만 보낸다.
  */
@@ -256,6 +266,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     return unwrap(response, body);
   }
   const callerSignal = options.signal ?? undefined;
+  const retryTimeouts = timeoutRetryAllowed(path);
   for (let retry = 0; ; retry += 1) {
     callerSignal?.throwIfAborted();
     const timeout = AbortSignal.timeout(GET_ATTEMPT_TIMEOUT_MS);
@@ -263,7 +274,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     let delay: number | null;
     try {
       const { response, body } = await send<T>(path, options, signal);
-      if (!RETRYABLE_STATUSES.has(response.status) || retry >= GET_MAX_RETRIES) {
+      const retryable = RETRYABLE_STATUSES.has(response.status) &&
+        (response.status !== 504 || retryTimeouts);
+      if (!retryable || retry >= GET_MAX_RETRIES) {
         return unwrap(response, body);
       }
       delay = retryDelayMs(retry, response.headers.get("retry-after"));
@@ -273,7 +286,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
       const timedOut = timeout.aborted;
       // fetch의 전송 실패는 TypeError다. 그 밖의 예외는 코드 결함이므로 그대로 올린다.
       if (!timedOut && !(error instanceof TypeError)) throw error;
-      if (retry >= GET_MAX_RETRIES) {
+      if (retry >= GET_MAX_RETRIES || (timedOut && !retryTimeouts)) {
         if (!timedOut) throw error;
         throw new Error(
           `날씨 서버 응답이 ${GET_ATTEMPT_TIMEOUT_MS / 1000}초 안에 오지 않았습니다. 잠시 후 다시 시도하세요.`,

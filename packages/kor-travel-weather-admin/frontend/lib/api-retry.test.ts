@@ -5,7 +5,9 @@ import {
   deleteProviderCredential,
   GET_ATTEMPT_TIMEOUT_MS,
   getMarkerSummaries,
+  getProviders,
   getPublicLocations,
+  getSyncRuns,
   retryDelayMs,
   updateLocation,
   updateProviderCredential,
@@ -175,6 +177,38 @@ describe("GET 시도별 20초 상한", () => {
     vi.stubGlobal("fetch", fetcher);
     const pending = getPublicLocations();
     await vi.advanceTimersByTimeAsync(GET_ATTEMPT_TIMEOUT_MS);
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toMatchObject({ data: [{ location_id: "seoul" }] });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("관리 GET의 시간 초과", () => {
+  // 관리 GET은 API DB 마감이 없어 BFF가 끊어도 서버 조회가 계속 돈다. 다시 보내면 겹쳐 쌓인다.
+  it("BFF 504는 다시 보내지 않는다", async () => {
+    const fetcher = vi.fn().mockResolvedValue(status(504, { "retry-after": "1" }));
+    vi.stubGlobal("fetch", fetcher);
+    await expect(getSyncRuns()).rejects.toThrow("원천 504");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0]?.[0])).toContain("/api/weather/v1/admin/sync-runs");
+  });
+
+  it("시도 상한 초과도 다시 보내지 않고 시간 초과 문장으로 끝난다", async () => {
+    fakeAttemptTimeouts();
+    const fetcher = vi.fn().mockImplementation(hangUntilAborted());
+    vi.stubGlobal("fetch", fetcher);
+    const failure = expect(getProviders()).rejects.toThrow("날씨 서버 응답이 20초 안에 오지 않았습니다.");
+    await vi.advanceTimersByTimeAsync(GET_ATTEMPT_TIMEOUT_MS);
+    await failure;
+    await vi.runAllTimersAsync();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([502, 503])("서버가 처리하지 않은 HTTP %s는 관리 GET도 다시 보낸다", async (code) => {
+    const fetcher = vi.fn().mockResolvedValueOnce(status(code)).mockResolvedValueOnce(ok());
+    vi.stubGlobal("fetch", fetcher);
+    const pending = getSyncRuns();
     await vi.runAllTimersAsync();
     await expect(pending).resolves.toMatchObject({ data: [{ location_id: "seoul" }] });
     expect(fetcher).toHaveBeenCalledTimes(2);
