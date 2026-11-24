@@ -1,10 +1,11 @@
 """Map 표준 프로필(current) 사전 구성 페이지(호출 검토 A3)의 읽기 경로·handle 수명·fallback."""
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from kortravelweather_dagster.kma_weather import KmaAllGridsFailedError
-from sqlalchemy import delete, event, func, select, text, update
+from sqlalchemy import delete, event, func, insert, select, text, update
 from test_frozen_service_exports import HEADERS, TOKEN, _client, _collect
 from test_frozen_service_exports import repository as repository
 
@@ -401,11 +402,21 @@ def test_damaged_page_body_is_rebuilt_from_artifacts(repository, tmp_path):
     _collect(repository, tmp_path)
     baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
     _build(repository, tmp_path)
+    first_page = (pages_table.c.start_g == 0) & (pages_table.c.start_p == 0)
     with repository.engine.begin() as connection:
-        # 시험 schema(create_all)에는 migration의 불변 trigger·digest 제약이 없다.
-        connection.execute(update(pages_table).where(
-            pages_table.c.start_g == 0, pages_table.c.start_p == 0,
-        ).values(payload=b"[]"))
+        # 같은 시험 DB를 앞선 시험이 migration으로 만들었으면 불변 trigger(BEFORE UPDATE)와
+        # byte·digest 제약이 있다. 행을 지우고 다시 넣되 byte·digest는 맞추고 항목 수만 어긋나게
+        # 해 두 schema(create_all·migration) 모두에서 읽기 검산의 shape 단계가 잡게 한다.
+        rows = [dict(row) for row in connection.execute(
+            select(pages_table).where(first_page)
+        ).mappings()]
+        assert rows and all(row["item_count"] > 0 for row in rows)
+        connection.execute(delete(pages_table).where(first_page))
+        connection.execute(insert(pages_table), [
+            {**row, "payload": b"[]", "byte_count": 2,
+             "payload_digest": hashlib.sha256(b"[]").hexdigest()}
+            for row in rows
+        ])
     pages = _walk(_app(repository, tmp_path))
     assert _items(pages) == baseline
     assert pages[0].headers["x-export-prebuilt"] == "hit"
