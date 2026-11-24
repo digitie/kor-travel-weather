@@ -15,10 +15,11 @@ const ADMIN_PAGES = [
 ] as const;
 
 const SIDO = ["서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시", "대전광역시", "울산광역시", "경기도", "강원특별자치도", "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도", "경상남도", "제주특별자치도"];
+const SHELL_LOCATIONS = SIDO.map((sido, index) => ({ location_id: `shell-${index}`, name: `${sido} 시험 위치`, latitude: 34 + (index % 8) * 0.5, longitude: 126.5 + Math.floor(index / 8) * 1.5 + (index % 3) * 0.3, nx: null, ny: null, region_code: null, sido_name: sido, sigungu_name: null, enabled: true, metadata: {} }));
 
 async function routeWeather(page: Page) {
   const stamp = new Date().toISOString();
-  const locations = SIDO.map((sido, index) => ({ location_id: `shell-${index}`, name: `${sido} 시험 위치`, latitude: 34 + (index % 8) * 0.5, longitude: 126.5 + Math.floor(index / 8) * 1.5 + (index % 3) * 0.3, nx: null, ny: null, region_code: null, sido_name: sido, sigungu_name: null, enabled: true, metadata: {} }));
+  const locations = SHELL_LOCATIONS;
   const value = { value_id: "temperature", provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: "shell-fixture" };
   await page.route("**/api/weather/**", async (route) => {
     const url = new URL(route.request().url());
@@ -38,6 +39,18 @@ async function login(page: Page, destination: string) {
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   // `/login?next=/`도 "/"로 끝나므로 경로를 정확히 비교한다.
   await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).toBe(destination);
+}
+
+// 카탈로그가 도착하면 지도는 기본 카메라(전국, zoom 6)에서 첫 위치로 한 번 자동 이동한다.
+// 이동 전 전국 범위에 놓인 카드 중 새 범위 밖의 카드는 이동이 끝날 때 DOM에서 빠진다. 그 사이에
+// 포커스한 카드는 포커스를 BODY로 잃고 Enter가 아무 위치도 고르지 않는다(느린 CI의 간헐 실패).
+// 좌표 표시와 카드 범위는 같은 moveend 반영에서 함께 바뀌므로, 첫 위치 중심이 보이면 이동이 끝난 것이다.
+async function waitForFirstSelectionCamera(page: Page) {
+  const [first] = SHELL_LOCATIONS;
+  await expect(page.locator(".kt-map-coordinates")).toContainText(
+    `center ${first.longitude.toFixed(4)}, ${first.latitude.toFixed(4)}`,
+    { timeout: 20_000 },
+  );
 }
 
 async function tabTo(page: Page, target: Locator) {
@@ -130,9 +143,10 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
     await routeWeather(page);
     await login(page, "/weather");
-    // 좁은 화면에서는 첫 위치 상세가 지도 대부분을 덮어 카드 자리가 없다. 닫고 본다.
+    await waitForFirstSelectionCamera(page);
+    // 첫 위치 자동 선택은 상세를 열지 않는다. 상세는 사용자가 위치를 고를 때만 열린다.
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
-    if (await detail.isVisible()) await detail.getByRole("button", { name: "상세 닫기", exact: true }).click();
+    await expect(detail).toHaveCount(0);
     const placed = page.locator('.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button');
     await expect(placed.first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("button", { name: /지역 날씨/ })).toHaveCount(0);
