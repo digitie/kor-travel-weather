@@ -162,6 +162,43 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await page.keyboard.press("Enter");
     await expect(page.getByRole("complementary", { name: "선택한 위치 상세" })).toBeVisible();
   });
+
+  test("첫 위치 자동 이동을 알리는 좌표 표시와 카드 범위는 같은 반영에서 바뀐다", async ({ page }) => {
+    test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
+    // waitForFirstSelectionCamera의 전제를 DOM 반영 단위로 확인한다. 시간 대기 없이 모든 DOM 변경
+    // 직후의 (좌표 표시, 카드 위치 이름) 쌍을 기록하므로 CI 속도와 무관하게 결정적이다.
+    await page.addInitScript(() => {
+      if (location.pathname !== "/weather") return;
+      const snapshots: { readout: string; cards: string[] }[] = [];
+      Object.assign(window, { __weatherCameraSnapshots: snapshots });
+      new MutationObserver(() => {
+        const readout = document.querySelector(".kt-map-coordinates")?.textContent ?? "";
+        // aria-label은 "<위치 이름>: <상태> 날씨 보기"다. 날씨 요약 도착으로 바뀌는 상태는 빼고 위치만 본다.
+        const cards = [...document.querySelectorAll(".weather-region-marker .vworld-weather-marker-button")]
+          .map((card) => card.getAttribute("aria-label")?.split(":")[0] ?? "").sort();
+        const last = snapshots.at(-1);
+        if (!last || last.readout !== readout || last.cards.join("|") !== cards.join("|")) snapshots.push({ readout, cards });
+      }).observe(document, { childList: true, subtree: true, characterData: true });
+    });
+    await routeWeather(page);
+    await login(page, "/weather");
+    await waitForFirstSelectionCamera(page);
+    const [first] = SHELL_LOCATIONS;
+    const settled = `center ${first.longitude.toFixed(4)}, ${first.latitude.toFixed(4)}`;
+    const snapshots = await page.evaluate(() => (window as unknown as { __weatherCameraSnapshots: { readout: string; cards: string[] }[] }).__weatherCameraSnapshots);
+    const settledAt = snapshots.findIndex((snapshot) => snapshot.readout.includes(settled));
+    expect(settledAt).toBeGreaterThan(0);
+    // 이동 전 기본 카메라(전국)에는 이 fixture의 시도 카드가 가장 많이 놓인다.
+    const nationwide = snapshots.slice(0, settledAt).reduce<string[]>((most, snapshot) => snapshot.cards.length > most.length ? snapshot.cards : most, []);
+    const settledCards = snapshots[settledAt].cards;
+    // 좌표 표시가 첫 위치를 처음 보인 그 반영에서 새 범위 밖 카드는 이미 빠져 있다. 이 fixture의 첫 위치(남서쪽)
+    // 범위에는 북쪽 시도가 들어가지 않으므로, 같은 수라면 좌표만 먼저 바뀌고 카드는 뒤늦게 빠지는 것이다.
+    expect(settledCards.length).toBeGreaterThan(0);
+    expect(settledCards.every((name) => nationwide.includes(name))).toBe(true);
+    expect(settledCards.length, JSON.stringify({ nationwide, settledCards })).toBeLessThan(nationwide.length);
+    // 이후 반영에서도 범위 밖 카드가 다시 생기지 않는다.
+    for (const snapshot of snapshots.slice(settledAt)) expect(snapshot.cards.every((name) => settledCards.includes(name)), JSON.stringify(snapshot)).toBe(true);
+  });
 });
 
 test.describe("390px 메뉴 drawer", () => {
