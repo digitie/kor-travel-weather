@@ -1,3 +1,41 @@
+## 2026-11-24 — 외부 provider: sweep하지 않는 provider의 schedule 제거·429는 다음 주기로
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #12·P2, §4 #12) 대응.
+
+- **schedule**: 외부 provider schedule은 실제로 sweep하는 slow 그룹(open_meteo·openweathermap·
+  weatherapi, current/forecast 각각 → 6개)에만 만든다. visual_crossing·tomorrow_io·weatherbit·
+  weatherstack·accuweather·wttr_in 여섯은 운영에서 credential이 없거나 기본 비활성이라 3시간마다
+  3~4초 skip run만 만들었다(14일 각 104~108 run, 약 635 run). 켜려면 이미 `SLOW_EXTERNAL_PROVIDER_KEYS`에
+  먼저 넣어 배포해야 했으므로(위치 상한 없는 전국 sweep 방지) 그 변경이 schedule도 만들게 했다.
+  admin UI에 DB credential만 넣어 상한 없는 sweep이 시작되던 길도 함께 닫힌다. job은 남겨 수동 실행은
+  가능하다. wttr_in은 key가 필요 없지만(`auth_required=False`) 자원봉사 서비스라 기본 비활성이다.
+- **429**: `request_json`이 `Retry-After`(초 또는 HTTP-date)를 읽는다. 30초 이하면 그만큼 한 번만
+  기다렸다 다시 묻고, 없거나 길면 기다리지 않고 `ProviderError(code="rate_limit",
+  retry_after_seconds=...)`로 끝낸다. 예전에는 값을 무시하고 0.5·1·2초 뒤 같은 요청을 세 번 더
+  보냈다(provider_retries=3). 외부 자산은 429를 실패가 아니라 `deferred`로 기록하고
+  (`rate_limited_datasets`, `kortravel/collection-outcome=deferred` → 관리자 화면 "갱신 대기"),
+  같은 run의 나머지 dataset은 묻지 않는다. 그 앞까지 게시한 batch는 남는다. 일부 dataset 실패는
+  `partial` 태그로 드러낸다.
+- **429·provider 중단 때 받은 응답**(리뷰 P2): rate limit·인증·연속 위치 실패·실패 비율 초과로 sweep이
+  멈추면 batch 한도에 닿지 않아 쌓여 있던 응답까지 먼저 게시한 뒤 `weather_sync_runs`를 `failed`로
+  닫는다(lease 만료·계약 위반·DB 오류에는 게시하지 않는다). Dagster는 SUCCESS+`deferred`여도 native
+  행은 `failed`라 그 run의 export cohort는 승인되지 않고, 그 dataset을 쓰는 Map export는 다음 완전·성공
+  sweep까지 이전 승인 값을 `source_status=stale`로 낸다. 위치를 건너뛴 `partial` run도 roster에 그
+  위치가 남아 같은 주기의 Map export는 stale이다. 건너뛴 위치 수는 Dagster metadata에만 남는다.
+
+- **위치별 격리**: weatherapi 전 dataset 실패 7건(11-10~21, odroid `weather_sync_runs.error`
+  "provider client 오류입니다.", 150곳 sweep의 1~136번째 요청)은 한 위치의 HTTP 4xx가 sweep 전체를
+  실패로 만든 것이었다(나머지 4건은 디스크 가득·worker 종료 회수). 이제 한 위치의
+  client·schema·server·network 오류는 그 위치만 건너뛰고(export attempt는 `SOURCE_LOCATION_FAILED`로
+  reject) sweep을 잇는다. 연속 5곳 실패(장애)나 실패 비율 20% 초과면 그대로 실패, 인증·rate limit은
+  즉시 멈춘다. 건너뛴 위치는 `locations_failed`·`location_failure_counts`와 `partial` 태그로 드러난다.
+
+시험: `tests/test_external_location_isolation.py`(실제 PG: 한 위치 건너뛰기·연속 실패 중단·비율 초과·
+인증/429 즉시 중단), `test_external_schedule_and_rate_limit.py`(schedule 집합, wttr_in 무키·기본 비활성, 429 deferred·
+나머지 dataset 생략, 다른 오류는 그대로 실패, partial 태그), `tests/test_external_providers.py`
+(짧은 Retry-After 1회 대기, 두 번째 429·값 없음·긴 값·잘못된 값은 재시도 없음, HTTP-date 해석).
+배포 뒤 옛 여섯 `three_hourly_*_weather` instigator 행은 고아로 남는다(동작 없음).
+
 ## 2026-11-24 — 지역 수집 원천별 job 분리·일시 네트워크 오류 재시도·보충 tick
 
 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P0 #3, §4 #6) 대응.
@@ -100,7 +138,6 @@ wall은 로컬 tmpfs 값이라 운영 배율로 옮기지 않는다. 운영 odro
 수정: 통합 주소(`전남광주…`) 측정소는 `광주`·`전남` 두 bulk 묶음을 모두 묻고 이름으로만 맞춘다(`measurement_sido_names`). 두 응답에 모두 나오면 한 번만 쓴다. 저장된 anchor metadata(`sido_name`)는 바꾸지 않는다. 측정소 실패는 사유(`not_in_response`·`ambiguous_name`·`request_error`·`normalize_error`)별로 세어 결과 metadata(`station_failure_reasons`, 일시/결정적 개수, 표본 20개)와 sync run 오류 문자열에 남기고, Dagster 결과 status와 `kortravel/collection-outcome` run tag를 `partial`로 올린다. native `weather_sync_runs`는 success로 둬 받은 측정소의 승격은 그대로다. 요청 오류 재시도는 client의 기존 3회 이상 재시도로 둔다.
 
 남은 확인: 실제 AirKorea가 `sidoName=광주` 묶음에 이 13곳을 돌려주는지는 배포 뒤 첫 run에서 본다(운영 key로 외부 호출을 하지 않았다). 여전히 `not_in_response`면 partial로 드러난다.
-
 
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 

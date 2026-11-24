@@ -67,7 +67,15 @@ DB 저장소는 count만 보존하는 시험 대역이며 전체 process RSS/운
    기본 location 상한이 없는 외부 provider(tomorrow_io·weatherbit·weatherstack·accuweather·
    visual_crossing·wttr_in)를 켜려면(env 또는 admin credential) **먼저** `definitions.py`의
    `SLOW_EXTERNAL_PROVIDER_KEYS`에 넣어 배포한다. 켜진 그 provider는 catalog 전체를 sweep하는데
-   태그는 정의 시점 값이라 그대로면 fast 그룹에서 돈다.
+   태그는 정의 시점 값이라 그대로면 fast 그룹에서 돈다. 2026-11-24부터 이 여섯은 schedule도
+   없다(slow 집합 provider에만 schedule을 만든다) — 집합에 넣는 변경이 schedule도 만든다.
+   외부 provider의 429는 짧은 `Retry-After`(30초 이하)만 한 번 기다리고, 아니면 그 run의 sweep을
+   멈춰 "갱신 대기"(`kortravel/collection-outcome=deferred`)로 끝낸다. 다음 주기가 다시 묻는다.
+   Dagster run은 SUCCESS지만 `weather_sync_runs` 행은 `failed`다. 그때까지 받은 응답은 게시되고,
+   그 run의 export cohort는 승인되지 않는다. 그래서 그 dataset을 쓰는 Map export는 다음 성공
+   sweep까지 이전 승인 값을 `source_status=stale`로 낸다. 위치 일부만 실패한 run(`partial`)도
+   사실값과 native 행은 success다. 그러나 cohort가 미확인이라 같은 주기의 Map export는 stale이다.
+   건너뛴 위치 수는 Dagster metadata(`locations_failed`)에만 남는다.
    pools가 있는 instance는 `concurrency.runs`에 넣고 coordinator 설정과 혼용하지 않는다.
 4. recovery sensor가 RUNNING인지 확인한다. 신규 metadata DB에도 기본 RUNNING이다.
 5. `/admin/dagster`의 공용 운영 화면에서 실패 원인·job별 상한 초과·스케줄을 확인한다.

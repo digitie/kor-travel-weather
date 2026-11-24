@@ -12,7 +12,12 @@ from typing import Any
 from kortravelcommon.deadline import call_with_deadline
 
 from kortravelweather.metrics import provider_request
-from kortravelweather.providers import ProviderLocation, WeatherProvider, redact_secrets
+from kortravelweather.providers import (
+    ProviderError,
+    ProviderLocation,
+    WeatherProvider,
+    redact_secrets,
+)
 from kortravelweather.repository import WeatherRepository
 
 from .chunked_publish import chunk_publications, uncited_sources
@@ -29,6 +34,32 @@ _PUBLISH_BATCH_VALUES = 5_000
 _PUBLISH_BATCH_SOURCES = 25
 _PUBLISH_BATCH_PAYLOAD_BYTES = 10_000_000
 logger = logging.getLogger(__name__)
+
+#: 한 위치의 응답만 잘못된 provider 오류. 그 위치를 건너뛰고 sweep을 잇는다.
+#: weatherapi는 2026-11-10~21 odroid에서 150곳 sweep 중 한 위치의 HTTP 4xx
+#: ("provider client 오류입니다.", 1~136번째 요청)로 이미 게시한 batch까지 실패 run이 됐다(7건).
+#: 인증·rate limit·credential은 provider 전체의 문제라 여기 없다 — 바로 sweep을 멈춘다.
+LOCATION_SCOPED_PROVIDER_ERRORS = frozenset({"client", "schema", "server", "network"})
+#: 연속으로 이만큼 위치가 실패하면 위치 문제가 아니라 장애다. sweep을 멈춘다.
+MAX_CONSECUTIVE_LOCATION_FAILURES = 5
+#: 전체 대상 중 실패 위치 비율이 이를 넘으면 실패 run이다. 그때까지 받은 응답은 게시한다
+#: (``_publish_staged`` — provider가 멈춘 sweep도 quota를 쓴 응답은 버리지 않는다).
+MAX_FAILED_LOCATION_RATIO = 0.2
+
+
+def _publish_staged(
+    repository: WeatherRepository,
+    staged_sources: list[dict[str, Any]],
+    staged_values: list[Any],
+) -> int:
+    """쌓인 응답을 위치 chunk 단위로 게시하고, fact가 없는 원천도 남긴다."""
+    published = 0
+    for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
+        published += repository.ingest_batch(source_records=chunk_sources, values=chunk)
+    empty = uncited_sources(staged_sources, staged_values)
+    if empty:
+        repository.ingest_batch(source_records=empty, values=[])
+    return published
 
 
 def _bounded_payload_size(payload: Any, *, max_bytes: int) -> int:
@@ -105,6 +136,11 @@ def run_external_weather_sync(
     sweep is simply fewer locations refreshed, and the retry republishes only
     what is missing. The run is still marked failed, now carrying the count it
     managed to load.
+
+    provider가 sweep을 멈춘 경우(``ProviderError``: rate limit·인증·연속 실패·실패
+    비율 초과)에는 아직 batch 한도에 닿지 않아 쌓여 있던 응답도 failed로 닫기 전에
+    게시한다. 그 run은 export cohort 승인 조건(native success)을 채우지 못하므로
+    Map export는 다음 성공 sweep까지 이전 승인 값을 ``source_status=stale``로 낸다.
     """
     target_list = list(targets)
     if not target_list:
@@ -135,6 +171,8 @@ def run_external_weather_sync(
     normalized_values_total = 0
     staged_payload_bytes = 0
     sent_at: float | None = None
+    failed_locations: dict[str, int] = {}
+    consecutive_failures = 0
     export_collector, prepared = None, None
     if exports_requested:
         try:
@@ -175,13 +213,35 @@ def run_external_weather_sync(
                 if idle > 0:
                     time.sleep(idle)
             sent_at = time.monotonic()
-            with provider_request(provider.provider_key, dataset_key):
-                response = _fetch_with_deadline(
-                    provider,
-                    target,
-                    dataset_key=dataset_key,
-                    timeout_seconds=fetch_timeout_seconds,
+            try:
+                with provider_request(provider.provider_key, dataset_key):
+                    response = _fetch_with_deadline(
+                        provider,
+                        target,
+                        dataset_key=dataset_key,
+                        timeout_seconds=fetch_timeout_seconds,
+                    )
+            except ProviderError as exc:
+                if exc.code not in LOCATION_SCOPED_PROVIDER_ERRORS:
+                    raise
+                code = f"{exc.code}:{exc.status_code}" if exc.status_code else exc.code
+                failed_locations[code] = failed_locations.get(code, 0) + 1
+                consecutive_failures += 1
+                if prepared is not None:
+                    # 위치 격리는 사실값 게시와 run 성공까지만 지킨다. HTTP 전에 선언한 cohort
+                    # roster에는 이 위치가 남고 그 attempt는 failed라, 이 run의 cohort는 승인
+                    # 조건(roster 전 위치의 승인 head가 이 run)을 채우지 못한다. Map export는
+                    # 다음 완전 sweep까지 source_status=stale이다(docs/weather-api.md).
+                    export_collector._reject(prepared.identity, "SOURCE_LOCATION_FAILED")
+                    prepared = None
+                if consecutive_failures >= MAX_CONSECUTIVE_LOCATION_FAILURES:
+                    raise
+                logger.warning(
+                    "external_location_skipped provider=%s dataset=%s location=%s code=%s",
+                    provider.provider_key, dataset_key, target.location_id, code,
                 )
+                continue
+            consecutive_failures = 0
             if response.provider != provider.provider_key or response.dataset_key != dataset_key:
                 raise ValueError("provider 응답의 provider/dataset 계약이 요청과 다릅니다.")
             if response.response_rows > max_response_rows:
@@ -228,16 +288,17 @@ def run_external_weather_sync(
                 or len(staged_sources) >= _PUBLISH_BATCH_SOURCES
                 or staged_payload_bytes >= _PUBLISH_BATCH_PAYLOAD_BYTES
             ):
-                for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
-                    published_values += repository.ingest_batch(
-                        source_records=chunk_sources, values=chunk
-                    )
-                empty = uncited_sources(staged_sources, staged_values)
-                if empty:
-                    repository.ingest_batch(source_records=empty, values=[])
+                published_values += _publish_staged(repository, staged_sources, staged_values)
                 staged_sources = []
                 staged_values = []
                 staged_payload_bytes = 0
+        failed_total = sum(failed_locations.values())
+        if failed_total > len(target_list) * MAX_FAILED_LOCATION_RATIO:
+            raise ProviderError(
+                f"위치 {failed_total}/{len(target_list)}곳의 응답이 실패했습니다: "
+                f"{dict(sorted(failed_locations.items()))}",
+                code="locations_failed",
+            )
         for chunk_sources, chunk in chunk_publications(staged_sources, staged_values):
             published_values += repository.ingest_batch(source_records=chunk_sources, values=chunk)
         # The finish carries only responses that produced no fact, so it
@@ -253,6 +314,23 @@ def run_external_weather_sync(
     except Exception as exc:
         if prepared is not None:
             export_collector._reject(prepared.identity, "SOURCE_OR_NATIVE_FAILED")
+        if isinstance(exc, ProviderError) and staged_sources:
+            # provider가 sweep을 멈췄다(rate limit·인증·연속 실패·실패 비율 초과). 이미 받은
+            # 응답은 quota를 쓴 정상 자료이므로 버리지 않고 게시한 뒤 run을 failed로 닫는다.
+            # lease 만료·계약 위반·DB 오류에서는 게시하지 않는다. 게시가 실패해도 원래 오류로
+            # run을 닫는다. 이 run의 export cohort는 failed라 승인되지 않는다
+            # (docs/weather-api.md "Hourly ingestion and providers").
+            try:
+                heartbeat = getattr(repository, "heartbeat_sync_run", None)
+                if not callable(heartbeat) or heartbeat(run.run_id) is not False:
+                    published_values += _publish_staged(
+                        repository, staged_sources, staged_values
+                    )
+            except Exception as publish_error:
+                logger.warning(
+                    "external_staged_publish_failed run_id=%s error=%s",
+                    run.run_id, type(publish_error).__name__,
+                )
         repository.finish_sync_run(
             run.run_id,
             status="failed",
@@ -272,5 +350,7 @@ def run_external_weather_sync(
         "targets": len(target_list),
         "requests_fetched": len(target_list),
         "values_loaded": loaded,
+        "locations_failed": sum(failed_locations.values()),
+        "location_failure_counts": dict(sorted(failed_locations.items())),
         "source_record_keys": source_record_keys,
     }
