@@ -120,6 +120,7 @@ from .metrics import (
 )
 from .models import PurgeReport, SyncRun, WeatherKind, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
+    BRIEF_DDL_LOCK_TIMEOUT_MS,
     DEFAULT_PARTITION,
     DETACHED_DEFAULT,
     VALUES_TABLE,
@@ -153,6 +154,7 @@ from .partitions import (
     other_sessions_locking,
     partition_name,
     readd_foreign_keys_not_valid,
+    set_ddl_timeouts,
     unvalidated_foreign_keys_into_facts,
     validate_default_floor,
     validate_foreign_keys_into_facts,
@@ -947,6 +949,13 @@ PARTITION_DDL_ATTEMPTS = 6
 #: 2026-11-24(L3)부터 첫 시도 앞에서도 기다린다. 그 전에는 첫 시도만 눈먼 채로 해서
 #: 수집 뒤에 lock 상한만큼 줄을 서고 그 뒤에 지도 reader를 세웠다.
 PARTITION_DDL_RETRY_SECONDS = 30.0
+#: 단기예보 보존 검사(``_preserve_short_forecast_partition``)의 문장 상한(ms).
+#: 2026-11-24(L1·L2)부터 표 lock 없이 먼저 실행하므로 이 시간 동안 누구도 막지 않는다.
+PARTITION_GUARD_STATEMENT_TIMEOUT_MS = 5000
+#: ACCESS EXCLUSIVE를 쥔 뒤 같은 보존 검사를 다시 할 때의 문장 상한(ms).
+#: 이미 한 번 읽은 부분 인덱스의 머리를 다시 확인할 뿐이라 짧다. 넘기면 지도 reader를
+#: lock 뒤에 더 세우지 않고 lock 경합에 진 시도처럼 rollback한다(``PartitionRecheckTimedOut``).
+PARTITION_RECHECK_STATEMENT_TIMEOUT_MS = 300
 #: How often ``_await_quiet_tables`` looks at ``pg_locks``.
 PARTITION_DDL_QUIET_POLL_SECONDS = 0.2
 #: What a partition-DDL step waits to find unlocked by anyone else: every
@@ -1064,6 +1073,20 @@ class StuckSyncRun:
     dataset_key: str
     orchestrator_run_id: str | None
     heartbeat_at: datetime
+
+
+class PartitionRecheckTimedOut(RuntimeError):
+    """ACCESS EXCLUSIVE를 쥔 뒤의 짧은 단기예보 보존 재확인이 상한을 넘었다.
+
+    보존 여부를 확정하지 못했으므로 DDL은 하지 않는다. 지도 reader를 lock 뒤에 더 세워 두지
+    않고, lock 경합에 진 시도처럼 rollback한 뒤 조용한 순간에 다시 시도하거나 다음 실행으로
+    연기한다(``WeatherRepository._attempt_partition_ddl``). ``error``는 원래의 57014다.
+    """
+
+    def __init__(self, name: str, error: OperationalError) -> None:
+        super().__init__(f"{name}: 단기예보 보존 재확인이 상한을 넘었습니다.")
+        self.name = name
+        self.error = error
 
 
 class SyncRunAlreadyActive(RuntimeError):
@@ -5340,6 +5363,8 @@ class WeatherRepository:
                         text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
                     )
                     return True, step(connection), None
+            except PartitionRecheckTimedOut as exc:
+                last = exc.error
             except OperationalError as exc:
                 if not is_lock_conflict(exc):
                     raise
@@ -5574,8 +5599,16 @@ class WeatherRepository:
         return marked_before, False
 
     @staticmethod
-    def _preserve_short_forecast_partition(connection: Connection, name: str) -> None:
-        """보존할 valid_at이 있거나 조회가 실패하면 partition을 삭제하지 않는다."""
+    def _preserve_short_forecast_partition(
+        connection: Connection,
+        name: str,
+        *,
+        cap_ms: int = PARTITION_GUARD_STATEMENT_TIMEOUT_MS,
+    ) -> None:
+        """보존할 valid_at이 있거나 조회가 실패하면 partition을 삭제하지 않는다.
+
+        문장 상한은 기존 ``statement_timeout``과 ``cap_ms`` 중 작은 쪽이다.
+        """
         # catalog 날짜 이름과 정본 DEFAULT 이름 이외의 식별자는 허용하지 않는다.
         dated = (
             name.startswith("weather_values_")
@@ -5592,8 +5625,8 @@ class WeatherRepository:
             not isinstance(previous, str) or type(milliseconds) is not int or milliseconds < 0
         ):
             raise RuntimeError("기존 statement_timeout을 확인할 수 없습니다.")
-        # 0은 무제한이다. 이미5초보다 작은 예산이면 그 예산도 늘리지 않는다.
-        cap = min(milliseconds, 5000) if milliseconds else 5000
+        # 0은 무제한이다. 이미 cap_ms보다 작은 예산이면 그 예산도 늘리지 않는다.
+        cap = min(milliseconds, int(cap_ms)) if milliseconds else int(cap_ms)
         connection.execute(text(f"SET LOCAL statement_timeout = '{cap}ms'"))
         retained = connection.scalar(
             text(
@@ -5613,22 +5646,57 @@ class WeatherRepository:
 
     @staticmethod
     def _detach_expired(connection: Connection, name: str) -> bool:
+        """Detach one expired day; ``False`` if another run already did.
+
+        단기예보 보존 검사는 ACCESS EXCLUSIVE 전에 한다(2026-11-24 L1). 그 전에는 부모·
+        projection을 잡은 채 상한 5초의 EXISTS를 돌려 지도 읽기를 그만큼 세웠다. 이 검사는
+        그 날 파티션의 ACCESS SHARE만 잡으므로 수집·reader 누구도 막지 않고, 보존 대상이면
+        표 lock 없이 끝난다(``ShortForecastPartitionRetained``).
+
+        검사와 lock 사이에 그 날짜로 새 단기예보가 들어올 수 있으므로(늦은 재수집) lock 뒤에
+        같은 검사를 짧은 상한으로 한 번 더 한다. lock을 쥔 뒤에는 새 행이 들어올 수 없어 이
+        재확인 결과가 DETACH까지 유지된다.
+        """
         if name not in {partition for partition, _ in existing_partitions(connection)}:
             return False  # another run got there first
-        lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
         WeatherRepository._preserve_short_forecast_partition(connection, name)
+        lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
+        WeatherRepository._recheck_short_forecast_partition(connection, name)
         keys = drop_foreign_keys_into_facts(connection)
         detach_partition(connection, name)
         readd_foreign_keys_not_valid(connection, keys)
         return True
 
     @staticmethod
+    def _recheck_short_forecast_partition(connection: Connection, name: str) -> None:
+        """lock을 쥔 뒤의 보존 재확인. 상한을 넘기면 ``PartitionRecheckTimedOut``."""
+        try:
+            WeatherRepository._preserve_short_forecast_partition(
+                connection, name, cap_ms=PARTITION_RECHECK_STATEMENT_TIMEOUT_MS
+            )
+        except OperationalError as exc:
+            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "57014":
+                raise
+            raise PartitionRecheckTimedOut(name, exc) from exc
+
+    @staticmethod
     def _drop_detached(connection: Connection, name: str) -> bool:
+        """Drop one detached day; ``False`` if it is gone already.
+
+        보존 검사는 참조 표(``weather_source_records``·``weather_locations``)의 ACCESS
+        EXCLUSIVE 전에 한다(2026-11-24 L2). 그 전에는 지도 API가 읽는 ``weather_locations``까지
+        잡은 채 상한 5초의 EXISTS를 돌렸다. 떼어낸 표에는 수집이 쓰지 않지만, 검사 전에 그 표만
+        SHARE로 잠가 쓰기를 막아 검사 결과가 DROP까지 유지되게 한다. SHARE는 읽기와 FK 검사의
+        KEY SHARE를 막지 않고 API는 떼어낸 표를 읽지 않는다. 그 표를 autovacuum이 처리 중이면
+        여기서(뜨거운 lock 없이) 기다린다.
+        """
         if name not in {table for table, _ in detached_leftovers(connection)}:
             return False
+        set_ddl_timeouts(connection, lock_timeout_ms=BRIEF_DDL_LOCK_TIMEOUT_MS)
+        lock_table(connection, name, "SHARE", brief=True)
+        WeatherRepository._preserve_short_forecast_partition(connection, name)
         lock_for_detached_drop(connection, brief=True)
         lock_table(connection, name, "ACCESS EXCLUSIVE", brief=True)
-        WeatherRepository._preserve_short_forecast_partition(connection, name)
         drop_detached_partition(connection, name)
         return True
 

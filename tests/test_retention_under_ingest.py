@@ -22,7 +22,7 @@ from datetime import timedelta
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from alembic import command
 from kortravelweather import partitions as partitions_module
@@ -39,6 +39,7 @@ from kortravelweather.partitions import (
     partition_name,
 )
 from kortravelweather.repository import WeatherRepository
+from kortravelweather.retention import ShortForecastPartitionRetained
 from kortravelweather.settings import get_settings
 
 TEST_DATABASE_URL = os.environ.get(
@@ -800,6 +801,211 @@ class _ReaderProbe:
                     self._stop.wait(0.02)
         except BaseException as exc:  # noqa: BLE001 - reported by the test
             self.errors.append(exc)
+
+
+def _committed_statements(engine, run):
+    """``run()``의 결과와, 그동안 commit된 transaction별 SQL 목록(commit 순서)."""
+    log: list[tuple[int, str, str]] = []
+
+    def on_begin(connection) -> None:
+        log.append((id(connection), "begin", ""))
+
+    def on_commit(connection) -> None:
+        log.append((id(connection), "commit", ""))
+
+    def on_execute(connection, _cursor, statement, *_: object) -> None:
+        log.append((id(connection), "sql", " ".join(statement.split())))
+
+    event.listen(engine, "begin", on_begin)
+    event.listen(engine, "commit", on_commit)
+    event.listen(engine, "before_cursor_execute", on_execute)
+    try:
+        result = run()
+    finally:
+        event.remove(engine, "begin", on_begin)
+        event.remove(engine, "commit", on_commit)
+        event.remove(engine, "before_cursor_execute", on_execute)
+    open_tx: dict[int, list[str]] = {}
+    committed: list[list[str]] = []
+    for connection_id, kind, statement in log:
+        if kind == "begin":
+            open_tx[connection_id] = []
+        elif kind == "commit":
+            committed.append(open_tx.pop(connection_id, []))
+        elif connection_id in open_tx:
+            open_tx[connection_id].append(statement)
+    return result, committed
+
+
+def _stage_short_forecast(connection, key: str, *, known_at) -> None:
+    """``known_at``(오래된 발표)에 미래 대상시각을 가진 KMA 단기예보 한 건: 보존 대상이다."""
+    valid_at = kst_now() + timedelta(days=1)
+    connection.execute(
+        text(
+            "INSERT INTO weather_source_records (source_record_key, provider, dataset_key, "
+            "source_entity_type, source_entity_id, raw_payload_hash, payload, fetched_at, "
+            "imported_at) VALUES (:key, 'python-kma-api', 'kma_short_forecast', "
+            "'weather_response', 'ingest', :key, '{}', :at, :at)"
+        ),
+        {"key": key, "at": known_at},
+    )
+    connection.execute(
+        text(
+            "INSERT INTO weather_values (value_id, location_id, provider, dataset_key, "
+            "weather_domain, forecast_style, metric_key, target_at, valid_at, known_at, "
+            "normalization_version, payload, collected_at, source_record_key, value_number) "
+            "VALUES (:key, 'ingest', 'python-kma-api', 'kma_short_forecast', "
+            "'kma_short_forecast', 'short', 'TMP', :valid, :valid, :at, 'test', '{}', :at, "
+            ":key, 1)"
+        ),
+        {"key": key, "at": known_at, "valid": valid_at},
+    )
+
+
+def test_the_short_forecast_guard_runs_before_the_exclusive_locks(
+    repository: WeatherRepository,
+) -> None:
+    """L1·L2: 보존 검사(상한 5초)는 뜨거운 표 lock 전에, lock 뒤에는 짧은 재확인만 한다.
+
+    예전에는 detach가 ``weather_values``·``weather_current_values`` ACCESS EXCLUSIVE를,
+    drop이 지도 API가 읽는 ``weather_locations`` ACCESS EXCLUSIVE를 쥔 채 그 검사를 돌렸다.
+    """
+    expired = _stage_expired_partition(repository, days_ago=10)
+    report, committed = _committed_statements(
+        repository.engine,
+        lambda: repository.purge_expired_history(retention_days=2, ahead_days=7),
+    )
+    assert report.partitions_dropped == (expired,)
+
+    def only(fragment: str) -> list[str]:
+        found = [tx for tx in committed if any(fragment in sql for sql in tx)]
+        assert len(found) == 1, committed
+        return found[0]
+
+    def where(tx: list[str], prefix: str) -> list[int]:
+        return [index for index, sql in enumerate(tx) if sql.startswith(prefix)]
+
+    def budget_before(tx: list[str], position: int) -> str:
+        return [sql for sql in tx[:position] if sql.startswith("SET LOCAL statement_timeout")][-1]
+
+    detach = only(f"DETACH PARTITION {expired}")
+    locks = where(detach, "LOCK TABLE")
+    guards = where(detach, "SELECT EXISTS (SELECT 1 FROM")
+    assert [detach[index] for index in locks] == [
+        "LOCK TABLE weather_source_records IN SHARE ROW EXCLUSIVE MODE",
+        "LOCK TABLE weather_locations IN SHARE ROW EXCLUSIVE MODE",
+        "LOCK TABLE weather_values IN ACCESS EXCLUSIVE MODE",
+        "LOCK TABLE weather_current_values IN ACCESS EXCLUSIVE MODE",
+    ]
+    assert len(guards) == 2 and guards[0] < locks[0] and guards[1] > locks[-1], detach
+    assert budget_before(detach, guards[0]) == "SET LOCAL statement_timeout = '5000ms'"
+    assert budget_before(detach, guards[1]) == "SET LOCAL statement_timeout = '300ms'"
+    assert f"SET LOCAL lock_timeout = '{BRIEF_DDL_LOCK_TIMEOUT_MS}ms'" in detach
+
+    drop = only(f"DROP TABLE {expired}")
+    locks = where(drop, "LOCK TABLE")
+    guards = where(drop, "SELECT EXISTS (SELECT 1 FROM")
+    assert [drop[index] for index in locks] == [
+        f"LOCK TABLE {expired} IN SHARE MODE",
+        "LOCK TABLE weather_source_records IN ACCESS EXCLUSIVE MODE",
+        "LOCK TABLE weather_locations IN ACCESS EXCLUSIVE MODE",
+        f"LOCK TABLE {expired} IN ACCESS EXCLUSIVE MODE",
+    ]
+    # 떼어낸 표만 SHARE로 쓰기를 막은 뒤 한 번 검사하고, 참조 표 lock 뒤에는 검사가 없다.
+    assert len(guards) == 1 and locks[0] < guards[0] < locks[1], drop
+
+
+def test_a_short_forecast_landing_between_the_check_and_the_lock_keeps_the_day(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L1 경합: lock 전 검사가 통과한 뒤 그 날짜로 보존할 단기예보가 commit돼도 잃지 않는다.
+
+    늦은 재수집이 오래된 발표의 미래 대상시각을 쓰는 경우다. lock 뒤 재확인이 없으면 이 실행의
+    DETACH·DROP이 그 행을 지운다. lock을 쥔 뒤에는 그 날짜에 새 행이 들어올 수 없다.
+    """
+    expired = _stage_expired_partition(repository, days_ago=10)
+    known_at = kst_now() - timedelta(days=10)
+    checks: list[tuple[int, str]] = []
+    landed: list[str] = []
+    original_guard = WeatherRepository._preserve_short_forecast_partition
+    original_lock = repository_module.lock_for_partition_ddl
+
+    def guard(
+        connection, name, *, cap_ms=repository_module.PARTITION_GUARD_STATEMENT_TIMEOUT_MS
+    ) -> None:
+        try:
+            original_guard(connection, name, cap_ms=cap_ms)
+        except ShortForecastPartitionRetained:
+            checks.append((cap_ms, "retained"))
+            raise
+        checks.append((cap_ms, "clear"))
+
+    def lock_after_a_late_write(connection, **kwargs) -> None:
+        if kwargs.get("drop_foreign_keys") and not landed:
+            # 검사와 lock 사이: 다른 세션이 그 날짜로 미래 대상시각 단기예보를 commit한다.
+            with repository.engine.begin() as writer:
+                _stage_short_forecast(writer, "late", known_at=known_at)
+            landed.append("late")
+        original_lock(connection, **kwargs)
+
+    monkeypatch.setattr(
+        WeatherRepository, "_preserve_short_forecast_partition", staticmethod(guard)
+    )
+    monkeypatch.setattr(repository_module, "lock_for_partition_ddl", lock_after_a_late_write)
+    report = repository.purge_expired_history(retention_days=2, ahead_days=7)
+
+    assert landed == ["late"]
+    # 첫 검사는 비어 있음을 확인했고, 그 뒤 들어온 행을 lock 뒤 재확인이 잡았다.
+    assert checks == [
+        (repository_module.PARTITION_GUARD_STATEMENT_TIMEOUT_MS, "clear"),
+        (repository_module.PARTITION_RECHECK_STATEMENT_TIMEOUT_MS, "retained"),
+    ]
+    assert report.partitions_retained_short_forecast == (expired,)
+    assert report.partitions_dropped == () and report.partitions_deferred == ()
+    assert expired in _names(repository)
+    with repository.engine.connect() as connection:
+        assert connection.execute(
+            text(f"SELECT value_id FROM {expired}")
+        ).scalars().all() == ["late"]
+    assert _source_exists(repository, "late")
+    assert _foreign_keys_valid(repository)
+
+
+def test_a_recheck_that_overruns_its_cap_defers_the_day_instead_of_failing(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L1: lock 뒤 재확인이 짧은 상한을 넘으면 reader를 더 세우지 않고 연기한다(실패 아님)."""
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 2)
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_RETRY_SECONDS", 0.05)
+    expired = _stage_expired_partition(repository, days_ago=10)
+    original_guard = WeatherRepository._preserve_short_forecast_partition
+    slow: list[bool] = [True]
+    rechecks: list[int] = []
+
+    def guard(
+        connection, name, *, cap_ms=repository_module.PARTITION_GUARD_STATEMENT_TIMEOUT_MS
+    ) -> None:
+        if slow[0] and cap_ms == repository_module.PARTITION_RECHECK_STATEMENT_TIMEOUT_MS:
+            rechecks.append(cap_ms)
+            # PostgreSQL이 실제로 문장 상한으로 취소하게 한다(57014).
+            connection.execute(text("SET LOCAL statement_timeout = '50ms'"))
+            connection.execute(text("SELECT pg_sleep(1)"))
+        original_guard(connection, name, cap_ms=cap_ms)
+
+    monkeypatch.setattr(
+        WeatherRepository, "_preserve_short_forecast_partition", staticmethod(guard)
+    )
+    report = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert len(rechecks) == 2  # 두 시도 모두 lock 뒤 재확인에서 상한을 넘었다
+    assert report.partitions_deferred == (expired,)
+    assert report.partitions_dropped == ()
+    assert report.partitions_retained_short_forecast == ()
+    assert expired in _names(repository)
+    assert _foreign_keys_valid(repository)
+
+    slow[0] = False
+    report = repository.purge_expired_history(retention_days=2, ahead_days=7)
+    assert report.partitions_dropped == (expired,)
 
 
 def test_a_brief_ddl_lock_wait_gives_way_to_a_writer_quickly(
