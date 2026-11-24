@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import kortravelcommon.dagster as common_dagster
 import pytest
 from dagster import (
     DagsterEvent,
@@ -36,17 +37,13 @@ def mapping(monkeypatch):
 
 def test_single_asset_jobs_in_process_and_regional_and_implicit_bounded():
     jobs = definitions._COLLECTION_JOBS
-    # 외부 provider 9개 + 분리한 3개의 forecast job(W-EXP-SPLIT-01).
-    assert len(jobs) == 22
+    # 외부 provider 9개 + 분리한 3개의 forecast job(W-EXP-SPLIT-01), 지역 원천 4개 job.
+    assert len(jobs) == 25
     assert "kma_regional_alert_events_job" in {job.name for job in jobs}
+    assert "regional_weather_job" not in {job.name for job in jobs}
     for job in jobs:
-        if job.name == "regional_weather_job":
-            assert len(job.graph.node_names()) == 4
-            bounded = job.executor_def.apply_config_mapping({"config": {}})
-            assert bounded.success and bounded.value["config"]["max_concurrent"] == 1
-        else:
-            assert len(job.graph.node_names()) == 1
-            assert job.executor_def.name == "in_process"
+        assert len(job.graph.node_names()) == 1
+        assert job.executor_def.name == "in_process"
     implicit = definitions.defs.resolve_implicit_global_asset_job_def()
     bounded = implicit.executor_def.apply_config_mapping({"config": {}})
     assert bounded.success and bounded.value["config"]["max_concurrent"] == 1
@@ -142,6 +139,8 @@ def _failure(instance, job, reason=RunFailureReason.RUN_WORKER_RESTART, **kwargs
 )
 def test_common_factory_preserves_retry_gates_with_weather_jobs(mapping, monkeypatch, kind):
     monkeypatch.setenv(INFRA_RETRY_ENABLED_ENV, "true")
+    # common은 방금 기록된 실패 event를 settle(기본 120초) 뒤에 판정한다. 시험은 바로 판정한다.
+    monkeypatch.setattr(common_dagster, "FAILURE_SETTLE_SECONDS", 0)
     (retry,) = optional_recovery_sensors(mapping)
     job = definitions.kma_ultra_short_nowcast_job
     # local_temp는 이 시험만의 임시 SQLite metadata이며 Weather DB resource는 실행하지 않는다.

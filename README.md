@@ -146,6 +146,8 @@ weather fact 저장소와는 결합하지 않는다.
 - `/v1/admin/providers`: credential configured 여부와 dataset catalog (secret 비노출)
 - `/v1/admin/provider-credentials`: provider API key 암호화 저장·교체·삭제
 - `/health`, `/version`: 의존성 없는 liveness와 버전 확인
+- `/ready`: API 시작 warmup 상태(진행 중 503, 완료·생략·비활성 200;
+  [`docs/weather-api-prewarm.md`](docs/weather-api-prewarm.md))
 
 응답은 `{data, meta}` envelope이며 `meta.request_id`로 로그와 Dagster run을 연결한다.
 자세한 내용은 [`docs/architecture/rest-api.md`](docs/architecture/rest-api.md)와

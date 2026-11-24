@@ -120,6 +120,7 @@ from .metrics import (
 )
 from .models import PurgeReport, SyncRun, WeatherKind, WeatherLocation, WeatherValue, kst_now
 from .partitions import (
+    BRIEF_DDL_LOCK_TIMEOUT_MS,
     DEFAULT_PARTITION,
     DETACHED_DEFAULT,
     VALUES_TABLE,
@@ -147,11 +148,13 @@ from .partitions import (
     kst_midnight,
     lock_for_detached_drop,
     lock_for_partition_ddl,
+    lock_table,
     missing_forward_days,
     oldest_partition_age_days,
     other_sessions_locking,
     partition_name,
     readd_foreign_keys_not_valid,
+    set_ddl_timeouts,
     unvalidated_foreign_keys_into_facts,
     validate_default_floor,
     validate_foreign_keys_into_facts,
@@ -935,7 +938,7 @@ SCHEMA_PARTITION_FUTURE_DAYS = 3
 #: Attempts for one partition-DDL step (one day created, one day detached,
 #: one detached day dropped) before it is deferred to the next nightly run.
 PARTITION_DDL_ATTEMPTS = 6
-#: The longest pause between two attempts.  It is spent watching for a moment
+#: The longest pause before an attempt.  It is spent watching for a moment
 #: when no other session holds the fact table or its source records
 #: (``_await_quiet_tables``), and ends as soon as one comes: an attempt made
 #: then usually succeeds at once, while one made blind queues behind every
@@ -943,7 +946,16 @@ PARTITION_DDL_ATTEMPTS = 6
 #: whole lock timeout.  2026-10-02..05 the blind attempts, twenty in two
 #: minutes, all lost; collectors publish in overlapping transactions of up to
 #: about a minute, with quiet gaps of seconds between bursts.
+#: 2026-11-24(L3)부터 첫 시도 앞에서도 기다린다. 그 전에는 첫 시도만 눈먼 채로 해서
+#: 수집 뒤에 lock 상한만큼 줄을 서고 그 뒤에 지도 reader를 세웠다.
 PARTITION_DDL_RETRY_SECONDS = 30.0
+#: 단기예보 보존 검사(``_preserve_short_forecast_partition``)의 문장 상한(ms).
+#: 2026-11-24(L1·L2)부터 표 lock 없이 먼저 실행하므로 이 시간 동안 누구도 막지 않는다.
+PARTITION_GUARD_STATEMENT_TIMEOUT_MS = 5000
+#: ACCESS EXCLUSIVE를 쥔 뒤 같은 보존 검사를 다시 할 때의 문장 상한(ms).
+#: 이미 한 번 읽은 부분 인덱스의 머리를 다시 확인할 뿐이라 짧다. 넘기면 지도 reader를
+#: lock 뒤에 더 세우지 않고 lock 경합에 진 시도처럼 rollback한다(``PartitionRecheckTimedOut``).
+PARTITION_RECHECK_STATEMENT_TIMEOUT_MS = 300
 #: How often ``_await_quiet_tables`` looks at ``pg_locks``.
 PARTITION_DDL_QUIET_POLL_SECONDS = 0.2
 #: What a partition-DDL step waits to find unlocked by anyone else: every
@@ -979,6 +991,21 @@ DEFERRAL_MARK_RETRY_SECONDS = 1.0
 #: 2h+ behind one 4h publish).  About a minute in all, like the DDL.
 INGEST_LOCK_ATTEMPTS = 20
 INGEST_LOCK_RETRY_SECONDS = 3.0
+
+#: 수집 writer transaction의 문장 하나 상한(ms, 2026-11-24 Map 호출 검토 L5). 보고서 권고(30초)가
+#: 아니라 300초인 이유: odroid KMA 단기예보 게시는 run당 384~441천 fact에 5,539~7,881초(weather
+#: PR #286의 14일 운영 조회, 2,500 fact chunk 약 160개 → chunk 하나 평균 약 45초)이고, n150
+#: 디스크 대기 때는 chunk 하나가 수 분이었다(``docs/architecture/dagster-boundary.md``). 문장
+#: 하나가 정상 chunk 전체 평균을 넘는 일은 드물지만, 30초 상한은 디스크가 밀릴 때 정상 문장을 거짓
+#: 실패시켜 몇 시간짜리 run 전체를 버린다. 300초는 그 최악 chunk 평균(약 150초)의 두 배이며, 계획
+#: 회귀로 fact 표를 훑는 문장이 location lock을 몇 시간 쥐는 일(2026-10-02)을 5분으로 끊는다.
+#: 수집 경로에서만 걸고 넘기면 재시도하지 않고 그 chunk를 실패시킨다(같은 문장은 다시 느리다).
+INGEST_STATEMENT_TIMEOUT_MS = 300_000
+#: 수집 writer transaction이 문장 사이에서 쉬는 상한(ms, L5). transaction 안의 Python 일(원천
+#: 정규화 묶음, export chunk 준비)은 보통 1초 미만이고, provider HTTP와 재시도 휴지는 transaction
+#: 밖이다. 프로세스가 멈추거나 연결이 끊긴 채 lock을 쥔 writer를 서버가 60초 뒤 끊는다. 공개 읽기와
+#: export 읽기 transaction에는 걸지 않는다.
+INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
 
 #: Rows per set-based projection upsert statement (10 array parameters each).
 PROJECTION_UPSERT_ROWS = 1000
@@ -1061,6 +1088,20 @@ class StuckSyncRun:
     dataset_key: str
     orchestrator_run_id: str | None
     heartbeat_at: datetime
+
+
+class PartitionRecheckTimedOut(RuntimeError):
+    """ACCESS EXCLUSIVE를 쥔 뒤의 짧은 단기예보 보존 재확인이 상한을 넘었다.
+
+    보존 여부를 확정하지 못했으므로 DDL은 하지 않는다. 지도 reader를 lock 뒤에 더 세워 두지
+    않고, lock 경합에 진 시도처럼 rollback한 뒤 조용한 순간에 다시 시도하거나 다음 실행으로
+    연기한다(``WeatherRepository._attempt_partition_ddl``). ``error``는 원래의 57014다.
+    """
+
+    def __init__(self, name: str, error: OperationalError) -> None:
+        super().__init__(f"{name}: 단기예보 보존 재확인이 상한을 넘었습니다.")
+        self.name = name
+        self.error = error
 
 
 class SyncRunAlreadyActive(RuntimeError):
@@ -1244,6 +1285,120 @@ PURGE_SOURCE_RECORDS_SQL = (
     "    SELECT 1 FROM weather_alert_events ae "
     "    WHERE ae.source_record_key = sr.source_record_key)"
 )
+
+#: 야간 이력 정리의 현재값 포인터·원천 기록 삭제를 나누는 batch(2026-11-24 Map 호출 검토 L4).
+#: 예전에는 둘 다 상한 없는 단일 DELETE였다. 밀린 뒤 첫 실행이면 수백만 행의 WAL·bloat가 한
+#: transaction에 몰리고, 그동안 같은 포인터 행을 쓰는 수집 CAS가 그 행 lock 뒤에 줄을 섰다.
+#: 지금은 기본키 순서의 keyset batch마다 commit하고, batch마다 아래 문장·lock 상한을 건다.
+#: 1,000행은 단기예보 정리(``MAX_BATCH_SIZE``)와 같은 크기다. 그쪽 운영 실측(약 3초/1,000행,
+#: ``docs/shortterm-retention.md``)이 10초 문장 상한 안에 든다. 이 두 DELETE의 운영 시간은
+#: 재지 않았다.
+HISTORY_PURGE_BATCH_ROWS = 1000
+HISTORY_PURGE_STATEMENT_TIMEOUT_MS = 10_000
+HISTORY_PURGE_LOCK_TIMEOUT_MS = 1_000
+#: batch 하나가 lock/statement timeout·deadlock에 지면 rollback한 뒤 같은 위치에서 다시 시도하는
+#: 횟수와 첫 휴지(초, 시도마다 두 배). 모두 지면 그 단계의 나머지는 다음 실행에 맡긴다.
+HISTORY_PURGE_BATCH_ATTEMPTS = 4
+HISTORY_PURGE_RETRY_SECONDS = 2.0
+#: 원천 정리 한 실행의 시간 예산(초). 수집 run에 연결된 원천(``weather_sync_run_sources``)은
+#: 지우지 않고 그 연결 행을 지우는 코드도 없다. Dagster 수집기는 모든 원천에 run을 붙이므로
+#: ``fetched_at < cutoff`` 후보는 보존 기간보다 오래된 원천 이력 거의 전부이고 날마다 늘지만
+#: 거의 지워지지 않는다. 그래서 한 실행이 이력 전체를 훑지 않고 이 예산만큼 읽은 뒤 keyset
+#: 위치(``PurgeReport.sources_resume_after``)를 남기고, 다음 실행이 거기서 이어 읽는다(끝에
+#: 닿으면 처음부터). 1,800초는 ``weather_retention_job`` 실행 상한 7,200초의 1/4로, 앞 단계
+#: (파티션 DDL 재시도·FK 검증)에 나머지를 남긴다. 운영 원천 수와 batch 시간은 재지 않았다.
+HISTORY_SOURCE_PURGE_BUDGET_SECONDS = 1800.0
+
+#: ``SHORT_FORECAST_PREDICATE``를 fact 별칭 ``wv``로 한정한 형태(포인터 정리의 보존 조건).
+_QUALIFIED_SHORT_FORECAST_PREDICATE = (
+    SHORT_FORECAST_PREDICATE.replace("provider =", "wv.provider =")
+    .replace("dataset_key =", "wv.dataset_key =")
+    .replace("weather_domain =", "wv.weather_domain =")
+    .replace("forecast_style =", "wv.forecast_style =")
+    .replace("valid_at IS", "wv.valid_at IS")
+)
+
+
+def _keyset_purge_sql(
+    *, table: str, alias: str, key: str, cutoff_column: str, resume: bool, delete_where: str
+) -> str:
+    """keyset batch 한 번: 후보를 고르고, 그중 ``delete_where``를 만족하는 행만 지운다.
+
+    후보는 ``cutoff_column < :cutoff``인 행을 기본키 ``key`` 순서로 ``HISTORY_PURGE_BATCH_ROWS``개
+    (``resume``이면 ``:after`` 뒤부터)다. 결과 한 행은 (후보 수, 마지막 후보 키, 지운 수)다. 후보
+    수가 batch보다 적으면 남은 후보가 없다. 지우지 않은 후보(보존·인용 중)도 위치를 넘기므로
+    다음 batch가 같은 행을 다시 읽지 않는다. LIMIT은 상수로 넣는다(prepared 문장의 generic
+    plan이 매개변수 LIMIT을 행의 10%로 추정해 기본키 순서 대신 전체 정렬을 고르지 않게).
+    DELETE는 후보 키 배열(``= ANY``)로 기본키를 찾아간다. ``IN (SELECT ...)`` semi-join은 후보
+    추정이 작을 때 표를 훑는 hash join으로 갈 수 있다.
+    """
+    after = f" AND c.{key} > :after" if resume else ""
+    return (
+        "WITH candidates AS MATERIALIZED ("
+        f" SELECT c.{key} AS candidate_key FROM {table} c"
+        f" WHERE c.{cutoff_column} < :cutoff{after}"
+        f" ORDER BY c.{key} LIMIT {int(HISTORY_PURGE_BATCH_ROWS)}"
+        "), deleted AS ("
+        f"{delete_where} AND {alias}.{key} = ANY(ARRAY(SELECT candidate_key FROM candidates))"
+        " RETURNING 1"
+        ") SELECT (SELECT count(*) FROM candidates),"
+        " (SELECT max(candidate_key) FROM candidates),"
+        " (SELECT count(*) FROM deleted)"
+    )
+
+
+def pointer_purge_sql(*, resume: bool) -> str:
+    """만료 일자의 fact를 가리키는 현재값 포인터 한 batch를 지운다.
+
+    지운 뒤 그 일자 partition을 떼어낼 수 있다. 오래된 known_at이어도 최근 6시간·미래 valid_at의
+    단기예보를 가리키는 포인터는 남긴다(그 partition도 보존된다). 수집 CAS가 batch 사이에 포인터를
+    더 새 판으로 옮겼으면 DELETE의 known_at 조건을 다시 평가해 지우지 않는다.
+    """
+    return _keyset_purge_sql(
+        table="weather_current_values",
+        alias="cv",
+        key="value_id",
+        cutoff_column="known_at",
+        resume=resume,
+        delete_where=(
+            "DELETE FROM weather_current_values cv WHERE cv.known_at < :cutoff "
+            "AND NOT EXISTS (SELECT 1 FROM weather_values wv "
+            "WHERE wv.value_id = cv.value_id AND wv.known_at = cv.known_at AND "
+            + _QUALIFIED_SHORT_FORECAST_PREDICATE
+            + " AND wv.valid_at >= :short_cutoff)"
+        ),
+    )
+
+
+def source_purge_sql(*, resume: bool, held: str = "") -> str:
+    """아무것도 인용하지 않는 만료 원천 기록 한 batch를 지운다(``PURGE_SOURCE_RECORDS_SQL``).
+
+    ``held``는 떼어 두고 아직 지우지 못한 표의 인용을 막는 ``NOT EXISTS`` 조건들이다.
+    """
+    return _keyset_purge_sql(
+        table="weather_source_records",
+        alias="sr",
+        key="source_record_key",
+        cutoff_column="fetched_at",
+        resume=resume,
+        delete_where=PURGE_SOURCE_RECORDS_SQL + held,
+    )
+
+
+@dataclass(frozen=True)
+class _HistoryPurgeProgress:
+    """keyset batch로 나눈 정리 한 단계의 결과(``WeatherRepository._run_history_purge_batches``).
+
+    ``complete``이면 끝까지 읽었고 ``resume_after``는 None이다. 아니면 예산이 다했거나
+    (``deferred=False``) batch가 재시도 끝에도 상한에 졌다(``deferred=True``). 어느 쪽이든
+    ``resume_after``에서 다음 실행이 이어 읽는다(None이면 처음부터).
+    """
+
+    deleted: int
+    scanned: int
+    complete: bool
+    deferred: bool
+    resume_after: str | None
 
 #: Kept as one string because both schema paths must install it byte-identically
 #: -- ``create_schema`` here and the alembic revision -- and
@@ -2009,11 +2164,16 @@ class WeatherRepository:
         # A pending source row in the same batch must not be autoflushed while
         # checking the alternate identity; otherwise PostgreSQL raises the
         # unique constraint before we can fold the replay into that row.
+        # 재수집 판정은 identity 열만 본다. 원문 payload(최대 8MiB)를 읽어 identity map에 두지
+        # 않는다(2026-11-24 L6). 같은 batch의 다른 조회도 payload를 쓰지 않는다.
         with session.no_autoflush:
-            row = session.get(SourceRecordRow, source_record_key)
+            row = session.get(
+                SourceRecordRow, source_record_key, options=[defer(SourceRecordRow.payload)]
+            )
             if row is None:
                 row = session.scalar(
                     select(SourceRecordRow)
+                    .options(defer(SourceRecordRow.payload))
                     .where(
                         SourceRecordRow.provider == provider,
                         SourceRecordRow.dataset_key == dataset_key,
@@ -2137,7 +2297,9 @@ class WeatherRepository:
         explicit_source = value.source_record_key is not None
         source = source_rows.get(source_key)
         if source is None:
-            source = session.get(SourceRecordRow, source_key)
+            source = session.get(
+                SourceRecordRow, source_key, options=[defer(SourceRecordRow.payload)]
+            )
             if source is not None:
                 source_rows[source_key] = source
         if source is None:
@@ -2737,6 +2899,37 @@ class WeatherRepository:
         timeout = ddl_lock_timeout_ms(session.connection())
         session.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
 
+    def _set_ingest_write_limits(self, session: Session) -> None:
+        """원천·fact를 게시하는 수집 transaction의 lock·문장·유휴 상한(2026-11-24 L5).
+
+        lock 대기는 ``_set_ingest_lock_timeout``과 같다. 문장(``INGEST_STATEMENT_TIMEOUT_MS``)과
+        문장 사이 유휴(``INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS``)는 이 transaction에만
+        ``set_config(..., true)``로 걸어 끝나면 연결 설정으로 돌아간다. 연결·role에 이미 더 엄격한
+        값이 있으면 그 값을 둔다. ``_set_ingest_lock_timeout``을 쓰는 export 읽기·lifecycle
+        transaction에는 걸지 않는다(writer 경로만).
+        """
+        self._set_ingest_lock_timeout(session)
+        inherited = dict(session.execute(text(
+            "SELECT name, setting::bigint FROM pg_settings "
+            "WHERE name IN ('statement_timeout', 'idle_in_transaction_session_timeout')"
+        )).all())
+        statement = min(
+            inherited.get("statement_timeout") or INGEST_STATEMENT_TIMEOUT_MS,
+            INGEST_STATEMENT_TIMEOUT_MS,
+        )
+        idle = min(
+            inherited.get("idle_in_transaction_session_timeout")
+            or INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+            INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+        )
+        session.execute(
+            text(
+                "SELECT set_config('statement_timeout', :statement, true), "
+                "set_config('idle_in_transaction_session_timeout', :idle, true)"
+            ),
+            {"statement": f"{int(statement)}ms", "idle": f"{int(idle)}ms"},
+        )
+
     def _retry_lock_race(self, step: Callable[[], _T]) -> _T:
         """Run one ingest transaction, retrying a lost lock race from scratch.
 
@@ -2794,7 +2987,7 @@ class WeatherRepository:
         if export_capture is None:
             def ordinary_step() -> int:
                 with self._session_factory.begin() as session:
-                    self._set_ingest_lock_timeout(session)
+                    self._set_ingest_write_limits(session)
                     return self._ingest_batch_session(session, records, facts)
             return self._retry_lock_race(ordinary_step)
 
@@ -2809,7 +3002,7 @@ class WeatherRepository:
         def step() -> tuple[int, PreparedExportChunk | None]:
             prepared: list[PreparedExportChunk] = []
             with self._session_factory.begin() as session:
-                self._set_ingest_lock_timeout(session)
+                self._set_ingest_write_limits(session)
                 loaded = self._ingest_batch_session(
                     session, records, facts, export_capture=export_capture, prepared=prepared,
                     input_digest=input_digest,
@@ -2862,7 +3055,7 @@ class WeatherRepository:
         def step() -> tuple[int, list[str]]:
             skipped: set[str] = set()
             with self._session_factory.begin() as session:
-                self._set_ingest_lock_timeout(session)
+                self._set_ingest_write_limits(session)
                 loaded = self._ingest_batch_session(session, records, facts, skipped=skipped)
             return loaded, sorted(skipped)
 
@@ -2900,7 +3093,7 @@ class WeatherRepository:
 
         def step() -> tuple[int, SyncRun, int]:
             with self._session_factory.begin() as session:
-                self._set_ingest_lock_timeout(session)
+                self._set_ingest_write_limits(session)
                 loaded = self._ingest_batch_session(session, source_records, values)
                 if values_loaded_offset is not None:
                     loaded += values_loaded_offset
@@ -5052,6 +5245,7 @@ class WeatherRepository:
             "cutoff": cutoff.isoformat(), "matched_in_batch": 0,
             "pointers_deleted": 0, "facts_deleted": 0,
             "remaining": None, "deferred": False, "last_key": None, "error_class": None,
+            "deferred_reason": None,
         }
         try:
             with self._session_factory.begin() as session:
@@ -5062,7 +5256,9 @@ class WeatherRepository:
                 if not dry_run and not session.scalar(text(
                     "SELECT pg_try_advisory_xact_lock(hashtext('weather_history_purge'))"
                 )):
+                    # 일별 이력 정리(weather_retention_job)가 같은 표를 정리하는 중이다.
                     report["deferred"] = True
+                    report["deferred_reason"] = "history_purge_running"
                     report["elapsed_seconds"] = time.monotonic() - started
                     return report
                 statement = SHORT_FORECAST_CANDIDATES_SQL
@@ -5129,6 +5325,7 @@ class WeatherRepository:
                 matched_in_batch=0, pointers_deleted=0, facts_deleted=0,
                 remaining=None, deferred=True, last_key=None,
                 error_class=type(exc.orig).__name__,
+                deferred_reason=type(exc.orig).__name__,
             )
         report["elapsed_seconds"] = time.monotonic() - started
         return report
@@ -5139,6 +5336,8 @@ class WeatherRepository:
         retention_days: int,
         ahead_days: int = 7,
         prior_unmarked: Sequence[str] = (),
+        sources_after: str | None = None,
+        sources_budget_seconds: float | None = None,
     ) -> PurgeReport:
         """Drop the days that have fallen out of the window, and make new ones.
 
@@ -5150,8 +5349,10 @@ class WeatherRepository:
 
         Ingestion never pauses, so every step that needs the fact table
         exclusively is one short transaction for one day, takes its locks up
-        front in the ingest's order, waits for a quiet moment between a few
-        attempts (``_try_partition_ddl``) -- and when it still loses, is
+        front in the ingest's order, waits for a quiet moment before each of a
+        few attempts and gives up a lock wait after ``BRIEF_DDL_LOCK_TIMEOUT_MS``
+        unless only autovacuum is in the way (``_try_partition_ddl``,
+        ``lock_table``) -- and when it still loses, is
         *deferred*: named in the report and retried by the next run, while the
         rest of this run carries on.  Until 2026-10-05 one lost race failed the
         whole run, night after night, and retention stopped without anybody
@@ -5168,6 +5369,9 @@ class WeatherRepository:
            step 3 refuse -- a fact must never vanish from under one.  A location
            that stopped reporting therefore loses its current value once its
            last reading ages out, which is what "we keep N days" means.
+           keyset batch(``HISTORY_PURGE_BATCH_ROWS``)마다 commit한다(2026-11-24 L4,
+           ``_run_history_purge_batches``). batch가 끝내 lock/문장 상한에 지면
+           (``pointers_deferred``) 이번 실행은 만료 일자를 떼지 않고 연기한다.
         3. Detach the expired dated partitions, oldest first, one per
            transaction, and drop each in a transaction of its own (the drop
            locks the source-record and location tables exclusively; see
@@ -5178,15 +5382,26 @@ class WeatherRepository:
            while writers carry on.  A detached table whose drop was deferred
            is found again by name (``detached_leftovers``).
         4. Delete the source records nothing cites any more.  They are not
-           partitioned -- they are small -- so they are still deleted.
+           partitioned -- they are small -- so they are still deleted, in the
+           same keyset batches as step 2; a batch that keeps losing leaves the
+           rest to the next run (``sources_deferred``).
+           run에 연결된 원천은 지우지 않으므로 후보는 오래된 원천 이력 거의 전부다. 한 실행은
+           ``sources_after`` 뒤부터 ``sources_budget_seconds``(기본
+           ``HISTORY_SOURCE_PURGE_BUDGET_SECONDS``)만큼 읽고, 다음 실행이 이어 읽을 위치를
+           ``sources_resume_after``로 돌려준다(끝까지 읽었으면 None).
 
         ``prior_unmarked`` is the previous run's ``partitions_unmarked``: days
         it missed but could not mark.  They count as marked, so a second miss
         is still overdue (the Dagster asset reads them back from that run's
-        record).
+        record).  ``sources_after``도 같은 기록에서 앞 실행의
+        ``sources_resume_after``를 읽어 넘긴다.
         """
         if retention_days <= 0:
             raise ValueError("retention_days는 1 이상이어야 합니다.")
+        if sources_after is not None and (not isinstance(sources_after, str) or not sources_after):
+            raise ValueError("sources_after는 비어 있지 않은 원천 키여야 합니다.")
+        if sources_budget_seconds is None:
+            sources_budget_seconds = HISTORY_SOURCE_PURGE_BUDGET_SECONDS
         cutoff = kst_now() - timedelta(days=retention_days)
         today = kst_now().date()
         self._deferrals_in_a_row = dict.fromkeys(PARTITION_DDL_BREAKERS, 0)
@@ -5195,56 +5410,28 @@ class WeatherRepository:
         )
         with self.engine.connect() as connection:
             forward_days = forward_partition_days(connection, today=today)
-        with self._session_factory.begin() as session:
-            session.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
-            )
-            pointers = session.execute(
-                text(
-                    "DELETE FROM weather_current_values cv WHERE cv.known_at < :cutoff "
-                    "AND NOT EXISTS (SELECT 1 FROM weather_values wv "
-                    "WHERE wv.value_id = cv.value_id AND wv.known_at = cv.known_at AND "
-                    + SHORT_FORECAST_PREDICATE.replace("provider =", "wv.provider =")
-                    .replace("dataset_key =", "wv.dataset_key =")
-                    .replace("weather_domain =", "wv.weather_domain =")
-                    .replace("forecast_style =", "wv.forecast_style =")
-                    .replace("valid_at IS", "wv.valid_at IS")
-                    + " AND wv.valid_at >= :short_cutoff)"
-                ),
-                {"cutoff": cutoff, "short_cutoff": short_forecast_cutoff(kst_now())},
-            ).rowcount
+        pointers, pointers_complete = self._purge_expired_pointers(cutoff)
+        # 남은 포인터가 가리키는 fact를 떼어 내면 FK 검증이 그 포인터를 한 번의 상한 없는
+        # DELETE(``delete_dangling_projection_rows``)로 지우게 된다. 포인터 정리를 끝내지 못한
+        # 밤에는 만료 일자를 떼지 않고 다음 실행에 맡긴다(이미 떼어 둔 표의 DROP은 계속한다).
         dropped, deferred, overdue, unmarked, retained = self._drop_expired_partitions(
-            cutoff.date(), prior_unmarked=frozenset(prior_unmarked)
+            cutoff.date(), prior_unmarked=frozenset(prior_unmarked), detach=pointers_complete
         )
         validation_deferred = not self._validate_fact_foreign_keys()
         with self._session_factory.begin() as session:
             session.execute(
                 text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
             )
-            # A detached table whose drop was deferred still holds facts that
-            # cite source records (ON DELETE RESTRICT), and the purge looks
-            # only at weather_values: those sources wait for the run that
-            # drops the table; every other expired source goes now.  The names
-            # come from the catalog and match weather_values_[0-9]{8}.  The
-            # operator swap's old DEFAULT, left detached when its drop did not
-            # commit, holds its sources the same way until the script is re-run.
-            holding = [name for name, _ in detached_leftovers(session.connection())]
-            if detached_default_present(session.connection()):
-                holding.append(DETACHED_DEFAULT)
-            held = "".join(
-                f' AND NOT EXISTS (SELECT 1 FROM "{name}" lv '
-                "WHERE lv.source_record_key = sr.source_record_key)"
-                for name in holding
-            )
             # Only for this transaction, and only DELETE: see PURGE_GUC.
             session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
             from .alert_event_store import purge_alert_events
 
             alert_events_deleted = purge_alert_events(session, cutoff=cutoff)
-            sources = session.execute(
-                text(PURGE_SOURCE_RECORDS_SQL + held), {"cutoff": cutoff}
-            ).rowcount
-            stranded = default_partition_rows(session.connection())
+        sources = self._purge_unreferenced_sources(
+            cutoff, after=sources_after, budget_seconds=sources_budget_seconds
+        )
+        with self.engine.connect() as connection:
+            stranded = default_partition_rows(connection)
         report = PurgeReport(
             cutoff=cutoff,
             partitions_created=tuple(created),
@@ -5256,8 +5443,12 @@ class WeatherRepository:
             partitions_unmarked=tuple(unmarked),
             foreign_key_validation_deferred=validation_deferred,
             partition_ddl_stopped=self._ddl_stopped(),
-            pointers_deleted=int(pointers or 0),
-            sources_deleted=int(sources or 0),
+            pointers_deleted=pointers,
+            pointers_deferred=not pointers_complete,
+            sources_deleted=sources.deleted,
+            sources_deferred=sources.deferred,
+            sources_scanned=sources.scanned,
+            sources_resume_after=sources.resume_after,
             alert_events_deleted=alert_events_deleted,
             rows_outside_any_partition=stranded,
             default_floor=floor,
@@ -5265,6 +5456,143 @@ class WeatherRepository:
         )
         observe_history_purged(len(dropped), report.sources_deleted)
         return report
+
+    def _purge_expired_pointers(self, cutoff: datetime) -> tuple[int, bool]:
+        """만료 일자를 가리키는 현재값 포인터를 keyset batch로 지운다(``pointer_purge_sql``).
+
+        ``(지운 수, 끝까지 했는지)``를 돌려준다. 보존 기준 시각(최근 6시간)은 실행 동안 고정한다.
+        """
+        short_cutoff = short_forecast_cutoff(kst_now())
+
+        def batch(session: Session, after: str | None) -> tuple[int, str | None, int]:
+            params: dict[str, Any] = {"cutoff": cutoff, "short_cutoff": short_cutoff}
+            if after is not None:
+                params["after"] = after
+            matched, last, removed = session.execute(
+                text(pointer_purge_sql(resume=after is not None)), params
+            ).one()
+            return int(matched), last, int(removed)
+
+        progress = self._run_history_purge_batches("pointers", batch)
+        return progress.deleted, progress.complete
+
+    def _purge_unreferenced_sources(
+        self, cutoff: datetime, *, after: str | None = None, budget_seconds: float | None = None
+    ) -> _HistoryPurgeProgress:
+        """아무것도 인용하지 않는 만료 원천 기록을 keyset batch로 지운다(``source_purge_sql``).
+
+        ``after`` 뒤부터 읽고, ``budget_seconds``가 지나면 batch 경계에서 멈춰 다음 실행이 이어
+        읽을 위치를 돌려준다(``HISTORY_SOURCE_PURGE_BUDGET_SECONDS``의 이유). 못 지운 나머지는
+        다음 실행이 지운다.
+        """
+
+        def batch(session: Session, after: str | None) -> tuple[int, str | None, int]:
+            connection = session.connection()
+            # A detached table whose drop was deferred still holds facts that
+            # cite source records (ON DELETE RESTRICT), and the purge looks
+            # only at weather_values: those sources wait for the run that
+            # drops the table; every other expired source goes now.  The names
+            # come from the catalog and match weather_values_[0-9]{8}.  The
+            # operator swap's old DEFAULT, left detached when its drop did not
+            # commit, holds its sources the same way until the script is re-run.
+            # batch마다 advisory lock 아래에서 다시 읽는다. batch 사이에 운영자 교체가
+            # 끼어들 수 있다.
+            holding = [name for name, _ in detached_leftovers(connection)]
+            if detached_default_present(connection):
+                holding.append(DETACHED_DEFAULT)
+            held = "".join(
+                f' AND NOT EXISTS (SELECT 1 FROM "{name}" lv '
+                "WHERE lv.source_record_key = sr.source_record_key)"
+                for name in holding
+            )
+            # Only for this transaction, and only DELETE: see PURGE_GUC.
+            session.execute(text(f"SET LOCAL {PURGE_GUC} = 'on'"))
+            params: dict[str, Any] = {"cutoff": cutoff}
+            if after is not None:
+                params["after"] = after
+            matched, last, removed = session.execute(
+                text(source_purge_sql(resume=after is not None, held=held)), params
+            ).one()
+            return int(matched), last, int(removed)
+
+        deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
+        return self._run_history_purge_batches("sources", batch, after=after, deadline=deadline)
+
+    def _run_history_purge_batches(
+        self,
+        step: str,
+        batch: Callable[[Session, str | None], tuple[int, str | None, int]],
+        *,
+        after: str | None = None,
+        deadline: float | None = None,
+    ) -> _HistoryPurgeProgress:
+        """``batch``를 keyset 위치를 넘기며 batch마다 짧은 transaction으로 돌린다(L4).
+
+        각 transaction은 예전처럼 ``weather_history_purge`` advisory lock을 먼저 기다려
+        잡고(운영자 DEFAULT 교체·단기예보 정리와 겹치지 않게), 그 뒤에만 문장 10초·lock 1초
+        상한을 건다. lock 대기에 상한을 먼저 걸면 advisory lock 대기까지 1초에 끊긴다. batch는
+        ``(후보 수, 마지막 후보 키, 지운 수)``를 돌려준다. lock/statement timeout·deadlock
+        (``_SHORT_RETENTION_DEFERRABLE``)에 진 batch는 rollback되고 같은 위치에서
+        ``HISTORY_PURGE_BATCH_ATTEMPTS``번까지 다시 한다. 그래도 지면 앞 batch의 commit은 그대로
+        두고 ``deferred``로 멈춘다. 다른 오류는 전파한다.
+
+        ``after``에서 읽기 시작한다. ``deadline``(``time.monotonic()`` 기준)이 지나면 batch
+        하나를 commit한 경계에서 멈춘다(한 실행에 batch 하나는 늘 한다). 멈춘 경우
+        ``resume_after``가 다음 실행이 이어 읽을 위치다. 연기면 진 batch의 시작 위치라 다음
+        실행이 그 batch부터 다시 한다.
+        """
+        deleted = 0
+        scanned = 0
+        batches = 0
+        while True:
+            outcome: tuple[int, str | None, int] | None = None
+            statement_limit = f"{int(HISTORY_PURGE_STATEMENT_TIMEOUT_MS)}ms"
+            lock_limit = f"{int(HISTORY_PURGE_LOCK_TIMEOUT_MS)}ms"
+            for attempt in range(1, HISTORY_PURGE_BATCH_ATTEMPTS + 1):
+                try:
+                    with self._session_factory.begin() as session:
+                        session.execute(text(
+                            "SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))"
+                        ))
+                        session.execute(text(f"SET LOCAL statement_timeout = '{statement_limit}'"))
+                        session.execute(text(f"SET LOCAL lock_timeout = '{lock_limit}'"))
+                        outcome = batch(session, after)
+                    break
+                except OperationalError as exc:
+                    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+                    if sqlstate not in _SHORT_RETENTION_DEFERRABLE:
+                        raise
+                    if attempt == HISTORY_PURGE_BATCH_ATTEMPTS:
+                        logger.warning(
+                            "weather_history_purge_deferred step=%s batches=%s deleted=%s "
+                            "sqlstate=%s",
+                            step, batches, deleted, sqlstate,
+                        )
+                        return _HistoryPurgeProgress(
+                            deleted=deleted, scanned=scanned, complete=False, deferred=True,
+                            resume_after=after,
+                        )
+                    time.sleep(HISTORY_PURGE_RETRY_SECONDS * 2 ** (attempt - 1))
+            assert outcome is not None
+            matched, last, removed = outcome
+            batches += 1
+            deleted += removed
+            scanned += matched
+            if matched < HISTORY_PURGE_BATCH_ROWS or last is None:
+                return _HistoryPurgeProgress(
+                    deleted=deleted, scanned=scanned, complete=True, deferred=False,
+                    resume_after=None,
+                )
+            after = last
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.info(
+                    "weather_history_purge_budget_reached step=%s batches=%s deleted=%s",
+                    step, batches, deleted,
+                )
+                return _HistoryPurgeProgress(
+                    deleted=deleted, scanned=scanned, complete=False, deferred=False,
+                    resume_after=after,
+                )
 
     def _partition_ddl(self, step: Callable[[Connection], _T]) -> _T:
         """Run one partition-DDL transaction, retrying a lost lock race.
@@ -5288,6 +5616,7 @@ class WeatherRepository:
         *,
         breaker: str,
         quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+        quiet_first: bool = True,
     ) -> tuple[bool, _T | None]:
         """``_partition_ddl`` that returns ``(False, None)`` instead of raising
         when every attempt lost its lock race: the step is deferred.
@@ -5296,10 +5625,15 @@ class WeatherRepository:
         ``breaker`` (``PARTITION_DDL_BREAKERS``) the run stops trying that
         kind of step: every later one is deferred without an attempt.  The
         other breaker's steps carry on.
+
+        ``quiet_first=False``는 수집·reader와 충돌하는 lock을 보통 잡지 않는 단계(이미 floor가
+        있는 DEFAULT 확인, SHARE UPDATE EXCLUSIVE의 VALIDATE)에서 첫 시도 앞의 대기를 건너뛴다.
         """
         if self._ddl_stopped(breaker):
             return False, None
-        done, result, _ = self._attempt_partition_ddl(step, quiet_on=quiet_on)
+        done, result, _ = self._attempt_partition_ddl(
+            step, quiet_on=quiet_on, quiet_first=quiet_first
+        )
         counts: dict[str, int] = self.__dict__.setdefault("_deferrals_in_a_row", {})
         counts[breaker] = 0 if done else counts.get(breaker, 0) + 1
         return done, result
@@ -5315,10 +5649,13 @@ class WeatherRepository:
         step: Callable[[Connection], _T],
         *,
         quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+        quiet_first: bool = True,
     ) -> tuple[bool, _T | None, OperationalError | None]:
         last: OperationalError | None = None
         for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
-            if attempt > 1:
+            # 첫 시도 앞에서도 조용한 순간을 기다린다(L3): 눈먼 첫 시도는 열린 수집 뒤에
+            # 줄을 서고, 그동안 뒤에 온 지도 reader를 자기 뒤에 세운다.
+            if attempt > 1 or quiet_first:
                 self._await_quiet_tables(PARTITION_DDL_RETRY_SECONDS, quiet_on)
             try:
                 with self.engine.begin() as connection:
@@ -5326,6 +5663,8 @@ class WeatherRepository:
                         text("SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))")
                     )
                     return True, step(connection), None
+            except PartitionRecheckTimedOut as exc:
+                last = exc.error
             except OperationalError as exc:
                 if not is_lock_conflict(exc):
                     raise
@@ -5361,6 +5700,8 @@ class WeatherRepository:
         done, floor = self._try_partition_ddl(
             lambda connection: self._forward_floor(connection, start=start),
             breaker="forward",
+            # floor가 있으면 표 lock 없는 catalog 읽기다(없는 새 DB에서만 lock을 잡는다).
+            quiet_first=False,
         )
         if not done:
             # Only reachable while DEFAULT has no floor yet (a fresh database):
@@ -5417,7 +5758,7 @@ class WeatherRepository:
 
     @staticmethod
     def _create_forward_day(connection: Connection, day: date) -> list[str]:
-        lock_for_partition_ddl(connection)
+        lock_for_partition_ddl(connection, brief=True)
         return ensure_partitions(connection, start=day, end=day)
 
     @staticmethod
@@ -5442,7 +5783,7 @@ class WeatherRepository:
         return created, floor
 
     def _drop_expired_partitions(
-        self, cutoff: date, *, prior_unmarked: frozenset[str] = frozenset()
+        self, cutoff: date, *, prior_unmarked: frozenset[str] = frozenset(), detach: bool = True
     ) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
         """Detach and drop each expired day.
 
@@ -5457,6 +5798,9 @@ class WeatherRepository:
         and is *overdue* when an earlier run had marked it or listed it in
         ``prior_unmarked``; a mark that could not be written is returned in
         ``unmarked`` for the next run.
+
+        ``detach=False``(포인터 정리를 끝내지 못한 실행)이면 이미 떼어 둔 표의 DROP만 하고 만료
+        일자는 떼지 않는다. 그 날들은 할 일이었으므로 표시되고 다음 실행도 놓치면 overdue다.
         """
         with self.engine.connect() as connection:
             leftovers = [
@@ -5503,6 +5847,10 @@ class WeatherRepository:
         for name in expired:
             if held:
                 missed(name, due=False)
+                continue
+            if not detach:
+                # 포인터 정리를 끝내지 못했다(``pointers_deferred``). 그 날은 할 일이었고 못 했다.
+                missed(name)
                 continue
             try:
                 done, detached = self._try_partition_ddl(
@@ -5558,8 +5906,16 @@ class WeatherRepository:
         return marked_before, False
 
     @staticmethod
-    def _preserve_short_forecast_partition(connection: Connection, name: str) -> None:
-        """보존할 valid_at이 있거나 조회가 실패하면 partition을 삭제하지 않는다."""
+    def _preserve_short_forecast_partition(
+        connection: Connection,
+        name: str,
+        *,
+        cap_ms: int = PARTITION_GUARD_STATEMENT_TIMEOUT_MS,
+    ) -> None:
+        """보존할 valid_at이 있거나 조회가 실패하면 partition을 삭제하지 않는다.
+
+        문장 상한은 기존 ``statement_timeout``과 ``cap_ms`` 중 작은 쪽이다.
+        """
         # catalog 날짜 이름과 정본 DEFAULT 이름 이외의 식별자는 허용하지 않는다.
         dated = (
             name.startswith("weather_values_")
@@ -5576,8 +5932,8 @@ class WeatherRepository:
             not isinstance(previous, str) or type(milliseconds) is not int or milliseconds < 0
         ):
             raise RuntimeError("기존 statement_timeout을 확인할 수 없습니다.")
-        # 0은 무제한이다. 이미5초보다 작은 예산이면 그 예산도 늘리지 않는다.
-        cap = min(milliseconds, 5000) if milliseconds else 5000
+        # 0은 무제한이다. 이미 cap_ms보다 작은 예산이면 그 예산도 늘리지 않는다.
+        cap = min(milliseconds, int(cap_ms)) if milliseconds else int(cap_ms)
         connection.execute(text(f"SET LOCAL statement_timeout = '{cap}ms'"))
         retained = connection.scalar(
             text(
@@ -5597,22 +5953,57 @@ class WeatherRepository:
 
     @staticmethod
     def _detach_expired(connection: Connection, name: str) -> bool:
+        """Detach one expired day; ``False`` if another run already did.
+
+        단기예보 보존 검사는 ACCESS EXCLUSIVE 전에 한다(2026-11-24 L1). 그 전에는 부모·
+        projection을 잡은 채 상한 5초의 EXISTS를 돌려 지도 읽기를 그만큼 세웠다. 이 검사는
+        그 날 파티션의 ACCESS SHARE만 잡으므로 수집·reader 누구도 막지 않고, 보존 대상이면
+        표 lock 없이 끝난다(``ShortForecastPartitionRetained``).
+
+        검사와 lock 사이에 그 날짜로 새 단기예보가 들어올 수 있으므로(늦은 재수집) lock 뒤에
+        같은 검사를 짧은 상한으로 한 번 더 한다. lock을 쥔 뒤에는 새 행이 들어올 수 없어 이
+        재확인 결과가 DETACH까지 유지된다.
+        """
         if name not in {partition for partition, _ in existing_partitions(connection)}:
             return False  # another run got there first
-        lock_for_partition_ddl(connection, drop_foreign_keys=True)
         WeatherRepository._preserve_short_forecast_partition(connection, name)
+        lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
+        WeatherRepository._recheck_short_forecast_partition(connection, name)
         keys = drop_foreign_keys_into_facts(connection)
         detach_partition(connection, name)
         readd_foreign_keys_not_valid(connection, keys)
         return True
 
     @staticmethod
+    def _recheck_short_forecast_partition(connection: Connection, name: str) -> None:
+        """lock을 쥔 뒤의 보존 재확인. 상한을 넘기면 ``PartitionRecheckTimedOut``."""
+        try:
+            WeatherRepository._preserve_short_forecast_partition(
+                connection, name, cap_ms=PARTITION_RECHECK_STATEMENT_TIMEOUT_MS
+            )
+        except OperationalError as exc:
+            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "57014":
+                raise
+            raise PartitionRecheckTimedOut(name, exc) from exc
+
+    @staticmethod
     def _drop_detached(connection: Connection, name: str) -> bool:
+        """Drop one detached day; ``False`` if it is gone already.
+
+        보존 검사는 참조 표(``weather_source_records``·``weather_locations``)의 ACCESS
+        EXCLUSIVE 전에 한다(2026-11-24 L2). 그 전에는 지도 API가 읽는 ``weather_locations``까지
+        잡은 채 상한 5초의 EXISTS를 돌렸다. 떼어낸 표에는 수집이 쓰지 않지만, 검사 전에 그 표만
+        SHARE로 잠가 쓰기를 막아 검사 결과가 DROP까지 유지되게 한다. SHARE는 읽기와 FK 검사의
+        KEY SHARE를 막지 않고 API는 떼어낸 표를 읽지 않는다. 그 표를 autovacuum이 처리 중이면
+        여기서(뜨거운 lock 없이) 기다린다.
+        """
         if name not in {table for table, _ in detached_leftovers(connection)}:
             return False
-        lock_for_detached_drop(connection)
-        connection.execute(text(f'LOCK TABLE "{name}" IN ACCESS EXCLUSIVE MODE'))
+        set_ddl_timeouts(connection, lock_timeout_ms=BRIEF_DDL_LOCK_TIMEOUT_MS)
+        lock_table(connection, name, "SHARE", brief=True)
         WeatherRepository._preserve_short_forecast_partition(connection, name)
+        lock_for_detached_drop(connection, brief=True)
+        lock_table(connection, name, "ACCESS EXCLUSIVE", brief=True)
         drop_detached_partition(connection, name)
         return True
 
@@ -5631,7 +6022,10 @@ class WeatherRepository:
         for _ in range(2):
             try:
                 done, _validated = self._try_partition_ddl(
-                    validate_foreign_keys_into_facts, breaker="retention"
+                    validate_foreign_keys_into_facts,
+                    breaker="retention",
+                    # SHARE UPDATE EXCLUSIVE: 수집·reader와 충돌하지 않아 기다릴 이유가 없다.
+                    quiet_first=False,
                 )
                 return done
             except OperationalError as exc:

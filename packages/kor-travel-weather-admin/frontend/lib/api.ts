@@ -161,7 +161,68 @@ export type Provider = {
 
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<ApiEnvelope<T>> {
+/**
+ * GET 한 시도의 브라우저 상한(헤더+본문). BFF 헤더 예산(15초)보다 길게 두어 보통은 BFF의
+ * 504·retry-after가 먼저 도착한다. 이 상한은 BFF 자체가 멈췄거나 본문 전송이 멈춘 경우의 끝이다.
+ */
+export const GET_ATTEMPT_TIMEOUT_MS = 20_000;
+/** GET 첫 시도 뒤 최대 재시도 횟수. 총 시도는 3번이다. */
+export const GET_MAX_RETRIES = 2;
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
+const RETRY_BASE_DELAY_MS = 500;
+/** Retry-After가 이보다 길면 기다리지 않고 바로 실패를 보여준다. */
+const MAX_RETRY_AFTER_MS = 10_000;
+
+function retryAfterMs(header: string | null, now: number): number | null {
+  const value = header?.trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return Number(value) * 1000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+/**
+ * `retry`번째 재시도(0부터) 전 대기(ms). 지수 backoff(0.5s, 1s)와 Retry-After 중 큰 값에
+ * backoff의 절반까지 jitter를 더한다. Retry-After가 10초를 넘으면 null(재시도하지 않음)이다.
+ */
+export function retryDelayMs(
+  retry: number,
+  retryAfter: string | null,
+  random: () => number = Math.random,
+  now: number = Date.now(),
+): number | null {
+  const backoff = RETRY_BASE_DELAY_MS * 2 ** retry;
+  const hinted = retryAfterMs(retryAfter, now);
+  if (hinted !== null && hinted > MAX_RETRY_AFTER_MS) return null;
+  return Math.round(Math.max(backoff, hinted ?? 0) + random() * (backoff / 2));
+}
+
+function waitBeforeRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+type ApiPayload<T> = (ApiEnvelope<T> & { detail?: string }) | { detail?: string };
+type ApiBody<T> = { data: ApiPayload<T> | null; text: string };
+
+async function send<T>(
+  path: string,
+  options: RequestOptions,
+  signal: AbortSignal | null | undefined,
+): Promise<{ response: Response; body: ApiBody<T> }> {
   const response = await fetch(`/api/weather${path}`, {
     ...options,
     headers: {
@@ -170,15 +231,71 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     cache: "no-store",
+    signal,
   });
   // See lib/http.ts: parsing before checking the status turns every plain-text
   // or HTML failure into a SyntaxError and hides what the server said.
-  const body = await readBody<(ApiEnvelope<T> & { detail?: string }) | { detail?: string }>(
-    response,
-  );
+  return { response, body: await readBody<ApiPayload<T>>(response) };
+}
+
+function unwrap<T>(response: Response, body: ApiBody<T>): ApiEnvelope<T> {
   if (!response.ok) throw new Error(failureMessage(response, body));
   if (!body.data) throw new Error(`응답을 해석하지 못했습니다 (${response.status})`);
   return body.data as ApiEnvelope<T>;
+}
+
+/**
+ * 시간 초과(504·시도 상한) 뒤에도 다시 보내는 경로. 공개 조회(`/v1/weather/*`)는 API가 DB 마감
+ * (statement_timeout)으로 버려진 조회를 스스로 끝낸다. 관리 GET은 그런 마감이 없어 BFF가 끊어도
+ * API thread가 계속 돌므로, 다시 보내면 같은 느린 조회가 겹쳐 쌓인다.
+ */
+function timeoutRetryAllowed(path: string): boolean {
+  return path.startsWith("/v1/weather/");
+}
+
+/**
+ * GET은 시도마다 20초 상한을 두고 502/503/504·네트워크 오류·상한 초과를 최대 2번 다시 보낸다.
+ * 504와 상한 초과는 공개 조회(`/v1/weather/*`)만 다시 보낸다(timeoutRetryAllowed).
+ * 호출자 signal 취소는 대기 중에도 즉시 그 취소로 끝낸다. POST/PATCH/PUT/DELETE는 서버가
+ * 이미 반영했을 수 있으므로 상한·재전송 없이 한 번만 보낸다.
+ */
+async function request<T>(path: string, options: RequestOptions = {}): Promise<ApiEnvelope<T>> {
+  const method = (options.method ?? "GET").toUpperCase();
+  if (method !== "GET") {
+    const { response, body } = await send<T>(path, options, options.signal);
+    return unwrap(response, body);
+  }
+  const callerSignal = options.signal ?? undefined;
+  const retryTimeouts = timeoutRetryAllowed(path);
+  for (let retry = 0; ; retry += 1) {
+    callerSignal?.throwIfAborted();
+    const timeout = AbortSignal.timeout(GET_ATTEMPT_TIMEOUT_MS);
+    const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
+    let delay: number | null;
+    try {
+      const { response, body } = await send<T>(path, options, signal);
+      const retryable = RETRYABLE_STATUSES.has(response.status) &&
+        (response.status !== 504 || retryTimeouts);
+      if (!retryable || retry >= GET_MAX_RETRIES) {
+        return unwrap(response, body);
+      }
+      delay = retryDelayMs(retry, response.headers.get("retry-after"));
+      if (delay === null) return unwrap(response, body);
+    } catch (error) {
+      if (callerSignal?.aborted) throw error;
+      const timedOut = timeout.aborted;
+      // fetch의 전송 실패는 TypeError다. 그 밖의 예외는 코드 결함이므로 그대로 올린다.
+      if (!timedOut && !(error instanceof TypeError)) throw error;
+      if (retry >= GET_MAX_RETRIES || (timedOut && !retryTimeouts)) {
+        if (!timedOut) throw error;
+        throw new Error(
+          `날씨 서버 응답이 ${GET_ATTEMPT_TIMEOUT_MS / 1000}초 안에 오지 않았습니다. 잠시 후 다시 시도하세요.`,
+        );
+      }
+      delay = retryDelayMs(retry, null) ?? 0;
+    }
+    await waitBeforeRetry(delay, callerSignal);
+  }
 }
 
 export function getLocations(
@@ -432,6 +549,46 @@ export function getHealth(): Promise<{ status: string; service: string; version:
   return fetch("/api/weather/health", { cache: "no-store" }).then(async (response) => {
     if (!response.ok) throw new Error(`API 연결 실패 (${response.status})`);
     return (await response.json()) as { status: string; service: string; version: string | null };
+  });
+}
+
+/** `GET /ready`의 시작 warmup 단계(OpenAPI `ReadinessStepOut`). */
+export type ApiReadinessStep = {
+  name: "connections" | "session_check" | "regions" | "locations" | "markers" | "location_detail";
+  outcome: "ok" | "failed" | "skipped";
+  elapsed_ms: number;
+};
+
+/**
+ * `GET /ready` 본문(OpenAPI `ReadinessOut`). API 프로세스 시작 warmup 상태이며 DB 건강 검사가 아니다.
+ * `ready`는 warmup이 끝났거나(done·skipped) 꺼져 있으면(disabled) true다.
+ */
+export type ApiReadiness = {
+  ready: boolean;
+  warm: "disabled" | "running" | "done" | "skipped";
+  reason: "budget" | "busy" | "error" | "shutdown" | null;
+  elapsed_ms: number | null;
+  steps: ApiReadinessStep[];
+};
+
+function isReadiness(body: unknown): body is ApiReadiness {
+  if (typeof body !== "object" || body === null) return false;
+  const value = body as Record<string, unknown>;
+  return typeof value.ready === "boolean" && typeof value.warm === "string" && Array.isArray(value.steps);
+}
+
+/**
+ * 503(warmup 진행 중)도 같은 본문을 주는 정상 답이다. 그 밖의 상태는 실패로 본다.
+ * BFF도 API 전송 실패를 503 `{detail}`로 돌려주므로, 본문이 `ReadinessOut` 모양이 아니면 실패다.
+ */
+export function getReadiness(): Promise<ApiReadiness> {
+  return fetch("/api/weather/ready", { cache: "no-store" }).then(async (response) => {
+    if (response.status !== 200 && response.status !== 503) {
+      throw new Error(`API 연결 실패 (${response.status})`);
+    }
+    const body: unknown = await response.json().catch(() => null);
+    if (!isReadiness(body)) throw new Error(`API 연결 실패 (${response.status})`);
+    return body;
   });
 }
 

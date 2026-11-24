@@ -147,9 +147,10 @@ describe("필터 범위별 동시2 marker queue", () => {
     expect(pending.slice(0, 2).every((row) => row.signal?.aborted)).toBe(true);
     expect(pending).toHaveLength(change === "mode" ? 2 : 4); view.cleanup(); await flush();
   });
+  // 502/503/504는 request()가 먼저 다시 보낸다(lib/api-retry.test.ts). 아래 실패 시험은 최종 실패(500)를 쓴다.
   it("실패chunk만retry하고성공cache나성공ID를다시조회하지않는다", async () => {
     const pending = setupFetch(); const view = mount(ids(120));
-    respond(pending[0]); respond(pending[1], 504); await flush();
+    respond(pending[0]); respond(pending[1], 500); await flush();
     expect(pending).toHaveLength(2); expect(Object.keys(view.summariesRef.current)).toHaveLength(60);
     const good = view.summariesRef.current.a0; view.retry();
     expect(pending).toHaveLength(3); expect(pending[2].ids).toEqual(ids(60, 60));
@@ -165,8 +166,33 @@ describe("필터 범위별 동시2 marker queue", () => {
   });
   it("viewport밖실패는오류를남기지않고다시보이면표시한다", async () => {
     const pending = setupFetch(); const view = mount(["a"]); view.render(["b"]);
-    respond(pending[0], 504); await flush(); expect(view.setMarkerError).toHaveBeenLastCalledWith("");
+    respond(pending[0], 500); await flush(); expect(view.setMarkerError).toHaveBeenLastCalledWith("");
     respond(pending[1]); await flush(); view.render(["a"]);
     expect(view.setMarkerError.mock.lastCall?.[0]).toBeTruthy(); expect(pending).toHaveLength(2); view.cleanup();
+  });
+  it("일시504chunk는같은worker가backoff뒤다시보내고성공하면오류없이채운다", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const pending = setupFetch(); const view = mount(ids(120));
+      respond(pending[0]); respond(pending[1], 504); await vi.advanceTimersByTimeAsync(499);
+      expect(pending).toHaveLength(2); expect(Object.keys(view.summariesRef.current)).toHaveLength(60);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(pending).toHaveLength(3); expect(pending[2].ids).toEqual(ids(60, 60));
+      respond(pending[2]); await vi.advanceTimersByTimeAsync(0);
+      expect(Object.keys(view.summariesRef.current)).toHaveLength(120);
+      expect(view.setMarkerError).toHaveBeenLastCalledWith(""); view.cleanup();
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+  it("재시도대기중범위가바뀌면옛chunk를다시보내지않는다", async () => {
+    vi.useFakeTimers(); vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const pending = setupFetch(); const view = mount(["a"]);
+      respond(pending[0], 503); await vi.advanceTimersByTimeAsync(100);
+      view.render(["a"], { kinds: ["changed"] }); await vi.runAllTimersAsync();
+      // 옛 범위 signal은 대기 중 취소되어 3번째 요청(옛 chunk 재전송)이 생기지 않는다.
+      expect(pending[0].signal?.aborted).toBe(true);
+      expect(pending).toHaveLength(2); expect(pending[1].signal?.aborted).toBe(false);
+      view.cleanup();
+    } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   });
 });

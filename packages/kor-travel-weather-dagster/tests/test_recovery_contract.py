@@ -45,7 +45,7 @@ def test_actual_dagster_instance_accepts_recovery_and_slot_limits():
 
 
 def test_asset_jobs_use_a_single_step_worker():
-    job = definitions.regional_weather_job
+    job = definitions.defs.resolve_implicit_global_asset_job_def()
     result = job.executor_def.apply_config_mapping({"config": {}})
     assert result.success
     assert result.value["config"]["max_concurrent"] == 1

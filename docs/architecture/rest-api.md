@@ -9,6 +9,9 @@
 ## Public
 
 - `GET /health`, `GET /version`
+- `GET /ready` (API 시작 warmup 상태. 진행 중이면 503·`retry-after: 1`, 완료·생략·비활성이면
+  200. DB를 읽지 않으며 DB 건강 검사가 아니다. 본문·공개 범위는
+  [weather-api-prewarm.md](../weather-api-prewarm.md))
 - `GET /v1/weather/locations?search=&limit=&offset=` (항상 enabled만)
 - `GET /v1/weather/locations/{location_id}`
 - `GET /v1/weather/locations/{location_id}/latest?limit=`
