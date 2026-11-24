@@ -228,7 +228,7 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 | weather #283 | 지역 수집 원천별 job 4개 분리·일시 오류 재시도·보충 tick | 한 원천 실패가 나머지 승격을 막지 않음 → Map freshness 개선 | in-process run 4개가 겹쳐(산악 p50 646s) weather run 상한 6을 나눠 씀. 05·17시대 단기예보·외부 sweep과 겹치면 AirKorea·KMA run 대기 가능. 재시도는 트랜잭션 밖 | `transient_retry.py` docstring이 없는 `tests/test_transient_retry.py`를 가리킴 |
 | weather #285 (draft) | 특보 한 요청 수집·충돌 행 격리·차단기 | PinVi·지도 특보 최신성 회복 | 게시는 짧은 트랜잭션 1개, 원천 payload 최대 8MiB | **위험:** `PAGE_SIZE = ALERT_MAX_ROWS`(10,000)로 요청하고 응답 `numOfRows`가 다르면 실패하는데, 실측 근거는 `numOfRows=1000`뿐이다. data.go.kr가 상한을 두면 5분 run이 전부 실패하고 차단기로 간격이 60분까지 늘어난다. 머지 전 10,000 요청 실측 또는 1000 유지 권장. schedule 평가마다 engine 생성·dispose |
 | weather #282 (draft) | AirKorea 광주 통합 주소 측정소 13곳 누락 수정·partial | Map current에 측정소 13곳 추가 | 무시할 수준 | 광주·전남 두 bulk 묶음에서 이름만으로 매칭 → 같은 이름 전남 측정소가 active anchor에 없으면 광주 anchor에 잘못 붙을 수 있음(`raw.sidoName` 대조 권장, 낮음) |
-| map #1541 | n150 Dagster freeze 도구·schedule 6개 | freeze 동안 `weather_state_*` 7개 정지, 놓친 tick 미보충 → unfreeze 직후 첫 호출은 304 기대 어려운 전량 fetch(사실상 Map 쪽 cold start). A2·A3가 이 비용을 줄인다 | Weather DB와 무관 | 없음 |
+| map #1541 | n150 Dagster freeze 도구·schedule 6개 | freeze 동안 `weather_state_*` 7개 정지, 놓친 tick 미보충 → 창이 끝난 뒤에도 다음 cron까지(최대 약 24시간) 날씨 상태가 낡는다. W1·W2·W5는 평소에도 매 순회 전량을 받으므로(§2.2, snapshot_id ETag는 304를 거의 못 만든다) "unfreeze 직후만 전량 fetch"는 아니다 | Weather DB와 무관 | **정정(2026-11-24):** 처음 "지적 없음"으로 적었으나 위 낡음과, 실패 1건을 처리한 SKIPPED tick을 따라잡음으로 세는 판정 결함이 있었다. map #1552에서 상태 schedule을 freeze 대상에서 빼고 판정을 고쳤다 |
 
 이번 묶음에 Weather API prewarm·export 캐시를 바꾸는 PR은 없다. 위험이 작은 머지 순서는
 #286 → #284 → #282 → #283 → #285(위 위험 해소 후)다.
