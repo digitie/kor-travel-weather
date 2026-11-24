@@ -231,10 +231,18 @@ without scanning it, and what the replay skip reads). Retention uses a plain
    floor 확인과 SHARE UPDATE EXCLUSIVE의 FK VALIDATE는 수집·읽기와 충돌하지 않아 첫 대기를 건너뛴다.
 2. 표 lock을 `BRIEF_DDL_LOCK_TIMEOUT_MS`(400ms)까지만 기다리고 물러나 다음 조용한 순간에 다시
    시도한다. 예전에는 `ddl_lock_timeout_ms`(deadlock_timeout의 세 배, 기본 3초)를 시도마다 기다렸다.
-   짧은 대기에 진 뒤 충돌하는 보유자가 autovacuum worker뿐이면(`pg_locks`의 granted 보유자를 충돌표로
-   거르고 `pg_stat_activity.backend_type`을 본다) 그 lock만 `ddl_lock_timeout_ms`까지 다시 기다린다.
-   autovacuum은 대기자가 deadlock_timeout을 넘겨 기다려야 deadlock 검사가 취소하기 때문이다.
-   `pg_blocking_pids`는 기다리는 동안에만 답하므로 쓰지 않는다.
+   짧은 대기에 진 뒤 차단자가 autovacuum worker뿐이면 그 lock만 `ddl_lock_timeout_ms`까지 다시
+   기다린다. autovacuum은 대기자가 deadlock_timeout을 넘겨 기다려야 deadlock 검사가 취소하기 때문이다.
+   차단자는 `pg_locks`의 granted 보유자를 충돌표로 거르고 `pg_stat_activity.backend_type`으로 가린다.
+   이때 LOCK 전과 짧은 대기에 진 직후에 한 번씩 보유자를 읽고, 직후의 보유자 중 **LOCK 전부터 같은
+   transaction(`pg_locks.virtualtransaction`)이 쥐고 있던 것과 autovacuum worker만** 센다. 부모에 거는
+   LOCK은 부모를 먼저 잡고 autovacuum이 쥔 파티션에서 기다리므로, 그동안 온 지도 reader·수집은 우리
+   뒤에 줄을 섰다가 savepoint로 되돌리는 순간 lock을 받아 직후의 보유자에 섞인다. 그들까지 세면 읽기가
+   도는 밤에는 autovacuum만 막는 경우를 놓쳐 detach·미래 파티션 생성이 autovacuum을 끝내 이기지 못한다.
+   `pg_stat_activity`는 transaction 안에서 처음 읽은 snapshot에 고정되므로 읽을 때마다
+   `pg_stat_clear_snapshot()`으로 버린다. superuser나 `pg_read_all_stats`가 아닌 role에는 autovacuum의
+   `backend_type`이 NULL로 보여 이 예외가 동작하지 않는다(연기 쪽으로 간다). compose의
+   `POSTGRES_USER`는 superuser다.
 3. 단기예보 보존 검사(최대 5초)를 표 lock 전에 하고, lock 뒤에는 300ms 상한의 재확인만 한다. 떼어낸
    표의 DROP은 그 표만 SHARE로 잠근 뒤 참조 표 lock 전에 한 번만 검사한다
    ([단기예보 보존](shortterm-retention.md)).

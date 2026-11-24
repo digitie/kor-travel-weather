@@ -22,7 +22,8 @@ from datetime import timedelta
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import event, text
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.pool import NullPool
 
 from alembic import command
 from kortravelweather import partitions as partitions_module
@@ -31,6 +32,9 @@ from kortravelweather.models import kst_now
 from kortravelweather.partitions import (
     AUTOVACUUM_BACKEND,
     BRIEF_DDL_LOCK_TIMEOUT_MS,
+    VALUES_TABLE,
+    LockHolder,
+    blocking_holder_kinds,
     conflicting_lock_holders,
     ensure_partitions,
     existing_partitions,
@@ -744,6 +748,8 @@ class _Holder:
         self._held = threading.Event()
         self._stop = threading.Event()
         self.errors: list[BaseException] = []
+        #: lock을 쥔 세션의 pid.
+        self.pid: int | None = None
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def __enter__(self) -> _Holder:
@@ -760,6 +766,7 @@ class _Holder:
         try:
             with self._engine.begin() as connection:
                 connection.execute(text(self._statement))
+                self.pid = int(connection.execute(text("SELECT pg_backend_pid()")).scalar_one())
                 self._held.set()
                 self._stop.wait(self._release_after)
         except BaseException as exc:  # noqa: BLE001 - reported by the test
@@ -770,11 +777,13 @@ class _Holder:
 class _ReaderProbe:
     """지도 읽기처럼 ``weather_values``를 짧은 transaction으로 계속 읽는다.
 
-    ``longest``는 가장 오래 걸린 읽기 문장의 시간(초)이다.
+    ``longest``는 가장 오래 걸린 읽기 문장의 시간(초)이다. ``hold``초 동안 읽은 뒤의
+    transaction을 열어 둔다(그동안 ACCESS SHARE를 쥔다).
     """
 
-    def __init__(self, repository: WeatherRepository) -> None:
+    def __init__(self, repository: WeatherRepository, *, hold: float = 0.0) -> None:
         self._engine = repository.engine
+        self._hold = hold
         self._stop = threading.Event()
         self.longest = 0.0
         self.reads = 0
@@ -795,8 +804,10 @@ class _ReaderProbe:
                 while not self._stop.is_set():
                     began = time.monotonic()
                     connection.execute(text("SELECT count(*) FROM weather_values"))
-                    connection.rollback()
                     self.longest = max(self.longest, time.monotonic() - began)
+                    if self._hold:
+                        self._stop.wait(self._hold)
+                    connection.rollback()
                     self.reads += 1
                     self._stop.wait(0.02)
         except BaseException as exc:  # noqa: BLE001 - reported by the test
@@ -1027,34 +1038,127 @@ def test_a_brief_ddl_lock_wait_gives_way_to_a_writer_quickly(
             assert low <= waited < high, (brief, waited)
 
 
+def _relabel_as_autovacuum(
+    monkeypatch: pytest.MonkeyPatch, pid: int | None
+) -> list[tuple[str, str, set[LockHolder]]]:
+    """``pid`` 세션을 autovacuum worker로 보이게 한다. 돌려준 목록에 물음마다 (표, mode, 보유자).
+
+    시험에서 autovacuum worker를 마음대로 띄울 수 없다. 판정 SQL은 그대로 실행하고 그 결과에서
+    대역 세션의 종류만 바꾼다. ``pid``가 ``None``이면 아무것도 바꾸지 않고 기록만 한다.
+    """
+    real = partitions_module.conflicting_lock_holders
+    seen: list[tuple[str, str, set[LockHolder]]] = []
+
+    def relabeled(connection, table: str, mode: str) -> set[LockHolder]:
+        holders = {
+            holder._replace(kind=AUTOVACUUM_BACKEND)
+            if pid is not None and holder.pid == pid
+            else holder
+            for holder in real(connection, table, mode)
+        }
+        seen.append((table, mode, holders))
+        return holders
+
+    monkeypatch.setattr(partitions_module, "conflicting_lock_holders", relabeled)
+    return seen
+
+
 def test_only_an_autovacuum_blocker_gets_the_long_wait(
     repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """L3: 짧은 상한에 진 뒤 차단자가 autovacuum뿐이면 ``ddl_lock_timeout_ms``까지 기다린다.
 
     autovacuum은 대기자가 deadlock_timeout을 넘겨 기다려야 그 deadlock 검사가 취소한다.
-    시험에서 autovacuum worker를 마음대로 띄울 수 없어 보유자 종류 판정만 바꾸고, 판정 SQL은
-    아래 시험이 실제 세션으로 확인한다.
+    대역 세션이 1.2초 뒤에 lock을 놓아 그 취소를 흉내 낸다.
     """
-    asked: list[tuple[str, str]] = []
-
-    def autovacuum_only(connection, table, mode):
-        asked.append((table, mode))
-        return {AUTOVACUUM_BACKEND}
-
-    monkeypatch.setattr(partitions_module, "conflicting_lock_holders", autovacuum_only)
     with _Holder(
         repository, "LOCK TABLE weather_values IN ROW EXCLUSIVE MODE", release_after=1.2
-    ):
+    ) as stand_in:
+        seen = _relabel_as_autovacuum(monkeypatch, stand_in.pid)
         began = time.monotonic()
         with repository.engine.begin() as connection:
             lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
             waited = time.monotonic() - began
             after = connection.execute(text("SHOW lock_timeout")).scalar_one()
-    assert asked == [("weather_values", "ACCESS EXCLUSIVE")]
+    # 표마다 LOCK 전에 한 번, 짧은 대기에 진 weather_values만 그 직후에 한 번 더 묻는다.
+    assert [(table, mode) for table, mode, _ in seen] == [
+        ("weather_source_records", "SHARE ROW EXCLUSIVE"),
+        ("weather_locations", "SHARE ROW EXCLUSIVE"),
+        ("weather_values", "ACCESS EXCLUSIVE"),
+        ("weather_values", "ACCESS EXCLUSIVE"),
+        ("weather_current_values", "ACCESS EXCLUSIVE"),
+    ]
     assert 1.0 <= waited < 3.0, waited
     # 긴 대기는 그 한 lock에만 쓰고 짧은 상한으로 되돌린다.
     assert after == f"{BRIEF_DDL_LOCK_TIMEOUT_MS}ms"
+
+
+@pytest.mark.parametrize("autovacuum", [True, False])
+def test_readers_queued_behind_a_brief_wait_do_not_decide_the_blocker(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch, autovacuum: bool
+) -> None:
+    """L3: 짧은 대기 동안 뒤에 줄 선 reader가 autovacuum 판정을 뒤집지 않는다.
+
+    부모에 거는 LOCK은 부모를 먼저 잡고, autovacuum이 쥔 오늘 파티션에서 기다린다. 그동안 온
+    reader는 부모에서 줄을 서고, savepoint로 되돌리는 순간 lock을 받아 짧은 대기 직후의 보유자에
+    섞인다. 대기 직후의 보유자만 보던 판정은 그 reader 때문에 autovacuum만 막는 경우를 놓쳐,
+    지도 읽기가 도는 밤에는 detach·미래 파티션 생성이 autovacuum을 끝내 이기지 못했다. 그
+    reader는 LOCK 전에 없던 transaction이라 세지 않는다. LOCK 전부터 같은 파티션을 쥔
+    client(``autovacuum=False``)는 reader가 섞여도 차단자이므로 짧은 상한에 물러난다.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    today = partition_name(kst_now().date())
+    with (
+        # 대역 세션: autovacuum처럼 오늘 파티션만 쥐고, deadlock 검사가 취소한 것처럼 놓는다.
+        _Holder(
+            repository,
+            f"LOCK TABLE {today} IN SHARE UPDATE EXCLUSIVE MODE",
+            release_after=1.2,
+        ) as stand_in,
+        _ReaderProbe(repository, hold=0.05) as reader,
+    ):
+        seen = _relabel_as_autovacuum(monkeypatch, stand_in.pid if autovacuum else None)
+        time.sleep(0.1)
+        began = time.monotonic()
+        outcome = "locked"
+        try:
+            with repository.engine.begin() as connection:
+                lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
+        except OperationalError as exc:
+            assert is_lock_conflict(exc)
+            outcome = "gave way"
+        waited = time.monotonic() - began
+    assert reader.errors == [] and reader.reads > 0
+    values = [holders for table, _, holders in seen if table == VALUES_TABLE]
+    assert len(values) == 2, seen  # LOCK 전, 짧은 대기에 진 직후
+    before, after = values
+    held_before = {holder.transaction for holder in before}
+    # 뒤에 줄 섰던 reader가 실제로 대기 직후의 보유자에 섞였다(예전 판정이 연기하던 상황).
+    assert any(
+        holder.kind == "client backend" and holder.transaction not in held_before
+        for holder in after
+    ), (before, after)
+    if autovacuum:
+        assert outcome == "locked" and waited < 3.0, (outcome, waited)
+    else:
+        assert outcome == "gave way" and waited < 1.5, (outcome, waited)
+
+
+def test_blocking_holder_kinds_ignore_sessions_that_arrived_during_the_wait() -> None:
+    """차단자는 LOCK 전부터 쥐고 있던 transaction과 autovacuum worker다(DB 없이)."""
+    vacuum = LockHolder("5/1", 10, AUTOVACUUM_BACKEND)
+    ingest = LockHolder("6/7", 11, "client backend")
+    queued_reader = LockHolder("7/9", 12, "client backend")
+    # 같은 연결(pid)의 다음 transaction: 대기 전 transaction이 끝나고 새로 줄을 섰다.
+    ingest_next = LockHolder("6/8", 11, "client backend")
+    late_vacuum = LockHolder("8/1", 13, AUTOVACUUM_BACKEND)
+    assert blocking_holder_kinds([vacuum], [vacuum, queued_reader]) == {AUTOVACUUM_BACKEND}
+    assert blocking_holder_kinds([vacuum, ingest], [vacuum, ingest]) == {
+        AUTOVACUUM_BACKEND, "client backend",
+    }
+    assert blocking_holder_kinds([ingest], [ingest_next, late_vacuum]) == {AUTOVACUUM_BACKEND}
+    assert blocking_holder_kinds([vacuum], [queued_reader]) == set()
 
 
 def test_lock_holder_kinds_follow_the_conflict_table_and_the_partition_tree(
@@ -1062,25 +1166,39 @@ def test_lock_holder_kinds_follow_the_conflict_table_and_the_partition_tree(
 ) -> None:
     """차단자 판정 SQL: 충돌하지 않는 보유자는 빼고, 파티션 하나만 잡은 보유자도 부모의 차단자다."""
     today = partition_name(kst_now().date())
+
+    def kinds(connection, table: str, mode: str) -> set[str]:
+        return {holder.kind for holder in conflicting_lock_holders(connection, table, mode)}
+
     with _LocationReader(repository), repository.engine.connect() as connection:
         # 읽기(ACCESS SHARE)는 SHARE ROW EXCLUSIVE를 막지 않고 ACCESS EXCLUSIVE는 막는다.
-        assert "client backend" not in conflicting_lock_holders(
+        assert "client backend" not in kinds(
             connection, "weather_locations", "SHARE ROW EXCLUSIVE"
         )
-        assert "client backend" in conflicting_lock_holders(
-            connection, "weather_locations", "ACCESS EXCLUSIVE"
-        )
+        assert "client backend" in kinds(connection, "weather_locations", "ACCESS EXCLUSIVE")
     # autovacuum처럼 파티션 하나만 SHARE UPDATE EXCLUSIVE로 잡아도 부모 lock의 차단자로 보인다.
     with (
-        _Holder(repository, f"LOCK TABLE {today} IN SHARE UPDATE EXCLUSIVE MODE"),
+        _Holder(repository, f"LOCK TABLE {today} IN SHARE UPDATE EXCLUSIVE MODE") as holder,
         repository.engine.connect() as connection,
     ):
-        assert "client backend" in conflicting_lock_holders(
-            connection, "weather_values", "ACCESS EXCLUSIVE"
-        )
-        assert "client backend" not in conflicting_lock_holders(
+        holders = conflicting_lock_holders(connection, "weather_values", "ACCESS EXCLUSIVE")
+        assert (holder.pid, "client backend") in {(h.pid, h.kind) for h in holders}
+        assert "client backend" not in kinds(
             connection, "weather_source_records", "ACCESS EXCLUSIVE"
         )
+        # pg_stat_activity는 transaction 안에서 처음 읽은 snapshot에 고정된다. 판정은 매번 그
+        # snapshot을 버리므로, 첫 물음 뒤에 연결한 세션(새 pid)의 종류도 안다.
+        late_engine = create_engine(TEST_DATABASE_URL, poolclass=NullPool)
+        try:
+            with late_engine.begin() as late:
+                late.execute(text("LOCK TABLE weather_source_records IN ROW EXCLUSIVE MODE"))
+                late_pid = int(late.execute(text("SELECT pg_backend_pid()")).scalar_one())
+                holders = conflicting_lock_holders(
+                    connection, "weather_source_records", "ACCESS EXCLUSIVE"
+                )
+                assert (late_pid, "client backend") in {(h.pid, h.kind) for h in holders}
+        finally:
+            late_engine.dispose()
 
 
 def test_the_first_attempt_also_waits_for_a_quiet_moment(
