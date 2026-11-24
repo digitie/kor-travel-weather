@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { middleware } from "./middleware";
+import { config, middleware } from "./middleware";
 import { POST as logout } from "./app/api/auth/logout/route";
 import {
   clearDurableSessionCache,
@@ -148,5 +149,37 @@ describe("durable 확인 캐시와 middleware", () => {
     expect(next(await middleware(request()))).toBe("1");
     expect(next(await middleware(request()))).toBe("1");
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("middleware matcher", () => {
+  const matches = (path: string) => unstable_doesMiddlewareMatch({ config, url: path });
+
+  it.each([
+    "/maplibre/maplibre-gl-worker.mjs",
+    "/maplibre/maplibre-gl-shared.mjs",
+    "/_next/static/chunks/main.js",
+    "/favicon.ico",
+  ])("공개 정적 자산 %s에는 인증 확인을 실행하지 않는다", (path) => {
+    expect(matches(path)).toBe(false);
+  });
+
+  it.each([
+    "/",
+    "/weather",
+    "/login",
+    "/admin/dagster",
+    "/api/weather/v1/weather/markers",
+    "/api/weather/v1/admin/locations",
+    "/api/auth/logout",
+    "/api/dagster/graphql",
+    "/api/region-boundary",
+    "/maplibre",
+    "/maplibre-gl-worker.mjs",
+    "/maplibrex/worker.mjs",
+    "/api/maplibre/worker.mjs",
+    "/weather/maplibre/worker.mjs",
+  ])("인증이 필요한 %s는 계속 middleware를 거친다", (path) => {
+    expect(matches(path)).toBe(true);
   });
 });

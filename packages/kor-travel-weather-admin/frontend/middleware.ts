@@ -120,6 +120,9 @@ export async function middleware(request: NextRequest) {
   return unauthorized();
 }
 
+// `public/maplibre/`는 node_modules의 maplibre-gl worker 복사본(scripts/copy-maplibre-worker.mjs)이다.
+// 공개 라이브러리 코드라 인증 대상이 아니고, 인증 저장소가 느릴 때 worker가 503을 받으면 지도가
+// 타일을 하나도 요청하지 못한다. 접두사는 `maplibre/`까지 정확히 맞춰 다른 경로는 계속 보호한다.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|maplibre/).*)"],
 };
