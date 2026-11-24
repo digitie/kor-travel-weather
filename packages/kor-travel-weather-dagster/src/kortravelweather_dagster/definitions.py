@@ -60,6 +60,11 @@ from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
 from .alert_events import AlertCollectionError, run_alert_event_sync
 from .alert_schedule import build_regional_alert_events_schedule
+from .export_maintenance import (
+    maintenance_policy,
+    weather_export_maintenance_job,
+    weather_export_maintenance_schedule,
+)
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -938,6 +943,9 @@ RUN_MAX_RUNTIME_SECONDS = 57600
 
 
 def _job_policy(job_name: str) -> RecoveryPolicy:
+    if job_name == weather_export_maintenance_job.name:
+        # 정리 job의 상한·태그는 그 모듈이 정한다(job 정의의 tags와 같은 객체).
+        return maintenance_policy()
     # 외부 provider의 실측 13시간 sweep 상한은 유지하고 최신성 작업은 더 일찍 회수한다.
     seconds = (
         RUN_MAX_RUNTIME_SECONDS
@@ -2160,7 +2168,7 @@ _COLLECTION_JOBS = [
 
 defs = Definitions(
     assets=_ASSETS,
-    jobs=[*_COLLECTION_JOBS, address_refresh_job],
+    jobs=[*_COLLECTION_JOBS, address_refresh_job, weather_export_maintenance_job],
     schedules=[
         hourly_kma_ultra_short_nowcast_schedule,
         hourly_kma_ultra_short_forecast_schedule,
@@ -2173,6 +2181,7 @@ defs = Definitions(
         *regional_weather_schedules,
         daily_weather_retention_schedule,
         short_forecast_retention_schedule,
+        weather_export_maintenance_schedule,
     ],
     resources=_resources,
     executor=_BOUNDED_MULTIPROCESS_EXECUTOR,

@@ -460,13 +460,27 @@ EXPORT_GC_DELETED_BYTES = Counter(
     "Bytes of unreferenced export artifact files deleted by the publisher GC.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
-EXPORT_GC_RECLAIMABLE_BYTES = Gauge(
-    "ktw_export_artifact_gc_reclaimable_bytes",
-    "Bytes the last publisher GC pass found unreferenced and past the grace period that "
-    "are still on disk (all of them in dry_run, the undeleted rest in delete mode).",
-    multiprocess_mode="livemax",
-    registry=_INSTRUMENTATION_REGISTRY,
-)
+# 정리 job(``weather_export_maintenance_job``)은 run이 끝나면 사라지는 run worker에서 돈다.
+# live 모드 gauge는 그 process가 끝나면 scrape에서 빠지므로, 끝난 process의 값도 가장 최근
+# 기록으로 남는 mostrecent를 쓴다. 이 모드의 파일은 process가 끝나도 지우지 않으므로, import만
+# 하는 모든 process가 파일을 남기지 않도록 처음 기록할 때 만든다.
+_EXPORT_GC_RECLAIMABLE_BYTES: Gauge | None = None
+_EXPORT_GC_RECLAIMABLE_LOCK = Lock()
+
+
+def _export_gc_reclaimable_bytes() -> Gauge:
+    global _EXPORT_GC_RECLAIMABLE_BYTES
+    with _EXPORT_GC_RECLAIMABLE_LOCK:
+        if _EXPORT_GC_RECLAIMABLE_BYTES is None:
+            _EXPORT_GC_RECLAIMABLE_BYTES = Gauge(
+                "ktw_export_artifact_gc_reclaimable_bytes",
+                "Bytes the last export maintenance GC run found unreferenced and past the "
+                "grace period that are still stored (all of them in dry_run, the undeleted "
+                "rest in delete mode).",
+                multiprocess_mode="mostrecent",
+                registry=_INSTRUMENTATION_REGISTRY,
+            )
+        return _EXPORT_GC_RECLAIMABLE_BYTES
 METRIC_ERRORS = Counter(
     "ktw_metrics_errors_total",
     "Instrumentation errors swallowed to keep the data path healthy.",
@@ -833,12 +847,12 @@ def observe_history_purged(values: int, sources: int) -> None:
 
 
 def observe_export_artifact_gc(report: Mapping[str, Any]) -> None:
-    """publisher GC 한 번의 결과. reclaimable은 대상 중 아직 디스크에 남은 byte다."""
+    """정리 job GC 한 run의 합계. reclaimable은 대상 중 아직 저장소에 남은 byte다."""
 
     def update() -> None:
         deleted, size = int(report.get("deleted", 0)), int(report.get("deleted_bytes", 0))
         remaining = int(report.get("eligible_bytes", 0)) - size
-        EXPORT_GC_RECLAIMABLE_BYTES.set(max(0, remaining))
+        _export_gc_reclaimable_bytes().set(max(0, remaining))
         if deleted > 0:
             EXPORT_GC_DELETED_FILES.inc(deleted)
         if size > 0:

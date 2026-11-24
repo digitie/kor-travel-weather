@@ -674,16 +674,25 @@ def _publisher_terminal(heads, identity, dagster_status):
     return "REJECTED", status
 
 
-def retire_settled_attempts(repository, *, limit: int = RETIRE_BATCH) -> dict[str, int]:
+def retire_settled_attempts(
+    repository, *, limit: int = RETIRE_BATCH, statement_timeout_seconds: float | None = None,
+) -> dict[str, int]:
     """승격될 수 없는 pending을 `_publisher_terminal`과 같은 판정·기록으로 일괄 퇴역한다.
 
     - ``SUPERSEDED``: 모든 claim scope가 더 새 epoch·다른 attempt로 넘어갔다(같은 SQL).
     - ``CONFIRMED_TERMINAL``: 원본 native run이 실패·부분·취소로 끝났다(같은 상태 집합).
     generation이 이미 있는 attempt는 건드리지 않는다. 후보는 ``FOR UPDATE SKIP LOCKED``로만
     잡아 수집·단건 publisher가 잡은 행을 기다리지 않는다. 각 문장은 ``limit``개까지다.
+
+    ``statement_timeout_seconds``는 head transaction의 5초 문장 상한을 바꾼다. sensor gRPC
+    기한에 묶이지 않는 정리 job(``export_maintenance``)만 쓴다. pending 수천 행의 소유권
+    판정(JSON)은 CPU가 포화된 호스트에서 5초를 넘긴다(2026-11-21..23 odroid sensor 퇴역의
+    54%가 statement_timeout).
     """
     if not 1 <= limit <= 5000:
         raise ValueError("일괄 퇴역 상한이 올바르지 않습니다.")
+    if statement_timeout_seconds is not None and not 0 < statement_timeout_seconds <= 120:
+        raise ValueError("일괄 퇴역 문장 상한이 올바르지 않습니다.")
     if repository.engine.dialect.name != "postgresql":
         return {}
     heads = _publisher_heads(repository)
@@ -695,6 +704,10 @@ def retire_settled_attempts(repository, *, limit: int = RETIRE_BATCH) -> dict[st
         ("CONFIRMED_TERMINAL", and_(_native_failed(heads), _NOT_SUPERSEDED_OWNERSHIP)),
     ):
         with heads._transaction() as session:
+            if statement_timeout_seconds is not None:
+                session.execute(text(
+                    f"SET LOCAL statement_timeout = '{int(statement_timeout_seconds * 1000)}ms'"
+                ))
             ids = list(session.scalars(
                 select(attempts.c.attempt_id)
                 .where(*_pending(attempts), _no_generation(heads), condition)
@@ -1033,7 +1046,7 @@ def refresh_publisher_daily(
     """
     from .export_daily_store import prune_daily_summaries, refresh_daily_summaries
 
-    total, more = 0, True
+    total, more, error = 0, True, None
     try:
         artifacts = export_artifact_store(repository, artifact_root)
         for _ in range(MAX_DAILY_GENERATIONS // DAILY_GENERATION_BATCH):
@@ -1052,11 +1065,13 @@ def refresh_publisher_daily(
             prune_daily_summaries(repository)
     except Exception as exc:
         more = True
-        logger.warning("weather_daily_summary_refresh_deferred reason=%s", failure_reason(exc))
+        error = failure_reason(exc)
+        logger.warning("weather_daily_summary_refresh_deferred reason=%s", error)
     # snapshot handle 정리는 일별 drain 예산(deadline)·일별 정리 성공과 무관하게 tick 상한
     # (hard_deadline) 안에서만 돈다. 일별 backlog가 길어도 handle 표가 계속 자라지 않는다.
     _prune_snapshot_handles(repository, hard_deadline=hard_deadline)
-    return {"processed": total, "has_more": more}
+    # 실패 분류(원문 없음)를 돌려 호출자(sensor)가 연속 실패를 셀 수 있게 한다.
+    return {"processed": total, "has_more": more, **({"error": error} if error else {})}
 
 
 # 다음 snapshot 정리의 한 문장 개수(프로세스 수명). statement 상한에 걸리면 절반으로 줄이고
