@@ -35,6 +35,15 @@ def _settings(database_url: str, *, enabled: bool = True) -> WeatherSettings:
     )
 
 
+@pytest.fixture(autouse=True)
+def _enabled_prewarm_logger(monkeypatch):
+    """같은 세션의 Alembic fileConfig(migration 시험)가 이미 있던 logger를 끈다.
+
+    실패 로그를 보는 시험이 전체 실행에서도 기록을 받도록 이 파일 안에서만 다시 켠다.
+    """
+    monkeypatch.setattr(prewarm.logger, "disabled", False)
+
+
 @pytest.fixture
 def repository(weather_test_database_url):
     repo = WeatherRepository(weather_test_database_url)
