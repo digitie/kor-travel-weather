@@ -2,12 +2,17 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DAGSTER_LOCATION_NAME } from "@/lib/dagster-scope";
 
-const auth = vi.hoisted(() => ({ allowed: true }));
-vi.mock("@/lib/session", () => ({
+const auth = vi.hoisted(() => ({ allowed: true, fresh: [] as (boolean | undefined)[] }));
+vi.mock("@/lib/session", async (importOriginal) => ({
   adminUsername: () => "admin", SESSION_COOKIE: "weather_session",
   sessionSecret: () => "s".repeat(32),
   verifySessionValue: async () => auth.allowed ? "admin" : null,
-  checkDurableSession: async () => "active",
+  durableSessionCacheAllowed: (await importOriginal<typeof import("@/lib/session")>())
+    .durableSessionCacheAllowed,
+  checkDurableSession: async (_session: string, _env: unknown, options?: { fresh?: boolean }) => {
+    auth.fresh.push(options?.fresh);
+    return "active";
+  },
 }));
 import { GET, POST } from "./route";
 
@@ -19,10 +24,23 @@ function request(body: object = { requestId }, origin = "http://address.test") {
     headers: { origin, "content-type": "application/json", cookie: "weather_session=session" },
     body: JSON.stringify(body) });
 }
-beforeEach(() => { auth.allowed = true; vi.stubEnv("WEATHER_UI_PUBLIC_ORIGIN", "http://address.test"); });
+beforeEach(() => {
+  auth.allowed = true;
+  auth.fresh = [];
+  vi.stubEnv("WEATHER_UI_PUBLIC_ORIGIN", "http://address.test");
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 describe("주소 수동 갱신 BFF", () => {
+  it("실행 예약 POST는 캐시된 세션 판정을 쓰지 않고 상태 GET만 캐시를 허용한다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+    await POST(request());
+    vi.stubEnv("WEATHER_ADMIN_TOKEN", "t".repeat(16));
+    await GET(new NextRequest("http://address.test/api/address-refresh", {
+      headers: { cookie: "weather_session=session" },
+    }));
+    expect(auth.fresh).toEqual([true, false]);
+  });
   it("미인증·교차 Origin·임의 job 설정은 upstream 호출 전에 차단한다", async () => {
     const upstream = vi.fn(); vi.stubGlobal("fetch", upstream);
     auth.allowed = false;

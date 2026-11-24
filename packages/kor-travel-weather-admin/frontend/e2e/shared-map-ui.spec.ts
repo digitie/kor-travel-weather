@@ -60,15 +60,21 @@ for (const width of [375, 1440]) test(`공통 날씨 종류·필터·오버레�
   await page.screenshot({ path: `test-results/weather-shared-ui-${width}.png`, fullPage: true });
 
   await page.getByRole("tab", { name: "목록", exact: true }).click();
-  let releaseCatalog: (() => Promise<void>) | undefined;
+  // GET 502는 request()가 두 번 더 보낸다. 풀어 준 뒤에는 재시도도 모두 502로 끝내 최종 실패 안내를 확인한다.
+  let releaseCatalog!: () => void;
+  const catalogReleased = new Promise<void>((resolve) => { releaseCatalog = resolve; });
+  let catalogCalls = 0;
   await page.route("**/api/weather/**/locations?**", async (route) => {
-    releaseCatalog = () => route.fulfill({ status: 502, json: { error: "fixture catalog failure" } });
+    catalogCalls += 1;
+    await catalogReleased;
+    await route.fulfill({ status: 502, json: { error: "fixture catalog failure" } });
   });
   await kinds.getByRole("button", { name: "초단기", exact: true }).click();
-  await expect.poll(() => Boolean(releaseCatalog)).toBe(true);
+  await expect.poll(() => catalogCalls).toBeGreaterThan(0);
   await expect(page.getByText("검색 결과가 없습니다.", { exact: true })).toHaveCount(0);
-  await releaseCatalog!();
+  releaseCatalog();
   await expect(page.getByText("선택한 소스의 위치를 불러오지 못했습니다. 다시 선택해 주세요.", { exact: true })).toBeVisible();
+  expect(catalogCalls).toBeGreaterThanOrEqual(3);
   await expect(page.getByText("검색 결과가 없습니다.", { exact: true })).toHaveCount(0);
   await page.unroute("**/api/weather/**/locations?**");
   await page.route("**/api/weather/**/locations?**", (route) => route.fulfill({ json: { data: [], meta: {} } }));

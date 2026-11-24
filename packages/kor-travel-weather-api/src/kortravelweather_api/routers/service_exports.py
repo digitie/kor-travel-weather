@@ -18,7 +18,7 @@ from anyio import to_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy.exc import OperationalError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from kortravelweather import export_forecasts as forecast_exports
@@ -52,6 +52,7 @@ from kortravelweather.read_performance import (
 )
 
 from ..auth import require_admin
+from ..db_errors import is_transient_db_error
 from ..response import Problem, request_id
 
 logger = logging.getLogger(__name__)
@@ -63,11 +64,6 @@ _CURSOR_SELECTION_MIN_REMAINING = 30.0
 #: 넘긴 요청이 같은 요청(같은 cursor)을 다시 보낼 때까지의 최소 대기다.
 EXPORT_RETRY_AFTER_SECONDS = 5
 TEMPORARILY_UNAVAILABLE = "EXPORT_TEMPORARILY_UNAVAILABLE"
-#: 읽기 경합·일시 장애 SQLSTATE(statement·lock timeout, deadlock, 직렬화, 연결 수 초과, 종료 중).
-#: 연결 오류 class 08도 같다. 권한(28)·디스크(53100)·I/O(58)·결함(42 등)은 경합이 아니다.
-_TRANSIENT_SQLSTATES = frozenset(
-    {"57014", "55P03", "40P01", "40001", "53300", "57P01", "57P02", "57P03"}
-)
 
 SourceStatus = Literal["ok", "stale", "failed"]
 ExportStyle = Literal["observed", "nowcast", "ultra_short", "short", "mid", "external"]
@@ -251,13 +247,8 @@ def _transient(exc: Exception) -> bool:
     """export 부재가 아니라 읽기 경합이면 참이다. 재시도하면 같은 snapshot을 읽는다."""
     if isinstance(exc, ExportGuardTimeout | ExportStatusPending | PoolTimeoutError):
         return True
-    if not isinstance(exc, SQLAlchemyError):
-        return False
-    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
-    if isinstance(sqlstate, str):
-        return sqlstate in _TRANSIENT_SQLSTATES or sqlstate.startswith("08")
-    # SQLSTATE가 없는 연결 단절(server closed·refused)만 일시 장애로 본다.
-    return isinstance(exc, OperationalError)
+    # SQLSTATE 경합·연결 단절 기준은 공개 조회 503(app.py)과 같다(db_errors.py).
+    return is_transient_db_error(exc)
 
 
 def _failed(request: Request, resource: str, exc: Exception) -> JSONResponse:
