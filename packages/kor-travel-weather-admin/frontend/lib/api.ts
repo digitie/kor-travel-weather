@@ -571,13 +571,24 @@ export type ApiReadiness = {
   steps: ApiReadinessStep[];
 };
 
-/** 503(warmup 진행 중)도 같은 본문을 주는 정상 답이다. 그 밖의 상태만 실패로 본다. */
+function isReadiness(body: unknown): body is ApiReadiness {
+  if (typeof body !== "object" || body === null) return false;
+  const value = body as Record<string, unknown>;
+  return typeof value.ready === "boolean" && typeof value.warm === "string" && Array.isArray(value.steps);
+}
+
+/**
+ * 503(warmup 진행 중)도 같은 본문을 주는 정상 답이다. 그 밖의 상태는 실패로 본다.
+ * BFF도 API 전송 실패를 503 `{detail}`로 돌려주므로, 본문이 `ReadinessOut` 모양이 아니면 실패다.
+ */
 export function getReadiness(): Promise<ApiReadiness> {
   return fetch("/api/weather/ready", { cache: "no-store" }).then(async (response) => {
     if (response.status !== 200 && response.status !== 503) {
       throw new Error(`API 연결 실패 (${response.status})`);
     }
-    return (await response.json()) as ApiReadiness;
+    const body: unknown = await response.json().catch(() => null);
+    if (!isReadiness(body)) throw new Error(`API 연결 실패 (${response.status})`);
+    return body;
   });
 }
 

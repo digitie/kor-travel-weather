@@ -205,4 +205,16 @@ describe("시작 warmup 상태(/ready)", () => {
     respond("Bad Gateway", { status: 502, headers: { "content-type": "text/plain" } });
     await expect(getReadiness()).rejects.toThrow("API 연결 실패 (502)");
   });
+
+  it("BFF가 API에 닿지 못한 503 {detail}은 warmup 상태가 아니라 실패다", async () => {
+    respond(JSON.stringify({ detail: "날씨 서버 응답을 받지 못했습니다. 잠시 후 다시 시도하세요." }), {
+      status: 503, headers: { "content-type": "application/json", "retry-after": "1" },
+    });
+    await expect(getReadiness()).rejects.toThrow("API 연결 실패 (503)");
+  });
+
+  it("JSON이 아닌 503(세션 저장소 장애 등)도 실패다", async () => {
+    respond("Service Unavailable", { status: 503, headers: { "content-type": "text/plain" } });
+    await expect(getReadiness()).rejects.toThrow("API 연결 실패 (503)");
+  });
 });
