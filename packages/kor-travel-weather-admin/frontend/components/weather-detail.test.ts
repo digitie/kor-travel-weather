@@ -103,7 +103,8 @@ describe("선택 위치의 독립 상세 로딩", () => {
     expect(state.setValues).toEqual([{ value_id: "current" }]);
     expect(state.setLoading).toBe(false);
     expect(state.setForecastLoading).toBe(true);
-    respond(requests[1], [], 503);
+    // 502/503/504는 request()가 먼저 다시 보낸다(lib/api-retry.test.ts). 여기서는 최종 실패를 쓴다.
+    respond(requests[1], [], 500);
     await flush();
     expect(state.setForecastLoading).toBe(false);
     expect(state.setForecastMessage).toContain("조회 실패");
@@ -117,10 +118,57 @@ describe("선택 위치의 독립 상세 로딩", () => {
     await flush();
     expect(state.setForecastLoading).toBe(false);
     expect(state.setLoading).toBe(true);
-    respond(requests[0], [], 503);
+    respond(requests[0], [], 500);
     await flush();
     expect(state.setMessage).toContain("조회 실패");
     expect(state.setForecast).toEqual([{ value_id: "forecast" }]);
+  });
+
+  it("예보의 일시 503은 다시 요청해 성공하면 오류 없이 표시한다", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const { requests, state, mount } = setup();
+      const cleanup = mount("one");
+      respond(requests[0], [{ value_id: "current" }]);
+      respond(requests[1], [], 503);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(requests).toHaveLength(2);
+      expect(state.setForecastLoading).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(requests).toHaveLength(3);
+      expect(requests[2].url).toBe(requests[1].url);
+      respond(requests[2], [{ value_id: "forecast" }]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(state.setForecast).toEqual([{ value_id: "forecast" }]);
+      expect(state.setForecastMessage).toBe("");
+      expect(state.setForecastLoading).toBe(false);
+      expect(state.setValues).toEqual([{ value_id: "current" }]);
+      cleanup();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("재시도 대기 중 다른 위치를 고르면 이전 예보를 다시 요청하지 않는다", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    try {
+      const { requests, mount } = setup();
+      const cleanup = mount("one");
+      respond(requests[1], [], 503);
+      await vi.advanceTimersByTimeAsync(100);
+      cleanup();
+      const next = mount("two");
+      await vi.runAllTimersAsync();
+      expect(requests.filter((request) => request.url.includes("/one/"))).toHaveLength(2);
+      expect(requests.filter((request) => request.url.includes("/two/"))).toHaveLength(2);
+      next();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 
   it("연속 선택·새로고침은 이전 요청 둘을 취소하고 늦은 응답을 무시한다", async () => {

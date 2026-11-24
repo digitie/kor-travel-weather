@@ -9,6 +9,7 @@ function respond(body: string, init: ResponseInit) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -45,11 +46,16 @@ describe("request error handling", () => {
   });
 
   it("reports the status when a gateway times out with an HTML body", async () => {
-    respond("<html><body><h1>504 Gateway Time-out</h1></body></html>", {
+    vi.useFakeTimers();
+    const fetchMock = respond("<html><body><h1>504 Gateway Time-out</h1></body></html>", {
       status: 504,
       headers: { "content-type": "text/html" },
     });
-    await expect(getPublicLocations()).rejects.toThrow("요청 실패 (504)");
+    const failure = expect(getPublicLocations()).rejects.toThrow("요청 실패 (504)");
+    // GET 504는 두 번 더 시도한 뒤 마지막 응답의 문장을 보여준다(lib/api-retry.test.ts).
+    await vi.runAllTimersAsync();
+    await failure;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("prefers the RFC7807 detail when the backend sends one", async () => {
@@ -125,12 +131,17 @@ describe("일반 날씨 카탈로그", () => {
     const result = await getAllPublicLocations(["python-kma-api"], controller.signal, true);
     expect(result).toHaveLength(1001);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    const signals: (AbortSignal | null | undefined)[] = [];
     for (const [url, init] of vi.mocked(fetch).mock.calls) {
       const query = new URL(String(url), "http://localhost").searchParams;
       expect(query.get("weather_only")).toBe("true");
       expect(query.getAll("provider")).toEqual(["python-kma-api"]);
-      expect(init?.signal).toBe(controller.signal);
+      expect(init?.signal?.aborted).toBe(false);
+      signals.push(init?.signal);
     }
+    // 시도별 20초 상한과 합친 signal이어도 호출자 취소는 그대로 전달된다.
+    controller.abort();
+    expect(signals.every((signal) => signal?.aborted)).toBe(true);
   });
   it("전체 해제는 일반값 옵션과 관계없이 요청하지 않는다", async () => {
     const fetchMock = vi.fn();
@@ -152,12 +163,15 @@ describe("날씨 종류 전달", () => {
     await getForecast("seoul", undefined, undefined, 1, controller.signal, ["python-kma-api"], [...kinds]);
     await getMarkerSummaries(["seoul"], controller.signal, ["python-kma-api"], [...kinds]);
     expect(fetchMock).toHaveBeenCalledTimes(4);
+    const signals: (AbortSignal | null | undefined)[] = [];
     for (const [url, init] of vi.mocked(fetch).mock.calls) {
       const query = new URL(String(url), "http://localhost").searchParams;
       expect(query.getAll("kind")).toEqual(kinds);
       expect(query.getAll("provider")).toEqual(["python-kma-api"]);
-      expect(init?.signal).toBe(controller.signal);
+      signals.push(init?.signal);
     }
+    controller.abort();
+    expect(signals.every((signal) => signal?.aborted)).toBe(true);
   });
   it("종류 전체 해제는 위치 요청을 보내지 않는다", async () => {
     const fetchMock = vi.fn();
