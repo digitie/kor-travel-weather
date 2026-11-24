@@ -5,8 +5,9 @@ from .export_database_artifacts import MAX_ARTIFACT_READ_BATCH, MAX_ARTIFACT_REA
 
 
 class ArtifactReadWindow:
-    def __init__(self, artifacts, *, fields=None, max_bytes=None):
+    def __init__(self, artifacts, *, fields=None, max_bytes=None, batch=MAX_ARTIFACT_READ_BATCH):
         self.artifacts = artifacts
+        self.batch = batch
         self.bulk = getattr(artifacts, "read_many", None)
         self.fields = fields if getattr(artifacts, "is_database", False) else None
         self.points = {}
@@ -31,7 +32,7 @@ class ArtifactReadWindow:
             digest = ref["artifact_digest"]
             if digest in seen:
                 continue
-            if len(refs) >= min(MAX_ARTIFACT_READ_BATCH, remaining_reads):
+            if len(refs) >= min(self.batch, remaining_reads):
                 break
             if size + ref["byte_count"] > byte_limit and (
                 refs or self.bytes_read or ref["byte_count"] > MAX_ARTIFACT_READ_BYTES
@@ -43,9 +44,10 @@ class ArtifactReadWindow:
         self.points.clear()
         self.receipts.clear()
         if refs:
-            self.points.update(
-                self.bulk(refs) if self.fields is None else self.bulk(refs, fields=self.fields)
-            )
+            options = {} if self.fields is None else {"fields": self.fields}
+            if self.batch != MAX_ARTIFACT_READ_BATCH:
+                options["max_batch"] = self.batch
+            self.points.update(self.bulk(refs, **options))
             self.receipts.update({ref["artifact_digest"]: (ref["byte_count"], ref["point_count"])
                                   for ref in refs})
             # 검산된 실제 payload 크기와 같은 receipt를 선읽기 전체에 대해 센다.

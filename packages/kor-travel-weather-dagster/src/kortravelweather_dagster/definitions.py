@@ -757,7 +757,19 @@ def airkorea_weather_sync(context: AssetExecutionContext) -> dict[str, object]:
             if runtime.service_exports_enabled and runtime.service_export_artifact_root else {}
         ),
     )
+    # 일부 측정소를 못 받은 run은 SUCCESS로 끝나되(받은 측정소는 승격) 결과·run tag에
+    # partial로 드러낸다. 사유별 개수는 station_failure_reasons에 있다.
+    result["collection_outcome"] = result.get("status", "unknown")
+    if result.get("stations_failed"):
+        context.log.warning(
+            f"AirKorea 측정소 {result['stations_failed']}곳 수집 실패 "
+            f"(일시 {result.get('stations_failed_transient', 0)}, "
+            f"결정적 {result.get('stations_failed_deterministic', 0)}): "
+            f"{result.get('station_failure_reasons', {})} "
+            f"sample={result.get('failed_station_sample', [])}"
+        )
     context.add_output_metadata(result)
+    _record_collection_outcome(context, result["collection_outcome"])
     return result
 
 

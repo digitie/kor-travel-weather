@@ -22,7 +22,7 @@ import yaml
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMON_COMMIT = "67efe2e546ecef41e54a866bf4862d608ace343d"
+COMMON_COMMIT = "ec5e16888fd3de069762f34c3cd06fe867e06688"
 COMMAND = ["python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
 
 # SERVING이 성공하려면 CLI가 Dagster 없이 실행돼야 한다. 예외를 숨긴 경우도 exit1로 실패한다.

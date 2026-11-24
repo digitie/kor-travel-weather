@@ -62,6 +62,29 @@ _SIDO_ALIASES: tuple[tuple[str, str], ...] = (
 )
 
 
+#: 행정구역 통합으로 주소 첫 토큰이 바뀌었지만 AirKorea 시도별 실시간 측정
+#: (getCtprvnRltmMesureDnsty)의 ``sidoName`` 묶음은 그대로인 경우. 2026-10-14 이후
+#: 측정소 목록의 광주 도심 측정소 주소가 ``전남광주통합특별시``로 바뀌었고, 첫 토큰이
+#: ``전남``으로 시작해 ``normalize_sido_name``이 전남으로 묶었다. 그런데 전남 묶음 응답에는
+#: 광주 측정소가 없어(운영 2026-10-14~11-24 측정 원천에 sidoName=광주 0건, 매시 13곳 누락)
+#: 13개 측정소가 한 번도 수집되지 않았다. 통합 주소는 두 묶음을 모두 묻고 이름으로만
+#: 맞춘다. 저장된 ``sido_name`` metadata는 바꾸지 않는다(anchor는 insert-only).
+_MERGED_SIDO_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("전남광주", ("광주", "전남")),
+)
+
+
+def measurement_sido_names(point: Mapping[str, Any]) -> tuple[str, ...]:
+    """측정소를 찾을 시도별 bulk 묶음들. 알 수 없으면 빈 tuple(개별 조회 경로)."""
+    address = str(point.get("address") or "").strip()
+    token = address.split()[0] if address else ""
+    for prefix, names in _MERGED_SIDO_PREFIXES:
+        if token.startswith(prefix):
+            return names
+    sido = normalize_sido_name(str(point.get("sido_name") or address))
+    return (sido,) if sido else ()
+
+
 def _slug(value: str) -> str:
     """Return an ASCII-safe, deterministic station suffix.
 
