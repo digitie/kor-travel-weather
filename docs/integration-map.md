@@ -3,9 +3,20 @@
 | consumer | reads | owns | does not own |
 | --- | --- | --- | --- |
 | PinVi | public weather REST/OpenAPI (`/resolve`, `/markers`, `/latest`, `/forecast`, `/nearby`) | UI presentation | KMA credentials/ETL |
-| ~~kor-travel-map~~ | 없음 — Map은 날씨를 읽지도 쓰지도 않는다(kor-travel-map `docs/adr/105-map-drops-weather-functionality.md`, accepted 2026-10-01). 날씨 소비자는 PinVi뿐이다 | — | — |
+| kor-travel-map | service export `GET /v1/service/exports/{locations,current,forecasts,daily-summaries}`(W1·W2·W3·W5, `X-Admin-Token`). Map Dagster `weather_state_*` job 일곱이 첫 페이지 `If-None-Match`·cursor로 끝까지 읽어 **Valkey에 세대 단위로 교체**한다 | Valkey의 weather 상태 세대, Map REST `/v1/service/weather/*`(PinVi용) | weather 수집·승인·export 계약, Map PG의 날씨 저장(ADR-105 — Map DB에 날씨를 **저장하지 않는다**는 결정이며 ADR-114가 Valkey로 부분 대체) |
 | Dagster | WeatherLocation catalog, KMA | source/fact publication, sync runs | consumer UI |
 | admin UI | admin REST proxy | location enablement, run observation | direct DB/raw SQL |
+
+kor-travel-map 행의 근거(kor-travel-map `origin/main@ac45ce883`, 2026-11-24): 호출 경로 상수
+`src/kortravelmap/providers/kor_travel_weather.py:63-66`, job·schedule 정의
+`packages/kor-travel-map-dagster/src/kortravelmap/dagster/weather_state.py:1-10`(module docstring — "PG를 읽지도
+쓰지도 않는다")·`:915-980`(`WEATHER_STATE_SPECS`)·`:982`(공용 읽기 자리 `weather.export_read`), 값 변환
+`src/kortravelmap/providers/kor_travel_weather_state.py`, 결정 `docs/adr/114-weather-transport-state-in-memory-db.md`
+"구현 설계 — 2단계" W0(원천 계약)·W7(Map REST), `docs/adr/105-map-drops-weather-functionality.md`(상태 줄의
+"2026-10-23 ADR-114가 부분 대체"). 이 저장소 쪽 계약은
+`packages/kor-travel-weather-api/src/kortravelweather_api/routers/service_exports.py`와
+`docs/design/map-service-exports.md`이고, 호출 비용·개선 이력은
+`docs/reports/2026-11-24-map-call-performance-review.md`(§9 이행 현황)에 있다.
 
 Consumer는 `source_record_key`로 원본을 추적할 수 있지만 raw payload를 public
 응답에서 직접 받지 않는다. 위치 lifecycle은 weather source가 소유하고, 지도
@@ -57,8 +68,9 @@ compose다(PinVi 저장소 `.env.example`은 개발용 기본값만 가진다). 
 주지 않는다. 따라서 본 서비스에 geo 릴리스 감지·재처리 경로를 두지 않는다.
 `weather_locations.region_code`는 법정동·행정동 행정코드가 아니며 geo에서 유도되지 않는다.
 본 서비스가 공급한 좌표·주소에서 다른 서비스가 행정코드를 유도한다면 그 갱신은 그쪽 소관이다
-(Map은 weather 위치를 feature로 적재하지 않으므로 — Map ADR-105, 표 참조 — 그런 유도가
-지금은 없고, 장래 생기더라도 Map 측 재지오코딩 경로(kor-travel-map `docs/adr/109-*.md`
+(Map은 weather 위치를 PG feature로 적재하지 않고 Valkey 상태에서도 W1의 `legal_dong_code`를 그대로
+쓰므로 — Map ADR-105, map `weather_state.py` module docstring "geo를 부르지 않는다", 표 참조 — 그런
+유도가 지금은 없고, 장래 생기더라도 Map 측 재지오코딩 경로(kor-travel-map `docs/adr/109-*.md`
 proposed, 미구현)의 범위에서 다룰 일이다). 두 ADR 번호는 2026-10-13 설계에서 선점한 것이며
 본 저장소 `docs/adr/`에는 없다(이 디렉터리는 Map 번호 체계의 부분 거울이다).
 

@@ -1,3 +1,10 @@
+## 2026-11-24 — Map 호출 검토 이행 완료(코드), 운영 수용 대기
+
+검토 문서의 A1~A9·L1~L8·B1~B12가 weather #290·#292·#294·#295·#297~#301·#304·#305와 map #1542·#1550으로
+모두 머지됐다(항목별 표는 [검토 문서 §9](reports/2026-11-24-map-call-performance-review.md)). 다음 한 작업은
+odroid weather API·Dagster 배포(Codex, migration 0044 포함) 뒤 §7 수용 기준 측정이다. 남은 설계 일은 A3 W5 프로필과
+A4 stale fallback 소유자 결정이다. [상세](journal.md)
+
 ## 2026-11-24 — 공용 queue 우선순위(`dagster/priority`)
 
 모든 weather job에 공통 규칙(10 = 1시간 미만 수집, 5 = 1시간~하루 미만 수집, 0 = 정리·수동 일괄·하루 이상)의

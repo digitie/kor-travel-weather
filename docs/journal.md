@@ -1,3 +1,24 @@
+## 2026-11-24 — Map 호출 검토 이행 정리(A1~A9·L1~L8·B1~B12)
+
+[Map 호출 검토](reports/2026-11-24-map-call-performance-review.md)의 개선 항목이 하루 동안 여러 작업자 PR로
+모두 머지됐다. 항목별 PR·머지 commit·남은 일은 그 문서 §9가 정본이고, 여기에는 묶음만 적는다.
+
+- export(경로 A): A1 #290(cursor 상태 판정 snapshot당 1회), A5·A6 #295(예보 첫 페이지 재사용·끊긴 요청 취소 499),
+  A2 #299 + map #1550(내용 ETag·본문 읽기 전 304), A3 #301(W2 current 표준 페이지 사전 구성, migration 0044,
+  `weather_export_prebuild_job`), A4·L8 #305(freeze를 읽기 전용 선택 RR과 짧은 발급 TX로 분리).
+- Map 쪽 A7·A8·A9는 map #1542(다른 작업자): current 상한 600초(임시)·상류 미준비 건너뛰기, `weather.export_read`
+  동시성 1·발화 분리, stale tag와 나이 기준 실패.
+- 쓰기·lock: L1~L3 #292(야간 파티션 DDL lock 구간), L4~L7 #297(keyset 정리·수집 문장/유휴 상한·payload defer·
+  migration `lock_timeout`).
+- 관리 지도(경로 B): B1·B2·B4·B5 #294, B3·B9·B10·B11과 공개 읽기 `lock_timeout` 2초 #300, B6·B7·B8·B12 #304,
+  API warmup·`/ready` #298.
+- `docs/integration-map.md`의 kor-travel-map 행을 고쳤다. Map은 Weather service export를 Dagster `weather_state_*`
+  job으로 읽어 Valkey에 싣는다. ADR-105는 Map DB에 날씨를 저장하지 않는다는 결정이다.
+
+하지 않은 것: A3의 W5(daily) 프로필(가산 DTO와 Map 소비자 검증이 함께 필요), A4의 freeze 예산 초과 시 stale
+반환(소유자 결정 필요), Manager 쪽 `/ready` verify·web healthcheck·HAProxy 게이트·사전 구성 hook. 모든 PR의 성능
+수치는 로컬 측정이고 운영(n150·odroid) 수용 측정은 배포 뒤 남아 있다.
+
 ## 2026-11-24 — 공용 Dagster queue 우선순위(`dagster/priority`)
 
 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.6 #9) 대응. 공용 Dagster(odroid)는 transport·weather·geo가 queue 하나(`max_concurrent_runs` 5)를 나눠 쓰는데 weather run에는 `dagster/priority`가 없어 모두 0, 즉 테넌트를 가리지 않는 FIFO였다. 5분 특보 발표 관측이 3시간 외부 sweep·일별 정리와 같은 줄에 섰다.
