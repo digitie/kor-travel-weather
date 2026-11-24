@@ -1,3 +1,11 @@
+## 2026-11-24 — 공용 Dagster queue 우선순위(`dagster/priority`)
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.6 #9) 대응. 공용 Dagster(odroid)는 transport·weather·geo가 queue 하나(`max_concurrent_runs` 5)를 나눠 쓰는데 weather run에는 `dagster/priority`가 없어 모두 0, 즉 테넌트를 가리지 않는 FIFO였다. 5분 특보 발표 관측이 3시간 외부 sweep·일별 정리와 같은 줄에 섰다.
+
+소유자 공통 규칙(2026-11-24, 정본 kor-travel-docker-manager `docs/dagster-tenant-fairness.md`)대로 `definitions.py`에 `JOB_PRIORITIES` 한 표를 두고 `_job_tags`가 job tags에 싣는다: 10 = 1시간 미만 주기 수집(`kma_regional_alert_events_job` 5분), 5 = 1시간 이상·하루 미만 주기 수집(매시 KMA 초단기예보·특보·초단기실황·AirKorea, 3시간 단기예보·schedule 있는 외부 provider(지금 6개), 12시간 중기예보·지역 원천 4개), 0 = 정리(일별 보존, 10분 단기예보 정리, 매시 export 정리 `weather_export_maintenance_job` — 이 job은 `export_maintenance.py`가 같은 값을 직접 단다), schedule 없는 외부 provider(지금 6개, 수동 전용), common 소유 `address_refresh_job`(tag 생략 = 0). `_job_tags`를 거치는 job은 분류가 없으면 import 시점에 거부되고(export 정리 job은 직접 단 값이 표와 다르면 import가 실패한다), 정의된 모든 job과 표의 일치는 시험이 본다. 값은 job tags에 있으므로 schedule·sensor·Launchpad·관리자 콘솔 launch·native/infra 재실행 run이 모두 받는다(Dagster 1.13.24의 scheduler·sensor는 `run_tags`, GraphQL launch·재실행은 job `tags`, common infra retry는 `job.tags`를 바탕으로 쓴다 — 셋 다 같다). 기존 `kortravelweather/run_group`·`dagster/max_runtime` tag는 그대로다.
+
+`packages/kor-travel-weather-dagster/tests/test_run_priority.py`가 정의된 모든 job과 표의 일치, 두 tag 표면, 실제 schedule 주기(지역은 정규 cron)에서 규칙으로 계산한 값, 모든 schedule tick의 RunRequest가 값을 덮지 않음, priority 없는 옛 parent의 infra retry child가 job 값(10)을 받음을 고정한다. 사람이 화면에서 기다리는 대화형 요청 run은 weather에 없다. 정본의 0 기준 "수동·관리자 일괄 실행"에는 수동 전용 job(schedule 없는 외부 provider·주소 갱신)이 들고, 정기 수집 job을 Launchpad·관리자 콘솔·Re-execute로 단건 다시 띄운 run은 정본(job tags → 모든 경로)대로 그 job 값을 받는다. 남은 결정: (1) 그런 수동 재실행을 0으로 낮출지 — 관리자 콘솔 launch가 거치는 common `dagster_webserver`가 `dagster/code_location` 외 `dagster/*` tag를 거부하므로 common 변경이 먼저다, (2) common `address_refresh_definitions`가 priority 인자를 받으면 0을 명시로 바꾼다.
+
 ## 2026-11-24 — export publisher의 정리를 매시 job으로 분리하고 실패를 tick 실패로
 
 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.6 #5)의 후속이다. odroid

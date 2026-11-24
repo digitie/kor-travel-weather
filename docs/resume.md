@@ -1,3 +1,9 @@
+## 2026-11-24 — 공용 queue 우선순위(`dagster/priority`)
+
+모든 weather job에 공통 규칙(10 = 1시간 미만 수집, 5 = 1시간~하루 미만 수집, 0 = 정리·수동 일괄·하루 이상)의
+`dagster/priority`를 `JOB_PRIORITIES` 한 표로 달았다. 다음은 odroid weather code-server 배포(Codex)와 배포 뒤
+새 run tag에 `dagster/priority`(특보 발표 관측 10, 매시 KMA·AirKorea 5, 보존 0)가 붙는지 확인이다. [상세](journal.md)
+
 ## 2026-11-24 — export publisher의 정리를 매시 job으로 분리하고 실패를 tick 실패로
 
 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.6 #5)의 후속이다. odroid
