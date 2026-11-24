@@ -401,6 +401,88 @@ def test_daily_content_etag_survives_handle_renewal(daily_repository, tmp_path, 
     assert renewed.json()["meta"]["snapshot_id"] != first.json()["meta"]["snapshot_id"]
 
 
+def test_daily_fallback_etag_follows_reducer_progress_on_later_pages(
+    daily_repository, tmp_path, monkeypatch,
+):
+    """fallback 동안 뒤 페이지 요약만 바뀌어도 첫 페이지 ETag가 바뀐다(호출 검토 A2 리뷰).
+
+    fallback은 이전 coverage digest를 유지하고, 페이지에서도 coverage를 못 읽으면 건강도·수집
+    시각·상태가 모두 고정된다. 첫 페이지 본문이 같아도 사전 계산 checkpoint가 진행하면 200이어야
+    첫 페이지에만 ``If-None-Match``를 보내는 Map W5가 뒤 페이지의 새 값을 받는다.
+    """
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+    from kortravelweather_api.app import create_app
+    from test_export_heads import _candidate, _descriptor
+
+    from kortravelweather.export_collector import publish_pending_exports
+    from kortravelweather.export_daily_reader import DailySummaryExports
+    from kortravelweather.export_snapshots import ExportSnapshotUnavailable
+    from kortravelweather.settings import WeatherSettings
+
+    repository = daily_repository
+    descriptor = _descriptor(repository)
+    yesterday = (datetime.now(KST) - timedelta(days=1)).replace(
+        hour=8, minute=0, second=0, microsecond=0
+    )
+    _candidate(
+        repository, tmp_path, descriptor, revision=yesterday, value="12", cohort=True,
+        artifacts=DatabaseExportArtifactStore(repository),
+    )
+    assert publish_pending_exports(repository, tmp_path, daily_summaries=True).results == {
+        "PUBLISHED": 1
+    }
+    client = TestClient(create_app(WeatherSettings(
+        environment="development", admin_token="daily-test-token",
+        enabled_providers=["python-kma-api"], service_exports_enabled=True,
+        service_export_artifact_root=tmp_path,
+    ), repository))
+    clock = install_api_clock(monkeypatch, client)
+    headers = {"x-admin-token": "daily-test-token"}
+    url, params = "/v1/service/exports/daily-summaries", {"days": 2, "limit": 2}
+    assert client.get(url, params=params, headers=headers).status_code == 200
+
+    def unavailable(self, connection, keys):
+        raise ExportSnapshotUnavailable("시험용 coverage 미준비")
+
+    # freeze는 이전 roster·coverage digest로 fallback하고, 페이지도 coverage를 못 읽는다.
+    monkeypatch.setattr(DailySummaryExports, "_selected_coverage", unavailable)
+    clock[0] += 60
+    fallback = client.get(url, params=params, headers=headers)
+    assert fallback.status_code == 200 and fallback.json()["meta"]["source_status"] == "stale"
+    assert fallback.json()["meta"]["has_more"]
+    conditional = {**headers, "if-none-match": fallback.headers["etag"]}
+    clock[0] += 60
+    assert client.get(url, params=params, headers=conditional).status_code == 304
+    # reducer가 뒤 페이지 위치(어제 저녁)의 새 승인 관측을 반영한다. 첫 페이지(어제 아침·낮)는 같다.
+    _candidate(
+        repository, tmp_path, descriptor, revision=yesterday.replace(hour=20), value="30",
+        cohort=True, artifacts=DatabaseExportArtifactStore(repository),
+    )
+    assert publish_pending_exports(repository, tmp_path, daily_summaries=True).results == {
+        "PUBLISHED": 1
+    }
+    clock[0] += 60
+    changed = client.get(url, params=params, headers=conditional)
+    assert changed.status_code == 200 and changed.headers["etag"] != fallback.headers["etag"]
+    assert changed.json()["meta"]["source_status"] == "stale"
+    assert changed.json()["items"] == fallback.json()["items"]
+    items, page = [], changed.json()
+    while True:
+        items.extend(page["items"])
+        if not page["meta"]["has_more"]:
+            break
+        page = client.get(
+            url, params={**params, "cursor": page["meta"]["next_cursor"]}, headers=headers
+        ).json()
+    evening = next(
+        item for item in items
+        if item["date"] == yesterday.date().isoformat() and item["slot"] == "evening"
+    )
+    assert evening["temp_avg"] == 30 and evening["sample_count"] == 1
+
+
 def test_daily_retention_is_bounded_and_keeps_cursor_day_grace(daily_repository):
     from datetime import timedelta
 

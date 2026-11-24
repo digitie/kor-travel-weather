@@ -525,7 +525,15 @@ class DailySummaryExports(FrozenCurrentExports):
         }
         # 요약 값은 같은 manifest에서도 사전 계산 갱신·시각 경계(partial)로 바뀌므로 본문을 넣는다.
         # 그래서 비교는 값을 읽은 뒤(직렬화 전)에 하고, handle이 바뀌어도 내용이 같으면 304다.
+        # 정상 freeze의 manifest는 coverage(위치·namespace·generation)를 묶어 다른 페이지 위치의
+        # 요약 갱신도 digest로 드러난다. fallback(이전 coverage digest 유지)이나 이 페이지에서
+        # coverage를 못 읽은 경우는 digest·건강도·수집 시각·상태가 모두 고정되므로, 사전 계산
+        # checkpoint(reducer 진도)를 넣어 뒤 페이지만 바뀌어도 첫 페이지 ETag가 바뀌게 한다.
+        progress_token = (
+            [ready["generation_id"], ready["published_at"].isoformat()]
+            if manifest.get("fallback_unconfirmed") or coverage is None else None
+        )
         return page, content_etag(
             frozen["manifest_digest"], page_key, status, page["meta"]["source_collected_at"],
-            self.daily_health_digest, output,
+            self.daily_health_digest, output, progress_token,
         )
