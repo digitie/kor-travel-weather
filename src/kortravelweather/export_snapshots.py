@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from contextlib import nullcontext
 from copy import copy, deepcopy
 from datetime import UTC, datetime, timedelta
@@ -266,6 +267,9 @@ class FrozenCurrentExports:
         self.reuse_liveness = None
         # 요청의 If-None-Match(route가 넣는다). 첫 페이지는 artifact 본문을 읽기 전에 비교한다.
         self.if_none_match = ""
+        # 페이지 캐시 리더일 때 같은 키 대기자(슬롯 대기 포함)가 있는지 묻는 함수(페이지 캐시가
+        # 넣는다). 참이면 본문 읽기 전 304로 끝내지 않고 본문을 만들어 대기자에게 남긴다.
+        self.page_waiters: Callable[[], bool] | None = None
         self.repository = repository
         self.heads = ExportHeads(repository)
         self.snapshots, self.refs = export_snapshot_tables(self.heads.metadata)
@@ -1318,7 +1322,11 @@ class FrozenCurrentExports:
             # cursor 페이지는 공용 판정의 남은 수명(20초 이상)을 본문 읽기 뒤에 쓰도록 예전 순서다.
             status = self._page_status(frozen, manifest, reuse=False)
             etag = self._content_etag(frozen, page_key, status)
-            if matches_etag(self.if_none_match, etag):
+            # 같은 키 대기자(Map read timeout 재시도 등)가 있으면 304로 끝내지 않고 본문을 만들어
+            # 페이지 캐시에 남긴다. 304는 캐시에 남지 않아 대기자가 freeze를 처음부터 다시 하기
+            # 때문이다. 이 요청은 route가 본문을 읽은 뒤 같은 ETag로 비교해 그대로 304를 받는다.
+            waiters = self.page_waiters
+            if matches_etag(self.if_none_match, etag) and not (waiters is not None and waiters()):
                 raise ExportNotModified(etag, status)
         output, size = [], 0
         if resource == "locations":

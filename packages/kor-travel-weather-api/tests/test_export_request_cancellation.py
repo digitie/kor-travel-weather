@@ -26,17 +26,19 @@ from kortravelweather.models import WeatherLocation
 MAP_TIMEOUT_RETRY_SECONDS = 18.0
 
 
-def _scope(path: str, query: str) -> dict:
+def _scope(path: str, query: str, headers: dict[str, str] | None = None) -> dict:
     return {
         "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "GET",
         "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "",
         "query_string": query.encode(),
-        "headers": [(b"host", b"test"), (b"x-admin-token", TOKEN.encode())],
+        "headers": [(b"host", b"test"), (b"x-admin-token", TOKEN.encode())] + [
+            (key.encode(), value.encode()) for key, value in (headers or {}).items()
+        ],
         "client": ("127.0.0.1", 50000), "server": ("test", 80),
     }
 
 
-async def _call(app, path, query="", *, gone=None):
+async def _call(app, path, query="", *, gone=None, headers=None):
     """``gone``이 set되면 연결이 끊긴 것처럼 ``http.disconnect``를 준다."""
     messages = []
     delivered = False
@@ -52,7 +54,7 @@ async def _call(app, path, query="", *, gone=None):
     async def send(message):
         messages.append(message)
 
-    await app(_scope(path, query), receive, send)
+    await app(_scope(path, query, headers), receive, send)
     start = next(message for message in messages if message["type"] == "http.response.start")
     return start["status"], {key.decode(): value.decode() for key, value in start["headers"]}
 
@@ -310,6 +312,88 @@ def test_disconnected_leader_survives_until_the_map_timeout_retry_arrives(
     assert result["leader"] == 499
     assert result["retry"] == 200
     assert result["retry_headers"]["x-export-read"] == "reused"
+    _released(app, repository)
+
+
+@pytest.mark.parametrize("slot_busy", [False, True])
+def test_conditional_leader_leaves_its_page_for_the_same_etag_retry(
+    repository, tmp_path, monkeypatch, slot_busy,
+):
+    """조건부 첫 페이지 리더도 같은 키 재시도가 있으면 본문을 만들어 남긴다(호출 검토 A2 리뷰).
+
+    Map W2는 current 첫 페이지에 ``If-None-Match``를 보낸다. read timeout으로 끊긴 리더를 같은
+    ETag 재시도가 기다리는데 리더가 본문 읽기 전 304로 끝나면 캐시에 남는 것이 없어, 재시도가
+    freeze를 처음부터 다시 했다. 이제 리더는 본문을 남기고 재시도는 그 페이지로 304를 받는다.
+    """
+    _collect(repository, tmp_path)
+    app = _client(repository, tmp_path).app
+    path = "/v1/service/exports/current"
+    seeded = {}
+
+    async def seed():
+        seeded["status"], seeded["headers"] = await _call(app, path, "limit=1")
+
+    anyio.run(seed)
+    assert seeded["status"] == 200
+    conditional = {"if-none-match": seeded["headers"]["etag"]}
+    cache = app.state.export_page_cache
+    # 완성 페이지를 비워 다음 조건부 요청이 freeze하는 리더가 되게 한다.
+    cache.entries.clear()
+    cache.bytes = 0
+    offset = [0.0]
+    created = []
+
+    def watched():
+        # 감시 시계만 앞당긴다. 페이지 캐시·승인 수명은 실제 시계 그대로다.
+        created.append(ExportCancellation(clock=lambda: monotonic() + offset[0]))
+        return created[-1]
+
+    monkeypatch.setattr(service_exports, "ExportCancellation", watched)
+    entered, release, freezes = _gated_current(monkeypatch)
+    limiter = app.state.service_export_limiter
+    result = {}
+
+    async def main():
+        gone = anyio.Event()
+        holder = object()
+
+        async def leader():
+            result["leader"], _ = await _call(
+                app, path, "limit=1", gone=gone, headers=conditional,
+            )
+
+        async def retry():
+            result["retry"], result["retry_headers"] = await _call(
+                app, path, "limit=1", headers=conditional,
+            )
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(leader)
+            await _until(entered.is_set)
+            gone.set()  # Map read timeout
+            await _until(lambda: created[0].disconnected)
+            if slot_busy:
+                # 재시도는 limiter에서 기다린다(같은 키 도착 등록). 리더 유예는 이미 지났다.
+                await limiter.acquire_on_behalf_of(holder)
+                group.start_soon(retry)
+                await _until(lambda: limiter.statistics().tasks_waiting == 1)
+                offset[0] = export_cancellation.LEADER_GRACE_SECONDS + 1
+                release.set()
+                await _until(lambda: "retry" in result)
+                limiter.release_on_behalf_of(holder)
+            else:
+                group.start_soon(retry)
+                await _until(lambda: bool(cache.waiting))
+                release.set()
+
+    anyio.run(main)
+    # 재시도는 freeze를 다시 하지 않고 리더가 남긴 페이지로 304를 받았다.
+    assert freezes == [1]
+    assert result["leader"] == 499
+    assert result["retry"] == 304
+    assert result["retry_headers"]["x-export-read"] == "reused"
+    assert result["retry_headers"]["etag"] == conditional["if-none-match"]
+    assert result["retry_headers"]["cache-control"] == "no-store, private"
     _released(app, repository)
 
 

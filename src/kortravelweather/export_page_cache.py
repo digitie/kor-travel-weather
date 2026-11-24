@@ -210,11 +210,16 @@ class ExportPageCache:
             # 소유자가 실패(410/422/503)·취소했거나 캐시하지 않은 결과면 이 요청이 직접 읽는다.
             # 소유자의 오류를 일시 경합 503으로 바꿔 숨기지 않는다.
             return self.read(key, reader, load)
+        def waiters():
+            return self.has_waiters(key)
+
         try:
             reader.page_reuse_status = "generated"
             if seed is not None:
                 reader._current_page_seed = (seed[1].reader, seed[1].deadline)
-            with leading(lambda: self.has_waiters(key)):
+            # 대기자가 있으면 reader는 본문 읽기 전 304 대신 본문을 만들어 캐시에 남긴다(A2).
+            reader.page_waiters = waiters
+            with leading(waiters):
                 try:
                     result, entry = self._prepare(reader, load)
                 except PageReuseExpired:
@@ -229,13 +234,15 @@ class ExportPageCache:
             return result
         except (ExportRequestCancelled, ExportNotModified):
             # seed는 다른 limit의 유효한 완료 proof다. 요청자가 떠났거나 본문 없는 304로
-            # 끝났다고 버리지 않는다. 304는 본문을 만들지 않아 캐시에도 넣지 않는다
-            # (대기자는 직접 읽는다).
+            # 끝났다고 버리지 않는다. 304는 본문을 만들지 않아 캐시에도 넣지 않는다. 비교
+            # 시점에 같은 키 대기자가 있었다면 reader가 304 대신 본문을 만들었으므로, 여기
+            # 오는 것은 그 뒤에 도착한 요청뿐이다(그 요청은 직접 읽는다).
             raise
         except BaseException:
             if seed is not None:
                 self._evict(*seed)
             raise
         finally:
+            reader.page_waiters = None
             with self.lock:
                 self.inflight.pop(key).set()

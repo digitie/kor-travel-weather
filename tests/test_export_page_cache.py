@@ -200,7 +200,45 @@ def test_not_modified_is_not_cached_and_keeps_the_cross_limit_seed():
     with pytest.raises(ExportNotModified):
         cache.read(other, target, unchanged)
     assert key in cache.entries and other not in cache.entries and not cache.inflight
+    assert target.page_waiters is None
     assert cache.read(other, reader(), lambda: ({"own": 1}, "etag")) == ({"own": 1}, "etag")
+
+
+def test_owner_reader_sees_same_key_waiters_so_it_builds_instead_of_early_304():
+    """리더 reader는 같은 키 대기자 유무를 묻는다(호출 검토 A2 리뷰).
+
+    대기자가 있으면 reader는 본문 읽기 전 304 대신 본문을 만든다. 그 본문은 캐시에 남아 대기자는
+    다시 만들지 않는다. 대기자가 없을 때의 조기 304는 캐시에 남지 않는다.
+    """
+    cache = ExportPageCache(clock=lambda: 0)
+    leader = reader()
+    entered, release = Event(), Event()
+    seen = []
+
+    def load():
+        seen.append(leader.page_waiters())
+        entered.set()
+        assert release.wait(5)
+        seen.append(leader.page_waiters())
+        if not seen[-1]:
+            raise ExportNotModified('W/"same"', "ok")
+        return ({"page": 1}, 'W/"same"')
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(cache.read, "a", leader, load)
+        assert entered.wait(5)
+        second = pool.submit(
+            cache.read, "a", reader(), lambda: pytest.fail("대기자가 페이지를 다시 만들었습니다."),
+        )
+        for _ in range(500):
+            if cache.waiting["a"]:
+                break
+            time.sleep(0.01)
+        assert cache.waiting["a"] == 1
+        release.set()
+        assert first.result() == second.result() == ({"page": 1}, 'W/"same"')
+    assert seen == [False, True]
+    assert leader.page_waiters is None and not cache.inflight and not cache.waiting
 
 
 def test_current_cross_limit_seed_is_pending_only_for_new_current_limit():
