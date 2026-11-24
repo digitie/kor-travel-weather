@@ -324,6 +324,9 @@ def test_error_after_disconnect_keeps_its_failure_class(
     _collect(repository, tmp_path)
     app = _client(repository, tmp_path).app
     entered, release, _ = _gated_current(monkeypatch, after=error)
+    # 같은 세션의 Alembic fileConfig(앞선 migration 시험)가 이미 있던 logger를 끄므로
+    # 이 시험 안에서만 다시 켠다. 끈 채로 두면 caplog가 기록을 하나도 받지 못한다.
+    monkeypatch.setattr(service_exports.logger, "disabled", False)
     result = {}
 
     async def main():
