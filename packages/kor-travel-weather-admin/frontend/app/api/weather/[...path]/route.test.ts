@@ -90,7 +90,7 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("공급자 키 상태 재시도도 같은20초 총예산을 사용한다", async () => {
+  it("공급자 키 상태 재시도도 같은15초 총예산을 사용한다", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockImplementationOnce(() => new Promise((_, reject) => {
       setTimeout(() => reject(socketFailure()), 12_000);
@@ -99,7 +99,7 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     }));
     vi.stubGlobal("fetch", fetcher);
     const pending = GET(request(), context(["v1", "admin", "provider-credentials"]));
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect((await pending).status).toBe(504);
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
@@ -142,7 +142,7 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("재시도해도 pre-header 총20초 예산을 초기화하지 않는다", async () => {
+  it("재시도해도 pre-header 총15초 예산을 초기화하지 않는다", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn().mockImplementationOnce(() => new Promise((_, reject) => {
       setTimeout(() => reject(socketFailure()), 12_000);
@@ -152,7 +152,7 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     vi.stubGlobal("fetch", fetcher);
     let settled = false;
     const pending = GET(request(), context()).then((response) => { settled = true; return response; });
-    await vi.advanceTimersByTimeAsync(19_999);
+    await vi.advanceTimersByTimeAsync(14_999);
     expect(settled).toBe(false);
     expect(fetcher).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
@@ -166,27 +166,62 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     vi.spyOn(performance, "now").mockImplementation(() => clock);
     const cancelled = vi.fn();
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => {
-      clock = 20_001;
+      clock = 15_001;
       return new Response(new ReadableStream({ cancel: cancelled }));
     }));
-    expect((await GET(request(), context())).status).toBe(504);
+    expect((await GET(request(), context(["v1", "weather", "markers"]))).status).toBe(504);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(cancelled).toHaveBeenCalledTimes(1);
   });
 
-  it("다른 GET과 write에는20초 상한을 새로 만들지 않는다", async () => {
+  it.each([
+    ["v1", "weather", "markers"],
+    ["v1", "weather", "locations", "a", "latest"],
+    ["v1", "admin", "sync-runs"],
+  ])("다른 GET %j도 헤더 15초 예산 뒤 재시도 가능한 504로 끝나고 BFF는 재전송하지 않는다", async (...path) => {
     vi.useFakeTimers();
-    for (const method of ["GET", "POST"]) {
-      vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise((resolve) => {
-        setTimeout(() => resolve(new Response("slow original")), 25_000);
-      })));
-      const pending = GET(request(method), context(["v1", "admin", "export"]));
-      await vi.advanceTimersByTimeAsync(25_000);
-      const response = await pending;
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("slow original");
-      expect(fetch).toHaveBeenCalledTimes(1);
-    }
+    const fetcher = vi.fn().mockImplementation((_url, init) => new Promise((_, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    }));
+    vi.stubGlobal("fetch", fetcher);
+    let settled = false;
+    const pending = GET(request(), context(path)).then((response) => { settled = true; return response; });
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const response = await pending;
+    expect(response.status).toBe(504);
+    expect(response.headers.get("retry-after")).toBe("1");
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("예산 안에 헤더가 오면 느린 GET도 그대로 전달한다", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(new Response("slow original")), 14_900);
+    })));
+    const pending = GET(request(), context(["v1", "weather", "markers"]));
+    await vi.advanceTimersByTimeAsync(14_900);
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("slow original");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["POST", "PATCH", "PUT", "DELETE"])("관리 write %s에는 헤더 상한을 새로 만들지 않는다", async (method) => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise((resolve) => {
+      setTimeout(() => resolve(new Response("slow original")), 25_000);
+    })));
+    const pending = POST(request(method), context(["v1", "admin", "locations"]));
+    await vi.advanceTimersByTimeAsync(25_000);
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("slow original");
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("헤더 뒤 body 오류는 재시도하지 않고 reader를 해제한다", async () => {
@@ -198,7 +233,7 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(body.locked).toBe(false);
   });
 
-  it("헤더 이후에는 새20초 body 제한을 부과하지 않고 취소를 전달한다", async () => {
+  it("헤더 이후에는 body 제한을 부과하지 않고 취소를 전달한다", async () => {
     vi.useFakeTimers();
     const cancelled = vi.fn();
     const body = new ReadableStream({ cancel: cancelled });

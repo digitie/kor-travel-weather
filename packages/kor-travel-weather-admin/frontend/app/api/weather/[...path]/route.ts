@@ -2,9 +2,11 @@ import { NextRequest } from "next/server";
 
 const apiBase = () => process.env.WEATHER_API_INTERNAL_URL ?? "http://127.0.0.1:14101";
 const MAX_PROXY_BODY_BYTES = 1_048_576;
-// 위치 목록과 공급자 키 상태의 읽기만 헤더 전 전송 장애를 한 번 복구한다.
-// headers 이후 stream·다른 GET·관리 write에는 새 상한을 두지 않는다.
-const READ_HEADERS_BUDGET_MS = 20_000;
+// 모든 GET은 응답 헤더 수신 총예산 15초를 쓴다. 공개 조회의 API DB 마감(기본 15초)과 같아
+// 느린 조회는 API 503 또는 이 504로 끝나고, 둘 다 retry-after를 주어 브라우저가 다시 시도한다.
+// 위치 목록과 공급자 키 상태의 읽기만 이 예산 안에서 헤더 전 전송 장애를 한 번 복구한다.
+// headers 이후 stream과 관리 write(POST/PATCH/PUT/DELETE)에는 상한을 두지 않는다.
+const READ_HEADERS_BUDGET_MS = 15_000;
 const RECOVERABLE_READ_PATHS = new Set([
   "v1/weather/locations",
   "v1/admin/provider-credentials",
@@ -97,14 +99,15 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       { status: 413, headers: { "cache-control": "no-store" } },
     );
   }
-  const recoverRead = request.method === "GET" && RECOVERABLE_READ_PATHS.has(path.join("/"));
+  const boundedRead = request.method === "GET";
+  const recoverRead = boundedRead && RECOVERABLE_READ_PATHS.has(path.join("/"));
   const upstream = new AbortController();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let timedOut = false;
   const deadline = performance.now() + READ_HEADERS_BUDGET_MS;
   // event-loop가 밀려 timer callback보다 fetch가 먼저 재개돼도 총예산을 지킨다.
-  const expired = () => timedOut || (recoverRead && performance.now() >= deadline);
-  const timer = recoverRead ? setTimeout(() => {
+  const expired = () => timedOut || (boundedRead && performance.now() >= deadline);
+  const timer = boundedRead ? setTimeout(() => {
     timedOut = true;
     upstream.abort();
   }, READ_HEADERS_BUDGET_MS) : undefined;

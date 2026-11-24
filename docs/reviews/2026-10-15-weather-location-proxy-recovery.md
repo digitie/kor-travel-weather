@@ -94,3 +94,8 @@ worker 수가 줄지 않았다. 실제 소유 builder의 Docker process 목록�
 이를2로 지정해 정적 빌드 worker를 제한한다. API/Dagster의 작업 동시성이나
 운영 HTTP worker 설정을 바꾸는 항목이 아니다. 기존 실패 로그와 source c2e6은
 보존하며, 실제 새 ARM64 빌드의 worker/메모리·완료 여부는 후속 실측으로 확인한다.
+
+## 후속 변경(2026-11-24)
+
+헤더 수신 예산은 15초로 줄고 모든 GET에 적용된다. 위치 목록·공급자 키 상태의 socket 1회 복구는
+그 15초 안에서 하고, 남은 복구는 브라우저 GET 재시도가 맡는다(`docs/weather-admin-map-call-resilience.md`).
