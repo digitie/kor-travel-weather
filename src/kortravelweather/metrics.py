@@ -950,7 +950,8 @@ def observe_read_stage(resource, page, stage, outcome, duration):
         resource if resource in resources else "other",
         page if page in {"first", "cursor", "304", "public"} else "other",
         stage if stage in stages else "other",
-        outcome if outcome in {"ok", "timeout", "error"} else "other",
+        # cancelled: 요청자가 연결을 끊어 export worker가 멈췄다(499).
+        outcome if outcome in {"ok", "timeout", "error", "cancelled"} else "other",
     )
     _safe("read_stage", lambda: READ_STAGE_DURATION.labels(*labels).observe(max(0, duration)))
 

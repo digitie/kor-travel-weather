@@ -325,6 +325,21 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 > `generated_at`만 응답마다 새로 쓴다(조건부·current 재사용과 같다). 응답 header
 > `x-export-read`가 `reused`·`generated`로 구분한다.
 
+> **연결 끊김 전파(2026-11-24, 호출 검토 A6).** export 요청은 worker thread에서 돈다. 요청자(Map)가
+> timeout·run 취소로 연결을 끊으면 route 감시 task가 ASGI `http.disconnect`를 받아 그 작업에
+> 알리고, worker는 limiter 진입 직후·freeze 앞뒤·렌더 전·같은 키 페이지/승인 선택 대기·SQL
+> 문장마다 확인해 멈춘다(rollback 뒤 export 슬롯과 DB 연결 반환). 끊긴 순간 실행 중이던 SQL은
+> psycopg `cancel_safe()`로 서버에 취소를 요청한다. 응답은 `/v1/weather/markers`와 같은 499이고,
+> 경합 503·`statement_timeout` 로그와 섞이지 않게 `weather_service_export_cancelled` 로그와
+> `ktw_read_stage_duration_seconds{outcome="cancelled"}`로 남는다.
+> 예외는 같은 키 페이지 캐시 리더다. Map은 timeout 뒤 같은 cursor로 다시 요청하므로 리더를 바로
+> 멈추면 생성 시간이 Map timeout보다 긴 페이지는 재시도가 매번 처음부터 다시 만들어 끝나지 않는다.
+> 리더는 끊긴 뒤 15초(`LEADER_GRACE_SECONDS`) 동안, 그리고 같은 키 대기자가 있는 동안 계속해 완성
+> 페이지를 캐시에 남기고 대기자는 그 페이지를 받는다. 유예가 끝나고 대기자도 없으면 다음 SQL 문장
+> 전에 멈춘다(실행 중 문장은 5초 문장 상한에 맡긴다). 리더가 멈추거나 실패하면 대기자 하나가 새
+> 리더가 되고, 요청자가 떠난 대기자는 기다리지 않고 바로 빠진다. 끊김을 감지하려면 Weather 앞의
+> proxy가 요청자 연결 종료를 upstream으로 전해야 한다. `/status`(최대128행)는 대상이 아니다.
+
 forecast는 **각 응답 시점의 지금 이후 target만** 내보낸다. 고정 snapshot_as_of가 과거였다는
 이유로 이미 지난 target을 보내고 Map에 prune 책임을 넘기지 않는다. snapshot artifact의 logical
 내용은 고정하되 응답의 temporal projection을 별도로 정의한다. `next_change_at`은 현재 페이지

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import and_, func, or_, select, text, tuple_
 
+from .export_cancellation import checkpoint
 from .export_capacity import any_of
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
@@ -408,7 +409,9 @@ class DailySummaryExports(FrozenCurrentExports):
                 raise ExportSnapshotExpired("요약 cursor가 만료됐습니다.")
             frozen = self._renew_reused(dict(row, _reused=True))
         else:
+            checkpoint("freeze")
             frozen = self._renew_reused(self._freeze_daily())
+            checkpoint("freeze")
             state = {
                 "v": 1,
                 "s": frozen["snapshot_id"],

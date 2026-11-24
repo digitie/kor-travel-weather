@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from kortravelweather.export_cancellation import install_export_cancellation
 from kortravelweather.export_page_cache import ExportPageCache
 from kortravelweather.export_read_cache import SnapshotMetadataCache
 from kortravelweather.export_selection_cache import ExportSelectionCache
@@ -161,6 +162,8 @@ def create_app(
     api.state.repository = runtime_repository
     if isinstance(runtime_repository, WeatherRepository):
         install_public_read_limits(runtime_repository.engine)
+        # 연결이 끊긴 service export 요청의 다음 SQL을 막고 실행 중 SQL을 취소한다.
+        install_export_cancellation(runtime_repository.engine)
     # 지도 이동의 이전 배치가 DB·일반 worker 슬롯을 독점하지 않도록 제한한다.
     api.state.marker_limiter = CapacityLimiter(2)
     api.state.service_export_limiter = CapacityLimiter(2)
