@@ -115,6 +115,25 @@ wttr.in needs no key but is off by default. A 429 waits once for a `Retry-After`
 less; otherwise the run stops that provider's sweep and records it as deferred for the next
 three-hourly cycle.
 
+What "deferred" and "partial" do and do not keep:
+
+- A sweep the provider stops (rate limit, auth, five failed locations in a row, or more than
+  20 % of the targets failed) publishes every response it already received, including those
+  still staged below the publish batch limit, then closes its `weather_sync_runs` row as
+  `failed`. Dagster shows a 429 as a SUCCESS run tagged `kortravel/collection-outcome=deferred`,
+  but the native row is `failed`, so the run's export cohort is not approved and its export
+  attempts are retired. The Map exports that read that dataset (`<provider>_current`: current
+  and daily summaries; `<provider>_forecast`: external forecasts) keep serving the previously
+  approved values with `source_status=stale` until the next successful sweep.
+- A client, schema, server or network error at one location skips only that location. The
+  facts and the native run succeed and Dagster tags the run `partial`, but the cohort declared
+  before the first request still lists the skipped location, whose export head stays on an
+  earlier run. The cohort is therefore unconfirmed and those Map exports stay `stale` (a request
+  without a provider selection falls back to the previous approved snapshot) until a sweep
+  reaches every location. Skipping does not make Map fresher than a failed run did. The
+  skipped count is recorded only in the Dagster metadata (`locations_failed`,
+  `location_failure_counts`), not in `weather_sync_runs`.
+
 ## Regional observation networks
 
 Collected on their own schedule, `twice_daily_regional_weather` (05:30 and 17:30

@@ -1150,9 +1150,13 @@ def _make_external_provider_asset(collection: ExternalCollection):
                     if exc.code != "rate_limit":
                         failed.append(_external_failure(provider_key, dataset.key, exc))
                         continue
-                    # 429는 provider가 지금 그만 물으라는 뜻이다. sweep이 그 앞까지 게시한
-                    # batch는 남는다(수집 기록은 failed로 닫혀 승격되지 않는다). 빨간 run이
-                    # 아니라 "갱신 대기"로 남기고 다음 주기에 다시 묻는다.
+                    # 429는 provider가 지금 그만 물으라는 뜻이다. sweep이 그 앞까지 받은 응답은
+                    # 모두 게시된다(external_weather가 쌓인 batch도 닫기 전에 게시한다). 그러나
+                    # 수집 기록(weather_sync_runs)은 failed로 닫히고, 그 run의 export cohort·
+                    # attempt는 승인되지 않고 퇴역한다. 그래서 그 dataset을 쓰는 Map export
+                    # (``*_current``는 current·daily, ``*_forecast``는 external 예보)는 다음 성공
+                    # sweep까지 이전 승인 값을 source_status=stale로 낸다. Dagster run은 빨간
+                    # 실패가 아니라 "갱신 대기"(deferred)로 남기고 다음 주기에 다시 묻는다.
                     rate_limited.append({
                         "provider": provider_key,
                         "dataset_key": dataset.key,
@@ -1170,6 +1174,8 @@ def _make_external_provider_asset(collection: ExternalCollection):
                 close()
         if failed or any(entry.get("locations_failed") for entry in results):
             # 한 위치의 응답 실패는 그 위치만 건너뛰었다(external_weather). 부분 완료로 드러낸다.
+            # 사실값과 native run은 success지만, 건너뛴 위치 때문에 이 run의 export cohort는
+            # 승인 조건을 채우지 못해 Map export는 다음 완전 sweep까지 stale이다.
             status = "partial"
         elif rate_limited:
             status = "deferred"
