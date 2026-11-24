@@ -117,6 +117,32 @@ def test_pg_oversized_refs_fail_closed_and_close_cursor(refs_connection, monkeyp
     assert connection.exec_driver_sql("SELECT 1").scalar() == 1
 
 
+def test_pg_server_cursor_fetch_loop_stops_for_a_disconnected_request(refs_connection):
+    from kortravelweather.export_cancellation import (
+        ExportCancellation,
+        ExportRequestCancelled,
+        export_cancellation,
+    )
+
+    connection, table = refs_connection
+    connection.execute(table.insert(), [ref_row(ordinal=n, locations=["a"]) for n in range(300)])
+    gone = ExportCancellation()
+
+    # DECLARE 직후에 끊긴다. 이어지는 FETCH는 SQL hook을 거치지 않아 읽기 loop가 확인한다.
+    def disconnect(_connection, _cursor, _statement, _parameters, context, _many):
+        if context.execution_options.get("stream_results"):
+            gone.mark_disconnected()
+
+    event.listen(connection.engine, "after_cursor_execute", disconnect)
+    try:
+        with export_cancellation(gone), pytest.raises(ExportRequestCancelled) as stopped:
+            capacity.read_generation_refs(connection, table, ["generation"])
+    finally:
+        event.remove(connection.engine, "after_cursor_execute", disconnect)
+    assert stopped.value.stage == "sql"
+    assert connection.exec_driver_sql("SELECT 1").scalar() == 1  # cursor를 닫고 연결은 그대로다.
+
+
 @pytest.mark.parametrize("failure", [None, "missing", "oversized", "total_budget"])
 def test_pg_scope_plans_bounded_once_per_attempt(refs_connection, monkeypatch, failure):
     connection, refs = refs_connection
