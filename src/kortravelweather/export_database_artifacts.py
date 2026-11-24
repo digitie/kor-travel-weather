@@ -48,6 +48,10 @@ _DIGEST = re.compile(r"[0-9a-f]{64}")
 _LOCK_NAMESPACE = 1465017671
 _LOCK_KEY = 42
 MAX_ARTIFACT_READ_BATCH = 8
+# 작은 artifact(current 관측 scope당 수 KB)를 한 왕복으로 읽는 호출자용 상한. byte 상한
+# (MAX_ARTIFACT_READ_BYTES)은 그대로라 메모리 상한은 늘지 않는다. 왕복마다 SET 2·advisory
+# lock·SELECT 4문장이라 8개씩이면 current 2,000점 페이지 하나에 100문장을 넘었다.
+MAX_ARTIFACT_READ_BATCH_LIMIT = 64
 MAX_ARTIFACT_READ_BYTES = MAX_CHUNK_BYTES
 # digest/정수만 읽는 존재 검산이다. 큰 payload나 JSON buffer의 크기는 늘리지 않는다.
 MAX_ARTIFACT_METADATA_BATCH = 1024
@@ -377,13 +381,16 @@ class DatabaseExportArtifactStore:
                     point[name] = deepcopy(item[name])
             yield point
 
-    def read_many(self, refs, *, fields=None):
-        """실제 요청 창의 최대8개/8MiB만 같은 연결·guard에서 읽고 모두 검산한다.
+    def read_many(self, refs, *, fields=None, max_batch=MAX_ARTIFACT_READ_BATCH):
+        """실제 요청 창의 최대 ``max_batch``개(기본8, 최대64)/8MiB만 같은 연결·guard에서 읽고
+        모두 검산한다.
 
         cache hit도 실제 DB payload의 SHA/bytes/point count를 확인한다. 전체 manifest를
         미리 읽거나 DB 불변성 검사를 metadata 존재 확인으로 대체하지 않는다.
         fields는 전체 검산·decode 뒤 보관할 projection을 지정한다. SQL/payload 검산은 줄이지 않는다.
         """
+        if not 1 <= max_batch <= MAX_ARTIFACT_READ_BATCH_LIMIT:
+            raise ExportArtifactError("artifact batch 읽기 상한이 올바르지 않습니다.")
         expected = {}
         for ref in refs:
             digest, size, count = (
@@ -393,7 +400,7 @@ class DatabaseExportArtifactStore:
             if digest in expected and expected[digest] != (size, count):
                 raise ExportArtifactError("같은 artifact의 receipt가 서로 다릅니다.")
             expected[digest] = size, count
-            if (len(expected) > MAX_ARTIFACT_READ_BATCH
+            if (len(expected) > max_batch
                     or sum(size for size, _ in expected.values()) > MAX_ARTIFACT_READ_BYTES):
                 raise ExportArtifactError("artifact batch 읽기 상한을 넘었습니다.")
         if not expected:

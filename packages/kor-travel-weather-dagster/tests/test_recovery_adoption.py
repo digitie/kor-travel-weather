@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import kortravelcommon.dagster as common_dagster
 import pytest
 from dagster import (
     DagsterEvent,
@@ -138,6 +139,8 @@ def _failure(instance, job, reason=RunFailureReason.RUN_WORKER_RESTART, **kwargs
 )
 def test_common_factory_preserves_retry_gates_with_weather_jobs(mapping, monkeypatch, kind):
     monkeypatch.setenv(INFRA_RETRY_ENABLED_ENV, "true")
+    # common은 방금 기록된 실패 event를 settle(기본 120초) 뒤에 판정한다. 시험은 바로 판정한다.
+    monkeypatch.setattr(common_dagster, "FAILURE_SETTLE_SECONDS", 0)
     (retry,) = optional_recovery_sensors(mapping)
     job = definitions.kma_ultra_short_nowcast_job
     # local_temp는 이 시험만의 임시 SQLite metadata이며 Weather DB resource는 실행하지 않는다.
