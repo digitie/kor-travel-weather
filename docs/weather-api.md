@@ -77,13 +77,24 @@ while observations keep arriving behind it, so a shared cap would hide exactly
 the warnings a map needs to show.
 
 `GET /v1/weather/markers?location_id=...` is a bounded marker projection. Pass
-up to 500 enabled location IDs (the admin map sends batches of 500); each item
+up to 500 enabled location IDs (the admin map sends batches of 60); each item
 contains only the current metrics and KMA alert facts needed to choose an icon
 and severity badge. It is safe to refresh on every map viewport update.
 
+`view=compact` (opt-in; default `view=full`) returns the same rows with only the
+fields a map draws: `provider`, `metric_key`, `metric_name`, `value_number`,
+`value_text`, `target_at` for current/forecast rows and `value_id`,
+`metric_name`, `value_text`, `severity` for alerts (`WeatherMarkerCompactOut`).
+The default response and its OpenAPI 200 schema are unchanged; the compact shape
+is published as `Envelope_list_WeatherMarkerCompactOut__` and referenced from the
+200 response's `x-compact-schema`. See [admin map calls](weather-admin-map-calls.md).
+
 ## Location and history routes
 
-- `GET /v1/weather/locations` — enabled location catalog (paginated).
+- `GET /v1/weather/locations` — enabled location catalog (paginated). Each page
+  carries a weak content `ETag` (the page's `data` plus `limit`/`offset`/`total`,
+  not the per-request meta); a matching `If-None-Match` gets an empty `304`. The
+  query still runs, so this saves transfer and parsing, not database work.
 - `GET /v1/weather/locations/{location_id}/latest` — current projection,
   deduplicated to the newest immutable revision per logical metric.
 - `GET /v1/weather/locations/{location_id}/forecast` — forecast/history query;
