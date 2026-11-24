@@ -464,6 +464,9 @@ services:
       # session-only; Basic Auth is reserved for the Dagster gateway.
       WEATHER_UI_PASSWORD_HASH: ${WEATHER_UI_PASSWORD_HASH:-}
       WEATHER_UI_SESSION_SECRET: ${WEATHER_UI_SESSION_SECRET:?set WEATHER_UI_SESSION_SECRET in .env}
+      # 세션 폐기 확인의 active 판정을 프로세스 메모리에 재사용하는 초(0이면 끔, GET/HEAD만).
+      # 다른 replica에서 한 로그아웃은 읽기에 최대 이 시간만큼 늦게 반영된다. write는 매번 확인한다.
+      WEATHER_UI_SESSION_CHECK_CACHE_SECONDS: ${WEATHER_UI_SESSION_CHECK_CACHE_SECONDS:-10}
       # Enable only when the front proxy strips and rewrites forwarding headers.
       WEATHER_UI_TRUST_PROXY: ${WEATHER_UI_TRUST_PROXY:-false}
       # CSRF accepts browser Origins only from this explicit public allowlist.
