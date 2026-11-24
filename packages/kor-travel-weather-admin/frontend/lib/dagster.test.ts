@@ -49,6 +49,14 @@ describe("jobLabel", () => {
     expect(jobLabel("openweathermap_forecast_weather_sync")).toBe("OpenWeatherMap 예보 날씨 수집");
   });
 
+  it("names each regional source job on its own", () => {
+    // 지역 원천은 원천마다 job 하나다. 실패한 job 이름만 보고 어느 원천인지 알아야 한다.
+    expect(jobLabel("krex_restarea_job")).toBe("고속도로 휴게소 날씨 수집");
+    expect(jobLabel("khoa_beach_index_job")).toBe("해수욕장 지수 수집");
+    expect(jobLabel("krforest_mountain_job")).toBe("산악 날씨 수집");
+    expect(jobLabel("krforest_dust_job")).toBe("청정넷 미세먼지 수집");
+  });
+
   it("translates a known step name the same way as a job name", () => {
     expect(jobLabel("krforest_dust_sync")).toBe("청정넷 미세먼지 수집");
   });

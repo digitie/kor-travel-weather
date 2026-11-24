@@ -298,6 +298,51 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 잘못된 최신 상태를 숨기지 못하게 한다. 데이터 generation은 고정해도 health는 현재 상태임을
 명시하고, Map은 페이지 중간 failed/stale가 나오면 새 generation publish를 보류한다.
 
+> **내용 ETag와 본문 읽기 전 304(2026-11-24, 호출 검토 A2).** locations·current·daily-summaries의
+> weak ETag에서 `snapshot_id`를 뺐다. 예전에는 같은 승인 집합이라도 snapshot handle TTL(15분)이
+> 지나 새 handle이 발급되면 ETag가 바뀌어, 매시·매일 도는 Map 적재가 사실상 304를 받지 못했다
+> (Map ADR-114 W3의 "TTL 15분 동안만"). 이제 ETag(`kortravelweather.export_conditional`)는
+> **고정 manifest digest**(승인 head vector·artifact ref·위치·selection) + **페이지 식별**(resource·
+> selection 서명·limit·첫 페이지 여부와 시작 위치 — cursor 문자열은 snapshot_id를 담으므로 쓰지
+> 않는다) + **상태 token**(`source_status`·`source_collected_at`, daily는 건강도 digest와 본문)의
+> digest다. handle 고유 값(`snapshot_id`·`snapshot_generated_at`·`as_of`·`next_cursor`)은 넣지
+> 않으므로 304는 "이미 가진 본문의 항목·상태·수집 시각이 지금과 같다"는 뜻이며 새 snapshot_id·
+> cursor를 주지 않는다. 이어서 순회하려면 조건 없이 첫 페이지를 다시 받는다(Map은 304면 순회하지
+> 않고 지금 세대의 `checked_at`만 갱신한다). 같은 manifest digest면 고정 artifact ref가 같아 항목도
+> 같다. `source_collected_at`은 같은 manifest라도 신선도 창(24시간) 경계에 따라 handle마다 다를 수
+> 있어 상태 token에 넣었다. 새 승인 세대·catalog 변경·실패/stale 전환은 digest나 상태가 바뀌어
+> 200을 낸다.
+>
+> ETag가 handle과 무관해졌으므로 HTTP 캐시가 200 본문을 저장해 두었다가 재검증 304로 다시 쓰면
+> 만료됐을 수 있는 `snapshot_id`·`next_cursor`를 내준다(그 cursor는 410, 처음부터 다시 받아도 같은
+> 304가 반복된다). 그래서 200·304는 `cache-control: no-store, private`다(예전
+> `private, max-age=0, must-revalidate`). 조건부 요청은 투명 HTTP 캐시가 아니라 소비자가 받은 ETag를
+> 직접 보관해 `If-None-Match`로 보내는 방식만 지원한다. Map(httpx, 캐시 없음)은 원래 이 방식이다.
+>
+> current·locations **첫 페이지**는 `If-None-Match`를 freeze(또는 handle 재사용)와 상태 판정 직후,
+> artifact 본문을 읽기 전에 비교한다. 맞으면 본문 읽기·검증·직렬화를 건너뛰고 304를 낸다(응답
+> header `x-export-artifact-read-calls: 0`). 첫 페이지의 상태 판정은 원래 freeze RR에서 한 판정을
+> 그대로 쓰므로 판정 수명은 바뀌지 않는다. freeze 자체는 남는다 — digest를 알려면 manifest를
+> 만들어야 하고, 그 비용을 없애는 것은 A3(표준 페이지 사전 구성)의 몫이다. cursor 페이지는 공용
+> 상태 판정의 남은 수명(20초 이상)을 본문 읽기 뒤에 쓰도록 예전 순서(본문 → 판정 → 비교)를
+> 유지한다. 이 304는 페이지 캐시에 넣지 않는다(본문이 없다). 그래서 current 리더는 비교 시점에
+> 같은 키 대기자(export 슬롯 대기 포함)가 있으면 304로 끝내지 않고 본문을 만들어 캐시에 남기고,
+> 자신은 본문을 읽은 뒤의 같은 ETag 비교로 304를 받는다. 그러지 않으면 read timeout으로 끊긴 리더를
+> 기다리던 Map 재시도(같은 `If-None-Match`)가 freeze를 처음부터 다시 한다(A6의 리더 계속 이득이
+> 사라진다). 304는 artifact 바이트를 다시 해시 검산하지 않는다 — 요청자에게 본문을 보내지 않으며,
+> 파일 존재는 freeze의 pin·`all_present`가 이미 확인했다.
+>
+> daily 요약 값은 같은 manifest에서도 사전 계산 갱신과 시각 경계(`partial`)로 바뀌므로 본문을
+> ETag에 넣고, 비교는 값을 읽은 뒤 직렬화 전에 한다(본문 읽기 생략은 없다). 정상 freeze의 manifest는
+> coverage(위치·namespace·generation) digest를 묶어 다른 페이지 위치의 요약 갱신도 드러난다. 하지만
+> `_previous_daily` fallback은 이전 coverage digest를 유지하고, 페이지에서 coverage를 못 읽으면
+> 건강도·수집 시각·상태도 상수가 된다. 그때는 사전 계산 checkpoint(`generation_id`·`published_at`)를
+> ETag에 넣어 뒤 페이지 요약만 바뀌어도 첫 페이지 ETag가 바뀌게 한다(Map W5는 첫 페이지에만
+> `If-None-Match`를 보낸다). **forecasts는 바꾸지
+> 않았다**(`snapshot_id`+본문). 본문이 응답 시각 이후 target만 담아 manifest만으로 정해지지 않고,
+> Map은 예보에 `If-None-Match`를 보내지 않는다(Map ADR-122: 304는 증분 cursor·전량 시각을 다시
+> 잡지 못한다). 배포 직후 첫 조건부 요청은 예전 형식 ETag와 맞지 않아 한 번 200을 받는다.
+
 > **current의 상태 판정 공유(2026-11-24).** "현재 상태"는 소유자가 승인한 상태 반영 지연(최대60초)
 > 안의 값이다. current는 고정 snapshot 하나의 DB 상태 판정(catalog·승인 선택·현재 head·소유 시도·
 > run 상태)을 snapshot_id·manifest digest·reader 설정마다 앱에서 한 번 계산해 cursor 페이지가 나눠

@@ -50,7 +50,13 @@ const JOB_LABELS: Record<string, string> = {
   weather_short_forecast_retention_job: "단기예보 보존 기간 정리",
   airkorea_weather_job: "에어코리아 대기질 수집",
   weather_retention_job: "보존 기간 만료 데이터 정리",
-  regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집",
+  // 지역 원천은 원천마다 job 하나다(한 원천의 실패가 나머지의 승격을 막지 않게).
+  // 분리 전 run 이력이 남아 있으므로 옛 묶음 job의 이름도 계속 번역한다.
+  khoa_beach_index_job: "해수욕장 지수 수집",
+  krforest_mountain_job: "산악 날씨 수집",
+  krforest_dust_job: "청정넷 미세먼지 수집",
+  krex_restarea_job: "고속도로 휴게소 날씨 수집",
+  regional_weather_job: "지역별(해수욕장·산·고속도로) 날씨 수집(분리 전)",
   ...externalLabels("_weather_job"),
   ...externalPartLabels("job"),
 };

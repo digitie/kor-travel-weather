@@ -125,6 +125,14 @@ run_coordinator:
       - key: "kortravelweather/run_group"
         value: "external_weather_slow"
         limit: 1
+      # 지역 원천 job 네 개(definitions.py REGIONAL_COLLECTIONS)는 한 번에 하나만 돈다.
+      # 원천별로 run을 나눈 것은 승격을 독립시키려는 것이지 동시 실행을 늘리려는 것이
+      # 아니다. 분리 전 묶음 job처럼 weather 슬롯을 하나만 쓰고, 05·17시대의 단기예보·
+      # 매시 job·외부 sweep 몫을 빼앗지 않는다. 일시 네트워크 오류 재시도 대기 중인 run도
+      # 슬롯을 쥐므로 상한이 없으면 장애 때 넷이 한꺼번에 슬롯을 잡는다.
+      - key: "kortravelweather/run_group"
+        value: "regional_weather"
+        limit: 1
 
 retention:
   # Run history is the only record of what collection did, but it is also the

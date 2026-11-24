@@ -337,6 +337,68 @@ def test_retry_only_retries_transient_http_status() -> None:
     assert len(non_retryable.calls) == 1
 
 
+def _limited(retry_after: str | None = None) -> FakeResponse:
+    response = FakeResponse({}, status_code=429)
+    if retry_after is not None:
+        response.headers = {**response.headers, "Retry-After": retry_after}
+    return response
+
+
+_OK = {"location": {"tz_id": "Asia/Seoul"},
+       "current": {"last_updated": "2026-08-30 12:00", "temp_c": 25}}
+
+
+def test_rate_limit_waits_once_for_a_short_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kortravelweather.providers import base
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(base.time, "sleep", sleeps.append)
+    transport = FixtureTransport(_limited("7"), FakeResponse(_OK))
+    result = WeatherApiProvider(api_key="secret", transport=transport, retries=3).fetch(LOCATION)
+    assert result.values
+    assert sleeps == [7.0]
+    assert len(transport.calls) == 2
+
+    # 두 번째 429는 다시 기다리지 않는다 — 다음 주기로 넘긴다.
+    sleeps.clear()
+    twice = FixtureTransport(_limited("1"), _limited("1"), FakeResponse(_OK))
+    with pytest.raises(ProviderError) as error:
+        WeatherApiProvider(api_key="secret", transport=twice, retries=3).fetch(LOCATION)
+    assert error.value.code == "rate_limit"
+    assert error.value.retry_after_seconds == 1.0
+    assert sleeps == [1.0]
+    assert len(twice.calls) == 2
+
+
+@pytest.mark.parametrize("retry_after", [None, "3600", "not-a-date"])
+def test_rate_limit_without_a_short_retry_after_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, retry_after: str | None
+) -> None:
+    from kortravelweather.providers import base
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(base.time, "sleep", sleeps.append)
+    transport = FixtureTransport(_limited(retry_after), FakeResponse(_OK))
+    with pytest.raises(ProviderError) as error:
+        WeatherApiProvider(api_key="secret", transport=transport, retries=3).fetch(LOCATION)
+    assert error.value.code == "rate_limit" and error.value.status_code == 429
+    assert error.value.retry_after_seconds == (3600.0 if retry_after == "3600" else None)
+    assert sleeps == []
+    assert len(transport.calls) == 1
+
+
+def test_retry_after_reads_http_dates() -> None:
+    from datetime import UTC, datetime
+
+    from kortravelweather.providers.base import retry_after_seconds
+
+    now = datetime(2026, 11, 24, 0, 0, 0, tzinfo=UTC)
+    response = _limited("Tue, 24 Nov 2026 00:00:20 GMT")
+    assert retry_after_seconds(response, now=now) == 20.0
+    assert retry_after_seconds(_limited("Mon, 23 Nov 2026 23:59:00 GMT"), now=now) == 0.0
+    assert retry_after_seconds(_limited(), now=now) is None
+
+
 def test_settings_accepts_legacy_provider_env_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WEATHER_API_KEY", "alias-secret")
     monkeypatch.setenv("WEATHER_PROVIDERS", "open_meteo,weatherapi")

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .alert_area_mapping import area_mapping, candidate_areas, known_bjd, scope_at
 from .alert_events import (
     ALERT_DATASET,
+    ALERT_MAX_ROWS,
     ALERT_PROVIDER,
     ALERT_SAFE_ERROR_CODES,
     AlertEvent,
@@ -43,14 +44,15 @@ def publish_alert_events(
         raise ValueError("ALERT_PUBLICATION_RECEIPT")
     validated = []
     for record in source_records:
+        # 게시 대상은 ``rows``뿐이다. 수집이 격리한 행(``quarantined``)은 원천 기록에만 남는다.
         rows = record["payload"].get("rows")
-        if not isinstance(rows, list) or len(rows) > 100:
+        if not isinstance(rows, list) or len(rows) > ALERT_MAX_ROWS:
             raise ValueError("ALERT_SOURCE_ROWS")
         for raw in rows:
             if not isinstance(raw, Mapping):
                 raise ValueError("ALERT_SOURCE_ROWS")
             validated.append((normalize_alert(raw), str(record["source_record_key"])))
-    if len(validated) > 10000:
+    if len(validated) > ALERT_MAX_ROWS:
         raise ValueError("ALERT_PUBLICATION_BOUNDS")
     if len({event.event_id for event, _ in validated}) != len(validated):
         raise ValueError("ALERT_DUPLICATE_OBSERVATION")

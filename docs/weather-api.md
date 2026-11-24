@@ -104,18 +104,46 @@ real 단기예보 publish times), `kma_mid_forecast_publish_hours` (`30 6,18 * *
 AirKorea's station catalog and measurements independently at `35 * * * *`. The
 ultra-short forecast, nowcast and AirKorea take turns because they lock the same
 station anchors; see [Dagster boundary](architecture/dagster-boundary.md#매시-station-lock-job의-시간-분리).
-A `three_hourly_<provider>_weather`
-schedule per external provider then collects every enabled non-KMA provider from the
-latest enabled AirKorea station anchors. An AirKorea quota or provider outage must
-not prevent already-known anchors from receiving external updates. Providers
-with no configured key (for example Open-Meteo and wttr.in) remain keyless;
-keyed providers are skipped with an auditable run result until their admin
-credential is configured.
+A `three_hourly_<provider>_<part>_weather`
+schedule per sweeping external provider (Open-Meteo, OpenWeatherMap, WeatherAPI; current and
+forecast each) then collects from the latest enabled AirKorea station anchors. An AirKorea
+quota or provider outage must not prevent already-known anchors from receiving external
+updates. The other external providers (Visual Crossing, Tomorrow.io, Weatherbit, Weatherstack,
+AccuWeather, wttr.in) keep their jobs for manual runs but have no schedule until they are added
+to the slow sweep group (`SLOW_EXTERNAL_PROVIDER_KEYS`), which also creates their schedules.
+wttr.in needs no key but is off by default. A 429 waits once for a `Retry-After` of 30 s or
+less; otherwise the run stops that provider's sweep and records it as deferred for the next
+three-hourly cycle.
+
+What "deferred" and "partial" do and do not keep:
+
+- A sweep the provider stops (rate limit, auth, five failed locations in a row, or more than
+  20 % of the targets failed) publishes every response it already received, including those
+  still staged below the publish batch limit, then closes its `weather_sync_runs` row as
+  `failed`. Dagster shows a 429 as a SUCCESS run tagged `kortravel/collection-outcome=deferred`,
+  but the native row is `failed`, so the run's export cohort is not approved and its export
+  attempts are retired. The Map exports that read that dataset (`<provider>_current`: current
+  and daily summaries; `<provider>_forecast`: external forecasts) keep serving the previously
+  approved values with `source_status=stale` until the next successful sweep.
+- A client, schema, server or network error at one location skips only that location. The
+  facts and the native run succeed and Dagster tags the run `partial`, but the cohort declared
+  before the first request still lists the skipped location, whose export head stays on an
+  earlier run. The cohort is therefore unconfirmed and those Map exports stay `stale` (a request
+  without a provider selection falls back to the previous approved snapshot) until a sweep
+  reaches every location. Skipping does not make Map fresher than a failed run did. The
+  skipped count is recorded only in the Dagster metadata (`locations_failed`,
+  `location_failure_counts`), not in `weather_sync_runs`.
 
 ## Regional observation networks
 
-Collected on their own schedule, `twice_daily_regional_weather` (05:30 and 17:30
-Asia/Seoul):
+Collected twice a day (05·17시 Asia/Seoul), one job and schedule per source so one
+source's failure does not hold back the others' promotion: `twice_daily_krforest_mountain`
+(:30), `twice_daily_khoa_beach_index` (:40), `twice_daily_krex_restarea` (:45),
+`twice_daily_krforest_dust` (:50). Each schedule also ticks 1 and 3 hours later, and those
+catch-up ticks run only when the regular tick left no successful run. DNS·connection·timeout
+errors are retried in the same run (up to 3 times, 60–240 s with jitter). The four jobs share
+the `kortravelweather/run_group=regional_weather` tag, which the Dagster instance caps at one
+run, so they still take one weather run slot at a time like the old bundled job.
 
 | Provider | Dataset | What |
 | --- | --- | --- |
@@ -252,6 +280,21 @@ PostgreSQL 16 시험(`tests/test_retention_under_ingest.py`)은 수집에 진 DD
 대기가 짧은 상한에서 1.5초 미만이고 예전 상한에서 2초 이상임을 확인한다(2026-11-24 Windows 개발
 PC·WSL docker PostgreSQL 16 로컬 3회: 0.37~0.40초 대 약 2.98초). 운영(야간 유지보수 중 지도 읽기
 p95·lock 대기)은 아직 재지 않았다.
+
+**포인터·원천 정리의 batch(2026-11-24, Map 호출 검토 L4).** 만료 일자를 가리키는 현재값 포인터와
+아무것도 인용하지 않는 만료 원천 기록은 예전에 각각 상한 없는 DELETE 한 문장이었다. 밀린 뒤 첫
+실행이면 수백만 행의 WAL·bloat가 한 transaction에 몰리고, 그동안 같은 포인터 행을 쓰는 수집
+CAS가 그 행 lock 뒤에 섰다. 지금은 기본키 순서의 keyset batch(1,000행)마다 commit하고, batch마다
+`weather_history_purge` advisory lock을 먼저 기다려 잡은 뒤 문장 10초·lock 1초 상한을 건다. 지우는
+대상은 그대로다(보존할 최근6시간·미래 단기예보 포인터, 떼어 두고 아직 못 지운 표가 인용하는 원천은
+남긴다). batch가 lock/문장 상한·deadlock에 지면 같은 위치에서 세 번 더(2·4·8초 뒤) 시도하고, 그래도
+지면 앞 batch의 commit은 둔 채 멈춘다(`pointers_deferred`·`sources_deferred`, 실행은 `deferred`).
+포인터를 끝내지 못한 밤에는 만료 일자를 떼지 않는다: 남은 포인터가 가리키는 fact를 떼면 FK 검증이 그
+포인터를 상한 없는 DELETE(`delete_dangling_projection_rows`)로 지우게 되기 때문이다. 그 날들은
+`partitions_deferred`로 표시되고 다음 밤에도 못 하면 overdue다. 수집 run에 연결된 원천은 지우지
+않으므로 원천 후보는 오래된 원천 이력 거의 전부다. 그래서 원천 단계는 실행당 1,800초 예산만큼 읽고
+멈춘 위치(`sources_resume_after`)를 Dagster 실행 기록으로 다음 실행에 넘겨 이어 읽는다. 원천 batch
+연기가 연속 2회면 실행은 `partial`이다. 자세한 근거는 [쓰기 경로 상한](write-path-bounds.md).
 
 **A replay outlives its first fetch's day.** A response the store already holds
 is replayed with its first fetch time as `known_at`, so an identical re-fetch is

@@ -146,6 +146,10 @@ services:
       # 두 실행 표면이 같은 승인 파일을 읽는다. 활성화는 수용 gate 이후 별도 수행한다.
       KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED:-false}
       KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT: /var/lib/kor-travel-weather/exports
+      # 시작 직후 관리 지도 읽기 경로를 한 번 데우는 읽기 전용 warmup(최대30초, 포트는 바로 연다).
+      # 진행 상태는 GET /ready가 보인다. 코드 기본값도 production에서 켜짐이지만 명시해 둔다.
+      # 끄려면 .env에 false를 둔다.
+      KOR_TRAVEL_WEATHER_API_PREWARM_ENABLED: ${KOR_TRAVEL_WEATHER_API_PREWARM_ENABLED:-true}
     volumes:
       - type: volume
         source: weather-export-artifacts
@@ -475,6 +479,19 @@ services:
       WEATHER_UI_PUBLIC_ORIGIN: ${WEATHER_UI_PUBLIC_ORIGIN:-http://127.0.0.1:14105}
     ports:
       - "127.0.0.1:14105:14105"
+    healthcheck:
+      # 자격증명 없이 /login만 GET한다(세션 cookie가 없으면 API를 부르지 않는다). 첫 점검이
+      # Next route 모듈과 middleware를 올려 두어 첫 사용자 요청의 적재 비용을 줄인다.
+      # redirect를 따라가지 않고 200만 정상으로 본다.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:14105/login',{redirect:'manual',signal:AbortSignal.timeout(4000)}).then((r)=>process.exit(r.status===200?0:1),()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 volumes:
   weather-postgres:

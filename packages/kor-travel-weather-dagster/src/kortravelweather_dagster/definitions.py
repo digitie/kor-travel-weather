@@ -5,8 +5,9 @@ import os
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from functools import cache
+from typing import Any
 
 from dagster import (
     AssetExecutionContext,
@@ -16,7 +17,6 @@ from dagster import (
     Definitions,
     Failure,
     MetadataValue,
-    ScheduleDefinition,
     asset,
     define_asset_job,
     in_process_executor,
@@ -31,20 +31,25 @@ from kortravelweather.metrics import start_metrics_server
 from kortravelweather.models import kst_now
 from kortravelweather.providers import (
     PROVIDER_CATALOG,
+    ProviderError,
     ProviderLocation,
     create_configured_provider,
     provider_spec,
     redact_secrets,
 )
-from kortravelweather.providers.khoa import KHOA_PROVIDER
-from kortravelweather.providers.krex import KREX_PROVIDER, UpstreamBlocked
-from kortravelweather.providers.krforest import KRFOREST_PROVIDER
+from kortravelweather.providers.khoa import KHOA_BEACH_INDEX_DATASET, KHOA_PROVIDER
+from kortravelweather.providers.krex import KREX_PROVIDER, KREX_RESTAREA_DATASET, UpstreamBlocked
+from kortravelweather.providers.krforest import KRFOREST_MOUNTAIN_DATASET, KRFOREST_PROVIDER
+from kortravelweather.providers.krforest_dust import KRFOREST_DUST_DATASET
 from kortravelweather.providers.sampling import spatially_even_subset
 from kortravelweather.repository import SyncRunAlreadyActive, WeatherRepository
 from kortravelweather.retention import (
+    NO_PROGRESS_ALERT_RUNS,
+    RESUME_METADATA_KEYS,
     backlog_stalled,
     lag_stall_runs,
     made_progress,
+    no_progress_runs,
     resume_position,
     run_short_forecast_retention,
     short_forecast_cutoff,
@@ -54,6 +59,7 @@ from kortravelweather.settings import WeatherSettings
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
 from .alert_events import AlertCollectionError, run_alert_event_sync
+from .alert_schedule import build_regional_alert_events_schedule
 from .export_maintenance import (
     maintenance_policy,
     weather_export_maintenance_job,
@@ -93,6 +99,7 @@ from .resources import (
 )
 from .retention import FORWARD_PARTITION_ALERT_DAYS, run_weather_retention_purge
 from .sync_recovery import terminal_worker, weather_sync_recovery_sensor
+from .transient_retry import retries_transient_network
 
 logger = logging.getLogger(__name__)
 
@@ -723,6 +730,11 @@ def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, 
         result["collection_outcome"] = (
             "deferred" if result.get("status") == "skipped" else result.get("status", "unknown")
         )
+        if result.get("quarantined_rows"):
+            context.log.warning(
+                f"ALERT_ROWS_QUARANTINED events={result['quarantined_events']} "
+                f"rows={result['quarantined_rows']} areas={result['quarantined_area_codes']}"
+            )
         context.add_output_metadata(result)
         _record_collection_outcome(context, result["collection_outcome"])
         return result
@@ -812,11 +824,12 @@ EXTERNAL_SLOW_RUN_GROUP = "external_weather_slow"
 #:   (2026-10-21 관측 약 9분), 늦어지면 openweathermap이 그 뒤에서 기다린다. 세 sweep의
 #:   관측 합(약 9 + 30 + 73~90분)은 3시간 주기 안이다.
 #:
-#: 나머지 provider는 기본 location 상한이 없다. 기본 설정에서 그들의 run이 빠른 것은
-#: 꺼져 있거나(visual_crossing, wttr_in) credential이 없어 skip하기 때문이다. 하나를
-#: 켜면(env 또는 admin UI의 DB credential — 코드 변경 없이 가능) catalog 전체(약
-#: 1,400곳)를 sweep한다. 태그는 정의 시점에 정해지므로 런타임 credential로 분류할 수
-#: 없다: **켜기 전에** 이 집합에 추가하는 변경이 먼저 배포돼야 한다(runbook
+#: 나머지 provider는 기본 location 상한이 없다. 그들은 schedule이 없다
+#: (``SCHEDULED_EXTERNAL_COLLECTIONS``) — 예전에는 schedule이 있어 꺼져 있거나
+#: (visual_crossing, wttr_in) credential이 없어 skip하는 run만 3시간마다 만들었고, admin UI에
+#: DB credential을 넣기만 해도 catalog 전체(약 1,400곳)를 상한 없이 sweep할 수 있었다.
+#: 태그는 정의 시점에 정해지므로 런타임 credential로 분류할 수 없다: **켜기 전에** 이 집합에
+#: 추가하는 변경이 먼저 배포돼야 하고, 그 변경이 schedule도 만든다(runbook
 #: docs/runbooks/dagster-recovery.md). 위치 상한을 env로 풀 때도 같다.
 #: tests/test_definitions.py가 기본 상한이 있는 provider는 모두 여기 있음을 고정한다.
 SLOW_EXTERNAL_PROVIDER_KEYS = frozenset({"open_meteo", "openweathermap", "weatherapi"})
@@ -939,14 +952,17 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
         if job_name.startswith(tuple(_external_slug(key) for key in EXTERNAL_PROVIDER_KEYS))
         else 7200
     )
-    if job_name == "regional_weather_job":
-        seconds = 21600
     if job_name == "kma_short_forecast_job":
         # 300격자 단기예보 한 회차는 2026-10-24..26 50~70분이었으나 CPU가 포화된 odroid에서
         # 10-27부터 2시간을 넘겨 7200초 상한에 거의 매번 회수됐다(10-29 07:13 뒤 성공 0).
-        # 같은 일을 끝내도록 발표 주기(3시간)까지 둔다. 다음 회차는 작업별 동시 1 제한으로
-        # 대기열에서 기다리므로 겹치지 않는다.
-        seconds = 10800
+        # 2026-11-09..23(14일) 성공 75회 step p50 8,165초·p90 9,665초·최대 10,736초로 10800초에
+        # 붙어 있고, 실패 11회 중 6회가 상한 회수(DagsterExecutionInterruptedError, run 10,955~
+        # 11,432초)였다 — 3시간 일을 다 하고 승격 없이 버렸다. 시간의 약 90%는 fact
+        # 게시(timed_publish, 384~441천 fact)다(docs/kma-short-forecast-runtime.md).
+        # 상한을 4시간으로 둔다. 3시간을 넘긴 회차 동안 다음 tick은 coalescing으로
+        # 합쳐지고 작업별 동시 1 제한도 그대로라 겹치지 않는다. 넘긴 회차는 회수 대신
+        # 끝까지 게시되어 다음 회차보다 먼저 최신이 된다.
+        seconds = 14400
     if job_name == "kma_regional_alert_events_job":
         seconds = 300
     if job_name == "address_refresh_job":
@@ -984,10 +1000,11 @@ def schedule_status_sources(job_name: str, settings: WeatherSettings):
         ) else ()
     if job_name == "airkorea_weather_job":
         return status_scopes(enabled & {"python-airkorea-api"})
-    if job_name == "regional_weather_job":
-        return status_scopes(enabled & {
-            "python-khoa-api", "python-krforest-api", "python-krex-api",
-        })
+    regional = _REGIONAL_COLLECTIONS_BY_JOB.get(job_name)
+    if regional is not None:
+        return dataset_scopes(regional.provider_key, {regional.dataset_key}) if (
+            regional.provider_key in enabled
+        ) else ()
     collection = _EXTERNAL_COLLECTIONS_BY_JOB.get(job_name)
     if collection is None or collection.provider_key not in enabled:
         return ()
@@ -1120,9 +1137,18 @@ def _make_external_provider_asset(collection: ExternalCollection):
         results: list[dict[str, object]] = []
         failed: list[dict[str, object]] = []
         skipped_datasets: list[dict[str, object]] = []
+        rate_limited: list[dict[str, object]] = []
         abandoned = False
         try:
             for dataset in datasets:
+                if rate_limited:
+                    # 같은 provider·key의 다음 dataset도 같은 한도에 걸린다. 한도를 더
+                    # 쓰지 않고 다음 주기(3시간 뒤)에 맡긴다.
+                    skipped_datasets.append({
+                        "provider": provider_key, "dataset_key": dataset.key,
+                        "skipped": True, "reason": "rate_limited",
+                    })
+                    continue
                 try:
                     results.append(
                         run_external_weather_sync(
@@ -1155,20 +1181,39 @@ def _make_external_provider_asset(collection: ExternalCollection):
                     # 다음 dataset/close와 경합시키지 않고 이 worker 실행을 끝낸다.
                     abandoned = True
                     raise
-                except Exception as exc:
-                    failed.append(
-                        {
-                            "provider": provider_key,
-                            "dataset_key": dataset.key,
-                            "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
-                        }
+                except ProviderError as exc:
+                    if exc.code != "rate_limit":
+                        failed.append(_external_failure(provider_key, dataset.key, exc))
+                        continue
+                    # 429는 provider가 지금 그만 물으라는 뜻이다. sweep이 그 앞까지 받은 응답은
+                    # 모두 게시된다(external_weather가 쌓인 batch도 닫기 전에 게시한다). 그러나
+                    # 수집 기록(weather_sync_runs)은 failed로 닫히고, 그 run의 export cohort·
+                    # attempt는 승인되지 않고 퇴역한다. 그래서 그 dataset을 쓰는 Map export
+                    # (``*_current``는 current·daily, ``*_forecast``는 external 예보)는 다음 성공
+                    # sweep까지 이전 승인 값을 source_status=stale로 낸다. Dagster run은 빨간
+                    # 실패가 아니라 "갱신 대기"(deferred)로 남기고 다음 주기에 다시 묻는다.
+                    rate_limited.append({
+                        "provider": provider_key,
+                        "dataset_key": dataset.key,
+                        "retry_after_seconds": exc.retry_after_seconds,
+                    })
+                    context.log.warning(
+                        f"{provider_key}/{dataset.key}: provider rate limit(429)으로 이번 주기 "
+                        f"수집을 멈춥니다(Retry-After {exc.retry_after_seconds})"
                     )
+                except Exception as exc:
+                    failed.append(_external_failure(provider_key, dataset.key, exc))
         finally:
             close = getattr(provider, "close", None)
             if callable(close) and not abandoned:
                 close()
-        if failed:
+        if failed or any(entry.get("locations_failed") for entry in results):
+            # 한 위치의 응답 실패는 그 위치만 건너뛰었다(external_weather). 부분 완료로 드러낸다.
+            # 사실값과 native run은 success지만, 건너뛴 위치 때문에 이 run의 export cohort는
+            # 승인 조건을 채우지 못해 Map export는 다음 완전 sweep까지 stale이다.
             status = "partial"
+        elif rate_limited:
+            status = "deferred"
         elif skipped_datasets and not results:
             status = "skipped"
         else:
@@ -1178,11 +1223,14 @@ def _make_external_provider_asset(collection: ExternalCollection):
             "status": status,
             "datasets": results,
             "failed_datasets": failed,
+            "rate_limited_datasets": rate_limited,
             "skipped_datasets": skipped_datasets,
             "locations_total": len(targets),
             "locations_available": len(catalog_targets),
         }
         context.add_output_metadata(result)
+        if status in {"partial", "deferred"}:
+            _record_collection_outcome(context, status)
         if failed and not results:
             # Nothing was collected. The old shared asset reported this as a
             # green "partial" because some *other* provider had succeeded;
@@ -1195,6 +1243,14 @@ def _make_external_provider_asset(collection: ExternalCollection):
         return result
 
     return _external_provider_sync
+
+
+def _external_failure(provider_key: str, dataset_key: str, exc: Exception) -> dict[str, object]:
+    return {
+        "provider": provider_key,
+        "dataset_key": dataset_key,
+        "error": f"{type(exc).__name__}: {redact_secrets(str(exc))[:500]}",
+    }
 
 
 EXTERNAL_COLLECTIONS = _external_collections()
@@ -1211,6 +1267,7 @@ _EXTERNAL_PROVIDER_ASSETS = tuple(
     required_resource_keys={"khoa_client", "weather_repository"},
     description="국립해양조사원 해수욕장 해양지수(파고·수온·기온·풍속)를 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1250,6 +1307,7 @@ def khoa_beach_index_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림청 산악기상관측망 관측값을 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1277,6 +1335,7 @@ def krforest_mountain_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krforest_client", "weather_repository"},
     description="산림 청정넷(AICAN) 미세먼지 PM10·PM2.5·PM1.0과 기상값을 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1315,6 +1374,7 @@ def krforest_dust_sync(context: AssetExecutionContext) -> dict[str, object]:
     required_resource_keys={"krex_client", "weather_repository"},
     description="한국도로공사 고속도로 휴게소 기상 관측값을 publish한다.",
 )
+@retries_transient_network
 @skips_live_overlap
 def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
@@ -1357,19 +1417,173 @@ def krex_restarea_sync(context: AssetExecutionContext) -> dict[str, object]:
     return result
 
 
+#: 지역 수집의 정규 시각(KST). 하루 두 번이면 충분하다(아래 schedule 주석).
+REGIONAL_REGULAR_HOURS = (5, 17)
+#: 정규 tick 뒤 보충 tick까지의 시간. 보충 tick은 정규 tick 뒤로 그 job의 SUCCESS run이
+#: 없을 때만 run을 만든다. 정규 run이 실패하면 다음 기회가 12시간 뒤가 아니라 1·3시간 뒤다.
+REGIONAL_CATCH_UP_DELAYS_HOURS = (1, 3)
+#: 지역 원천 job 네 개가 함께 받는 ``EXTERNAL_RUN_GROUP_TAG`` 값. deploy/dagster.yaml이 이
+#: 값을 ``limit: 1``로 묶는다 — 아래 ``RegionalCollection`` 설명.
+REGIONAL_RUN_GROUP = "regional_weather"
+
+
+@dataclass(frozen=True, slots=True)
+class RegionalCollection:
+    """지역 원천 하나 — asset·job·schedule이 한 벌씩 붙는다.
+
+    네 원천은 한 job(``regional_weather_job``)의 네 step이었다. export 승격은 run 전체가
+    SUCCESS일 때만 일어나므로(W-EXP-SPLIT-01과 같은 규칙, step 단위 승격 없음) 한 원천의
+    실패가 나머지 셋의 승격까지 막았다 — 2026-11-22 20:30Z krex DNS 오류 하나로 해수욕장·
+    산악·청정넷이 성공했는데도 24시간 공개되지 못했다. 그래서 외부 provider처럼 run을 나눈다.
+
+    분리 전 묶음 job은 run 하나(``max_concurrent=1``)로 네 step을 차례로 돌아 weather run
+    슬롯(deploy/dagster.yaml ``kortravelcommon/project=weather`` limit 6)을 하나만 썼다.
+    나눈 네 job은 각자 run이라, 그대로 두면 05·17시대에 실측 최대 시간 기준으로 둘~셋이
+    겹치고(산악 :30 최대 1110초가 :40·:45 시작과 겹침) 일시 네트워크 오류 재시도 대기
+    (``transient_retry``, 시도마다 30~240초) 동안에도 run이 STARTED로 슬롯을 쥔다. 이 창은
+    KMA 단기예보(:15)·AirKorea(:35)·매 정시 초단기예보·외부 sweep과 겹친다. 그래서 네 job에
+    같은 run group(``REGIONAL_RUN_GROUP``)을 달아 instance가 한 번에 하나만 돌린다. 슬롯 점유는
+    분리 전과 같은 1개이고, 원천별 run SUCCESS(=승격 단위)는 그대로 독립이다. 상한에 걸린
+    run은 QUEUED로 기다릴 뿐 슬롯을 잡지 않으며 다른 job의 dequeue를 막지 않는다.
+    """
+
+    asset: Any
+    provider_key: str
+    dataset_key: str
+    #: 정규·보충 tick의 분. 네 원천의 시작을 흩어 CPU가 포화된 호스트에 한꺼번에 몰리지
+    #: 않게 한다. 실측(2026-11-09..23) step p50/최대: 산악 646/1110초, 청정넷 345/478초,
+    #: 휴게소 371/599초, 해수욕장 129/221초 — 가장 긴 산악을 먼저 띄운다.
+    minute: int
+
+    @property
+    def slug(self) -> str:
+        return self.asset.key.path[-1].removesuffix("_sync")
+
+    @property
+    def job_name(self) -> str:
+        return f"{self.slug}_job"
+
+    @property
+    def schedule_name(self) -> str:
+        return f"twice_daily_{self.slug}"
+
+    @property
+    def regular_cron_schedule(self) -> str:
+        hours = ",".join(str(hour) for hour in REGIONAL_REGULAR_HOURS)
+        return f"{self.minute} {hours} * * *"
+
+    @property
+    def cron_schedule(self) -> str:
+        hours = sorted(
+            {*REGIONAL_REGULAR_HOURS}
+            | {
+                (hour + delay) % 24
+                for hour in REGIONAL_REGULAR_HOURS
+                for delay in REGIONAL_CATCH_UP_DELAYS_HOURS
+            }
+        )
+        return f"{self.minute} {','.join(str(hour) for hour in hours)} * * *"
+
+
+REGIONAL_COLLECTIONS = (
+    RegionalCollection(
+        krforest_mountain_sync, KRFOREST_PROVIDER, KRFOREST_MOUNTAIN_DATASET, minute=30
+    ),
+    RegionalCollection(khoa_beach_index_sync, KHOA_PROVIDER, KHOA_BEACH_INDEX_DATASET, minute=40),
+    RegionalCollection(krex_restarea_sync, KREX_PROVIDER, KREX_RESTAREA_DATASET, minute=45),
+    RegionalCollection(krforest_dust_sync, KRFOREST_PROVIDER, KRFOREST_DUST_DATASET, minute=50),
+)
+_REGIONAL_COLLECTIONS_BY_JOB = {
+    collection.job_name: collection for collection in REGIONAL_COLLECTIONS
+}
+
+
+def last_regular_tick(local: datetime, minute: int) -> datetime:
+    """``local``(KST, aware) 이전·같은 가장 최근 정규 tick 시각."""
+    candidates = [
+        (local - timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        for days in (0, 1)
+        for hour in REGIONAL_REGULAR_HOURS
+    ]
+    return max(candidate for candidate in candidates if candidate <= local)
+
+
+def _regional_catch_up_gate(collection: RegionalCollection):
+    """정규 tick은 항상, 보충 tick은 정규 tick 뒤 SUCCESS run이 없을 때만 실행한다."""
+    from zoneinfo import ZoneInfo
+
+    from dagster import DagsterRunStatus, RunsFilter
+
+    seoul = ZoneInfo("Asia/Seoul")
+
+    def should_execute(context) -> bool:
+        try:
+            scheduled = context.scheduled_execution_time
+        except Exception:
+            scheduled = None
+        if scheduled is None:
+            # 시각 없는 수동 평가는 정규 tick처럼 다룬다.
+            return True
+        local = scheduled.astimezone(seoul)
+        if local.hour in REGIONAL_REGULAR_HOURS:
+            return True
+        regular = last_regular_tick(local, collection.minute)
+        succeeded = context.instance.get_runs(
+            filters=RunsFilter(
+                job_name=collection.job_name,
+                statuses=[DagsterRunStatus.SUCCESS],
+                # 정규 tick의 run은 tick 시각 직후에 만들어진다. 앞선 주기의 run을
+                # 섞지 않도록 정규 tick 시각부터 센다.
+                created_after=regular.astimezone(UTC),
+            ),
+            limit=1,
+        )
+        if succeeded:
+            return False
+        context.log.info(
+            "%s: 정규 실행(%s) 뒤 성공한 run이 없어 보충 실행합니다",
+            collection.job_name, regular.isoformat(),
+        )
+        return True
+
+    return should_execute
+
+
 #: Days a retention run missed but could not mark on their table (the
 #: ``COMMENT`` kept losing its lock race).  Kept in the run's own Dagster
 #: record -- an asset observation, which needs no table lock and no migration
 #: and is written even when the run then fails -- and handed to the next run.
 _UNMARKED_KEY = "partitions_unmarked"
+#: 원천 정리가 멈춘 keyset 위치와 연기가 이어진 실행 수(2026-11-24 L4). 같은 observation에
+#: 남겨 다음 실행이 이어 읽고 연기를 센다.
+_SOURCES_RESUME_KEY = "sources_resume_after"
+_SOURCES_DEFERRED_RUNS_KEY = "sources_deferred_runs"
 
 
-def _previous_unmarked(context: AssetExecutionContext) -> tuple[str, ...]:
-    """The previous retention run's ``partitions_unmarked``, from its observation."""
+def _previous_retention_record(context: AssetExecutionContext) -> dict[str, object]:
+    """The previous retention run's observation metadata, as plain values."""
     records = context.instance.fetch_observations(context.asset_key, limit=1).records
     observation = records[0].asset_observation if records else None
-    value = observation.metadata.get(_UNMARKED_KEY) if observation else None
-    return tuple(str(name) for name in (getattr(value, "value", None) or ()))
+    if observation is None:
+        return {}
+    return {key: getattr(value, "value", value) for key, value in observation.metadata.items()}
+
+
+def _previous_unmarked(previous: dict[str, object]) -> tuple[str, ...]:
+    """The previous retention run's ``partitions_unmarked``, from its observation."""
+    value = previous.get(_UNMARKED_KEY) or ()
+    return tuple(str(name) for name in value) if isinstance(value, list | tuple) else ()
+
+
+def _previous_sources_after(previous: dict[str, object]) -> str | None:
+    """앞 실행의 원천 정리 위치. 형식이 맞지 않으면 처음부터 읽는다(위치는 성능 힌트일 뿐)."""
+    value = previous.get(_SOURCES_RESUME_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+def _previous_sources_deferred_runs(previous: dict[str, object]) -> int:
+    value = previous.get(_SOURCES_DEFERRED_RUNS_KEY)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 @asset(
@@ -1380,12 +1594,16 @@ def _previous_unmarked(context: AssetExecutionContext) -> tuple[str, ...]:
 def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]:
     runtime = WeatherSettings()
     repository = _run_repository(context)
+    previous = _previous_retention_record(context)
     result = run_weather_retention_purge(
         repository=repository,
         retention_days=runtime.retention_days,
         ahead_days=runtime.retention_ahead_days,
-        prior_unmarked=_previous_unmarked(context),
+        prior_unmarked=_previous_unmarked(previous),
+        sources_after=_previous_sources_after(previous),
+        prior_sources_deferred_runs=_previous_sources_deferred_runs(previous),
     )
+    resume = result[_SOURCES_RESUME_KEY]
     # Recorded before any Failure below: a failed run materializes nothing,
     # and its lost marks must still reach the next run.
     context.log_event(
@@ -1393,6 +1611,12 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
             asset_key=context.asset_key,
             metadata={
                 _UNMARKED_KEY: MetadataValue.json(list(result[_UNMARKED_KEY])),
+                _SOURCES_RESUME_KEY: (
+                    MetadataValue.text(str(resume)) if resume else MetadataValue.null()
+                ),
+                _SOURCES_DEFERRED_RUNS_KEY: MetadataValue.int(
+                    int(result[_SOURCES_DEFERRED_RUNS_KEY])
+                ),
             },
         )
     )
@@ -1429,6 +1653,20 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
             result["partitions_overdue"],
             result["partitions_not_created"],
         )
+    if result["pointers_deferred"] or result["sources_deferred"]:
+        # 정리 batch가 재시도 끝에도 문장/lock 상한에 졌다. 포인터면 그 밤 만료 일자를 떼지
+        # 않았고, 원천이면 진 batch 위치를 다음 실행에 넘겼다(연속이면 partial).
+        context.log.warning(
+            "retention %s: purge batch deferred -- pointers %s (deleted %s), "
+            "sources %s (deleted %s, %s run(s) in a row, resume after %s)",
+            result["status"],
+            result["pointers_deferred"],
+            result["pointers_deleted"],
+            result["sources_deferred"],
+            result["sources_deleted"],
+            result["sources_deferred_runs"],
+            result["sources_resume_after"],
+        )
     if result["status"] == "failed":
         raise Failure(
             description=(
@@ -1436,6 +1674,12 @@ def weather_retention_purge(context: AssetExecutionContext) -> dict[str, object]
                 f"overdue {result['partitions_overdue']}, "
                 f"not created {result['partitions_not_created']} "
                 f"(forward window {days} day(s))"
+                + (
+                    "; the current-value pointer purge was deferred, so no expired "
+                    "day was detached"
+                    if result["pointers_deferred"]
+                    else ""
+                )
             ),
             metadata=result,
         )
@@ -1489,25 +1733,50 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
     # 정책·DB·시계가 달라 위치를 버렸으면 앞 지연·연속 횟수도 같은 기준이 아니므로 새로 센다.
     baseline = {} if result.get("resume_discarded") in _UNTRUSTED_HISTORY else previous
     result["lag_stall_runs"] = lag_stall_runs(baseline, result)
+    result[_NO_PROGRESS_KEY] = no_progress_runs(_previous_no_progress_runs(previous), result)
+    if not made_progress(result):
+        # 진척이 없으면 다음 실행의 출발점(이어 읽을 위치·머리 훑기 시각·지연 기준)을 앞 실행의
+        # 것 그대로 넘긴다. 이 실행의 materialization이 위치를 비우면(주기 머리 훑기 중 연기)
+        # 다음 실행이 저장 위치 없이 머리부터 다시 훑어 같은 timeout을 반복한다.
+        result.update({key: baseline[key] for key in _CARRIED_ON_NO_PROGRESS if key in baseline})
     context.add_output_metadata(result)
     if not made_progress(result):
-        # 진척 0(연기·잠금/timeout·머리 탐색 실패)이면 실패다. raise 뒤 STEP_OUTPUT이
-        # 없어도 Failure 이벤트 자체에 결과 metadata를 남긴다.
-        raise Failure(
-            description="단기예보 정리가 이번 실행에서 진척 없이 끝났습니다.",
-            metadata=result,
-        )
+        # 진척 0(연기·잠금/timeout·머리 탐색 실패). 연속 횟수는 이 실행의 materialization에 남는다.
+        if result[_NO_PROGRESS_KEY] >= NO_PROGRESS_ALERT_RUNS:
+            # raise 뒤 STEP_OUTPUT이 없어도 Failure 이벤트 자체에 결과 metadata를 남긴다.
+            raise Failure(
+                description=(
+                    f"단기예보 정리가 {result[_NO_PROGRESS_KEY]}회 연속 진척 없이 끝났습니다."
+                ),
+                metadata=result,
+            )
+        if not backlog_stalled(result):
+            context.log.warning(
+                "단기예보 정리 연기 status=%s deferred_reason=%s error_class=%s "
+                "no_progress_runs=%s (연속 %s회부터 실패)",
+                result["status"], result.get("deferred_reason"), result.get("error_class"),
+                result[_NO_PROGRESS_KEY], NO_PROGRESS_ALERT_RUNS,
+            )
+            _record_collection_outcome(context, "deferred")
+            return result
+        # 정체 중의 진척 0은 연기 경고로 두지 않고 아래 정체 실패로 보낸다. 진척 없는 실행은 앞
+        # 실행의 지연 기준(lag_stall_runs)을 그대로 넘겨받으므로, 정체는 지연이 실제로 줄 때까지
+        # 풀리지 않는다. 일별 정리와의 lock 양보도 무진척 횟수로는 세지 않지만 정체 실패는 그대로다.
     if backlog_stalled(result):
-        # 지운 행은 있지만 backlog가 24시간 넘게 뒤처진 채 연속으로 줄지 않는다. 다음 실행이
-        # 위치와 연속 횟수를 이어받도록 materialization을 먼저 남기고 실패로 알린다.
+        # backlog가 24시간 넘게 뒤처진 채 연속으로 줄지 않는다(이번 실행은 지운 행이 있거나
+        # 진척 0이다). 다음 실행이 위치와 연속 횟수를 이어받도록 materialization을 먼저 남기고
+        # 실패로 알린다.
         context.log_event(AssetMaterialization(asset_key=context.asset_key, metadata=result))
-        raise Failure(
-            description=(
-                "단기예보 정리 backlog가 24시간 넘게 뒤처진 채 "
-                f"{result['lag_stall_runs']}회 연속 줄지 않았습니다."
-            ),
-            metadata=result,
+        description = (
+            "단기예보 정리 backlog가 24시간 넘게 뒤처진 채 "
+            f"{result['lag_stall_runs']}회 연속 줄지 않았습니다."
         )
+        if not made_progress(result):
+            description += (
+                " 이번 실행도 진척 없이 끝났습니다"
+                f"(deferred_reason={result.get('deferred_reason')})."
+            )
+        raise Failure(description=description, metadata=result)
     if result["status"] != "complete_snapshot":
         # 지운 행이 있으면 성공이다(뒤처져도 줄고 있으면 따라잡는 중). 남은 backlog는
         # 다음 실행이 위치에서 이어 정리한다.
@@ -1518,6 +1787,25 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
             result["lag_stall_runs"], result.get("error_class"),
         )
     return result
+
+
+_NO_PROGRESS_KEY = "no_progress_runs"
+#: 진척 없는 실행이 앞 실행에서 그대로 넘기는 metadata
+#: (``resume_position``·``lag_stall_runs``의 입력).
+_CARRIED_ON_NO_PROGRESS = (
+    *RESUME_METADATA_KEYS, "resume_policy", "resume_database", "head_scan_at",
+    "backlog_lag_seconds", "lag_stall_runs",
+)
+
+
+def _previous_no_progress_runs(previous: Mapping[str, object]) -> int:
+    """앞 실행 materialization이 남긴 연속 무진척 횟수. 없거나 이상하면 0.
+
+    진척 없는 실행도 materialization을 남기므로(출발점은 앞 실행 것 그대로) 횟수가 이어진다.
+    실패로 끝난 실행은 materialization이 없어 다음 실행도 같은 횟수에서 다시 센다.
+    """
+    count = previous.get(_NO_PROGRESS_KEY)
+    return count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0
 
 
 #: 앞 실행의 지연 기준을 이어 쓰지 않는 위치 폐기 사유(주기 머리 훑기는 같은 기준이라 제외).
@@ -1612,16 +1900,14 @@ _unresolved_short_retention_job = define_asset_job(
     selection=[weather_short_forecast_retention],
     tags=_job_tags("weather_short_forecast_retention_job"),
 )
-_unresolved_regional_job = define_asset_job(
-    "regional_weather_job",
-    selection=[
-        khoa_beach_index_sync,
-        krforest_mountain_sync,
-        krforest_dust_sync,
-        krex_restarea_sync,
-    ],
-    tags=_job_tags("regional_weather_job"),
-)
+_unresolved_regional_jobs = {
+    collection.job_name: define_asset_job(
+        collection.job_name,
+        selection=[collection.asset],
+        tags={**_job_tags(collection.job_name), EXTERNAL_RUN_GROUP_TAG: REGIONAL_RUN_GROUP},
+    )
+    for collection in REGIONAL_COLLECTIONS
+}
 
 # Resolve the asset job before exposing it from ``Definitions``.  Passing an
 # ``UnresolvedAssetJobDefinition`` directly emits a deprecation warning today
@@ -1676,9 +1962,9 @@ external_weather_jobs = {
 }
 weather_retention_job = _resolve_job(_unresolved_retention_job)
 weather_short_forecast_retention_job = _resolve_job(_unresolved_short_retention_job)
-regional_weather_job = _resolve_job(
-    _unresolved_regional_job, executor_def=_BOUNDED_MULTIPROCESS_EXECUTOR
-)
+regional_weather_jobs = {
+    name: _resolve_job(unresolved) for name, unresolved in _unresolved_regional_jobs.items()
+}
 
 # The three hourly jobs that publish into the AirKorea station anchors run one
 # after another, not together: 초단기예보 at :00, 초단기실황 at :20, AirKorea at
@@ -1755,13 +2041,10 @@ hourly_kma_weather_alerts_schedule = _weather_schedule(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다.
-regional_alert_events_schedule = ScheduleDefinition(
-    name="regional_alert_events_every_five_minutes",
-    cron_schedule="*/5 * * * *",
-    job=kma_regional_alert_events_job,
-    execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
+# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다. 이전 실행이 남아 있으면
+# tick을 합치고, 같은 오류로 연속 실패하면 간격을 늘린다(alert_schedule).
+regional_alert_events_schedule = build_regional_alert_events_schedule(
+    kma_regional_alert_events_job
 )
 
 # :35, after the nowcast (see the ultra-short schedules above).  It is also
@@ -1802,6 +2085,18 @@ _EXTERNAL_PHASE_MINUTES = {
 }
 # 분리한 provider(W-EXP-SPLIT-01)의 current는 provider phase 그대로, forecast는
 # ``SPLIT_FORECAST_PHASE_OFFSET_MINUTES`` 뒤(기존 20분 간격 phase 사이의 빈 10분 자리)다.
+#
+# schedule은 실제로 sweep하는(slow 그룹의) provider에만 만든다. 나머지 여섯(visual_crossing·
+# tomorrow_io·weatherbit·weatherstack·accuweather·wttr_in)은 운영에서 credential이 없거나
+# 기본 비활성이라 3시간마다 3~4초짜리 skip run만 만들었다(14일 약 635 run, 감사 §2.5 P2·§4 #12).
+# 켜려면 위 SLOW 집합에 먼저 넣어야 하고(위치 상한 없는 전국 sweep 방지), 그 변경이 schedule도
+# 만든다. job은 그대로 두어 관리자 수동 실행은 가능하다. wttr_in은 key가 필요 없지만
+# 자원봉사 서비스라 기본 비활성이다(settings.enabled_providers 주석).
+SCHEDULED_EXTERNAL_COLLECTIONS = tuple(
+    collection
+    for collection in EXTERNAL_COLLECTIONS
+    if collection.provider_key in SLOW_EXTERNAL_PROVIDER_KEYS
+)
 external_weather_schedules = [
     _weather_schedule(
         name=collection.schedule_name,
@@ -1812,21 +2107,27 @@ external_weather_schedules = [
         execution_timezone="Asia/Seoul",
         default_status=DefaultScheduleStatus.RUNNING,
     )
-    for collection in EXTERNAL_COLLECTIONS
+    for collection in SCHEDULED_EXTERNAL_COLLECTIONS
 ]
 
 
-# Twice a day, on the half hour so it never collides with the hourly
-# ingests.  These three sources publish a few times a day at most; asking
-# hourly would multiply an already 3M-fact-per-day pipeline for readings
-# that have not changed.
-regional_weather_schedule = _weather_schedule(
-    name="twice_daily_regional_weather",
-    cron_schedule="30 5,17 * * *",
-    job=regional_weather_job,
-    execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
-)
+# Twice a day.  These three sources publish a few times a day at most; asking
+# hourly would multiply an already 3M-fact-per-day pipeline for readings that
+# have not changed.  Each source is its own job (see ``RegionalCollection``):
+# one source's failure no longer holds back the others' promotion.  The
+# catch-up hours run only when the regular tick left no SUCCESS behind.
+regional_weather_schedules = [
+    _weather_schedule(
+        name=collection.schedule_name,
+        cron_schedule=collection.cron_schedule,
+        status_cron_schedule=collection.regular_cron_schedule,
+        job=regional_weather_jobs[collection.job_name],
+        should_execute=_regional_catch_up_gate(collection),
+        execution_timezone="Asia/Seoul",
+        default_status=DefaultScheduleStatus.RUNNING,
+    )
+    for collection in REGIONAL_COLLECTIONS
+]
 
 # 01:45 KST는 기존 실측(2026-10-04..07)의 저부하 시각으로 유지한다.
 # 외부 수집의 phase 분산 후에는 이 시간에도 실행이 시작될 수 있다.
@@ -1859,7 +2160,7 @@ _COLLECTION_JOBS = [
     kma_regional_alert_events_job,
     airkorea_job,
     *external_weather_jobs.values(),
-    regional_weather_job,
+    *regional_weather_jobs.values(),
     weather_retention_job,
     weather_short_forecast_retention_job,
 ]
@@ -1877,7 +2178,7 @@ defs = Definitions(
         regional_alert_events_schedule,
         hourly_airkorea_weather_schedule,
         *external_weather_schedules,
-        regional_weather_schedule,
+        *regional_weather_schedules,
         daily_weather_retention_schedule,
         short_forecast_retention_schedule,
         weather_export_maintenance_schedule,

@@ -281,6 +281,14 @@ READ_STAGE_DURATION = Histogram(
     buckets=(.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 1200),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+#: API 시작 warmup 단계별 소요 시간. 프로세스 기동마다 단계당 한 번만 관측한다.
+API_PREWARM_STEP_DURATION = Histogram(
+    "ktw_api_prewarm_step_duration_seconds",
+    "One-time API startup warmup step duration by step and outcome (ok, failed, skipped).",
+    ("step", "outcome"),
+    buckets=(.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 
 EXPORT_DATABASE_PAYLOAD_READS = Counter(
     "ktw_export_database_payload_reads_total", "Actual database payload SELECT calls.",
@@ -329,6 +337,29 @@ ALERT_CLEANUP_FAILURES = Counter(
     "ktw_alert_cleanup_failures_total",
     "Deferred alert run terminalization or client cleanup failures.",
     ("stage",),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+
+#: 특보 발표 관측 수집이 한 응답 안에서 정리한 원천 행. merged는 모든 필드가 같은 반복 행
+#: (하나만 게시), quarantined는 같은 event_id에 내용이 다른 행(게시하지 않고 원천 기록에 격리).
+ALERT_ROWS_RECONCILED = Counter(
+    "ktw_alert_rows_reconciled_total",
+    "Alert event source rows merged as exact duplicates or quarantined as conflicting.",
+    ("outcome",),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+#: 특보 발표 관측 schedule의 연속 실패 차단기. 같은 오류 코드로 연속 실패한 실행 수와,
+#: 그 수가 문턱을 넘어 tick을 건너뛰는(간격을 늘린) 상태인지. schedule 평가 때 갱신한다.
+ALERT_COLLECTION_FAILURE_STREAK = Gauge(
+    "ktw_alert_collection_failure_streak",
+    "Consecutive regional alert event runs that failed with the same error code.",
+    multiprocess_mode="livemax",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+ALERT_COLLECTION_BREAKER_OPEN = Gauge(
+    "ktw_alert_collection_breaker_open",
+    "1 while the regional alert event schedule backs off after repeated identical failures.",
+    multiprocess_mode="livemax",
     registry=_INSTRUMENTATION_REGISTRY,
 )
 
@@ -785,6 +816,25 @@ def set_sync_recovery_stalled(stalled: bool) -> None:
     _safe("sync_recovery_stalled", lambda: SYNC_RECOVERY_STALLED.set(1 if stalled else 0))
 
 
+def observe_alert_rows_reconciled(*, merged: int, quarantined: int) -> None:
+    def update() -> None:
+        if merged > 0:
+            ALERT_ROWS_RECONCILED.labels(outcome="merged").inc(merged)
+        if quarantined > 0:
+            ALERT_ROWS_RECONCILED.labels(outcome="quarantined").inc(quarantined)
+
+    if merged > 0 or quarantined > 0:
+        _safe("alert_rows_reconciled", update)
+
+
+def set_alert_collection_breaker(*, streak: int, open_: bool) -> None:
+    def update() -> None:
+        ALERT_COLLECTION_FAILURE_STREAK.set(max(0, streak))
+        ALERT_COLLECTION_BREAKER_OPEN.set(1 if open_ else 0)
+
+    _safe("alert_collection_breaker", update)
+
+
 def observe_history_purged(values: int, sources: int) -> None:
     def update() -> None:
         if values > 0:
@@ -944,6 +994,7 @@ __all__ = [
     "initialize_sync_values_skipped",
     "metrics_content_type",
     "metrics_payload",
+    "observe_alert_rows_reconciled",
     "observe_http_request",
     "observe_provider_request",
     "observe_stale_recovered",
@@ -952,6 +1003,7 @@ __all__ = [
     "observe_sync_started",
     "observe_sync_values_skipped",
     "provider_request",
+    "set_alert_collection_breaker",
     "set_sync_recovery_stalled",
     "start_metrics_server",
 ]
@@ -979,3 +1031,20 @@ def observe_database_payload_read(mode, rows):
         EXPORT_DATABASE_PAYLOAD_BYTES.labels(mode=mode).inc(sum(len(row.payload) for row in rows))
 
     _safe("database_payload_read", observe)
+
+
+#: API warmup 단계 이름(``kortravelweather_api.prewarm.STEP_NAMES``와 같다). 밖의 값은 other.
+API_PREWARM_STEPS = frozenset({
+    "connections", "session_check", "regions", "locations", "markers", "location_detail",
+})
+
+
+def observe_api_prewarm_step(step, outcome, duration):
+    labels = (
+        step if step in API_PREWARM_STEPS else "other",
+        outcome if outcome in {"ok", "failed", "skipped"} else "other",
+    )
+    _safe(
+        "api_prewarm_step",
+        lambda: API_PREWARM_STEP_DURATION.labels(*labels).observe(max(0, duration)),
+    )

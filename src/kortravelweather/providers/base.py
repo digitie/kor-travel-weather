@@ -30,12 +30,48 @@ class ProviderError(RuntimeError):
     """분류 가능한 provider 호출 오류."""
 
     def __init__(
-        self, message: str, *, code: str, retryable: bool = False, status_code: int | None = None
+        self,
+        message: str,
+        *,
+        code: str,
+        retryable: bool = False,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
         self.status_code = status_code
+        #: 429 응답의 ``Retry-After``(초). 없거나 읽지 못하면 None.
+        self.retry_after_seconds = retry_after_seconds
+
+
+#: 429의 ``Retry-After``가 이 값(초) 이하일 때만 같은 호출 안에서 한 번 기다렸다 다시 묻는다.
+#: 더 길거나 값이 없으면 기다리지 않는다 — sweep을 끝내고 다음 주기(3시간 뒤)에 맡긴다.
+#: 예전에는 ``Retry-After``를 무시하고 0.5·1·2초 뒤 같은 요청을 세 번 더 보냈다(감사 §2.5 P1 #12).
+RATE_LIMIT_RETRY_AFTER_MAX_SECONDS = 30.0
+
+
+def retry_after_seconds(
+    response: ProviderResponseLike, *, now: datetime | None = None
+) -> float | None:
+    """``Retry-After``(delta-seconds 또는 HTTP-date)를 초로 읽는다. 읽을 수 없으면 None."""
+    headers = getattr(response, "headers", None) or {}
+    raw = None
+    with suppress(AttributeError):
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text.isdigit():
+        return float(int(text))
+    try:
+        when = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - (now or datetime.now(UTC))).total_seconds())
 
 
 class CredentialError(ProviderError):
@@ -350,6 +386,7 @@ def request_json(
     attempts = retries + 1
     last_error: Exception | None = None
     response: ProviderResponseLike | None = None
+    rate_limit_waited = False
     for attempt in range(attempts):
         try:
             response = transport.request(
@@ -366,14 +403,24 @@ def request_json(
                     "provider credential이 거부되었습니다.", code="auth", status_code=status_code
                 )
             if status_code == 429:
-                if attempt + 1 < attempts:
-                    time.sleep(min(0.5 * (2**attempt), 5.0))
+                # 한도에 걸린 요청을 곧바로 다시 보내면 한도만 더 쓴다. provider가 짧은
+                # Retry-After를 주면 그만큼 한 번만 기다리고, 아니면 다음 주기로 넘긴다.
+                wait = retry_after_seconds(response)
+                if (
+                    not rate_limit_waited
+                    and attempt + 1 < attempts
+                    and wait is not None
+                    and wait <= RATE_LIMIT_RETRY_AFTER_MAX_SECONDS
+                ):
+                    rate_limit_waited = True
+                    time.sleep(wait)
                     continue
                 raise ProviderError(
                     "provider rate limit입니다.",
                     code="rate_limit",
                     retryable=True,
                     status_code=status_code,
+                    retry_after_seconds=wait,
                 )
             if status_code >= 500:
                 if attempt + 1 < attempts:
