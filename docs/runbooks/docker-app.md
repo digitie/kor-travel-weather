@@ -31,9 +31,11 @@
    commit을 답할 때까지 기다린다. `migrate` one-shot 서비스가 `alembic upgrade head`를
    완료한 뒤 API/Dagster가 시작된다.
    이어서 `/ready`를 최대 60초 확인하고, Map 표준 프로필 export 페이지 사전 구성을
-   `docker compose exec -T api python -m kortravelweather.export_prebuilt`로 한 번
-   돌린다(5분 상한). 입력이 마지막 build와 같으면 `unchanged`, export가 꺼져 있으면
-   `disabled`로 끝나며, 실패해도 경고만 하고 배포는 성공이다
+   `docker compose exec -T api timeout 280 python -m kortravelweather.export_prebuilt
+   --budget-seconds 240`으로 한 번 돌린다. 호스트 `timeout 300`은 exec client만 끝내므로
+   컨테이너 안 `timeout 280`이 builder 프로세스 자체를 끊는다. 입력이 마지막 build와 같으면
+   `unchanged`, export·사전 구성이 꺼져 있으면 `disabled`, 승인 집합이 아직 없으면
+   `not_ready`로 정상 종료한다. 실패해도 경고만 하고 배포는 성공이다
    (`docs/export-prebuilt-pages.md`).
 3. migration 복구가 필요하면 `docker compose -f compose.yaml run --rm migrate`를
    별도로 실행하고, `docker compose ... ps`에서 완료 상태를 확인한다.
