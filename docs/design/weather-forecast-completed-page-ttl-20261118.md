@@ -30,6 +30,11 @@ fixture와 fake clock으로 첫 생성59초+다음 metadata5초를 주면 같은
   계산 후 monotonic에 과거 잔여시간을 더해 생성 시간만큼 business 경계가 밀리지 않게 한다.
   본문 deadline은 이 절대 경계보다 길어질 수 없다.
 
+> 2026-11-24 갱신(호출 검토 A5): 위 hit 검산은 조건부 요청에만 쓰였고, `If-None-Match`가 없는
+> 첫 예보는 캐시 항목을 강제로 버렸다(`force`). 이제 비조건부 첫 예보도 같은 hit 검산(새 freeze·
+> snapshot/digest·건강도·삭제 epoch)을 거쳐 본문을 재사용한다. 근거와 계약은
+> [map-service-exports.md](map-service-exports.md) §3.2.
+
 ## 검증과 남은 비용
 
 회귀111개 통과, 추가 head 변경 case를 포함한 최종 slow-build API5개 통과(4개는 회귀와 중복),

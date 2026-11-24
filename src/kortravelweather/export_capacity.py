@@ -11,6 +11,7 @@ from sqlalchemy import String, Text, any_, bindparam, case, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY
 
 from .export_artifacts import ExportArtifactError
+from .export_cancellation import checkpoint
 
 MAX_SOURCE_SCOPES = 8192
 MAX_GENERATION_REFS = 65536
@@ -136,6 +137,8 @@ def read_generation_refs(connection, table, generation_ids):
     result = connection.execute(statement)
     try:
         for count, row in enumerate(result.mappings(), 1):
+            # FETCH는 SQL hook 밖이다. 끊긴 요청이면 다음 FETCH 전에 멈춘다(export_cancellation).
+            checkpoint("sql")
             if count > MAX_GENERATION_REFS or row["oversized_locations"]:
                 raise ExportCapacityExceeded("승인 artifact 참조 상한을 넘었습니다.")
             ref = {key: value for key, value in row.items() if key != "oversized_locations"}
@@ -178,6 +181,7 @@ def read_scope_plans(connection, table, attempt_ids, *, byte_sizes=None):
     result = connection.execute(statement)
     try:
         for row in result.mappings():
+            checkpoint("sql")  # server cursor FETCH 사이의 끊김 확인(위와 같다)
             if row["oversized_descriptor"] or row["descriptor"] is None:
                 raise ExportCapacityExceeded("승인 source plan 메타데이터 상한을 넘었습니다.")
             before = budget.used
