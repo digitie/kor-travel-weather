@@ -93,6 +93,7 @@ from .export_external_cohorts import external_cohort_table
 from .export_heads import export_head_tables, validate_head_capture
 from .export_inventory import export_inventory_table
 from .export_lifecycle import export_lifecycle_tables, normalization_input_digest
+from .export_prebuilt import export_prebuilt_tables
 from .export_receipts import (
     ExportAttempt,
     ExportCapture,
@@ -194,6 +195,7 @@ export_fetch_clock_table(Base.metadata)
 daily_summary_tables(Base.metadata)
 external_cohort_table(Base.metadata)
 export_inventory_table(Base.metadata)
+export_prebuilt_tables(Base.metadata)
 
 logger = logging.getLogger(__name__)
 

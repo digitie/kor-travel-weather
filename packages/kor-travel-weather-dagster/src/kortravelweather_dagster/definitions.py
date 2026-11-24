@@ -66,6 +66,11 @@ from .export_maintenance import (
     weather_export_maintenance_job,
     weather_export_maintenance_schedule,
 )
+from .export_prebuild import (
+    prebuild_policy,
+    weather_export_prebuild_job,
+    weather_export_prebuild_schedule,
+)
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -970,6 +975,9 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
         seconds = 120
     if job_name == "weather_short_forecast_retention_job":
         seconds = 300
+    if job_name == weather_export_prebuild_job.name:
+        # 사전 구성 job의 상한·태그는 그 모듈이 정한다(job 정의의 tags와 같은 객체).
+        return prebuild_policy()
     return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1)
 
 
@@ -1899,6 +1907,9 @@ JOB_PRIORITIES: Mapping[str, int] = MappingProxyType({
     # 0 — export 일괄 퇴역·artifact GC(매시 :52지만 정리). tag는 export_maintenance가 job 정의에
     # 직접 단다(이 모듈을 import할 수 없다) — 이 값과의 일치는 시험이 본다.
     weather_export_maintenance_job.name: PRIORITY_BATCH,
+    # 0 — export 사전 구성(:23·:38, Map W2 직전). 주기는 1시간 미만이지만 수집이 아닌 export다.
+    # tag는 export_prebuild가 job 정의에 직접 단다(정리 job과 같은 이유).
+    weather_export_prebuild_job.name: PRIORITY_BATCH,
     # 0 — 6개월 주소 갱신(10분 sensor가 대상 유무만 본다). job·sensor는 common
     # ``address_refresh_definitions``가 만들어 여기서 tag를 달 수 없다 — tag 생략 = 0이다.
     "address_refresh_job": PRIORITY_BATCH,
@@ -1913,6 +1924,10 @@ if weather_export_maintenance_job.tags.get(RUN_PRIORITY_TAG) != str(
     JOB_PRIORITIES[weather_export_maintenance_job.name]
 ):
     raise RuntimeError("export 정리 job의 dagster/priority가 JOB_PRIORITIES와 다릅니다.")
+if weather_export_prebuild_job.tags.get(RUN_PRIORITY_TAG) != str(
+    JOB_PRIORITIES[weather_export_prebuild_job.name]
+):
+    raise RuntimeError("export 사전 구성 job의 dagster/priority가 JOB_PRIORITIES와 다릅니다.")
 
 
 #: 모든 작업이 같은 asset graph를 사용하도록 자산을 한 번만 선언한다.
@@ -2252,6 +2267,8 @@ defs = Definitions(
         hourly_kma_weather_alerts_schedule,
         regional_alert_events_schedule,
         hourly_airkorea_weather_schedule,
+        # job은 이 schedule로 등록된다(Map W2 직전 사전 구성, 호출 검토 A3).
+        weather_export_prebuild_schedule,
         *external_weather_schedules,
         *regional_weather_schedules,
         daily_weather_retention_schedule,

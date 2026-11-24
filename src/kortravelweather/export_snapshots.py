@@ -677,6 +677,56 @@ class FrozenCurrentExports:
             raise ExportSnapshotUnavailable("선택 위치 전체의 성공 head가 준비되지 않았습니다.")
         return descriptors, heads, None, False
 
+    def _catalog_locations(self, connection):
+        """freeze가 읽는 활성 catalog 행(상한+1). 사전 구성 proof도 같은 조회를 쓴다."""
+        catalog = self.heads.metadata.tables["weather_locations"]
+        from .export_inventory_selection import catalog_source_projection
+
+        source_from, source_columns = (
+            catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+        )
+        return list(
+            connection.execute(
+                select(
+                    catalog.c.location_id,
+                    catalog.c.name,
+                    catalog.c.latitude,
+                    catalog.c.longitude,
+                    catalog.c.nx,
+                    catalog.c.ny,
+                    *source_columns,
+                )
+                .select_from(source_from)
+                .where(catalog.c.enabled.is_(True))
+                .order_by(catalog.c.location_id)
+                .limit(MAX_SNAPSHOT_LOCATIONS + 1)
+            ).mappings()
+        )
+
+    def _address_entries(self, connection, locations):
+        """manifest 위치 항목의 법정동·시도·시군구 원천. 사전 구성 proof도 같은 조회를 쓴다."""
+        entries = self.heads.metadata.tables["reverse_address_entries"]
+        return {
+            row["target_key"]: row
+            for row in connection.execute(
+                select(
+                    entries.c.target_key,
+                    entries.c.coordinate_key,
+                    entries.c.payload["address"]["legal_dong_code"]
+                    .as_string()
+                    .label("legal_dong_code"),
+                    entries.c.payload["region"]["sido"].as_string().label("sido_name"),
+                    entries.c.payload["region"]["sigungu"].as_string().label("sigungu_name"),
+                ).where(
+                    entries.c.provider_id == VworldKakaoAddressResolver.provider_id,
+                    entries.c.status.in_(["ok", "error"]),
+                    any_of(entries.c.target_key, [row["location_id"] for row in locations])
+                    if connection.dialect.name == "postgresql" else
+                    entries.c.target_key.in_([row["location_id"] for row in locations]),
+                )
+            ).mappings()
+        }
+
     @measured_stage("freeze")
     def _freeze(self):
         self.__dict__.pop("_freeze_selection", None)
@@ -691,30 +741,7 @@ class FrozenCurrentExports:
             connection.begin(),
         ):
             connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
-            catalog = self.heads.metadata.tables["weather_locations"]
-            from .export_inventory_selection import catalog_source_projection
-
-            source_from, source_columns = (
-                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
-            )
-
-            locations = list(
-                connection.execute(
-                    select(
-                        catalog.c.location_id,
-                        catalog.c.name,
-                        catalog.c.latitude,
-                        catalog.c.longitude,
-                        catalog.c.nx,
-                        catalog.c.ny,
-                        *source_columns,
-                    )
-                    .select_from(source_from)
-                    .where(catalog.c.enabled.is_(True))
-                    .order_by(catalog.c.location_id)
-                    .limit(MAX_SNAPSHOT_LOCATIONS + 1)
-                ).mappings()
-            )
+            locations = self._catalog_locations(connection)
             if not locations or len(locations) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("활성 location 전체 집합이 준비되지 않았습니다.")
             self._keep_freeze_selection = True
@@ -761,27 +788,7 @@ class FrozenCurrentExports:
                     }
                 )
                 budget.add_bounded_record(scopes[-1], MAX_MANIFEST_BYTES)
-            entries = self.heads.metadata.tables["reverse_address_entries"]
-            addresses = {
-                row["target_key"]: row
-                for row in connection.execute(
-                    select(
-                        entries.c.target_key,
-                        entries.c.coordinate_key,
-                        entries.c.payload["address"]["legal_dong_code"]
-                        .as_string()
-                        .label("legal_dong_code"),
-                        entries.c.payload["region"]["sido"].as_string().label("sido_name"),
-                        entries.c.payload["region"]["sigungu"].as_string().label("sigungu_name"),
-                    ).where(
-                        entries.c.provider_id == VworldKakaoAddressResolver.provider_id,
-                        entries.c.status.in_(["ok", "error"]),
-                        any_of(entries.c.target_key, [row["location_id"] for row in locations])
-                        if connection.dialect.name == "postgresql" else
-                        entries.c.target_key.in_([row["location_id"] for row in locations]),
-                    )
-                ).mappings()
-            }
+            addresses = self._address_entries(connection, locations)
             items = []
             for location in locations:
                 entry = addresses.get(location["location_id"])
@@ -818,6 +825,13 @@ class FrozenCurrentExports:
             digest = bounded_manifest_digest(
                 manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
             )
+            if getattr(self, "_prebuild_capture", False):
+                # 사전 구성 builder만 켠다. manifest를 만든 같은 RR의 입력 proof다(export_prebuilt).
+                from .export_prebuilt import state_proof
+
+                self._prebuild_proof = state_proof(
+                    connection, self, locations=locations, addresses=addresses,
+                )
             # 첫 페이지의 상태 판정은 방금 manifest를 만든 같은 RR에서 한다. 같은 승인 선택과
             # catalog를 다른 RR에서 다시 읽고 검산하던 왕복(선택 무결성 2문장·roster)을 없앤다.
             status = self._freeze_state_proof(connection, manifest, status_started)
@@ -1026,15 +1040,19 @@ class FrozenCurrentExports:
                     fresh = self.__dict__.pop("_selection_read_in", None)
                     if fresh is not None and fresh[0] is session and fresh[1] is latest:
                         selection = latest  # 같은 RR에서 방금 읽었다(캐시 hit가 아니다).
-                    stale |= latest.unconfirmed or {
+                    same_scopes = {
                         (item.descriptor.namespace, item.location_ids) for item in latest.scopes
-                    } != {
+                    } == {
                         (scope["namespace"], tuple(scope["location_ids"]))
                         for scope in manifest["scopes"]
                     }
+                    # 사전 구성 첫 페이지가 "지금 freeze해도 같은 manifest인가"를 확인하는 근거다.
+                    self._state_selection_parity = (bool(latest.unconfirmed), same_scopes)
+                    stale |= latest.unconfirmed or not same_scopes
                 except ExportGuardTimeout:
                     raise
                 except (ExportArtifactError, KeyError, ValueError, TypeError):
+                    self._state_selection_parity = None
                     stale = True
             else:
                 expected = sorted(
@@ -1147,20 +1165,29 @@ class FrozenCurrentExports:
             if frozen["expires_at"] > now:
                 frozen["_reused"] = True
             else:
-                frozen.pop("issue_order", None)
-                for column in self.snapshots.c:
-                    if column.computed is not None:
-                        frozen.pop(column.name, None)
-                frozen.update(
-                    snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now)
-                )
-                session.execute(self.snapshots.insert().values(**frozen))
-                insert_snapshot_refs(
-                    session, self.refs, frozen["snapshot_id"],
-                    (scope["generation_id"] for scope in frozen["manifest"]["scopes"]),
-                )
+                frozen = self._copy_handle(session, frozen)
             frozen["_source_unconfirmed"] = True
             return frozen
+
+    def _copy_handle(self, session, frozen):
+        """같은 manifest로 새 handle을 발급한다. 만료된 handle을 UPDATE로 되살리지 않는다.
+
+        새 handle의 수명은 발급식(다음 분 경계+15분)을 따르고, 참조 세대는 새 snapshot ref로
+        GC에서 지킨다. 호출자의 transaction에서 실행한다.
+        """
+        now = datetime.now(UTC)
+        row = {
+            column.name: frozen[column.name] for column in self.snapshots.c
+            if column.computed is None and column.name != "issue_order"
+            and column.name in frozen
+        }
+        row.update(snapshot_id=str(uuid4()), created_at=now, expires_at=snapshot_expires_at(now))
+        session.execute(self.snapshots.insert().values(**row))
+        insert_snapshot_refs(
+            session, self.refs, row["snapshot_id"],
+            (scope["generation_id"] for scope in row["manifest"]["scopes"]),
+        )
+        return row
 
     def page(self, resource: str, *, limit: int, cursor: str | None):
         # 공유 guard는 artifact 파일 하나 읽는 동안만 잡는다(read_shared). 읽을 파일은
@@ -1271,6 +1298,7 @@ class FrozenCurrentExports:
             if self.current_selection is None
             else (resource + ":" + self.current_selection["signature"])
         )
+        prebuilt_status = None
         if cursor:
             state = self._decode(cursor)
             if state["r"] != cursor_resource or state["l"] != limit:
@@ -1292,6 +1320,13 @@ class FrozenCurrentExports:
 
             frozen = (self.__dict__.pop("_current_seed_frozen", None)
                       if resource == "current" else None)
+            if frozen is None and resource == "current" and getattr(self, "prebuilt", False):
+                # 사전 구성된 표준 프로필이면 freeze 없이 입력 proof·상태만 검산한다(호출 검토 A3).
+                from .export_prebuilt import prebuilt_first_page
+
+                ready = prebuilt_first_page(self, limit)
+                if ready is not None:
+                    frozen, prebuilt_status = ready
             if frozen is None:
                 frozen = ensure_snapshot_files(self.artifacts, issue)
                 frozen = self._renew_reused(frozen)
@@ -1315,12 +1350,14 @@ class FrozenCurrentExports:
         # 페이지 식별은 handle이 아니라 selection·limit·시작 위치다
         # (cursor 문자열은 snapshot_id를 담는다).
         page_key = [cursor_resource, limit, cursor is None, [state["g"], state["p"]]]
-        status = None
+        # 사전 구성 첫 페이지는 상태를 이미 판정했다(같은 판정이 cursor 페이지 공용 판정이 된다).
+        status = prebuilt_status
         if cursor is None and self.if_none_match:
             # 첫 페이지 조건부 요청은 상태 판정(freeze RR의 판정을 그대로 쓴다)까지 끝낸 뒤 artifact
             # 본문을 읽기 전에 비교한다. 같은 manifest면 본문도 같으므로 읽기·검증을 건너뛴다.
             # cursor 페이지는 공용 판정의 남은 수명(20초 이상)을 본문 읽기 뒤에 쓰도록 예전 순서다.
-            status = self._page_status(frozen, manifest, reuse=False)
+            if status is None:
+                status = self._page_status(frozen, manifest, reuse=False)
             etag = self._content_etag(frozen, page_key, status)
             # 같은 키 대기자(Map read timeout 재시도 등)가 있으면 304로 끝내지 않고 본문을 만들어
             # 페이지 캐시에 남긴다. 304는 캐시에 남지 않아 대기자가 freeze를 처음부터 다시 하기
@@ -1346,98 +1383,15 @@ class FrozenCurrentExports:
             state["p"] = start + len(output)
             more = state["p"] < len(manifest["locations"])
         else:
-            scopes = manifest["scopes"]
-            if state["g"] > len(scopes):
-                raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
-            more = False
-            # artifact GC(export_gc)는 유효하거나 보존 창 안의 snapshot과 최근 snapshot이
-            # 가리키는 세대의 파일을 지우지 않는다. snapshot_refs가 generation 행 삭제도 막는다.
-            # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
-            # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
-            scope_reads, artifact_reads, input_bytes = 0, 0, 0
-            artifact_window = ArtifactReadWindow(
-                self.artifacts, batch=CURRENT_ARTIFACT_READ_BATCH
-                if getattr(self.artifacts, "is_database", False) else MAX_ARTIFACT_READ_BATCH,
-            )
-            while state["g"] < len(scopes):
-                scope = scopes[state["g"]]
-                if (scope_reads >= MAX_CURRENT_PAGE_SCOPES
-                        or artifact_reads + len(scope["refs"]) > MAX_CURRENT_PAGE_ARTIFACTS):
-                    if not output:
-                        raise ExportSnapshotUnavailable(
-                            "단일 scope가 페이지 읽기 상한을 넘었습니다.",
-                        )
-                    more = True
-                    break
-                scope_bytes = sum(ref["byte_count"] for ref in scope["refs"])
-                if output and input_bytes + scope_bytes > MAX_CURRENT_PAGE_INPUT_BYTES:
-                    more = True
-                    break
-                input_bytes += scope_bytes
-                remaining_reads = MAX_CURRENT_PAGE_ARTIFACTS - artifact_reads
-                scope_reads += 1
-                artifact_reads += len(scope["refs"])
-                points = []
-                selected = set(scope["location_ids"])
-                approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
-                for ref_index, ref in enumerate(scope["refs"]):
-                    artifact_window.prepare(
-                        ref,
-                        lambda scope_reads=scope_reads, ref_index=ref_index: current_candidates(
-                            scopes, state["g"], points=limit - len(output) + state["p"],
-                            max_scopes=MAX_CURRENT_PAGE_SCOPES - scope_reads + 1,
-                            ref_start=ref_index,
-                        ), remaining_reads=remaining_reads - ref_index,
-                    )
-                    self.reuse_artifacts.add((
-                        ref["artifact_digest"], ref["byte_count"], ref["point_count"],
-                    ))
-                    for point in artifact_window.read(ref):
-                        if (
-                            point["provider"] != scope.get("provider", "python-kma-api")
-                            or point["forecast_style"] != scope.get("forecast_style", "nowcast")
-                            or point["location_id"] not in approved_ids
-                        ):
-                            raise ExportSnapshotUnavailable(
-                                "승인된 scope와 artifact가 다릅니다."
-                            )
-                        if point["location_id"] in selected:
-                            points.append(point)
-                points.sort(key=lambda p: (p["location_id"], p["provider"], p["metric_key"]))
-                if state["p"] > len(points):
-                    raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
-                while state["p"] < len(points):
-                    point = points[state["p"]]
-                    item = {
-                        "location_id": point["location_id"],
-                        "provider": point["provider"],
-                        "metric_key": point["metric_key"],
-                        "value": float(point["value_number"])
-                        if point["value_number"] is not None
-                        else point["value_text"],
-                        "unit": point["unit"],
-                        "target_at": point["target_at"],
-                        "known_at": point["known_at"],
-                        "forecast_style": point["forecast_style"],
-                    }
-                    item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
-                    if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
-                        raise ExportSnapshotUnavailable(
-                            "단일 point가 페이지 byte 상한을 넘었습니다."
-                        )
-                    if (
-                        len(output) >= limit
-                        or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
-                    ):
-                        more = True
-                        break
-                    output.append(item)
-                    size += item_size
-                    state["p"] += 1
-                if more:
-                    break
-                state["g"] += 1
-                state["p"] = 0
+            output = None
+            if getattr(self, "prebuilt", False):
+                from .export_prebuilt import prebuilt_page
+
+                found = prebuilt_page(self, frozen, state, limit)
+                if found is not None:
+                    output, more = found
+            if output is None:
+                output, more = self._current_items(manifest["scopes"], state, limit)
         if status is None:
             status = self._page_status(frozen, manifest, reuse=cursor is not None)
         now = datetime.now(UTC)
@@ -1458,6 +1412,105 @@ class FrozenCurrentExports:
         if self.immutable_reads and datetime.now(UTC) >= frozen["expires_at"]:
             raise ExportSnapshotExpired("읽는 동안 고정 snapshot이 만료됐습니다.")
         return {"items": output, "meta": meta}, etag
+
+    def _current_items(self, scopes, state, limit):
+        """current 값 페이지 하나를 승인 artifact에서 만든다. ``state``(g·p)를 다음 위치로 옮긴다.
+
+        요청 경로와 사전 구성 builder(``export_prebuilt``)가 같은 경계·상한으로 페이지를 자른다.
+        """
+        output, size = [], 0
+        if state["g"] > len(scopes):
+            raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
+        more = False
+        # artifact GC(export_gc)는 유효하거나 보존 창 안의 snapshot과 최근 snapshot이
+        # 가리키는 세대의 파일을 지우지 않는다. snapshot_refs가 generation 행 삭제도 막는다.
+        # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
+        # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
+        scope_reads, artifact_reads, input_bytes = 0, 0, 0
+        artifact_window = ArtifactReadWindow(
+            self.artifacts, batch=CURRENT_ARTIFACT_READ_BATCH
+            if getattr(self.artifacts, "is_database", False) else MAX_ARTIFACT_READ_BATCH,
+        )
+        while state["g"] < len(scopes):
+            scope = scopes[state["g"]]
+            if (scope_reads >= MAX_CURRENT_PAGE_SCOPES
+                    or artifact_reads + len(scope["refs"]) > MAX_CURRENT_PAGE_ARTIFACTS):
+                if not output:
+                    raise ExportSnapshotUnavailable(
+                        "단일 scope가 페이지 읽기 상한을 넘었습니다.",
+                    )
+                more = True
+                break
+            scope_bytes = sum(ref["byte_count"] for ref in scope["refs"])
+            if output and input_bytes + scope_bytes > MAX_CURRENT_PAGE_INPUT_BYTES:
+                more = True
+                break
+            input_bytes += scope_bytes
+            remaining_reads = MAX_CURRENT_PAGE_ARTIFACTS - artifact_reads
+            scope_reads += 1
+            artifact_reads += len(scope["refs"])
+            points = []
+            selected = set(scope["location_ids"])
+            approved_ids = set(scope.get("approved_location_ids", scope["location_ids"]))
+            for ref_index, ref in enumerate(scope["refs"]):
+                artifact_window.prepare(
+                    ref,
+                    lambda scope_reads=scope_reads, ref_index=ref_index: current_candidates(
+                        scopes, state["g"], points=limit - len(output) + state["p"],
+                        max_scopes=MAX_CURRENT_PAGE_SCOPES - scope_reads + 1,
+                        ref_start=ref_index,
+                    ), remaining_reads=remaining_reads - ref_index,
+                )
+                self.reuse_artifacts.add((
+                    ref["artifact_digest"], ref["byte_count"], ref["point_count"],
+                ))
+                for point in artifact_window.read(ref):
+                    if (
+                        point["provider"] != scope.get("provider", "python-kma-api")
+                        or point["forecast_style"] != scope.get("forecast_style", "nowcast")
+                        or point["location_id"] not in approved_ids
+                    ):
+                        raise ExportSnapshotUnavailable(
+                            "승인된 scope와 artifact가 다릅니다."
+                        )
+                    if point["location_id"] in selected:
+                        points.append(point)
+            points.sort(key=lambda p: (p["location_id"], p["provider"], p["metric_key"]))
+            if state["p"] > len(points):
+                raise ExportCursorInvalid("cursor 범위가 올바르지 않습니다.")
+            while state["p"] < len(points):
+                point = points[state["p"]]
+                item = {
+                    "location_id": point["location_id"],
+                    "provider": point["provider"],
+                    "metric_key": point["metric_key"],
+                    "value": float(point["value_number"])
+                    if point["value_number"] is not None
+                    else point["value_text"],
+                    "unit": point["unit"],
+                    "target_at": point["target_at"],
+                    "known_at": point["known_at"],
+                    "forecast_style": point["forecast_style"],
+                }
+                item_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
+                if item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE:
+                    raise ExportSnapshotUnavailable(
+                        "단일 point가 페이지 byte 상한을 넘었습니다."
+                    )
+                if (
+                    len(output) >= limit
+                    or size + item_size > MAX_PAGE_BYTES - PAGE_META_RESERVE
+                ):
+                    more = True
+                    break
+                output.append(item)
+                size += item_size
+                state["p"] += 1
+            if more:
+                break
+            state["g"] += 1
+            state["p"] = 0
+        return output, more
 
     def _page_status(self, frozen, manifest, *, reuse):
         """페이지의 ``source_status``. 고정 manifest와 현재 상태만 보며 artifact 본문과 무관하다."""

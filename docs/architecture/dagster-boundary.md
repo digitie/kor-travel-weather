@@ -330,7 +330,7 @@ Manager 쪽 PR 머지 전에는 링크가 비어 있을 수 있다).
 | --- | --- | --- |
 | 10 | 현황(관측·상태)을 1시간 미만 주기로 갱신하는 정기 수집·상태 적재 | `kma_regional_alert_events_job`(5분) |
 | 5 | 시간 단위로 바뀌는 값(예보·가격·관측 등)을 하루 미만 주기로 갱신하는 정기 수집(1시간 미만 주기여도 현황이 아니면 5) | 매시: `kma_ultra_short_forecast_job`·`kma_weather_alerts_job`·`kma_ultra_short_nowcast_job`·`airkorea_weather_job` / 3시간: `kma_short_forecast_job`, schedule 있는 외부 provider 6개(`{open_meteo,openweathermap,weatherapi}_{current,forecast}_weather_job`) / 12시간: `kma_mid_forecast_job`, 지역 원천 4개(`krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·`krforest_dust_job`) |
-| 0 | 그 밖 전부: 기준 자료(주기와 무관), 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
+| 0 | 그 밖 전부: 기준 자료(주기와 무관), 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), `weather_export_prebuild_job`(:23·:38이지만 export 사전 구성), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
 
 - 분류는 자료의 성격 + 주기다. 1시간 미만 주기 job은 특보 발표 관측(현황, 10)과 단기예보 정리(정리, 0)
   둘뿐이고 1시간 미만 주기의 예보 job은 없다. weather에는 기준 자료(목록·지점 catalog)만 받는 job이 없다 — AirKorea는
