@@ -1,3 +1,56 @@
+## 2026-11-24 — 지역 수집 원천별 job 분리·일시 네트워크 오류 재시도·보충 tick
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P0 #3, §4 #6) 대응.
+2026-11-22 20:30Z `regional_weather_job`의 `krex_restarea_sync` 한 step이
+`KrexConnectionError: [Errno -5] No address associated with hostname`(odroid DNS)으로 실패해
+run이 FAILURE가 됐고, export 승격은 run SUCCESS에서만 일어나므로(`export_collector._lock_free_verdict`,
+`export_lifecycle.reconcile`) 성공한 해수욕장·산악·청정넷까지 `CONFIRMED_TERMINAL`로 퇴역돼
+24시간 공개되지 못했다. 재시도도 없었고 다음 tick은 12시간 뒤였다.
+
+- **원천별 job**: 네 자산을 `krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·
+  `krforest_dust_job`으로 나눴다(W-EXP-SPLIT-01과 같은 규칙 — step 단위 승격은 만들지 않고 run을 나눈다).
+  한 원천의 실패는 그 원천만 막는다. 실행기는 다른 단일 자산 job처럼 in-process, 상한은 기본 7200초
+  (실측 step 최대 1110초). 시작 분은 :30/:40/:45/:50으로 흩었다(14일 step p50/최대: 산악 646/1110초,
+  청정넷 345/478, 휴게소 371/599, 해수욕장 129/221).
+- **일시 네트워크 오류 op 재시도**: `transient_retry.retries_transient_network`가 DNS·연결·timeout 계열
+  (`socket.gaierror`·`ConnectionError`·`TimeoutError`·`httpx.TransportError`·`KrexNetworkError`·
+  산림 `failure_kind="network"`·KHOA transport 오류, 원인 사슬 포함)만 `RetryRequested`로 바꾼다.
+  최대 3회, 대기 60·120·240초 상한의 equal jitter(절반 고정+절반 무작위), 600초 cap. 인증·쿼터·파싱·
+  차단(`UpstreamBlocked`)·의도적 `Failure`는 그대로 실패한다. 실패한 시도의 수집 기록은 이미 `failed`로
+  닫혀 승격되지 않고, 재시도 성공 run이 SUCCESS면 새 attempt가 승격된다.
+- **보충 tick**: schedule cron에 정규(05·17시) 뒤 +1h·+3h(06·08·18·20시)를 더하고, 보충 tick은
+  정규 tick 시각 이후 그 job의 SUCCESS run이 없을 때만 run을 만든다(`_regional_catch_up_gate`).
+  /status의 다음 예정 시각은 정규 cron으로만 계산한다(`schedule_with_export_status(status_cron_schedule=)`).
+- 관리자 Dagster 화면의 job 이름 번역을 원천별로 추가하고 옛 묶음 job은 "(분리 전)"으로 남겼다.
+
+시험: `test_regional_split.py`(분리·cron·status scope·보충 gate 실제 run storage·오류 분류·backoff·
+in-process executor에서 실제 RetryRequested 재실행 성공), `test_export_schedule_status.py` 보충 cron 제외,
+기존 job 수 22→25 갱신, admin vitest·fixture e2e `dagster-regional-jobs.spec.ts`.
+배포 뒤 옛 `twice_daily_regional_weather` instigator 행은 고아로 남는다(동작 없음). 새 schedule 네 개는
+기본 RUNNING이다.
+
+## 2026-11-24 — 단기예보 정리: 일시 연기는 경고, 연속 3회 무진척부터 실패
+
+수집 실패 감사 부모 재집계(odroid 14일): `weather_short_forecast_retention_job` 1,380 성공 / 36 실패 / 11 취소.
+"진척 없이 끝났습니다" 31건과 "backlog 정체" 4건(11-11·11-14, 오래된 backlog 사례 — 이후 재발 없음)이었다.
+무진척 31건은 둘로 나뉜다. 둘 다 다음 10분 실행에서 회복됐고 연속은 최대 2회(11-20 23:33·23:42)였다.
+
+- **advisory lock 연기 18건**: 매일 16:50~17:20Z(01:50~02:20 KST), 0.3~0.9초, error_class 없음. 일별 이력
+  정리(`weather_retention_job`, 01:45 KST)가 `pg_try_advisory_xact_lock('weather_history_purge')`를 쥐고
+  있어 단기 정리가 기다리지 않고 연기한 것이다 — 설계대로의 양보.
+- **첫 선택 문장 timeout 13건**: `QueryCanceled` 5~13초. CPU가 포화된 odroid(4코어, load 19~26)에서
+  첫 후보 선택이 문장 상한을 넘었다.
+
+변경: 저장소 보고에 `deferred_reason`(`history_purge_running`·SQLSTATE 클래스·`empty_selection`)을 더하고,
+asset은 무진척을 바로 실패로 두지 않고 materialization의 `no_progress_runs`로 연속 횟수를 센다.
+`NO_PROGRESS_ALERT_RUNS=3`(30분)부터 실패이며, 일별 정리와의 lock 연기는 세지 않는다(그 job이 자기 실패를
+알린다). 진척 없는 실행은 이어 읽을 위치·머리 훑기 시각·지연 기준을 앞 실행 것 그대로 넘겨, 주기 머리 훑기
+중 연기돼도 저장 위치를 잃지 않는다. 연기 실행은 SUCCESS + `kortravel/collection-outcome=deferred`와 경고 로그다.
+backlog 정체 판정(`lag_stall_runs`)은 그대로다.
+
+시험: `test_short_retention_progress.py` — 한 번의 연기는 경고, lock 연기는 미집계, 위치 승계, 실제 SDK
+저장소에서 무진척·무진척·진척·무진척×3 → 6번째만 실패. 기존 무진척 실패 시험은 직전 2회를 두고 갱신.
+
 ## 2026-11-24 — current cursor 페이지의 상태 판정 공유·페이지 상한 512·artifact 묶음 읽기
 
 운영 odroid(2,925 scope)에서 Map의 current 순회가 cursor 페이지마다 활성 roster·승인 선택(무결성 2문장)·
@@ -47,6 +100,7 @@ wall은 로컬 tmpfs 값이라 운영 배율로 옮기지 않는다. 운영 odro
 수정: 통합 주소(`전남광주…`) 측정소는 `광주`·`전남` 두 bulk 묶음을 모두 묻고 이름으로만 맞춘다(`measurement_sido_names`). 두 응답에 모두 나오면 한 번만 쓴다. 저장된 anchor metadata(`sido_name`)는 바꾸지 않는다. 측정소 실패는 사유(`not_in_response`·`ambiguous_name`·`request_error`·`normalize_error`)별로 세어 결과 metadata(`station_failure_reasons`, 일시/결정적 개수, 표본 20개)와 sync run 오류 문자열에 남기고, Dagster 결과 status와 `kortravel/collection-outcome` run tag를 `partial`로 올린다. native `weather_sync_runs`는 success로 둬 받은 측정소의 승격은 그대로다. 요청 오류 재시도는 client의 기존 3회 이상 재시도로 둔다.
 
 남은 확인: 실제 AirKorea가 `sidoName=광주` 묶음에 이 13곳을 돌려주는지는 배포 뒤 첫 run에서 본다(운영 key로 외부 호출을 하지 않았다). 여전히 `not_in_response`면 partial로 드러난다.
+
 
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 

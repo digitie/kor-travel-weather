@@ -266,7 +266,7 @@ def run_short_forecast_retention(
         "pointers_deleted": 0, "facts_deleted": 0, "remaining": None,
         "status": "budget_exhausted", "resumed": after is not None,
         "resume_discarded": discarded, "head_sweep_timed_out": False,
-        "error_class": None, "backlog_lag_seconds": None,
+        "error_class": None, "backlog_lag_seconds": None, "deferred_reason": None,
         "budget_seconds": budget_seconds,
         "resume_policy": RETENTION_POLICY, "resume_database": database,
         "head_scan_at": scanned.astimezone(UTC).isoformat() if scanned is not None else None,
@@ -317,6 +317,7 @@ def run_short_forecast_retention(
             continue
         if report["deferred"]:
             result["status"] = "deferred"
+            result["deferred_reason"] = report.get("deferred_reason") or report.get("error_class")
             break
         if dry_run:
             result["status"] = "dry_run"
@@ -328,6 +329,7 @@ def run_short_forecast_retention(
             # 남은 행이 있는데 고른 행이 없으면 같은 행을100회 즉시 재조회하지 않는다.
             # 남은 행은 다음 실행으로 연기하며 완료로 표시하지 않는다.
             result["status"] = "deferred"
+            result["deferred_reason"] = "empty_selection"
             break
     if result["remaining"] is False:
         result["backlog_lag_seconds"] = 0.0
@@ -336,6 +338,26 @@ def run_short_forecast_retention(
         result["backlog_lag_seconds"] = max(0.0, (cutoff - position.valid_at).total_seconds())
     result["elapsed_seconds"] = monotonic() - started
     return result
+
+
+#: 진척 없는 실행이 이만큼 연속돼야 실패로 알린다(10분 주기 → 30분).
+#: 2026-11-10~23 odroid 31건의 "진척 없음"은 전부 다음 실행에서 회복된 일시 연기였다:
+#: 일별 이력 정리와의 advisory lock 경합(01:50~02:20 KST, 0.3~0.9초) 18건, CPU 포화 시
+#: 첫 선택의 문장 timeout(QueryCanceled, 5~13초) 13건. 한 번의 연기를 빨간 run으로 두면
+#: 운영자는 진짜 정체(연속 실패, backlog 정체)를 그 사이에서 구분하지 못한다.
+NO_PROGRESS_ALERT_RUNS = 3
+#: 이 사유의 연기는 정체로 세지 않는다. 일별 정리가 같은 일을 하고 있고, 그 job은 자기 실패를
+#: 따로 알린다.
+EXPECTED_DEFERRALS = frozenset({"history_purge_running"})
+
+
+def no_progress_runs(previous_runs: int, result: Mapping[str, Any]) -> int:
+    """이번 실행을 포함한 연속 무진척 횟수. 진척이 있으면 0, 예정된 연기는 앞 값을 유지한다."""
+    if made_progress(result):
+        return 0
+    if result.get("deferred_reason") in EXPECTED_DEFERRALS:
+        return previous_runs
+    return previous_runs + 1
 
 
 def made_progress(result: Mapping[str, Any]) -> bool:

@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from dagster import (
@@ -125,6 +126,25 @@ def test_public_evaluation_preserves_run_request_config_tags_and_callbacks(proje
     key, clock = projection.calls[0]
     assert key == KEY and clock["next_scheduled_at"] > clock["evaluated_at"]
     assert clock["next_scheduled_at"].minute == 20
+
+
+def test_status_cron_keeps_catch_up_ticks_out_of_the_next_scheduled_time(projection):
+    """보충 tick(실패 때만 run)이 섞인 schedule은 정규 cron으로 다음 예정을 기록한다."""
+    value = schedule(
+        projection,
+        cron_schedule="30 5,6,8,17,18,20 * * *",
+        status_cron_schedule="30 5,17 * * *",
+        run_config={"ops": {"scheduled_op": {"config": {"value": 1}}}},
+    )
+    assert value.cron_schedule == "30 5,6,8,17,18,20 * * *"
+    with (
+        DagsterInstance.local_temp() as instance,
+        build_schedule_context(instance=instance, scheduled_execution_time=NOW) as context,
+    ):
+        value.evaluate_tick(context)
+    [(_key, clock)] = projection.calls
+    local = clock["next_scheduled_at"].astimezone(ZoneInfo("Asia/Seoul"))
+    assert (local.hour, local.minute) in {(5, 30), (17, 30)}
 
 
 def test_active_run_is_still_coalesced_and_also_records_next_tick(projection):
