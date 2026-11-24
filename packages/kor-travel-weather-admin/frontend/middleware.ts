@@ -4,6 +4,7 @@ import { sanitizeLocalPath } from "@/lib/navigation";
 import {
   adminUsername,
   checkDurableSession,
+  forgetDurableSession,
   SESSION_COOKIE,
   sessionSecret,
   verifySessionValue,
@@ -48,6 +49,23 @@ async function redirectAuthenticatedLogin(request: NextRequest) {
   return null;
 }
 
+// 로그아웃과 재로그인은 요청의 기존 쿠키를 폐기한다. middleware는 route와 다른 runtime의
+// 메모리를 쓸 수 있으므로, durable 확인 캐시가 있는 이곳에서 폐기 기록 전에 그 쿠키를 잊는다.
+// 실제 폐기·쿠키 삭제·Origin 거부 응답은 route가 그대로 처리한다.
+async function forgetRotatedSession(request: NextRequest) {
+  const session = request.cookies.get(SESSION_COOKIE)?.value;
+  if (request.method !== "POST" || !session || !isAllowedOrigin(request)) return;
+  try {
+    const username = adminUsername();
+    const secret = sessionSecret(username, process.env.WEATHER_UI_PASSWORD ?? "");
+    if ((await verifySessionValue(session, secret, request, username)) === username) {
+      forgetDurableSession(session);
+    }
+  } catch {
+    // 설정 오류면 이 쿠키로 캐시된 판정도 없다. 응답은 route가 같은 판정으로 만든다.
+  }
+}
+
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   // Login/logout are deliberately public; they establish/clear the signed
@@ -56,6 +74,7 @@ export async function middleware(request: NextRequest) {
     return (await redirectAuthenticatedLogin(request)) ?? NextResponse.next();
   }
   if (pathname === "/api/auth/login" || pathname === "/api/auth/logout") {
+    await forgetRotatedSession(request);
     return NextResponse.next();
   }
   if (process.env.NODE_ENV !== "production") return NextResponse.next();
