@@ -1,9 +1,11 @@
 """공개 읽기 경로(호출 검토 B3·B9, gzip) 회귀 시험.
 
-- B3: DB 읽기·변환·직렬화가 event loop 밖 worker thread 하나에서 끝나고, 본문은 예전
-  FastAPI ``response_model`` 경로가 만들던 bytes와 같다. OpenAPI 무변경은
-  ``test_weather_api.test_checked_in_openapi_matches_runtime``이 확인한다.
-- B9: handler 하나의 읽기가 연결 하나·transaction 하나를 쓰고 마감 설정은 한 번 건다.
+- B3: DB 읽기·변환·직렬화가 event loop 밖 worker thread 하나에서 끝나고, 새 직렬화가 같은
+  값을 FastAPI ``response_model`` 경로로 직렬화한 bytes와 같다(직렬화기 동등성). 데이터 계산의
+  변경 전후 동일성은 이 시험이 아니라 기존 handler 시험(``test_weather_api`` 등)의 값 단언이
+  지킨다. OpenAPI 무변경은 ``test_weather_api.test_checked_in_openapi_matches_runtime``이 확인한다.
+- B9: handler 하나의 읽기가 연결 하나·transaction 하나를 쓰고 마감 설정은 한 번 건다. 마커는
+  위치 PK 조회를 따로 짧게 끝내고 projection 읽기만 묶는다(연결 2회).
 - gzip: 허용·크기 조건에서만 worker thread에서 압축하고 ``Vary: Accept-Encoding``을 붙인다.
 """
 
@@ -46,7 +48,10 @@ ENDPOINTS = [
 
 
 def _legacy_bytes(model, body: bytes) -> bytes:
-    """예전 경로: handler가 JSON 값 dict를 돌려주면 FastAPI가 response_model로 검증·직렬화."""
+    """같은 값을 예전 직렬화 경로(JSON 값 dict → FastAPI response_model 검증·직렬화)에 넣은 bytes.
+
+    입력이 새 경로의 출력이므로 숫자·시각 표기·필드 순서 같은 직렬화 동등성만 본다.
+    """
     legacy = FastAPI()
     content = json.loads(body)
 
@@ -134,11 +139,43 @@ def test_public_handler_uses_one_connection_and_arms_limits_once(repository, mon
             arms.clear()
             assert client.get(path).status_code == 200, path
             # 예전: 읽기 함수마다 checkout·pre-ping·transaction·문장마다 SET LOCAL.
-            assert len(checkouts) == 1, path
-            assert len(arms) == 1, path
+            # 마커는 위치 PK 조회와 projection 묶음이 따로다(아래 시험).
+            expected = 2 if "markers" in path else 1
+            assert len(checkouts) == expected, path
+            assert len(arms) == expected, path
     finally:
         event.remove(repository.engine, "checkout", listener)
     assert repository.engine.pool.checkedout() == 0
+
+
+def test_marker_projection_transaction_does_not_hold_the_location_catalog(repository):
+    """마커 묶음 내내 weather_locations ACCESS SHARE를 쥐지 않는다(파티션 DROP quiet 창)."""
+    _seed(repository)
+    client = _client(repository)
+    transactions: list[list[str]] = []
+
+    def begin(connection):
+        transactions.append([])
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        if transactions:
+            transactions[-1].append(statement)
+
+    event.listen(repository.engine, "begin", begin)
+    event.listen(repository.engine, "before_cursor_execute", capture)
+    try:
+        response = client.get(
+            "/v1/weather/markers?location_id=air-a&location_id=kma-a&kind=alert",
+        )
+    finally:
+        event.remove(repository.engine, "before_cursor_execute", capture)
+        event.remove(repository.engine, "begin", begin)
+    assert response.status_code == 200, response.text
+    assert [item["location_id"] for item in response.json()["data"]] == ["air-a", "kma-a"]
+    touched = [any("weather_locations" in sql for sql in statements)
+               for statements in transactions if statements]
+    # 위치 PK 조회 transaction 하나와, 위치를 다시 읽지 않는 projection transaction 하나.
+    assert touched == [True, False]
 
 
 class _GatedMarkers:

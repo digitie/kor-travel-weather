@@ -1019,9 +1019,15 @@ def _marker_summaries(
 ) -> Rendered:
     """입장이 허용된 마커 배치만 조회·변환한다(worker thread)."""
     unique_ids = list(dict.fromkeys(requested_ids))
+    # 위치 PK 조회는 자기 짧은 transaction에서 끝낸다. 긴 projection 읽기와 한 묶음에 넣으면
+    # weather_locations의 ACCESS SHARE를 마커 묶음 내내 쥐어 detached partition DROP의
+    # quiet 창(``_DETACHED_DROP_HOT_TABLES``)을 줄인다. projection 읽기는 위치를 다시 읽지
+    # 않는다(``locations=by_id``).
+    by_id, valid_ids = _marker_locations(repo, unique_ids)
     with read_scope(repo):
-        reads = _marker_reads(repo, unique_ids, providers=providers, kinds=kinds)
-    by_id, valid_ids, latest_by_location, alert_by_location = reads
+        latest_by_location, alert_by_location = _marker_values(
+            repo, by_id, valid_ids, providers=providers, kinds=kinds,
+        )
     data: list[WeatherMarkerOut] = []
     for location_id in valid_ids:
         latest, forecast, latest_alerts = _split_weather_values(
@@ -1054,19 +1060,10 @@ def _marker_summaries(
     return render(public, WeatherMarkerListResponse, data, meta)
 
 
-def _marker_reads(
-    repo: WeatherRepository,
-    unique_ids: list[str],
-    *,
-    providers: list[str] | None,
-    kinds: list[WeatherKind] | None,
-) -> tuple[
-    dict[str, WeatherLocation],
-    list[str],
-    dict[str, list[WeatherValue]],
-    dict[str, list[WeatherValue]],
-]:
-    """마커 묶음의 DB 읽기: 위치·유효 ID·현재값 묶음·특보 묶음(운영은 같은 묶음)."""
+def _marker_locations(
+    repo: WeatherRepository, unique_ids: list[str],
+) -> tuple[dict[str, WeatherLocation], list[str]]:
+    """마커 묶음의 활성 위치와 요청 순서의 유효 ID."""
     get_by_ids = getattr(repo, "get_locations_by_ids", None)
     if callable(get_by_ids):
         locations = get_by_ids(unique_ids, enabled_only=True)
@@ -1076,7 +1073,18 @@ def _marker_reads(
         # primary-key path above and never scans the full catalog per batch.
         locations = repo.list_locations(enabled_only=True, limit=None)
     by_id = {location.location_id: location for location in locations}
-    valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
+    return by_id, [location_id for location_id in unique_ids if location_id in by_id]
+
+
+def _marker_values(
+    repo: WeatherRepository,
+    by_id: dict[str, WeatherLocation],
+    valid_ids: list[str],
+    *,
+    providers: list[str] | None,
+    kinds: list[WeatherKind] | None,
+) -> tuple[dict[str, list[WeatherValue]], dict[str, list[WeatherValue]]]:
+    """마커 묶음의 값 읽기: 현재값 묶음·특보 묶음(운영은 같은 묶음)."""
     marker_many = getattr(repo, "marker_values_many", None)
     if callable(marker_many):
         # The marker projection is deliberately allow-listed at the
@@ -1093,7 +1101,7 @@ def _marker_reads(
             valid_ids, limit_per_location=80,
             **_provider_kwargs(providers), **_kind_kwargs(kinds), **same_catalog,
         )
-        return by_id, valid_ids, marker_by_location, marker_by_location
+        return marker_by_location, marker_by_location
     latest_many = getattr(repo, "latest_values_many", None)
     if callable(latest_many):
         latest_by_location = latest_many(
@@ -1105,7 +1113,7 @@ def _marker_reads(
             weather_domain="weather_alert",
             **_provider_kwargs(providers),
         )
-        return by_id, valid_ids, latest_by_location, alert_by_location
+        return latest_by_location, alert_by_location
     latest_by_location = {
         location_id: repo.latest_values(location_id, limit=80, **_provider_kwargs(providers))
         for location_id in valid_ids
@@ -1118,7 +1126,7 @@ def _marker_reads(
         ]
         for location_id in valid_ids
     }
-    return by_id, valid_ids, latest_by_location, alert_by_location
+    return latest_by_location, alert_by_location
 
 
 @admin_router.get(

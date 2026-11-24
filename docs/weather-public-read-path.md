@@ -24,11 +24,12 @@ handler는 `Response(bytes, media_type="application/json")`을 돌려주므로 F
 `jsonable_encoder`는 실행되지 않는다. `response_model`은 OpenAPI 문서에만 쓰이며 그대로 두었다.
 CI의 OpenAPI export 비교와 `test_checked_in_openapi_matches_runtime`이 문서 무변경을 확인한다.
 
-본문 동일성: `test_public_read_path.py`는 각 공개 응답을 예전 경로(handler가 JSON 값 dict를 돌려주고
-FastAPI가 같은 `response_model`로 검증·직렬화)에 다시 넣은 bytes와 비교한다. 예전 경로도 pydantic
-`dump_json`으로 직렬화했으므로 숫자·시각 표기와 필드 순서가 같다. 변경 전후 코드로 같은 fixture를
-받아 비교했을 때도 요청 시각에서 계산하는 값(`generated_at`·`duration_ms`, alert-events의
-`retained_since`·`queried_since`) 말고는 bytes가 같았다(로컬).
+본문 동일성: `test_public_read_path.py`는 각 공개 응답을 예전 직렬화 경로(JSON 값 dict를 FastAPI가
+같은 `response_model`로 검증·직렬화)에 다시 넣은 bytes와 비교한다. 입력이 새 경로의 출력이므로
+이것은 직렬화기 동등성(숫자·시각 표기와 필드 순서)만 보장한다. 데이터 계산의 동일성은 기존 handler
+시험의 값 단언이 지키고, 변경 전후 코드로 같은 fixture를 받아 비교한 A/B는 수동으로 한 번 했다(요청
+시각에서 계산하는 값 `generated_at`·`duration_ms`, alert-events의 `retained_since`·`queried_since`
+말고는 bytes가 같았다, 로컬). 그 A/B는 자동 시험이 아니다.
 
 render 단계 시간(직렬화·gzip)은 `ktw_read_stage_duration_seconds{resource="public",stage="render"}`에
 남는다. DTO 생성 시간은 들어가지 않는다.
@@ -48,8 +49,14 @@ render 단계 시간(직렬화·gzip)은 `ktw_read_stage_duration_seconds{resour
 `WeatherRepository.read_scope()`(`kortravelweather.read_scope`) 안에서는 읽기 세션
 (`_session_factory()`)과 Core 읽기 연결(`read_connection`)이 처음 연 연결과 transaction을 함께 쓴다.
 연결은 처음 필요할 때 열고, 묶음이 끝나면 rollback으로 닫는다. 그래서 handler 하나의 pool
-checkout·`pool_pre_ping`·transaction 시작이 한 번이다(시험: latest·forecast·nearby·resolve·markers·
-locations 각각 checkout 1회, 예전 코드는 읽기 함수 수만큼).
+checkout·`pool_pre_ping`·transaction 시작이 한 번이다(시험: latest·forecast·nearby·resolve·
+locations 각각 checkout 1회, markers는 아래처럼 2회, 예전 코드는 읽기 함수 수만큼).
+
+- 마커는 위치 PK 조회(`get_locations_by_ids`)를 묶음 밖 자기 짧은 transaction에서 끝내고,
+  projection 읽기(`marker_values_many(locations=by_id)`, 위치를 다시 읽지 않음)만 묶는다. 둘을 한
+  묶음에 넣으면 `weather_locations`의 ACCESS SHARE를 마커 묶음 내내 쥐게 되어, 그 테이블을 quiet
+  대상으로 두는 detached partition DROP(`_DETACHED_DROP_HOT_TABLES`)의 창이 지도 부하에서 크게
+  줄어든다(시험: 위치를 읽는 transaction과 projection transaction이 따로임).
 
 - READ COMMITTED이므로 문장마다 새 snapshot을 보는 것은 예전과 같다. 바뀐 것은 묶음이 끝날 때까지
   읽은 테이블의 ACCESS SHARE lock을 쥐는 것이다(공개 읽기 마감 15초 안). DTO 변환·직렬화 전에 묶음을
@@ -75,7 +82,10 @@ locations 각각 checkout 1회, 예전 코드는 읽기 함수 수만큼).
   왕복 비용이 작다.
 - `SET ...` 문장 앞에서는 걸지 않는다. `SELECT set_config`는 snapshot을 잡는 query라 뒤이은
   `SET TRANSACTION ISOLATION LEVEL`을 실패시키기 때문이다(`SET`은 lock을 기다리지 않는다).
-- savepoint rollback은 그 안에서 건 설정을 되돌리므로 기록을 지우고 다음 문장에서 다시 건다.
+- savepoint rollback은 그 안에서 건 설정을 되돌리므로 기록을 지우고 rollback 뒤 첫 문장에서 다시
+  건다. `ROLLBACK ...`·`RELEASE ...` 문장 앞에서는 걸지 않는다. 걸면 그 값이 곧바로 되돌려져 기록과
+  실제 값이 어긋나고, 실패한 transaction에서는 그 SELECT가 25P02로 실패해 savepoint 복구가 막힌다
+  (시험: 오류 없는/있는 savepoint rollback 뒤 `current_setting('statement_timeout')`).
 
 ### 공개 읽기 `lock_timeout` 2초
 
