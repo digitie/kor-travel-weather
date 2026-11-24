@@ -78,8 +78,12 @@ def test_default_delete_capture_waits_for_nonexpired_reference_and_real_delete(
     assert item.digest == stale
     store = DatabaseExportArtifactStore(repository)
     started = time.monotonic()
+    # delete GC의 첫 참조 판정은 공유 guard라 capture와 함께 간다. capture는 지울 대상을
+    # 배타 guard 안에서 다시 판정하고 지우는 구간만 기다린다. 그 구간에 capture를 시작한다.
     with (
-        _slow_real_gc(repository, monkeypatch, "delete", delay=2.7) as (reports, _finished),
+        _slow_real_gc(
+            repository, monkeypatch, "delete", delay=2.7, exclusive_only=True,
+        ) as (reports, _finished),
         repository._session_factory.begin() as session,
     ):
         native_location(session, "committed-native")

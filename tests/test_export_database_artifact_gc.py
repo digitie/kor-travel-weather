@@ -266,9 +266,15 @@ def postgres_gc_repo(weather_test_database_url):
 
 
 @contextmanager
-def _slow_real_gc(repository, monkeypatch, mode, *, delay=1.35):
-    """기존3초 reference 창 안의 정상 GC를 다른 실제 DB 연결에서 실행한다."""
+def _slow_real_gc(repository, monkeypatch, mode, *, delay=1.35, exclusive_only=False):
+    """기존3초 reference 창 안의 정상 GC를 다른 실제 DB 연결에서 실행한다.
+
+    ``exclusive_only``면 공유 guard의 첫 판정은 그대로 두고, 배타 guard 안의 재판정만
+    늦추고 그때 진입을 알린다(delete가 실제로 지우는 구간).
+    """
     from threading import Event, Thread
+
+    from kortravelweather import export_database_artifacts
 
     entered, finished = Event(), Event()
     report, errors = [], []
@@ -276,6 +282,8 @@ def _slow_real_gc(repository, monkeypatch, mode, *, delay=1.35):
 
     def slow_reference(*args, **kwargs):
         assert kwargs["timeout_seconds"] == 3
+        if exclusive_only and export_database_artifacts._context.guards[repository.engine][1]:
+            return original(*args, **kwargs)
         entered.set()
         assert 0 < delay < kwargs["timeout_seconds"]
         time.sleep(delay)
