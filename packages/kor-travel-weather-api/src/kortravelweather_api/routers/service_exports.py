@@ -354,6 +354,23 @@ def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
     return Response(payload, media_type="application/json", headers=headers)
 
 
+def _cancellation_outcome(error: Exception) -> bool:
+    """요청자가 떠난 뒤의 오류가 취소 자체나 일시 경합이면 참이다(499로 조용히 끝낸다).
+
+    무결성 실패(ExportArtifactError)·파일 오류·프로그래밍 오류는 요청자가 떠났어도 원래
+    분류(503 WARNING·failure_site, 500 traceback)로 남긴다. 리더는 끊긴 뒤에도 공유 페이지를
+    계속 만들므로 그 사이의 실제 결함을 취소 로그로 묻지 않는다.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ExportRequestCancelled):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return _transient(error)
+
+
 async def _run_export_worker(
     request: Request,
     work: Callable[[], Any],
@@ -404,8 +421,9 @@ async def _run_export_worker(
                 error = exc
             group.cancel_scope.cancel()
     if error is not None:
-        if cancellation.disconnected and not isinstance(error, ExportRequestCancelled):
-            # 요청자가 이미 떠났다. 그 사이 난 오류(취소한 SQL 포함)도 응답할 곳이 없다.
+        if (cancellation.disconnected and not isinstance(error, ExportRequestCancelled)
+                and _cancellation_outcome(error)):
+            # 요청자가 이미 떠났다. 취소한 SQL·일시 경합은 응답할 곳이 없는 소음이다.
             raise ExportRequestCancelled(cancellation.stopped_stage or "error") from error
         raise error
     return result

@@ -3,6 +3,7 @@
 실제 ASGI ``http.disconnect``를 middleware 너머로 보낸다(``Request.is_disconnected`` 대체 없음).
 """
 
+import logging
 import threading
 from time import monotonic
 
@@ -14,6 +15,7 @@ from test_frozen_service_exports import TOKEN, _client, _collect
 from test_frozen_service_exports import repository as repository
 
 from kortravelweather import export_cancellation
+from kortravelweather.export_artifacts import ExportArtifactError, ExportGuardTimeout
 from kortravelweather.export_cancellation import ExportCancellation
 from kortravelweather.export_locations import FrozenLocationExports
 from kortravelweather.export_snapshots import FrozenCurrentExports
@@ -310,3 +312,43 @@ def test_disconnected_leader_survives_until_the_map_timeout_retry_arrives(
     assert result["retry_headers"]["x-export-read"] == "reused"
     _released(app, repository)
 
+
+@pytest.mark.parametrize(("error", "status", "logged"), [
+    (ExportArtifactError("무결성"), 503, "weather_service_export_unavailable"),
+    (ExportGuardTimeout("대기 상한"), 499, "weather_service_export_cancelled"),
+])
+def test_error_after_disconnect_keeps_its_failure_class(
+    repository, tmp_path, monkeypatch, caplog, error, status, logged,
+):
+    """끊긴 뒤 리더에서 난 무결성 실패는 취소 INFO로 묻히지 않는다. 일시 경합만 499다."""
+    _collect(repository, tmp_path)
+    app = _client(repository, tmp_path).app
+    entered, release, _ = _gated_current(monkeypatch, after=error)
+    result = {}
+
+    async def main():
+        gone = anyio.Event()
+
+        async def leader():
+            result["status"], _ = await _call(
+                app, "/v1/service/exports/current", "limit=1", gone=gone,
+            )
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(leader)
+            await _until(entered.is_set)
+            gone.set()
+            await anyio.sleep(0.3)  # 감시 task가 끊김을 본다. 리더는 유예 안이다.
+            release.set()
+
+    with caplog.at_level(logging.INFO, logger=service_exports.logger.name):
+        anyio.run(main)
+    assert result["status"] == status
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(message.startswith(logged) for message in messages)
+    if status == 503:
+        assert any(message.startswith("weather_service_export_failure_site")
+                   for message in messages)
+        assert not any(message.startswith("weather_service_export_cancelled")
+                       for message in messages)
+    _released(app, repository)
