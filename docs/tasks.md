@@ -17,6 +17,7 @@
 
 
 
+- [ ] **W-EXPORT-CURSOR-REUSE-20261124** — current cursor 페이지의 상태 판정 공유·페이지 상한512·artifact 64개 묶음 읽기를 배포 뒤 수용한다(배포는 Codex). 수용 기준: Map current cursor 페이지 p50 1초 미만, current 1 run 90초 미만, current `statement_timeout` 503 0건. 응답 header `x-export-status-proof`(`frozen`/`reused`/`computed`)와 `Server-Timing`, `ktw_read_stage_duration_seconds{resource="current",page="cursor"}`로 전후를 본다. 로컬 운영 규모 비교는 [journal](journal.md) 2026-11-24.
 - [ ] **W-EXPORT-SLOW-20261108** — 완료 페이지 재사용은66.73~340.44ms이지만 최초·60초 만료 뒤 전체 구성19.70~54.41초로1초 목표는 미달이다. 원천 신선도·GC pin·불변 plan/세대 검증을 유지한 공유 읽기 모델의 비용을 다음 단계에서 검산한다. 반복 전체 재구성 worker는 폐기했고 SQL5초·상태60초와 원503/UNKNOWN을 보존한다. [최신 실측](reports/2026-11-08-aggressive-export-read.md), [이전 표본](reports/2026-11-08-remaining-read-and-overlap.md).
 
 

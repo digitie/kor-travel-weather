@@ -4,6 +4,8 @@ import { sanitizeLocalPath } from "@/lib/navigation";
 import {
   adminUsername,
   checkDurableSession,
+  durableSessionCacheAllowed,
+  forgetDurableSession,
   SESSION_COOKIE,
   sessionSecret,
   verifySessionValue,
@@ -48,6 +50,23 @@ async function redirectAuthenticatedLogin(request: NextRequest) {
   return null;
 }
 
+// 로그아웃과 재로그인은 요청의 기존 쿠키를 폐기한다. middleware는 route와 다른 runtime의
+// 메모리를 쓸 수 있으므로, durable 확인 캐시가 있는 이곳에서 폐기 기록 전에 그 쿠키를 잊는다.
+// 실제 폐기·쿠키 삭제·Origin 거부 응답은 route가 그대로 처리한다.
+async function forgetRotatedSession(request: NextRequest) {
+  const session = request.cookies.get(SESSION_COOKIE)?.value;
+  if (request.method !== "POST" || !session || !isAllowedOrigin(request)) return;
+  try {
+    const username = adminUsername();
+    const secret = sessionSecret(username, process.env.WEATHER_UI_PASSWORD ?? "");
+    if ((await verifySessionValue(session, secret, request, username)) === username) {
+      forgetDurableSession(session);
+    }
+  } catch {
+    // 설정 오류면 이 쿠키로 캐시된 판정도 없다. 응답은 route가 같은 판정으로 만든다.
+  }
+}
+
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
   // Login/logout are deliberately public; they establish/clear the signed
@@ -56,6 +75,7 @@ export async function middleware(request: NextRequest) {
     return (await redirectAuthenticatedLogin(request)) ?? NextResponse.next();
   }
   if (pathname === "/api/auth/login" || pathname === "/api/auth/logout") {
+    await forgetRotatedSession(request);
     return NextResponse.next();
   }
   if (process.env.NODE_ENV !== "production") return NextResponse.next();
@@ -85,7 +105,10 @@ export async function middleware(request: NextRequest) {
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (session && (await verifySessionValue(session, secret, request, username)) === username) {
-    const state = await checkDurableSession(session);
+    // 캐시된 active 판정은 GET/HEAD만 쓴다. 상태 변경 요청은 다른 replica의 로그아웃을 바로 본다.
+    const state = await checkDurableSession(session, process.env, {
+      fresh: !durableSessionCacheAllowed(request.method),
+    });
     if (state === "active") return NextResponse.next();
     if (state === "unavailable") return sessionStoreUnavailable();
   }
@@ -101,6 +124,9 @@ export async function middleware(request: NextRequest) {
   return unauthorized();
 }
 
+// `public/maplibre/`는 node_modules의 maplibre-gl worker 복사본(scripts/copy-maplibre-worker.mjs)이다.
+// 공개 라이브러리 코드라 인증 대상이 아니고, 인증 저장소가 느릴 때 worker가 503을 받으면 지도가
+// 타일을 하나도 요청하지 못한다. 접두사는 `maplibre/`까지 정확히 맞춰 다른 경로는 계속 보호한다.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|maplibre/).*)"],
 };

@@ -19,9 +19,12 @@ and not the others is an insert that fails at midnight.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import Connection, text
+from sqlalchemy.exc import OperationalError
 
 from .models import KST
 
@@ -202,13 +205,152 @@ def referenced_tables(connection: Connection) -> list[str]:
     )
 
 
-def set_ddl_timeouts(connection: Connection) -> None:
-    timeout = ddl_lock_timeout_ms(connection)
-    connection.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
+#: 야간 유지보수(``WeatherRepository.purge_expired_history``)가 표 lock을 기다리는 기본
+#: 상한(ms). 운영자 스크립트·migration·수집은 그대로 ``ddl_lock_timeout_ms``를 쓴다.
+#:
+#: ACCESS EXCLUSIVE 요청이 대기열에 서 있는 동안 뒤에 온 reader(지도 읽기)도 그 뒤에 줄을
+#: 선다. ``ddl_lock_timeout_ms``(deadlock_timeout의 세 배, 기본 3초)를 그대로 쓰면 시도마다
+#: reader가 최대 3초 멈췄다(2026-11-24 Map 호출 검토 L3). 수집 transaction에 진 시도는 짧게
+#: 포기하고 다음 조용한 순간(``WeatherRepository._await_quiet_tables``)에 다시 한다.
+#: 차단자가 autovacuum worker뿐이면 그때만 ``ddl_lock_timeout_ms``로 다시 기다린다
+#: (``lock_table``): autovacuum은 대기자가 ``deadlock_timeout``을 넘겨 기다려야 그 deadlock
+#: 검사가 취소하므로, 짧은 상한으로는 autovacuum을 영영 이기지 못한다.
+BRIEF_DDL_LOCK_TIMEOUT_MS = 400
+
+#: ``pg_stat_activity.backend_type``에서 autovacuum이 쓰는 이름.
+AUTOVACUUM_BACKEND = "autovacuum worker"
+
+#: 요청한 표 lock mode와 충돌하는, 이미 잡힌 lock mode(PostgreSQL 문서 "Table-Level Lock
+#: Modes"의 충돌표). 이 모듈이 요청하는 mode만 둔다.
+_CONFLICTING_MODES: dict[str, tuple[str, ...]] = {
+    "SHARE": (
+        "RowExclusiveLock", "ShareUpdateExclusiveLock", "ShareRowExclusiveLock",
+        "ExclusiveLock", "AccessExclusiveLock",
+    ),
+    "SHARE ROW EXCLUSIVE": (
+        "RowExclusiveLock", "ShareUpdateExclusiveLock", "ShareLock",
+        "ShareRowExclusiveLock", "ExclusiveLock", "AccessExclusiveLock",
+    ),
+    "ACCESS EXCLUSIVE": (
+        "AccessShareLock", "RowShareLock", "RowExclusiveLock", "ShareUpdateExclusiveLock",
+        "ShareLock", "ShareRowExclusiveLock", "ExclusiveLock", "AccessExclusiveLock",
+    ),
+}
+
+
+def set_ddl_timeouts(connection: Connection, *, lock_timeout_ms: int | None = None) -> None:
+    """DDL transaction의 lock·문장 상한. ``lock_timeout_ms``가 없으면 ``ddl_lock_timeout_ms``."""
+    timeout = ddl_lock_timeout_ms(connection) if lock_timeout_ms is None else lock_timeout_ms
+    connection.execute(text(f"SET LOCAL lock_timeout = '{int(timeout)}ms'"))
     connection.execute(text(f"SET LOCAL statement_timeout = '{DDL_STATEMENT_TIMEOUT}'"))
 
 
-def lock_for_partition_ddl(connection: Connection, *, drop_foreign_keys: bool = False) -> None:
+class LockHolder(NamedTuple):
+    """표 lock을 쥔 다른 transaction 하나(``conflicting_lock_holders``)."""
+
+    #: ``pg_locks.virtualtransaction``. transaction마다 새로 받으므로 같은 연결(pid)을
+    #: 다시 쓰는 다음 transaction과 구별된다.
+    transaction: str
+    pid: int | None
+    #: ``pg_stat_activity.backend_type``. 모르면 ``"unknown"``.
+    kind: str
+
+
+def conflicting_lock_holders(connection: Connection, table: str, mode: str) -> set[LockHolder]:
+    """``table``(파티션 포함)에 ``mode``와 충돌하는 lock을 이미 쥔 다른 transaction.
+
+    세션 정보가 없는 보유자(준비된 transaction 등)의 ``kind``는 ``"unknown"``이다. superuser나
+    ``pg_read_all_stats``가 아닌 role에는 background process(autovacuum 포함)의
+    ``backend_type``이 NULL로 보여 역시 ``"unknown"``이 된다(compose의 ``POSTGRES_USER``는
+    superuser다). granted 보유자를 충돌표로 걸러 읽는다. 파티션 부모에 거는 ``LOCK TABLE``은
+    모든 파티션으로 내려가고 autovacuum은 파티션 하나를 잡으므로 ``table`` 자신과 그 파티션
+    트리 전체를 본다.
+
+    ``pg_stat_activity``는 transaction 안에서 처음 읽은 snapshot을 계속 돌려주므로(그 뒤에
+    생긴 pid는 보이지 않는다) 읽기 전에 ``pg_stat_clear_snapshot()``으로 버린다.
+    """
+    connection.execute(text("SELECT pg_stat_clear_snapshot()"))
+    rows = connection.execute(
+        text(
+            "SELECT DISTINCT l.virtualtransaction, l.pid, "
+            "coalesce(a.backend_type, 'unknown') FROM pg_locks l "
+            "LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
+            "WHERE l.locktype = 'relation' AND l.granted "
+            "AND l.pid IS DISTINCT FROM pg_backend_pid() "
+            "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+            "AND l.mode = ANY (CAST(:modes AS text[])) "
+            # pg_partition_tree는 파티션이 아닌 보통 표에는 행을 내지 않는다(PostgreSQL 16).
+            "AND l.relation IN (SELECT to_regclass(:t) "
+            "UNION ALL SELECT relid FROM pg_partition_tree(to_regclass(:t)))"
+        ),
+        {"t": table, "modes": list(_CONFLICTING_MODES[mode])},
+    ).all()
+    return {
+        LockHolder(str(transaction), None if pid is None else int(pid), str(kind))
+        for transaction, pid, kind in rows
+    }
+
+
+def blocking_holder_kinds(
+    before: Iterable[LockHolder], after: Iterable[LockHolder]
+) -> set[str]:
+    """짧은 대기에 진 직후의 보유자(``after``) 중 차단자로 볼 것의 종류.
+
+    ``after``에는 우리 요청 뒤에 줄 섰던 reader·수집도 섞인다. 부모에 거는 ``LOCK TABLE``은
+    부모를 먼저 잡고 파티션을 차례로 잡으므로, autovacuum이 쥔 파티션에서 기다리는 동안
+    이미 쥔 부모 lock 뒤에 그들이 줄을 서고, savepoint로 되돌리는 순간 lock을 받는다.
+    그래서 LOCK 전(``before``)부터 같은 transaction이 쥐고 있던 보유자만 센다. transaction은
+    끝날 때까지 표 lock을 놓지 않으므로 그 보유자는 대기 내내 쥐고 있었다.
+
+    autovacuum worker는 대기 중에 시작했어도 센다. 아직 잡지 않은 파티션을 처리하기 시작한
+    것이고, wraparound 방지가 아닌 autovacuum은 lock을 조건부(SKIP LOCKED)로만 잡아 누구 뒤에도
+    줄 서지 않는다. 대기 직전에 시작해 대기 내내 쥔 수집은 놓칠 수 있으나, 그때도 autovacuum이
+    함께 있어야 긴 대기로 가고 그 대기는 예전 상한(``ddl_lock_timeout_ms``)과 같다.
+    """
+    held_before = {holder.transaction for holder in before}
+    return {
+        holder.kind
+        for holder in after
+        if holder.transaction in held_before or holder.kind == AUTOVACUUM_BACKEND
+    }
+
+
+def lock_table(connection: Connection, table: str, mode: str, *, brief: bool = False) -> None:
+    """``LOCK TABLE table IN mode MODE``.
+
+    ``brief``이면 호출자가 둔 짧은 ``lock_timeout``(``BRIEF_DDL_LOCK_TIMEOUT_MS``)으로 먼저
+    시도한다. 그 상한에 지면 savepoint로 되돌린 뒤, 차단자가 autovacuum worker뿐일 때만
+    ``ddl_lock_timeout_ms``로 한 번 더 기다리고 짧은 상한을 되돌린다. 그 밖의
+    보유자(수집·API reader·다른 DDL)에게 지면 lock 경합(55P03)을 그대로 올려 호출자가
+    transaction을 rollback하고 조용한 순간에 다시 시도하게 한다.
+
+    차단자는 LOCK 전과 짧은 대기에 진 직후의 보유자로 가린다(``blocking_holder_kinds``).
+    ``pg_blocking_pids``는 그 세션이 기다리는 동안에만 답하므로 대기 중인 이 연결로는 물을 수
+    없고, 다른 연결로 대기 중에 물으려면 시도마다 연결과 thread가 하나씩 더 든다.
+    """
+    statement = text(f"LOCK TABLE {table} IN {mode} MODE")
+    if not brief:
+        connection.execute(statement)
+        return
+    before = conflicting_lock_holders(connection, table, mode)
+    try:
+        with connection.begin_nested():
+            connection.execute(statement)
+        return
+    except OperationalError as exc:
+        if getattr(getattr(exc, "orig", None), "sqlstate", None) != "55P03":
+            raise
+        after = conflicting_lock_holders(connection, table, mode)
+        if blocking_holder_kinds(before, after) != {AUTOVACUUM_BACKEND}:
+            raise
+    connection.execute(text(f"SET LOCAL lock_timeout = '{ddl_lock_timeout_ms(connection)}ms'"))
+    connection.execute(statement)
+    connection.execute(text(f"SET LOCAL lock_timeout = '{BRIEF_DDL_LOCK_TIMEOUT_MS}ms'"))
+
+
+def lock_for_partition_ddl(
+    connection: Connection, *, drop_foreign_keys: bool = False, brief: bool = False
+) -> None:
     """Take every lock partition DDL needs, in the ingest's order, up front.
 
     An ingest writes source records, then facts, then the projection, so the
@@ -223,17 +365,20 @@ def lock_for_partition_ddl(connection: Connection, *, drop_foreign_keys: bool = 
     key -- what keeps a DETACH from checking every projection row while it
     holds the whole tree -- needs ACCESS EXCLUSIVE on it.  All are held only
     for the catalog changes that follow, bounded by ``DDL_STATEMENT_TIMEOUT``.
+
+    ``brief``: 야간 유지보수용. 각 lock을 ``BRIEF_DDL_LOCK_TIMEOUT_MS``까지만 기다리고
+    autovacuum에게 진 경우만 길게 다시 기다린다(``lock_table``).
     """
-    set_ddl_timeouts(connection)
+    set_ddl_timeouts(connection, lock_timeout_ms=BRIEF_DDL_LOCK_TIMEOUT_MS if brief else None)
     for table in referenced_tables(connection):
-        connection.execute(text(f"LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE"))
-    connection.execute(text(f"LOCK TABLE {VALUES_TABLE} IN ACCESS EXCLUSIVE MODE"))
+        lock_table(connection, table, "SHARE ROW EXCLUSIVE", brief=brief)
+    lock_table(connection, VALUES_TABLE, "ACCESS EXCLUSIVE", brief=brief)
     has_projection = connection.execute(
         text("SELECT to_regclass('weather_current_values') IS NOT NULL")
     ).scalar_one()
     if has_projection:
         mode = "ACCESS EXCLUSIVE" if drop_foreign_keys else "SHARE ROW EXCLUSIVE"
-        connection.execute(text(f"LOCK TABLE weather_current_values IN {mode} MODE"))
+        lock_table(connection, "weather_current_values", mode, brief=brief)
 
 
 def is_lock_conflict(exc: BaseException) -> bool:
@@ -550,13 +695,16 @@ def detach_partition(connection: Connection, name: str) -> None:
     connection.execute(text(f"ALTER TABLE {VALUES_TABLE} DETACH PARTITION {name}"))
 
 
-def lock_for_detached_drop(connection: Connection) -> None:
+def lock_for_detached_drop(connection: Connection, *, brief: bool = False) -> None:
     """Dropping a detached partition removes the foreign-key triggers DETACH
     gave it on the referenced tables, under ACCESS EXCLUSIVE on each: take
-    them up front, in the ingest's order, with the DDL timeouts."""
-    set_ddl_timeouts(connection)
+    them up front, in the ingest's order, with the DDL timeouts.
+
+    ``brief``는 ``lock_for_partition_ddl``과 같다.
+    """
+    set_ddl_timeouts(connection, lock_timeout_ms=BRIEF_DDL_LOCK_TIMEOUT_MS if brief else None)
     for table in referenced_tables(connection):
-        connection.execute(text(f"LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE"))
+        lock_table(connection, table, "ACCESS EXCLUSIVE", brief=brief)
 
 
 def drop_detached_partition(connection: Connection, name: str) -> None:
