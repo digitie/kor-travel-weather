@@ -41,7 +41,7 @@ curl http://127.0.0.1:14101/health
 # 시작 warmup 상태. 진행 중이면 503, 완료·생략·비활성이면 200(docs/weather-api-prewarm.md)
 curl http://127.0.0.1:14101/ready
 # Map 표준 프로필 export 페이지 사전 구성 1회(멱등, docs/export-prebuilt-pages.md). deploy.sh가 자동 실행
-docker compose -f compose.yaml exec -T api python -m kortravelweather.export_prebuilt
+docker compose -f compose.yaml exec -T api timeout 280 python -m kortravelweather.export_prebuilt --budget-seconds 240
 open http://127.0.0.1:14105
 curl http://127.0.0.1:14104/-/ready
 ```

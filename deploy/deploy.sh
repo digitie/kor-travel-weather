@@ -137,8 +137,12 @@ fi
 # 입력(승인 inventory·catalog·삭제 epoch)이 마지막 build와 같으면 아무 것도 쓰지 않고(unchanged),
 # export나 사전 구성이 꺼져 있으면 disabled로 끝난다. 실패·5분 초과는 경고만 한다: 사전 구성은
 # Map 첫 페이지를 빠르게 할 뿐이고, 없거나 입력이 바뀌었으면 API가 기존 freeze 경로를 쓴다.
+# 호스트의 timeout은 docker exec client만 끝내고 컨테이너 안 프로세스는 남는다. 그래서 컨테이너
+# 안에서도 timeout(280초)으로 builder 프로세스를 끊고, builder 자체 예산(240초)은 그보다 짧게 준다.
+# 끊겨도 저장은 한 transaction이라 반쯤 쓴 build는 남지 않는다.
 if prebuild_reply="$(timeout 300 docker compose exec -T api \
-        python -m kortravelweather.export_prebuilt 2>&1 | tail -1)"; then
+        timeout 280 python -m kortravelweather.export_prebuilt --budget-seconds 240 \
+        2>&1 | tail -1)"; then
     echo "export prebuild: ${prebuild_reply}"
 else
     echo "warning: export prebuild did not finish (${prebuild_reply:-no output});" \

@@ -759,6 +759,12 @@ def test_the_deploy_script_runs_the_export_prebuild_once_in_the_api_container() 
     assert "docker compose exec -T api" in hook
     assert "python -m kortravelweather.export_prebuilt" in hook
     assert "timeout 300" in hook
+    # 호스트 timeout은 exec client만 끝낸다. 컨테이너 안 프로세스도 그보다 짧게 끊고,
+    # builder 예산은 다시 그보다 짧다(끊긴 builder가 Dagster run과 겹치지 않게).
+    inner = re.search(r"exec -T api\s*\\?\s*timeout (\d+) python -m "
+                      r"kortravelweather\.export_prebuilt --budget-seconds (\d+)", hook)
+    assert inner is not None, hook
+    assert int(inner.group(2)) < int(inner.group(1)) < 300
     result = _prebuild_hook(0, '{"outcome":"unchanged"}')
     assert result.returncode == 0, result.stderr
     assert 'export prebuild: {"outcome":"unchanged"}' in result.stdout
@@ -771,6 +777,22 @@ def test_a_failed_export_prebuild_only_warns() -> None:
     assert result.returncode == 0, result.stderr
     assert "warning: export prebuild did not finish" in result.stderr
     assert '"reason":"OperationalError"' in result.stderr
+
+
+def test_the_prebuild_switch_reaches_the_api_and_the_builder_alike() -> None:
+    """끄기 설정이 .env에서 두 실행 표면 모두에 닿아야 한다(retention_days와 같은 누락 방지).
+
+    API 요청 경로와 dagster-code-server builder가 다른 값을 받으면 한쪽만 꺼진다.
+    """
+    name = "KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED"
+    services = _load(BASE_COMPOSE)["services"]
+    values = {
+        service: (services[service].get("environment") or {}).get(name)
+        for service in ("api", "dagster-code-server")
+    }
+    assert values == dict.fromkeys(values, f"${{{name}:-true}}"), values
+    example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    assert re.search(rf"(?m)^{name}=true$", example)
 
 
 def test_the_api_service_enables_the_startup_warmup() -> None:

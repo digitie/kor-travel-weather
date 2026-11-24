@@ -146,6 +146,9 @@ services:
       # 두 실행 표면이 같은 승인 파일을 읽는다. 활성화는 수용 gate 이후 별도 수행한다.
       KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED:-false}
       KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT: /var/lib/kor-travel-weather/exports
+      # Map 표준 프로필 사전 구성(호출 검토 A3). API 요청 경로와 dagster-code-server builder가 같은
+      # 값을 받아야 한다(끄면 둘 다 꺼진다). 기본값은 settings.py와 같은 true다.
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED:-true}
       # 시작 직후 관리 지도 읽기 경로를 한 번 데우는 읽기 전용 warmup(최대30초, 포트는 바로 연다).
       # 진행 상태는 GET /ready가 보인다. 코드 기본값도 production에서 켜짐이지만 명시해 둔다.
       # 끄려면 .env에 false를 둔다.
@@ -244,6 +247,8 @@ services:
       KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PUBLISHER_BUDGET_SECONDS: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PUBLISHER_BUDGET_SECONDS:-30}
       KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC:-delete}
       KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS:-24}
+      # 사전 구성 builder job(:23·:38). api 서비스와 같은 값이어야 한다.
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED:-true}
     expose:
       - "14106"
       - "14103"
