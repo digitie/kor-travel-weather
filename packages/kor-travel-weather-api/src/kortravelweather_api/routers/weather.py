@@ -595,10 +595,11 @@ async def latest(
         scope_unverified = _unverified_alert_scope(rows, location)
         current_rows, forecast_rows, alert_rows = _split_weather_values(rows, location)
         rows = [*current_rows, *forecast_rows, *alert_rows]
+        data = [value_out(row) for row in rows]
         meta = public.meta(
             limit=limit, returned=len(rows), alert_scope_unverified=scope_unverified,
         )
-        return render(public, WeatherValueListResponse, [value_out(row) for row in rows], meta)
+        return render(public, WeatherValueListResponse, data, meta)
 
     return await respond(build)
 
@@ -642,8 +643,9 @@ async def forecast(
                 exclude_alerts=True,
                 **_provider_kwargs(providers), **_kind_kwargs(kinds),
             )
+        data = [value_out(row) for row in rows]
         meta = public.meta(limit=limit, returned=len(rows))
-        return render(public, WeatherValueListResponse, [value_out(row) for row in rows], meta)
+        return render(public, WeatherValueListResponse, data, meta)
 
     return await respond(build)
 
