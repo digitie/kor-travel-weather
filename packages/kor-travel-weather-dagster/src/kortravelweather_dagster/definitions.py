@@ -65,6 +65,11 @@ from .export_maintenance import (
     weather_export_maintenance_job,
     weather_export_maintenance_schedule,
 )
+from .export_prebuild import (
+    prebuild_policy,
+    weather_export_prebuild_job,
+    weather_export_prebuild_schedule,
+)
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -969,6 +974,9 @@ def _job_policy(job_name: str) -> RecoveryPolicy:
         seconds = 120
     if job_name == "weather_short_forecast_retention_job":
         seconds = 300
+    if job_name == weather_export_prebuild_job.name:
+        # 사전 구성 job의 상한·태그는 그 모듈이 정한다(job 정의의 tags와 같은 객체).
+        return prebuild_policy()
     return RecoveryPolicy(seconds, idempotent=True, infrastructure_retries=1)
 
 
@@ -2177,6 +2185,8 @@ defs = Definitions(
         hourly_kma_weather_alerts_schedule,
         regional_alert_events_schedule,
         hourly_airkorea_weather_schedule,
+        # job은 이 schedule로 등록된다(Map W2 직전 사전 구성, 호출 검토 A3).
+        weather_export_prebuild_schedule,
         *external_weather_schedules,
         *regional_weather_schedules,
         daily_weather_retention_schedule,
