@@ -550,6 +550,54 @@ def test_partition_lookup_caps_then_restores_exact_previous_budget(previous, mil
     assert "set_config" in sql and params == {"previous": previous}
 
 
+@pytest.mark.parametrize(("previous", "milliseconds", "cap"), [
+    ("0", 0, 300), ("60s", 60000, 300), ("50ms", 50, 50),
+])
+def test_partition_recheck_under_lock_uses_the_short_cap(previous, milliseconds, cap):
+    """lock 뒤 재확인(L1)은 5초가 아니라 짧은 상한이고, 더 작은 기존 예산은 늘리지 않는다."""
+    assert module.PARTITION_RECHECK_STATEMENT_TIMEOUT_MS == 300
+
+    class TimeoutSession(Session):
+        def scalar(self, statement, params=None):
+            if str(statement) == "SHOW statement_timeout":
+                return previous
+            if "FROM pg_settings" in str(statement):
+                return milliseconds
+            return super().scalar(statement, params)
+    connection = TimeoutSession()
+    WeatherRepository._recheck_short_forecast_partition(connection, "weather_values_20260101")
+    assert [sql for sql, _, _ in connection.statements if sql.startswith("SET LOCAL")] == [
+        f"SET LOCAL statement_timeout = '{cap}ms'",
+    ]
+    sql, params, _ = connection.statements[-1]
+    assert "set_config" in sql and params == {"previous": previous}
+
+
+def test_partition_recheck_timeout_becomes_a_lost_race_other_errors_do_not():
+    """재확인 57014는 연기(경합 패배)로, 그 밖의 오류는 그대로 올라간다."""
+    from kortravelweather.repository import PartitionRecheckTimedOut
+
+    class Cancelled(Session):
+        def __init__(self, sqlstate):
+            super().__init__()
+            self.sqlstate = sqlstate
+
+        def scalar(self, statement, params=None):
+            if "SELECT EXISTS" in str(statement):
+                raise OperationalError("EXISTS", {}, SimpleNamespace(sqlstate=self.sqlstate))
+            return super().scalar(statement, params)
+
+    with pytest.raises(PartitionRecheckTimedOut) as caught:
+        WeatherRepository._recheck_short_forecast_partition(
+            Cancelled("57014"), "weather_values_20260101",
+        )
+    assert caught.value.error.orig.sqlstate == "57014"
+    with pytest.raises(OperationalError):
+        WeatherRepository._recheck_short_forecast_partition(
+            Cancelled("08006"), "weather_values_20260101",
+        )
+
+
 def _batch(last_key, *, remaining=True, matched=1000, deferred=False, error_class=None):
     return dict(
         matched_in_batch=matched, pointers_deleted=matched, facts_deleted=matched,
