@@ -82,7 +82,10 @@ def weather_export_prebuild(context) -> dict[str, Any]:
 @job(
     name=JOB_NAME,
     executor_def=in_process_executor,
-    tags=_POLICY.tags(project="weather", job_name=JOB_NAME),
+    # dagster/priority 0: 15분 간격이지만 수집이 아닌 export 사전 구성이다(공용 queue 규칙).
+    # 분류의 정본은 definitions의 ``JOB_PRIORITIES``이고 tests/test_run_priority.py가 이 값과
+    # 대조한다(정리 job과 같이 순환 import라 상수로 둔다).
+    tags={**_POLICY.tags(project="weather", job_name=JOB_NAME), "dagster/priority": "0"},
     description="Map 표준 프로필(current limit 2000) export 페이지를 publisher 뒤 미리 만든다.",
 )
 def weather_export_prebuild_job():

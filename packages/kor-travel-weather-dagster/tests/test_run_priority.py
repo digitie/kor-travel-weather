@@ -28,7 +28,7 @@ from dagster import (
 )
 from dagster._core.events import JobFailureData, RunFailureReason
 from dagster._utils.schedules import schedule_execution_time_iterator
-from kortravelweather_dagster import alert_schedule, export_maintenance
+from kortravelweather_dagster import alert_schedule, export_maintenance, export_prebuild
 from kortravelweather_dagster import definitions as definitions
 from kortravelweather_dagster.recovery import (
     INFRA_RETRY_ENABLED_ENV,
@@ -45,6 +45,7 @@ MAINTENANCE_JOBS = frozenset({
     "weather_retention_job",
     "weather_short_forecast_retention_job",
     "weather_export_maintenance_job",
+    "weather_export_prebuild_job",
     "address_refresh_job",
 })
 
@@ -201,6 +202,8 @@ def test_every_schedule_tick_leaves_the_job_priority_in_place(monkeypatch, histo
     # export 정리 schedule은 publisher sensor가 RUNNING이고 export가 켜진 곳에서만 run을 만든다.
     monkeypatch.setattr(export_maintenance, "maintenance_enabled", lambda settings: True)
     monkeypatch.setattr(export_maintenance, "publisher_sensor_running", lambda instance: True)
+    # export 사전 구성 schedule도 같은 조건(+ 사전 구성 설정)에서만 run을 만든다.
+    monkeypatch.setattr(export_prebuild, "prebuild_enabled", lambda settings: True)
     monkeypatch.setattr(alert_schedule, "_read_history", lambda database_url: rows)
     # 차단기 gauge(프로세스 전역)를 열린 채 남기지 않는다.
     monkeypatch.setattr(alert_schedule, "set_alert_collection_breaker", lambda **kwargs: None)
