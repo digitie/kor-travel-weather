@@ -58,14 +58,21 @@ def _result(status, facts_deleted):
     )
 
 
+def _after_no_progress(monkeypatch, runs):
+    """앞서 ``runs``회 연속 진척 없이 끝났다고 둔다."""
+    monkeypatch.setattr(definitions, "_previous_no_progress_runs", lambda _previous: runs)
+
+
 @pytest.mark.parametrize("status", ["budget_exhausted", "deferred"])
 def test_zero_progress_failure_itself_carries_result_metadata(monkeypatch, status):
     result = _result(status, 0)
     monkeypatch.setattr(definitions, "run_short_forecast_retention", lambda *a, **kw: result)
+    _after_no_progress(monkeypatch, retention.NO_PROGRESS_ALERT_RUNS - 1)
     context, _, outputs, disposed = _context(lambda **_: None)
     with pytest.raises(Failure) as failure:
         _execute(context)
-    assert "진척 없이" in failure.value.description
+    assert f"{retention.NO_PROGRESS_ALERT_RUNS}회 연속 진척 없이" in failure.value.description
+    assert failure.value.metadata["no_progress_runs"].value == retention.NO_PROGRESS_ALERT_RUNS
     assert failure.value.metadata["status"].value == status
     assert failure.value.metadata["facts_deleted"].value == 0
     assert failure.value.metadata["remaining"].value is True
@@ -131,10 +138,12 @@ def test_empty_locked_selection_defers_and_failure_is_observable(monkeypatch):
         return _report(remaining=True, matched=0)
 
     monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    _after_no_progress(monkeypatch, retention.NO_PROGRESS_ALERT_RUNS - 1)
     context, logs, _, disposed = _context(purge)
     with pytest.raises(Failure) as failure:
         _execute(context)
     assert failure.value.metadata["status"].value == "deferred"
+    assert failure.value.metadata["deferred_reason"].value == "empty_selection"
     assert failure.value.metadata["facts_deleted"].value == 0
     assert len(calls) == len(logs) == 1 and disposed == [True]
 
@@ -149,17 +158,88 @@ def test_runner_never_turns_budget_exhaustion_into_completion(monkeypatch):
     assert result["status"] == "budget_exhausted" and result["batches"] == 0
 
 
+def _timed_out(**_):
+    return dict(_report(remaining=None, matched=0, deferred=True),
+                deferred_reason="QueryCanceled", error_class="QueryCanceled")
+
+
 def test_advisory_deferral_does_not_invent_remaining_or_deleted_rows(monkeypatch):
     monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
-    context, logs, _, disposed = _context(
-        lambda **_: _report(remaining=None, matched=0, deferred=True),
-    )
+    _after_no_progress(monkeypatch, retention.NO_PROGRESS_ALERT_RUNS - 1)
+    context, logs, _, disposed = _context(_timed_out)
     with pytest.raises(Failure) as failure:
         _execute(context)
     assert failure.value.metadata["status"].value == "deferred"
     assert failure.value.metadata["remaining"].value is None
     assert failure.value.metadata["facts_deleted"].value == 0
     assert len(logs) == 1 and disposed == [True]
+
+
+def test_a_single_transient_deferral_is_a_warning_not_a_failure(monkeypatch):
+    """odroid 11-10~23: 무진척 31건은 모두 다음 10분 실행에서 회복된 일시 연기였다."""
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    context, _, outputs, disposed = _context(_timed_out)
+    result = _execute(context)
+    assert result["status"] == "deferred" and result["no_progress_runs"] == 1
+    assert outputs == [result] and disposed == [True]
+    assert any("no_progress_runs=1" in warning for warning in context.warnings)
+
+
+def test_history_purge_lock_deferral_is_never_counted(monkeypatch):
+    """일별 이력 정리(01:45 KST)가 advisory lock을 쥔 동안의 연기는 정체가 아니다."""
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    _after_no_progress(monkeypatch, retention.NO_PROGRESS_ALERT_RUNS - 1)
+    context, _, _, _ = _context(
+        lambda **_: dict(_report(remaining=None, matched=0, deferred=True),
+                         deferred_reason="history_purge_running"),
+    )
+    result = _execute(context)
+    assert result["deferred_reason"] == "history_purge_running"
+    assert result["no_progress_runs"] == retention.NO_PROGRESS_ALERT_RUNS - 1
+
+
+def test_no_progress_run_hands_the_previous_start_point_to_the_next_run(monkeypatch):
+    """주기 머리 훑기 중 연기돼도 저장 위치·지연 기준을 비우지 않는다."""
+    cutoff = NOW - timedelta(hours=6)
+    key = _key(cutoff - timedelta(hours=3), "k")
+    previous = {
+        **key.as_metadata(), "resume_policy": retention.RETENTION_POLICY,
+        "resume_database": "weather_test",
+        # 머리 훑기 주기가 지나 이번 실행은 머리부터 시작한다(위치는 fallback).
+        "head_scan_at": (NOW - retention.HEAD_SWEEP_INTERVAL).isoformat(),
+        "backlog_lag_seconds": 3 * 3600.0, "lag_stall_runs": 2,
+    }
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    monkeypatch.setattr(definitions, "_short_retention_previous_metadata", lambda _: previous)
+    context, _, _, _ = _context(
+        lambda **_: dict(_report(remaining=None, matched=0, deferred=True),
+                         deferred_reason="history_purge_running"),
+    )
+    context.resources.weather_repository.create_repository().engine.url = SimpleNamespace(
+        database="weather_test",
+    )
+    result = _execute(context)
+    assert retention.ShortForecastKey.from_metadata(result) == key
+    assert result["head_scan_at"] == previous["head_scan_at"]
+    assert result["lag_stall_runs"] == 2 and result["backlog_lag_seconds"] == 3 * 3600.0
+
+
+def test_consecutive_no_progress_runs_fail_on_the_third_in_real_storage(monkeypatch, tmp_path):
+    """실제 SDK 저장소: 연속 횟수는 materialization으로 이어지고 진척이 생기면 0으로 돌아간다."""
+    outcomes = iter(["timeout", "timeout", "progress", "timeout", "timeout", "timeout"])
+
+    def purge(**kwargs):
+        if next(outcomes) == "progress":
+            return dict(_report(remaining=False, matched=5), last_key=None)
+        return dict(_timed_out(), last_key=None)
+
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    job = _sdk_job(purge, "short_retention_no_progress_test")
+    with DagsterInstance.local_temp(
+        str(tmp_path), overrides={"telemetry": {"enabled": False}},
+    ) as instance:
+        runs = [job.execute_in_process(instance=instance, raise_on_error=False) for _ in range(6)]
+    assert [run.success for run in runs] == [True, True, True, True, True, False]
 
 
 @pytest.mark.parametrize("log_level", ["ERROR", "WARN"])
@@ -348,6 +428,79 @@ def test_behind_backlog_fails_only_after_seven_runs_without_draining(monkeypatch
     assert stalls == [*range(1, stall + 2), 0]
     # 실패한 run의 위치를 다음 run이 이어받는다.
     assert [call["after"] for call in calls[::2]] == [None, *keys[:-1]]
+
+
+def test_no_progress_runs_during_a_backlog_stall_keep_failing(monkeypatch, tmp_path):
+    """실제 SDK 저장소: 정체(``lag_stall_runs>=7``) 중 진척 0 run은 연기 경고가 아닌 정체 실패다.
+
+    진척 없는 run은 지연 기준을 앞 run 것 그대로 넘기므로 정체는 지연이 실제로 줄 때까지 풀리지
+    않는다. 그 사이의 첫 선택 timeout·일별 정리와의 lock 양보 run이 녹색(deferred)이면 진척조차
+    없는 더 나쁜 상태가 정체 실패보다 조용해진다.
+    """
+    cutoff = NOW - timedelta(hours=6)
+    behind = cutoff - timedelta(hours=30)
+    stall = retention.LAG_STALL_RUNS
+    keys = [
+        retention.ShortForecastKey(
+            behind, behind - timedelta(hours=48 - index), chr(ord("a") + index) * 64,
+        )
+        for index in range(stall)
+    ]
+    drained = _key(behind + timedelta(hours=2), "z")
+    lock_wait = dict(_report(remaining=None, matched=0, deferred=True),
+                     last_key=None, error_class="LockNotAvailable")
+    script = []
+    for key in keys:
+        script += [dict(_report(remaining=True, matched=1000), last_key=key), lock_wait]
+    script += [
+        # 정체 실패 뒤: 첫 선택 timeout, 일별 정리와의 lock 양보, 그리고 지연이 줄어든 진척.
+        dict(_timed_out(), last_key=None),
+        dict(_report(remaining=None, matched=0, deferred=True),
+             last_key=None, deferred_reason="history_purge_running"),
+        dict(_report(remaining=True, matched=1000), last_key=drained), lock_wait,
+    ]
+    calls = []
+
+    def purge(**kwargs):
+        calls.append(kwargs)
+        return script.pop(0)
+
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    job = _sdk_job(purge, "short_retention_stall_no_progress_test")
+    outcomes, recorded, first_calls = [], [], []
+    with DagsterInstance.local_temp(
+        str(tmp_path), overrides={"telemetry": {"enabled": False}},
+    ) as instance:
+        for _ in range(stall + 3):
+            first_calls.append(len(calls))
+            run = job.execute_in_process(instance=instance, raise_on_error=False)
+            outcomes.append(run.success)
+            recorded.append(_latest_metadata(instance))
+            tags = instance.get_run_by_id(run.run_id).tags
+            if not run.success:
+                failure = next(
+                    event for event in run.all_events
+                    if event.event_type_value == "STEP_FAILURE"
+                )
+                description = failure.event_specific_data.user_failure_data.description
+                assert "연속 줄지 않았습니다" in description
+                assert tags.get("kortravel/collection-outcome") != "deferred"
+    assert script == []
+    assert outcomes == [True] * (stall - 1) + [False, False, False, True]
+    stalled_timeout, stalled_lock, drained_run = recorded[stall:]
+    # 실패한 진척 0 run도 materialization을 남겨 위치·정체 횟수·무진척 횟수를 잇는다.
+    assert stalled_timeout["status"] == "deferred"
+    assert stalled_timeout["deferred_reason"] == "QueryCanceled"
+    assert stalled_timeout["lag_stall_runs"] == stall
+    assert stalled_timeout["no_progress_runs"] == 1
+    assert retention.ShortForecastKey.from_metadata(stalled_timeout) == keys[-1]
+    assert stalled_lock["deferred_reason"] == "history_purge_running"
+    assert stalled_lock["lag_stall_runs"] == stall
+    # 일별 정리와의 lock 양보는 무진척 횟수로 세지 않는다(정체 실패는 그대로).
+    assert stalled_lock["no_progress_runs"] == 1
+    assert drained_run["lag_stall_runs"] == 0 and drained_run["no_progress_runs"] == 0
+    # 정체 중 진척 0 run 뒤에도 다음 run은 정체 run이 지운 마지막 키에서 이어 고른다.
+    assert [calls[index]["after"] for index in first_calls[stall:]] == [keys[-1]] * 3
 
 
 @pytest.mark.parametrize(("previous", "lag_hours", "remaining", "expected"), [
@@ -559,6 +712,40 @@ def test_behind_and_flat_seventh_run_fails_and_records_materialization(monkeypat
     # 실패 전에 위치와 횟수를 materialization으로 남긴다.
     assert [type(event).__name__ for event in context.observations] == ["AssetMaterialization"]
     assert outputs == [result] and disposed == [True]
+
+
+@pytest.mark.parametrize(("reason", "expected_runs"), [
+    ("QueryCanceled", 1),
+    # 일별 정리와의 lock 양보는 무진척 횟수로 세지 않지만 정체 실패는 그대로다.
+    ("history_purge_running", 0),
+])
+def test_no_progress_run_while_stalled_fails_and_records_materialization(
+    monkeypatch, reason, expected_runs,
+):
+    """정체 중 진척 0 run은 앞 정체 횟수를 그대로 넘겨받으므로 경고가 아니라 정체 실패다."""
+    stall = retention.LAG_STALL_RUNS
+    monkeypatch.setattr(definitions, "kst_now", lambda: NOW)
+    monkeypatch.setattr(
+        definitions, "_short_retention_previous_metadata",
+        lambda _: {"backlog_lag_seconds": 30 * 3600.0, "lag_stall_runs": stall},
+    )
+    context, _, outputs, disposed = _context(
+        lambda **_: dict(_report(remaining=None, matched=0, deferred=True),
+                         deferred_reason=reason,
+                         error_class=reason if reason == "QueryCanceled" else None),
+    )
+    with pytest.raises(Failure) as failure:
+        _execute(context)
+    assert f"{stall}회 연속 줄지 않았습니다" in failure.value.description
+    assert f"deferred_reason={reason}" in failure.value.description
+    assert failure.value.metadata["status"].value == "deferred"
+    assert failure.value.metadata["lag_stall_runs"].value == stall
+    assert failure.value.metadata["no_progress_runs"].value == expected_runs
+    # 실패 전에 위치와 횟수를 materialization으로 남기고, 연기 경고는 남기지 않는다.
+    events = [type(event).__name__ for event in context.observations]
+    assert events.count("AssetMaterialization") == 1 and events[-1] == "AssetMaterialization"
+    assert context.warnings == []
+    assert len(outputs) == 1 and disposed == [True]
 
 
 @pytest.mark.parametrize("changes", [

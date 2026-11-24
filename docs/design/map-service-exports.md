@@ -298,6 +298,51 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 잘못된 최신 상태를 숨기지 못하게 한다. 데이터 generation은 고정해도 health는 현재 상태임을
 명시하고, Map은 페이지 중간 failed/stale가 나오면 새 generation publish를 보류한다.
 
+> **내용 ETag와 본문 읽기 전 304(2026-11-24, 호출 검토 A2).** locations·current·daily-summaries의
+> weak ETag에서 `snapshot_id`를 뺐다. 예전에는 같은 승인 집합이라도 snapshot handle TTL(15분)이
+> 지나 새 handle이 발급되면 ETag가 바뀌어, 매시·매일 도는 Map 적재가 사실상 304를 받지 못했다
+> (Map ADR-114 W3의 "TTL 15분 동안만"). 이제 ETag(`kortravelweather.export_conditional`)는
+> **고정 manifest digest**(승인 head vector·artifact ref·위치·selection) + **페이지 식별**(resource·
+> selection 서명·limit·첫 페이지 여부와 시작 위치 — cursor 문자열은 snapshot_id를 담으므로 쓰지
+> 않는다) + **상태 token**(`source_status`·`source_collected_at`, daily는 건강도 digest와 본문)의
+> digest다. handle 고유 값(`snapshot_id`·`snapshot_generated_at`·`as_of`·`next_cursor`)은 넣지
+> 않으므로 304는 "이미 가진 본문의 항목·상태·수집 시각이 지금과 같다"는 뜻이며 새 snapshot_id·
+> cursor를 주지 않는다. 이어서 순회하려면 조건 없이 첫 페이지를 다시 받는다(Map은 304면 순회하지
+> 않고 지금 세대의 `checked_at`만 갱신한다). 같은 manifest digest면 고정 artifact ref가 같아 항목도
+> 같다. `source_collected_at`은 같은 manifest라도 신선도 창(24시간) 경계에 따라 handle마다 다를 수
+> 있어 상태 token에 넣었다. 새 승인 세대·catalog 변경·실패/stale 전환은 digest나 상태가 바뀌어
+> 200을 낸다.
+>
+> ETag가 handle과 무관해졌으므로 HTTP 캐시가 200 본문을 저장해 두었다가 재검증 304로 다시 쓰면
+> 만료됐을 수 있는 `snapshot_id`·`next_cursor`를 내준다(그 cursor는 410, 처음부터 다시 받아도 같은
+> 304가 반복된다). 그래서 200·304는 `cache-control: no-store, private`다(예전
+> `private, max-age=0, must-revalidate`). 조건부 요청은 투명 HTTP 캐시가 아니라 소비자가 받은 ETag를
+> 직접 보관해 `If-None-Match`로 보내는 방식만 지원한다. Map(httpx, 캐시 없음)은 원래 이 방식이다.
+>
+> current·locations **첫 페이지**는 `If-None-Match`를 freeze(또는 handle 재사용)와 상태 판정 직후,
+> artifact 본문을 읽기 전에 비교한다. 맞으면 본문 읽기·검증·직렬화를 건너뛰고 304를 낸다(응답
+> header `x-export-artifact-read-calls: 0`). 첫 페이지의 상태 판정은 원래 freeze RR에서 한 판정을
+> 그대로 쓰므로 판정 수명은 바뀌지 않는다. freeze 자체는 남는다 — digest를 알려면 manifest를
+> 만들어야 하고, 그 비용을 없애는 것은 A3(표준 페이지 사전 구성)의 몫이다. cursor 페이지는 공용
+> 상태 판정의 남은 수명(20초 이상)을 본문 읽기 뒤에 쓰도록 예전 순서(본문 → 판정 → 비교)를
+> 유지한다. 이 304는 페이지 캐시에 넣지 않는다(본문이 없다). 그래서 current 리더는 비교 시점에
+> 같은 키 대기자(export 슬롯 대기 포함)가 있으면 304로 끝내지 않고 본문을 만들어 캐시에 남기고,
+> 자신은 본문을 읽은 뒤의 같은 ETag 비교로 304를 받는다. 그러지 않으면 read timeout으로 끊긴 리더를
+> 기다리던 Map 재시도(같은 `If-None-Match`)가 freeze를 처음부터 다시 한다(A6의 리더 계속 이득이
+> 사라진다). 304는 artifact 바이트를 다시 해시 검산하지 않는다 — 요청자에게 본문을 보내지 않으며,
+> 파일 존재는 freeze의 pin·`all_present`가 이미 확인했다.
+>
+> daily 요약 값은 같은 manifest에서도 사전 계산 갱신과 시각 경계(`partial`)로 바뀌므로 본문을
+> ETag에 넣고, 비교는 값을 읽은 뒤 직렬화 전에 한다(본문 읽기 생략은 없다). 정상 freeze의 manifest는
+> coverage(위치·namespace·generation) digest를 묶어 다른 페이지 위치의 요약 갱신도 드러난다. 하지만
+> `_previous_daily` fallback은 이전 coverage digest를 유지하고, 페이지에서 coverage를 못 읽으면
+> 건강도·수집 시각·상태도 상수가 된다. 그때는 사전 계산 checkpoint(`generation_id`·`published_at`)를
+> ETag에 넣어 뒤 페이지 요약만 바뀌어도 첫 페이지 ETag가 바뀌게 한다(Map W5는 첫 페이지에만
+> `If-None-Match`를 보낸다). **forecasts는 바꾸지
+> 않았다**(`snapshot_id`+본문). 본문이 응답 시각 이후 target만 담아 manifest만으로 정해지지 않고,
+> Map은 예보에 `If-None-Match`를 보내지 않는다(Map ADR-122: 304는 증분 cursor·전량 시각을 다시
+> 잡지 못한다). 배포 직후 첫 조건부 요청은 예전 형식 ETag와 맞지 않아 한 번 200을 받는다.
+
 > **current의 상태 판정 공유(2026-11-24).** "현재 상태"는 소유자가 승인한 상태 반영 지연(최대60초)
 > 안의 값이다. current는 고정 snapshot 하나의 DB 상태 판정(catalog·승인 선택·현재 head·소유 시도·
 > run 상태)을 snapshot_id·manifest digest·reader 설정마다 앱에서 한 번 계산해 cursor 페이지가 나눠
@@ -308,6 +353,52 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 > 행 변경·이력 정리 — 는 최대60초 안에 반영된다. 판정 수명은 그 판정에 쓴 승인 선택의 수명을
 > 넘지 않으며, 응답 직전의 60초 검사(`require_current_selection`)도 그대로다. 응답 header
 > `x-export-status-proof`가 `frozen`·`reused`·`computed`로 출처를 알린다.
+
+> **예보 첫 페이지의 완성 페이지 재사용(2026-11-24, 호출 검토 A5).** 예보 첫 페이지는
+> `If-None-Match`가 없어도 앱의 완성 페이지 캐시(완성 뒤 최대60초, target·snapshot 경계 이내)를
+> 쓴다. hit마다 새 RR freeze로 최신 승인 선택과 head vector를 다시 읽어 같은 snapshot handle·
+> manifest digest인지, 새로 계산한 건강도가 같은지, head·generation·plan 삭제 변경 번호가 같은지
+> 확인한 뒤에만 본문을 재사용하고, 하나라도 다르면 새로 만든다. 그래서 "예보 첫 페이지는
+> 승인·실패를 바로 반영한다"는 계약은 그대로이며 줄어드는 것은 artifact 본문 읽기·투영뿐이다
+> (새 freeze 비용은 남는다). 전에는 INM이 없으면 캐시 항목을 강제로 버려(`force`) 예보에 INM을
+> 보내지 않는 Map의 같은 첫 페이지 재요청마다 본문 전체를 다시 읽었다. 이 강제 우회는 #249
+> (`0c3b70e`)가 "본문 읽기 없는 304"만 범위로 잡으며 200 응답은 예전처럼 새로 만들게 남긴 보수적
+> 선택이었고 따로 기록한 이유는 없다. 그 뒤 hit 검산이 완성 본문 기한·target 경계(`dac78d5`)와
+> fresh 건강도(`d7e5d25`)까지 갖춰 비조건부 요청에도 같은 검산을 쓰면 대체된다. #290의 current
+> 상태 판정 공유(최대60초 지연)로 바꾸지는 않았다. 예보 첫 페이지 계약은 즉시 반영이기 때문이다.
+> 재사용 본문의 `meta.as_of`는 그 본문을 투영한 시각이며
+> `generated_at`만 응답마다 새로 쓴다(조건부·current 재사용과 같다). 응답 header
+> `x-export-read`가 `reused`·`generated`로 구분한다.
+
+> **연결 끊김 전파(2026-11-24, 호출 검토 A6).** export 요청은 worker thread에서 돈다. 요청자(Map)가
+> timeout·run 취소로 연결을 끊으면 route 감시 task가 ASGI `http.disconnect`를 받아 그 작업에
+> 알리고, worker는 limiter 진입 직후·freeze 앞뒤·렌더 전·같은 키 페이지/승인 선택 대기·SQL
+> 문장마다 확인해 멈춘다(rollback 뒤 export 슬롯과 DB 연결 반환). 끊긴 순간 실행 중이던 SQL은
+> psycopg `cancel_safe()`로 서버에 취소를 요청한다. 단, 승인 참조·plan을 읽는 server-side
+> cursor(`stream_results`)의 FETCH는 SQLAlchemy cursor hook을 거치지 않는다. 그래서 실행 중인
+> FETCH는 서버 취소 대상이 아니며(FETCH마다 5초 문장 상한), 끊김은 읽는 loop가 행마다 확인해
+> 다음 FETCH 전에 멈춘다. 응답은 `/v1/weather/markers`와 같은 499이고,
+> 경합 503·`statement_timeout` 로그와 섞이지 않게 `weather_service_export_cancelled` 로그와
+> `ktw_read_stage_duration_seconds{outcome="cancelled"}`로 남는다. 499로 바꾸는 것은 취소 자체와
+> 일시 경합(`ExportGuardTimeout`, 취소·문장 상한 57014 등)뿐이다. 끊긴 뒤 리더에서 난 무결성
+> 실패(`ExportArtifactError`)·파일 오류·프로그래밍 오류는 요청자가 떠났어도 원래처럼
+> `weather_service_export_unavailable`·`weather_service_export_failure_site` WARNING(503)이나
+> 500 traceback으로 남는다.
+> 예외는 같은 키 페이지 캐시 리더다. Map은 read timeout 뒤 같은 cursor로 다시 요청하므로 리더를
+> 바로 멈추면 생성 시간이 Map timeout(기본60초)보다 긴 페이지는 재시도가 매번 처음부터 다시 만들어
+> 끝나지 않는다. 연결을 끊는 것은 httpx `ReadTimeout`이고, Map `weather_state._weather_get`은 이
+> 전송 오류를 한 번만 `PROVIDER_BOUNDARY_BASE_DELAY_SECONDS`=15초 뒤(kor-travel-map #1542의
+> jitter ±20%면 12~18초) 다시 보낸다. 503 뒤의 5초 페이지 재시도는 완결된 응답이라 끊긴 리더를
+> 만들지 않으므로 기준이 아니다. 리더는 끊긴 뒤 45초(`LEADER_GRACE_SECONDS`, 18초에 새 연결·인증
+> 여유를 넉넉히 더한 값) 동안, 그리고 같은 키 요청이 대기자이거나 export 슬롯을 기다리는 동안
+> 계속해 완성 페이지를 캐시에 남기고, 재시도는 그 페이지를 받는다. 슬롯 대기 중인 같은 키 요청은
+> route가 limiter 진입 전에 `ExportPageCache.arriving`으로 등록한다(요청자가 이미 떠난 요청은 세지
+> 않는다). 다른 export가 슬롯을 쥐어 재시도가 limiter에서 기다리는 동안 유예가 끝나도 리더가 멈추지
+> 않게 하기 위해서다. 유예가 끝나고 기다리는 같은 키 요청도 없으면 다음 SQL 문장 전에 멈춘다(실행
+> 중 문장은 5초 문장 상한에 맡긴다). 리더가 멈추거나 실패하면 대기자 하나가 새 리더가 되고,
+> 요청자가 떠난 대기자는 기다리지 않고 바로 빠진다. 끊김을 감지하려면 Weather 앞의 proxy가 요청자
+> 연결 종료를 upstream으로 전해야 한다. `/status`(최대128행)는 대상이 아니다. Map 재시도 정책
+> (간격·횟수·read timeout)이 바뀌면 이 유예를 다시 본다.
 
 forecast는 **각 응답 시점의 지금 이후 target만** 내보낸다. 고정 snapshot_as_of가 과거였다는
 이유로 이미 지난 target을 보내고 Map에 prune 책임을 넘기지 않는다. snapshot artifact의 logical

@@ -281,6 +281,14 @@ READ_STAGE_DURATION = Histogram(
     buckets=(.001, .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 1200),
     registry=_INSTRUMENTATION_REGISTRY,
 )
+#: API 시작 warmup 단계별 소요 시간. 프로세스 기동마다 단계당 한 번만 관측한다.
+API_PREWARM_STEP_DURATION = Histogram(
+    "ktw_api_prewarm_step_duration_seconds",
+    "One-time API startup warmup step duration by step and outcome (ok, failed, skipped).",
+    ("step", "outcome"),
+    buckets=(.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
 
 EXPORT_DATABASE_PAYLOAD_READS = Counter(
     "ktw_export_database_payload_reads_total", "Actual database payload SELECT calls.",
@@ -994,7 +1002,8 @@ def observe_read_stage(resource, page, stage, outcome, duration):
         resource if resource in resources else "other",
         page if page in {"first", "cursor", "304", "public"} else "other",
         stage if stage in stages else "other",
-        outcome if outcome in {"ok", "timeout", "error"} else "other",
+        # cancelled: 요청자가 연결을 끊어 export worker가 멈췄다(499).
+        outcome if outcome in {"ok", "timeout", "error", "cancelled"} else "other",
     )
     _safe("read_stage", lambda: READ_STAGE_DURATION.labels(*labels).observe(max(0, duration)))
 
@@ -1008,3 +1017,20 @@ def observe_database_payload_read(mode, rows):
         EXPORT_DATABASE_PAYLOAD_BYTES.labels(mode=mode).inc(sum(len(row.payload) for row in rows))
 
     _safe("database_payload_read", observe)
+
+
+#: API warmup 단계 이름(``kortravelweather_api.prewarm.STEP_NAMES``와 같다). 밖의 값은 other.
+API_PREWARM_STEPS = frozenset({
+    "connections", "session_check", "regions", "locations", "markers", "location_detail",
+})
+
+
+def observe_api_prewarm_step(step, outcome, duration):
+    labels = (
+        step if step in API_PREWARM_STEPS else "other",
+        outcome if outcome in {"ok", "failed", "skipped"} else "other",
+    )
+    _safe(
+        "api_prewarm_step",
+        lambda: API_PREWARM_STEP_DURATION.labels(*labels).observe(max(0, duration)),
+    )

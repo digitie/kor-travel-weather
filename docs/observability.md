@@ -54,6 +54,10 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_http_requests_total{method,route,status_class}`
 - `ktw_http_request_duration_seconds{method,route}`
 - `ktw_http_requests_in_flight{method}`
+- `ktw_api_prewarm_step_duration_seconds{step,outcome}` — API 시작 warmup 단계별 소요 시간(기동마다
+  단계당 한 번, API만). `step`은 `connections`·`session_check`·`regions`·`locations`·`markers`·
+  `location_detail`, `outcome`은 `ok`·`failed`·`skipped`. 상태는 `GET /ready`, 설계는
+  [weather-api-prewarm.md](weather-api-prewarm.md)
 - `ktw_provider_requests_total{provider,dataset,outcome}` — `outcome`은 `success`·`error`·`blocked`.
   `blocked`는 provider의 edge(WAF)가 API에 닿기 전에 요청을 거절한 것이고, **여전히 실패다** —
   실패의 종류를 구분할 뿐이다. 지금은 `python-krex-api`만 분류한다: HTTP 400/403이면서 본문이

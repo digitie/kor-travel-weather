@@ -2,6 +2,26 @@
 
 `kma_regional_alert_events_job`을 한 요청 수집·행 격리·연속 실패 차단기·coalescing으로 바꿨다(journal 같은 날짜). 다음 한 작업: odroid weather Dagster code-server를 이 PR 이후 이미지로 배포하고, 5분 run 실패 0·`quarantined_rows`(당진 발표가 창에 있을 때만 양수)·run 간격 5분을 확인한다. 당진(L1031200) 이중 지역명 묶음을 격리 대신 결정적으로 고를지는 소유자 결정 후보다.
 
+## 2026-11-24 — 외부 provider schedule 정리·429 다음 주기
+
+sweep하지 않는 외부 provider 여섯의 schedule을 없애(3시간마다 skip run 제거) slow 집합에 넣을 때만
+schedule이 생기게 했고, 429는 짧은 `Retry-After`만 한 번 기다린 뒤 "갱신 대기"로 다음 주기에 넘긴다.
+멈춘 sweep도 받은 응답은 게시하지만 native 행은 `failed`라 그 주기의 Map export는 stale이다. 다음은 odroid weather code-server 배포(Codex)와 배포 뒤 외부 schedule 6개만 남았는지 확인이다.
+[상세](journal.md)
+
+## 2026-11-24 — 지역 수집 원천별 job 분리·재시도·보충 tick
+
+`regional_weather_job`을 원천별 job 네 개로 나눠 한 원천의 실패가 나머지 승격을 막지 않게 했고,
+DNS·연결·timeout은 같은 run에서 backoff·jitter로 최대 3회 다시 시도하며, 정규 tick이 성공을 남기지
+못하면 +1h·+3h 보충 tick이 돈다. 다음은 odroid weather code-server 배포(Codex)와 배포 뒤
+`twice_daily_*` 네 schedule RUNNING·첫 05:30/17:30 실행 확인이다. [상세](journal.md)
+
+## 2026-11-24 — 단기예보 정리 일시 연기 경고화
+
+단기예보 정리의 "진척 없음" 31건(14일)은 일별 이력 정리와의 advisory lock 양보(18)와 CPU 포화 시 첫 선택
+timeout(13)으로, 모두 다음 실행에서 회복됐다. 이제 연속 3회(30분)부터 실패이고 lock 양보는 세지 않으며,
+연기 실행은 이어 읽을 위치를 보존한다. 다음은 odroid weather code-server 배포(Codex). [상세](journal.md)
+
 ## 2026-11-24 — AirKorea 광주 통합 주소 측정소 13곳 누락과 partial 노출
 
 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #10, §4 #17): `airkorea_weather_job`이 매 run 13개 측정소를 못 받고도 SUCCESS로 끝났다(302회 중 301회). odroid 읽기 전용 조회로 원인을 확인했다. 13곳은 모두 광주 도심 측정소(두암동·건국동·주월동·운암동·우산동(광주)·서석동·노대동·농성동·유촌동·치평동·오선동·일곡동·평동)이고, 측정소 목록의 주소 첫 토큰이 `전남광주통합특별시`라 `normalize_sido_name`이 `전남`으로 묶었다. 전남 시도별 bulk 응답에는 이들이 없어 `not_in_response`로 빠졌다. 2026-10-14 첫 수집부터 측정 원천에 `sidoName=광주` 행은 0건이다 — 폐쇄 측정소도 일시 오류도 아닌 결정적 매핑 결함이다(오류 문자열의 예외 종류가 비어 있던 이유).

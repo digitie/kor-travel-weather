@@ -63,6 +63,10 @@ server-side 환경변수로만 주입한다. Next proxy가 브라우저에 backe
 전달하지 않도록 한다. web middleware는 로그아웃 marker를 API의 PostgreSQL에
 기록하므로 web replica가 늘어나도 세션 폐기가 공유된다. 이를 위해 web 컨테이너의
 `WEATHER_API_INTERNAL_URL`과 `WEATHER_ADMIN_TOKEN`을 API와 동일하게 설정한다.
+web은 GET/HEAD 요청의 폐기 확인 active 판정만 `WEATHER_UI_SESSION_CHECK_CACHE_SECONDS`(기본 10초,
+`0`이면 끔) 동안 프로세스 메모리에 재사용하므로, 다른 replica에서 한 로그아웃은 읽기에 최대 그
+시간만큼 늦게 반영된다. 상태 변경 요청(POST/PATCH/PUT/DELETE)은 캐시 없이 매번 확인한다. 저장소
+장애는 캐시하지 않고 계속 503이다(`docs/weather-admin-map-call-resilience.md`).
 
 서비스 key가 없거나 target이 비어 있으면 Dagster run은 실패해야 하며, 기존
 immutable facts를 삭제하거나 부분 publish하지 않는다. MVP는 durable cursor 없이

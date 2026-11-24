@@ -92,7 +92,9 @@ proposed, 미구현)의 범위에서 다룰 일이다). 두 ADR 번호는 2026-1
 이를 알려 주지 않는다(백로그화 여부는 소유자 결정 대기, 2026-10-13 — 그 전까지는 메모만):
 
 - `_SIDO_ALIASES`(`providers/airkorea.py:25-63`) 하드코딩 시도 표는 행정구역 개편 시
-  사람이 갱신한다.
+  사람이 갱신한다. 통합 주소 측정소의 통합 전 시도를 가리는 자치구·시·군 표
+  `_MERGED_DISTRICT_SIDOS`(`providers/airkorea.py:81-94`)도 같다. 원천 행 `sidoName`과
+  대조하는 규칙은 `docs/design/airkorea-merged-sido-check-20261124.md`.
 - AirKorea 측정소 `location_id`는 측정소 코드가 없을 때 provider 주소 문자열을 포함한
   해시다(`providers/airkorea.py:104-107`) — 도로명 개편으로 provider 문자열이 바뀌면
   재키된다(provider 주도).

@@ -80,8 +80,15 @@ production 상태 변경 요청은 `WEATHER_UI_PUBLIC_ORIGIN` 또는
 `WEATHER_UI_PUBLIC_ORIGINS`에 등록된 Origin만 허용한다. 이 값을 비워 두면
 CSRF 검사는 fail-closed로 동작하며, 요청자가 보낸 `X-Forwarded-Host`/`X-Forwarded-Proto`는
 Origin 검증에 사용하지 않는다. 로그아웃한 세션 cookie는 서버 revocation store에서
-즉시 폐기된다. revocation marker는 PostgreSQL에 저장되므로 web 프로세스 재시작이나
-다중 replica에서도 같은 cookie가 다시 승인되지 않는다.
+폐기된다. revocation marker는 PostgreSQL에 저장되므로 web 프로세스 재시작이나
+다중 replica에서도 같은 cookie가 계속 승인되지는 않는다. 다만 web은 GET/HEAD 요청의 폐기
+확인 active 판정을 프로세스 메모리에 `WEATHER_UI_SESSION_CHECK_CACHE_SECONDS`(기본 10초,
+최대 60초, `0`이면 끔) 동안 재사용한다. 그래서 로그아웃을 처리한 같은 프로세스에서는 즉시
+반영되지만, 다른 replica나 같은 서버의 다른 runtime(Edge middleware·Node route handler)에서는
+읽기 요청에 최대 그 시간만큼 늦게 반영되고, 그 사이 탈취된 cookie가 읽기를 통과할 수 있다.
+상태 변경 요청(POST/PATCH/PUT/DELETE, Dagster console·주소 갱신 POST 포함)은 캐시 없이 매번
+저장소에서 확인하고, 저장소 장애(확인 실패)는 캐시하지 않고 계속 503으로 닫힌다. 자세한 계약은
+[관리 지도 호출 무실패화](../weather-admin-map-call-resilience.md)를 따른다.
 
 Provider API key override는 `/settings/providers`에서 관리한다. API와 Dagster가
 공유하는 `KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`(Fernet URL-safe key)가

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hmac
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from time import perf_counter
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from kortravelweather.export_cancellation import install_export_cancellation
 from kortravelweather.export_page_cache import ExportPageCache
 from kortravelweather.export_read_cache import SnapshotMetadataCache
 from kortravelweather.export_selection_cache import ExportSelectionCache
@@ -37,6 +39,8 @@ from kortravelweather.repository import WeatherRepository, repository_from_setti
 from kortravelweather.settings import WeatherSettings, get_settings
 
 from . import __version__
+from .db_errors import driver_error_name, is_connection_loss, sqlstate
+from .prewarm import ApiPrewarm, PrewarmState, ReadinessOut, RequestActivity, stop_prewarm
 from .read_limits import PublicReadTimeout, install_public_read_limits, public_read_deadline
 from .response import Problem, request_id
 from .routers.alert_events import router as alert_event_router
@@ -74,9 +78,16 @@ class RequestContextMiddleware:
     그러면 지도 이동으로 취소된 marker 배치도 limiter 뒤에서 DB 조회를 시작한다.
     """
 
-    def __init__(self, app: ASGIApp, public_read_timeout_seconds: float = 15) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        public_read_timeout_seconds: float = 15,
+        activity: RequestActivity | None = None,
+    ) -> None:
         self.app = app
         self.public_read_timeout_seconds = public_read_timeout_seconds
+        # 시작 warmup이 사용자 요청과 겹치면 물러나도록 ``/v1/*`` 처리 중 수를 센다.
+        self.activity = activity
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -98,8 +109,13 @@ class RequestContextMiddleware:
                 headers["x-duration-ms"] = str(max(0, int((perf_counter() - started) * 1000)))
             await send(message)
 
-        public = scope.get("path", "").startswith("/v1/weather/")
+        path = scope.get("path", "")
+        public = path.startswith("/v1/weather/")
         trace = ReadTrace("public", "public") if public else None
+        # 점검(/health·/ready·/version·/metrics)과 문서는 세지 않는다.
+        counted = self.activity if path.startswith("/v1/") else None
+        if counted is not None:
+            counted.active += 1
         try:
             if public:
                 with public_read_deadline(self.public_read_timeout_seconds), read_trace(trace):
@@ -107,8 +123,12 @@ class RequestContextMiddleware:
             else:
                 await self.app(scope, receive, send_with_context)
         finally:
+            if counted is not None:
+                counted.active -= 1
             if trace is not None:
-                trace.finish(outcome="timeout" if status_code == 503 else "ok")
+                # DB 연결 단절 503은 지연(timeout)과 구분해 error로 남긴다.
+                outcome = scope["state"].get("public_read_outcome")
+                trace.finish(outcome=outcome or ("timeout" if status_code == 503 else "ok"))
             # Do not count scrapes themselves: Prometheus polling must not
             # make request volume grow when it observes the request metric.
             if scope.get("path") != "/metrics":
@@ -152,15 +172,45 @@ def create_app(
         runtime_settings.require_admin_token()
         runtime_settings.require_metrics_token()
     runtime_repository = repository or repository_from_settings(runtime_settings)
+    prewarm_state = PrewarmState()
+    request_activity = RequestActivity()
+    # 실제 repository에서만 켠다. repository double을 넘기는 시험·하위 통합에는 DB가 없다.
+    prewarm_enabled = runtime_settings.api_prewarm_active and isinstance(
+        runtime_repository, WeatherRepository
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # 포트 열기를 막지 않는다. warmup은 별도 task로 돌고 /ready가 그 상태를 보인다.
+        task = None
+        if prewarm_enabled:
+            task = ApiPrewarm(
+                runtime_repository,
+                state=prewarm_state,
+                activity=request_activity,
+                marker_limiter=app.state.marker_limiter,
+                auth_limiter=app.state.auth_limiter,
+            ).start()
+        try:
+            yield
+        finally:
+            if task is not None:
+                await stop_prewarm(task)
+
     api = FastAPI(
         title="kor-travel-weather API",
         version=__version__,
         description="Provider-independent Korean weather facts and forecasts.",
+        lifespan=lifespan,
     )
     api.state.settings = runtime_settings
     api.state.repository = runtime_repository
+    api.state.prewarm = prewarm_state
+    api.state.request_activity = request_activity
     if isinstance(runtime_repository, WeatherRepository):
         install_public_read_limits(runtime_repository.engine)
+        # 연결이 끊긴 service export 요청의 다음 SQL을 막고 실행 중 SQL을 취소한다.
+        install_export_cancellation(runtime_repository.engine)
     # 지도 이동의 이전 배치가 DB·일반 worker 슬롯을 독점하지 않도록 제한한다.
     api.state.marker_limiter = CapacityLimiter(2)
     api.state.service_export_limiter = CapacityLimiter(2)
@@ -189,6 +239,7 @@ def create_app(
     api.add_middleware(
         RequestContextMiddleware,
         public_read_timeout_seconds=runtime_settings.public_read_timeout_seconds,
+        activity=request_activity,
     )
 
     @api.exception_handler(PublicReadTimeout)
@@ -196,11 +247,21 @@ def create_app(
     async def public_read_error(request: Request, exc: Exception) -> JSONResponse:
         if not request.url.path.startswith("/v1/weather/"):
             raise exc
-        state = getattr(getattr(exc, "orig", None), "sqlstate", None)
         if isinstance(exc, PoolTimeoutError):
             code = "POOL_BUSY"
-        elif isinstance(exc, PublicReadTimeout) or state == "57014":
+        elif isinstance(exc, PublicReadTimeout) or sqlstate(exc) == "57014":
             code = "READ_TIMEOUT"
+        elif is_connection_loss(exc):
+            # 연결 단절·DB 재시작(08xxx, 57P01~03, SQLSTATE 없는 단절)도 같은 요청을 다시 보내면
+            # pool이 새 연결로 처리할 수 있다. 인증·없는 DB 같은 접속 설정 오류는 여기 오지 않고
+            # 500(traceback)으로 남는다. 원인 문장·SQL·주소는 응답과 이 로그에 넣지 않고,
+            # 운영자가 지연·거부·종료를 구분하도록 DBAPI 예외 class 이름만 남긴다.
+            code = "DB_UNAVAILABLE"
+            request.state.public_read_outcome = "error"
+            logger.warning(
+                "weather_public_read_db_unavailable path_kind=public sqlstate=%s type=%s driver=%s",
+                sqlstate(exc) or "-", type(exc).__name__, driver_error_name(exc),
+            )
         else:
             raise exc
         response = _problem(request, 503, "조회 일시 지연", "잠시 후 다시 요청하세요.", code)
@@ -234,6 +295,27 @@ def create_app(
     @api.get("/health", tags=["system"])
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "kor-travel-weather", "version": __version__}
+
+    @api.get(
+        "/ready",
+        tags=["system"],
+        response_model=ReadinessOut,
+        responses={503: {"model": ReadinessOut, "description": "시작 warmup이 아직 진행 중"}},
+    )
+    async def ready() -> JSONResponse:
+        """시작 warmup 상태. 완료·예산 초과 등 생략·비활성이면 200, 진행 중이면 503.
+
+        DB를 읽지 않으며 DB 건강 검사가 아니다. ``/health``는 그대로 생존 확인만 한다.
+        """
+        body = ReadinessOut.from_state(prewarm_state)
+        headers = {"cache-control": "no-store"}
+        if not body.ready:
+            headers["retry-after"] = "1"
+        return JSONResponse(
+            status_code=200 if body.ready else 503,
+            content=body.model_dump(mode="json"),
+            headers=headers,
+        )
 
     @api.get("/version", tags=["system"])
     async def version() -> dict[str, str | None]:
