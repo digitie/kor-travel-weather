@@ -37,8 +37,10 @@ Map export(`/v1/service/exports/*`)는 이 warmup으로 거의 풀리지 않는�
   않아 lazy 삭제 분기에 들어가지 않는다. 시험이 실행한 문장에 쓰기가 없는지 확인한다.
 - **동시성 1.** 단계를 한 task에서 차례로, DB 작업은 한 번에 worker thread 하나로 한다.
 - **문장당 5초·전체 30초.** 공개 읽기 마감 장치(`read_limits.public_read_deadline`)에
-  문장 상한(`statement_seconds`)을 더해 문장마다 `SET LOCAL statement_timeout = min(남은 예산, 5초)`를
-  건다. pool 대기도 남은 예산으로 줄어든다(`ReadDeadlineQueuePool`). 예산이 끝나면 다음 문장은
+  문장 상한(`statement_seconds`)을 더해 문장마다 `statement_timeout`이 `min(남은 예산, 5초)` 이하가
+  되게 한다. 값은 transaction마다 bind 상수 SQL(`set_config`)로 한 번 걸고, 남은 예산과 어긋날 때만
+  다시 건다(`lock_timeout` 2초도 같이 건다, [weather-public-read-path.md](weather-public-read-path.md)).
+  pool 대기도 남은 예산으로 줄어든다(`ReadDeadlineQueuePool`). 예산이 끝나면 다음 문장은
   보내지 않는다.
 - **사용자 우선.** 처리 중인 사용자 요청(`/v1/*`, 점검·문서 경로 제외)이 2건 이상이면 남은 단계를
   생략한다(`RequestContextMiddleware`가 센다). 단계 사이와 마커 묶음 사이, 마커 자리를 얻은

@@ -1,18 +1,17 @@
 """행정구역 근거가 확인된 공식 발표 관측. 활성 상태/해제를 빈 목록에서 추정하지 않는다."""
 
 from datetime import datetime, timedelta
-from time import perf_counter
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
-from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.alert_events import AlertEvent
 from kortravelweather.models import kst_now
 from kortravelweather.repository import WeatherRepository
 
-from ..response import Envelope, envelope
+from ..public_response import PublicRequest, Rendered, render, respond
+from ..response import Envelope
 from .weather import repository
 
 router = APIRouter(prefix="/v1/weather", tags=["weather"])
@@ -48,9 +47,12 @@ class AlertEventsOut(BaseModel):
     events: list[ScopedAlertEventOut]
 
 
+AlertEventsResponse = Envelope[AlertEventsOut]
+
+
 @router.get(
     "/alert-events",
-    response_model=Envelope[AlertEventsOut],
+    response_model=AlertEventsResponse,
     summary="공식 기상특보 발표 관측 조회",
     description=(
         "BJD namespace의 시도/시군구/검증된 개별 코드로 전체 행정구역 교집합을 조회한다. "
@@ -66,15 +68,21 @@ async def alert_events(
         Query(pattern=r"^(?:[0-9]{2}|[0-9]{5}|[0-9]{10})$", max_length=10),
     ],
     since: datetime | None = None,
-) -> dict:
-    started = perf_counter()
+) -> Response:
+    public = PublicRequest.of(request)
     since = since if since is not None else kst_now() - timedelta(days=3)
-    try:
-        data = await run_in_threadpool(repo.read_alert_events, bjd_code=bjd_code, since=since)
-    except ValueError as exc:
-        if str(exc) != "ALERT_HISTORY_WINDOW":
-            raise
-        raise HTTPException(
-            422, detail="ALERT_HISTORY_WINDOW: timezone-aware 최근31일 조회가 필요합니다."
-        ) from None
-    return envelope(request, started, data)
+
+    def build() -> Rendered:
+        # 조회·검증·직렬화를 worker thread에서 끝낸다(호출 검토 B3).
+        try:
+            data = repo.read_alert_events(bjd_code=bjd_code, since=since)
+        except ValueError as exc:
+            if str(exc) != "ALERT_HISTORY_WINDOW":
+                raise
+            raise HTTPException(
+                422, detail="ALERT_HISTORY_WINDOW: timezone-aware 최근31일 조회가 필요합니다."
+            ) from None
+        body = AlertEventsOut.model_validate(data)
+        return render(public, AlertEventsResponse, body, public.meta())
+
+    return await respond(build)

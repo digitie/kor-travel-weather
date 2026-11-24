@@ -25,6 +25,11 @@
 disabled location은 404로 숨긴다. forecast의 기본 응답은 current projection이고
 `history=true`가 명시된 경우에만 correction revision이 포함된다.
 
+공개 200 응답은 `Vary: Accept-Encoding`을 붙이고, 요청이 gzip을 허용하고 본문이 1,024 bytes
+이상이면 gzip으로 보낸다. 일시 지연·경합은 `503`, `retry-after: 1`, problem `code`
+(`READ_TIMEOUT`·`POOL_BUSY`·`DB_UNAVAILABLE`·`LOCK_TIMEOUT`·`MARKER_BUSY`)로 알리며 같은 요청을
+다시 보내면 된다. 자세한 계약은 [weather-public-read-path.md](../weather-public-read-path.md)다.
+
 ## Admin
 
 `X-Admin-Token`이 설정된 환경에서는 constant-time 비교로 보호한다.
