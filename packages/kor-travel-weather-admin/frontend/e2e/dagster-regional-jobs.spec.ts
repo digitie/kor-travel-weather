@@ -14,7 +14,16 @@ const RUNS = [
   { runId: "c0ffee00-0000-4000-8000-000000000002", status: "SUCCESS", jobName: "khoa_beach_index_job", startTime: now - 1200, endTime: now - 1000, tags: [] },
 ];
 
+// 같은 화면의 주소 갱신 패널은 이 요약 모양을 기대한다. fixture backend의 기본 응답
+// (`{ data: [], meta: {} }`)이 그대로 들어가면 패널이 렌더 중 예외를 내고 Dagster 운영 화면
+// 전체가 "UI 런타임 오류"로 바뀌어, 아래 실행 표가 아예 그려지지 않는다.
+const ADDRESS_REFRESH_SUMMARY = {
+  total: 0, due: 0, failed: 0, refresh_months: 6, configured: false, auto_enabled: false,
+  in_progress: false, manual_cycle: false, last_resolved_at: null, items: [],
+};
+
 async function routeDagster(page: Page) {
+  await page.route("**/api/address-refresh", (route) => route.fulfill({ json: ADDRESS_REFRESH_SUMMARY }));
   await page.route("**/api/dagster/graphql", async (route) => {
     const { operationName } = route.request().postDataJSON() as { operationName: string };
     if (operationName === "WeatherDagsterRunFailure") {
@@ -47,9 +56,6 @@ async function login(page: Page) {
   await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).toBe("/admin/dagster");
 }
 
-// 실행 표는 가상 목록이라 화면 밖 행은 그리지 않는다. 앞 패널이 모두 보이도록 높은 화면을 쓴다.
-test.use({ viewport: { width: 1280, height: 2400 } });
-
 // CI는 산출물을 올리지 않는다. 실패하면 화면 글자 일부를 오류 메시지에 붙여 로그만으로 원인을 본다.
 async function withPageText(page: Page, check: () => Promise<void>) {
   try {
@@ -66,7 +72,8 @@ test("지역 원천 job은 원천 이름으로 보이고 실패 원인이 그 �
   await routeDagster(page);
   await login(page);
   const failed = page.getByRole("button", { name: /실행 상세: 고속도로 휴게소 날씨 수집/ });
-  await withPageText(page, () => expect(failed.first()).toBeVisible({ timeout: 30_000 }));
+  // 로그인 대기(최대 30초)와 합쳐도 시험 상한 45초 안에 실패가 드러나게 한다.
+  await withPageText(page, () => expect(failed.first()).toBeVisible({ timeout: 10_000 }));
   // 묶음 job 이름(분리 전)은 새 실행 목록 어디에도 없다.
   await expect(page.getByText("지역별(해수욕장·산·고속도로) 날씨 수집", { exact: false })).toHaveCount(0);
   await failed.first().click();
