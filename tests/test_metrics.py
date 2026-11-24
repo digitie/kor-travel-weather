@@ -271,6 +271,50 @@ def test_multiprocess_registry_aggregates_worker_samples(tmp_path) -> None:
     ) in scraper.stdout
 
 
+def test_export_gc_reclaimable_gauge_outlives_the_run_worker(tmp_path) -> None:
+    # 정리 job은 run이 끝나면 사라지는 run worker에서 돈다. 끝난 worker의 마지막 run 값이
+    # scrape에 남고, 값을 쓰지 않고 import만 하는 process는 gauge 파일을 남기지 않는다.
+    environment = os.environ.copy()
+    environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    source_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [source_root, environment.get("PYTHONPATH", "")]
+    )
+    subprocess.run(
+        [sys.executable, "-c", "import kortravelweather.metrics"], env=environment, check=True,
+    )
+    assert not list(tmp_path.glob("gauge_mostrecent_*.db"))
+    for eligible, deleted in ((900, 100), (500, 0)):
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from kortravelweather.metrics import observe_export_artifact_gc; "
+                f"observe_export_artifact_gc({{'eligible_bytes': {eligible}, "
+                f"'deleted_bytes': {deleted}, 'deleted': 1}})",
+            ],
+            env=environment,
+            check=True,
+        )
+    assert len(list(tmp_path.glob("gauge_mostrecent_*.db"))) == 2
+    scraper = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from kortravelweather.metrics import metrics_payload; "
+            "print(metrics_payload().decode())",
+        ],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    # 두 worker 모두 끝났다. 더 나중 run의 값(500 - 0)이 남는다.
+    assert "ktw_export_artifact_gc_reclaimable_bytes 500.0" in scraper.stdout
+    assert "ktw_export_artifact_gc_deleted_files_total 2.0" in scraper.stdout
+    assert "ktw_export_artifact_gc_deleted_bytes_total 100.0" in scraper.stdout
+
+
 def test_multiprocess_live_gauge_is_cleaned_on_sigterm(tmp_path) -> None:
     environment = os.environ.copy()
     environment["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)

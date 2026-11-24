@@ -77,12 +77,20 @@ rule·알람을 새 이름으로 함께 전환한다.
 - `ktw_forward_partition_days`, `ktw_oldest_partition_age_days` — API `/metrics` scrape 때 카탈로그에서 읽는다(API만 내보낸다). 앞의 것은 오늘 이후 날짜 파티션 일수(`KorTravelWeatherForwardPartitionsLow`, 3일 이하), 뒤의 것은 가장 오래된 날짜 파티션의 첫날부터 오늘까지 일수로 보존 정리의 정체 신호다(야간 정리 직후 `RETENTION_DAYS`, 다음 정리 직전 +1). `KorTravelWeatherRetentionStale`은 9(운영 7일 + 2, 2026-10-13부터; 이전 16일 + 2 = 18) 초과가 30분 이어지면 울린다 — 정리가 이틀 연속 하루도 지우지 못했다는 뜻이다. API는 `RETENTION_DAYS`를 갖지 않으므로 임계값은 규칙에 있고 `tests/test_metrics.py`가 고정한다. 카탈로그 읽기가 실패하면 둘 다 빠지고 `KorTravelWeatherForwardPartitionsUnknown`이 울린다
 - `ktw_export_artifact_gc_deleted_files_total`, `ktw_export_artifact_gc_deleted_bytes_total`,
   `ktw_export_artifact_gc_reclaimable_bytes` — 매시 :52 `weather_export_maintenance_job`이
-  참조 없는 export artifact를 정리한 결과(code-server만 의미 있다; 2026-11-24 전에는
-  `weather_export_publisher` sensor가 10분마다 돌았다). job은 publisher sensor가 RUNNING이고
-  export가 켜진 곳에서만 run을 만들며, 일괄 퇴역(CONFIRMED_TERMINAL·SUPERSEDED)도 같은 run이
-  한다. 정리가 실패하면 run 실패로 보인다. publisher sensor는 승격·일별 집계만 하고, 단계
-  실패가 3 tick 연속이거나 DB 장애로 후보 처리가 멈추면 tick이 실패로 끝난다(한 번의 일시
-  문장 초과는 skip 사유에 분류만 남긴다). 현재 head·승인 inventory·
+  참조 없는 export artifact를 정리한 결과(code-server의 multiprocess 지표; 2026-11-24 전에는
+  `weather_export_publisher` sensor가 10분마다 돌았다). job은 code-server가 띄우는 run worker
+  process에서 돌고 run이 끝나면 그 process도 끝난다. 그래서 reclaimable gauge는 live 모드가
+  아니라 `mostrecent`이고 run 합계로 run마다 한 번만 기록한다 — 다음 run까지(또는 code-server
+  컨테이너가 다시 시작해 multiprocess tmpfs가 빌 때까지) 마지막 run의 값이 scrape에 남는다.
+  job은 publisher sensor가 RUNNING이고 export가 켜진 곳에서만 run을 만들며, 일괄
+  퇴역(CONFIRMED_TERMINAL·SUPERSEDED)도 같은 run이 한다. 퇴역과 GC는 서로 독립이라 한쪽이
+  실패해도 다른 쪽은 돌고, 하나라도 실패하면 run이 실패로 끝난다(실패 사유는 단계와 분류만,
+  다른 단계의 진행은 실패 metadata에 남는다). GC는 참조 판정을 공유 guard에서 먼저 하고 지울
+  대상이 있는 batch만 배타 guard 안에서 다시 판정해 지운다. 배타 guard를 잡은 호출 뒤에는 그
+  호출 시간 이상 쉬어 배타 점유가 GC 시간의 절반을 넘지 않는다. publisher sensor는 승격·일별
+  집계만 하고, 단계 실패가 3 tick 연속이거나 DB 장애로 후보 처리가 멈추면 tick이 실패로
+  끝난다(한 번의 일시 문장 초과는 skip 사유에 분류만 남긴다). 실패 tick의 cursor는 Dagster가
+  저장하지 않으므로 sweep 위치는 sensor process 메모리에서 다음 tick이 잇는다. 현재 head·승인 inventory·
   공개 전 receipt·승격 pin·유효하거나 최근인 frozen snapshot·일별 집계가 아직 읽지 않은 세대·
   보존 창(`KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_RETENTION_HOURS`, 기본 24) 안의 세대는
   지우지 않는다. 활성 publisher의 기본 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_GC=delete`는
@@ -93,9 +101,10 @@ rule·알람을 새 이름으로 함께 전환한다.
   한 run 안에서 2,000행 page를 차례로 읽는다(run 사이에는 아무것도 보관하지 않는다). 새 파일·live 파일·
   알 수 없는 이름도 목록 예산에 포함하며, DB 실패/취소 후에는 같은 미처리 후보를 재확인한다.
   재시작하면 처음부터 돌아도 안전하다. 전환은 기존 정상 release 절차로 배포와 함께 조정한다.
-  reclaimable은 **마지막 제한된 패스**가 찾은 대상 중 아직 디스크에 남은 byte이며,
-  볼륨 전체 회수량이 아니다. sensor skip 메시지의 `gc=…`, `gc_complete`, `gc_visited`,
-  `gc_pending`, `gc_errors`와 실제 deleted byte counter를 함께 본다. snapshot handle은
+  reclaimable은 **마지막 정리 run**(300초 예산 안의 제한된 패스)이 찾은 대상 중 아직
+  저장소에 남은 byte이며, 볼륨 전체 회수량이 아니다. `weather_export_maintenance_job` run
+  metadata·log의 `gc_deleted`, `gc_eligible_bytes`, `gc_complete`, `gc_visited`, `gc_pending`,
+  `gc_errors`와 실제 deleted byte counter를 함께 본다. snapshot handle은
   약 15~16분 후 만료되고 만료 후 6시간을 넘으면 DB 행과 ref만 정리한다. 그 삭제가 파일
   unlink를 대신하지 않으며, 실제 파일 정리는 위 보존·참조 검사에 따른다.
 - `ktw_metrics_errors_total{operation}`

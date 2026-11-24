@@ -117,7 +117,9 @@ def test_gc_walks_every_page_in_one_run_and_deletes_old_orphans(
     assert report["gc_deleted"] == 5 and report["gc_complete"] is True
     assert report["gc_calls"] >= 3 and report["gc_pending"] == 0
     # 배타 guard를 잡는 삭제 호출 사이마다 reader·writer에게 양보한다(마지막 완료 호출 뒤는 없음).
-    assert pauses == [module.GC_YIELD_SECONDS] * (report["gc_calls"] - 1)
+    # 쉬는 시간은 그 호출 시간 이상이라 실제 시계로는 최소값만 확인한다.
+    assert len(pauses) == report["gc_calls"] - 1
+    assert all(pause >= module.GC_YIELD_SECONDS for pause in pauses)
 
 
 def test_gc_dry_run_counts_without_deleting(publisher_repository, tmp_path):
@@ -136,8 +138,136 @@ def test_gc_failure_fails_the_run_instead_of_being_swallowed(tmp_path, monkeypat
         raise TimeoutError("reference unavailable")
 
     monkeypatch.setattr(module, "collect_export_artifacts", fail)
-    with pytest.raises(TimeoutError):
+    with pytest.raises(module.ExportMaintenanceError) as raised:
         module.run_export_maintenance(object(), _settings(tmp_path))
+    assert raised.value.report["failures"] == "gc:TimeoutError"
+    # 메시지는 분류만 담고 원 예외를 잇지 않는다.
+    assert "unavailable" not in str(raised.value) and raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+def test_retire_failure_still_runs_gc_then_fails(tmp_path, monkeypatch):
+    # 퇴역이 계속 문장 상한에 걸려도 같은 run의 GC는 돈다(artifact가 쌓이지 않는다).
+    rounds = []
+
+    def retire(repository, *, statement_timeout_seconds):
+        rounds.append(statement_timeout_seconds)
+        if len(rounds) == 2:
+            raise RuntimeError("postgresql://user:secret@host/db statement")
+        return {"SUPERSEDED": module.RETIRE_BATCH, "CONFIRMED_TERMINAL": 3}
+
+    gc_calls = []
+
+    def collect(*args, **kwargs):
+        gc_calls.append(kwargs)
+        return {"mode": "delete", "visited": 2, "live": 1, "eligible": 1, "eligible_bytes": 7,
+                "deleted": 1, "deleted_bytes": 7, "complete": True, "pending": 0}
+
+    monkeypatch.setattr(module, "retire_settled_attempts", retire)
+    monkeypatch.setattr(module, "collect_export_artifacts", collect)
+    with pytest.raises(module.ExportMaintenanceError) as raised:
+        module.run_export_maintenance(object(), _settings(tmp_path), sleep=lambda _: None)
+    report = raised.value.report
+    assert len(gc_calls) == 1 and report["gc_deleted"] == 1 and report["gc_complete"] is True
+    # 실패 전 문장의 퇴역 수는 남는다.
+    assert report["retire_rounds"] == 1 and report["retired_superseded"] == module.RETIRE_BATCH
+    assert report["failures"] == "retire:RuntimeError"
+    assert "secret" not in str(raised.value)
+
+
+def test_both_stage_failures_are_reported(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise TimeoutError("synthetic")
+
+    monkeypatch.setattr(module, "retire_settled_attempts", fail)
+    monkeypatch.setattr(module, "collect_export_artifacts", fail)
+    with pytest.raises(module.ExportMaintenanceError) as raised:
+        module.run_export_maintenance(object(), _settings(tmp_path))
+    assert raised.value.report["failures"] == "retire:TimeoutError,gc:TimeoutError"
+
+
+def test_failed_stage_fails_the_run_with_progress_metadata(tmp_path, monkeypatch):
+    from dagster import ResourceDefinition
+
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED", "true")
+    monkeypatch.setenv("KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT", str(tmp_path))
+    disposed = []
+    repository = SimpleNamespace(engine=SimpleNamespace(dispose=lambda: disposed.append(True)))
+
+    def run(repo, settings):
+        assert repo is repository
+        raise module.ExportMaintenanceError(
+            {"retire_rounds": 0, "gc_deleted": 3, "failures": "retire:statement_timeout"},
+        )
+
+    monkeypatch.setattr(module, "run_export_maintenance", run)
+    resource = ResourceDefinition.hardcoded_resource(
+        SimpleNamespace(create_repository=lambda: repository),
+    )
+    result = module.weather_export_maintenance_job.execute_in_process(
+        resources={"weather_repository": resource}, raise_on_error=False,
+    )
+    assert not result.success and disposed == [True]
+    failure = result.failure_data_for_node("weather_export_maintenance")
+    assert "retire:statement_timeout" in failure.user_failure_data.description
+    assert failure.user_failure_data.metadata["gc_deleted"].value == 3
+
+
+def _scripted_gc(monkeypatch, results, *, seconds_per_call):
+    """정해진 결과를 차례로 돌려주는 GC 호출. 호출마다 가짜 시계를 ``seconds_per_call`` 민다."""
+    clock = [0.0]
+    remaining = list(results)
+
+    def collect(*args, **kwargs):
+        clock[0] += seconds_per_call
+        return remaining.pop(0)
+
+    monkeypatch.setattr(module, "retire_settled_attempts", lambda *a, **k: {})
+    monkeypatch.setattr(module, "collect_export_artifacts", collect)
+    return clock
+
+
+def _gc_result(*, eligible, eligible_bytes=0, deleted_bytes=0, complete=False):
+    return {"mode": "delete", "visited": 4, "live": 4 - eligible, "eligible": eligible,
+            "eligible_bytes": eligible_bytes, "deleted": eligible, "deleted_bytes": deleted_bytes,
+            "complete": complete, "pending": 0 if complete else 4}
+
+
+@pytest.mark.parametrize("gc,eligible,expected", [
+    # 지울 대상이 있던 delete 호출은 배타 guard를 잡았다. 그 호출 시간(2초) 이상 쉰다.
+    ("delete", 1, 2.0),
+    # 보호 행뿐인 호출과 dry_run은 공유 guard만 잡았다. 최소 양보만 한다.
+    ("delete", 0, module.GC_YIELD_SECONDS),
+    ("dry_run", 1, module.GC_YIELD_SECONDS),
+])
+def test_gc_rests_at_least_as_long_as_it_held_the_exclusive_guard(
+    tmp_path, monkeypatch, gc, eligible, expected,
+):
+    clock = _scripted_gc(monkeypatch, [
+        _gc_result(eligible=eligible), _gc_result(eligible=eligible),
+        _gc_result(eligible=eligible, complete=True),
+    ], seconds_per_call=2.0)
+    pauses = []
+    module.run_export_maintenance(
+        object(), _settings(tmp_path, gc=gc), clock=lambda: clock[0], sleep=pauses.append,
+    )
+    assert pauses == [expected, expected]
+
+
+def test_gc_metrics_are_observed_once_with_run_totals(tmp_path, monkeypatch):
+    clock = _scripted_gc(monkeypatch, [
+        _gc_result(eligible=2, eligible_bytes=50, deleted_bytes=30),
+        _gc_result(eligible=1, eligible_bytes=20, deleted_bytes=20, complete=True),
+    ], seconds_per_call=0.0)
+    observed = []
+    monkeypatch.setattr(module, "observe_export_artifact_gc", observed.append)
+    report = module.run_export_maintenance(
+        object(), _settings(tmp_path), clock=lambda: clock[0], sleep=lambda _: None,
+    )
+    # 호출마다 덮어쓰면 reclaimable에 마지막 호출분(0)만 남는다. run 합계(70 - 50)를 한 번 쓴다.
+    assert len(observed) == 1
+    assert observed[0]["eligible_bytes"] == 70 and observed[0]["deleted_bytes"] == 50
+    assert observed[0]["deleted"] == 3 and report["gc_calls"] == 2
 
 
 def test_gc_stops_without_progress(tmp_path, monkeypatch):
