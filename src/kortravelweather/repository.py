@@ -1446,6 +1446,29 @@ _IN_CHUNK = 1000
 #: (이 문자가 아닌 글자가 하나라도 있음)으로 그대로 옮긴다.
 _PY_WHITESPACE = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
 _NON_BLANK_PATTERN = f"[^{_PY_WHITESPACE}]"
+#: JSON 원문의 NUL 이스케이프와 그 대체값. 길이가 같고 둘 다 공백이 아니다.
+_JSON_NUL_ESCAPE = "\\u0000"
+_JSON_NUL_STAND_IN = "\\u0001"
+
+
+def _nul_safe_json(document):
+    """``json`` 값에서 ``->``·``->>``를 써도 22P05로 실패하지 않는 같은 모양의 값.
+
+    PostgreSQL ``json``의 ``->``는 문서 전체를 파싱하며 어느 문자열에든 ``\\u0000``이 있으면
+    text로 풀 수 없다며 실패한다(관리 API의 임의 ``metadata``로 넣을 수 있다). 그런 행만
+    원문 텍스트의 ``\\u0000``을 ``\\u0001``로 바꿔 다시 파싱한다. 앞 글자가 백슬래시
+    이스케이프의 짝이어서 바뀐 것이 글자 그대로의 ``u0000``이어도 결과는 유효한 JSON이다. 두
+    값 모두 Python ``str.isspace()``가 거짓이므로 공백만인지 판정은 바뀌지 않는다. 다른
+    행은 CASE의 else 쪽이라 예전 값을 그대로 쓴다.
+    """
+    raw = document.cast(Text)
+    return case(
+        (
+            func.strpos(raw, _JSON_NUL_ESCAPE) > 0,
+            func.replace(raw, _JSON_NUL_ESCAPE, _JSON_NUL_STAND_IN).cast(JSON),
+        ),
+        else_=document,
+    )
 
 
 class WeatherRepository:
@@ -4756,8 +4779,8 @@ class WeatherRepository:
 
         기준은 반경 안에서 가장 가까운 측정점(``metadata.measurement_point``가 객체이고
         ``station_name``이 공백만이 아닌 문자열), 측정점이 없으면 가장 가까운 위치다. 후보는
-        기준에서 ``max(5, 기준 거리 + 5)``km(요청 반경 이하) 안의 측정점이 아닌 다른 위치이며
-        거리·``location_id`` 순이다. 반경 안의 위치가 없으면 None이다.
+        요청 좌표에서 ``max(5, 기준 거리 + 5)``km(요청 반경 이하) 안의 측정점이 아닌 다른
+        위치이며 거리·``location_id`` 순이다. 반경 안의 위치가 없으면 None이다.
 
         예전에는 반경 안 최대 1만 행을 ORM으로 읽어 Python에서 골랐다(호출 검토 B10). 판정
         규칙은 API의 ``measurement_point_out``과 같다(공백은 Python ``str.strip()`` 기준).
@@ -4766,7 +4789,7 @@ class WeatherRepository:
         if circle is None:
             return None
         predicates, distance_km = circle
-        point = WeatherLocationRow.metadata_json["measurement_point"]
+        point = _nul_safe_json(WeatherLocationRow.metadata_json)["measurement_point"]
         station_name = point["station_name"]
         is_station = func.coalesce(
             and_(

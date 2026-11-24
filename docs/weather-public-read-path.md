@@ -94,10 +94,18 @@ CTE 한 문장으로 기준 1행과 후보만 읽는다.
   측정점은 `metadata.measurement_point`가 JSON 객체이고 `station_name`이 공백만이 아닌 문자열인
   위치다. API `measurement_point_out`과 같은 판정이며, 공백은 Python `str.strip()`이 지우는 문자
   전부(U+3000 포함)를 정규식으로 옮겼다.
-- 후보: 기준에서 `max(5, 기준 거리 + 5)`km 안(요청 반경 이하)의 측정점이 아닌 다른 위치, 거리·
-  `location_id` 순.
-- 시험은 측정점 경계 사례(공백·전각 공백 이름, 숫자·null 이름, 문자열·배열 `measurement_point`,
-  비활성, 같은 좌표 동률)를 섞은 카탈로그에서 예전 Python 선택과 결과(위치·거리)가 같은지 본다.
+- PostgreSQL `json`의 `->`·`->>`는 문서 전체를 파싱하므로 `metadata`의 어느 문자열에든 JSON
+  `\u0000`이 있으면 22P05(unsupported Unicode escape)로 실패한다. 관리 API `LocationCreate`/
+  `LocationPatch`의 `metadata`(임의 dict)로 넣을 수 있어서, 반경 안 한 행 때문에 그 지역 `/resolve`
+  전체가 500이 되지 않도록 원문 텍스트에 `\u0000`이 있는 행만 `\u0001`로 바꿔 다시 파싱한
+  값에서 판정한다(`_nul_safe_json`, CASE라 다른 행은 예전 값 그대로). 두 문자 모두 Python
+  `str.isspace()`가 거짓이므로 측정점 판정은 예전 Python 선택과 같다. 응답의 `metadata`는 원래
+  값(NUL 포함)이다.
+- 후보: 요청 좌표에서 `max(5, 기준 거리 + 5)`km 안(요청 반경 이하)의 측정점이 아닌 다른 위치,
+  거리·`location_id` 순. 거리는 모두 요청 좌표 기준이다(예전 Python 선택과 같다).
+- 시험은 측정점 경계 사례(공백·전각 공백 이름, NUL이 든 이름, 숫자·null 이름, 문자열·배열
+  `measurement_point`, 비활성, 같은 좌표 동률)를 섞은 카탈로그에서 예전 Python 선택과 결과(위치·
+  거리)가 같은지 본다.
 - 달라지는 경우: 반경 안 활성 위치가 1만 곳을 넘을 때 예전에는 가까운 1만 곳 밖의 측정점·후보를
   보지 못했다. 지금은 반경 전체에서 고른다.
 - repository double(`resolve_locations` 없음)은 예전 Python 선택을 그대로 쓴다.

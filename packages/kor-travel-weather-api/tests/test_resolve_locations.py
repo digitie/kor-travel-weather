@@ -15,7 +15,8 @@ from kortravelweather import repository as repository_module
 from kortravelweather.models import WeatherLocation
 from kortravelweather.settings import WeatherSettings
 
-#: 측정점 판정의 경계 사례. 앞의 둘만 측정점이다(공백만인 이름은 아니다).
+#: 측정점 판정의 경계 사례. 앞의 둘과 맨 끝 넷 중 공백만인 이름을 뺀 셋이 측정점이다. NUL은
+#: PostgreSQL ``json``의 ``->``가 풀지 못하는 이스케이프라 따로 둔다.
 METADATA = [
     {"measurement_point": {"station_name": "중구", "provider": "python-airkorea-api"}},
     {"measurement_point": {"station_name": " 종로　"}},
@@ -29,6 +30,11 @@ METADATA = [
     {"measurement_point": None},
     {"note": "kma grid"},
     {},
+    {"measurement_point": {"station_name": "a\x00b"}},
+    {"measurement_point": {"station_name": " \x00 "}},
+    # 다른 키의 NUL(이름은 공백만), 글자 그대로의 백슬래시+u0000(측정점).
+    {"note": "x\x00", "measurement_point": {"station_name": " "}},
+    {"measurement_point": {"station_name": "\\u0000"}},
 ]
 
 
@@ -95,6 +101,28 @@ def test_station_without_a_visible_name_falls_back_to_the_nearest_location(repos
     # 후보 반경은 기준 거리 + 5km라 측정점이 아닌 두 위치가 모두 들어간다.
     assert [candidate.location_id for candidate, _ in candidates] == ["blank-station", "kma"]
     assert repository.resolve_locations(33.2, 126.2, radius_km=1) is None
+
+
+def test_station_name_with_nul_escape_does_not_break_resolve(repository):
+    """관리 API metadata로 들어온 ``\\u0000``이 반경 전체의 /resolve를 22P05로 막지 않는다."""
+    repository.create_location(WeatherLocation(
+        location_id="st-nul", name="NUL 측정소", latitude=37.53, longitude=127.0,
+        metadata={"measurement_point": {"station_name": "a\x00b"}},
+    ))
+    repository.create_location(WeatherLocation(
+        location_id="kma", name="KMA", latitude=37.5, longitude=127.0,
+        metadata={"note": "\x00"},
+    ))
+    selected = repository.resolve_locations(37.5, 127.0, radius_km=100)
+    assert selected == _python_selection(repository, 37.5, 127.0, 100)
+    (anchor, _), candidates = selected
+    # NUL은 공백이 아니므로 예전 Python 판정처럼 측정점이다.
+    assert anchor.location_id == "st-nul"
+    assert [candidate.location_id for candidate, _ in candidates] == ["kma"]
+    client = TestClient(create_app(WeatherSettings(environment="development"), repository))
+    response = client.get("/v1/weather/resolve", params={"lat": 37.5, "lon": 127.0})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["location"]["location_id"] == "st-nul"
 
 
 def test_whitespace_pattern_covers_every_python_whitespace_character():
