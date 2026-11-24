@@ -552,6 +552,46 @@ export function getHealth(): Promise<{ status: string; service: string; version:
   });
 }
 
+/** `GET /ready`의 시작 warmup 단계(OpenAPI `ReadinessStepOut`). */
+export type ApiReadinessStep = {
+  name: "connections" | "session_check" | "regions" | "locations" | "markers" | "location_detail";
+  outcome: "ok" | "failed" | "skipped";
+  elapsed_ms: number;
+};
+
+/**
+ * `GET /ready` 본문(OpenAPI `ReadinessOut`). API 프로세스 시작 warmup 상태이며 DB 건강 검사가 아니다.
+ * `ready`는 warmup이 끝났거나(done·skipped) 꺼져 있으면(disabled) true다.
+ */
+export type ApiReadiness = {
+  ready: boolean;
+  warm: "disabled" | "running" | "done" | "skipped";
+  reason: "budget" | "busy" | "error" | "shutdown" | null;
+  elapsed_ms: number | null;
+  steps: ApiReadinessStep[];
+};
+
+function isReadiness(body: unknown): body is ApiReadiness {
+  if (typeof body !== "object" || body === null) return false;
+  const value = body as Record<string, unknown>;
+  return typeof value.ready === "boolean" && typeof value.warm === "string" && Array.isArray(value.steps);
+}
+
+/**
+ * 503(warmup 진행 중)도 같은 본문을 주는 정상 답이다. 그 밖의 상태는 실패로 본다.
+ * BFF도 API 전송 실패를 503 `{detail}`로 돌려주므로, 본문이 `ReadinessOut` 모양이 아니면 실패다.
+ */
+export function getReadiness(): Promise<ApiReadiness> {
+  return fetch("/api/weather/ready", { cache: "no-store" }).then(async (response) => {
+    if (response.status !== 200 && response.status !== 503) {
+      throw new Error(`API 연결 실패 (${response.status})`);
+    }
+    const body: unknown = await response.json().catch(() => null);
+    if (!isReadiness(body)) throw new Error(`API 연결 실패 (${response.status})`);
+    return body;
+  });
+}
+
 
 export type AddressItem = {
   target_key: string; name?: string; status: string; stale: boolean;

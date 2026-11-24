@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.pool import Pool
 
 from alembic import command
 from kortravelweather.repository import WeatherRepository
@@ -163,8 +164,28 @@ def test_resolved_table_schema_is_used_even_with_another_first_schema(
             text("SELECT to_regclass('marker_search.'||:name)::oid"), {"name": name}
         ).scalar_one()
     monkeypatch.setenv("PGOPTIONS", "-csearch_path=marker_search,public")
+    search_paths: list[str] = []
+
+    def on_connect(dbapi_connection, _record) -> None:  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("SELECT current_setting('search_path')")
+            search_paths.append(cursor.fetchone()[0])
+        finally:
+            cursor.close()
+            dbapi_connection.rollback()
+
     try:
-        command.upgrade(Config("alembic.ini"), "0034_marker_kind_indexes")
+        # migration 연결이 정말 marker_search를 먼저 보는지 확인한다. env.py가 연결 옵션을 주면서
+        # PGOPTIONS를 잃으면 이 시험은 public만 보고 통과해 버린다(2026-11-24 L7 리뷰).
+        event.listen(Pool, "connect", on_connect)
+        try:
+            command.upgrade(Config("alembic.ini"), "0034_marker_kind_indexes")
+        finally:
+            event.remove(Pool, "connect", on_connect)
+        assert search_paths and all(
+            path.startswith("marker_search") for path in search_paths
+        ), search_paths
         assert set(db.indexes()) == set(NAMES)
         command.downgrade(Config("alembic.ini"), "0033_export_source_inventory")
         assert not db.indexes()

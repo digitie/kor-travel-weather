@@ -7,13 +7,15 @@ import hashlib
 import logging
 import traceback
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, date, datetime
 from functools import partial
 from time import monotonic
 from typing import Annotated, Any, Generic, Literal, TypeVar
 
+import anyio
 from anyio import to_thread
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy.exc import SQLAlchemyError
@@ -23,6 +25,12 @@ from kortravelweather import export_forecasts as forecast_exports
 from kortravelweather.export_artifacts import (
     ExportArtifactError,
     ExportGuardTimeout,
+)
+from kortravelweather.export_cancellation import (
+    ExportCancellation,
+    ExportRequestCancelled,
+    checkpoint,
+    export_cancellation,
 )
 from kortravelweather.export_daily_reader import DailySummaryExports
 from kortravelweather.export_database_artifacts import export_artifact_store
@@ -308,6 +316,8 @@ def _render_page(
     막지 않게 한다. 304이면 payload는 None이다.
     """
     page, etag = read()
+    # 완성 페이지는 이미 캐시에 있다. 요청자가 떠났으면 검증·직렬화·압축은 하지 않는다.
+    checkpoint("render")
     with read_stage("render"):
         body = model.model_validate(page)
     headers = {
@@ -333,6 +343,81 @@ def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
     if payload is None:
         return Response(status_code=304, headers=headers)
     return Response(payload, media_type="application/json", headers=headers)
+
+
+def _cancellation_outcome(error: Exception) -> bool:
+    """요청자가 떠난 뒤의 오류가 취소 자체나 일시 경합이면 참이다(499로 조용히 끝낸다).
+
+    무결성 실패(ExportArtifactError)·파일 오류·프로그래밍 오류는 요청자가 떠났어도 원래
+    분류(503 WARNING·failure_site, 500 traceback)로 남긴다. 리더는 끊긴 뒤에도 공유 페이지를
+    계속 만들므로 그 사이의 실제 결함을 취소 로그로 묻지 않는다.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ExportRequestCancelled):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return _transient(error)
+
+
+async def _run_export_worker(
+    request: Request,
+    work: Callable[[], Any],
+    *,
+    arriving: Callable[[ExportCancellation], AbstractContextManager[Any]] | None = None,
+) -> Any:
+    """export worker thread에서 ``work``를 돌리며 요청자 연결 끊김을 그 작업에 전한다.
+
+    Map이 timeout·run 취소로 연결을 끊어도 ``to_thread`` 작업은 스스로 멈추지 않아 export
+    슬롯 2개와 DB 연결을 쥐었다(호출 검토 A6). 감시 task가 끊김을 보면 worker는 limiter 진입
+    직후·freeze 앞뒤·렌더 전·같은 키 대기·SQL 문장마다 멈추고, 실행 중인 SQL은 서버에 취소를
+    요청한다. 페이지 캐시 리더만 같은 키 재시도를 위해 유예한다(``export_cancellation``).
+    ``arriving``은 limiter 대기 중에도 이 요청을 같은 키 리더의 계속 판정에 넣는다.
+    끊긴 요청은 :class:`ExportRequestCancelled`로 끝난다.
+    """
+    cancellation = ExportCancellation()
+
+    def run() -> Any:
+        with export_cancellation(cancellation):
+            cancellation.check("admission")
+            return work()
+
+    async def watch() -> None:
+        try:
+            # 본문 없는 GET이라 첫 http.request 뒤의 receive는 끊김(또는 응답 완료)까지 막힌다.
+            # 응답 전에 이 task를 끝내므로 응답 완료의 http.disconnect는 여기 오지 않는다.
+            while (await request.receive())["type"] != "http.disconnect":
+                continue
+            cancellation.mark_disconnected()
+            if cancellation.should_stop():
+                # 리더가 아니면 실행 중 SQL까지 바로 취소한다. 리더는 worker가 유예를 판정한다.
+                await to_thread.run_sync(cancellation.cancel)
+        except Exception as exc:  # noqa: BLE001 - 감시 실패가 export 응답을 바꾸지 않는다
+            logger.warning("weather_service_export_disconnect_watch_failed reason=%s",
+                           type(exc).__name__)
+
+    result: Any = None
+    error: Exception | None = None
+    with nullcontext() if arriving is None else arriving(cancellation):
+        async with anyio.create_task_group() as group:
+            group.start_soon(watch)
+            try:
+                result = await to_thread.run_sync(
+                    run, limiter=request.app.state.service_export_limiter,
+                )
+            except Exception as exc:
+                # task group 안에서 올리면 ExceptionGroup으로 감싸진다. 밖에서 원래 예외로 올린다.
+                error = exc
+            group.cancel_scope.cancel()
+    if error is not None:
+        if (cancellation.disconnected and not isinstance(error, ExportRequestCancelled)
+                and _cancellation_outcome(error)):
+            # 요청자가 이미 떠났다. 취소한 SQL·일시 경합은 응답할 곳이 없는 소음이다.
+            raise ExportRequestCancelled(cancellation.stopped_stage or "error") from error
+        raise error
+    return result
 
 
 def _validated_read(read, model, reader):
@@ -425,10 +510,14 @@ async def _frozen_response(
         # 첫 페이지 miss(긴 freeze)는 승인 선택을 항상 새로 읽어 60초 전체를 쓴다. 그 결과는
         # 앱 공용 캐시에 남아, 이어지는 cursor 페이지는 30초 이상 남았으면 다시 읽지 않는다.
         # (예전에는 요청마다 빈 캐시를 만들어 공용 캐시가 한 번도 쓰이지 않았다.)
+        # 예보 첫 페이지는 If-None-Match가 없어도 완성 페이지 캐시를 쓴다. hit마다 새 freeze로
+        # 최신 승인·head vector를 확인하고 snapshot·manifest·건강도·삭제 epoch가 같을 때만 본문을
+        # 재사용하므로 "첫 페이지는 바로 반영" 계약은 그대로다(호출 검토 A5).
         reader = make_reader()
         reader.revalidate_first_page = resource == "forecasts" and cursor is None
         reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
         read = page_read(reader)
+        arriving = None
         if resource in {"current", "daily-summaries", "forecasts"}:
             key = (
                 id(request.app.state.repository.engine), resource, limit, cursor,
@@ -439,9 +528,9 @@ async def _frozen_response(
             read = partial(
                 request.app.state.export_page_cache.read, key, reader,
                 partial(_validated_read, read, _PAGE_MODELS[resource], reader),
-                force=(resource == "forecasts" and cursor is None
-                       and not request.headers.get("if-none-match")),
             )
+            # 슬롯이 차서 limiter에서 기다리는 같은 키 재시도도 끊긴 리더가 계속할 이유로 센다.
+            arriving = partial(request.app.state.export_page_cache.arriving, key)
         elif forecast_reuse:
             # 승인 선택의 60초 수명은 limiter 대기 뒤 실제 읽기부터 센다(현재·일별과 같다).
             def read(inner=read):
@@ -460,9 +549,10 @@ async def _frozen_response(
                 )
 
         try:
-            payload, headers = await to_thread.run_sync(
-                render, limiter=request.app.state.service_export_limiter,
-            )
+            payload, headers = await _run_export_worker(request, render, arriving=arriving)
+        except ExportRequestCancelled:
+            trace.finish(outcome="cancelled")
+            raise
         except BaseException:
             trace.finish(outcome="error")
             raise
@@ -487,6 +577,16 @@ async def _frozen_response(
             # 상태 판정의 출처: frozen(첫 페이지 freeze RR)·reused(앱 공용 판정)·computed(새 계산).
             # 완료 페이지 재사용(x-export-read=reused)이면 이 요청은 판정을 하지 않았다(none).
             headers["x-export-status-proof"] = getattr(reader, "page_status_proof", "none")
+    except ExportRequestCancelled as exc:
+        # 응답을 받을 요청자가 없다. 경합 503 통계·statement_timeout 로그와 섞지 않는다.
+        cause = exc.__cause__
+        logger.info(
+            "weather_service_export_cancelled resource=%s stage=%s cause=%s request_id=%s",
+            resource, exc.stage, "-" if cause is None else _cause(cause),
+            "".join(c if c.isprintable() else "?" for c in request_id(request)[:64]),
+        )
+        # /v1/weather/markers와 같은 499(client closed request)다.
+        raise HTTPException(status_code=499, detail="요청이 취소되었습니다.") from exc
     except ExportCursorInvalid as exc:
         _log_unavailable(request, resource, _cause(exc))
         return _unavailable(request, status=422, code="EXPORT_CURSOR_INVALID")
