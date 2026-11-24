@@ -57,7 +57,12 @@ def _jobs():
 
 
 def _expected(period: timedelta | None, *, maintenance: bool) -> int:
-    """규칙 그대로: 주기가 없으면(수동 전용) 0."""
+    """규칙 그대로: 주기가 없으면(수동 전용) 0.
+
+    1시간 미만 주기는 현황이면 10, 예보처럼 현황이 아니면 5다. weather의 1시간 미만 주기 수집은
+    특보 발표 관측(현황) 하나뿐이라 주기만으로 판정한다 — 1시간 미만 예보 job이 생기면
+    여기를 고친다.
+    """
     if maintenance or period is None or period >= timedelta(days=1):
         return 0
     if period < timedelta(hours=1):
