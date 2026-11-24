@@ -1,3 +1,25 @@
+## 2026-11-24 — 단기예보 정리: 일시 연기는 경고, 연속 3회 무진척부터 실패
+
+수집 실패 감사 부모 재집계(odroid 14일): `weather_short_forecast_retention_job` 1,380 성공 / 36 실패 / 11 취소.
+"진척 없이 끝났습니다" 31건과 "backlog 정체" 4건(11-11·11-14, 오래된 backlog 사례 — 이후 재발 없음)이었다.
+무진척 31건은 둘로 나뉜다. 둘 다 다음 10분 실행에서 회복됐고 연속은 최대 2회(11-20 23:33·23:42)였다.
+
+- **advisory lock 연기 18건**: 매일 16:50~17:20Z(01:50~02:20 KST), 0.3~0.9초, error_class 없음. 일별 이력
+  정리(`weather_retention_job`, 01:45 KST)가 `pg_try_advisory_xact_lock('weather_history_purge')`를 쥐고
+  있어 단기 정리가 기다리지 않고 연기한 것이다 — 설계대로의 양보.
+- **첫 선택 문장 timeout 13건**: `QueryCanceled` 5~13초. CPU가 포화된 odroid(4코어, load 19~26)에서
+  첫 후보 선택이 문장 상한을 넘었다.
+
+변경: 저장소 보고에 `deferred_reason`(`history_purge_running`·SQLSTATE 클래스·`empty_selection`)을 더하고,
+asset은 무진척을 바로 실패로 두지 않고 materialization의 `no_progress_runs`로 연속 횟수를 센다.
+`NO_PROGRESS_ALERT_RUNS=3`(30분)부터 실패이며, 일별 정리와의 lock 연기는 세지 않는다(그 job이 자기 실패를
+알린다). 진척 없는 실행은 이어 읽을 위치·머리 훑기 시각·지연 기준을 앞 실행 것 그대로 넘겨, 주기 머리 훑기
+중 연기돼도 저장 위치를 잃지 않는다. 연기 실행은 SUCCESS + `kortravel/collection-outcome=deferred`와 경고 로그다.
+backlog 정체 판정(`lag_stall_runs`)은 그대로다.
+
+시험: `test_short_retention_progress.py` — 한 번의 연기는 경고, lock 연기는 미집계, 위치 승계, 실제 SDK
+저장소에서 무진척·무진척·진척·무진척×3 → 6번째만 실패. 기존 무진척 실패 시험은 직전 2회를 두고 갱신.
+
 ## 2026-11-24 — current cursor 페이지의 상태 판정 공유·페이지 상한 512·artifact 묶음 읽기
 
 운영 odroid(2,925 scope)에서 Map의 current 순회가 cursor 페이지마다 활성 roster·승인 선택(무결성 2문장)·
