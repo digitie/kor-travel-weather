@@ -2140,11 +2140,16 @@ class WeatherRepository:
         # A pending source row in the same batch must not be autoflushed while
         # checking the alternate identity; otherwise PostgreSQL raises the
         # unique constraint before we can fold the replay into that row.
+        # 재수집 판정은 identity 열만 본다. 원문 payload(최대 8MiB)를 읽어 identity map에 두지
+        # 않는다(2026-11-24 L6). 같은 batch의 다른 조회도 payload를 쓰지 않는다.
         with session.no_autoflush:
-            row = session.get(SourceRecordRow, source_record_key)
+            row = session.get(
+                SourceRecordRow, source_record_key, options=[defer(SourceRecordRow.payload)]
+            )
             if row is None:
                 row = session.scalar(
                     select(SourceRecordRow)
+                    .options(defer(SourceRecordRow.payload))
                     .where(
                         SourceRecordRow.provider == provider,
                         SourceRecordRow.dataset_key == dataset_key,
@@ -2268,7 +2273,9 @@ class WeatherRepository:
         explicit_source = value.source_record_key is not None
         source = source_rows.get(source_key)
         if source is None:
-            source = session.get(SourceRecordRow, source_key)
+            source = session.get(
+                SourceRecordRow, source_key, options=[defer(SourceRecordRow.payload)]
+            )
             if source is not None:
                 source_rows[source_key] = source
         if source is None:
