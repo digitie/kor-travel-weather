@@ -351,3 +351,28 @@ tests:
       - eval_time: 61m
         alertname: KorTravelWeatherSyncRecoveryStalled
         exp_alerts: []
+
+  # The alert event schedule sets the breaker gauge on each evaluation.  A
+  # short backoff (one probe recovers) stays silent; 30 minutes of it pages.
+  # Only the Dagster job counts.
+  - interval: 5m
+    input_series:
+      - series: 'ktw_alert_collection_breaker_open{job="kor-travel-weather-dagster",instance="dagster-code-server:14103"}'
+        values: '0x2 1x3 0x2 1x11 0x2'
+      - series: 'ktw_alert_collection_breaker_open{job="kor-travel-weather-api",instance="api:14101"}'
+        values: '1x23'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: KorTravelWeatherAlertCollectionBreakerOpen
+        exp_alerts: []
+      - eval_time: 85m
+        alertname: KorTravelWeatherAlertCollectionBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Regional alert event collection keeps failing with the same error"
+              description: "kma_regional_alert_events_job failed at least three times in a row with one error code (ktw_alert_collection_failure_streak has the count) and its schedule now runs at a longer interval. The Dagster tick log `ALERT_BREAKER_OPEN` names the error code; the failed run's metadata has the page diagnostics."
+      - eval_time: 115m
+        alertname: KorTravelWeatherAlertCollectionBreakerOpen
+        exp_alerts: []

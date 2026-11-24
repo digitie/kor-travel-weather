@@ -6100,16 +6100,7 @@ class WeatherRepository:
         with self._session_factory.begin() as session:
             if timeout_ms is not None:
                 # 특보 cleanup만 제한하며 기존 호출자의 더 엄격한 설정은 유지한다.
-                limits = dict(session.execute(text(
-                    "SELECT name,setting::bigint FROM pg_settings "
-                    "WHERE name IN ('lock_timeout','statement_timeout')"
-                )).all())
-                for name, inherited in limits.items():
-                    limit = min(inherited or timeout_ms, timeout_ms)
-                    session.execute(
-                        text("SELECT set_config(:name,:value,true)"),
-                        {"name": name, "value": f"{limit}ms"},
-                    )
+                self._limit_transaction_waits(session, timeout_ms)
             result = session.execute(
                 update(SyncRunRow)
                 .where(SyncRunRow.run_id == run_id, SyncRunRow.status == "running")
@@ -6143,15 +6134,45 @@ class WeatherRepository:
             )
         return finished
 
+    @staticmethod
+    def _limit_transaction_waits(session: Session, timeout_ms: int) -> None:
+        """이 transaction의 lock·statement 대기를 ``timeout_ms`` 안으로 묶는다.
+
+        ``set_config(..., true)``는 transaction 범위라 끝나면 원래 값으로 돌아간다. 이미 더
+        엄격한 session 설정은 그대로 둔다.
+        """
+        limits = dict(session.execute(text(
+            "SELECT name,setting::bigint FROM pg_settings "
+            "WHERE name IN ('lock_timeout','statement_timeout')"
+        )).all())
+        for name, inherited in limits.items():
+            limit = min(inherited or timeout_ms, timeout_ms)
+            session.execute(
+                text("SELECT set_config(:name,:value,true)"),
+                {"name": name, "value": f"{limit}ms"},
+            )
+
     def list_sync_runs(
         self,
         *,
         limit: int = 50,
         provider: str | None = None,
         dataset_key: str | None = None,
+        timeout_ms: int | None = None,
     ) -> list[SyncRun]:
-        """Newest first, optionally one provider/dataset's runs only."""
+        """Newest first, optionally one provider/dataset's runs only.
+
+        ``timeout_ms``를 주면 조회의 lock·statement 대기를 그 안으로 묶는다. schedule 평가처럼
+        멈추면 안 되는 호출자가 잠금 대기를 예외로 받게 한다.
+        """
+        if timeout_ms is not None and (
+            isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int)
+            or not 1 <= timeout_ms <= 30000
+        ):
+            raise ValueError("sync run 조회 timeout_ms는1..30000 정수여야 합니다.")
         with self._session_factory() as session:
+            if timeout_ms is not None:
+                self._limit_transaction_waits(session, timeout_ms)
             stmt = select(SyncRunRow)
             if provider is not None:
                 stmt = stmt.where(SyncRunRow.provider == provider)

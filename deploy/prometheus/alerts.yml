@@ -162,3 +162,18 @@ groups:
         annotations:
           summary: "Weather sync recovery has been failing or finding wedged runs"
           description: "The weather_sync_recovery sensor raised a stall alert. Search the Dagster sensor log for `weather_sync_recovery.stalled`: last_failure SyncRunsStuck means a run kept a running sync row past its 3h lease (wedged worker; it also holds a max_concurrent_runs slot); DeadlineExceeded or a database error means recovery itself cannot run."
+
+      # The 5-minute regional alert event schedule backs off once three runs in
+      # a row failed with the same error code (10/20/40/60 min).  The gauge is
+      # set on every schedule evaluation, so it clears on the first success.
+      # 30 minutes of backoff is at least five identical failures: a
+      # deterministic provider or contract fault, not a transient one.
+      - alert: KorTravelWeatherAlertCollectionBreakerOpen
+        expr: |
+          max(ktw_alert_collection_breaker_open{job="kor-travel-weather-dagster"}) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Regional alert event collection keeps failing with the same error"
+          description: "kma_regional_alert_events_job failed at least three times in a row with one error code (ktw_alert_collection_failure_streak has the count) and its schedule now runs at a longer interval. The Dagster tick log `ALERT_BREAKER_OPEN` names the error code; the failed run's metadata has the page diagnostics."

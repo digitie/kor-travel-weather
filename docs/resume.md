@@ -1,3 +1,7 @@
+## 2026-11-24 — 지역별 특보 발표 관측 수집 복구(배포 대기)
+
+`kma_regional_alert_events_job`을 한 요청 수집·행 격리·연속 실패 차단기·coalescing으로 바꿨다(journal 같은 날짜). 다음 한 작업: odroid weather Dagster code-server를 이 PR 이후 이미지로 배포하고, 5분 run 실패 0·`quarantined_rows`(당진 발표가 창에 있을 때만 양수)·run 간격 5분을 확인한다. 당진(L1031200) 이중 지역명 묶음을 격리 대신 결정적으로 고를지는 소유자 결정 후보다.
+
 ## 2026-11-24 — 외부 provider schedule 정리·429 다음 주기
 
 sweep하지 않는 외부 provider 여섯의 schedule을 없애(3시간마다 skip run 제거) slow 집합에 넣을 때만

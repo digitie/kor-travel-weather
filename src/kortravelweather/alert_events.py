@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
@@ -15,6 +16,14 @@ from pydantic import BaseModel, ConfigDict
 ALERT_DATASET = "kma_regional_alert_events"
 ALERT_PROVIDER = "python-kma-api"
 ALERT_VERSION = "datagokr-pwncd-260601-v1"
+#: 한 실행이 게시할 수 있는 원천 행 상한(게시 경계 검사). 수집 한 요청의 numOfRows는 이와
+#: 별개로 실측한 값(수집 모듈 ``PAGE_SIZE`` = 1000)이며 이 상한보다 작다.
+ALERT_MAX_ROWS = 10_000
+#: 같은 event_id에 내용이 다른 행(격리 대상)이 이 수 또는 전체 행의
+#: ``ALERT_QUARANTINE_MAX_FRACTION`` 중 큰 값을 넘으면 원천 이상으로 보고 실행을 실패시킨다.
+#: 2026-11-18..24 운영 관측의 최대는 381행 중 8행(당진 L1031200의 이중 지역명)이었다.
+ALERT_QUARANTINE_MIN_ROWS = 10
+ALERT_QUARANTINE_MAX_FRACTION = 0.05
 AlertAction = Literal[
     "issued",
     "released",
@@ -153,13 +162,73 @@ def normalize_alert(raw: Mapping[str, Any]) -> AlertEvent:
     )
 
 
+@dataclass(frozen=True)
+class QuarantinedAlert:
+    """같은 event_id에 내용이 다른 원천 행 묶음. 어느 쪽도 게시하지 않는다."""
+
+    event_id: str
+    area_code: str
+    rows: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class AlertRowReconciliation:
+    accepted: list[dict[str, Any]]
+    events: list[AlertEvent]
+    duplicates_merged: int
+    quarantined: list[QuarantinedAlert]
+
+    @property
+    def quarantined_rows(self) -> int:
+        return sum(len(group.rows) for group in self.quarantined)
+
+
+def quarantine_limit(rows: int) -> int:
+    return max(ALERT_QUARANTINE_MIN_ROWS, int(rows * ALERT_QUARANTINE_MAX_FRACTION))
+
+
+def reconcile_alert_rows(rows: list[dict[str, Any]]) -> AlertRowReconciliation:
+    """같은 관측(event_id)의 행을 합치거나 격리한다.
+
+    - 모든 원천 필드가 같은 행은 하나만 남긴다(완전 중복 병합).
+    - 같은 event_id인데 원천 필드가 하나라도 다르면 그 event_id의 행 전부를 격리한다.
+      어느 행이 맞는지 원천만으로 정할 수 없으므로 임의로 고르지 않는다.
+    - 나머지는 원래 순서대로 게시 대상이다.
+    """
+    groups: dict[str, list[tuple[dict[str, Any], AlertEvent]]] = {}
+    for raw in rows:
+        event = normalize_alert(raw)
+        groups.setdefault(event.event_id, []).append((raw, event))
+    accepted: list[dict[str, Any]] = []
+    events: list[AlertEvent] = []
+    quarantined: list[QuarantinedAlert] = []
+    merged = 0
+    for event_id, members in groups.items():
+        if len({canonical_hash(raw) for raw, _ in members}) > 1:
+            quarantined.append(
+                QuarantinedAlert(
+                    event_id=event_id,
+                    area_code=members[0][1].area_code,
+                    rows=tuple(raw for raw, _ in members),
+                )
+            )
+            continue
+        merged += len(members) - 1
+        accepted.append(members[0][0])
+        events.append(members[0][1])
+    return AlertRowReconciliation(accepted, events, merged, quarantined)
+
+
 # provider 오류 원문·URL 대신 공개할 수 있는 고정 분류만 남긴다.
+# ALERT_PAGE_TOTAL_CHANGED·ALERT_PAGE_DUPLICATE·ALERT_FIRST_PAGE_CHANGED는 여러 페이지
+# 수집(2026-11-24 이전)이 남긴 실행 기록을 계속 설명하려고 유지한다.
 ALERT_SAFE_ERROR_CODES = frozenset(
     {
         "ALERT_PAGE_METADATA",
         "ALERT_PAGE_ROWS",
         "ALERT_PAGE_TOTAL_CHANGED",
         "ALERT_PAGE_DUPLICATE",
+        "ALERT_QUARANTINE_LIMIT",
         "ALERT_TOO_MANY_ROWS",
         "ALERT_RESPONSE_TOO_LARGE",
         "ALERT_FIRST_PAGE_CHANGED",
