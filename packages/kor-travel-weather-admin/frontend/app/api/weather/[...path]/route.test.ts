@@ -52,6 +52,28 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["READ_TIMEOUT", "POOL_BUSY", "DB_UNAVAILABLE"])(
+    "API 503 %s의 retry-after를 브라우저까지 그대로 넘긴다", async (code) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(
+        { code }, { status: 503, headers: { "retry-after": "1", "x-request-id": "req-1" } },
+      )));
+      const response = await GET(request(), context(["v1", "weather", "markers"]));
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("1");
+      expect(response.headers.get("x-request-id")).toBe("req-1");
+      expect(response.headers.get("cache-control")).toBe("no-store, private");
+      expect(await response.json()).toEqual({ code });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("upstream에 retry-after가 없으면 만들어 넣지 않는다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [] })));
+    const response = await GET(request(), context(["v1", "weather", "markers"]));
+    expect(response.status).toBe(200);
+    expect(response.headers.has("retry-after")).toBe(false);
+  });
+
   it("알 수 없는 TypeError는 재시도하지 않는다", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("invalid private detail")));
     expect((await GET(request(), context())).status).toBe(503);

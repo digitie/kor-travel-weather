@@ -3,7 +3,9 @@ import { NextRequest } from "next/server";
 const apiBase = () => process.env.WEATHER_API_INTERNAL_URL ?? "http://127.0.0.1:14101";
 const MAX_PROXY_BODY_BYTES = 1_048_576;
 // 모든 GET은 응답 헤더 수신 총예산 15초를 쓴다. 공개 조회의 API DB 마감(기본 15초)과 같아
-// 느린 조회는 API 503 또는 이 504로 끝나고, 둘 다 retry-after를 주어 브라우저가 다시 시도한다.
+// 느린 조회는 API 503 또는 이 504로 끝나고, 둘 다 retry-after를 브라우저에 전달해 다시 시도하게
+// 한다(API 응답의 retry-after는 그대로 넘긴다). 관리 GET은 API에 DB 마감이 없어 이 504 뒤
+// 브라우저가 다시 보내지 않는다(lib/api.ts timeoutRetryAllowed).
 // 위치 목록과 공급자 키 상태의 읽기만 이 예산 안에서 헤더 전 전송 장애를 한 번 복구한다.
 // headers 이후 stream과 관리 write(POST/PATCH/PUT/DELETE)에는 상한을 두지 않는다.
 const READ_HEADERS_BUDGET_MS = 15_000;
@@ -173,14 +175,15 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
           },
         });
       } else cleanup();
-      return new Response(forwardedBody, {
-        status: response.status,
-        headers: {
-          "content-type": response.headers.get("content-type") ?? "application/json",
-          "cache-control": "no-store, private",
-          "x-request-id": response.headers.get("x-request-id") ?? "",
-        },
-      });
+      const forwardedHeaders: Record<string, string> = {
+        "content-type": response.headers.get("content-type") ?? "application/json",
+        "cache-control": "no-store, private",
+        "x-request-id": response.headers.get("x-request-id") ?? "",
+      };
+      // API 503(READ_TIMEOUT·POOL_BUSY·DB_UNAVAILABLE 등)의 대기 신호를 브라우저 재시도가 따르게 한다.
+      const retryAfter = response.headers.get("retry-after");
+      if (retryAfter) forwardedHeaders["retry-after"] = retryAfter;
+      return new Response(forwardedBody, { status: response.status, headers: forwardedHeaders });
     } catch (error) {
       if (request.signal.aborted || expired()) {
         upstream.abort();
