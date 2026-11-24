@@ -931,8 +931,10 @@ def test_a_short_forecast_landing_between_the_check_and_the_lock_keeps_the_day(
 ) -> None:
     """L1 경합: lock 전 검사가 통과한 뒤 그 날짜로 보존할 단기예보가 commit돼도 잃지 않는다.
 
-    늦은 재수집이 오래된 발표의 미래 대상시각을 쓰는 경우다. lock 뒤 재확인이 없으면 이 실행의
-    DETACH·DROP이 그 행을 지운다. lock을 쥔 뒤에는 그 날짜에 새 행이 들어올 수 없다.
+    늦은 재수집이 오래된 발표의 미래 대상시각을 쓰는 경우다. lock 뒤 재확인이 없으면 그 행이 든
+    파티션이 떼어져 조회에서 사라지고, 뒤이은 drop의 보존 검사가
+    ``ShortForecastPartitionRetained``로 실행을 예외로 끝낸다(행 자체는 떼어낸 표에 남는다).
+    lock을 쥔 뒤에는 그 날짜에 새 행이 들어올 수 없다.
     """
     expired = _stage_expired_partition(repository, days_ago=10)
     known_at = kst_now() - timedelta(days=10)
