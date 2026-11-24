@@ -68,6 +68,44 @@ def test_each_regional_source_is_its_own_single_asset_job() -> None:
     assert "twice_daily_regional_weather" not in {s.name for s in repository.schedule_defs}
 
 
+def test_regional_jobs_share_one_run_group_the_instance_caps_at_one() -> None:
+    """분리해도 weather run 슬롯은 분리 전 묶음 run처럼 하나만 쓴다.
+
+    상한이 없으면 05·17시대에 지역 run 둘~셋이 겹치고(실측 최대 산악 1110초가 :40·:45 시작과
+    겹침), 일시 네트워크 오류 재시도 대기 중에도 run이 슬롯을 쥐어 단기예보·매시 job·외부
+    sweep과 weather 상한 6을 나눠 쓴다.
+    """
+    from pathlib import Path
+
+    import yaml
+    from kortravelweather_dagster.definitions import (
+        EXTERNAL_RUN_GROUP_TAG,
+        REGIONAL_RUN_GROUP,
+        _job_tags,
+    )
+
+    for collection in REGIONAL_COLLECTIONS:
+        job = regional_weather_jobs[collection.job_name]
+        assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) == REGIONAL_RUN_GROUP, job.name
+        # 기존 태그(project·job·max_runtime 등)는 그대로 남는다.
+        for key, value in _job_tags(collection.job_name).items():
+            assert job.run_tags.get(key) == value, (job.name, key)
+    # 지역 job이 아닌 job은 이 group에 들어오지 않는다(다른 job을 지역 수집 뒤에 세우지 않게).
+    regional_names = {collection.job_name for collection in REGIONAL_COLLECTIONS}
+    for job in defs.get_repository_def().get_all_jobs():
+        if job.name not in regional_names:
+            assert job.run_tags.get(EXTERNAL_RUN_GROUP_TAG) != REGIONAL_RUN_GROUP, job.name
+
+    path = Path(__file__).resolve().parents[3] / "deploy/dagster.yaml"
+    coordinator = yaml.safe_load(path.read_text(encoding="utf-8"))["run_coordinator"]
+    limits = {
+        entry["value"]: entry["limit"]
+        for entry in coordinator["config"]["tag_concurrency_limits"]
+        if entry["key"] == EXTERNAL_RUN_GROUP_TAG
+    }
+    assert limits[REGIONAL_RUN_GROUP] == 1
+
+
 def test_regional_schedules_keep_twice_daily_and_add_catch_up_hours() -> None:
     by_job = {schedule.job_name: schedule for schedule in regional_weather_schedules}
     assert set(by_job) == {collection.job_name for collection in REGIONAL_COLLECTIONS}

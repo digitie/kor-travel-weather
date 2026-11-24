@@ -119,7 +119,9 @@ source's failure does not hold back the others' promotion: `twice_daily_krforest
 (:30), `twice_daily_khoa_beach_index` (:40), `twice_daily_krex_restarea` (:45),
 `twice_daily_krforest_dust` (:50). Each schedule also ticks 1 and 3 hours later, and those
 catch-up ticks run only when the regular tick left no successful run. DNS·connection·timeout
-errors are retried in the same run (up to 3 times, 60–240 s with jitter).
+errors are retried in the same run (up to 3 times, 60–240 s with jitter). The four jobs share
+the `kortravelweather/run_group=regional_weather` tag, which the Dagster instance caps at one
+run, so they still take one weather run slot at a time like the old bundled job.
 
 | Provider | Dataset | What |
 | --- | --- | --- |

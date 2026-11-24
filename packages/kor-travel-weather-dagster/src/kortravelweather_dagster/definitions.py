@@ -1360,6 +1360,9 @@ REGIONAL_REGULAR_HOURS = (5, 17)
 #: 정규 tick 뒤 보충 tick까지의 시간. 보충 tick은 정규 tick 뒤로 그 job의 SUCCESS run이
 #: 없을 때만 run을 만든다. 정규 run이 실패하면 다음 기회가 12시간 뒤가 아니라 1·3시간 뒤다.
 REGIONAL_CATCH_UP_DELAYS_HOURS = (1, 3)
+#: 지역 원천 job 네 개가 함께 받는 ``EXTERNAL_RUN_GROUP_TAG`` 값. deploy/dagster.yaml이 이
+#: 값을 ``limit: 1``로 묶는다 — 아래 ``RegionalCollection`` 설명.
+REGIONAL_RUN_GROUP = "regional_weather"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1370,6 +1373,16 @@ class RegionalCollection:
     SUCCESS일 때만 일어나므로(W-EXP-SPLIT-01과 같은 규칙, step 단위 승격 없음) 한 원천의
     실패가 나머지 셋의 승격까지 막았다 — 2026-11-22 20:30Z krex DNS 오류 하나로 해수욕장·
     산악·청정넷이 성공했는데도 24시간 공개되지 못했다. 그래서 외부 provider처럼 run을 나눈다.
+
+    분리 전 묶음 job은 run 하나(``max_concurrent=1``)로 네 step을 차례로 돌아 weather run
+    슬롯(deploy/dagster.yaml ``kortravelcommon/project=weather`` limit 6)을 하나만 썼다.
+    나눈 네 job은 각자 run이라, 그대로 두면 05·17시대에 실측 최대 시간 기준으로 둘~셋이
+    겹치고(산악 :30 최대 1110초가 :40·:45 시작과 겹침) 일시 네트워크 오류 재시도 대기
+    (``transient_retry``, 시도마다 30~240초) 동안에도 run이 STARTED로 슬롯을 쥔다. 이 창은
+    KMA 단기예보(:15)·AirKorea(:35)·매 정시 초단기예보·외부 sweep과 겹친다. 그래서 네 job에
+    같은 run group(``REGIONAL_RUN_GROUP``)을 달아 instance가 한 번에 하나만 돌린다. 슬롯 점유는
+    분리 전과 같은 1개이고, 원천별 run SUCCESS(=승격 단위)는 그대로 독립이다. 상한에 걸린
+    run은 QUEUED로 기다릴 뿐 슬롯을 잡지 않으며 다른 job의 dequeue를 막지 않는다.
     """
 
     asset: Any
@@ -1733,7 +1746,7 @@ _unresolved_regional_jobs = {
     collection.job_name: define_asset_job(
         collection.job_name,
         selection=[collection.asset],
-        tags=_job_tags(collection.job_name),
+        tags={**_job_tags(collection.job_name), EXTERNAL_RUN_GROUP_TAG: REGIONAL_RUN_GROUP},
     )
     for collection in REGIONAL_COLLECTIONS
 }
