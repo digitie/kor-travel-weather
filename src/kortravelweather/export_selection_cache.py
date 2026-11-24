@@ -5,6 +5,7 @@ from collections import OrderedDict
 from time import monotonic
 
 from .export_artifacts import ExportGuardTimeout
+from .export_cancellation import ExportRequestCancelled, wait_event
 
 SELECTION_MAX_AGE_SECONDS = 60
 # 예보(초단기·단기·외부 × provider 필터)도 같은 캐시를 쓴다(2026-11-10). 현재·일별 항목이
@@ -110,7 +111,8 @@ class ExportSelectionCache:
           버리고 이 요청의 transaction에서 새로 읽는다. 60초 상한(``ExportGuardTimeout``)은 그대로
           올린다.
         같은 키를 다른 요청이 읽는 중이면 이 요청의 60초 안에서만 기다린다. 기다리는 동안 API
-        worker 슬롯과 열린 transaction을 쥐고 있다(페이지 캐시의 동일 키 대기와 같다).
+        worker 슬롯과 열린 transaction을 쥐고 있다(페이지 캐시의 동일 키 대기와 같다). 요청자
+        연결이 끊기면 기다리지 않고 멈춘다(``export_cancellation``).
         """
         own_deadline = checked_after + SELECTION_MAX_AGE_SECONDS
 
@@ -140,7 +142,7 @@ class ExportSelectionCache:
                     raise ExportGuardTimeout("승인 상태 갱신이 이미 진행 중입니다.")
                 self.inflight[key] = threading.Event()
         if waiting is not None:
-            if not waiting.wait(max(0.0, own_deadline - self.clock())):
+            if not wait_event(waiting, own_deadline - self.clock(), stage="selection_wait"):
                 raise ExportGuardTimeout("승인 상태 갱신 대기 상한을 넘었습니다.")
             return self.read(
                 key, load, checked_after=checked_after, validate=validate,
@@ -154,6 +156,9 @@ class ExportSelectionCache:
                 return found[0], found[1]
             except ExportGuardTimeout:
                 self._drop(key, found)
+                raise
+            except ExportRequestCancelled:
+                # 요청자가 떠나 검산을 멈췄을 뿐이다. 다른 요청이 쓸 공용 선택은 버리지 않는다.
                 raise
             except Exception:
                 # 다른 요청의 더 새 snapshot에서 읽은 선택을 이 요청의 오래된 RR로
