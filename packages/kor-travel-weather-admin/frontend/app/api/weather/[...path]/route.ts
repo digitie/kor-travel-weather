@@ -14,6 +14,7 @@ const RECOVERABLE_READ_PATHS = new Set([
   "v1/admin/provider-credentials",
 ]);
 const TRANSIENT_CODES = new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
+const NULL_BODY_STATUSES = new Set([204, 304]);
 
 function transientCode(error: unknown): string | null {
   if (!(error instanceof TypeError) || !("cause" in error)) return null;
@@ -148,7 +149,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         return unavailable(request.signal.aborted ? 499 : 504);
       }
       let forwardedBody: ReadableStream<Uint8Array> | null = null;
-      if (response.body) {
+      if (NULL_BODY_STATUSES.has(response.status)) {
+        // 304(If-None-Match 일치)·204는 본문이 없어야 한다. Response 생성자는 본문이 있으면 거부한다.
+        await response.body?.cancel().catch(() => {});
+        cleanup();
+      } else if (response.body) {
         reader = response.body.getReader();
         const bodyReader = reader;
         forwardedBody = new ReadableStream<Uint8Array>({
@@ -183,6 +188,10 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       // API 503(READ_TIMEOUT·POOL_BUSY·DB_UNAVAILABLE 등)의 대기 신호를 브라우저 재시도가 따르게 한다.
       const retryAfter = response.headers.get("retry-after");
       if (retryAfter) forwardedHeaders["retry-after"] = retryAfter;
+      // 위치 카탈로그의 내용 ETag를 브라우저가 보관했다가 If-None-Match로 다시 보낸다(호출 검토 B12).
+      // cache-control은 그대로 no-store라 브라우저 HTTP 캐시가 본문을 저장하지 않는다.
+      const etag = response.headers.get("etag");
+      if (etag) forwardedHeaders.etag = etag;
       return new Response(forwardedBody, { status: response.status, headers: forwardedHeaders });
     } catch (error) {
       if (request.signal.aborted || expired()) {

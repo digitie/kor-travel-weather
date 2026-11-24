@@ -74,6 +74,39 @@ describe("weather BFF 위치 GET 전송 복구", () => {
     expect(response.headers.has("retry-after")).toBe(false);
   });
 
+  it("위치 카탈로그의 etag를 브라우저로 넘기고 If-None-Match를 API로 보낸다", async () => {
+    const fetcher = vi.fn().mockResolvedValue(Response.json(
+      { data: [] }, { headers: { etag: 'W/"page-0"' } },
+    ));
+    vi.stubGlobal("fetch", fetcher);
+    const conditional = new NextRequest(
+      "http://localhost/api/weather/v1/weather/locations?limit=1000&offset=0",
+      { headers: { "if-none-match": 'W/"page-0"' } },
+    );
+    const response = await GET(conditional, context());
+    expect(response.status).toBe(200);
+    expect(response.headers.get("etag")).toBe('W/"page-0"');
+    // ETag를 넘겨도 브라우저 HTTP 캐시 정책은 그대로 저장 금지다.
+    expect(response.headers.get("cache-control")).toBe("no-store, private");
+    expect((fetcher.mock.calls[0][1].headers as Headers).get("if-none-match")).toBe('W/"page-0"');
+  });
+
+  it("API 304는 본문 없이 같은 etag로 전달한다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, {
+      status: 304, headers: { etag: 'W/"page-0"' },
+    })));
+    const response = await GET(request(), context());
+    expect(response.status).toBe(304);
+    expect(response.headers.get("etag")).toBe('W/"page-0"');
+    expect(response.body).toBeNull();
+  });
+
+  it("etag가 없는 응답에는 만들어 넣지 않는다", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [] })));
+    const response = await GET(request(), context(["v1", "weather", "markers"]));
+    expect(response.headers.has("etag")).toBe(false);
+  });
+
   it("알 수 없는 TypeError는 재시도하지 않는다", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("invalid private detail")));
     expect((await GET(request(), context())).status).toBe(503);
