@@ -136,6 +136,8 @@ def test_pointers_and_sources_go_in_committed_keyset_batches(
 
     assert report.pointers_deleted == 5 and report.sources_deleted == 5
     assert not report.pointers_deferred and not report.sources_deferred
+    # 끝까지 읽었으므로 다음 실행은 처음부터다.
+    assert report.sources_scanned == 5 and report.sources_resume_after is None
     assert partition_name((now - timedelta(days=30)).date()) in report.partitions_dropped
     with repository._session_factory() as session:
         left = set(session.scalars(select(SourceRecordRow.source_record_key)))
@@ -269,6 +271,71 @@ def test_a_source_batch_past_its_statement_limit_is_deferred_after_earlier_commi
     # 첫 batch 1번 + 둘째 batch 2번 시도(fast_retry)
     assert calls == [False, True, True]
     assert _count(repository, SourceRecordRow) == 3
+    # 진 batch의 시작 위치(첫 batch의 마지막 후보)를 넘긴다: 다음 실행은 그 batch부터 다시 한다.
+    first_batch = sorted(f"purge-batch-source-{index}" for index in range(5))[:2]
+    assert report.sources_scanned == 2
+    assert report.sources_resume_after == first_batch[-1]
+
+    monkeypatch.setattr(module, "source_purge_sql", real)
+    again = repository.purge_expired_history(
+        retention_days=2, sources_after=report.sources_resume_after
+    )
+    assert not again.sources_deferred and again.sources_deleted == 3
+    assert again.sources_resume_after is None
+    assert _count(repository, SourceRecordRow) == 0
+
+
+def test_the_source_sweep_stops_on_its_budget_and_the_next_run_resumes(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run에 연결돼 지우지 못하는 원천이 쌓여도 한 실행은 예산만큼만 읽고 위치를 넘긴다.
+
+    운영의 오래된 원천은 거의 다 run에 연결돼 지워지지 않으므로, 예산 없이 매일 처음부터 읽으면
+    밤마다 이력 전체를 훑는다. 예산 0이면 batch 하나를 commit하고 멈춘다.
+    """
+    monkeypatch.setattr(module, "HISTORY_PURGE_BATCH_ROWS", 2)
+    now = datetime.now(KST)
+    aged_at = now - timedelta(days=30)
+    keys = sorted(_publish(repository, f"swept-{index}", aged_at) for index in range(5))
+    # 셋째 원천은 run 연결로 인용 중이라 남는다(운영의 대부분 원천과 같다).
+    with repository.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO weather_sync_runs (run_id, provider, dataset_key, status, started_at) "
+            "VALUES ('sweep-run', 'p', 'd', 'success', now())"
+        ))
+        connection.execute(
+            text(
+                "INSERT INTO weather_sync_run_sources (run_id, source_record_key, recorded_at) "
+                "VALUES ('sweep-run', :key, now())"
+            ),
+            {"key": keys[2]},
+        )
+
+    first = repository.purge_expired_history(retention_days=2, sources_budget_seconds=0)
+    assert not first.sources_deferred
+    assert first.sources_scanned == 2 and first.sources_deleted == 2
+    assert first.sources_resume_after == keys[1]
+
+    second = repository.purge_expired_history(
+        retention_days=2, sources_after=first.sources_resume_after, sources_budget_seconds=0
+    )
+    # 이어 읽은 batch: run에 연결된 keys[2]는 후보지만 지우지 않는다.
+    assert second.sources_scanned == 2 and second.sources_deleted == 1
+    assert second.sources_resume_after == keys[3]
+
+    third = repository.purge_expired_history(
+        retention_days=2, sources_after=second.sources_resume_after, sources_budget_seconds=0
+    )
+    # 마지막 후보 하나: 덜 찬 batch라 끝이고, 다음 실행은 처음부터 다시 훑는다.
+    assert third.sources_scanned == 1 and third.sources_deleted == 1
+    assert third.sources_resume_after is None
+    with repository._session_factory() as session:
+        assert set(session.scalars(select(SourceRecordRow.source_record_key))) == {keys[2]}
+
+
+def test_a_blank_resume_position_is_refused(repository: WeatherRepository) -> None:
+    with pytest.raises(ValueError, match="sources_after"):
+        repository.purge_expired_history(retention_days=2, sources_after="")
 
 
 def test_other_errors_still_fail_the_run(

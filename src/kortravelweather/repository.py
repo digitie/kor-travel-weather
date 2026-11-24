@@ -1300,6 +1300,14 @@ HISTORY_PURGE_LOCK_TIMEOUT_MS = 1_000
 #: 횟수와 첫 휴지(초, 시도마다 두 배). 모두 지면 그 단계의 나머지는 다음 실행에 맡긴다.
 HISTORY_PURGE_BATCH_ATTEMPTS = 4
 HISTORY_PURGE_RETRY_SECONDS = 2.0
+#: 원천 정리 한 실행의 시간 예산(초). 수집 run에 연결된 원천(``weather_sync_run_sources``)은
+#: 지우지 않고 그 연결 행을 지우는 코드도 없다. Dagster 수집기는 모든 원천에 run을 붙이므로
+#: ``fetched_at < cutoff`` 후보는 보존 기간보다 오래된 원천 이력 거의 전부이고 날마다 늘지만
+#: 거의 지워지지 않는다. 그래서 한 실행이 이력 전체를 훑지 않고 이 예산만큼 읽은 뒤 keyset
+#: 위치(``PurgeReport.sources_resume_after``)를 남기고, 다음 실행이 거기서 이어 읽는다(끝에
+#: 닿으면 처음부터). 1,800초는 ``weather_retention_job`` 실행 상한 7,200초의 1/4로, 앞 단계
+#: (파티션 DDL 재시도·FK 검증)에 나머지를 남긴다. 운영 원천 수와 batch 시간은 재지 않았다.
+HISTORY_SOURCE_PURGE_BUDGET_SECONDS = 1800.0
 
 #: ``SHORT_FORECAST_PREDICATE``를 fact 별칭 ``wv``로 한정한 형태(포인터 정리의 보존 조건).
 _QUALIFIED_SHORT_FORECAST_PREDICATE = (
@@ -1375,6 +1383,22 @@ def source_purge_sql(*, resume: bool, held: str = "") -> str:
         resume=resume,
         delete_where=PURGE_SOURCE_RECORDS_SQL + held,
     )
+
+
+@dataclass(frozen=True)
+class _HistoryPurgeProgress:
+    """keyset batch로 나눈 정리 한 단계의 결과(``WeatherRepository._run_history_purge_batches``).
+
+    ``complete``이면 끝까지 읽었고 ``resume_after``는 None이다. 아니면 예산이 다했거나
+    (``deferred=False``) batch가 재시도 끝에도 상한에 졌다(``deferred=True``). 어느 쪽이든
+    ``resume_after``에서 다음 실행이 이어 읽는다(None이면 처음부터).
+    """
+
+    deleted: int
+    scanned: int
+    complete: bool
+    deferred: bool
+    resume_after: str | None
 
 #: Kept as one string because both schema paths must install it byte-identically
 #: -- ``create_schema`` here and the alembic revision -- and
@@ -5308,6 +5332,8 @@ class WeatherRepository:
         retention_days: int,
         ahead_days: int = 7,
         prior_unmarked: Sequence[str] = (),
+        sources_after: str | None = None,
+        sources_budget_seconds: float | None = None,
     ) -> PurgeReport:
         """Drop the days that have fallen out of the window, and make new ones.
 
@@ -5355,14 +5381,23 @@ class WeatherRepository:
            partitioned -- they are small -- so they are still deleted, in the
            same keyset batches as step 2; a batch that keeps losing leaves the
            rest to the next run (``sources_deferred``).
+           run에 연결된 원천은 지우지 않으므로 후보는 오래된 원천 이력 거의 전부다. 한 실행은
+           ``sources_after`` 뒤부터 ``sources_budget_seconds``(기본
+           ``HISTORY_SOURCE_PURGE_BUDGET_SECONDS``)만큼 읽고, 다음 실행이 이어 읽을 위치를
+           ``sources_resume_after``로 돌려준다(끝까지 읽었으면 None).
 
         ``prior_unmarked`` is the previous run's ``partitions_unmarked``: days
         it missed but could not mark.  They count as marked, so a second miss
         is still overdue (the Dagster asset reads them back from that run's
-        record).
+        record).  ``sources_after``도 같은 기록에서 앞 실행의
+        ``sources_resume_after``를 읽어 넘긴다.
         """
         if retention_days <= 0:
             raise ValueError("retention_days는 1 이상이어야 합니다.")
+        if sources_after is not None and (not isinstance(sources_after, str) or not sources_after):
+            raise ValueError("sources_after는 비어 있지 않은 원천 키여야 합니다.")
+        if sources_budget_seconds is None:
+            sources_budget_seconds = HISTORY_SOURCE_PURGE_BUDGET_SECONDS
         cutoff = kst_now() - timedelta(days=retention_days)
         today = kst_now().date()
         self._deferrals_in_a_row = dict.fromkeys(PARTITION_DDL_BREAKERS, 0)
@@ -5388,7 +5423,9 @@ class WeatherRepository:
             from .alert_event_store import purge_alert_events
 
             alert_events_deleted = purge_alert_events(session, cutoff=cutoff)
-        sources, sources_complete = self._purge_unreferenced_sources(cutoff)
+        sources = self._purge_unreferenced_sources(
+            cutoff, after=sources_after, budget_seconds=sources_budget_seconds
+        )
         with self.engine.connect() as connection:
             stranded = default_partition_rows(connection)
         report = PurgeReport(
@@ -5404,8 +5441,10 @@ class WeatherRepository:
             partition_ddl_stopped=self._ddl_stopped(),
             pointers_deleted=pointers,
             pointers_deferred=not pointers_complete,
-            sources_deleted=sources,
-            sources_deferred=not sources_complete,
+            sources_deleted=sources.deleted,
+            sources_deferred=sources.deferred,
+            sources_scanned=sources.scanned,
+            sources_resume_after=sources.resume_after,
             alert_events_deleted=alert_events_deleted,
             rows_outside_any_partition=stranded,
             default_floor=floor,
@@ -5430,12 +5469,17 @@ class WeatherRepository:
             ).one()
             return int(matched), last, int(removed)
 
-        return self._run_history_purge_batches("pointers", batch)
+        progress = self._run_history_purge_batches("pointers", batch)
+        return progress.deleted, progress.complete
 
-    def _purge_unreferenced_sources(self, cutoff: datetime) -> tuple[int, bool]:
+    def _purge_unreferenced_sources(
+        self, cutoff: datetime, *, after: str | None = None, budget_seconds: float | None = None
+    ) -> _HistoryPurgeProgress:
         """아무것도 인용하지 않는 만료 원천 기록을 keyset batch로 지운다(``source_purge_sql``).
 
-        ``(지운 수, 끝까지 했는지)``를 돌려준다. 못 지운 나머지는 다음 실행이 지운다.
+        ``after`` 뒤부터 읽고, ``budget_seconds``가 지나면 batch 경계에서 멈춰 다음 실행이 이어
+        읽을 위치를 돌려준다(``HISTORY_SOURCE_PURGE_BUDGET_SECONDS``의 이유). 못 지운 나머지는
+        다음 실행이 지운다.
         """
 
         def batch(session: Session, after: str | None) -> tuple[int, str | None, int]:
@@ -5467,13 +5511,17 @@ class WeatherRepository:
             ).one()
             return int(matched), last, int(removed)
 
-        return self._run_history_purge_batches("sources", batch)
+        deadline = None if budget_seconds is None else time.monotonic() + budget_seconds
+        return self._run_history_purge_batches("sources", batch, after=after, deadline=deadline)
 
     def _run_history_purge_batches(
         self,
         step: str,
         batch: Callable[[Session, str | None], tuple[int, str | None, int]],
-    ) -> tuple[int, bool]:
+        *,
+        after: str | None = None,
+        deadline: float | None = None,
+    ) -> _HistoryPurgeProgress:
         """``batch``를 keyset 위치를 넘기며 batch마다 짧은 transaction으로 돌린다(L4).
 
         각 transaction은 예전처럼 ``weather_history_purge`` advisory lock을 먼저 기다려
@@ -5482,10 +5530,15 @@ class WeatherRepository:
         ``(후보 수, 마지막 후보 키, 지운 수)``를 돌려준다. lock/statement timeout·deadlock
         (``_SHORT_RETENTION_DEFERRABLE``)에 진 batch는 rollback되고 같은 위치에서
         ``HISTORY_PURGE_BATCH_ATTEMPTS``번까지 다시 한다. 그래도 지면 앞 batch의 commit은 그대로
-        두고 ``(지운 수, False)``로 멈춘다. 다른 오류는 전파한다.
+        두고 ``deferred``로 멈춘다. 다른 오류는 전파한다.
+
+        ``after``에서 읽기 시작한다. ``deadline``(``time.monotonic()`` 기준)이 지나면 batch
+        하나를 commit한 경계에서 멈춘다(한 실행에 batch 하나는 늘 한다). 멈춘 경우
+        ``resume_after``가 다음 실행이 이어 읽을 위치다. 연기면 진 batch의 시작 위치라 다음
+        실행이 그 batch부터 다시 한다.
         """
-        after: str | None = None
         deleted = 0
+        scanned = 0
         batches = 0
         while True:
             outcome: tuple[int, str | None, int] | None = None
@@ -5511,15 +5564,31 @@ class WeatherRepository:
                             "sqlstate=%s",
                             step, batches, deleted, sqlstate,
                         )
-                        return deleted, False
+                        return _HistoryPurgeProgress(
+                            deleted=deleted, scanned=scanned, complete=False, deferred=True,
+                            resume_after=after,
+                        )
                     time.sleep(HISTORY_PURGE_RETRY_SECONDS * 2 ** (attempt - 1))
             assert outcome is not None
             matched, last, removed = outcome
             batches += 1
             deleted += removed
+            scanned += matched
             if matched < HISTORY_PURGE_BATCH_ROWS or last is None:
-                return deleted, True
+                return _HistoryPurgeProgress(
+                    deleted=deleted, scanned=scanned, complete=True, deferred=False,
+                    resume_after=None,
+                )
             after = last
+            if deadline is not None and time.monotonic() >= deadline:
+                logger.info(
+                    "weather_history_purge_budget_reached step=%s batches=%s deleted=%s",
+                    step, batches, deleted,
+                )
+                return _HistoryPurgeProgress(
+                    deleted=deleted, scanned=scanned, complete=False, deferred=False,
+                    resume_after=after,
+                )
 
     def _partition_ddl(self, step: Callable[[Connection], _T]) -> _T:
         """Run one partition-DDL transaction, retrying a lost lock race.

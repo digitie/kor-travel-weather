@@ -312,6 +312,13 @@ class PurgeReport(BaseModel):
     sources_deleted: int = 0
     #: 원천 기록 정리 batch가 재시도 끝에도 져서 나머지를 다음 실행에 맡겼다.
     sources_deferred: bool = False
+    #: 이번 실행의 원천 정리가 읽은 후보(``fetched_at < cutoff``) 수. run에 연결된 원천은 지우지
+    #: 않으므로 지운 수보다 훨씬 클 수 있다.
+    sources_scanned: int = 0
+    #: 원천 정리가 시간 예산이나 연기로 멈춘 keyset 위치. 다음 실행이 이 키 뒤부터 이어 읽는다
+    #: (Dagster asset이 실행 기록으로 넘긴다). None이면 끝까지 읽었거나 첫 batch에서 연기돼
+    #: 다음 실행이 처음부터 읽는다.
+    sources_resume_after: str | None = None
     alert_events_deleted: int = 0
     #: Rows that landed outside every dated partition, so retention will never
     #: reach them.  Non-zero means a partition was missing when something
