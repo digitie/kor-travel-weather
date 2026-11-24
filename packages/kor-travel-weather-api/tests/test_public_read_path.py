@@ -127,7 +127,10 @@ def test_public_handler_uses_one_connection_and_arms_limits_once(repository, mon
         return result
 
     # 느린 CI에서도 transaction당 횟수만 보도록 재설정 여유를 넉넉히 둔다(여유 판정은 따로 시험).
+    # 여유는 min(초, 건 값 x 비율)이라 비율도 풀어야 한다. 비율 10%만 두면 마감 15초에서 여유가
+    # 1.5초로 묶여, 부하 걸린 CI에서 /resolve 문장 사이가 1.5초를 넘으면 설계대로 다시 건다.
     monkeypatch.setattr(read_limits, "_REARM_SLACK_SECONDS", 10.0)
+    monkeypatch.setattr(read_limits, "_REARM_SLACK_RATIO", 1.0)
     monkeypatch.setattr(read_limits, "_needs_arm", counting)
     listener = lambda *args: checkouts.append(1)  # noqa: E731
     event.listen(repository.engine, "checkout", listener)
