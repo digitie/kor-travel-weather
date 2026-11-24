@@ -329,16 +329,31 @@ header를 반환한다. source failure나 stale threshold 경과는 health valid
 > timeout·run 취소로 연결을 끊으면 route 감시 task가 ASGI `http.disconnect`를 받아 그 작업에
 > 알리고, worker는 limiter 진입 직후·freeze 앞뒤·렌더 전·같은 키 페이지/승인 선택 대기·SQL
 > 문장마다 확인해 멈춘다(rollback 뒤 export 슬롯과 DB 연결 반환). 끊긴 순간 실행 중이던 SQL은
-> psycopg `cancel_safe()`로 서버에 취소를 요청한다. 응답은 `/v1/weather/markers`와 같은 499이고,
+> psycopg `cancel_safe()`로 서버에 취소를 요청한다. 단, 승인 참조·plan을 읽는 server-side
+> cursor(`stream_results`)의 FETCH는 SQLAlchemy cursor hook을 거치지 않는다. 그래서 실행 중인
+> FETCH는 서버 취소 대상이 아니며(FETCH마다 5초 문장 상한), 끊김은 읽는 loop가 행마다 확인해
+> 다음 FETCH 전에 멈춘다. 응답은 `/v1/weather/markers`와 같은 499이고,
 > 경합 503·`statement_timeout` 로그와 섞이지 않게 `weather_service_export_cancelled` 로그와
-> `ktw_read_stage_duration_seconds{outcome="cancelled"}`로 남는다.
-> 예외는 같은 키 페이지 캐시 리더다. Map은 timeout 뒤 같은 cursor로 다시 요청하므로 리더를 바로
-> 멈추면 생성 시간이 Map timeout보다 긴 페이지는 재시도가 매번 처음부터 다시 만들어 끝나지 않는다.
-> 리더는 끊긴 뒤 15초(`LEADER_GRACE_SECONDS`) 동안, 그리고 같은 키 대기자가 있는 동안 계속해 완성
-> 페이지를 캐시에 남기고 대기자는 그 페이지를 받는다. 유예가 끝나고 대기자도 없으면 다음 SQL 문장
-> 전에 멈춘다(실행 중 문장은 5초 문장 상한에 맡긴다). 리더가 멈추거나 실패하면 대기자 하나가 새
-> 리더가 되고, 요청자가 떠난 대기자는 기다리지 않고 바로 빠진다. 끊김을 감지하려면 Weather 앞의
-> proxy가 요청자 연결 종료를 upstream으로 전해야 한다. `/status`(최대128행)는 대상이 아니다.
+> `ktw_read_stage_duration_seconds{outcome="cancelled"}`로 남는다. 499로 바꾸는 것은 취소 자체와
+> 일시 경합(`ExportGuardTimeout`, 취소·문장 상한 57014 등)뿐이다. 끊긴 뒤 리더에서 난 무결성
+> 실패(`ExportArtifactError`)·파일 오류·프로그래밍 오류는 요청자가 떠났어도 원래처럼
+> `weather_service_export_unavailable`·`weather_service_export_failure_site` WARNING(503)이나
+> 500 traceback으로 남는다.
+> 예외는 같은 키 페이지 캐시 리더다. Map은 read timeout 뒤 같은 cursor로 다시 요청하므로 리더를
+> 바로 멈추면 생성 시간이 Map timeout(기본60초)보다 긴 페이지는 재시도가 매번 처음부터 다시 만들어
+> 끝나지 않는다. 연결을 끊는 것은 httpx `ReadTimeout`이고, Map `weather_state._weather_get`은 이
+> 전송 오류를 한 번만 `PROVIDER_BOUNDARY_BASE_DELAY_SECONDS`=15초 뒤(kor-travel-map #1542의
+> jitter ±20%면 12~18초) 다시 보낸다. 503 뒤의 5초 페이지 재시도는 완결된 응답이라 끊긴 리더를
+> 만들지 않으므로 기준이 아니다. 리더는 끊긴 뒤 45초(`LEADER_GRACE_SECONDS`, 18초에 새 연결·인증
+> 여유를 넉넉히 더한 값) 동안, 그리고 같은 키 요청이 대기자이거나 export 슬롯을 기다리는 동안
+> 계속해 완성 페이지를 캐시에 남기고, 재시도는 그 페이지를 받는다. 슬롯 대기 중인 같은 키 요청은
+> route가 limiter 진입 전에 `ExportPageCache.arriving`으로 등록한다(요청자가 이미 떠난 요청은 세지
+> 않는다). 다른 export가 슬롯을 쥐어 재시도가 limiter에서 기다리는 동안 유예가 끝나도 리더가 멈추지
+> 않게 하기 위해서다. 유예가 끝나고 기다리는 같은 키 요청도 없으면 다음 SQL 문장 전에 멈춘다(실행
+> 중 문장은 5초 문장 상한에 맡긴다). 리더가 멈추거나 실패하면 대기자 하나가 새 리더가 되고,
+> 요청자가 떠난 대기자는 기다리지 않고 바로 빠진다. 끊김을 감지하려면 Weather 앞의 proxy가 요청자
+> 연결 종료를 upstream으로 전해야 한다. `/status`(최대128행)는 대상이 아니다. Map 재시도 정책
+> (간격·횟수·read timeout)이 바뀌면 이 유예를 다시 본다.
 
 forecast는 **각 응답 시점의 지금 이후 target만** 내보낸다. 고정 snapshot_as_of가 과거였다는
 이유로 이미 지난 target을 보내고 Map에 prune 책임을 넘기지 않는다. snapshot artifact의 logical
