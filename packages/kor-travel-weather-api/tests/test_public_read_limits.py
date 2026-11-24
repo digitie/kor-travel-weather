@@ -8,13 +8,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from time import monotonic
+from time import monotonic, sleep
 
+import pytest
 from fastapi.testclient import TestClient
 from kortravelweather_api import read_limits
 from kortravelweather_api.app import create_app
 from kortravelweather_api.read_limits import public_read_deadline
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from kortravelweather.models import ForecastStyle, WeatherLocation, WeatherValue
 from kortravelweather.settings import WeatherSettings
@@ -103,6 +105,42 @@ def test_rearm_only_when_the_armed_timeout_drifts_past_the_slack():
     assert read_limits._needs_arm(.06, .02)
     # 마감이 길어진 경우(다른 문맥)도 다시 건다.
     assert read_limits._needs_arm(5, 15)
+
+
+def _timeout_ms(value: str) -> int:
+    if value.endswith("ms"):
+        return int(value.removesuffix("ms"))
+    return int(value.removesuffix("s")) * 1000
+
+
+def test_savepoint_rollback_rearms_the_remaining_deadline_on_the_next_statement(repository):
+    """savepoint 안에서 다시 건 값은 rollback으로 되돌아간다. 그 뒤 첫 문장이 다시 건다."""
+    create_app(WeatherSettings(environment="development"), repository)
+    with public_read_deadline(15), repository.engine.connect() as connection, connection.begin():
+        connection.execute(text("SELECT 1"))  # 약 15초로 건다.
+        savepoint = connection.begin_nested()
+        sleep(0.3)  # 여유 50ms를 넘겨 savepoint 안 문장이 다시 걸게 한다.
+        connection.execute(text("SELECT 1"))
+        savepoint.rollback()
+        actual = connection.scalar(text("SELECT current_setting('statement_timeout')"))
+        lock = connection.scalar(text("SELECT current_setting('lock_timeout')"))
+    # 되돌아간 15초가 아니라 남은 마감(15 - 0.3초 이하)이 걸려 있다.
+    assert _timeout_ms(actual) <= 14_750
+    assert lock == "2s"
+
+
+def test_savepoint_rollback_recovers_from_an_error_under_the_public_deadline(repository):
+    """실패한 savepoint의 ``ROLLBACK TO SAVEPOINT`` 앞에서 마감을 걸지 않아 복구가 된다."""
+    create_app(WeatherSettings(environment="development"), repository)
+    with public_read_deadline(15), repository.engine.connect() as connection, connection.begin():
+        connection.execute(text("SELECT 1"))
+        savepoint = connection.begin_nested()
+        with pytest.raises(DBAPIError):
+            connection.execute(text("SELECT 1 / 0"))
+        savepoint.rollback()
+        assert connection.scalar(text("SELECT 2")) == 2
+        actual = connection.scalar(text("SELECT current_setting('statement_timeout')"))
+    assert 0 < _timeout_ms(actual) <= 15_000
 
 
 def test_public_read_behind_a_lock_ends_with_503_lock_timeout(repository):

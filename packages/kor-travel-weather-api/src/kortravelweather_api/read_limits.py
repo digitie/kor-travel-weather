@@ -38,9 +38,12 @@ _ARMED = "weather_public_read_statement_timeout"
 _ARM_SQL = (
     "SELECT set_config('statement_timeout', %s, true), set_config('lock_timeout', %s, true)"
 )
-#: ``SET``은 lock을 기다리지 않는다. 그 앞에서는 걸지 않는다: ``SELECT set_config``는 snapshot을
-#: 잡는 query라 뒤이은 ``SET TRANSACTION ISOLATION LEVEL``을 실패시킨다.
-_SETTING = re.compile(r"\s*SET\s", re.IGNORECASE)
+#: 이 문장들 앞에서는 걸지 않는다. ``SET``은 lock을 기다리지 않고, ``SELECT set_config``는
+#: snapshot을 잡는 query라 뒤이은 ``SET TRANSACTION ISOLATION LEVEL``을 실패시킨다.
+#: ``ROLLBACK TO SAVEPOINT``·``RELEASE SAVEPOINT`` 앞에서 걸면 savepoint 안에서 건 값이 곧바로
+#: 되돌려지고(기록과 실제 값이 어긋난다), 실패한 transaction에서는 그 SELECT가 25P02로 실패해
+#: savepoint 복구가 막힌다.
+_SKIP_ARM = re.compile(r"\s*(SET|ROLLBACK|RELEASE)\s", re.IGNORECASE)
 
 
 class PublicReadTimeout(TimeoutError):
@@ -91,7 +94,9 @@ def install_public_read_limits(engine):
 
     @event.listens_for(engine, "rollback_savepoint")
     def rollback_savepoint(connection, name, context):
-        # savepoint 안에서 건 설정은 그 rollback으로 되돌아간다. 다음 문장에서 다시 건다.
+        # savepoint 안에서 건 설정은 그 rollback으로 되돌아간다. 이 event는 ``ROLLBACK TO
+        # SAVEPOINT`` 문장보다 먼저 오고 그 문장 앞에서는 걸지 않으므로(``_SKIP_ARM``) 기록을
+        # 지우면 rollback 뒤 첫 문장에서 다시 건다.
         with suppress(SQLAlchemyError):
             connection.info.pop(_ARMED, None)
 
@@ -109,7 +114,7 @@ def install_public_read_limits(engine):
             if cap is not None:
                 remaining = min(remaining, cap)
             # timeout 설정과 SQL 관측은 독립이다. service export는 자체 transaction 예산을 쓴다.
-            if not _SETTING.match(statement) and _needs_arm(
+            if not _SKIP_ARM.match(statement) and _needs_arm(
                 connection.info.get(_ARMED), remaining,
             ):
                 timeout_ms = max(1, int(remaining * 1000))
