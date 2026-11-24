@@ -91,6 +91,7 @@ def test_production_health_intervals_tripled_without_probe_budget_changes() -> N
         "dagster-webserver": ("45s", "5s", 8, "30s"),
         "dagster-daemon": ("90s", "10s", 5, "60s"),
         "prometheus": ("30s", "5s", 12, None),
+        "web": ("30s", "5s", 12, "30s"),
     }
     assert {name for name, value in compose.items() if "healthcheck" in value} == set(expected)
     for name, (interval, timeout, retries, start) in expected.items():
@@ -102,6 +103,12 @@ def test_production_health_intervals_tripled_without_probe_budget_changes() -> N
     assert compose["dagster-daemon"]["healthcheck"]["test"] == [
         "CMD", "dagster-daemon", "liveness-check",
     ]
+    # web은 자격증명 없이 /login만 GET하고 redirect 없이 200만 정상으로 본다.
+    web = compose["web"]["healthcheck"]["test"]
+    assert web[:3] == ["CMD", "node", "-e"]
+    assert "http://127.0.0.1:14105/login" in web[3]
+    assert "redirect:'manual'" in web[3] and "r.status===200" in web[3]
+    assert "cookie" not in web[3].lower() and "authorization" not in web[3].lower()
 
 
 @pytest.mark.parametrize(("reply", "expected"), [

@@ -97,3 +97,29 @@ done
 echo "deployed: /version reports ${GIT_COMMIT}"
 curl -s --max-time 5 "http://${probe}/version"
 echo
+
+# 시작 warmup(/ready)을 최대 60초 확인한다. 끝나지 않아도 배포를 실패로 만들지 않는다:
+# warmup은 첫 관리 지도 요청을 빠르게 할 뿐이고, 트래픽을 막을지는 HAProxy/Manager가 정한다.
+# /ready는 warmup이 끝났거나(done) 예산 초과·사용자 요청 겹침으로 생략됐거나(skipped)
+# 꺼져 있으면(disabled) 200, 진행 중이면 503이다. 단계별 결과와 시간은 본문의 steps에 있다.
+ready_deadline=$(( $(date +%s) + 60 ))
+ready_status=""
+ready_body=""
+while :; do
+    ready_reply="$(curl -s --max-time 5 -w '\n%{http_code}' "http://${probe}/ready" 2>/dev/null || true)"
+    ready_status="${ready_reply##*$'\n'}"
+    ready_body="${ready_reply%$'\n'*}"
+    if [ "$ready_status" = "200" ] || [ "$(date +%s)" -ge "$ready_deadline" ]; then
+        break
+    fi
+    sleep 2
+done
+if [ "$ready_status" = "200" ]; then
+    echo "ready: ${ready_body}"
+else
+    echo "warning: /ready did not answer 200 within 60s (last status ${ready_status:-none});" \
+        "the deploy itself succeeded, the first admin map requests may be slower" >&2
+    if [ -n "$ready_body" ]; then
+        echo "$ready_body" >&2
+    fi
+fi

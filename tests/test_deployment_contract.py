@@ -647,3 +647,63 @@ def test_web_public_dagster_url_is_baked_before_next_build() -> None:
     assert instructions.index("ARG NEXT_PUBLIC_DAGSTER_URL=") < instructions.index(
         "ENV NEXT_PUBLIC_DAGSTER_URL=$NEXT_PUBLIC_DAGSTER_URL"
     ) < build.start()
+
+
+def _ready_check(statuses: list[str]) -> subprocess.CompletedProcess[str]:
+    """deploy.sh의 /ready 확인 구간을 가짜 curl·date·sleep으로 돌린다.
+
+    ``$(...)`` subshell에서도 호출 순서를 세도록 bash 안에서 만든 임시 파일에 상태를 둔다.
+    가짜 시계는 date 호출마다 30초씩 간다(첫 호출이 마감 기준).
+    """
+    script = (REPO_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
+    block = script[script.index("ready_deadline="):]
+    prelude = "\n".join([
+        "set -euo pipefail",
+        "probe=127.0.0.1:14101",
+        'STATE="$(mktemp)"',
+        'echo "0 0" > "$STATE"',
+        f"STATUSES=({' '.join(statuses)})",
+        "curl() {",
+        '    read -r calls ticks < "$STATE"',
+        '    echo "$((calls + 1)) $ticks" > "$STATE"',
+        """    printf '{"warm":"stub"}\n%s' "${STATUSES[$calls]}" """,
+        "}",
+        "date() {",
+        '    read -r calls ticks < "$STATE"',
+        '    echo "$calls $((ticks + 1))" > "$STATE"',
+        "    echo $((1000 + 30 * ticks))",
+        "}",
+        "sleep() { :; }",
+        "",
+    ])
+    return subprocess.run(
+        ["bash", "-s"], input=prelude + block, capture_output=True, text=True,
+        encoding="utf-8", check=False,
+    )
+
+
+def test_the_deploy_script_reports_ready_once_warmup_finishes() -> None:
+    result = _ready_check(["503", "200"])
+    assert result.returncode == 0, result.stderr
+    assert 'ready: {"warm":"stub"}' in result.stdout
+    assert "warning" not in result.stderr
+
+
+@pytest.mark.parametrize("statuses", [["503", "503", "503"], ["000", "000", "000"]])
+def test_the_deploy_script_only_warns_when_ready_stays_unavailable(
+    statuses: list[str],
+) -> None:
+    """warmup은 첫 요청을 빠르게 할 뿐이다. 60초 안에 끝나지 않아도 배포를 실패로 만들지 않는다."""
+    result = _ready_check(statuses)
+    assert result.returncode == 0, result.stderr
+    assert f"/ready did not answer 200 within 60s (last status {statuses[0]})" in result.stderr
+    assert "ready:" not in result.stdout
+
+
+def test_the_api_service_enables_the_startup_warmup() -> None:
+    api = _load(BASE_COMPOSE)["services"]["api"]
+    assert api["environment"]["KOR_TRAVEL_WEATHER_API_PREWARM_ENABLED"] == (
+        "${KOR_TRAVEL_WEATHER_API_PREWARM_ENABLED:-true}"
+    )
+    # /health는 그대로 생존 확인만 한다. warmup 중(/ready 503)이라고 컨테이너를 내리지 않는다.
+    assert "/health" in api["healthcheck"]["test"]
