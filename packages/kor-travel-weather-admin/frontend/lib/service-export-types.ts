@@ -5,6 +5,8 @@ export type ExportMeta = {
   source_collected_at: string | null;
   source_status: "ok" | "stale" | "failed";
   item_count: number;
+  // snapshot handle 식별자다. locations·current·daily-summaries의 약한 ETag는 handle이 아니라
+  // 내용(manifest digest·페이지·상태)이라 304 뒤에도 이 값·next_cursor는 새로 오지 않는다.
   snapshot_id?: string | null;
   snapshot_generated_at?: string | null;
   as_of?: string | null;
