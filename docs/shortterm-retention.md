@@ -252,6 +252,10 @@ JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서�
    연기 — 일별 이력 정리와의 advisory lock 양보(`deferred_reason=history_purge_running`, 세지 않음)와
    CPU 포화 시 첫 선택 timeout — 였다. 연기 실행은 SUCCESS + `kortravel/collection-outcome=deferred`이고
    이어 읽을 위치·머리 훑기 시각·지연 기준을 앞 실행 것 그대로 materialization에 넘긴다.)
+   단, 정체(`lag_stall_runs>=7`)가 이어지는 동안의 진척0 실행은 연기 경고가 아니라 정체 Failure다.
+   진척0 실행은 앞 실행의 `lag_stall_runs`를 그대로 넘겨받으므로 정체는 지연이 실제로 줄 때까지 풀리지
+   않는다. 일별 정리와의 lock 양보도 `no_progress_runs`로는 세지 않지만 정체 Failure는 그대로이며, 실패
+   전에 같은 metadata로 materialization을 남겨 위치·횟수를 잇는다. Failure 문구에 `deferred_reason`이 붙는다.
 
 ### 남은 한계
 

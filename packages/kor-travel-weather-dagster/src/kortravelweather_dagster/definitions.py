@@ -1501,25 +1501,33 @@ def weather_short_forecast_retention(context: AssetExecutionContext) -> dict[str
                 ),
                 metadata=result,
             )
-        context.log.warning(
-            "단기예보 정리 연기 status=%s deferred_reason=%s error_class=%s "
-            "no_progress_runs=%s (연속 %s회부터 실패)",
-            result["status"], result.get("deferred_reason"), result.get("error_class"),
-            result[_NO_PROGRESS_KEY], NO_PROGRESS_ALERT_RUNS,
-        )
-        _record_collection_outcome(context, "deferred")
-        return result
+        if not backlog_stalled(result):
+            context.log.warning(
+                "단기예보 정리 연기 status=%s deferred_reason=%s error_class=%s "
+                "no_progress_runs=%s (연속 %s회부터 실패)",
+                result["status"], result.get("deferred_reason"), result.get("error_class"),
+                result[_NO_PROGRESS_KEY], NO_PROGRESS_ALERT_RUNS,
+            )
+            _record_collection_outcome(context, "deferred")
+            return result
+        # 정체 중의 진척 0은 연기 경고로 두지 않고 아래 정체 실패로 보낸다. 진척 없는 실행은 앞
+        # 실행의 지연 기준(lag_stall_runs)을 그대로 넘겨받으므로, 정체는 지연이 실제로 줄 때까지
+        # 풀리지 않는다. 일별 정리와의 lock 양보도 무진척 횟수로는 세지 않지만 정체 실패는 그대로다.
     if backlog_stalled(result):
-        # 지운 행은 있지만 backlog가 24시간 넘게 뒤처진 채 연속으로 줄지 않는다. 다음 실행이
-        # 위치와 연속 횟수를 이어받도록 materialization을 먼저 남기고 실패로 알린다.
+        # backlog가 24시간 넘게 뒤처진 채 연속으로 줄지 않는다(이번 실행은 지운 행이 있거나
+        # 진척 0이다). 다음 실행이 위치와 연속 횟수를 이어받도록 materialization을 먼저 남기고
+        # 실패로 알린다.
         context.log_event(AssetMaterialization(asset_key=context.asset_key, metadata=result))
-        raise Failure(
-            description=(
-                "단기예보 정리 backlog가 24시간 넘게 뒤처진 채 "
-                f"{result['lag_stall_runs']}회 연속 줄지 않았습니다."
-            ),
-            metadata=result,
+        description = (
+            "단기예보 정리 backlog가 24시간 넘게 뒤처진 채 "
+            f"{result['lag_stall_runs']}회 연속 줄지 않았습니다."
         )
+        if not made_progress(result):
+            description += (
+                " 이번 실행도 진척 없이 끝났습니다"
+                f"(deferred_reason={result.get('deferred_reason')})."
+            )
+        raise Failure(description=description, metadata=result)
     if result["status"] != "complete_snapshot":
         # 지운 행이 있으면 성공이다(뒤처져도 줄고 있으면 따라잡는 중). 남은 backlog는
         # 다음 실행이 위치에서 이어 정리한다.
