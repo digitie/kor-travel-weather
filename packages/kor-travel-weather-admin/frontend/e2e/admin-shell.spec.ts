@@ -45,12 +45,39 @@ async function login(page: Page, destination: string) {
 // 이동 전 전국 범위에 놓인 카드 중 새 범위 밖의 카드는 이동이 끝날 때 DOM에서 빠진다. 그 사이에
 // 포커스한 카드는 포커스를 BODY로 잃고 Enter가 아무 위치도 고르지 않는다(느린 CI의 간헐 실패).
 // 좌표 표시와 카드 범위는 같은 moveend 반영에서 함께 바뀌므로, 첫 위치 중심이 보이면 이동이 끝난 것이다.
-async function waitForFirstSelectionCamera(page: Page) {
+function firstSelectionCenter() {
   const [first] = SHELL_LOCATIONS;
-  await expect(page.locator(".kt-map-coordinates")).toContainText(
-    `center ${first.longitude.toFixed(4)}, ${first.latitude.toFixed(4)}`,
-    { timeout: 20_000 },
-  );
+  return `center ${first.longitude.toFixed(4)}, ${first.latitude.toFixed(4)}`;
+}
+
+async function waitForFirstSelectionCamera(page: Page) {
+  await expect(page.locator(".kt-map-coordinates")).toContainText(firstSelectionCenter(), { timeout: 20_000 });
+}
+
+type CameraSnapshot = { readout: string; cards: string[] };
+
+// 모든 DOM 변경 직후의 (좌표 표시, 카드 위치 이름) 쌍을 바뀔 때만 기록한다. 시간 대기 없이 반영 단위로
+// 보므로 CI 속도와 무관하게 결정적이다. 로그인 뒤 `/weather` 문서에서만 기록한다.
+async function recordCameraSnapshots(page: Page) {
+  await page.addInitScript(() => {
+    if (location.pathname !== "/weather") return;
+    const snapshots: CameraSnapshot[] = [];
+    Object.assign(window, { __weatherCameraSnapshots: snapshots });
+    new MutationObserver(() => {
+      const readout = document.querySelector(".kt-map-coordinates")?.textContent ?? "";
+      // aria-label은 "<위치 이름>: <상태> 날씨 보기"다. 날씨 요약 도착으로 바뀌는 상태는 빼고 위치만 본다.
+      const cards = [...document.querySelectorAll(".weather-region-marker .vworld-weather-marker-button")]
+        .map((card) => card.getAttribute("aria-label")?.split(":")[0] ?? "").sort();
+      const last = snapshots.at(-1);
+      if (!last || last.readout !== readout || last.cards.join("|") !== cards.join("|")) snapshots.push({ readout, cards });
+    }).observe(document, { childList: true, subtree: true, characterData: true });
+  });
+}
+
+async function readCameraSnapshots(page: Page) {
+  const snapshots = await page.evaluate(() => (window as unknown as { __weatherCameraSnapshots: CameraSnapshot[] }).__weatherCameraSnapshots);
+  // 좌표 표시가 첫 위치 중심을 처음 보인 반영이 자동 이동의 정착 시점이다.
+  return { snapshots, settledAt: snapshots.findIndex((snapshot) => snapshot.readout.includes(firstSelectionCenter())) };
 }
 
 async function tabTo(page: Page, target: Locator) {
@@ -141,6 +168,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
   test("지역 날씨 모두 보기 버튼과 목록이 없고 지도 마커는 키보드로 고른다", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
+    await recordCameraSnapshots(page);
     await routeWeather(page);
     await login(page, "/weather");
     await waitForFirstSelectionCamera(page);
@@ -158,6 +186,14 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     }
     const marker = placed.first();
     await expect(marker).toHaveAttribute("tabindex", "0");
+    // 정착한 뒤 고르기 직전까지 놓인 카드가 DOM에서 빠지지 않아야 포커스한 카드가 Enter까지 남는다.
+    // 빠졌다면 Enter 뒤 "상세 없음" 대신 어느 반영에서 어떤 카드가 빠졌는지로 실패한다.
+    const { snapshots, settledAt } = await readCameraSnapshots(page);
+    expect(settledAt).toBeGreaterThan(0);
+    const settledCards = snapshots[settledAt].cards;
+    for (const snapshot of snapshots.slice(settledAt + 1)) {
+      expect(settledCards.every((name) => snapshot.cards.includes(name)), JSON.stringify({ settledCards, snapshot })).toBe(true);
+    }
     await marker.focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("complementary", { name: "선택한 위치 상세" })).toBeVisible();
@@ -165,28 +201,13 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
   test("첫 위치 자동 이동을 알리는 좌표 표시와 카드 범위는 같은 반영에서 바뀐다", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
-    // waitForFirstSelectionCamera의 전제를 DOM 반영 단위로 확인한다. 시간 대기 없이 모든 DOM 변경
-    // 직후의 (좌표 표시, 카드 위치 이름) 쌍을 기록하므로 CI 속도와 무관하게 결정적이다.
-    await page.addInitScript(() => {
-      if (location.pathname !== "/weather") return;
-      const snapshots: { readout: string; cards: string[] }[] = [];
-      Object.assign(window, { __weatherCameraSnapshots: snapshots });
-      new MutationObserver(() => {
-        const readout = document.querySelector(".kt-map-coordinates")?.textContent ?? "";
-        // aria-label은 "<위치 이름>: <상태> 날씨 보기"다. 날씨 요약 도착으로 바뀌는 상태는 빼고 위치만 본다.
-        const cards = [...document.querySelectorAll(".weather-region-marker .vworld-weather-marker-button")]
-          .map((card) => card.getAttribute("aria-label")?.split(":")[0] ?? "").sort();
-        const last = snapshots.at(-1);
-        if (!last || last.readout !== readout || last.cards.join("|") !== cards.join("|")) snapshots.push({ readout, cards });
-      }).observe(document, { childList: true, subtree: true, characterData: true });
-    });
+    // waitForFirstSelectionCamera의 전제(좌표 표시가 정착을 보이면 카드 범위도 이미 바뀌었다)를 DOM 반영 단위로 확인한다.
+    // 정착 뒤 고르기 전까지 카드가 빠지지 않는다는 다른 전제는 키보드 선택 시험이 고르기 직전에 본다.
+    await recordCameraSnapshots(page);
     await routeWeather(page);
     await login(page, "/weather");
     await waitForFirstSelectionCamera(page);
-    const [first] = SHELL_LOCATIONS;
-    const settled = `center ${first.longitude.toFixed(4)}, ${first.latitude.toFixed(4)}`;
-    const snapshots = await page.evaluate(() => (window as unknown as { __weatherCameraSnapshots: { readout: string; cards: string[] }[] }).__weatherCameraSnapshots);
-    const settledAt = snapshots.findIndex((snapshot) => snapshot.readout.includes(settled));
+    const { snapshots, settledAt } = await readCameraSnapshots(page);
     expect(settledAt).toBeGreaterThan(0);
     // 이동 전 기본 카메라(전국)에는 이 fixture의 시도 카드가 가장 많이 놓인다.
     const nationwide = snapshots.slice(0, settledAt).reduce<string[]>((most, snapshot) => snapshot.cards.length > most.length ? snapshot.cards : most, []);
@@ -196,8 +217,6 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect(settledCards.length).toBeGreaterThan(0);
     expect(settledCards.every((name) => nationwide.includes(name))).toBe(true);
     expect(settledCards.length, JSON.stringify({ nationwide, settledCards })).toBeLessThan(nationwide.length);
-    // 이후 반영에서도 범위 밖 카드가 다시 생기지 않는다.
-    for (const snapshot of snapshots.slice(settledAt)) expect(snapshot.cards.every((name) => settledCards.includes(name)), JSON.stringify(snapshot)).toBe(true);
   });
 });
 
