@@ -1,6 +1,7 @@
 """공개 읽기의 요청 마감. 관리자/수집 engine 설정은 바꾸지 않는다."""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from time import monotonic
 
 from sqlalchemy import event
@@ -9,6 +10,8 @@ from kortravelweather.read_deadline import PUBLIC_READ_DEADLINE
 from kortravelweather.read_performance import read_stage
 
 _DEADLINE = PUBLIC_READ_DEADLINE
+#: 문장 하나의 statement_timeout 상한(초). 남은 마감보다 짧을 때만 쓴다(API 시작 warmup 전용).
+_STATEMENT_CAP: ContextVar[float | None] = ContextVar("weather_read_statement_cap", default=None)
 
 
 class PublicReadTimeout(TimeoutError):
@@ -16,11 +19,14 @@ class PublicReadTimeout(TimeoutError):
 
 
 @contextmanager
-def public_read_deadline(seconds):
+def public_read_deadline(seconds, *, statement_seconds=None):
+    """``seconds`` 뒤를 마감으로 둔다. ``statement_seconds``는 문장마다 따로 거는 상한이다."""
     token = _DEADLINE.set(monotonic() + seconds)
+    cap_token = _STATEMENT_CAP.set(statement_seconds)
     try:
         yield
     finally:
+        _STATEMENT_CAP.reset(cap_token)
         _DEADLINE.reset(token)
 
 
@@ -36,6 +42,9 @@ def install_public_read_limits(engine):
             remaining = deadline - monotonic()
             if remaining <= 0:
                 raise PublicReadTimeout("공개 읽기 마감이 지났습니다.")
+            cap = _STATEMENT_CAP.get()
+            if cap is not None:
+                remaining = min(remaining, cap)
             # timeout 설정과 SQL 관측은 독립이다. service export는 자체 transaction 예산을 쓴다.
             timeout_ms = max(1, int(remaining * 1000))
             with cursor.connection.cursor() as settings_cursor:

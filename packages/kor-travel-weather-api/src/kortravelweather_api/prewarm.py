@@ -1,0 +1,399 @@
+"""API 시작 직후 한 번 도는 읽기 전용 warmup과 ``/ready`` 상태.
+
+배포 직후 관리 지도의 첫 마커 묶음(60곳)은 이어진 묶음보다 약 10초 느렸다(26초 대 15초).
+빈 DB pool·지연 import·catalog/plan cache·PG 버퍼가 첫 요청에 몰린 탓이다
+(``docs/reports/2026-11-24-map-call-performance-review.md`` §4, 설계는
+``docs/weather-api-prewarm.md``). 포트 열기를 막지 않는 task 하나가 관리 지도가 처음 밟는
+읽기 경로를 사용자 요청과 같은 인자로 한 번 밟는다.
+
+안전 장치:
+
+- 읽기 전용. 쓰기 함수(``refresh_region_locations`` 등)는 부르지 않는다. 세션 폐기 확인은
+  존재할 수 없는 무작위 값으로 해 lazy 삭제 분기에 들어가지 않는다.
+- 동시성 1. 단계를 차례로 한 thread에서 실행하고 마커는 사용자와 같은 ``marker_limiter``,
+  세션 확인은 같은 ``auth_limiter``로 들어간다.
+- 문장당 5초·전체 30초. 공개 읽기 마감 장치(:mod:`.read_limits`)로 문장마다
+  ``statement_timeout``을 걸고 pool 대기도 남은 시간으로 줄인다.
+- 사용자 요청(``/v1/*``)이 2건 이상 처리 중이면 남은 단계를 생략한다.
+- 예외는 로그·지표로만 남기고 앱 기동·요청 처리에 영향을 주지 않는다. 지도 엔드포인트에는
+  결과 캐시가 없으므로 warmup이 오래된 데이터를 남기지 않는다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import logging
+from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from datetime import time as day_time
+from time import monotonic
+from typing import Any, Literal, TypeVar, get_args
+from uuid import uuid4
+
+from anyio import CapacityLimiter, to_thread
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+
+from kortravelweather.metrics import observe_api_prewarm_step
+from kortravelweather.models import WeatherKind, WeatherLocation, kst_now
+from kortravelweather.repository import WeatherRepository
+
+from .db_errors import driver_error_name, sqlstate
+from .read_limits import PublicReadTimeout, public_read_deadline
+
+logger = logging.getLogger(__name__)
+
+#: 전체 예산(초). 넘으면 남은 단계를 생략하고 ``/ready``는 200이 된다.
+PREWARM_BUDGET_SECONDS = 30.0
+#: 문장 하나의 ``statement_timeout`` 상한(초).
+PREWARM_STATEMENT_SECONDS = 5.0
+#: pool에 미리 열어 두는 연결 수(pool_size 10 안).
+PREWARM_CONNECTIONS = 3
+#: 관리 지도 ``MARKER_BATCH_SIZE``(weather-map.tsx)와 같다.
+MARKER_BATCH_SIZE = 60
+MARKER_BATCHES = 2
+#: ``/v1/weather/markers``가 ``marker_values_many``에 넘기는 위치당 행 수와 같다.
+MARKER_ROWS_PER_LOCATION = 80
+#: 관리 지도 위치 카탈로그 한 페이지(``getAllPublicLocations``)와 같다.
+LOCATION_PAGE_SIZE = 1000
+#: 관리 지도 상세의 최신값(``getLatest(…, 200)``)·예보(``FORECAST_DETAIL_LIMIT``) 상한과 같다.
+DETAIL_LATEST_LIMIT = 200
+DETAIL_FORECAST_LIMIT = 5000
+#: 처리 중인 사용자 요청이 이 수 이상이면 남은 단계를 생략한다.
+BUSY_REQUESTS = 2
+#: 종료 시 취소한 task를 기다리는 상한(초). 실행 중 문장은 5초 상한에 맡긴다.
+SHUTDOWN_GRACE_SECONDS = 6.0
+#: 공개 위치·대표 위치 읽기가 함수 안에서 처음 import하는 모듈.
+LAZY_MODULES = ("kortravelcommon.address_providers", "kortravelcommon.reverse_address")
+
+WarmStatus = Literal["disabled", "running", "done", "skipped"]
+#: budget: 전체 예산 초과, busy: 사용자 요청 처리 중, error: 첫 연결 실패, shutdown: 종료.
+SkipReason = Literal["budget", "busy", "error", "shutdown"]
+StepName = Literal[
+    "connections", "session_check", "regions", "locations", "markers", "location_detail",
+]
+StepOutcome = Literal["ok", "failed", "skipped"]
+STEP_NAMES: tuple[StepName, ...] = get_args(StepName)
+
+_T = TypeVar("_T")
+
+
+class RequestActivity:
+    """처리 중인 사용자 요청(``/v1/*``) 수. event loop에서만 바뀌므로 잠금이 없다."""
+
+    def __init__(self) -> None:
+        self.active = 0
+
+
+@dataclass
+class StepResult:
+    name: StepName
+    outcome: StepOutcome
+    elapsed_ms: int
+
+
+@dataclass
+class PrewarmState:
+    """프로세스 하나의 warmup 상태. ``/ready``가 읽는다."""
+
+    status: WarmStatus = "disabled"
+    reason: SkipReason | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    steps: list[StepResult] = field(default_factory=list)
+
+    @property
+    def ready(self) -> bool:
+        """warmup이 끝났거나(완료·생략) 꺼져 있으면 참이다."""
+        return self.status != "running"
+
+    def elapsed_ms(self, now: float | None = None) -> int | None:
+        if self.started_at is None:
+            return None
+        end = self.finished_at
+        if end is None:
+            end = monotonic() if now is None else now
+        return max(0, int((end - self.started_at) * 1000))
+
+
+class ReadinessStepOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: StepName
+    outcome: StepOutcome
+    elapsed_ms: int = Field(ge=0)
+
+
+class ReadinessOut(BaseModel):
+    """``GET /ready`` 본문. 시작 warmup 상태이며 DB 건강 검사가 아니다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool = Field(description="warmup이 끝났거나(done·skipped) 꺼져 있으면(disabled) true")
+    warm: WarmStatus
+    reason: SkipReason | None = Field(description="warm=skipped일 때 남은 단계를 생략한 이유")
+    elapsed_ms: int | None = Field(
+        ge=0, description="warmup 시작부터 끝(진행 중이면 지금)까지. 꺼져 있으면 null",
+    )
+    steps: list[ReadinessStepOut] = Field(description="끝난 단계(생략 포함)의 결과")
+
+    @classmethod
+    def from_state(cls, state: PrewarmState) -> ReadinessOut:
+        return cls(
+            ready=state.ready,
+            warm=state.status,
+            reason=state.reason,
+            elapsed_ms=state.elapsed_ms(),
+            steps=[
+                ReadinessStepOut(name=step.name, outcome=step.outcome, elapsed_ms=step.elapsed_ms)
+                for step in state.steps
+            ],
+        )
+
+
+def _forecast_detail_window(now: datetime) -> tuple[datetime, datetime]:
+    """관리 지도 상세 예보 구간(``forecastWindowStart``·``forecastWindowEnd``)과 같다."""
+    start = now.replace(minute=0, second=0, microsecond=0)
+    end = datetime.combine(now.date() + timedelta(days=2), day_time(0), tzinfo=now.tzinfo)
+    return start, end
+
+
+class ApiPrewarm:
+    """``create_app``의 lifespan이 시작하는 1회 warmup."""
+
+    def __init__(
+        self,
+        repository: WeatherRepository,
+        *,
+        state: PrewarmState,
+        activity: RequestActivity,
+        marker_limiter: CapacityLimiter,
+        auth_limiter: CapacityLimiter,
+        budget_seconds: float | None = None,
+        statement_seconds: float | None = None,
+    ) -> None:
+        self.repository = repository
+        self.state = state
+        self.activity = activity
+        self.marker_limiter = marker_limiter
+        self.auth_limiter = auth_limiter
+        self.budget_seconds = PREWARM_BUDGET_SECONDS if budget_seconds is None else budget_seconds
+        self.statement_seconds = (
+            PREWARM_STATEMENT_SECONDS if statement_seconds is None else statement_seconds
+        )
+        self._deadline = 0.0
+        self._locations: list[WeatherLocation] = []
+
+    def start(self) -> asyncio.Task[None]:
+        """상태를 running으로 두고 warmup task를 만든다. 포트 열기를 기다리게 하지 않는다."""
+        self.state.status = "running"
+        self.state.reason = None
+        self.state.started_at = monotonic()
+        self.state.finished_at = None
+        self.state.steps = []
+        self._deadline = self.state.started_at + self.budget_seconds
+        return asyncio.create_task(self.run(), name="weather-api-prewarm")
+
+    async def run(self) -> None:
+        steps: tuple[tuple[StepName, Callable[[], Awaitable[StepOutcome]]], ...] = (
+            ("connections", self._connections),
+            ("session_check", self._session_check),
+            ("regions", self._regions),
+            ("locations", self._catalog),
+            ("markers", self._markers),
+            ("location_detail", self._location_detail),
+        )
+        reason: SkipReason | None = None
+        try:
+            for index, (name, step) in enumerate(steps):
+                reason = self._stop_reason()
+                if reason is not None:
+                    self._skip(steps[index:])
+                    break
+                outcome = await self._run_step(name, step)
+                if outcome == "failed" and name == "connections":
+                    # 연결도 못 여는 DB에 나머지 단계를 보내 봐야 예산만 쓴다.
+                    reason = "error"
+                    self._skip(steps[index + 1:])
+                    break
+        except asyncio.CancelledError:
+            reason = "shutdown"
+            raise
+        finally:
+            self._finish(reason)
+
+    def _skip(self, steps: tuple[tuple[StepName, object], ...]) -> None:
+        for name, _ in steps:
+            self._record(name, "skipped", 0.0)
+
+    def _finish(self, reason: SkipReason | None) -> None:
+        state = self.state
+        state.finished_at = monotonic()
+        state.reason = reason
+        state.status = "done" if reason is None else "skipped"
+        counts = {outcome: 0 for outcome in get_args(StepOutcome)}
+        for step in state.steps:
+            counts[step.outcome] += 1
+        log = logger.info if reason in (None, "busy", "shutdown") else logger.warning
+        log(
+            "weather_api_prewarm_finished warm=%s reason=%s elapsed_ms=%s ok=%d failed=%d "
+            "skipped=%d",
+            state.status, reason or "-", state.elapsed_ms(), counts["ok"], counts["failed"],
+            counts["skipped"],
+        )
+
+    def _stop_reason(self) -> SkipReason | None:
+        if monotonic() >= self._deadline:
+            return "budget"
+        if self.activity.active >= BUSY_REQUESTS:
+            return "busy"
+        return None
+
+    def _record(self, name: StepName, outcome: StepOutcome, seconds: float) -> None:
+        elapsed_ms = max(0, int(seconds * 1000))
+        self.state.steps.append(StepResult(name=name, outcome=outcome, elapsed_ms=elapsed_ms))
+        observe_api_prewarm_step(name, outcome, seconds)
+        logger.info(
+            "weather_api_prewarm_step step=%s outcome=%s elapsed_ms=%d", name, outcome, elapsed_ms,
+        )
+
+    async def _run_step(
+        self, name: StepName, step: Callable[[], Awaitable[StepOutcome]],
+    ) -> StepOutcome:
+        started = monotonic()
+        try:
+            outcome = await step()
+        except Exception as exc:
+            # warmup 실패는 로그·지표로만 남긴다. 원문은 SQL·주소를 담을 수 있어 남기지 않고,
+            # DB 밖 예외(코드 결함)만 traceback을 남긴다.
+            outcome = "failed"
+            logger.warning(
+                "weather_api_prewarm_step_failed step=%s type=%s sqlstate=%s driver=%s",
+                name, type(exc).__name__, sqlstate(exc) or "-", driver_error_name(exc),
+                exc_info=not isinstance(exc, (SQLAlchemyError, PublicReadTimeout)),
+            )
+        self._record(name, outcome, monotonic() - started)
+        return outcome
+
+    async def _call(
+        self,
+        function: Callable[..., _T],
+        *args: Any,
+        limiter: CapacityLimiter | None = None,
+        **kwargs: Any,
+    ) -> _T:
+        """남은 예산을 마감으로, 5초를 문장 상한으로 걸고 worker thread에서 실행한다."""
+
+        def bounded() -> _T:
+            remaining = self._deadline - monotonic()
+            if remaining <= 0:
+                raise PublicReadTimeout("warmup 예산이 끝났습니다.")
+            with public_read_deadline(remaining, statement_seconds=self.statement_seconds):
+                return function(*args, **kwargs)
+
+        return await to_thread.run_sync(bounded, limiter=limiter)
+
+    async def _connections(self) -> StepOutcome:
+        await self._call(self._open_connections)
+        return "ok"
+
+    def _open_connections(self) -> None:
+        for module in LAZY_MODULES:
+            importlib.import_module(module)
+        # 한 thread에서 차례로 열고 모두 쥔 채 확인해야 pool에 서로 다른 연결이 남는다.
+        with ExitStack() as stack:
+            for _ in range(PREWARM_CONNECTIONS):
+                connection = stack.enter_context(self.repository.engine.connect())
+                connection.execute(text("SELECT 1"))
+
+    async def _session_check(self) -> StepOutcome:
+        # BFF는 모든 관리 요청마다 이 확인을 5초 fail-closed로 부른다. 무작위 값은 어떤
+        # 폐기 기록과도 맞지 않으므로 행을 읽기만 한다.
+        await self._call(
+            self.repository.is_admin_session_revoked,
+            f"prewarm-{uuid4().hex}",
+            limiter=self.auth_limiter,
+        )
+        return "ok"
+
+    async def _regions(self) -> StepOutcome:
+        await self._call(self.repository.region_locations)
+        return "ok"
+
+    async def _catalog(self) -> StepOutcome:
+        self._locations = await self._call(self._read_catalog)
+        return "ok"
+
+    def _read_catalog(self) -> list[WeatherLocation]:
+        # ``GET /v1/weather/locations?limit=1000&offset=0``과 같은 세 읽기.
+        rows = self.repository.list_locations(
+            enabled_only=True, search=None, limit=LOCATION_PAGE_SIZE, offset=0,
+            include_metadata=False,
+        )
+        self.repository.count_locations(enabled_only=True, search=None)
+        self.repository.public_location_regions(rows)
+        return rows
+
+    async def _markers(self) -> StepOutcome:
+        ids = [row.location_id for row in self._locations[: MARKER_BATCH_SIZE * MARKER_BATCHES]]
+        batches = 0
+        for start in range(0, len(ids), MARKER_BATCH_SIZE):
+            if self._stop_reason() is not None:
+                break
+            # 사용자 마커 묶음과 같은 limiter(2)를 나눠 쓴다. warmup은 한 자리만 쓴다.
+            async with self.marker_limiter:
+                await self._call(self._marker_batch, ids[start:start + MARKER_BATCH_SIZE])
+            batches += 1
+        return "ok" if batches else "skipped"
+
+    def _marker_batch(self, ids: list[str]) -> None:
+        # ``GET /v1/weather/markers``가 관리 지도 기본 필터(종류 6개 전체)로 하는 읽기와 같다.
+        locations = self.repository.get_locations_by_ids(ids, enabled_only=True)
+        by_id = {location.location_id: location for location in locations}
+        self.repository.marker_values_many(
+            [location_id for location_id in ids if location_id in by_id],
+            limit_per_location=MARKER_ROWS_PER_LOCATION,
+            kinds=list(WeatherKind),
+            locations=by_id,
+        )
+
+    async def _location_detail(self) -> StepOutcome:
+        if not self._locations:
+            return "skipped"
+        await self._call(self._read_detail, self._locations[0].location_id)
+        return "ok"
+
+    def _read_detail(self, location_id: str) -> None:
+        # 관리 지도 상세의 ``/latest?limit=200``과 ``/forecast?from&to&limit=5000``.
+        self.repository.get_location(location_id)
+        self.repository.latest_values(location_id, limit=DETAIL_LATEST_LIMIT)
+        start, end = _forecast_detail_window(kst_now())
+        self.repository.timeline(
+            location_id, from_at=start, to_at=end, limit=DETAIL_FORECAST_LIMIT,
+            include_revisions=False, exclude_alerts=True,
+        )
+
+
+async def stop_prewarm(task: asyncio.Task[None]) -> None:
+    """종료 시 warmup task를 취소하고 짧게 기다린다. 남은 문장은 5초 상한이 끝낸다."""
+    if task.done():
+        return
+    task.cancel()
+    done, _ = await asyncio.wait({task}, timeout=SHUTDOWN_GRACE_SECONDS)
+    if not done:
+        logger.warning("weather_api_prewarm_shutdown_pending grace_seconds=%s",
+                       SHUTDOWN_GRACE_SECONDS)
+
+
+__all__ = [
+    "STEP_NAMES",
+    "ApiPrewarm",
+    "PrewarmState",
+    "ReadinessOut",
+    "RequestActivity",
+    "stop_prewarm",
+]
