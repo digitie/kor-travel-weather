@@ -47,6 +47,9 @@ Docker 이미지 빌드·ARM cache 확인·운영 cold 점검·정의 준비·UI
 
 시험용 CI PostgreSQL health와 Prometheus scrape/evaluation은 이 표의 변경 대상이 아니다.
 web/UI에는 이 저장소의 독립 Docker healthcheck가 없어 새 점검을 추가하지 않았다.
+(2026-11-24 갱신: API 시작 warmup 작업에서 web에 자격증명 없는 `GET /login` 점검을 추가했다.
+interval 30s·timeout 5s·retries 12·start_period 30s이며 근거는
+[weather-api-prewarm.md](weather-api-prewarm.md)에 있다.)
 Manager가 실제 UI/공유 daemon/webserver에 선언하는 override는 해당 소유 저장소에서 정산한다.
 
 ## interval과 복구 시간 경계
