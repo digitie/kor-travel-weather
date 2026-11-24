@@ -16,6 +16,12 @@
   (`rate_limited_datasets`, `kortravel/collection-outcome=deferred` → 관리자 화면 "갱신 대기"),
   같은 run의 나머지 dataset은 묻지 않는다. 그 앞까지 게시한 batch는 남는다. 일부 dataset 실패는
   `partial` 태그로 드러낸다.
+- **429·provider 중단 때 받은 응답**(리뷰 P2): rate limit·인증·연속 위치 실패·실패 비율 초과로 sweep이
+  멈추면 batch 한도에 닿지 않아 쌓여 있던 응답까지 먼저 게시한 뒤 `weather_sync_runs`를 `failed`로
+  닫는다(lease 만료·계약 위반·DB 오류에는 게시하지 않는다). Dagster는 SUCCESS+`deferred`여도 native
+  행은 `failed`라 그 run의 export cohort는 승인되지 않고, 그 dataset을 쓰는 Map export는 다음 완전·성공
+  sweep까지 이전 승인 값을 `source_status=stale`로 낸다. 위치를 건너뛴 `partial` run도 roster에 그
+  위치가 남아 같은 주기의 Map export는 stale이다. 건너뛴 위치 수는 Dagster metadata에만 남는다.
 
 - **위치별 격리**: weatherapi 전 dataset 실패 7건(11-10~21, odroid `weather_sync_runs.error`
   "provider client 오류입니다.", 150곳 sweep의 1~136번째 요청)은 한 위치의 HTTP 4xx가 sweep 전체를

@@ -2,7 +2,7 @@
 
 sweep하지 않는 외부 provider 여섯의 schedule을 없애(3시간마다 skip run 제거) slow 집합에 넣을 때만
 schedule이 생기게 했고, 429는 짧은 `Retry-After`만 한 번 기다린 뒤 "갱신 대기"로 다음 주기에 넘긴다.
-다음은 odroid weather code-server 배포(Codex)와 배포 뒤 외부 schedule 6개만 남았는지 확인이다.
+멈춘 sweep도 받은 응답은 게시하지만 native 행은 `failed`라 그 주기의 Map export는 stale이다. 다음은 odroid weather code-server 배포(Codex)와 배포 뒤 외부 schedule 6개만 남았는지 확인이다.
 [상세](journal.md)
 
 ## 2026-11-24 — 지역 수집 원천별 job 분리·재시도·보충 tick
