@@ -1,3 +1,10 @@
+## 2026-11-24 — 지역 수집 원천별 job 분리·재시도·보충 tick
+
+`regional_weather_job`을 원천별 job 네 개로 나눠 한 원천의 실패가 나머지 승격을 막지 않게 했고,
+DNS·연결·timeout은 같은 run에서 backoff·jitter로 최대 3회 다시 시도하며, 정규 tick이 성공을 남기지
+못하면 +1h·+3h 보충 tick이 돈다. 다음은 odroid weather code-server 배포(Codex)와 배포 뒤
+`twice_daily_*` 네 schedule RUNNING·첫 05:30/17:30 실행 확인이다. [상세](journal.md)
+
 ## 2026-11-24 — 단기예보 정리 일시 연기 경고화
 
 단기예보 정리의 "진척 없음" 31건(14일)은 일별 이력 정리와의 advisory lock 양보(18)와 CPU 포화 시 첫 선택
@@ -11,6 +18,7 @@ timeout(13)으로, 모두 다음 실행에서 회복됐다. 이제 연속 3회(3
 수정: 통합 주소(`전남광주…`) 측정소는 `광주`·`전남` 두 bulk 묶음을 모두 묻고 이름으로만 맞춘다(`measurement_sido_names`). 두 응답에 모두 나오면 한 번만 쓴다. 저장된 anchor metadata(`sido_name`)는 바꾸지 않는다. 측정소 실패는 사유(`not_in_response`·`ambiguous_name`·`request_error`·`normalize_error`)별로 세어 결과 metadata(`station_failure_reasons`, 일시/결정적 개수, 표본 20개)와 sync run 오류 문자열에 남기고, Dagster 결과 status와 `kortravel/collection-outcome` run tag를 `partial`로 올린다. native `weather_sync_runs`는 success로 둬 받은 측정소의 승격은 그대로다. 요청 오류 재시도는 client의 기존 3회 이상 재시도로 둔다.
 
 남은 확인: 실제 AirKorea가 `sidoName=광주` 묶음에 이 13곳을 돌려주는지는 배포 뒤 첫 run에서 본다(운영 key로 외부 호출을 하지 않았다). 여전히 `not_in_response`면 partial로 드러난다.
+
 
 ## 2026-11-20 — 게시 FK 계획 비용과 전체 사용 공유 의존성 정렬
 

@@ -61,6 +61,9 @@ DB 저장소는 count만 보존하는 시험 대역이며 전체 process RSS/운
    기존 `kortravelweather/run_group=external_weather` 3개 제한과
    `kortravelweather/run_group=external_weather_slow` 1개 제한(긴 sweep provider)을 함께 유지한다.
    slow 항목이 instance에 없으면 slow run은 group 상한 없이 돈다 — code-server 갱신 전에 넣는다.
+   지역 원천 job 네 개의 `kortravelweather/run_group=regional_weather` 1개 제한도 같은 이유로
+   code-server 갱신 전에 넣는다(shared plane이면 관리자 배포의 공용 `dagster.yaml`에도). 없으면
+   05·17시대에 지역 run이 둘~넷 동시에 weather 슬롯을 잡는다.
    기본 location 상한이 없는 외부 provider(tomorrow_io·weatherbit·weatherstack·accuweather·
    visual_crossing·wttr_in)를 켜려면(env 또는 admin credential) **먼저** `definitions.py`의
    `SLOW_EXTERNAL_PROVIDER_KEYS`에 넣어 배포한다. 켜진 그 provider는 catalog 전체를 sweep하는데
