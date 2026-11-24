@@ -17,7 +17,6 @@ from dagster import (
     Definitions,
     Failure,
     MetadataValue,
-    ScheduleDefinition,
     asset,
     define_asset_job,
     in_process_executor,
@@ -60,6 +59,12 @@ from kortravelweather.settings import WeatherSettings
 from .address_refresh import address_refresh_job, address_refresh_sensor
 from .airkorea_weather import run_airkorea_weather_sync
 from .alert_events import AlertCollectionError, run_alert_event_sync
+from .alert_schedule import build_regional_alert_events_schedule
+from .export_maintenance import (
+    maintenance_policy,
+    weather_export_maintenance_job,
+    weather_export_maintenance_schedule,
+)
 from .export_publisher import weather_export_publisher_sensor
 from .external_weather import run_external_weather_sync
 from .kma_weather import (
@@ -725,6 +730,11 @@ def kma_regional_alert_events_sync(context: AssetExecutionContext) -> dict[str, 
         result["collection_outcome"] = (
             "deferred" if result.get("status") == "skipped" else result.get("status", "unknown")
         )
+        if result.get("quarantined_rows"):
+            context.log.warning(
+                f"ALERT_ROWS_QUARANTINED events={result['quarantined_events']} "
+                f"rows={result['quarantined_rows']} areas={result['quarantined_area_codes']}"
+            )
         context.add_output_metadata(result)
         _record_collection_outcome(context, result["collection_outcome"])
         return result
@@ -933,6 +943,9 @@ RUN_MAX_RUNTIME_SECONDS = 57600
 
 
 def _job_policy(job_name: str) -> RecoveryPolicy:
+    if job_name == weather_export_maintenance_job.name:
+        # 정리 job의 상한·태그는 그 모듈이 정한다(job 정의의 tags와 같은 객체).
+        return maintenance_policy()
     # 외부 provider의 실측 13시간 sweep 상한은 유지하고 최신성 작업은 더 일찍 회수한다.
     seconds = (
         RUN_MAX_RUNTIME_SECONDS
@@ -2028,13 +2041,10 @@ hourly_kma_weather_alerts_schedule = _weather_schedule(
     default_status=DefaultScheduleStatus.RUNNING,
 )
 
-# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다.
-regional_alert_events_schedule = ScheduleDefinition(
-    name="regional_alert_events_every_five_minutes",
-    cron_schedule="*/5 * * * *",
-    job=kma_regional_alert_events_job,
-    execution_timezone="Asia/Seoul",
-    default_status=DefaultScheduleStatus.RUNNING,
+# 발표 관측은 WeatherValue export가 아니므로 별도 schedule을 사용한다. 이전 실행이 남아 있으면
+# tick을 합치고, 같은 오류로 연속 실패하면 간격을 늘린다(alert_schedule).
+regional_alert_events_schedule = build_regional_alert_events_schedule(
+    kma_regional_alert_events_job
 )
 
 # :35, after the nowcast (see the ultra-short schedules above).  It is also
@@ -2158,7 +2168,7 @@ _COLLECTION_JOBS = [
 
 defs = Definitions(
     assets=_ASSETS,
-    jobs=[*_COLLECTION_JOBS, address_refresh_job],
+    jobs=[*_COLLECTION_JOBS, address_refresh_job, weather_export_maintenance_job],
     schedules=[
         hourly_kma_ultra_short_nowcast_schedule,
         hourly_kma_ultra_short_forecast_schedule,
@@ -2171,6 +2181,7 @@ defs = Definitions(
         *regional_weather_schedules,
         daily_weather_retention_schedule,
         short_forecast_retention_schedule,
+        weather_export_maintenance_schedule,
     ],
     resources=_resources,
     executor=_BOUNDED_MULTIPROCESS_EXECUTOR,

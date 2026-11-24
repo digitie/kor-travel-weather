@@ -128,8 +128,9 @@ def test_daily_missing_artifact_stops_without_advancing_checkpoint_and_repairs(
     _, generations, refs = seed_mixed_approved_metadata(repo, tmp_path, locations=3)
     saved = remove_artifact(repo, refs[0]["artifact_digest"])
     monkeypatch.setattr(publisher, "time", SimpleNamespace(monotonic=lambda: 0))
+    # 실패 분류가 결과에 실려 sensor가 연속 실패 tick으로 셀 수 있다(원문은 없다).
     assert publisher.refresh_publisher_daily(repo, tmp_path, deadline=4) == {
-        "processed": 0, "has_more": True,
+        "processed": 0, "has_more": True, "error": "proof",
     }
     assert checkpoint(repo) is None
     restore_artifact(repo, saved)

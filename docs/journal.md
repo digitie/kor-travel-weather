@@ -1,3 +1,34 @@
+## 2026-11-24 — export publisher의 정리를 매시 job으로 분리하고 실패를 tick 실패로
+
+수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.6 #5)의 후속이다. odroid
+`weather_export_publisher` sensor 48시간(11-21 21:4xZ~11-23 21:4xZ, 2,845 tick, job_ticks 읽기 전용)
+실측: tick 평균 32.4초·p50 34.7·p95 39.2·최대 49.2초. 단계 평균은 fresh 20.2초(p50 22.7)·sweep 6.2·
+daily 2.9·퇴역 4.2(돈 tick 561회 중 303회가 5초 문장 상한)·GC 3.1(571회 중 344회가 1.5초 목록 상한).
+GC 목록 20,000행은 EXPLAIN ANALYZE 6.7초라 sensor 예산에 들어갈 수 없었고, tick마다 새 repository를
+만들어 process 안의 목록 cursor가 매번 버려졌다. 승격은 48시간 70,743세대(2,597 tick에서 승격 발생)로
+거의 매 tick 일이 있어 sensor에 남긴다 — job으로 옮기면 하루 1,440 run이 생긴다.
+
+- `weather_export_maintenance_job`(매시 :52, max_runtime 900초, in_process)이 일괄 퇴역(문장 상한 30초,
+  예산 60초 안에서 반복)과 artifact GC(2,000행 page·문장 15초, 배타 guard를 잡는 삭제는 호출당 1.5초 뒤 0.25초 양보, 전체 300초)를 돈다.
+  schedule은 기본 RUNNING이지만 publisher sensor가 저장소에 RUNNING이고 export가 켜진 곳에서만 run을
+  만든다(freeze·운영 정지로 publisher를 멈추면 정리도 멈춘다). 실패는 run 실패다.
+- sensor tick 상한 45→40초. GC 예약(10초)이 빠져 source 예산은 모든 tick에서 30초 그대로다.
+- 오류: lease 경합·평가 중·비활성은 skip. 단계(fresh·sweep·daily) 실패는 1~2 tick은 skip(분류만),
+  3 tick 연속이면 tick 실패. DB 장애로 후보 처리가 멈춘 tick과 repository·lease 단계 예외는 즉시
+  실패. 메시지는 분류만 남기고 원 예외 연결을 끊는다. 실패 tick은 cursor가 저장되지 않는다.
+- `refresh_publisher_daily`는 실패 분류를 `error`로 돌려준다. `retire_settled_attempts`에 문장 상한
+  재정의, `DatabaseArtifactGCScan`에 page·문장 상한 인자를 더했다(기본값은 기존 그대로).
+
+## 2026-11-24 — 지역별 특보 발표 관측: 한 페이지 수집·행 격리·연속 실패 차단기
+
+`kma_regional_alert_events_job`은 11-18 07:05Z부터 11-23 21:00Z까지 거의 모든 run이 실패했다(`ALERT_PAGE_DUPLICATE` 1,495, 11-14~15 `ALERT_PAGE_METADATA` 152 — 후자는 #239의 NO_DATA 모양 수용으로 이미 해소). 실패는 원천 두 가지였다. (1) getPwnCd는 같은 발표 시각(tmFc) 행 사이 순서가 요청마다 고정되지 않아 100행 페이지 경계 행이 다음 페이지에 반복되고 그만큼 다른 행이 빠진다. 같은 구간을 2026-11-24에 다시 받으면 20261118..21 구간 381행 중 33행 반복·33행 누락, numOfRows=1000 한 페이지는 381행을 중복 없이 모두 돌려줬다. (2) 당진(L1031200)은 원천에 지역명 두 개(당진시·당진군)로 같은 관측이 두 행씩 있어 event_id가 같고 내용이 다르다. 11-18..22의 실패는 1페이지(당진), 11-22 후반..23은 2페이지(경계 반복)에서 났고, 11-24 06시 KST 창이 당진 발표를 벗어나고 경계 순서가 우연히 맞아 스스로 회복했다.
+
+과거 구간도 같은 원인이다. 11-06 05:15Z~11-10 08:35Z의 `ALERT_PAGE_DUPLICATE` 837건은 창의 행이 11-06 02:00Z에 100을 넘고 100행 경계가 한 tmFc 묶음 안에 떨어진 동안의 간헐 실패였다(당진 충돌 없음, 경계가 묶음 밖이거나 순서가 우연히 안정되면 성공). 11-14 15:03Z~11-15 03:30Z의 `ALERT_PAGE_METADATA` 152건은 KST 자정에 창에 발표가 0건이 되어 원천이 NO_DATA를 준 경우로 #239 배포 시각에 멎었다. 11-18 07:05Z 시작은 16:00 KST 발표(행 72→128, 당진 이중 행 포함)이며 배포가 아니다 — 수집 코드는 11-15 이후 같고 07:02Z 성공과 07:05Z 실패 사이에 바뀐 것은 원천뿐이다. 11-23 21:00Z 회복은 06:00 KST 발표 5행이 경계를 묶음 밖으로 민 결과다.
+
+수집을 pageNo=1·numOfRows=1000(실측한 값, 1000행 초과는 `ALERT_TOO_MANY_ROWS`) 한 요청으로 바꿨다(요청 수 3~5→1). 반복 행 병합만 하면 누락이 숨으므로 페이지를 나누지 않는다. 받은 행은 event_id로 묶어 완전 동일 반복은 하나만, 내용이 다른 묶음은 게시하지 않고 원천 기록 payload `quarantined`에 원문 그대로 남긴다(격리). 격리 행이 max(10, 행 수×5%)를 넘으면 `ALERT_QUARANTINE_LIMIT`로 아무것도 게시하지 않는다. 성공 metadata에 병합·격리 수와 격리 구역 코드, `collection_warning=ALERT_ROWS_QUARANTINED`, 지표 `ktw_alert_rows_reconciled_total{outcome}`을 남긴다.
+
+5분 schedule은 common `coalescing_schedule`로 이전 실행이 대기·진행 중이면 tick을 합치고, `weather_sync_runs.error`가 같은 연속 실패 3회부터 간격을 10·20·40·60분으로 늘린다(probe 실행으로 회복 즉시 5분 복귀, 상태 조회 실패 시 막지 않음). gauge `ktw_alert_collection_failure_streak`·`ktw_alert_collection_breaker_open`과 규칙 `KorTravelWeatherAlertCollectionBreakerOpen`(30분)을 추가했다. 실제 응답 fixture(20261120..23, 272행·100행 페이지 index)로 경계 반복·누락, 당진 격리, 268건 게시를 재현했다. 남은 위험: 당진 관측은 원천이 고쳐질 때까지 게시되지 않는다(소유자 결정 후보: 지역명만 다른 묶음의 결정적 선택). 오래된 구간 요청에서 totalCount가 실제 행 수보다 작은 원천 이상도 관측했으나(20261114..17 totalCount 0·39행) 현재 3일 창에서는 일치했다 — 일어나면 `ALERT_PAGE_ROWS`와 차단기가 막는다.
+
 ## 2026-11-24 — 외부 provider: sweep하지 않는 provider의 schedule 제거·429는 다음 주기로
 
 수집 실패 감사(Map `docs/reports/2026-11-23-collection-failure-audit.md` §2.5 P1 #12·P2, §4 #12) 대응.

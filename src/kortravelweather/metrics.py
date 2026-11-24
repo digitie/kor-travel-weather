@@ -340,6 +340,29 @@ ALERT_CLEANUP_FAILURES = Counter(
     registry=_INSTRUMENTATION_REGISTRY,
 )
 
+#: 특보 발표 관측 수집이 한 응답 안에서 정리한 원천 행. merged는 모든 필드가 같은 반복 행
+#: (하나만 게시), quarantined는 같은 event_id에 내용이 다른 행(게시하지 않고 원천 기록에 격리).
+ALERT_ROWS_RECONCILED = Counter(
+    "ktw_alert_rows_reconciled_total",
+    "Alert event source rows merged as exact duplicates or quarantined as conflicting.",
+    ("outcome",),
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+#: 특보 발표 관측 schedule의 연속 실패 차단기. 같은 오류 코드로 연속 실패한 실행 수와,
+#: 그 수가 문턱을 넘어 tick을 건너뛰는(간격을 늘린) 상태인지. schedule 평가 때 갱신한다.
+ALERT_COLLECTION_FAILURE_STREAK = Gauge(
+    "ktw_alert_collection_failure_streak",
+    "Consecutive regional alert event runs that failed with the same error code.",
+    multiprocess_mode="livemax",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+ALERT_COLLECTION_BREAKER_OPEN = Gauge(
+    "ktw_alert_collection_breaker_open",
+    "1 while the regional alert event schedule backs off after repeated identical failures.",
+    multiprocess_mode="livemax",
+    registry=_INSTRUMENTATION_REGISTRY,
+)
+
 SYNC_STARTED = Counter(
     "ktw_sync_runs_started_total",
     "Weather sync runs successfully opened.",
@@ -437,13 +460,27 @@ EXPORT_GC_DELETED_BYTES = Counter(
     "Bytes of unreferenced export artifact files deleted by the publisher GC.",
     registry=_INSTRUMENTATION_REGISTRY,
 )
-EXPORT_GC_RECLAIMABLE_BYTES = Gauge(
-    "ktw_export_artifact_gc_reclaimable_bytes",
-    "Bytes the last publisher GC pass found unreferenced and past the grace period that "
-    "are still on disk (all of them in dry_run, the undeleted rest in delete mode).",
-    multiprocess_mode="livemax",
-    registry=_INSTRUMENTATION_REGISTRY,
-)
+# 정리 job(``weather_export_maintenance_job``)은 run이 끝나면 사라지는 run worker에서 돈다.
+# live 모드 gauge는 그 process가 끝나면 scrape에서 빠지므로, 끝난 process의 값도 가장 최근
+# 기록으로 남는 mostrecent를 쓴다. 이 모드의 파일은 process가 끝나도 지우지 않으므로, import만
+# 하는 모든 process가 파일을 남기지 않도록 처음 기록할 때 만든다.
+_EXPORT_GC_RECLAIMABLE_BYTES: Gauge | None = None
+_EXPORT_GC_RECLAIMABLE_LOCK = Lock()
+
+
+def _export_gc_reclaimable_bytes() -> Gauge:
+    global _EXPORT_GC_RECLAIMABLE_BYTES
+    with _EXPORT_GC_RECLAIMABLE_LOCK:
+        if _EXPORT_GC_RECLAIMABLE_BYTES is None:
+            _EXPORT_GC_RECLAIMABLE_BYTES = Gauge(
+                "ktw_export_artifact_gc_reclaimable_bytes",
+                "Bytes the last export maintenance GC run found unreferenced and past the "
+                "grace period that are still stored (all of them in dry_run, the undeleted "
+                "rest in delete mode).",
+                multiprocess_mode="mostrecent",
+                registry=_INSTRUMENTATION_REGISTRY,
+            )
+        return _EXPORT_GC_RECLAIMABLE_BYTES
 METRIC_ERRORS = Counter(
     "ktw_metrics_errors_total",
     "Instrumentation errors swallowed to keep the data path healthy.",
@@ -779,6 +816,25 @@ def set_sync_recovery_stalled(stalled: bool) -> None:
     _safe("sync_recovery_stalled", lambda: SYNC_RECOVERY_STALLED.set(1 if stalled else 0))
 
 
+def observe_alert_rows_reconciled(*, merged: int, quarantined: int) -> None:
+    def update() -> None:
+        if merged > 0:
+            ALERT_ROWS_RECONCILED.labels(outcome="merged").inc(merged)
+        if quarantined > 0:
+            ALERT_ROWS_RECONCILED.labels(outcome="quarantined").inc(quarantined)
+
+    if merged > 0 or quarantined > 0:
+        _safe("alert_rows_reconciled", update)
+
+
+def set_alert_collection_breaker(*, streak: int, open_: bool) -> None:
+    def update() -> None:
+        ALERT_COLLECTION_FAILURE_STREAK.set(max(0, streak))
+        ALERT_COLLECTION_BREAKER_OPEN.set(1 if open_ else 0)
+
+    _safe("alert_collection_breaker", update)
+
+
 def observe_history_purged(values: int, sources: int) -> None:
     def update() -> None:
         if values > 0:
@@ -791,12 +847,12 @@ def observe_history_purged(values: int, sources: int) -> None:
 
 
 def observe_export_artifact_gc(report: Mapping[str, Any]) -> None:
-    """publisher GC 한 번의 결과. reclaimable은 대상 중 아직 디스크에 남은 byte다."""
+    """정리 job GC 한 run의 합계. reclaimable은 대상 중 아직 저장소에 남은 byte다."""
 
     def update() -> None:
         deleted, size = int(report.get("deleted", 0)), int(report.get("deleted_bytes", 0))
         remaining = int(report.get("eligible_bytes", 0)) - size
-        EXPORT_GC_RECLAIMABLE_BYTES.set(max(0, remaining))
+        _export_gc_reclaimable_bytes().set(max(0, remaining))
         if deleted > 0:
             EXPORT_GC_DELETED_FILES.inc(deleted)
         if size > 0:
@@ -938,6 +994,7 @@ __all__ = [
     "initialize_sync_values_skipped",
     "metrics_content_type",
     "metrics_payload",
+    "observe_alert_rows_reconciled",
     "observe_http_request",
     "observe_provider_request",
     "observe_stale_recovered",
@@ -946,6 +1003,7 @@ __all__ = [
     "observe_sync_started",
     "observe_sync_values_skipped",
     "provider_request",
+    "set_alert_collection_breaker",
     "set_sync_recovery_stalled",
     "start_metrics_server",
 ]

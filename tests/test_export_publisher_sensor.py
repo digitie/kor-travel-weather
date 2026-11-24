@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 import test_export_publisher_recovery as fixtures
@@ -27,13 +28,9 @@ state = fixtures.state
 
 
 @pytest.fixture(autouse=True)
-def _retire_due_each_test(monkeypatch):
-    # 일괄 퇴역은 프로세스당 주기다. 시험마다 새 프로세스처럼 첫 tick에 돌게 한다.
-    monkeypatch.setattr(module, "_RETIRE_NEXT", [0.0])
-    scan = module.ArtifactGCScan()
-    monkeypatch.setattr(module, "_GC_SCAN", scan)
-    yield
-    scan.close()
+def _fresh_failure_streak(monkeypatch):
+    # 연속 실패 tick 수는 프로세스 상태다. 시험마다 새 프로세스처럼 0에서 시작한다.
+    monkeypatch.setattr(module, "_FAILING_TICKS", [0])
 
 
 @job
@@ -84,17 +81,17 @@ def test_disabled_and_missing_root_have_zero_db_and_instance_queries(publisher_r
 
 
 def test_tick_budgets_fit_inside_the_sensor_grpc_deadline():
-    # 운영 daemon의 DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS는 60초다. tick 상한 45초에 마지막
-    # 문장 하나의 최악 대기(statement 5초)와 정리 한 문장(5초)을 더해도 그 안이어야 한다.
+    # 운영 daemon의 DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS는 60초다. tick 상한 40초에 마지막
+    # 문장 하나의 최악 대기(statement 5초)와 정리 한 문장(5초)을 더해도 10초 이상 남는다
+    # (45초 상한일 때는 5초였다).
     from kortravelweather.export_collector import DAILY_PRUNE_WORST_SECONDS
     from kortravelweather.settings import SERVICE_EXPORT_PUBLISHER_BUDGET_MAX as upper
 
-    assert module.TICK_DEADLINE_SECONDS + 5 + DAILY_PRUNE_WORST_SECONDS <= 60
-    # GC 차례가 아니면 기본 예산 전부를, GC 차례면 GC 최악 시간을 뺀 만큼을 쓴다.
-    assert upper + module.DAILY_BUDGET_SECONDS + DAILY_PRUNE_WORST_SECONDS <= (
+    assert module.TICK_DEADLINE_SECONDS + 5 + DAILY_PRUNE_WORST_SECONDS <= 60 - 10
+    # GC·퇴역이 job으로 나가 모든 tick이 기본 source 예산 전부를 쓴다(처리량 유지).
+    assert upper + module.DAILY_BUDGET_SECONDS + DAILY_PRUNE_WORST_SECONDS == (
         module.TICK_DEADLINE_SECONDS
     )
-    assert module.GC_SCAN_SECONDS + module.GC_DELETE_SECONDS < module.GC_WORST_SECONDS
     # 기본값이 도착량 대비 여유를 갖도록 상한과 같다(운영 env 변경 없이 적용).
     assert WeatherSettings().service_export_publisher_budget_seconds == upper == 30
     assert WeatherSettings(
@@ -295,31 +292,14 @@ def test_planless_crash_is_seen_by_terminal_sweep_without_inventing_success(
             assert "0개" in evaluate(sensor, instance, cursor=evaluated.cursor).skip_message
 
 
-def test_failed_run_backlog_is_retired_in_one_tick_without_visiting_candidates(
-    publisher_repository, tmp_path,
-):
-    from kortravelweather.export_heads import ExportHeads
-
-    repo = publisher_repository
-    run = repo.start_sync_run(provider="test-capacity", dataset_key="synthetic")
-    for _ in range(300):
-        repo.begin_export_attempt(run_id=run.run_id, scope_key="synthetic",
-                                 planned_sources=["0" * 64], execution_mode="native")
-    repo.finish_sync_run(run.run_id, status="failed")
-    sensor, _ = build(repo, tmp_path)
+def test_tick_does_no_bulk_retirement_or_gc(publisher_repository, tmp_path, monkeypatch):
+    # 퇴역·GC는 export_maintenance job의 일이다. sensor tick은 부르지 않는다.
+    assert not hasattr(module, "retire_settled_attempts")
+    assert not hasattr(module, "collect_export_artifacts")
+    sensor, _ = build(publisher_repository, tmp_path, gc="delete")
     with DagsterInstance.ephemeral() as instance:
-        first = evaluate(sensor, instance)
-        # 실패 run의 300건은 후보를 하나씩 방문하지 않고 한 문장으로 퇴역한다.
-        assert "0개 후보" in first.skip_message and "retired=300" in first.skip_message
-        # 퇴역은 5분 주기다. 두 번째 tick도 실제로 퇴역을 돌려 남은 것이 없음을 본다.
-        module._RETIRE_NEXT[0] = 0.0
-        assert "retired=0" in evaluate(sensor, instance, cursor=first.cursor).skip_message
-    heads = ExportHeads(repo)
-    with repo.engine.connect() as connection:
-        rows = connection.execute(
-            select(heads.lifecycle.attempts.c.status, heads.lifecycle.attempts.c.error_code)
-        ).all()
-    assert {tuple(row) for row in rows} == {("failed", "CONFIRMED_TERMINAL")} and len(rows) == 300
+        result = evaluate(sensor, instance)
+    assert "retired=" not in result.skip_message and "gc=" not in result.skip_message
 
 
 def test_sweep_is_bounded_per_tick_and_resumes_beyond_the_bound(
@@ -390,7 +370,7 @@ def test_daily_budget_is_reserved_until_the_hard_tick_deadline(
 
     def source(*args, **kwargs):
         assert kwargs["budget_seconds"] == 30
-        clock[0] = 100 + 38  # 마지막 DB/IO 대기가 협력 예산을 넘었지만 tick 상한 전이다.
+        clock[0] = 100 + 33  # 마지막 DB/IO 대기가 협력 예산을 넘었지만 tick 상한 전이다.
         return _progress(2, {"NOT_READY": 2}, None, True)
 
     def daily(*args, **kwargs):
@@ -404,72 +384,150 @@ def test_daily_budget_is_reserved_until_the_hard_tick_deadline(
     with DagsterInstance.ephemeral() as instance:
         result = evaluate(sensor, instance)
     hard = 100 + module.TICK_DEADLINE_SECONDS
-    assert daily_calls == [{"deadline": 138 + module.DAILY_BUDGET_SECONDS, "hard_deadline": hard}]
+    assert daily_calls == [{"deadline": 133 + module.DAILY_BUDGET_SECONDS, "hard_deadline": hard}]
     assert "일별 4세대" in result.skip_message and "stages=" in result.skip_message
 
 
-def test_tick_past_the_hard_deadline_skips_daily_and_gc(
+def test_tick_past_the_hard_deadline_skips_daily_without_failing(
     publisher_repository, tmp_path, monkeypatch,
 ):
     clock = _fake_clock(monkeypatch)
-    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
 
     def source(*args, **kwargs):
-        clock[0] = 100 + module.TICK_DEADLINE_SECONDS + 1
+        clock[0] += module.TICK_DEADLINE_SECONDS + 1
         return _progress(1, {"NOT_READY": 1})
 
     def forbidden(*args, **kwargs):
-        pytest.fail("tick 상한을 넘긴 뒤에는 일별 집계·GC를 시작하지 않습니다.")
+        pytest.fail("tick 상한을 넘긴 뒤에는 일별 집계를 시작하지 않습니다.")
 
     monkeypatch.setattr(module, "publish_fresh_exports", source)
     monkeypatch.setattr(module, "publish_pending_exports", lambda *a, **k: _progress())
     monkeypatch.setattr(module, "refresh_publisher_daily", forbidden)
-    monkeypatch.setattr(module, "collect_export_artifacts", forbidden)
-    sensor, _ = build(publisher_repository, tmp_path, gc="dry_run")
+    sensor, _ = build(publisher_repository, tmp_path)
     with DagsterInstance.ephemeral() as instance:
-        result = evaluate(sensor, instance)
-    assert "daily:tick_deadline:1" in result.skip_message and "gc=deferred" in result.skip_message
-    assert module._GC_NEXT == [0.0]  # 다음 tick에 GC를 다시 시도한다.
+        for _ in range(module.FAILING_TICKS_BEFORE_ERROR + 1):
+            result = evaluate(sensor, instance)
+            # 시간 상한으로 건너뛴 일별 집계는 실패가 아니다. 연속돼도 tick은 skip이다.
+            assert "daily:tick_deadline:1" in result.skip_message
+    assert module._FAILING_TICKS == [0]
 
 
-def test_gc_due_tick_reserves_gc_worst_case_inside_the_hard_deadline(
-    publisher_repository, tmp_path, monkeypatch,
-):
-    clock, calls = _fake_clock(monkeypatch), []
-    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
-
-    def source(*args, **kwargs):
-        calls.append(("source", kwargs["budget_seconds"]))
-        clock[0] = 100 + kwargs["budget_seconds"]  # source가 예산을 다 쓴다.
-        return _progress(2, {"NOT_READY": 2})
-
-    def daily(*args, **kwargs):
-        calls.append(("daily", kwargs["deadline"] - clock[0]))
-        clock[0] = kwargs["deadline"]  # 일별 집계도 예산을 다 쓴다.
-        return {"processed": 1, "has_more": True}
-
-    def gc(*args, **kwargs):
-        calls.append(("gc", kwargs["delete_budget_seconds"]))
-        clock[0] += module.GC_WORST_SECONDS  # GC가 최악 시간을 다 쓴다.
-        return {"mode": "dry_run", "eligible": 0, "eligible_bytes": 0,
-                "deleted": 0, "deleted_bytes": 0}
+def _failing_sweep(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("synthetic private exception must not reach the tick")
 
     monkeypatch.setattr(module, "publish_fresh_exports", lambda *a, **k: _progress())
-    monkeypatch.setattr(module, "publish_pending_exports", source)
-    monkeypatch.setattr(module, "refresh_publisher_daily", daily)
-    monkeypatch.setattr(module, "collect_export_artifacts", gc)
-    sensor, _ = build(publisher_repository, tmp_path, gc="dry_run")
+    monkeypatch.setattr(module, "publish_pending_exports", fail)
+
+
+def test_one_failing_stage_is_a_skip_but_repeated_failure_fails_the_tick(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    _failing_sweep(monkeypatch)
+    sensor, _ = build(publisher_repository, tmp_path)
     with DagsterInstance.ephemeral() as instance:
-        result = evaluate(sensor, instance)
-    reserved = (
-        module.TICK_DEADLINE_SECONDS - module.DAILY_BUDGET_SECONDS - 5 - module.GC_WORST_SECONDS
+        for _ in range(module.FAILING_TICKS_BEFORE_ERROR - 1):
+            result = evaluate(sensor, instance)
+            assert "sweep:RuntimeError:1" in result.skip_message
+        with pytest.raises(Exception) as raised:
+            evaluate(sensor, instance)
+    text_of = str(raised.value)
+    assert "3_consecutive_failing_ticks:sweep:RuntimeError" in text_of
+    assert "synthetic" not in text_of
+
+
+def test_a_healthy_tick_resets_the_failure_streak(publisher_repository, tmp_path, monkeypatch):
+    original = module.publish_pending_exports
+    _failing_sweep(monkeypatch)
+    sensor, _ = build(publisher_repository, tmp_path)
+    with DagsterInstance.ephemeral() as instance:
+        for _ in range(module.FAILING_TICKS_BEFORE_ERROR - 1):
+            evaluate(sensor, instance)
+        monkeypatch.setattr(module, "publish_pending_exports", original)
+        evaluate(sensor, instance)
+        assert module._FAILING_TICKS == [0]
+        _failing_sweep(monkeypatch)
+        assert "sweep:RuntimeError:1" in evaluate(sensor, instance).skip_message
+
+
+def test_daily_failure_counts_as_a_failing_stage(publisher_repository, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        module, "refresh_publisher_daily",
+        lambda *a, **k: {"processed": 0, "has_more": True, "error": "statement_timeout"},
     )
-    assert calls == [
-        ("source", reserved), ("daily", module.DAILY_BUDGET_SECONDS),
-        ("gc", module.GC_DELETE_SECONDS),
-    ]
-    assert clock[0] <= 100 + module.TICK_DEADLINE_SECONDS
-    assert "gc=dry_run:0files/0B" in result.skip_message
+    sensor, _ = build(publisher_repository, tmp_path)
+    with DagsterInstance.ephemeral() as instance:
+        first = evaluate(sensor, instance)
+    assert "daily:statement_timeout:1" in first.skip_message
+    assert module._FAILING_TICKS == [1]
+
+
+def test_failing_ticks_keep_the_sweep_moving(publisher_repository, tmp_path, monkeypatch):
+    # daily만 계속 실패해도(누락 artifact의 proof 등) sweep은 실패 tick마다 다음 구간으로 간다.
+    # Dagster는 실패 tick의 cursor를 저장하지 않는다. 시험도 실패 tick 뒤에는 앞서 저장된
+    # cursor를 그대로 넘겨 그 동작을 재현한다.
+    positions = [str(UUID(int=number)) for number in range(1, 10)]
+    seen = []
+
+    def sweep(*args, cursor, **kwargs):
+        seen.append(cursor)
+        index = 0 if cursor is None else positions.index(cursor) + 1
+        return _progress(1, {"NOT_READY": 1}, positions[index], False)
+
+    monkeypatch.setattr(module, "publish_fresh_exports", lambda *a, **k: _progress())
+    monkeypatch.setattr(module, "publish_pending_exports", sweep)
+    monkeypatch.setattr(
+        module, "refresh_publisher_daily",
+        lambda *a, **k: {"processed": 0, "has_more": True, "error": "proof"},
+    )
+    sensor, _ = build(publisher_repository, tmp_path)
+    stored, failed = None, 0
+    with DagsterInstance.ephemeral() as instance:
+        for _ in range(module.FAILING_TICKS_BEFORE_ERROR + 2):
+            try:
+                stored = evaluate(sensor, instance, cursor=stored).cursor
+            except Exception as raised:
+                assert "consecutive_failing_ticks:daily:proof" in str(raised)
+                failed += 1
+        assert failed == 3
+        # 실패 tick 셋도 매번 앞 tick이 끝난 위치에서 시작했다(같은 구간을 되풀이하지 않는다).
+        assert seen == [None, *positions[:4]]
+        assert json.loads(stored)["after"] == positions[1]
+        # 저장된 cursor가 바뀌면(운영자 reset 등) 메모리의 위치보다 저장된 cursor를 따른다.
+        stored = None
+        with pytest.raises(Exception, match="consecutive_failing_ticks:daily:proof"):
+            evaluate(sensor, instance, cursor=stored)
+        assert seen[-1] is None
+        # 실패가 끝나면 메모리의 위치(reset 뒤 실패 tick이 끝낸 곳)부터 잇고 cursor로 남긴다.
+        monkeypatch.setattr(
+            module, "refresh_publisher_daily", lambda *a, **k: {"processed": 0, "has_more": False},
+        )
+        healed = evaluate(sensor, instance, cursor=stored)
+    assert seen[-1] == positions[0]
+    assert json.loads(healed.cursor)["after"] == positions[1]
+    assert module._FAILING_TICKS == [0]
+
+
+def test_unexpected_tick_error_fails_the_tick_without_the_original_message(
+    publisher_repository, tmp_path,
+):
+    def factory(context, runtime):
+        raise RuntimeError("postgresql://user:secret@host/db synthetic")
+
+    sensor = module.build_export_publisher_sensor(
+        settings_factory=lambda: WeatherSettings(
+            service_exports_enabled=True, service_export_artifact_root=tmp_path,
+        ),
+        repository_factory=factory,
+    )
+    with DagsterInstance.ephemeral() as instance, pytest.raises(Exception) as raised:
+        evaluate(sensor, instance)
+    message = str(raised.value)
+    assert "export publisher 평가 실패(RuntimeError)" in message
+    assert "secret" not in message and "synthetic" not in message
+    # 다음 tick은 슬롯을 다시 잡을 수 있다.
+    assert module._TICK_SLOT.acquire(blocking=False)
+    module._TICK_SLOT.release()
 
 
 def _hold_row(repository, run_id, locked, release):
@@ -530,78 +588,3 @@ def test_lock_timeout_on_one_candidate_does_not_defer_the_tick(
         again = evaluate(sensor, instance, cursor=result.cursor)
     assert "published=1" in again.skip_message
     assert state(repo, heads, blocked)[0]["published_at"] is not None
-
-
-def test_gc_runs_on_its_interval_and_reports_in_the_skip_reason(
-    publisher_repository, tmp_path, monkeypatch,
-):
-    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
-    sensor, _ = build(publisher_repository, tmp_path, gc="dry_run")
-    with DagsterInstance.ephemeral() as instance:
-        first = evaluate(sensor, instance)
-        second = evaluate(sensor, instance, cursor=first.cursor)
-    assert "gc=dry_run:0files/0B" in first.skip_message
-    assert "gc=" not in second.skip_message
-
-
-
-def test_default_delete_gc_removes_old_unreferenced_database_artifacts_through_the_public_sensor(
-    publisher_repository, tmp_path, monkeypatch,
-):
-    from datetime import UTC, datetime, timedelta
-
-    from sqlalchemy import select
-
-    from kortravelweather.export_artifacts import prepare_export_chunk
-    from kortravelweather.export_database_artifacts import export_artifact_store
-
-    repo = publisher_repository
-    store = export_artifact_store(repo, tmp_path)
-    chunk = prepare_export_chunk([{"obsolete": True}], source_collected_at=datetime.now(UTC))
-    # DB 행은 UPDATE 불가이므로 오래된 orphan을 처음부터 그 시각으로 삽입한다.
-    with repo.engine.begin() as connection:
-        connection.execute(store.table.insert().values(
-            digest=chunk.digest, payload=chunk.payload, byte_count=len(chunk.payload),
-            point_count=chunk.point_count, created_at=datetime.now(UTC) - timedelta(hours=48),
-        ))
-    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
-    sensor, owned = build(
-        repo, tmp_path, gc=WeatherSettings().service_export_artifact_gc,
-    )
-    with DagsterInstance.ephemeral() as instance:
-        result = evaluate(sensor, instance)
-    with repo.engine.connect() as connection:
-        assert connection.scalar(select(store.table.c.digest).where(
-            store.table.c.digest == chunk.digest,
-        )) is None
-    assert not list(tmp_path.glob("*.jsonl"))
-    assert f"gc=delete:1files/{len(chunk.payload)}B" in result.skip_message
-    assert "gc_complete=true" in result.skip_message
-    assert "gc_pending=0" in result.skip_message
-    assert owned[0].engine.pool.checkedout() == 0
-
-
-def test_gc_reference_failure_retries_next_tick_without_resetting_scan_state(
-    publisher_repository, tmp_path, monkeypatch,
-):
-    from sqlalchemy.exc import OperationalError
-
-    monkeypatch.setattr(module, "_GC_NEXT", [0.0])
-    calls = []
-
-    def gc(*args, **kwargs):
-        calls.append(kwargs["scan"])
-        if len(calls) == 1:
-            raise OperationalError("synthetic", {}, RuntimeError("reference unavailable"))
-        return {"mode": "delete", "eligible": 0, "eligible_bytes": 0,
-                "deleted": 0, "deleted_bytes": 0, "complete": True, "pending": 0}
-
-    monkeypatch.setattr(module, "collect_export_artifacts", gc)
-    sensor, _ = build(publisher_repository, tmp_path, gc="delete")
-    with DagsterInstance.ephemeral() as instance:
-        first = evaluate(sensor, instance)
-        assert module._GC_NEXT == [0.0]
-        second = evaluate(sensor, instance, cursor=first.cursor)
-    assert "gc:OperationalError:1" in first.skip_message
-    assert "gc=delete:0files/0B" in second.skip_message
-    assert calls == [module._GC_SCAN, module._GC_SCAN]

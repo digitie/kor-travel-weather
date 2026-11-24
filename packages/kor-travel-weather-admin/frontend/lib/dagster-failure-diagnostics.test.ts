@@ -42,6 +42,18 @@ describe("수집 실패 상세의 서버 정제", () => {
     expect(result).toContain("게시 소요(ms): 150.25");
     expect(result).toContain("가격 저장 수: 0");
   });
+  it("격리 상한 초과는 격리 행 수와 상한을 함께 보여준다", () => {
+    const result = failureDiagnostic({ ...event, failureMetadata: { metadataEntries: [
+      { label: "error_code", text: "ALERT_QUARANTINE_LIMIT" }, { label: "stage", text: "page_validation" },
+      { label: "returned_rows", intValue: 63 }, { label: "quarantined_rows", intValue: 12 },
+      { label: "quarantine_limit", intValue: 10 },
+    ] } });
+    expect(result).toContain("오류 코드: ALERT_QUARANTINE_LIMIT");
+    expect(result).toContain("격리 행 수: 12");
+    expect(result).toContain("격리 상한: 10");
+    expect(result).toContain("마지막 정상 자료를 유지");
+    expect(result).not.toContain("UNKNOWN_FAILURE");
+  });
   it("auth·한도·timeout에 서로 다른 대응을 보여준다", () => {
     expect(failureDiagnostic({ message: "ALERT_PROVIDER_AUTH" })).toContain("활용신청·서비스 키 권한");
     expect(failureDiagnostic({ message: "ALERT_PROVIDER_RATE_LIMIT" })).toContain("한도 종류와 복구 정책");
