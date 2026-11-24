@@ -40,6 +40,7 @@ from sqlalchemy import (
 from sqlalchemy.exc import SQLAlchemyError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore, ExportGuardTimeout
+from .export_cancellation import checkpoint
 from .export_capacity import (
     MANIFEST_STATE_RESERVE,
     MAX_MANIFEST_BYTES,
@@ -50,6 +51,7 @@ from .export_capacity import (
     bounded_manifest_digest,
     read_generation_refs,
 )
+from .export_database_artifacts import MAX_ARTIFACT_READ_BATCH, MAX_ARTIFACT_READ_BATCH_LIMIT
 from .export_heads import ExportHeads, ScopeDescriptor, _digest
 from .export_read_window import ArtifactReadWindow, current_candidates
 from .export_snapshot_refs import insert_snapshot_refs
@@ -62,6 +64,17 @@ SNAPSHOT_TTL = timedelta(minutes=15)
 SNAPSHOT_MAX_LIFETIME = timedelta(hours=6)
 MAX_PAGE_ARTIFACTS = 128
 MAX_PAGE_SCOPES = 128
+# current 값 페이지만의 scope·artifact 읽기 상한. current artifact는 scope당 1개·수 KB라
+# 512개여도 4MiB 응답 상한(MAX_PAGE_BYTES)과 limit(최대5000)이 먼저 막는다. 2,925 scope
+# 운영 vector를 limit 2000으로 읽으면 23→14페이지다. 예보·중기는 artifact가 크고 별도 입력
+# byte 예산이 있어 위의 128을 그대로 쓴다.
+MAX_CURRENT_PAGE_SCOPES = 512
+MAX_CURRENT_PAGE_ARTIFACTS = 512
+# 한 current 페이지가 읽고 검산하는 artifact 입력 byte 상한. 선택 위치가 artifact 일부뿐이면
+# 출력보다 입력이 커질 수 있어 scope 경계에서 끊는다(첫 scope는 freeze의 scope당 16MiB 상한).
+MAX_CURRENT_PAGE_INPUT_BYTES = 32 * 1024 * 1024
+# current DB artifact를 한 왕복에 읽는 개수(byte 상한 8MiB는 그대로).
+CURRENT_ARTIFACT_READ_BATCH = MAX_ARTIFACT_READ_BATCH_LIMIT
 
 
 def snapshot_expires_at(now):
@@ -70,6 +83,10 @@ def snapshot_expires_at(now):
 
 
 SOURCE_MAX_AGE = timedelta(hours=3)
+# 앱 공용 상태 판정을 이어받는 최소 남은 수명(초). 판정은 페이지의 마지막 DB 단계라 뒤에는
+# 완료 페이지 검산(공유 guard 대기 최대5초 + 5초 상한 문장)과 직렬화만 남는다. 그 최악보다
+# 넉넉하고, 승인 선택 자체를 이어받는 cursor 기준(30초)보다는 짧다.
+STATUS_PROOF_MIN_REMAINING = 20.0
 # 만료 뒤 이만큼 지난 handle만 publisher tick이 지운다. 유효 cursor(만료 전)는 대상이 아니다.
 SNAPSHOT_PRUNE_RETAIN = timedelta(hours=6)
 # current handle 하나에 scope ref가 수천 행이라 CASCADE까지 5초 statement 상한 안에 끝나도록
@@ -202,12 +219,15 @@ def ensure_snapshot_files(artifacts, issue):
     GC가 이전 generation 파일을 지울 수 있다(24시간 넘게 승격되지 않은 scope + 최근 snapshot에도
     없는 드문 경우). 그러면 한 번 다시 발급하고(이제 새 head를 본다), 그래도 없으면 일시 경합
     503으로 돌려 같은 요청을 다시 받게 한다.
+    요청자 연결이 끊겼으면 발급 앞뒤에서 멈춘다(``export_cancellation``).
     """
     for _ in range(3):
+        checkpoint("freeze")
         try:
             frozen = issue()
         except AtomicPinMissing:
             continue  # pin 직전 GC가 이전 generation 파일을 지웠다. 새 head로 다시 발급한다.
+        checkpoint("freeze")
         # API freeze는 전체 파일의 존재/크기를 GC guard 안에서 검사하고 ref와 함께
         # commit한다. 같은 발급의 DB pin이 이미 파일을 지키므로 다시 stat하지 않는다.
         # 재사용 handle·이전 성공 fallback·SDK 발급은 기존 all_present/재시도를 유지한다.
@@ -333,6 +353,8 @@ class FrozenCurrentExports:
                 expected=self.expected_sources, optional=self.optional_sources,
                 health_location_ids=health_location_ids, health_proof=capture_health,
             )
+            # 이 연결(RR)에서 새로 읽은 선택이다. 같은 RR의 상태 판정이 scope 상태를 다시 쓴다.
+            self._selection_read_in = (connection, result)
             if capture_health:
                 self._fresh_forecast_health = (
                     result.health_checked_at, result.health_recheck_at, result.unconfirmed,
@@ -587,6 +609,9 @@ class FrozenCurrentExports:
                 raise ExportSnapshotUnavailable(
                     "실제 승인 source 집합이 준비되지 않았습니다."
                 ) from exc
+            if getattr(self, "_keep_freeze_selection", False):
+                # current freeze 끝의 같은 RR 상태 판정이 승인 선택을 다시 읽지 않도록 넘긴다.
+                self._freeze_selection = selection
             selected = {item.descriptor.namespace: item.location_ids for item in selection.scopes}
             heads = {item.descriptor.namespace: {
                 "generation_id": item.generation_id,
@@ -647,6 +672,10 @@ class FrozenCurrentExports:
 
     @measured_stage("freeze")
     def _freeze(self):
+        self.__dict__.pop("_freeze_selection", None)
+        self.__dict__.pop("_freeze_status", None)
+        # 상태 판정 수명은 RR 시작 전 시각부터 센다(보수적).
+        status_started = self.selection_cache.clock() if self.selection_cache is not None else None
         # catalog와 head vector를 동일 MVCC에서 읽는다. 파일 I/O는 이 TX 밖이다.
         with (
             self.repository.engine.connect().execution_options(
@@ -681,9 +710,13 @@ class FrozenCurrentExports:
             )
             if not locations or len(locations) > MAX_SNAPSHOT_LOCATIONS:
                 raise ExportSnapshotUnavailable("활성 location 전체 집합이 준비되지 않았습니다.")
-            descriptors, heads, selected, unconfirmed = self._select_current_scopes(
-                connection, locations
-            )
+            self._keep_freeze_selection = True
+            try:
+                descriptors, heads, selected, unconfirmed = self._select_current_scopes(
+                    connection, locations
+                )
+            finally:
+                self._keep_freeze_selection = False
             generations = [heads[d.namespace]["generation_id"] for d in descriptors]
             grouped_refs = read_generation_refs(connection, self.heads.refs, generations)
             scopes = []
@@ -778,6 +811,9 @@ class FrozenCurrentExports:
             digest = bounded_manifest_digest(
                 manifest, MAX_MANIFEST_BYTES - MANIFEST_STATE_RESERVE,
             )
+            # 첫 페이지의 상태 판정은 방금 manifest를 만든 같은 RR에서 한다. 같은 승인 선택과
+            # catalog를 다른 RR에서 다시 읽고 검산하던 왕복(선택 무결성 2문장·roster)을 없앤다.
+            status = self._freeze_state_proof(connection, manifest, status_started)
             now = datetime.now(UTC)
             # 재사용 조건은 그대로다: 같은 digest의 유효한 handle이 그 selection의 **가장 최근**
             # 발급이어야 한다. 같은 digest면 manifest(안의 selection 포함)가 같으므로, 그 handle보다
@@ -804,6 +840,7 @@ class FrozenCurrentExports:
                     *self._same_selection(),
                 ).limit(1)
             ) is None:
+                self._remember_freeze_status(existing["snapshot_id"], digest, status)
                 return {**existing, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
@@ -845,7 +882,234 @@ class FrozenCurrentExports:
                         raise AtomicPinMissing() from exc
                     connection.commit()
                 row["_atomic_files_pinned"] = True
+            self._remember_freeze_status(row["snapshot_id"], digest, status)
             return row
+
+    def _state_signature(self):
+        """상태 판정이 같은 의미인 reader 설정. snapshot_id/digest와 함께 판정 key가 된다."""
+        return (
+            type(self).__name__, self.current_providers, self.source_inventory,
+            tuple(sorted(self.expected_sources)), tuple(sorted(self.optional_sources)),
+        )
+
+    def _state_proof_cache(self):
+        # 삭제 변경 번호(page liveness)가 있는 앱 공용 승인 수명 안에서만 판정을 잇는다.
+        return self.selection_cache if self.page_liveness else None
+
+    def _freeze_state_proof(self, connection, manifest, started):
+        """승인 inventory 경로의 freeze RR 안에서 상태 판정과 그 근거(epoch·수명)를 만든다."""
+        cache = self._state_proof_cache()
+        selection = self.__dict__.pop("_freeze_selection", None)
+        self.__dict__.pop("_selection_read_in", None)
+        if cache is None or selection is None or started is None:
+            return None
+        from .export_page_liveness import capture_liveness
+
+        token = capture_liveness(connection, self.heads.metadata)
+        if (token is None or self.selection_deadline is None
+                or (self.reuse_liveness is not None and tuple(self.reuse_liveness) != token)):
+            # 선택을 고른 삭제 변경 번호(이전 발급 시도의 RR일 수 있다)와 지금 RR의 번호가 다르면
+            # 판정을 남기지 않는다. 이 요청은 아래 일반 경로에서 새 RR로 판정한다.
+            return None
+        stale = self._compute_state_stale(connection, manifest, selection=selection)
+        return stale, min(self.selection_deadline, started + 60), token
+
+    def _remember_freeze_status(self, snapshot_id, digest, status):
+        if status is not None:
+            self._freeze_status = (snapshot_id, digest, *status)
+
+    @measured_stage("metadata")
+    def _current_state_stale(self, frozen, manifest, *, reuse):
+        """고정 manifest 기준으로 현재 catalog·승인·head·수집 상태가 어긋났는지(stale) 판정한다.
+
+        데이터 세대는 snapshot에 고정하지만 상태는 현재 값이다(설계 §3). 다만 Map의 cursor
+        순회는 같은 snapshot을 수십 페이지 읽으므로, 판정은 snapshot·reader 설정마다 승인 수명
+        (최대60초, 소유자 결정의 상태 반영 지연 상한) 안에서 한 번 계산해 앱이 나눠 쓴다.
+        이어지는 페이지는 같은 RR에서 삭제 변경 번호(head·generation·plan DELETE epoch, 3행)만
+        읽어 같으면 재사용한다. head 삭제처럼 즉시 드러나야 하는 변화는 번호가 바뀌어 다시
+        계산하고, 수집 실패·승인 변경은 기존 계약대로 최대60초 늦게 반영될 수 있다.
+        첫 페이지(``reuse=False``)는 Map의 304 판단 기준이라 공용 판정을 읽지 않고 새로
+        계산한다(cross-limit seed도 건강도는 다시 읽는다). 계산 결과는 이어지는 cursor에 남긴다.
+        """
+        self.__dict__.pop("_freeze_selection", None)
+        self.__dict__.pop("_selection_read_in", None)
+        cache = self._state_proof_cache()
+        key = (id(self.repository.engine), self._state_signature(),
+               frozen["snapshot_id"], frozen["manifest_digest"])
+        pending = self.__dict__.pop("_freeze_status", None)
+        if (cache is not None and pending is not None
+                and pending[:2] == (frozen["snapshot_id"], frozen["manifest_digest"])):
+            _, _, stale, deadline, token = pending
+            # freeze RR에서 이미 계산했다. 이 요청과 이어지는 cursor 페이지가 같은 판정을 쓴다.
+            cache.put_status(key, stale, deadline, token)
+            self.selection_deadline = min(self.selection_deadline or deadline, deadline)
+            self.page_status_proof = "frozen"
+            return stale
+        started = cache.clock() if cache is not None else None
+        with (
+            self.repository.engine.connect().execution_options(
+                isolation_level="REPEATABLE READ"
+            ) as session, session.begin(),
+        ):
+            session.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
+            token = None
+            if cache is not None:
+                from .export_page_liveness import capture_liveness
+
+                token = capture_liveness(session, self.heads.metadata)
+                proof = (cache.read_status(key, token, min_remaining=STATUS_PROOF_MIN_REMAINING)
+                         if reuse else None)
+                if proof is not None:
+                    stale, deadline = proof
+                    self.selection_deadline = min(self.selection_deadline or deadline, deadline)
+                    if self.reuse_liveness is None:
+                        # 판정을 검산한 때와 같은 삭제 변경 번호다(번호는 증가만 한다).
+                        self.reuse_liveness = token
+                    self.page_status_proof = "reused"
+                    return stale
+                if self.reuse_liveness is None and token is not None:
+                    # _approved_selection이 같은 RR에서 다시 읽던 값과 같다.
+                    self.reuse_liveness = token
+            stale = self._compute_state_stale(session, manifest)
+        if cache is not None and self.selection_deadline is not None:
+            cache.put_status(key, stale, min(self.selection_deadline, started + 60), token)
+        self.page_status_proof = "computed"
+        return stale
+
+    def _compute_state_stale(self, session, manifest, *, selection=None):
+        """caller의 RR에서 catalog·승인 선택·현재 head·수집 상태를 manifest와 대조한다."""
+        stale = False
+        catalog = self.heads.metadata.tables["weather_locations"]
+        from .export_inventory_selection import catalog_source_projection
+
+        source_from, source_columns = (
+            catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
+        )
+        latest = None
+        if self.source_inventory and selection is not None:
+            # freeze가 같은 RR에서 이 manifest를 만든 승인 선택이다. roster도 같은 RR의 값이다.
+            latest = selection
+            stale |= latest.unconfirmed or {
+                (item.descriptor.namespace, item.location_ids) for item in latest.scopes
+            } != {
+                (scope["namespace"], tuple(scope["location_ids"]))
+                for scope in manifest["scopes"]
+            }
+        else:
+            roster = session.execute(
+                select(
+                    catalog.c.location_id,
+                    catalog.c.nx,
+                    catalog.c.ny,
+                    catalog.c.latitude,
+                    catalog.c.longitude,
+                    *source_columns,
+                )
+                .select_from(source_from)
+                .where(catalog.c.enabled.is_(True))
+                .order_by(catalog.c.location_id)
+                .limit(MAX_SNAPSHOT_LOCATIONS + 1)
+            ).all()
+            stale |= len(roster) > MAX_SNAPSHOT_LOCATIONS
+            if self.source_inventory:
+                try:
+                    latest = self._approved_selection(
+                        session, [row._mapping for row in roster],
+                    )
+                    fresh = self.__dict__.pop("_selection_read_in", None)
+                    if fresh is not None and fresh[0] is session and fresh[1] is latest:
+                        selection = latest  # 같은 RR에서 방금 읽었다(캐시 hit가 아니다).
+                    stale |= latest.unconfirmed or {
+                        (item.descriptor.namespace, item.location_ids) for item in latest.scopes
+                    } != {
+                        (scope["namespace"], tuple(scope["location_ids"]))
+                        for scope in manifest["scopes"]
+                    }
+                except ExportGuardTimeout:
+                    raise
+                except (ExportArtifactError, KeyError, ValueError, TypeError):
+                    stale = True
+            else:
+                expected = sorted(
+                    (key, scope["nx"], scope["ny"])
+                    for scope in manifest["scopes"]
+                    if scope.get("provider", "python-kma-api") == "python-kma-api"
+                    for key in scope["location_ids"]
+                )
+                if "python-kma-api" in self.current_providers:
+                    stale |= [tuple(row)[:3] for row in roster] != expected
+                else:
+                    stale |= [
+                        (row.location_id, float(row.latitude), float(row.longitude))
+                        for row in roster
+                    ] != [
+                        (row["location_id"], row["latitude"], row["longitude"])
+                        for row in manifest["locations"]
+                    ]
+                external = set(self.current_providers) - {"python-kma-api"}
+                if external:
+                    from .export_external_cohorts import selected_external_descriptors
+
+                    try:
+                        current_external = selected_external_descriptors(
+                            session, self.heads.metadata, [row._mapping for row in roster],
+                            external,
+                        )
+                        stale |= {d.namespace for d in current_external} != {
+                            scope["namespace"]
+                            for scope in manifest["scopes"]
+                            if scope.get("provider", "python-kma-api") != "python-kma-api"
+                        }
+                    except (ExportArtifactError, KeyError, ValueError, TypeError):
+                        stale = True
+        # cursor로 같은 reader handle을 이어 읽어도 현재 head 유효성을 확인한다.
+        # 이전 manifest를 반환했다는 메모리 flag만으로는 다음 요청에 stale이
+        # 사라져 삭제/복구 중인 source를 정상이라고 표시할 수 있다.
+        # head.generation_id는 generation PK를 참조하는 FK라(같은 RR) head가 있으면 세대도 있다.
+        # 예전 heads⋈generations는 큰 generation 표를 scope 수만큼 다시 찾았다.
+        namespaces = [scope["namespace"] for scope in manifest["scopes"]]
+        current_namespaces = set(session.scalars(select(self.heads.heads.c.namespace).where(
+            any_of(self.heads.heads.c.namespace, namespaces)
+            if session.dialect.name == "postgresql" else
+            self.heads.heads.c.namespace.in_(namespaces)
+        )))
+        stale |= current_namespaces != set(namespaces)
+        # 소유 시도·시도·공개 세대·run 상태. 4표 JOIN은 운영 부하에서 5초 statement 상한의
+        # 1위 원인이었다(2026-11-24 odroid, 2,925 scope). 승인 선택과 같은 분해 조회로 읽는다
+        # (run은 서로 다른 run_id만, 공개 세대는 시도 PK 배열 한 번).
+        # 승인 선택이 읽은 scope 상태는 다시 찾지 않는다: freeze가 manifest를 만든 선택(이 요청
+        # 시작 뒤 읽힌 것만 쓰인다, 첫 페이지 min_deadline)과 이 RR에서 방금 새로 읽은 선택.
+        # 공용 캐시에서 온 과거 선택의 상태는 쓰지 않고 지금 RR에서 읽는다(seed·cursor 재계산).
+        source_scopes = {scope["source_scope"] for scope in manifest["scopes"]}
+        if session.dialect.name != "postgresql":
+            owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
+            runs = self.heads.metadata.tables["weather_sync_runs"]
+            active = [(None, None, None, attempt, generation, run, None)
+                      for attempt, run, generation in session.execute(
+                select(attempts.c.status, runs.c.status, self.heads.generations.c.generation_id)
+                .select_from(
+                    owners.join(attempts, owners.c.active_attempt_id == attempts.c.attempt_id)
+                    .join(runs, runs.c.run_id == attempts.c.run_id)
+                    .outerjoin(self.heads.generations,
+                               self.heads.generations.c.attempt_id == attempts.c.attempt_id)
+                ).where(owners.c.source_scope.in_(sorted(source_scopes)))
+            ).all()]
+        else:
+            from .export_inventory_selection import _active_scope_states
+
+            known = getattr(selection, "state_scopes", frozenset()) & source_scopes
+            active = [row for row in getattr(selection, "scope_states", ()) if row[0] in known]
+            if source_scopes - known:
+                active += _active_scope_states(
+                    session, self.heads.metadata, source_scopes - known,
+                )
+        stale |= len(active) != len(source_scopes) or any(
+            attempt == "failed"
+            or run not in {"running", "success"}
+            or (run == "success" and generation is None)
+            for _scope, _attempt_id, _run_id, attempt, generation, run, _epoch in active
+        )
+        return stale
 
     def _same_selection(self):
         """이 reader와 같은 selection(없으면 selection 없는 기본 집합)인 snapshot 행 조건들.
@@ -1067,19 +1331,27 @@ class FrozenCurrentExports:
             # 가리키는 세대의 파일을 지우지 않는다. snapshot_refs가 generation 행 삭제도 막는다.
             # 파일은 검증한 같은 파일(identity 동일, 10분 이내)이면 복호 캐시를 쓰고, 아니면 동일fd
             # hash/count를 재검증한다. 누락은 성공으로 반환하지 않는다.
-            scope_reads, artifact_reads = 0, 0
-            artifact_window = ArtifactReadWindow(self.artifacts)
+            scope_reads, artifact_reads, input_bytes = 0, 0, 0
+            artifact_window = ArtifactReadWindow(
+                self.artifacts, batch=CURRENT_ARTIFACT_READ_BATCH
+                if getattr(self.artifacts, "is_database", False) else MAX_ARTIFACT_READ_BATCH,
+            )
             while state["g"] < len(scopes):
                 scope = scopes[state["g"]]
-                if (scope_reads >= MAX_PAGE_SCOPES
-                        or artifact_reads + len(scope["refs"]) > MAX_PAGE_ARTIFACTS):
+                if (scope_reads >= MAX_CURRENT_PAGE_SCOPES
+                        or artifact_reads + len(scope["refs"]) > MAX_CURRENT_PAGE_ARTIFACTS):
                     if not output:
                         raise ExportSnapshotUnavailable(
                             "단일 scope가 페이지 읽기 상한을 넘었습니다.",
                         )
                     more = True
                     break
-                remaining_reads = MAX_PAGE_ARTIFACTS - artifact_reads
+                scope_bytes = sum(ref["byte_count"] for ref in scope["refs"])
+                if output and input_bytes + scope_bytes > MAX_CURRENT_PAGE_INPUT_BYTES:
+                    more = True
+                    break
+                input_bytes += scope_bytes
+                remaining_reads = MAX_CURRENT_PAGE_ARTIFACTS - artifact_reads
                 scope_reads += 1
                 artifact_reads += len(scope["refs"])
                 points = []
@@ -1090,7 +1362,8 @@ class FrozenCurrentExports:
                         ref,
                         lambda scope_reads=scope_reads, ref_index=ref_index: current_candidates(
                             scopes, state["g"], points=limit - len(output) + state["p"],
-                            max_scopes=MAX_PAGE_SCOPES - scope_reads + 1, ref_start=ref_index,
+                            max_scopes=MAX_CURRENT_PAGE_SCOPES - scope_reads + 1,
+                            ref_start=ref_index,
                         ), remaining_reads=remaining_reads - ref_index,
                     )
                     self.reuse_artifacts.add((
@@ -1164,127 +1437,7 @@ class FrozenCurrentExports:
                 for scope in manifest["scopes"]
             )
         stale |= bool(manifest.get("capacity_limited"))
-        owners, attempts = self.heads.lifecycle.owners, self.heads.lifecycle.attempts
-        runs = self.heads.metadata.tables["weather_sync_runs"]
-        with (
-            self.repository.engine.connect().execution_options(
-                isolation_level="REPEATABLE READ"
-            ) as session, session.begin(),
-        ):
-            session.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
-            catalog = self.heads.metadata.tables["weather_locations"]
-            from .export_inventory_selection import catalog_source_projection
-
-            source_from, source_columns = (
-                catalog_source_projection(catalog) if self.source_inventory else (catalog, [])
-            )
-
-            roster = session.execute(
-                select(
-                    catalog.c.location_id,
-                    catalog.c.nx,
-                    catalog.c.ny,
-                    catalog.c.latitude,
-                    catalog.c.longitude,
-                    *source_columns,
-                )
-                .select_from(source_from)
-                .where(catalog.c.enabled.is_(True))
-                .order_by(catalog.c.location_id)
-                .limit(MAX_SNAPSHOT_LOCATIONS + 1)
-            ).all()
-            stale |= len(roster) > MAX_SNAPSHOT_LOCATIONS
-            if self.source_inventory:
-                try:
-                    latest = self._approved_selection(
-                        session, [row._mapping for row in roster],
-                    )
-                    stale |= latest.unconfirmed or {
-                        (item.descriptor.namespace, item.location_ids) for item in latest.scopes
-                    } != {
-                        (scope["namespace"], tuple(scope["location_ids"]))
-                        for scope in manifest["scopes"]
-                    }
-                except ExportGuardTimeout:
-                    raise
-                except (ExportArtifactError, KeyError, ValueError, TypeError):
-                    stale = True
-            else:
-                expected = sorted(
-                    (key, scope["nx"], scope["ny"])
-                    for scope in manifest["scopes"]
-                    if scope.get("provider", "python-kma-api") == "python-kma-api"
-                    for key in scope["location_ids"]
-                )
-                if "python-kma-api" in self.current_providers:
-                    stale |= [tuple(row)[:3] for row in roster] != expected
-                else:
-                    stale |= [
-                        (row.location_id, float(row.latitude), float(row.longitude))
-                        for row in roster
-                    ] != [
-                        (row["location_id"], row["latitude"], row["longitude"])
-                        for row in manifest["locations"]
-                    ]
-                external = set(self.current_providers) - {"python-kma-api"}
-                if external:
-                    from .export_external_cohorts import selected_external_descriptors
-
-                    try:
-                        current_external = selected_external_descriptors(
-                            session, self.heads.metadata, [row._mapping for row in roster], external
-                        )
-                        stale |= {d.namespace for d in current_external} != {
-                            scope["namespace"]
-                            for scope in manifest["scopes"]
-                            if scope.get("provider", "python-kma-api") != "python-kma-api"
-                        }
-                    except (ExportArtifactError, KeyError, ValueError, TypeError):
-                        stale = True
-            # cursor로 같은 reader handle을 이어 읽어도 현재 head 유효성을 확인한다.
-            # 이전 manifest를 반환했다는 메모리 flag만으로는 다음 요청에 stale이
-            # 사라져 삭제/복구 중인 source를 정상이라고 표시할 수 있다.
-            current_namespaces = set(
-                session.scalars(
-                    select(self.heads.heads.c.namespace)
-                    .join(
-                        self.heads.generations,
-                        self.heads.generations.c.generation_id == self.heads.heads.c.generation_id,
-                    )
-                    .where(
-                        any_of(self.heads.heads.c.namespace,
-                               [scope["namespace"] for scope in manifest["scopes"]])
-                        if session.dialect.name == "postgresql" else
-                        self.heads.heads.c.namespace.in_(
-                            [scope["namespace"] for scope in manifest["scopes"]])
-                    )
-                )
-            )
-            stale |= current_namespaces != {scope["namespace"] for scope in manifest["scopes"]}
-            statuses = session.execute(
-                select(attempts.c.status, runs.c.status, self.heads.generations.c.generation_id)
-                .select_from(
-                    owners.join(attempts, owners.c.active_attempt_id == attempts.c.attempt_id)
-                    .join(runs, runs.c.run_id == attempts.c.run_id)
-                    .outerjoin(
-                        self.heads.generations,
-                        self.heads.generations.c.attempt_id == attempts.c.attempt_id,
-                    )
-                )
-                .where(
-                    any_of(owners.c.source_scope,
-                           [scope["source_scope"] for scope in manifest["scopes"]])
-                    if session.dialect.name == "postgresql" else
-                    owners.c.source_scope.in_(
-                        [scope["source_scope"] for scope in manifest["scopes"]])
-                )
-            ).all()
-        stale |= len(statuses) != len({s["source_scope"] for s in manifest["scopes"]}) or any(
-            a == "failed"
-            or run not in {"running", "success"}
-            or (run == "success" and generation is None)
-            for a, run, generation in statuses
-        )
+        stale |= self._current_state_stale(frozen, manifest, reuse=cursor is not None)
         status = "stale" if stale else "ok"
         meta = {
             "generated_at": now.isoformat(),

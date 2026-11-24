@@ -26,8 +26,18 @@ type SessionPayload = {
   v: number;
 };
 
+type DurableSessionCache = {
+  /** 서명 쿠키 값 → active 판정 재사용 만료 시각(ms). */
+  active: Map<string, number>;
+  /** 서명 쿠키 값 → 진행 중인 단일 확인. */
+  inflight: Map<string, Promise<DurableSessionState>>;
+  /** 서명 쿠키 값 → 다시 캐시하지 않을 만료 시각(ms). 로그아웃·재로그인 직후 경합을 막는다. */
+  forgotten: Map<string, number>;
+};
+
 type SessionGlobal = typeof globalThis & {
   __korTravelWeatherRevokedSessions?: RevocationStore;
+  __korTravelWeatherDurableSessionCache?: DurableSessionCache;
 };
 
 function revocationStore(): RevocationStore {
@@ -55,11 +65,147 @@ function pruneRevocations(now = Date.now()) {
 export type DurableSessionState = "active" | "revoked" | "unavailable";
 const DURABLE_AUTH_READ_TIMEOUT_MS = 5000;
 
+// durable 확인 결과의 프로세스 메모리 캐시(docs/weather-admin-map-call-resilience.md B1).
+// - active 판정만 TTL(기본 10초) 동안 재사용한다. revoked·unavailable은 저장하지 않으므로
+//   저장소 장애는 지금처럼 매 요청 503(fail-closed)이다.
+// - 같은 쿠키의 동시 확인은 진행 중인 요청 하나를 공유한다(single-flight).
+// - 키는 서명 쿠키 값 전체다. 백엔드 폐기 저장소도 같은 값의 digest를 보므로 sid와 1:1이고,
+//   서명을 확인하지 않은 값이 다른 쿠키의 판정을 대신할 수 없다.
+// - 이 프로세스의 로그아웃·재로그인은 해당 쿠키를 즉시 잊고 폐기 기록이 끝날 동안 다시 캐시하지
+//   않는다. 다른 web replica·runtime에서 한 로그아웃은 GET/HEAD에 최대 TTL 늦게 반영된다.
+// - 상태 변경 요청은 캐시를 쓰지 않는다(`fresh`). 지연 계약은 읽기에만 해당한다.
+const DURABLE_SESSION_CACHE_DEFAULT_SECONDS = 10;
+const DURABLE_SESSION_CACHE_MAX_SECONDS = 60;
+const DURABLE_SESSION_CACHE_MAX_ENTRIES = 1024;
+// 폐기 기록 쓰기 예산(5초)과 TTL 상한보다 길게 둔다.
+const DURABLE_SESSION_FORGET_HOLD_MS = 60_000;
+
+function durableSessionCache(): DurableSessionCache {
+  const root = globalThis as SessionGlobal;
+  if (!root.__korTravelWeatherDurableSessionCache) {
+    root.__korTravelWeatherDurableSessionCache = {
+      active: new Map(),
+      inflight: new Map(),
+      forgotten: new Map(),
+    };
+  }
+  return root.__korTravelWeatherDurableSessionCache;
+}
+
+/**
+ * active 판정 재사용 시간(ms). `WEATHER_UI_SESSION_CHECK_CACHE_SECONDS`가 비어 있으면 10초,
+ * 0이면 캐시와 동시 확인 공유를 모두 끈다(이전 동작). 숫자가 아니거나 음수면 보수적으로 끈다.
+ */
+export function durableSessionCacheTtlMs(env: Env = process.env): number {
+  const raw = env.WEATHER_UI_SESSION_CHECK_CACHE_SECONDS?.trim();
+  if (!raw) return DURABLE_SESSION_CACHE_DEFAULT_SECONDS * 1000;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+  return Math.round(Math.min(seconds, DURABLE_SESSION_CACHE_MAX_SECONDS) * 1000);
+}
+
+function boundedSet(store: Map<string, number>, key: string, expiresAt: number, now: number) {
+  store.delete(key);
+  if (store.size >= DURABLE_SESSION_CACHE_MAX_ENTRIES) {
+    for (const [entry, until] of store) if (until <= now) store.delete(entry);
+  }
+  // 상한을 넘으면 가장 오래 넣은 항목부터 버린다. 버려진 active는 다음 요청에서 다시 확인한다.
+  while (store.size >= DURABLE_SESSION_CACHE_MAX_ENTRIES) {
+    const oldest = store.keys().next().value;
+    if (oldest === undefined) break;
+    store.delete(oldest);
+  }
+  store.set(key, expiresAt);
+}
+
+function recentlyForgotten(cache: DurableSessionCache, session: string, now: number): boolean {
+  const until = cache.forgotten.get(session);
+  if (until === undefined) return false;
+  if (until > now) return true;
+  cache.forgotten.delete(session);
+  return false;
+}
+
+/**
+ * 이 프로세스의 확인 캐시에서 쿠키 하나를 지운다. 로그아웃·재로그인처럼 쿠키를 폐기하는 요청이
+ * 실제 폐기 기록 전에 호출한다. 진행 중이던 확인 결과도 저장하지 않는다.
+ */
+export function forgetDurableSession(session: string | undefined, now = Date.now()) {
+  if (!session || session.length > MAX_COOKIE_VALUE_LENGTH) return;
+  const cache = durableSessionCache();
+  cache.active.delete(session);
+  cache.inflight.delete(session);
+  boundedSet(cache.forgotten, session, now + DURABLE_SESSION_FORGET_HOLD_MS, now);
+}
+
+/** 확인 캐시 전체를 비운다. 시험과 설정 변경 뒤 재설정용이다. */
+export function clearDurableSessionCache() {
+  const cache = durableSessionCache();
+  cache.active.clear();
+  cache.inflight.clear();
+  cache.forgotten.clear();
+}
+
+/**
+ * 캐시된 active 판정을 써도 되는 method. 상태 변경 요청(POST/PATCH/PUT/DELETE 등)은 다른
+ * replica의 로그아웃을 TTL만큼 늦게 보지 않도록 매번 저장소에 확인한다.
+ */
+export function durableSessionCacheAllowed(method: string): boolean {
+  const normalized = method.toUpperCase();
+  return normalized === "GET" || normalized === "HEAD";
+}
+
+export type DurableSessionCheckOptions = {
+  /** 참이면 캐시·진행 중 확인을 쓰지 않고 저장소에 새로 묻는다(상태 변경 요청용). */
+  fresh?: boolean;
+};
+
 export async function checkDurableSession(
   session: string,
   env: Env = process.env,
+  options: DurableSessionCheckOptions = {},
 ): Promise<DurableSessionState> {
   if (env.NODE_ENV !== "production") return "active";
+  const ttlMs = durableSessionCacheTtlMs(env);
+  if (ttlMs <= 0) return fetchDurableSessionState(session, env);
+  const cache = durableSessionCache();
+  if (options.fresh) {
+    const state = await fetchDurableSessionState(session, env);
+    // 새 확인이 active가 아니면 이 프로세스의 읽기 캐시와 진행 중 확인의 저장도 버린다.
+    // active는 저장하지 않는다(읽기 캐시는 읽기 경로의 확인만 채운다).
+    if (state !== "active") {
+      cache.active.delete(session);
+      cache.inflight.delete(session);
+    }
+    return state;
+  }
+  const cachedUntil = cache.active.get(session);
+  if (cachedUntil !== undefined) {
+    if (cachedUntil > Date.now()) return "active";
+    cache.active.delete(session);
+  }
+  const pending = cache.inflight.get(session);
+  if (pending) return pending;
+  const lookup: Promise<DurableSessionState> = fetchDurableSessionState(session, env).then((state) => {
+    // forget 뒤에 끝난 확인은 공유 목록에서 이미 빠졌으므로 저장하지 않는다.
+    if (cache.inflight.get(session) !== lookup) return state;
+    cache.inflight.delete(session);
+    const now = Date.now();
+    if (state === "active" && !recentlyForgotten(cache, session, now)) {
+      boundedSet(cache.active, session, now + ttlMs, now);
+    } else {
+      cache.active.delete(session);
+    }
+    return state;
+  });
+  cache.inflight.set(session, lookup);
+  return lookup;
+}
+
+async function fetchDurableSessionState(
+  session: string,
+  env: Env,
+): Promise<DurableSessionState> {
   const apiBase = env.WEATHER_API_INTERNAL_URL?.trim();
   const adminToken = env.WEATHER_ADMIN_TOKEN?.trim();
   if (!apiBase || !adminToken) return "unavailable";
@@ -93,7 +239,7 @@ export async function checkDurableSession(
 /** Persist a logout marker in the shared backend store. */
 // 읽기·쓰기 모두 유한한 5초 예산을 사용한다. CPU가 바쁜 호스트의 일시 지연을
 // 세션 폐기로 해석하지 않으며, 저장소를 확인하지 못하면 접근은 계속 차단한다.
-// 자동 재시도나 권한 허용 캐시는 두지 않는다.
+// 자동 재시도는 두지 않는다. 권한 허용 재사용은 읽기의 active 판정을 위 TTL 동안만 한다.
 const DURABLE_AUTH_WRITE_TIMEOUT_MS = 5000;
 
 export async function durableRevokeSession(
@@ -372,6 +518,7 @@ export function revokeSessionValue(value: string | undefined) {
   }
   pruneRevocations();
   revocationStore().set(key, Math.max(Date.now() + 1000, expiresAt));
+  forgetDurableSession(value);
 }
 
 /**
