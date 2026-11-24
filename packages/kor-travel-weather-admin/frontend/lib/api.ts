@@ -115,6 +115,28 @@ export type WeatherMarker = {
   alerts: WeatherValue[];
 };
 
+/** `view=compact` 마커의 현재값·예보 행(OpenAPI `WeatherMarkerValueOut`). */
+export type WeatherMarkerValue = Pick<
+  WeatherValue,
+  "provider" | "metric_key" | "metric_name" | "value_number" | "value_text" | "target_at"
+>;
+
+/** `view=compact` 마커의 특보 행(OpenAPI `WeatherMarkerAlertOut`). */
+export type WeatherMarkerAlert = Pick<WeatherValue, "value_id" | "metric_name" | "value_text" | "severity">;
+
+/**
+ * `GET /v1/weather/markers?view=compact` 항목(OpenAPI `WeatherMarkerCompactOut`). full과 같은 행을
+ * 지도 표시 필드만 담는다. 기본(full) 응답은 {@link WeatherMarker}다.
+ */
+export type WeatherMarkerCompact = {
+  alert_scope_unverified?: boolean;
+  location_id: string;
+  measurement_point: MeasurementPoint | null;
+  latest: WeatherMarkerValue[];
+  forecast?: WeatherMarkerValue[];
+  alerts: WeatherMarkerAlert[];
+};
+
 const SYNC_RUN_STATUS_LABELS: Record<string, string> = {
   success: "성공",
   failed: "실패",
@@ -260,11 +282,17 @@ function timeoutRetryAllowed(path: string): boolean {
  * 이미 반영했을 수 있으므로 상한·재전송 없이 한 번만 보낸다.
  */
 async function request<T>(path: string, options: RequestOptions = {}): Promise<ApiEnvelope<T>> {
+  const { response, body } = await exchange<T>(path, options);
+  return unwrap(response, body);
+}
+
+/** {@link request}의 전송·재시도 부분. 상태 판정 전의 응답과 본문을 돌려준다(304 처리용). */
+async function exchange<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<{ response: Response; body: ApiBody<T> }> {
   const method = (options.method ?? "GET").toUpperCase();
-  if (method !== "GET") {
-    const { response, body } = await send<T>(path, options, options.signal);
-    return unwrap(response, body);
-  }
+  if (method !== "GET") return send<T>(path, options, options.signal);
   const callerSignal = options.signal ?? undefined;
   const retryTimeouts = timeoutRetryAllowed(path);
   for (let retry = 0; ; retry += 1) {
@@ -273,14 +301,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<A
     const signal = callerSignal ? AbortSignal.any([callerSignal, timeout]) : timeout;
     let delay: number | null;
     try {
-      const { response, body } = await send<T>(path, options, signal);
+      const sent = await send<T>(path, options, signal);
+      const { response } = sent;
       const retryable = RETRYABLE_STATUSES.has(response.status) &&
         (response.status !== 504 || retryTimeouts);
-      if (!retryable || retry >= GET_MAX_RETRIES) {
-        return unwrap(response, body);
-      }
+      if (!retryable || retry >= GET_MAX_RETRIES) return sent;
       delay = retryDelayMs(retry, response.headers.get("retry-after"));
-      if (delay === null) return unwrap(response, body);
+      if (delay === null) return sent;
     } catch (error) {
       if (callerSignal?.aborted) throw error;
       const timedOut = timeout.aborted;
@@ -327,17 +354,138 @@ export function getPublicLocations(limit = 1000, offset = 0, providers?: string[
 }
 
 export async function getAllPublicLocations(providers?: string[], signal?: AbortSignal, weatherOnly = false, kinds?: WeatherKind[]): Promise<Location[]> {
-  if (providers?.length === 0 || kinds?.length === 0) return [];
-  const pageSize = 1000;
-  const all: Location[] = [];
-  let offset = 0;
-  while (true) {
+  return (await fetchLocationCatalog({ providers, kinds, weatherOnly }, signal)).locations;
+}
+
+/** 위치 카탈로그 한 페이지 크기(API 상한). */
+export const LOCATION_PAGE_SIZE = 1000;
+/** 첫 페이지 뒤 나머지 페이지를 동시에 받는 수. 공개 읽기 worker를 혼자 차지하지 않게 작게 둔다. */
+export const LOCATION_PAGE_CONCURRENCY = 3;
+
+export type LocationCatalogFilters = {
+  providers?: readonly string[];
+  kinds?: readonly WeatherKind[];
+  weatherOnly?: boolean;
+};
+
+/** 받은 카탈로그 한 페이지. `etag`는 다음 재수신 때 `If-None-Match`로 보낸다. */
+export type LocationCatalogPage = {
+  offset: number;
+  etag: string | null;
+  total: number | null;
+  data: Location[];
+};
+
+export type LocationCatalog = {
+  pages: LocationCatalogPage[];
+  locations: Location[];
+};
+
+const EMPTY_CATALOG: LocationCatalog = { pages: [], locations: [] };
+
+async function getLocationCatalogPage(
+  offset: number,
+  filters: LocationCatalogFilters,
+  signal: AbortSignal | undefined,
+  previous: LocationCatalogPage | undefined,
+): Promise<LocationCatalogPage> {
+  const query = new URLSearchParams({ limit: String(LOCATION_PAGE_SIZE), offset: String(offset) });
+  appendProviders(query, filters.providers);
+  appendKinds(query, filters.kinds);
+  if (filters.weatherOnly) query.set("weather_only", "true");
+  const etag = previous?.etag ?? null;
+  const { response, body } = await exchange<Location[]>(`/v1/weather/locations?${query}`, {
+    signal,
+    ...(etag ? { headers: { "if-none-match": etag } } : {}),
+  });
+  // 304는 이 페이지의 행과 total이 지난번과 같다는 뜻이다(API 내용 ETag). 가진 페이지를 그대로 쓴다.
+  if (response.status === 304 && previous) return previous;
+  const envelope = unwrap(response, body);
+  return {
+    offset,
+    etag: response.headers.get("etag"),
+    total: envelope.meta?.page?.total ?? null,
+    data: envelope.data,
+  };
+}
+
+/** 받은 페이지가 한 시점의 카탈로그로 이어지는지(중간에 위치가 바뀌지 않았는지) 본다. */
+function consistentPages(pages: LocationCatalogPage[], total: number): boolean {
+  const count = pages.reduce((sum, page) => sum + page.data.length, 0);
+  return count === total && pages.every((page, index) => page.total === total
+    && page.offset === index * LOCATION_PAGE_SIZE
+    && (index === pages.length - 1 || page.data.length === LOCATION_PAGE_SIZE));
+}
+
+async function sequentialCatalog(
+  filters: LocationCatalogFilters,
+  signal: AbortSignal | undefined,
+  first?: LocationCatalogPage,
+): Promise<LocationCatalogPage[]> {
+  const pages: LocationCatalogPage[] = [];
+  let page = first;
+  for (let offset = 0; ; offset += LOCATION_PAGE_SIZE) {
     signal?.throwIfAborted();
-    const page = await getPublicLocations(pageSize, offset, providers, signal, weatherOnly, kinds);
-    all.push(...page.data);
-    if (page.data.length < pageSize) return all;
-    offset += page.data.length;
+    page ??= await getLocationCatalogPage(offset, filters, signal, undefined);
+    pages.push(page);
+    if (page.data.length < LOCATION_PAGE_SIZE) return pages;
+    page = undefined;
   }
+}
+
+/**
+ * 공개 위치 카탈로그 전체(호출 검토 B12).
+ *
+ * 첫 페이지의 `meta.page.total`로 나머지 페이지 수를 알면 {@link LOCATION_PAGE_CONCURRENCY}개씩
+ * 동시에 받는다. total이 없거나 받는 사이 카탈로그가 바뀌어 페이지가 이어지지 않으면 예전처럼
+ * 처음부터 한 페이지씩 받는다. `previous`(같은 조건으로 지난번 받은 카탈로그)가 있으면 페이지별
+ * ETag를 `If-None-Match`로 보내 304인 페이지는 가진 행을 재사용하고, 모든 페이지가 그대로면
+ * `previous` 객체를 그대로 돌려준다.
+ */
+export async function fetchLocationCatalog(
+  filters: LocationCatalogFilters,
+  signal?: AbortSignal,
+  previous?: LocationCatalog,
+): Promise<LocationCatalog> {
+  if (filters.providers?.length === 0 || filters.kinds?.length === 0) return EMPTY_CATALOG;
+  signal?.throwIfAborted();
+  const known = new Map(previous?.pages.map((page) => [page.offset, page]));
+  const first = await getLocationCatalogPage(0, filters, signal, known.get(0));
+  signal?.throwIfAborted();
+  const total = first.total;
+  let pages: LocationCatalogPage[];
+  if (total === null || first.data.length < LOCATION_PAGE_SIZE) {
+    pages = await sequentialCatalog(filters, signal, first);
+  } else {
+    const offsets: number[] = [];
+    for (let offset = LOCATION_PAGE_SIZE; offset < total; offset += LOCATION_PAGE_SIZE) offsets.push(offset);
+    // 한 페이지가 실패하면 나머지 진행 중 요청도 끊는다. 호출자 취소도 그대로 전달한다.
+    const local = new AbortController();
+    const pageSignal = signal ? AbortSignal.any([signal, local.signal]) : local.signal;
+    const rest: LocationCatalogPage[] = new Array(offsets.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < offsets.length) {
+        const index = next++;
+        pageSignal.throwIfAborted();
+        rest[index] = await getLocationCatalogPage(offsets[index], filters, pageSignal, known.get(offsets[index]));
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(LOCATION_PAGE_CONCURRENCY, offsets.length) }, worker));
+    } catch (error) {
+      local.abort();
+      throw error;
+    }
+    pages = [first, ...rest];
+    if (!consistentPages(pages, total)) {
+      signal?.throwIfAborted();
+      pages = await sequentialCatalog(filters, signal);
+    }
+  }
+  if (previous && pages.length === previous.pages.length
+    && pages.every((page, index) => page === previous.pages[index])) return previous;
+  return { pages, locations: pages.flatMap((page) => page.data) };
 }
 
 export type WeatherRegionProjection = {
@@ -495,6 +643,24 @@ export function getMarkerSummaries(
   appendKinds(query, kinds);
   for (const locationId of locationIds) query.append("location_id", locationId);
   return request<WeatherMarker[]>(`/v1/weather/markers?${query.toString()}`, { signal });
+}
+
+/**
+ * 관리 지도 마커 묶음(`view=compact`). full과 같은 행을 지도가 그리는 필드만 받는다(호출 검토 B8).
+ * PinVi 등 기존 소비자의 기본 응답은 {@link getMarkerSummaries}의 full 그대로다.
+ */
+export function getCompactMarkers(
+  locationIds: string[],
+  signal?: AbortSignal,
+  providers?: string[],
+  kinds?: WeatherKind[],
+): Promise<ApiEnvelope<WeatherMarkerCompact[]>> {
+  const query = new URLSearchParams();
+  appendProviders(query, providers);
+  appendKinds(query, kinds);
+  for (const locationId of locationIds) query.append("location_id", locationId);
+  query.set("view", "compact");
+  return request<WeatherMarkerCompact[]>(`/v1/weather/markers?${query.toString()}`, { signal });
 }
 
 export function getSyncRuns(limit = 50): Promise<ApiEnvelope<SyncRun[]>> {

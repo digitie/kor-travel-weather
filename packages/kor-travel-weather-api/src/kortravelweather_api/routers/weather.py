@@ -12,11 +12,12 @@ from typing import Annotated, Any, Literal
 
 import anyio
 from anyio import to_thread
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from kortravelweather.alerts import active_alert_values, alert_location_scope
+from kortravelweather.export_conditional import matches_etag
 from kortravelweather.models import SyncRun, WeatherKind, WeatherLocation, WeatherValue, kst_now
 from kortravelweather.providers import PROVIDER_CATALOG, catalog_dicts
 from kortravelweather.repository import (
@@ -26,7 +27,15 @@ from kortravelweather.repository import (
 )
 
 from ..auth import require_admin
-from ..public_response import PublicRequest, Rendered, read_scope, render, respond
+from ..public_response import (
+    NotModified,
+    PublicRequest,
+    Rendered,
+    data_etag,
+    read_scope,
+    render,
+    respond,
+)
 from ..read_limits import PublicReadBusy
 from ..response import BundleMeta, Envelope, envelope
 
@@ -217,6 +226,46 @@ class WeatherMarkerOut(BaseModel):
     alert_scope_unverified: bool = False
 
 
+class WeatherMarkerValueOut(BaseModel):
+    """``view=compact`` 마커의 현재값·예보 행. 관리 지도가 아이콘·기온을 고르는 필드만 담는다.
+
+    행 선택(위치당 상한·순서)은 ``view=full``과 같고 필드만 줄인다(호출 검토 B8).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    metric_key: str
+    metric_name: str | None = None
+    value_number: float | None = None
+    value_text: str | None = None
+    target_at: datetime
+
+
+class WeatherMarkerAlertOut(BaseModel):
+    """``view=compact`` 마커의 특보 행. 배지 수와 특보 이름·등급 표시에 쓰는 필드만 담는다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value_id: str
+    metric_name: str | None = None
+    value_text: str | None = None
+    severity: str | None = None
+
+
+class WeatherMarkerCompactOut(BaseModel):
+    """``GET /v1/weather/markers?view=compact`` 항목. 기본(``view=full``) 계약은 바꾸지 않는다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    location_id: str
+    measurement_point: MeasurementPointOut | None = None
+    latest: list[WeatherMarkerValueOut] = Field(default_factory=list)
+    forecast: list[WeatherMarkerValueOut] = Field(default_factory=list)
+    alerts: list[WeatherMarkerAlertOut] = Field(default_factory=list)
+    alert_scope_unverified: bool = False
+
+
 class SourceRecordSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -239,6 +288,8 @@ WeatherValueListResponse = Envelope[list[WeatherValueOut]]
 NearbyListResponse = Envelope[list[NearbyOut]]
 ResolvedWeatherResponse = Envelope[ResolvedWeatherOut]
 WeatherMarkerListResponse = Envelope[list[WeatherMarkerOut]]
+WeatherMarkerCompactListResponse = Envelope[list[WeatherMarkerCompactOut]]
+MarkerView = Literal["full", "compact"]
 SyncRunListResponse = Envelope[list[SyncRun]]
 SourceRecordListResponse = Envelope[list[SourceRecordSummary]]
 
@@ -424,6 +475,27 @@ def value_out(value: WeatherValue) -> WeatherValueOut:
     )
 
 
+def marker_value_out(value: WeatherValue) -> WeatherMarkerValueOut:
+    """``value_out``과 같은 값을 compact 마커 필드로만 옮긴다(``target_at`` 대체 순서도 같다)."""
+    return WeatherMarkerValueOut(
+        provider=value.provider,
+        metric_key=value.metric_key,
+        metric_name=value.metric_name,
+        value_number=float(value.value_number) if value.value_number is not None else None,
+        value_text=value.value_text,
+        target_at=value.target_at or value.valid_at or value.observed_at or value.collected_at,
+    )
+
+
+def marker_alert_out(value: WeatherValue) -> WeatherMarkerAlertOut:
+    return WeatherMarkerAlertOut(
+        value_id=value.identity_key(),
+        metric_name=value.metric_name,
+        value_text=value.value_text,
+        severity=value.severity,
+    )
+
+
 def measurement_point_out(
     location: WeatherLocation, *, distance_km: float
 ) -> MeasurementPointOut | None:
@@ -518,7 +590,32 @@ async def region_locations(
     return await respond(build)
 
 
-@router.get("/locations", response_model=LocationListResponse)
+@router.get(
+    "/locations",
+    response_model=LocationListResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": (
+                        "이 페이지 data와 limit·offset·total의 약한 ETag. 요청마다 바뀌는 meta"
+                        "(request_id·generated_at·duration_ms)는 넣지 않는다."
+                    ),
+                    "schema": {"type": "string"},
+                },
+            },
+        },
+        304: {
+            "description": (
+                "If-None-Match가 지금 ETag와 같음(본문 없음). 이미 가진 이 페이지의 data·"
+                "meta.page.total을 그대로 쓴다. 조회는 하므로 DB 비용은 줄지 않고 전송·파싱만 준다."
+            ),
+            "headers": {
+                "ETag": {"description": "200과 같은 약한 ETag", "schema": {"type": "string"}},
+            },
+        },
+    },
+)
 async def list_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
@@ -529,13 +626,16 @@ async def list_locations(
     search: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
+    if_none_match: str | None = Header(
+        default=None, description="이전 200 응답의 ETag. 같으면 본문 없이 304"
+    ),
 ) -> Response:
     public = PublicRequest.of(request)
     filters = {**_provider_kwargs(providers), **_kind_kwargs(kinds)}
     if weather_only:
         filters["weather_only"] = True
 
-    def build() -> Rendered:
+    def build() -> Rendered | NotModified:
         with read_scope(repo):
             rows = repo.list_locations(
                 enabled_only=True,
@@ -548,8 +648,13 @@ async def list_locations(
             total = repo.count_locations(enabled_only=True, search=search, **filters)
             regions = repo.public_location_regions(rows)
         data = [location_out(row, region=regions.get(row.location_id)) for row in rows]
+        # 관리 지도는 화면 진입·필터 변경마다 같은 카탈로그를 다시 받는다. 내용 ETag로 바뀌지 않은
+        # 페이지는 본문 없이 304로 돌려준다(호출 검토 B12).
+        etag = data_etag(list[LocationOut], data, limit, offset, total)
+        if matches_etag(if_none_match or "", etag):
+            return NotModified(etag)
         meta = public.meta(limit=limit, offset=offset, total=total, returned=len(rows))
-        return render(public, LocationListResponse, data, meta)
+        return render(public, LocationListResponse, data, meta, etag=etag)
 
     return await respond(build)
 
@@ -982,6 +1087,13 @@ async def marker_summaries(
     location_ids: Annotated[list[str] | None, Query(alias="location_id", min_length=1)] = None,
     providers: ProviderFilter = None,
     kinds: KindFilter = None,
+    view: Annotated[MarkerView, Query(
+        description=(
+            "응답 모양. 기본 full은 WeatherMarkerOut(값 행 전체 필드)이다. compact는 같은 행을 "
+            "지도 표시 필드만 담은 WeatherMarkerCompactOut으로 돌려준다(200 응답의 "
+            "x-compact-schema). 행 선택·상한·순서는 둘이 같다."
+        ),
+    )] = "full",
 ) -> Response:
     """Return current/alert marker state for a bounded visible-location batch."""
     public = PublicRequest.of(request)
@@ -1003,7 +1115,7 @@ async def marker_summaries(
             raise HTTPException(status_code=499, detail="요청이 취소되었습니다.")
         return await respond(partial(
             _marker_summaries, public, repo, location_ids or [],
-            providers=providers, kinds=kinds,
+            providers=providers, kinds=kinds, view=view,
         ))
     finally:
         limiter.release()
@@ -1016,6 +1128,7 @@ def _marker_summaries(
     *,
     providers: list[str] | None = None,
     kinds: list[WeatherKind] | None = None,
+    view: MarkerView = "full",
 ) -> Rendered:
     """입장이 허용된 마커 배치만 조회·변환한다(worker thread)."""
     unique_ids = list(dict.fromkeys(requested_ids))
@@ -1029,6 +1142,7 @@ def _marker_summaries(
             repo, by_id, valid_ids, providers=providers, kinds=kinds,
         )
     data: list[WeatherMarkerOut] = []
+    compact: list[WeatherMarkerCompactOut] = []
     for location_id in valid_ids:
         latest, forecast, latest_alerts = _split_weather_values(
             latest_by_location.get(location_id, []), by_id[location_id],
@@ -1042,22 +1156,64 @@ def _marker_summaries(
                 alert_by_location.get(location_id, []), by_id[location_id],
             )
             alerts = filtered_alerts or latest_alerts
+        point = measurement_point_out(by_id[location_id], distance_km=0.0)
+        unverified = _unverified_alert_scope(
+            alert_by_location.get(location_id, []), by_id[location_id],
+        )
+        if kinds is None:
+            forecast = []
+        if view == "compact":
+            compact.append(
+                WeatherMarkerCompactOut(
+                    location_id=location_id,
+                    measurement_point=point,
+                    latest=[marker_value_out(row) for row in latest],
+                    forecast=[marker_value_out(row) for row in forecast],
+                    alerts=[marker_alert_out(row) for row in alerts],
+                    alert_scope_unverified=unverified,
+                )
+            )
+            continue
         data.append(
             WeatherMarkerOut(
                 location_id=location_id,
-                measurement_point=measurement_point_out(
-                    by_id[location_id], distance_km=0.0
-                ),
+                measurement_point=point,
                 latest=[value_out(row) for row in latest],
-                forecast=[value_out(row) for row in forecast] if kinds is not None else [],
+                forecast=[value_out(row) for row in forecast],
                 alerts=[value_out(row) for row in alerts],
-                alert_scope_unverified=_unverified_alert_scope(
-                    alert_by_location.get(location_id, []), by_id[location_id],
-                ),
+                alert_scope_unverified=unverified,
             )
         )
+    if view == "compact":
+        meta = public.meta(limit=len(valid_ids), returned=len(compact))
+        return render(public, WeatherMarkerCompactListResponse, compact, meta)
     meta = public.meta(limit=len(valid_ids), returned=len(data))
     return render(public, WeatherMarkerListResponse, data, meta)
+
+
+#: ``view=compact`` 응답 envelope의 OpenAPI component 이름(FastAPI 이름 규칙과 같다).
+MARKER_COMPACT_SCHEMA = "Envelope_list_WeatherMarkerCompactOut__"
+
+
+def add_marker_compact_schema(schema: dict[str, Any]) -> None:
+    """``view=compact`` 응답 모양을 OpenAPI component로 싣는다.
+
+    200의 ``application/json`` schema는 기본(full) envelope 그대로 둔다. 기존 소비자(PinVi)의
+    생성 타입·계약 시험이 응답 union으로 바뀌지 않게 하려는 것이다. compact 모양은 200 응답의
+    ``x-compact-schema``가 가리킨다.
+    """
+    components = schema.setdefault("components", {}).setdefault("schemas", {})
+    generated = WeatherMarkerCompactListResponse.model_json_schema(
+        mode="serialization", ref_template="#/components/schemas/{model}"
+    )
+    for name, definition in generated.pop("$defs", {}).items():
+        components.setdefault(name, definition)
+    generated["title"] = "Envelope[list[WeatherMarkerCompactOut]]"
+    components[MARKER_COMPACT_SCHEMA] = generated
+    operation = schema.get("paths", {}).get("/v1/weather/markers", {}).get("get")
+    if isinstance(operation, dict):
+        ok = operation.setdefault("responses", {}).setdefault("200", {})
+        ok["x-compact-schema"] = {"$ref": f"#/components/schemas/{MARKER_COMPACT_SCHEMA}"}
 
 
 def _marker_locations(

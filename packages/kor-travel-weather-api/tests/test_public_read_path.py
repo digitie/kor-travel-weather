@@ -43,6 +43,8 @@ ENDPOINTS = [
      weather.WeatherMarkerListResponse),
     ("/v1/weather/markers?location_id=air-a&location_id=kma-a&kind=observed&kind=short"
      "&kind=alert", weather.WeatherMarkerListResponse),
+    ("/v1/weather/markers?location_id=air-a&location_id=kma-a&kind=observed&kind=short"
+     "&kind=alert&view=compact", weather.WeatherMarkerCompactListResponse),
     ("/v1/weather/alert-events?bjd_code=11", alert_events.AlertEventsResponse),
 ]
 

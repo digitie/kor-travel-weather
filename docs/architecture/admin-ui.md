@@ -113,6 +113,11 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 기존 위치·마커·상세 요청을 취소한다. 키보드 방향키·Space/Enter·Escape와 모바일
 화면을 지원한다.
 
+마커는 `view=compact`로 받고, 실패한 위치는 시간 기반으로 다시 묻는다. 지도 load 전에도
+첫 카메라로 범위를 계산해 마커 요청을 시작하고, 위치 카탈로그는 나머지 페이지를 병렬로
+받아 화면·필터 사이에 캐시하며 페이지 ETag로 다시 확인한다. 새로고침은 그린 마커를 남긴 채
+다시 받는다. 자세한 계약은 [관리 지도 호출 줄이기](../weather-admin-map-calls.md)를 따른다.
+
 제공처 필터의 특보는 이벤트별 revision·상한을 적용한 key를 먼저 확정하고,
 `(value_id, known_at)` PK LATERAL 조회와 날짜 범위로 전체 fact를 읽는다.
 큰 fact JOIN이 특보 ranking 앞에 배치되는 계획을 피하며 원본 payload는 보존한다.

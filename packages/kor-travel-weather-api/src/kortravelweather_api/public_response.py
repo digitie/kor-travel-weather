@@ -12,11 +12,15 @@
 gzip은 ``Accept-Encoding``이 허용하고 본문이 :data:`GZIP_MINIMUM_BYTES` 이상일 때만 worker
 thread에서 한다(event loop에서 압축하는 ``GZipMiddleware``는 쓰지 않는다). 압축 여부와 관계없이
 ``Vary: Accept-Encoding``을 붙인다.
+
+내용 ETag(:func:`data_etag`)를 쓰는 handler는 ``If-None-Match``가 맞으면 :class:`NotModified`를
+돌려주고, :func:`respond`가 본문 없는 304로 바꾼다(위치 카탈로그, 호출 검토 B12).
 """
 
 from __future__ import annotations
 
 import gzip
+import hashlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -95,26 +99,57 @@ class PublicRequest:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class NotModified:
+    """``If-None-Match``가 지금 ETag와 같아 본문 없이 304로 답한다(오류가 아니다)."""
+
+    etag: str
+
+
 @cache
-def _adapter(model: type[BaseModel]) -> TypeAdapter[Any]:
+def _adapter(model: Any) -> TypeAdapter[Any]:
     return TypeAdapter(model)
 
 
-def render(public: PublicRequest, model: type[BaseModel], data: Any, meta: Meta) -> Rendered:
+def data_etag(data_type: Any, data: Any, *parts: Any) -> str:
+    """``data``와 페이지 식별 ``parts``만으로 만든 약한 ETag.
+
+    요청마다 바뀌는 meta(``request_id``·``generated_at``·``duration_ms``)는 넣지 않는다. gzip
+    여부와 무관한 의미 validator라 약한(``W/``) ETag다. 같은 URL의 본문 내용이 같으면 같다.
+    """
+    digest = hashlib.blake2b(_adapter(data_type).dump_json(data), digest_size=16)
+    for part in parts:
+        digest.update(b"\x00" + str(part).encode())
+    return f'W/"{digest.hexdigest()}"'
+
+
+def render(
+    public: PublicRequest,
+    model: type[BaseModel],
+    data: Any,
+    meta: Meta,
+    *,
+    etag: str | None = None,
+) -> Rendered:
     """``model``(``Envelope[...]``) 본문을 JSON bytes로 만들고 필요하면 gzip한다."""
     with read_stage("render"):
         body = model(data=data, meta=meta)
         payload = _adapter(model).dump_json(body)
         headers = {"vary": "Accept-Encoding"}
+        if etag is not None:
+            headers["etag"] = etag
         if len(payload) >= GZIP_MINIMUM_BYTES and accepts_gzip(public.accept_encoding):
             payload = gzip.compress(payload, compresslevel=_GZIP_LEVEL, mtime=0)
             headers["content-encoding"] = "gzip"
         return payload, headers
 
 
-async def respond(work: Callable[[], Rendered]) -> Response:
+async def respond(work: Callable[[], Rendered | NotModified]) -> Response:
     """``work``(DB 읽기·변환·직렬화)를 worker thread에서 실행해 응답으로 만든다."""
-    payload, headers = await run_in_threadpool(work)
+    result = await run_in_threadpool(work)
+    if isinstance(result, NotModified):
+        return Response(status_code=304, headers={"etag": result.etag, "vary": "Accept-Encoding"})
+    payload, headers = result
     return Response(payload, media_type="application/json", headers=headers)
 
 

@@ -14,7 +14,7 @@ import type {
   PositionAnchor,
 } from "maplibre-gl";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode, Ref } from "react";
 import { abbreviateWeatherRegionName } from "@/lib/weather-regions";
 
 import {
@@ -58,6 +58,8 @@ export type VWorldMapViewProps = {
   style?: CSSProperties;
   /** 지도 래퍼의 data-testid. kor-travel-map의 VWorldMapView testId와 같은 계약이다. */
   testId?: string;
+  /** 지도 래퍼 요소. 지도 load 전 화면 범위 추정(컨테이너 크기)에 쓴다. */
+  containerRef?: Ref<HTMLDivElement>;
   children?: ReactNode;
   onLoad?: (map: MapLibreMap) => void;
   onMoveEnd?: (map: MapLibreMap, event: MapLibreEvent) => void;
@@ -123,12 +125,12 @@ function rasterTileKey(event: { sourceId?: string; tile?: { tileID?: { key?: str
 }
 
 export function VWorldMapView({ apiKey, center, zoom, layerType = "Base", minZoom = 6,
-  maxZoom = 19, navigation = true, scale = false, className, style, testId, children,
+  maxZoom = 19, navigation = true, scale = false, className, style, testId, containerRef, children,
   onLoad, onMoveEnd, onError, onRecover,
 }: VWorldMapViewProps) {
   const configured = isVWorldApiKeyConfigured(apiKey);
   const recovery = useMemo<TileRecoveryState>(() => ({ failedTiles: new Map(), shown: false, blocked: false }), []);
-  return <div aria-label="VWorld 날씨 지도" role="application" className={className} style={style} data-testid={testId}
+  return <div ref={containerRef} aria-label="VWorld 날씨 지도" role="application" className={className} style={style} data-testid={testId}
     data-vworld-basemap={configured ? layerType : "fallback"} data-vworld-key={configured ? "configured" : "missing"}>
     <UpstreamMapView apiKey={configured ? apiKey.trim() : "weather-neutral-basemap"}
       center={center} zoom={zoom} layerType={layerType} minZoom={minZoom} maxZoom={maxZoom}

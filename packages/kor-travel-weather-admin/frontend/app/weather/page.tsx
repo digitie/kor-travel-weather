@@ -1,45 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-
 import { AdminShell } from "@/components/admin-shell";
 import { WeatherMap } from "@/components/weather-map";
-import { getAllPublicLocations, getPublicRegionLocations, Location, type WeatherRegionProjection } from "@/lib/api";
+import type { Location } from "@/lib/api";
+import { useLocationCatalog, useRegionProjection } from "@/lib/location-catalog";
+
+const NO_LOCATIONS: Location[] = [];
 
 export default function WeatherPage() {
-  const [locations, setLocations] = useState<Location[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [regionProjection, setRegionProjection] = useState<WeatherRegionProjection | null>(null);
-  const catalogRequest = useRef<AbortController | null>(null);
-
-  const loadLocations = useCallback(() => {
-    catalogRequest.current?.abort();
-    const request = new AbortController();
-    catalogRequest.current = request;
-    setLoading(true);
-    setError(null);
-    setRegionProjection(null);
-    // 전체 목록은 병행해서 유지한다. 대표 참조의 실패·미준비는 전체 조회를 막지 않는다.
-    void getPublicRegionLocations(AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]))
-      .then(({ data }) => { if (!request.signal.aborted && data.ready) setRegionProjection(data); })
-      .catch(() => { /* 기존 전체 카탈로그 경로로 진행한다. */ });
-    getAllPublicLocations(undefined, request.signal)
-      .then((result) => {
-        if (!request.signal.aborted) setLocations(result);
-      })
-      .catch((reason: unknown) => {
-        if (!request.signal.aborted) setError(reason instanceof Error ? reason.message : "위치를 불러오지 못했습니다.");
-      })
-      .finally(() => {
-        if (!request.signal.aborted) setLoading(false);
-      });
-  }, []);
-
-  useEffect(() => {
-    loadLocations();
-    return () => catalogRequest.current?.abort();
-  }, [loadLocations]);
+  // 전체 목록과 대표 참조는 병행한다. 대표 참조의 실패·미준비는 전체 조회를 막지 않는다.
+  // 둘 다 화면 사이 캐시(TanStack Query)라 다시 들어와도 바로 그리고, 오래됐으면 ETag로 다시 확인한다.
+  const catalog = useLocationCatalog({});
+  const regions = useRegionProjection();
+  const locations = catalog.data?.locations ?? NO_LOCATIONS;
+  const loading = catalog.isPending;
+  // 이미 받은 목록이 있으면 뒤 재확인 실패는 목록을 지우지 않는다.
+  const error = catalog.isError && !catalog.data
+    ? catalog.error instanceof Error ? catalog.error.message : "위치를 불러오지 못했습니다."
+    : null;
+  const retry = () => {
+    void catalog.refetch();
+    void regions.refetch();
+  };
 
   // 상단 바 설명은 로딩·실패 중에도 한 줄을 유지한다(한 줄 상단 바라 작업면 높이가 바뀌지 않는다).
   return (
@@ -55,7 +37,7 @@ export default function WeatherPage() {
       helpVariant="info"
       title="날씨 지도"
     >
-      <WeatherMap locations={locations} regionProjection={regionProjection} catalogLoading={loading} catalogError={error} onRetryCatalog={loadLocations} />
+      <WeatherMap locations={locations} regionProjection={regions.data ?? null} catalogLoading={loading} catalogError={error} onRetryCatalog={retry} />
     </AdminShell>
   );
 }

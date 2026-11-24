@@ -12,7 +12,10 @@
 - `GET /ready` (API 시작 warmup 상태. 진행 중이면 503·`retry-after: 1`, 완료·생략·비활성이면
   200. DB를 읽지 않으며 DB 건강 검사가 아니다. 본문·공개 범위는
   [weather-api-prewarm.md](../weather-api-prewarm.md))
-- `GET /v1/weather/locations?search=&limit=&offset=` (항상 enabled만)
+- `GET /v1/weather/locations?search=&limit=&offset=` (항상 enabled만. 페이지 내용의 약한 `ETag`,
+  `If-None-Match`가 맞으면 본문 없는 304)
+- `GET /v1/weather/markers?location_id=...&view=full|compact` (기본 full. compact는 같은 행의 지도
+  표시 필드만, [weather-admin-map-calls.md](../weather-admin-map-calls.md))
 - `GET /v1/weather/locations/{location_id}`
 - `GET /v1/weather/locations/{location_id}/latest?limit=`
 - `GET /v1/weather/locations/{location_id}/forecast?from=&to=&dataset_key=&metric_key=&history=&limit=`

@@ -233,6 +233,24 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "이전 200 응답의 ETag. 같으면 본문 없이 304",
+              "title": "If-None-Match"
+            },
+            "description": "이전 200 응답의 ETag. 같으면 본문 없이 304"
           }
         ],
         "responses": {
@@ -242,6 +260,25 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Envelope_list_LocationOut__"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "이 페이지 data와 limit·offset·total의 약한 ETag. 요청마다 바뀌는 meta(request_id·generated_at·duration_ms)는 넣지 않는다.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "If-None-Match가 지금 ETag와 같음(본문 없음). 이미 가진 이 페이지의 data·meta.page.total을 그대로 쓴다. 조회는 하므로 DB 비용은 줄지 않고 전송·파싱만 준다.",
+            "headers": {
+              "ETag": {
+                "description": "200과 같은 약한 ETag",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -836,6 +873,22 @@
               "title": "Kind"
             },
             "description": "종류. alert/nowcast/ultra_short/short/mid/observed를 OR로 선택"
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "full",
+                "compact"
+              ],
+              "type": "string",
+              "description": "응답 모양. 기본 full은 WeatherMarkerOut(값 행 전체 필드)이다. compact는 같은 행을 지도 표시 필드만 담은 WeatherMarkerCompactOut으로 돌려준다(200 응답의 x-compact-schema). 행 선택·상한·순서는 둘이 같다.",
+              "default": "full",
+              "title": "View"
+            },
+            "description": "응답 모양. 기본 full은 WeatherMarkerOut(값 행 전체 필드)이다. compact는 같은 행을 지도 표시 필드만 담은 WeatherMarkerCompactOut으로 돌려준다(200 응답의 x-compact-schema). 행 선택·상한·순서는 둘이 같다."
           }
         ],
         "responses": {
@@ -847,6 +900,9 @@
                   "$ref": "#/components/schemas/Envelope_list_WeatherMarkerOut__"
                 }
               }
+            },
+            "x-compact-schema": {
+              "$ref": "#/components/schemas/Envelope_list_WeatherMarkerCompactOut__"
             }
           },
           "422": {
@@ -5246,6 +5302,192 @@
           "request_id"
         ],
         "title": "Problem",
+        "type": "object"
+      },
+      "WeatherMarkerAlertOut": {
+        "additionalProperties": false,
+        "description": "``view=compact`` 마커의 특보 행. 배지 수와 특보 이름·등급 표시에 쓰는 필드만 담는다.",
+        "properties": {
+          "value_id": {
+            "title": "Value Id",
+            "type": "string"
+          },
+          "metric_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metric Name"
+          },
+          "value_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value Text"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Severity"
+          }
+        },
+        "required": [
+          "value_id"
+        ],
+        "title": "WeatherMarkerAlertOut",
+        "type": "object"
+      },
+      "WeatherMarkerCompactOut": {
+        "additionalProperties": false,
+        "description": "``GET /v1/weather/markers?view=compact`` 항목. 기본(``view=full``) 계약은 바꾸지 않는다.",
+        "properties": {
+          "location_id": {
+            "title": "Location Id",
+            "type": "string"
+          },
+          "measurement_point": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasurementPointOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "latest": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherMarkerValueOut"
+            },
+            "title": "Latest",
+            "type": "array"
+          },
+          "forecast": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherMarkerValueOut"
+            },
+            "title": "Forecast",
+            "type": "array"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherMarkerAlertOut"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "alert_scope_unverified": {
+            "default": false,
+            "title": "Alert Scope Unverified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "location_id"
+        ],
+        "title": "WeatherMarkerCompactOut",
+        "type": "object"
+      },
+      "WeatherMarkerValueOut": {
+        "additionalProperties": false,
+        "description": "``view=compact`` 마커의 현재값·예보 행. 관리 지도가 아이콘·기온을 고르는 필드만 담는다.\n\n행 선택(위치당 상한·순서)은 ``view=full``과 같고 필드만 줄인다(호출 검토 B8).",
+        "properties": {
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "metric_key": {
+            "title": "Metric Key",
+            "type": "string"
+          },
+          "metric_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metric Name"
+          },
+          "value_number": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value Number"
+          },
+          "value_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Value Text"
+          },
+          "target_at": {
+            "format": "date-time",
+            "title": "Target At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "metric_key",
+          "target_at"
+        ],
+        "title": "WeatherMarkerValueOut",
+        "type": "object"
+      },
+      "Envelope_list_WeatherMarkerCompactOut__": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/WeatherMarkerCompactOut"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "required": [
+          "data",
+          "meta"
+        ],
+        "title": "Envelope[list[WeatherMarkerCompactOut]]",
         "type": "object"
       }
     },
