@@ -101,8 +101,12 @@ prefetch는 이미 payload를 빼고 있었다. 새 원천의 INSERT는 그대�
   주석이 말하는 "세션 자신의 값"이 바로 이것이다.
 - 0022·0032~0043의 "현재 값과 상한 중 더 엄격한 값" 규칙은 5초가 더 엄격하면 5초를 쓴다. 이 규칙의
   상한이 5초보다 큰 것은 0022(30초)뿐이고 운영 DB에는 이미 적용됐다.
-- URL에 `options`가 있으면 그 뒤에 둔다. 같은 설정을 여러 번 주면 뒤의 값이 이기므로 운영자가 URL로 준
-  `lock_timeout`이 우선한다. libpq `PGOPTIONS` 환경변수는 이 `options` 인자에 가려진다.
+- 운영자 설정은 그대로 산다. libpq는 `options` 인자가 있으면 `PGOPTIONS` 환경변수를 읽지 않으므로
+  `migration_connect_args`가 기본값 → `PGOPTIONS` → URL의 `options` 순서로 직접 이어 붙인다. 같은
+  설정을 여러 번 주면 뒤의 값이 이기므로 `PGOPTIONS`나 URL로 준 `lock_timeout`·`search_path`가 이
+  기본값보다 우선한다(URL이 환경변수를 이기는 것은 libpq 자신의 순서와 같다).
+  `tests/test_marker_migration_guard.py`의 다른 schema 우선 시험이 `PGOPTIONS`로 `search_path`를
+  바꾸므로, 그 시험과 `test_migration_lock_timeout.py`가 migration 연결에 그 값이 실제로 있는지 확인한다.
 
 **재시도 헬퍼는 표준화하지 않았다.** 지금 있는 것은 0012의 짧은 `lock_timeout`·30회 재시도,
 `default_partition._with_lock_retries`(운영자 DEFAULT 교체), `partitions.lock_for_partition_ddl`
@@ -129,6 +133,7 @@ prefetch는 이미 payload를 빼고 있었다. 새 원천의 INSERT는 그대�
 - `tests/test_replay_source_payload.py`: 같은 키 재수집·새 키 같은 원문(identity 조회)·원천 키 없는
   fact의 대체 원천 재조회에서 `weather_source_records` SELECT에 payload 열이 없음. `defer`를 빼면
   실패함을 로컬에서 확인했다.
-- `tests/test_migration_lock_timeout.py`: 연결 옵션, `SET LOCAL`·`TO DEFAULT`·`RESET` 우선순위,
-  `alembic upgrade`가 실제로 여는 연결의 `lock_timeout`이 5초.
+- `tests/test_migration_lock_timeout.py`: 연결 옵션과 `PGOPTIONS`·URL 순서, `SET LOCAL`·`TO DEFAULT`·
+  `RESET` 우선순위, 빈 schema에서 `alembic upgrade head`가 실제로 여는 연결의 `lock_timeout`이 5초이고
+  `PGOPTIONS`의 `search_path`도 남음(시험 순서와 무관).
 - `packages/kor-travel-weather-dagster/tests/test_retention_status.py`: 두 연기 값이 `deferred`·metadata로.
