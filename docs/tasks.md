@@ -1,3 +1,12 @@
+## 2026-11-24 — Map 호출 검토 이행 후속
+
+코드 항목은 모두 머지됐다([검토 문서 §9](reports/2026-11-24-map-call-performance-review.md)). 아래는 남은 일이다.
+
+- [ ] **MAP-CALL-ACCEPT-20261124 / P1** — odroid weather API·Dagster를 #290~#305 이후 이미지와 migration 0044로 배포(Codex)한 뒤 검토 문서 §7 수용 기준을 잰다: Map current run 시간·상한 초과 건수(7일 전후), 응답 header `x-export-status-proof`·`x-export-prebuilt` 분포, 첫 페이지 304 비율, 499(`weather_service_export_cancelled`) 건수, 야간 유지보수 중 지도 읽기 p95·`partitions_deferred`, 배포 직후 첫 마커 묶음 대 두 번째 묶음. `W-EXPORT-CURSOR-REUSE-20261124`의 수용과 함께 한다. 로컬 수치를 운영 수치로 옮기지 않는다.
+- [ ] **W-EXPORT-PREBUILT-W5-20261124 / P2** — A3의 W5(daily-summaries, days 14) 사전 구성 프로필. 설계 `docs/design/weather-performance-use-cases-20261109.md` §P0-A대로 요약 watermark·coverage digest·날짜창·partial 경계를 key/proof에 넣고, 가산 opt-in 계약(`summary_watermark`·`summary_as_of`·전체 count/hash)을 OpenAPI·TS 타입과 Map 소비자 검증과 함께 바꾼다([`docs/export-prebuilt-pages.md`](export-prebuilt-pages.md)).
+- [ ] **W-EXPORT-FREEZE-STALE-20261124 / 소유자 결정** — current freeze 예산 초과 때 503 대신 `_previous_success`를 `source_status=stale`로 줄지 정한다. Map #1542가 503을 상류 미준비로 건너뛰므로 지금은 필요가 크지 않다. 근거 [`reports/2026-11-24-export-freeze-split.md`](reports/2026-11-24-export-freeze-split.md).
+- [ ] **MGR-WEATHER-READY-20261124 / P2 (Manager 저장소)** — Manager 배포 verify가 `/ready`를 최대 60초 보고(초과는 경고), web healthcheck를 Manager 선언에 옮기고, 운영 배포 뒤 `python -m kortravelweather.export_prebuilt` hook을 한 번 돌린다. HAProxy 트래픽 게이트 여부도 Manager가 정한다([`weather-api-prewarm.md`](weather-api-prewarm.md)).
+
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
 - [ ] **COMMON-PLAN-20261117 / P2** — kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`) 가운데 Weather가 실행하는 task를 추적한다. 선행 없음: Common `T-468`(`components/ui/*` 순수 재수출 shim 13개를 공통 경로 직접 import로, 릴리스 불필요), `T-465`(관리자 프론트 `lib/navigation.ts`의 판정 본체를 공통 `sanitizeLocalPath` 호출로 바꾸는 중복 제거. 구현 간 검증 차이는 #244로 이미 맞췄다. `%20`이 든 경로처럼 결과가 달라지는 입력이 있어 받아들일지 먼저 정한다). Common 작업 뒤: `T-467`(guard 호출 SHA를 Common이 지정한 채택 커밋으로, `T-024` 뒤), `T-466`(선택형 패키지 `@kor-travel/admin-kit` 채택, `T-221` 뒤), `T-481a`(로컬 수집 결과 tag 함수를 공통 구현으로, `T-313` 뒤, 급하지 않다). Common `T-025`(ui·tokens patch 릴리스) 전에 `T-467`이 병합되지 않으면 그날 ui·tokens를 재vendor해야 한다(Common은 릴리스 전에 이 팀의 확인을 받는다). `T-466`은 새 guard를 쓰고 있으면 첫 단계로 호출 SHA를 Common이 지정한 admin-kit 채택 커밋으로 올리고 ui·tokens를 재vendor한다. 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다. 시점은 Weather 유지 팀이 정한다.
