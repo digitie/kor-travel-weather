@@ -10,6 +10,7 @@ from kortravelcommon.reverse_address import AddressTarget
 from sqlalchemy import select, text
 
 from .export_cancellation import checkpoint
+from .export_conditional import ExportNotModified, content_etag, matches_etag
 from .export_heads import _digest
 from .export_snapshots import (
     MAX_PAGE_BYTES,
@@ -209,6 +210,14 @@ class FrozenLocationExports(FrozenCurrentExports):
         items = frozen["manifest"]["locations"]
         if state["p"] > len(items):
             raise ExportCursorInvalid("reference cursor 위치가 올바르지 않습니다.")
+        # 위치 목록이 곧 manifest라 digest가 같으면 내용이 같다. 상태는 언제나 stale·수집 시각 null
+        # (catalog 수집 시각을 알 수 없다)이다. TTL이 지나 handle만 새로 발급돼도 ETag는 그대로다.
+        etag = content_etag(
+            frozen["manifest_digest"], ["locations", limit, cursor is None, [0, state["p"]]],
+            "stale", None,
+        )
+        if cursor is None and matches_etag(self.if_none_match, etag):
+            raise ExportNotModified(etag, "stale")
         output, size = [], 0
         for item in items[state["p"] : state["p"] + limit]:
             encoded_size = len(json.dumps(item, ensure_ascii=False).encode()) + 1
@@ -234,4 +243,4 @@ class FrozenLocationExports(FrozenCurrentExports):
                 "next_cursor": self._encode(state) if more else None,
             },
         }
-        return page, 'W/"' + _digest([frozen["snapshot_id"], cursor, limit]) + '"'
+        return page, etag

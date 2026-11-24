@@ -190,7 +190,16 @@ def test_locked_expired_fact_defers_the_batch_instead_of_skipping(
             ), {"id": later})
             report = repository.purge_expired_short_forecast(cutoff=cutoff, dry_run=False)
             assert report["deferred"] is True and report["error_class"] == "LockNotAvailable"
+            assert report["deferred_reason"] == "LockNotAvailable"
             assert report["facts_deleted"] == 0 and report["last_key"] is None
+        with other.begin() as connection:
+            # 일별 이력 정리가 같은 advisory lock을 쥔 동안은 기다리지 않고 양보한다.
+            connection.execute(text(
+                "SELECT pg_advisory_xact_lock(hashtext('weather_history_purge'))"
+            ))
+            report = repository.purge_expired_short_forecast(cutoff=cutoff, dry_run=False)
+            assert report["deferred"] is True and report["error_class"] is None
+            assert report["deferred_reason"] == "history_purge_running"
         # 앞 행만 지우고 잠긴 행을 건너뛰면 위치 뒤에 행이 남는다. 연기는 둘 다 보존한다.
         assert len(_expired_in_order(repository, cutoff)) == 2
         report = repository.purge_expired_short_forecast(cutoff=cutoff, dry_run=False)

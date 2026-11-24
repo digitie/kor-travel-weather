@@ -331,12 +331,37 @@ def test_split_forecast_starts_after_its_current_inside_the_cycle() -> None:
 
 def test_kma_short_forecast_runtime_covers_its_publish_interval() -> None:
     # 단기예보는 3시간마다 발표한다. 포화된 odroid에서 한 회차가 2시간을 넘겨 7200초 상한에
-    # 거의 매번 회수됐다(2026-10-27~11-02). 상한은 발표 주기와 같다.
+    # 거의 매번 회수됐다(2026-10-27~11-02). 3시간 상한에도 14일 6회가 상한 회수였다
+    # (2026-11-09..23). 상한은 발표 주기 + 1시간이다. 겹침은 coalescing schedule이 막는다.
     job = defs.get_repository_def().get_job("kma_short_forecast_job")
-    assert job.run_tags["dagster/max_runtime"] == "10800"
+    assert job.run_tags["dagster/max_runtime"] == "14400"
     assert defs.get_repository_def().get_job("kma_ultra_short_forecast_job").run_tags[
         "dagster/max_runtime"
     ] == "7200"
+
+
+def test_short_forecast_tick_is_coalesced_while_a_long_run_is_still_publishing() -> None:
+    # 상한(4시간)이 발표 주기(3시간)보다 길다. 3시간을 넘긴 회차가 도는 동안 다음 tick은
+    # 새 run을 만들지 않고 합쳐져야 같은 dataset의 두 회차가 겹치지 않는다.
+    from datetime import UTC, datetime
+
+    from dagster import DagsterInstance, DagsterRunStatus, build_schedule_context
+    from kortravelweather_dagster.definitions import (
+        kma_short_forecast_job,
+        kma_short_forecast_schedule,
+    )
+
+    tick = datetime(2026, 11, 24, 2, 15, tzinfo=UTC)
+    with DagsterInstance.local_temp() as instance:
+        with build_schedule_context(instance=instance, scheduled_execution_time=tick) as context:
+            assert kma_short_forecast_schedule.evaluate_tick(context).run_requests
+        instance.create_run_for_job(
+            kma_short_forecast_job, status=DagsterRunStatus.STARTED,
+            tags={**kma_short_forecast_job.run_tags},
+        )
+        with build_schedule_context(instance=instance, scheduled_execution_time=tick) as context:
+            result = kma_short_forecast_schedule.evaluate_tick(context)
+    assert result.run_requests == [] and result.skip_message
 
 
 def test_every_location_capped_provider_runs_in_the_slow_group() -> None:
@@ -395,7 +420,7 @@ def test_every_instigator_declares_its_expected_default_state_in_code() -> None:
 
     repository = defs.get_repository_def()
     schedules = list(repository.schedule_defs)
-    assert len(schedules) >= 17
+    assert len(schedules) >= 16
     for schedule in schedules:
         assert schedule.default_status == DefaultScheduleStatus.RUNNING, schedule.name
     for sensor in repository.sensor_defs:
@@ -420,8 +445,8 @@ def test_external_schedules_keep_volume_and_three_hour_freshness_across_month_bo
     start = datetime(2026, 10, 31, tzinfo=ZoneInfo("Asia/Seoul"))
     end = start + timedelta(days=2)
     launches = []
-    # 9 provider + 분리한 3 provider의 forecast schedule(W-EXP-SPLIT-01).
-    assert len(external_weather_schedules) == 12
+    # sweep하는 3 provider × current/forecast(W-EXP-SPLIT-01). 나머지 여섯은 schedule이 없다.
+    assert len(external_weather_schedules) == 6
     for schedule in external_weather_schedules:
         times = []
         for tick in schedule_execution_time_iterator(

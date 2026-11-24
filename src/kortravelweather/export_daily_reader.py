@@ -10,6 +10,7 @@ from sqlalchemy import and_, func, or_, select, text, tuple_
 
 from .export_cancellation import checkpoint
 from .export_capacity import any_of
+from .export_conditional import content_etag
 from .export_daily import KST, SLOTS, summarize
 from .export_daily_store import daily_coverage_table, daily_summary_tables
 from .export_heads import _digest
@@ -432,6 +433,9 @@ class DailySummaryExports(FrozenCurrentExports):
         keys, output, size = manifest["locations"], [], 0
         if state["g"] > len(keys) or state["p"] > len(positions):
             raise ExportCursorInvalid("요약 cursor 위치가 올바르지 않습니다.")
+        # 페이지 식별은 handle이 아니라 selection·limit·시작 위치다
+        # (cursor 문자열은 snapshot_id를 담는다).
+        page_key = [self.resource, limit, cursor is None, [state["g"], state["p"]]]
         # 같은 RR에서 필요한 위치만 작은 묶음으로 읽고 frozen roster/slot 순서대로 낸다.
         # 조회 수가 위치 수에 비례하지 않도록 하되 scalar 메모리는 최대 8위치로 한정한다.
         with self._daily_transaction() as s:
@@ -519,6 +523,17 @@ class DailySummaryExports(FrozenCurrentExports):
                 "has_more": more,
             },
         }
-        return page, 'W/"' + _digest([
-            frozen["snapshot_id"], limit, cursor, status, output, self.daily_health_digest,
-        ]) + '"'
+        # 요약 값은 같은 manifest에서도 사전 계산 갱신·시각 경계(partial)로 바뀌므로 본문을 넣는다.
+        # 그래서 비교는 값을 읽은 뒤(직렬화 전)에 하고, handle이 바뀌어도 내용이 같으면 304다.
+        # 정상 freeze의 manifest는 coverage(위치·namespace·generation)를 묶어 다른 페이지 위치의
+        # 요약 갱신도 digest로 드러난다. fallback(이전 coverage digest 유지)이나 이 페이지에서
+        # coverage를 못 읽은 경우는 digest·건강도·수집 시각·상태가 모두 고정되므로, 사전 계산
+        # checkpoint(reducer 진도)를 넣어 뒤 페이지만 바뀌어도 첫 페이지 ETag가 바뀌게 한다.
+        progress_token = (
+            [ready["generation_id"], ready["published_at"].isoformat()]
+            if manifest.get("fallback_unconfirmed") or coverage is None else None
+        )
+        return page, content_etag(
+            frozen["manifest_digest"], page_key, status, page["meta"]["source_collected_at"],
+            self.daily_health_digest, output, progress_token,
+        )

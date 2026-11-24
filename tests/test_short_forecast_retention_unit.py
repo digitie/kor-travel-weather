@@ -715,3 +715,18 @@ def test_runner_empty_selection_never_repeats_without_progress(remaining, dry_ru
     assert result["batches"] == len(calls) == 1
     assert result["facts_deleted"] == 0
     assert result["remaining"] is remaining
+
+
+@pytest.mark.parametrize(("previous", "result", "expected"), [
+    (2, {"status": "complete_snapshot", "facts_deleted": 0}, 0),
+    (2, {"status": "budget_exhausted", "facts_deleted": 10}, 0),
+    (0, {"status": "deferred", "facts_deleted": 0, "deferred_reason": "QueryCanceled"}, 1),
+    (2, {"status": "deferred", "facts_deleted": 0, "deferred_reason": "empty_selection"}, 3),
+    (2, {"status": "deferred", "facts_deleted": 0,
+         "deferred_reason": "history_purge_running"}, 2),
+    (1, {"status": "dry_run", "facts_deleted": 0, "dry_run": True}, 2),
+])
+def test_no_progress_counter(previous, result, expected):
+    from kortravelweather.retention import no_progress_runs
+
+    assert no_progress_runs(previous, result) == expected

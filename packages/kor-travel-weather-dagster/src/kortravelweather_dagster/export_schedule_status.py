@@ -52,6 +52,7 @@ def schedule_with_export_status(
     source_keys: ScopeKeys | Callable[[ScheduleEvaluationContext], ScopeKeys],
     repository_factory: Callable[[ScheduleEvaluationContext], WeatherRepository],
     schedule_running: Callable[[ScheduleEvaluationContext], bool | None] | None = None,
+    status_cron_schedule: str | Sequence[str] | None = None,
     **kwargs: Any,
 ) -> ScheduleDefinition:
     """기존 coalescing schedule을 public hook으로 감싸 metadata만 추가한다.
@@ -62,6 +63,9 @@ def schedule_with_export_status(
     일정을 null로 기록한다. default_status로 현재 실행 상태를 추측하지 않는다.
     중지 후 새 tick이 없을 때는 마지막 예정 시각이 지나면 상태 reader가 null로
     보여 준다. 운영 중지 여부를 API에서 Dagster에 다시 묻지 않는다.
+
+    ``status_cron_schedule``을 주면 다음 예정 시각은 그 cron으로 계산한다. 실패했을 때만
+    run을 만드는 보충 tick이 섞인 schedule이 /status에 "곧 새 자료"를 약속하지 않게 한다.
     """
     original = coalescing_schedule(project=project, location_name=location_name, **kwargs)
 
@@ -84,7 +88,9 @@ def schedule_with_export_status(
                     running = None
             upcoming = (
                 next_schedule_time(
-                    original.cron_schedule, original.execution_timezone, after=evaluated
+                    status_cron_schedule or original.cron_schedule,
+                    original.execution_timezone,
+                    after=evaluated,
                 )
                 if running is True
                 else None

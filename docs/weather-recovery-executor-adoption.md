@@ -15,9 +15,13 @@ resource와 기존 `weather_sync_recovery` 앱 DB 정산은 유지한다.
 
 16개 단일 자산 job은 `in_process_executor`로 실행한다. 같은 run 안에서 별도
 step child를 시작하는 비용을 줄이려는 변경이며 HTTP 요청 병렬도나 run 동시성을
-높이지 않는다. 4개 자산의 `regional_weather_job`과 암묵적 전체 자산 job은
-`multiprocess_executor(max_concurrent=1)`을 사용한다. 지역 수집 단계마다 process
-정리 경계를 유지한다.
+높이지 않는다. 암묵적 전체 자산 job은 `multiprocess_executor(max_concurrent=1)`을
+사용한다. (2026-11-24: 4개 자산의 `regional_weather_job`은 원천별 단일 자산 job 네 개로
+나눴고 다른 단일 자산 job처럼 in-process다 — run worker 하나가 원천 하나의 process 경계다.
+네 job은 `kortravelweather/run_group=regional_weather` 태그를 함께 받고 instance가 이 값을
+`limit: 1`로 묶어, 분리 전 묶음 run처럼 weather run 슬롯을 하나만 쓴다. 그래서 이 분리도 run
+동시성을 높이지 않는다. 일시 네트워크 오류 재시도 대기 중인 run도 STARTED로 슬롯을 쥐므로 이
+상한이 없으면 장애 때 네 run이 함께 슬롯을 잡는다.)
 
 Dagster 1.13.24의 DefaultRunLauncher/user-code server는 여전히 각 run을 별도
 spawn run worker에서 실행한다. 다른 run의 프로세스 격리, daemon의 태그 기반
