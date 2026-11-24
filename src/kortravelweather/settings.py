@@ -110,6 +110,9 @@ class WeatherSettings(BaseSettings):
     service_export_artifact_retention_hours: int = SERVICE_EXPORT_ARTIFACT_RETENTION_DEFAULT
     # API reader의 공유 artifact guard 대기(초, 0.5~10). 범위 밖·숫자 아님은 경고와 함께 기본 5초.
     service_export_reader_guard_seconds: float = 5.0
+    # Map 표준 프로필(current limit 2000) 완료 페이지의 사전 구성(호출 검토 A3). builder job과
+    # API 읽기 경로가 함께 본다. 끄면 builder는 만들지 않고 API는 기존 freeze 경로만 쓴다.
+    service_export_prebuild_enabled: bool = True
 
     @field_validator("service_export_reader_guard_seconds", mode="before")
     @classmethod

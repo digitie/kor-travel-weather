@@ -551,6 +551,9 @@ async def _frozen_response(
         reader.if_none_match = request.headers.get("if-none-match", "")
         reader.revalidate_first_page = resource == "forecasts" and cursor is None
         reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
+        # Map 표준 프로필(current)은 publisher 뒤 job이 미리 만든 페이지 본문을 검산해 쓴다(A3).
+        # 준비가 안 됐거나 입력이 바뀌었으면 reader가 기존 freeze 경로로 간다.
+        reader.prebuilt = resource == "current" and settings.service_export_prebuild_enabled
         read = page_read(reader)
         arriving = None
         if resource in {"current", "daily-summaries", "forecasts"}:
@@ -612,6 +615,10 @@ async def _frozen_response(
             # 상태 판정의 출처: frozen(첫 페이지 freeze RR)·reused(앱 공용 판정)·computed(새 계산).
             # 완료 페이지 재사용(x-export-read=reused)이면 이 요청은 판정을 하지 않았다(none).
             headers["x-export-status-proof"] = getattr(reader, "page_status_proof", "none")
+            # 첫 페이지 사전 구성 판정(hit·none·changed·expired·selection 등, cursor는 "-")과
+            # 이 요청이 쓴 사전 구성 본문 수. 완료 페이지 재사용(reused)이면 둘 다 판정 없음이다.
+            headers["x-export-prebuilt"] = getattr(reader, "prebuilt_outcome", "-")
+            headers["x-export-prebuilt-pages"] = str(getattr(reader, "prebuilt_pages", 0))
     except ExportRequestCancelled as exc:
         # 응답을 받을 요청자가 없다. 경합 503 통계·statement_timeout 로그와 섞지 않는다.
         cause = exc.__cause__
