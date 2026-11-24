@@ -31,6 +31,38 @@
         }
       }
     },
+    "/ready": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Ready",
+        "description": "시작 warmup 상태. 완료·예산 초과 등 생략·비활성이면 200, 진행 중이면 503.\n\nDB를 읽지 않으며 DB 건강 검사가 아니다. ``/health``는 그대로 생존 확인만 한다.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessOut"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "시작 warmup이 아직 진행 중",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessOut"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/version": {
       "get": {
         "tags": [
@@ -4155,6 +4187,113 @@
           "datasets"
         ],
         "title": "ProviderOut"
+      },
+      "ReadinessOut": {
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "title": "Ready",
+            "description": "warmup이 끝났거나(done·skipped) 꺼져 있으면(disabled) true"
+          },
+          "warm": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "running",
+              "done",
+              "skipped"
+            ],
+            "title": "Warm"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "budget",
+                  "busy",
+                  "error",
+                  "shutdown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "warm=skipped일 때 남은 단계를 생략한 이유"
+          },
+          "elapsed_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elapsed Ms",
+            "description": "warmup 시작부터 끝(진행 중이면 지금)까지. 꺼져 있으면 null"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/ReadinessStepOut"
+            },
+            "type": "array",
+            "title": "Steps",
+            "description": "끝난 단계(생략 포함)의 결과"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ready",
+          "warm",
+          "reason",
+          "elapsed_ms",
+          "steps"
+        ],
+        "title": "ReadinessOut",
+        "description": "``GET /ready`` 본문. 시작 warmup 상태이며 DB 건강 검사가 아니다."
+      },
+      "ReadinessStepOut": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "connections",
+              "session_check",
+              "regions",
+              "locations",
+              "markers",
+              "location_detail"
+            ],
+            "title": "Name"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "failed",
+              "skipped"
+            ],
+            "title": "Outcome"
+          },
+          "elapsed_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Elapsed Ms"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "outcome",
+          "elapsed_ms"
+        ],
+        "title": "ReadinessStepOut"
       },
       "RegionLocationOut": {
         "properties": {

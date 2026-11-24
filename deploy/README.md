@@ -38,6 +38,8 @@ KMA live
 GIT_COMMIT=$(git describe --always --dirty --abbrev=7) docker compose -f compose.yaml up -d --build
 docker compose -f compose.yaml ps
 curl http://127.0.0.1:14101/health
+# 시작 warmup 상태. 진행 중이면 503, 완료·생략·비활성이면 200(docs/weather-api-prewarm.md)
+curl http://127.0.0.1:14101/ready
 open http://127.0.0.1:14105
 curl http://127.0.0.1:14104/-/ready
 ```
