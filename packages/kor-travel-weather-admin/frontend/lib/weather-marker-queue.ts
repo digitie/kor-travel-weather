@@ -6,7 +6,8 @@
  * - 실패한 위치는 영구히 막지 않는다. 최종 실패(요청 함수의 재시도까지 끝난 실패)와 응답 누락을
  *   나눠 지수 backoff 뒤 화면에 남아 있으면 자동으로 다시 보낸다. 수동 "다시 조회"는 대기를 지운다.
  * - `fresh`는 이번 세대(새로고침·필터 범위)에 받은 ID다. 새로고침은 새 `fresh`로 시작하므로
- *   이미 그린 마커(`cache`)를 지우지 않고 다시 받아 바꾼다.
+ *   이미 그린 마커(`cache`)를 지우지 않고 다시 받아 바꾼다. 응답에서 빠진 위치의 값은 지우고,
+ *   최종 실패한 위치의 값은 일시 장애일 수 있어 남긴다.
  */
 
 export const MARKER_BATCH_SIZE = 60;
@@ -110,8 +111,13 @@ export function createMarkerQueue<T extends { location_id: string }>(
             failed.delete(item.location_id);
             returned.add(item.location_id);
           }
-          // 빈/부분 응답의 누락 위치는 즉시 다시 보내지 않고 긴 대기 뒤에만 다시 본다.
-          for (const id of chunk) if (!returned.has(id)) fail(id, true);
+          // 빈/부분 응답의 누락 위치는 즉시 다시 보내지 않고 긴 대기 뒤에만 다시 본다. API가 이번에
+          // 돌려주지 않은 위치(비활성·삭제 등)의 지난 세대 값은 지워 오래된 날씨를 새 값처럼 그리지 않는다.
+          for (const id of chunk) {
+            if (returned.has(id)) continue;
+            delete options.cache.current[id];
+            fail(id, true);
+          }
           options.onData(options.cache.current);
         })
         .catch(() => {
@@ -150,11 +156,21 @@ type Positioned = { location_id: string; longitude: number; latitude: number };
 /**
  * 마커 요청 순서: 화면 중심에서 가까운 위치부터. 중심을 모르면 받은 순서를 유지한다.
  * 한국 범위라 경도 차이에 위도 cos만 곱한 평면 거리로 충분하다.
+ * `firstId`(상세에 연 선택 위치)가 목록에 있으면 거리와 상관없이 맨 앞에 둬 첫 묶음으로 보낸다.
  */
 export function markerFetchOrder(
   locations: readonly Positioned[],
   center: readonly [number, number] | null,
+  firstId: string | null = null,
 ): string[] {
+  const ordered = distanceOrder(locations, center);
+  if (!firstId) return ordered;
+  const at = ordered.indexOf(firstId);
+  if (at <= 0) return ordered;
+  return [firstId, ...ordered.slice(0, at), ...ordered.slice(at + 1)];
+}
+
+function distanceOrder(locations: readonly Positioned[], center: readonly [number, number] | null): string[] {
   if (!center) return locations.map((location) => location.location_id);
   const scale = Math.cos((center[1] * Math.PI) / 180);
   return locations

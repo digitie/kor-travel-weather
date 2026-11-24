@@ -27,7 +27,8 @@ function visit(node: ts.Node) {
 visit(tree);
 const NAMES = ["WEATHER_KINDS", "mapLocations", "mode", "refreshToken", "markerScopeRef", "markerFreshRef",
   "summariesRef", "setSummaries", "getCompactMarkers", "createMarkerQueue", "markerFetchOrder", "viewportCenter",
-  "providerFilter", "kindFilter", "setMarkerError", "markerQueueRef", "markerRetryToken", "effectiveViewport"];
+  "providerFilter", "kindFilter", "setMarkerError", "markerQueueRef", "markerRetryToken", "effectiveViewport",
+  "priorityId"];
 function compileEffect(deps: string) {
   const callback = callbacks.get(deps.replace(/\s+/g, ""));
   if (!callback) throw new Error("마커 effect를 찾지 못했습니다.");
@@ -38,7 +39,7 @@ function compileEffect(deps: string) {
 }
 const scopeEffect = compileEffect("[mode, refreshToken, providerFilter, kindFilter]");
 const viewportEffect = compileEffect(
-  "[mapLocations, effectiveViewport, mode, refreshToken, providerFilter, kindFilter, markerRetryToken]",
+  "[mapLocations, effectiveViewport, mode, refreshToken, providerFilter, kindFilter, markerRetryToken, priorityId]",
 );
 type Pending = { ids: string[]; url: URL; signal?: AbortSignal; done: boolean; resolve: (response: Response) => void };
 function setupFetch(ignoreAbort = false) {
@@ -66,7 +67,7 @@ function mount(initial = ids(240)) {
   let cleanup: (() => void) | undefined; let lastScope = "";
   let points = initial; let retry = 0;
   let positions: Record<string, [number, number]> = {};
-  let viewport: Viewport = null;
+  let viewport: Viewport = null; let priority: string | null = null;
   let options: { mode: string; token: number; providers?: string[]; kinds?: string[] } = { mode: "map", token: 0 };
   function render(next = points, change: Partial<typeof options> = {}) {
     points = next; options = { ...options, ...change };
@@ -75,13 +76,14 @@ function mount(initial = ids(240)) {
         latitude: positions[location_id]?.[1] ?? 37 })),
       options.mode, options.token, markerScopeRef, markerFreshRef,
       summariesRef, setSummaries, getCompactMarkers, createMarkerQueue, markerFetchOrder, viewportCenter,
-      options.providers, options.kinds, setMarkerError, markerQueueRef, retry, viewport];
+      options.providers, options.kinds, setMarkerError, markerQueueRef, retry, viewport, priority];
     const scope = JSON.stringify(options);
     if (scope !== lastScope) { cleanup?.(); lastScope = scope; cleanup = scopeEffect(...args); }
     viewportEffect(...args);
   }
   return { render, retry() { retry += 1; render(); }, cleanup() { cleanup?.(); },
     place(next: Record<string, [number, number]>, view: Viewport) { positions = next; viewport = view; },
+    prioritize(id: string | null) { priority = id; },
     start() { render(); return this; },
     setSummaries, summariesRef, setMarkerError };
 }
@@ -311,8 +313,24 @@ describe("새로고침과 요청 순서(B12)", () => {
     // 캐시를 비우지 않는다(빈 객체로 다시 그리지 않는다).
     expect(view.summariesRef.current).toBe(before); expect(view.setSummaries).not.toHaveBeenCalled();
     expect(pending).toHaveLength(2); expect(pending[1].ids).toEqual(["a", "b"]);
-    respond(pending[1], 200, ["a"]); await flush();
+    respond(pending[1]); await flush();
     expect(view.summariesRef.current.a).not.toBe(oldA); expect(view.summariesRef.current.b).toBeTruthy();
+    view.cleanup();
+  });
+  it("새 세대 응답에서 빠진 위치의 지난 값은 지우고 최종 실패한 위치는 지난 값을 유지한다", async () => {
+    const pending = setupFetch(); const view = mount(["a", "b"]).start();
+    respond(pending[0]); await flush();
+    view.render(undefined, { token: 1 });
+    respond(pending[1], 200, ["a"]); await flush();
+    // 비활성·삭제 등으로 API가 돌려주지 않은 위치는 오래된 날씨를 새 값처럼 그리지 않는다.
+    expect(view.summariesRef.current.a).toBeTruthy(); expect(view.summariesRef.current.b).toBeUndefined();
+    expect(view.setSummaries).toHaveBeenLastCalledWith({ a: view.summariesRef.current.a });
+    const oldA = view.summariesRef.current.a;
+    view.render(undefined, { token: 2 });
+    respond(pending[2], 500); await flush();
+    // 최종 실패는 일시 장애일 수 있어 지난 값을 남기고 "일부 위치" 안내와 자동 재시도로 알린다.
+    expect(view.summariesRef.current.a).toBe(oldA);
+    expect(view.setMarkerError).toHaveBeenLastCalledWith(MARKER_PARTIAL_ERROR);
     view.cleanup();
   });
   it("필터 범위 변경은 이전 범위의 마커를 지운다", async () => {
@@ -346,5 +364,23 @@ describe("새로고침과 요청 순서(B12)", () => {
       { location_id: "z", longitude: 127, latitude: 37 }];
     expect(markerFetchOrder(rows, null)).toEqual(["x", "y", "z"]);
     expect(markerFetchOrder(rows, [127, 37])).toEqual(["z", "x", "y"]);
+  });
+  it("상세에 연 선택 위치는 거리와 상관없이 맨 앞에 둔다", () => {
+    const rows = [{ location_id: "x", longitude: 128, latitude: 37 }, { location_id: "y", longitude: 126, latitude: 37 },
+      { location_id: "z", longitude: 127, latitude: 37 }];
+    expect(markerFetchOrder(rows, [127, 37], "y")).toEqual(["y", "z", "x"]);
+    expect(markerFetchOrder(rows, null, "z")).toEqual(["z", "x", "y"]);
+    expect(markerFetchOrder(rows, [127, 37], "missing")).toEqual(["z", "x", "y"]);
+  });
+  it("선택 위치가 화면 중심에서 멀어도 첫 묶음의 맨 앞으로 보낸다", () => {
+    const pending = setupFetch();
+    const view = mount(ids(130));
+    const positions: Record<string, [number, number]> = {};
+    ids(130).forEach((id, index) => { positions[id] = [127 + (129 - index) * 0.01, 37]; });
+    view.place(positions, { west: 126.9, east: 127.1, south: 36.9, north: 37.1 });
+    view.prioritize("a0");
+    view.start();
+    expect(pending[0].ids[0]).toBe("a0"); expect(pending[0].ids.slice(1)).toEqual(ids(59, 71).reverse());
+    view.cleanup();
   });
 });

@@ -505,6 +505,7 @@ function useMarkerSummaries({
   mapLocations,
   effectiveViewport,
   markerRetryToken,
+  priorityId,
 }: {
   mode: "map" | "list";
   refreshToken: number;
@@ -513,6 +514,8 @@ function useMarkerSummaries({
   mapLocations: Location[];
   effectiveViewport: MapViewport | null;
   markerRetryToken: number;
+  /** 상세에 연 선택 위치. 거리순과 상관없이 첫 묶음으로 보낸다. */
+  priorityId: string | null;
 }) {
   const [markerError, setMarkerError] = useState("");
   const markerQueueRef = useRef<MarkerQueue | null>(null);
@@ -561,9 +564,9 @@ function useMarkerSummaries({
     const queue = markerQueueRef.current;
     if (!queue || mode !== "map") return;
     // 같은 필터 범위에서는 지도 이동 중인 batch를 이어받는다. 다음 배정만 현재 범위로 좁히고
-    // 화면 중심에서 가까운 위치부터 보낸다.
+    // 화면 중심에서 가까운 위치부터 보내되 상세에 연 선택 위치는 맨 앞에 둔다.
     queue.update(
-      markerFetchOrder(mapLocations, viewportCenter(effectiveViewport)),
+      markerFetchOrder(mapLocations, viewportCenter(effectiveViewport), priorityId),
       markerRetryToken,
     );
   }, [
@@ -574,6 +577,7 @@ function useMarkerSummaries({
     providerFilter,
     kindFilter,
     markerRetryToken,
+    priorityId,
   ]);
 
   // 다른 필터 범위의 값은 쓰지 않는다(범위가 바뀐 첫 렌더는 effect가 비우기 전이다). 같은 범위의
@@ -754,6 +758,7 @@ function useWeatherMapModel({
   ]);
   const { summaries, markerError } = useMarkerSummaries({
     mode, refreshToken, providerFilter, kindFilter, mapLocations, effectiveViewport, markerRetryToken,
+    priorityId: selected?.location_id ?? null,
   });
   // 상세·제공처 상태만 바뀐 렌더는 동일한 GeoJSON을 다시 만들지 않는다.
   const markers = useMemo(
