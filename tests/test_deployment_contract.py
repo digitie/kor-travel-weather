@@ -649,11 +649,13 @@ def test_web_public_dagster_url_is_baked_before_next_build() -> None:
     ) < build.start()
 
 
-def _ready_check(statuses: list[str]) -> subprocess.CompletedProcess[str]:
+def _ready_check(
+    statuses: list[str], body: str = '{"warm":"stub"}',
+) -> subprocess.CompletedProcess[str]:
     """deploy.sh의 /ready 확인 구간을 가짜 curl·date·sleep으로 돌린다.
 
     ``$(...)`` subshell에서도 호출 순서를 세도록 bash 안에서 만든 임시 파일에 상태를 둔다.
-    가짜 시계는 date 호출마다 30초씩 간다(첫 호출이 마감 기준).
+    가짜 시계는 date 호출마다 30초씩 간다(첫 호출이 마감 기준). ``body``는 작은따옴표 없는 JSON.
     """
     script = (REPO_ROOT / "deploy" / "deploy.sh").read_text(encoding="utf-8")
     block = script[script.index("ready_deadline="):]
@@ -663,10 +665,11 @@ def _ready_check(statuses: list[str]) -> subprocess.CompletedProcess[str]:
         'STATE="$(mktemp)"',
         'echo "0 0" > "$STATE"',
         f"STATUSES=({' '.join(statuses)})",
+        f"BODY='{body}'",
         "curl() {",
         '    read -r calls ticks < "$STATE"',
         '    echo "$((calls + 1)) $ticks" > "$STATE"',
-        """    printf '{"warm":"stub"}\n%s' "${STATUSES[$calls]}" """,
+        """    printf '%s\\n%s' "$BODY" "${STATUSES[$calls]}" """,
         "}",
         "date() {",
         '    read -r calls ticks < "$STATE"',
@@ -686,6 +689,34 @@ def test_the_deploy_script_reports_ready_once_warmup_finishes() -> None:
     result = _ready_check(["503", "200"])
     assert result.returncode == 0, result.stderr
     assert 'ready: {"warm":"stub"}' in result.stdout
+    assert "warning" not in result.stderr
+
+
+@pytest.mark.parametrize("body", [
+    # 첫 연결부터 실패해 나머지를 생략한 경우(app.py JSONResponse는 공백 없는 JSON이다).
+    '{"ready":true,"warm":"skipped","reason":"error","elapsed_ms":40,"steps":'
+    '[{"name":"connections","outcome":"failed","elapsed_ms":40}]}',
+    # 모든 단계를 시도했지만 일부가 실패한 경우.
+    '{"ready":true,"warm":"done","reason":null,"elapsed_ms":900,"steps":'
+    '[{"name":"connections","outcome":"ok","elapsed_ms":40},'
+    '{"name":"regions","outcome":"failed","elapsed_ms":500}]}',
+])
+def test_the_deploy_script_warns_when_ready_reports_a_failed_step(body: str) -> None:
+    """DB에 닿지 못한 새 배포도 /ready는 200이다. 신호를 stderr 경고로 남기고 배포는 성공이다."""
+    result = _ready_check(["200"], body)
+    assert result.returncode == 0, result.stderr
+    assert f"ready: {body}" in result.stdout
+    assert "warning: /ready reports a failed startup warmup step" in result.stderr
+
+
+def test_the_deploy_script_does_not_warn_about_a_clean_or_skipped_warmup() -> None:
+    body = (
+        '{"ready":true,"warm":"skipped","reason":"budget","elapsed_ms":30000,"steps":'
+        '[{"name":"connections","outcome":"ok","elapsed_ms":40},'
+        '{"name":"markers","outcome":"skipped","elapsed_ms":0}]}'
+    )
+    result = _ready_check(["200"], body)
+    assert result.returncode == 0, result.stderr
     assert "warning" not in result.stderr
 
 

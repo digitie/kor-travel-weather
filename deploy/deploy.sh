@@ -116,6 +116,14 @@ while :; do
 done
 if [ "$ready_status" = "200" ]; then
     echo "ready: ${ready_body}"
+    # /version·/health는 DB를 보지 않는다. 새 배포의 DB 도달 여부는 이 본문이 유일한 신호라
+    # 실패 단계나 첫 연결 실패(reason=error)는 stderr에 남긴다. 배포는 그대로 성공이다.
+    case "$ready_body" in
+        *'"reason":"error"'* | *'"outcome":"failed"'*)
+            echo "warning: /ready reports a failed startup warmup step" \
+                "(the API may not reach the database); the deploy itself succeeded" >&2
+            ;;
+    esac
 else
     echo "warning: /ready did not answer 200 within 60s (last status ${ready_status:-none});" \
         "the deploy itself succeeded, the first admin map requests may be slower" >&2
