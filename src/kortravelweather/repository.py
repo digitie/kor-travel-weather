@@ -1441,6 +1441,12 @@ _ALERT_FIRST_SCAN_FACTOR = 4
 #: 배치 prefetch의 IN 목록 단위(파일의 다른 묶음 조회와 같은 1000).
 _IN_CHUNK = 1000
 
+#: Python ``str.isspace()``가 참인 문자 전부(U+3000이 가장 큼). PostgreSQL ``btrim``은 공백만
+#: 지우므로, API ``measurement_point_out``의 ``station_name.strip()`` 판정을 SQL 정규식
+#: (이 문자가 아닌 글자가 하나라도 있음)으로 그대로 옮긴다.
+_PY_WHITESPACE = "".join(chr(code) for code in range(0x3001) if chr(code).isspace())
+_NON_BLANK_PATTERN = f"[^{_PY_WHITESPACE}]"
+
 
 class WeatherRepository:
     """동기 SQLAlchemy repository.
@@ -4725,12 +4731,95 @@ class WeatherRepository:
         exact distance and ordering stay in SQL, so a nationwide catalog is
         never materialized and sorted by Python.
         """
+        if limit <= 0:
+            raise ValueError("limit은 양수여야 합니다.")
+        circle = self._nearest_circle(latitude, longitude, radius_km)
+        if circle is None:
+            return []
+        predicates, distance_km = circle
+        with self._session_factory() as session:
+            stmt = (
+                select(WeatherLocationRow, distance_km.label("distance_km"))
+                .where(*predicates)
+                .order_by(distance_km, WeatherLocationRow.location_id)
+                .limit(limit)
+            )
+            return [
+                (self._location_model(row), float(distance))
+                for row, distance in session.execute(stmt).all()
+            ]
+
+    def resolve_locations(
+        self, latitude: float, longitude: float, *, radius_km: float,
+    ) -> tuple[tuple[WeatherLocation, float], list[tuple[WeatherLocation, float]]] | None:
+        """``/v1/weather/resolve``의 기준 위치와 같은 지점의 원천 후보를 SQL에서 고른다.
+
+        기준은 반경 안에서 가장 가까운 측정점(``metadata.measurement_point``가 객체이고
+        ``station_name``이 공백만이 아닌 문자열), 측정점이 없으면 가장 가까운 위치다. 후보는
+        기준에서 ``max(5, 기준 거리 + 5)``km(요청 반경 이하) 안의 측정점이 아닌 다른 위치이며
+        거리·``location_id`` 순이다. 반경 안의 위치가 없으면 None이다.
+
+        예전에는 반경 안 최대 1만 행을 ORM으로 읽어 Python에서 골랐다(호출 검토 B10). 판정
+        규칙은 API의 ``measurement_point_out``과 같다(공백은 Python ``str.strip()`` 기준).
+        """
+        circle = self._nearest_circle(latitude, longitude, radius_km)
+        if circle is None:
+            return None
+        predicates, distance_km = circle
+        point = WeatherLocationRow.metadata_json["measurement_point"]
+        station_name = point["station_name"]
+        is_station = func.coalesce(
+            and_(
+                func.json_typeof(point) == "object",
+                func.json_typeof(station_name) == "string",
+                station_name.as_string().regexp_match(_NON_BLANK_PATTERN),
+            ),
+            false(),
+        )
+        anchor = (
+            select(
+                WeatherLocationRow.location_id.label("location_id"),
+                distance_km.label("distance_km"),
+            )
+            .where(*predicates)
+            .order_by(is_station.desc(), distance_km, WeatherLocationRow.location_id)
+            .limit(1)
+            .cte("resolve_anchor")
+        )
+        is_anchor = WeatherLocationRow.location_id == anchor.c.location_id
+        stmt = (
+            select(WeatherLocationRow, distance_km.label("distance_km"))
+            .join(anchor, true())
+            .where(
+                *predicates,
+                or_(
+                    is_anchor,
+                    and_(
+                        distance_km <= func.greatest(5.0, anchor.c.distance_km + 5.0),
+                        not_(is_station),
+                    ),
+                ),
+            )
+            .order_by(is_anchor.desc(), distance_km, WeatherLocationRow.location_id)
+        )
+        with self._session_factory() as session:
+            rows = [
+                (self._location_model(row), float(distance))
+                for row, distance in session.execute(stmt).all()
+            ]
+        if not rows:
+            return None
+        return rows[0], rows[1:]
+
+    @staticmethod
+    def _nearest_circle(
+        latitude: float, longitude: float, radius_km: float,
+    ) -> tuple[list[Any], Any] | None:
+        """반경 원의 SQL 조건(활성·위경도 상자·정확한 거리)과 거리식. 상자가 비면 None."""
         if not all(math.isfinite(value) for value in (latitude, longitude, radius_km)):
             raise ValueError("좌표와 반경은 유한한 숫자여야 합니다.")
         if radius_km <= 0:
             raise ValueError("radius_km은 양수여야 합니다.")
-        if limit <= 0:
-            raise ValueError("limit은 양수여야 합니다.")
 
         earth_km = 6371.0088
         # Haversine uses radians while the catalog stores degrees.
@@ -4754,7 +4843,7 @@ class WeatherRepository:
         min_longitude = max(124.0, longitude - longitude_delta)
         max_longitude = min(132.0, longitude + longitude_delta)
         if min_latitude > max_latitude or min_longitude > max_longitude:
-            return []
+            return None
 
         lat1 = func.radians(latitude)
         lat2 = func.radians(WeatherLocationRow.latitude)
@@ -4771,24 +4860,14 @@ class WeatherRepository:
             * earth_km
             * func.asin(func.sqrt(func.least(haversine_a, 1.0)))
         )
-        with self._session_factory() as session:
-            stmt = (
-                select(WeatherLocationRow, distance_km.label("distance_km"))
-                .where(
-                    WeatherLocationRow.enabled.is_(True),
-                    WeatherLocationRow.latitude >= min_latitude,
-                    WeatherLocationRow.latitude <= max_latitude,
-                    WeatherLocationRow.longitude >= min_longitude,
-                    WeatherLocationRow.longitude <= max_longitude,
-                    distance_km <= radius_km,
-                )
-                .order_by(distance_km, WeatherLocationRow.location_id)
-                .limit(limit)
-            )
-            return [
-                (self._location_model(row), float(distance))
-                for row, distance in session.execute(stmt).all()
-            ]
+        return [
+            WeatherLocationRow.enabled.is_(True),
+            WeatherLocationRow.latitude >= min_latitude,
+            WeatherLocationRow.latitude <= max_latitude,
+            WeatherLocationRow.longitude >= min_longitude,
+            WeatherLocationRow.longitude <= max_longitude,
+            distance_km <= radius_km,
+        ], distance_km
 
     @staticmethod
     def _status_scope_dict(key: SourceKey) -> dict[str, str]:

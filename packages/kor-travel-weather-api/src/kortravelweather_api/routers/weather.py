@@ -818,7 +818,13 @@ def _resolve_anchor(
     of historical rows and exceed the gateway timeout.  Keep the selected
     station plus nearby non-station anchors (for example a KMA grid anchor)
     that can actually represent an additional source for that station.
+
+    운영 repository는 이 선택을 SQL 한 문장으로 한다(``resolve_locations``, 호출 검토 B10).
+    그 기능이 없는 repository double만 예전처럼 반경 안 후보를 읽어 Python에서 고른다.
     """
+    resolve = getattr(repo, "resolve_locations", None)
+    if callable(resolve):
+        return resolve(lat, lon, radius_km=radius_km)
     rows = repo.nearest_locations(lat, lon, radius_km=radius_km, limit=10_000)
     if not rows:
         return None
