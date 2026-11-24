@@ -38,7 +38,7 @@ from sqlalchemy import (
     select,
     update,
 )
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .export_artifacts import ExportArtifactError, ExportArtifactStore, ExportGuardTimeout
 from .export_cancellation import checkpoint
@@ -94,6 +94,9 @@ SNAPSHOT_PRUNE_RETAIN = timedelta(hours=6)
 # current handle 하나에 scope ref가 수천 행이라 CASCADE까지 5초 statement 상한 안에 끝나도록
 # 작게 둔다. tick이 handle 발급 속도(selection당 15분마다 1개 안팎)보다 충분히 많이 지운다.
 SNAPSHOT_PRUNE_LIMIT = 20
+# freeze 발급 TX(snapshot·ref INSERT)의 행 잠금 대기 상한. 선택 RR과 나눈 짧은 쓰기라 잠금을
+# 오래 기다리지 않고 55P03(일시 경합 503)으로 끝낸다. handle 갱신(_renew_reused)과 같은 값이다.
+FREEZE_ISSUE_LOCK_TIMEOUT = "1s"
 
 logger = logging.getLogger(__name__)
 
@@ -729,17 +732,42 @@ class FrozenCurrentExports:
 
     @measured_stage("freeze")
     def _freeze(self):
+        """승인 manifest를 고정하고 snapshot handle을 발급(또는 재사용)한다.
+
+        두 transaction으로 나눈다(호출 검토 A4·L8).
+
+        1. 선택 RR(``_freeze_plan``, READ ONLY): catalog·승인 선택·세대 ref·주소·상태 판정·사전
+           구성 proof를 한 MVCC snapshot에서 읽고 manifest와 digest를 계산한다. 쓰지 않는다.
+        2. 발급 TX(``_issue_frozen``, READ COMMITTED + ``lock_timeout``): 1에서 계산한 값만 쓴다.
+           같은 digest의 최신 handle을 재사용하거나 snapshot·ref를 INSERT한다.
+
+        RR 일관성은 그대로다. manifest·digest·상태 판정·proof가 모두 1의 같은 snapshot에서
+        나오고, 2는 다시 읽어 manifest를 바꾸지 않는다. 같은 digest면 manifest 전체(승인 head
+        vector·ref·위치·selection)가 같으므로 2에서 찾은 handle이 1 뒤에 발급된 것이어도 내용은
+        같다. ref INSERT의 FK 검사가 1 뒤에 지워진 세대를 만나면 발급을 되돌리고 새 head로
+        다시 고정한다(``AtomicPinMissing``). 그래서 xmin을 고정하는 RR은 읽기 동안만 열리고,
+        INSERT·FK 검사·파일 guard 대기는 RR 밖에서 짧은 transaction으로 끝난다.
+        """
+        plan = self._freeze_plan()
+        # 긴 선택 RR 뒤 요청자가 끊겼으면 handle을 쓰지 않고 멈춘다(export_cancellation).
+        checkpoint("freeze")
+        return self._issue_frozen(plan)
+
+    def _freeze_plan(self):
+        """선택 RR(읽기 전용)에서 manifest·digest·상태 판정을 계산한다. DB에 쓰지 않는다."""
         self.__dict__.pop("_freeze_selection", None)
         self.__dict__.pop("_freeze_status", None)
         # 상태 판정 수명은 RR 시작 전 시각부터 센다(보수적).
         status_started = self.selection_cache.clock() if self.selection_cache is not None else None
-        # catalog와 head vector를 동일 MVCC에서 읽는다. 파일 I/O는 이 TX 밖이다.
+        # catalog와 head vector를 동일 MVCC에서 읽는다. 파일 I/O·INSERT는 이 TX 밖이다.
         with (
             self.repository.engine.connect().execution_options(
                 isolation_level="REPEATABLE READ"
             ) as connection,
             connection.begin(),
         ):
+            # 첫 문장이어야 한다. 이 RR이 아무것도 쓰지 않음을 DB가 보장한다(쓰면 25006).
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
             connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
             locations = self._catalog_locations(connection)
             if not locations or len(locations) > MAX_SNAPSHOT_LOCATIONS:
@@ -835,6 +863,31 @@ class FrozenCurrentExports:
             # 첫 페이지의 상태 판정은 방금 manifest를 만든 같은 RR에서 한다. 같은 승인 선택과
             # catalog를 다른 RR에서 다시 읽고 검산하던 왕복(선택 무결성 2문장·roster)을 없앤다.
             status = self._freeze_state_proof(connection, manifest, status_started)
+        return {
+            "manifest": manifest, "digest": digest, "status": status,
+            "freshness": list(heads.values()),
+            "generations": [scope["generation_id"] for scope in scopes],
+            "refs": {
+                (ref["artifact_digest"], ref["byte_count"])
+                for scope in scopes for ref in scope["refs"]
+            },
+        }
+
+    def _issue_frozen(self, plan):
+        """선택 RR이 계산한 manifest로 handle을 재사용하거나 발급한다(짧은 READ COMMITTED).
+
+        manifest를 다시 읽거나 바꾸지 않는다. 행 잠금 대기는 ``lock_timeout``으로 짧게 끝내
+        5초 문장 상한(57014)을 기다리지 않고 55P03(일시 경합 503)이 된다.
+        """
+        manifest, digest = plan["manifest"], plan["digest"]
+        with (
+            self.repository.engine.connect().execution_options(
+                isolation_level="READ COMMITTED"
+            ) as connection,
+            connection.begin(),
+        ):
+            connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
+            connection.exec_driver_sql(f"SET LOCAL lock_timeout = '{FREEZE_ISSUE_LOCK_TIMEOUT}'")
             now = datetime.now(UTC)
             # 재사용 조건은 그대로다: 같은 digest의 유효한 handle이 그 selection의 **가장 최근**
             # 발급이어야 한다. 같은 digest면 manifest(안의 selection 포함)가 같으므로, 그 handle보다
@@ -842,6 +895,7 @@ class FrozenCurrentExports:
             # 전체를 먼저 훑으면 행마다 큰 manifest json(평균 약 330 KB)을 해석해 65행에 약 3.7초가
             # 걸렸고(2026-11-02 odroid), 5초 statement 상한에 걸려 export 503이 됐다. digest 조회는
             # index로 1 ms 미만이고, 뒤의 확인은 더 새 행만 해석한다.
+            # READ COMMITTED라 선택 RR 동안 다른 요청이 commit한 같은 digest handle도 보인다.
             existing = (
                 connection.execute(
                     select(self.snapshots)
@@ -861,13 +915,13 @@ class FrozenCurrentExports:
                     *self._same_selection(),
                 ).limit(1)
             ) is None:
-                self._remember_freeze_status(existing["snapshot_id"], digest, status)
+                self._remember_freeze_status(existing["snapshot_id"], digest, plan["status"])
                 return {**existing, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
                 "manifest": manifest,
-                **_freshness(heads.values(), now),
+                **_freshness(plan["freshness"], now),
                 "created_at": now,
                 "expires_at": snapshot_expires_at(now),
             }
@@ -876,19 +930,23 @@ class FrozenCurrentExports:
             # guard를 쥐면 writer가 5초 상한에 걸린다). GC는 배타 guard 안에서 commit된 ref만
             # 보므로, 여기 stat가 통과한 뒤의 GC는 commit된 pin을 보고 파일을 지킨다.
             connection.execute(self.snapshots.insert().values(**row))
-            insert_snapshot_refs(
-                connection, self.refs, row["snapshot_id"],
-                (scope["generation_id"] for scope in scopes),
-            )
+            try:
+                insert_snapshot_refs(
+                    connection, self.refs, row["snapshot_id"], plan["generations"],
+                )
+            except IntegrityError as exc:
+                if getattr(exc.orig, "sqlstate", None) != "23503":
+                    raise
+                # 선택 RR 뒤에 참조 세대가 지워졌다(GC와 겹친 드문 경합). READ COMMITTED의 FK
+                # 검사는 이를 23503으로 알린다. 발급 TX를 되돌리고 ensure_snapshot_files가 새
+                # head로 다시 고정한다(3회 뒤에는 일시 경합 503).
+                raise AtomicPinMissing() from exc
             if self.immutable_reads:
                 with self.artifacts.guard(shared=True):
                     try:
                         refs = [
                             {"artifact_digest": digest, "byte_count": size}
-                            for digest, size in {
-                                (ref["artifact_digest"], ref["byte_count"])
-                                for scope in scopes for ref in scope["refs"]
-                            }
+                            for digest, size in plan["refs"]
                         ]
                         present_many = getattr(self.artifacts, "present_many", None)
                         if callable(present_many):
@@ -903,7 +961,7 @@ class FrozenCurrentExports:
                         raise AtomicPinMissing() from exc
                     connection.commit()
                 row["_atomic_files_pinned"] = True
-            self._remember_freeze_status(row["snapshot_id"], digest, status)
+            self._remember_freeze_status(row["snapshot_id"], digest, plan["status"])
             return row
 
     def _state_signature(self):
