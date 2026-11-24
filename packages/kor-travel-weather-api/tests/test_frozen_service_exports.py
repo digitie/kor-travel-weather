@@ -1401,6 +1401,10 @@ def test_identical_manifest_after_reader_ttl_keeps_content_etag_without_body_rea
     assert unchanged.status_code == 304 and unchanged.content == b""
     assert unchanged.headers["etag"] == first.headers["etag"]
     assert unchanged.headers["x-source-status"] == first.json()["meta"]["source_status"] == "ok"
+    # ETag가 handle과 무관하므로 HTTP 캐시가 옛 cursor가 든 본문을 저장해 304로 다시 쓰지 않게 한다.
+    assert first.headers["cache-control"] == unchanged.headers["cache-control"] == (
+        "no-store, private"
+    )
     # 만료된 handle 대신 새 handle을 발급했지만 본문 artifact는 읽지 않았다.
     assert unchanged.headers["x-export-artifact-read-calls"] == "0"
     assert 'render;dur=0.000;desc="count=0"' in unchanged.headers["server-timing"]

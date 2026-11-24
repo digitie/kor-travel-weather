@@ -191,16 +191,22 @@ router = APIRouter(
                 "If-None-Match가 지금 ETag와 같음(본문 없음). locations·current·daily-summaries의 "
                 "ETag는 snapshot handle이 아니라 고정 manifest digest(승인 head vector·artifact "
                 "ref·위치·selection)·페이지 식별(limit·시작 위치)·상태(source_status·"
-                "source_collected_at, daily-summaries는 건강도와 본문 포함)의 약한 validator라 "
-                "handle TTL이 지나 snapshot_id만 바뀌어도 같다. status는 본문 digest이고 "
-                "forecasts는 snapshot_id와 본문을 넣는 기존 ETag다. 304는 이미 가진 본문의 "
-                "항목·상태가 같다는 뜻이며 snapshot_id·next_cursor를 새로 주지 않는다. 이어서 "
-                "순회하려면 조건 없이 첫 페이지를 다시 받는다."
+                "source_collected_at, daily-summaries는 건강도와 본문, fallback 중에는 사전 계산 "
+                "진도 포함)의 약한 validator라 handle TTL이 지나 snapshot_id만 바뀌어도 같다. "
+                "status는 본문 digest이고 forecasts는 snapshot_id와 본문을 넣는 기존 ETag다. 304는 "
+                "이미 가진 본문의 항목·상태가 같다는 뜻이며 snapshot_id·next_cursor를 새로 주지 "
+                "않는다. 이어서 순회하려면 조건 없이 첫 페이지를 다시 받는다. 200·304는 "
+                "Cache-Control: no-store라 HTTP 캐시가 저장한 본문(만료됐을 수 있는 cursor 포함)을 "
+                "304로 재사용하지 않는다. If-None-Match는 소비자가 받은 ETag를 직접 보관해 보낸다."
             ),
             "headers": {
                 "ETag": {"description": "200과 같은 약한 ETag", "schema": {"type": "string"}},
                 "X-Source-Status": {
                     "description": "200 meta.source_status와 같은 값",
+                    "schema": {"type": "string"},
+                },
+                "Cache-Control": {
+                    "description": "no-store, private(200과 같다)",
                     "schema": {"type": "string"},
                 },
             },
@@ -315,11 +321,16 @@ def _log_unavailable(request: Request, resource: str, reason: str) -> None:
 
 
 def _validator_headers(etag: str, source_status: str) -> dict[str, str]:
-    """200과 304가 같이 쓰는 header. 304도 같은 ETag와 상태를 알린다."""
+    """200과 304가 같이 쓰는 header. 304도 같은 ETag와 상태를 알린다.
+
+    내용 ETag는 snapshot handle과 무관하므로(호출 검토 A2) HTTP 캐시가 200 본문을 저장했다가
+    304로 재사용하면 만료됐을 수 있는 ``snapshot_id``·``next_cursor``를 다시 내준다. 그래서
+    캐시 저장을 막는다(``no-store``). ``If-None-Match``는 소비자가 받은 ETag를 직접 보관해 보낸다.
+    """
     return {
         "etag": etag,
         "vary": "Accept-Encoding",
-        "cache-control": "private, max-age=0, must-revalidate",
+        "cache-control": "no-store, private",
         "x-source-status": source_status,
     }
 
