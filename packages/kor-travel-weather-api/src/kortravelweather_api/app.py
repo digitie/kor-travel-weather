@@ -50,7 +50,7 @@ from .read_limits import (
 from .response import Problem, request_id
 from .routers.alert_events import router as alert_event_router
 from .routers.service_exports import router as service_export_router
-from .routers.weather import admin_router, router
+from .routers.weather import add_marker_compact_schema, admin_router, router
 
 logger = logging.getLogger(__name__)
 
@@ -431,6 +431,7 @@ def create_app(
             }
         }
         schemas["Problem"] = Problem.model_json_schema(ref_template="#/components/schemas/{model}")
+        add_marker_compact_schema(schema)
 
         def problem_response(description: str) -> dict[str, object]:
             return {
