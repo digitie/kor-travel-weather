@@ -197,6 +197,43 @@ def test_leader_keeps_building_while_a_same_key_request_waits():
     assert builds == [1]
 
 
+def test_leader_keeps_building_while_a_same_key_request_waits_for_a_slot():
+    cache = ExportPageCache(clock=lambda: 0)
+    leader_cancel = ExportCancellation(grace_seconds=0)
+    queued = ExportCancellation()
+    kept = []
+
+    def load():
+        leader_cancel.mark_disconnected()
+        checkpoint("freeze")  # 유예가 없어도 export 슬롯을 기다리는 같은 키 요청이 있다.
+        kept.append(1)
+        queued.mark_disconnected()  # 그 요청의 요청자도 떠나면 더 기다릴 이유가 없다.
+        checkpoint("freeze")
+        pytest.fail("기다릴 요청이 없는데 끊긴 리더가 계속했습니다.")
+
+    with cache.arriving("a", queued):
+        with pytest.raises(ExportRequestCancelled):
+            run_with(leader_cancel, cache.read, "a", reader(), load)
+        assert kept == [1]
+    assert not cache.arrivals and not cache.inflight and not cache.entries
+
+
+def test_arrival_leaves_on_read_and_never_counts_the_request_itself():
+    cache = ExportPageCache(clock=lambda: 0)
+    me = ExportCancellation(grace_seconds=0)
+    seen = []
+
+    def load():
+        seen.append(cache.has_waiters("a"))
+        return ({"page": 1}, "etag")
+
+    with cache.arriving("a", me):
+        assert cache.has_waiters("a")  # 슬롯 대기 중에는 같은 키 관심으로 센다.
+        run_with(me, cache.read, "a", reader(), load)
+        assert not cache.arrivals  # read에 들어오면 도착 등록에서 빠진다.
+    assert seen == [False]
+
+
 def test_cancelled_hit_validation_keeps_the_valid_entry():
     cache = ExportPageCache(clock=lambda: 0)
     old = reader()

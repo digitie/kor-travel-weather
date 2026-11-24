@@ -8,14 +8,20 @@ from time import monotonic
 
 import anyio
 import pytest
+from kortravelweather_api.routers import service_exports
 from sqlalchemy import event, text
 from test_frozen_service_exports import TOKEN, _client, _collect
 from test_frozen_service_exports import repository as repository
 
 from kortravelweather import export_cancellation
+from kortravelweather.export_cancellation import ExportCancellation
 from kortravelweather.export_locations import FrozenLocationExports
 from kortravelweather.export_snapshots import FrozenCurrentExports
 from kortravelweather.models import WeatherLocation
+
+#: Map이 read timeout(연결 끊김) 뒤 같은 cursor를 다시 보내기까지의 최대 간격(초).
+#: Map ``PROVIDER_BOUNDARY_BASE_DELAY_SECONDS``=15초에 jitter ±20%(kor-travel-map #1542)를 더했다.
+MAP_TIMEOUT_RETRY_SECONDS = 18.0
 
 
 def _scope(path: str, query: str) -> dict:
@@ -74,6 +80,7 @@ def _released(app, repository):
     assert repository.engine.pool.checkedout() == 0
     assert not app.state.export_page_cache.inflight
     assert not app.state.export_page_cache.waiting
+    assert not app.state.export_page_cache.arrivals
 
 
 def test_disconnect_while_queued_for_a_slot_skips_all_db_work(repository, tmp_path):
@@ -218,3 +225,88 @@ def test_disconnected_leader_finishes_for_a_waiter_and_stops_without_one(
     else:
         assert not cache.entries
     _released(app, repository)
+
+
+def _gated_current(monkeypatch, after=None):
+    """current freeze 첫머리에서 멈춘다. ``after``가 있으면 풀린 뒤 그 예외로 실패한다."""
+    entered, release = threading.Event(), threading.Event()
+    freezes = []
+    original = FrozenCurrentExports._freeze
+
+    def gated(self):
+        freezes.append(1)
+        entered.set()
+        assert release.wait(10)
+        if after is not None:
+            raise after
+        return original(self)
+
+    monkeypatch.setattr(FrozenCurrentExports, "_freeze", gated)
+    return entered, release, freezes
+
+
+@pytest.mark.parametrize("slot_busy", [False, True])
+def test_disconnected_leader_survives_until_the_map_timeout_retry_arrives(
+    repository, tmp_path, monkeypatch, slot_busy,
+):
+    """Map read timeout으로 끊긴 리더의 페이지를 15~18초 뒤 같은 cursor 재시도가 받는다.
+
+    ``slot_busy``이면 다른 export가 슬롯을 쥐어 재시도는 limiter에서 기다리고, 그 사이 리더
+    유예가 지난다. 그래도 리더는 재시도를 위해 끝까지 만들고 build는 한 번뿐이다.
+    """
+    _collect(repository, tmp_path)
+    app = _client(repository, tmp_path).app
+    offset = [0.0]
+    created = []
+
+    def watched():
+        # 감시 시계만 앞당긴다. 페이지 캐시·승인 수명은 실제 시계 그대로다.
+        created.append(ExportCancellation(clock=lambda: monotonic() + offset[0]))
+        return created[-1]
+
+    monkeypatch.setattr(service_exports, "ExportCancellation", watched)
+    entered, release, freezes = _gated_current(monkeypatch)
+    limiter = app.state.service_export_limiter
+    result = {}
+
+    async def main():
+        gone = anyio.Event()
+        holder = object()
+
+        async def leader():
+            result["leader"], _ = await _call(
+                app, "/v1/service/exports/current", "limit=1", gone=gone,
+            )
+
+        async def retry():
+            result["retry"], result["retry_headers"] = await _call(
+                app, "/v1/service/exports/current", "limit=1",
+            )
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(leader)
+            await _until(entered.is_set)
+            gone.set()  # Map read timeout
+            await _until(lambda: created[0].disconnected)
+            if slot_busy:
+                await limiter.acquire_on_behalf_of(holder)
+                group.start_soon(retry)
+                await _until(lambda: limiter.statistics().tasks_waiting == 1)
+                offset[0] = export_cancellation.LEADER_GRACE_SECONDS + 1
+                release.set()
+                await _until(lambda: "retry" in result)
+                limiter.release_on_behalf_of(holder)
+            else:
+                # 재시도가 오기 전에 리더가 다음 SQL에 이른다. 유예가 재시도 간격보다 짧으면 멈춘다.
+                offset[0] = MAP_TIMEOUT_RETRY_SECONDS
+                release.set()
+                await _until(lambda: "leader" in result)
+                group.start_soon(retry)
+
+    anyio.run(main)
+    assert freezes == [1]
+    assert result["leader"] == 499
+    assert result["retry"] == 200
+    assert result["retry_headers"]["x-export-read"] == "reused"
+    _released(app, repository)
+

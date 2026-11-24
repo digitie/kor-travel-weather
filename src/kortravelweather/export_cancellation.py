@@ -6,12 +6,16 @@ thread는 단계 경계(limiter 진입·freeze 전후·렌더 전·같은 키 �
 ``cancel_safe()``로 서버에 취소를 요청한다. 멈춘 요청은 transaction을 rollback하고 export
 슬롯(``service_export_limiter``)과 DB 연결을 바로 돌려준다.
 
-페이지 캐시 리더(같은 키의 첫 요청)는 예외다. Map은 timeout 뒤 같은 cursor로 다시 요청하므로
-리더를 끊김 즉시 멈추면 재시도가 처음부터 다시 만들고, 페이지 생성 시간이 Map timeout보다
-길면 영영 끝나지 않는다. 그래서 리더는 끊긴 뒤 :data:`LEADER_GRACE_SECONDS` 동안, 그리고
-같은 키 대기자가 있는 동안 계속해 완성 페이지를 캐시에 남긴다. 유예가 끝난 리더는 실행 중
-SQL을 끊지 않고 다음 문장 전에 멈춘다(문장 상한 5초). 아직 일을 시작하지 않은 요청, 다른
-리더를 기다리는 요청, 캐시하지 않는 작업은 끊김 즉시 멈춘다.
+페이지 캐시 리더(같은 키의 첫 요청)는 예외다. Map은 read timeout 뒤 같은 cursor로 다시
+요청하므로 리더를 끊김 즉시 멈추면 재시도가 처음부터 다시 만들고, 페이지 생성 시간이 Map
+timeout보다 길면 영영 끝나지 않는다. 그래서 리더는 끊긴 뒤 :data:`LEADER_GRACE_SECONDS` 동안,
+그리고 같은 키 요청이 대기자이거나 export 슬롯을 기다리는 동안 계속해 완성 페이지를 캐시에
+남긴다. 유예가 끝난 리더는 실행 중 SQL을 끊지 않고 다음 문장 전에 멈춘다(문장 상한 5초).
+아직 일을 시작하지 않은 요청, 다른 리더를 기다리는 요청, 캐시하지 않는 작업은 끊김 즉시 멈춘다.
+
+server-side cursor(``stream_results``)의 FETCH는 SQLAlchemy cursor hook을 거치지 않는다. 그래서
+실행 중인 FETCH는 서버 취소 대상이 아니고(FETCH마다 문장 상한 5초), 끊김은 읽는 쪽 loop의 행마다
+:func:`checkpoint`로 확인한다(``export_capacity``).
 """
 
 from __future__ import annotations
@@ -29,8 +33,13 @@ from sqlalchemy import event
 logger = logging.getLogger(__name__)
 
 #: 페이지 캐시 리더가 연결이 끊긴 뒤에도 같은 키 재시도를 기다리며 계속하는 시간(초).
-#: Map의 같은 cursor 재시도 간격(5초+jitter)보다 넉넉하고, export 첫 페이지 최대 시간보다 짧다.
-LEADER_GRACE_SECONDS = 15.0
+#: 연결을 끊는 것은 Map의 httpx read timeout이다. Map ``weather_state._weather_get``은 그 전송
+#: 오류를 한 번만 재시도하며(``DEFAULT_UPSTREAM_ATTEMPTS=2``), 간격은
+#: ``PROVIDER_BOUNDARY_BASE_DELAY_SECONDS=15``초다(jitter ±20%를 넣으면 최대 18초). 503 응답 뒤의
+#: 5초 페이지 재시도는 완결된 응답이라 끊긴 리더를 만들지 않으므로 기준이 아니다. 18초에 새 연결·
+#: 인증·route 진입 여유를 넉넉히 더했다. export 슬롯 대기는 이 유예가 아니라 같은 키 도착 등록
+#: (``ExportPageCache.arriving``)이 맡는다. 재시도가 없으면 고아 리더는 이 시간 뒤 멈춘다.
+LEADER_GRACE_SECONDS = 45.0
 #: 취소 가능한 대기(같은 키 페이지·승인 선택)의 끊김 확인 간격(초).
 WAIT_POLL_SECONDS = 0.25
 #: 실행 중 SQL 취소 요청의 상한(초). 넘기면 그 문장은 문장 상한(5초)에 맡긴다.
@@ -165,7 +174,7 @@ def checkpoint(stage: str) -> None:
 
 @contextmanager
 def leading(has_waiters: Callable[[], bool]) -> Iterator[None]:
-    """페이지 캐시 리더 구간. 끊겨도 유예 동안과 같은 키 대기자가 있는 동안은 계속한다."""
+    """페이지 캐시 리더 구간. 끊겨도 유예 동안과 ``has_waiters``가 참인 동안은 계속한다."""
     cancellation = _CURRENT.get()
     if cancellation is None:
         yield

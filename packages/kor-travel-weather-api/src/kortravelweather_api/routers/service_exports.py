@@ -7,6 +7,7 @@ import hashlib
 import logging
 import traceback
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, date, datetime
 from functools import partial
 from time import monotonic
@@ -353,13 +354,19 @@ def _rendered(payload: bytes | None, headers: dict[str, str]) -> Response:
     return Response(payload, media_type="application/json", headers=headers)
 
 
-async def _run_export_worker(request: Request, work: Callable[[], Any]) -> Any:
+async def _run_export_worker(
+    request: Request,
+    work: Callable[[], Any],
+    *,
+    arriving: Callable[[ExportCancellation], AbstractContextManager[Any]] | None = None,
+) -> Any:
     """export worker thread에서 ``work``를 돌리며 요청자 연결 끊김을 그 작업에 전한다.
 
     Map이 timeout·run 취소로 연결을 끊어도 ``to_thread`` 작업은 스스로 멈추지 않아 export
     슬롯 2개와 DB 연결을 쥐었다(호출 검토 A6). 감시 task가 끊김을 보면 worker는 limiter 진입
     직후·freeze 앞뒤·렌더 전·같은 키 대기·SQL 문장마다 멈추고, 실행 중인 SQL은 서버에 취소를
     요청한다. 페이지 캐시 리더만 같은 키 재시도를 위해 유예한다(``export_cancellation``).
+    ``arriving``은 limiter 대기 중에도 이 요청을 같은 키 리더의 계속 판정에 넣는다.
     끊긴 요청은 :class:`ExportRequestCancelled`로 끝난다.
     """
     cancellation = ExportCancellation()
@@ -385,16 +392,17 @@ async def _run_export_worker(request: Request, work: Callable[[], Any]) -> Any:
 
     result: Any = None
     error: Exception | None = None
-    async with anyio.create_task_group() as group:
-        group.start_soon(watch)
-        try:
-            result = await to_thread.run_sync(
-                run, limiter=request.app.state.service_export_limiter,
-            )
-        except Exception as exc:
-            # task group 안에서 올리면 ExceptionGroup으로 감싸진다. 밖에서 원래 예외로 다시 올린다.
-            error = exc
-        group.cancel_scope.cancel()
+    with nullcontext() if arriving is None else arriving(cancellation):
+        async with anyio.create_task_group() as group:
+            group.start_soon(watch)
+            try:
+                result = await to_thread.run_sync(
+                    run, limiter=request.app.state.service_export_limiter,
+                )
+            except Exception as exc:
+                # task group 안에서 올리면 ExceptionGroup으로 감싸진다. 밖에서 원래 예외로 올린다.
+                error = exc
+            group.cancel_scope.cancel()
     if error is not None:
         if cancellation.disconnected and not isinstance(error, ExportRequestCancelled):
             # 요청자가 이미 떠났다. 그 사이 난 오류(취소한 SQL 포함)도 응답할 곳이 없다.
@@ -500,6 +508,7 @@ async def _frozen_response(
         reader.revalidate_first_page = resource == "forecasts" and cursor is None
         reader.selection_min_remaining = None if cursor is None else _CURSOR_SELECTION_MIN_REMAINING
         read = page_read(reader)
+        arriving = None
         if resource in {"current", "daily-summaries", "forecasts"}:
             key = (
                 id(request.app.state.repository.engine), resource, limit, cursor,
@@ -511,6 +520,8 @@ async def _frozen_response(
                 request.app.state.export_page_cache.read, key, reader,
                 partial(_validated_read, read, _PAGE_MODELS[resource], reader),
             )
+            # 슬롯이 차서 limiter에서 기다리는 같은 키 재시도도 끊긴 리더가 계속할 이유로 센다.
+            arriving = partial(request.app.state.export_page_cache.arriving, key)
         elif forecast_reuse:
             # 승인 선택의 60초 수명은 limiter 대기 뒤 실제 읽기부터 센다(현재·일별과 같다).
             def read(inner=read):
@@ -529,7 +540,7 @@ async def _frozen_response(
                 )
 
         try:
-            payload, headers = await _run_export_worker(request, render)
+            payload, headers = await _run_export_worker(request, render, arriving=arriving)
         except ExportRequestCancelled:
             trace.finish(outcome="cancelled")
             raise
