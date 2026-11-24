@@ -992,6 +992,21 @@ DEFERRAL_MARK_RETRY_SECONDS = 1.0
 INGEST_LOCK_ATTEMPTS = 20
 INGEST_LOCK_RETRY_SECONDS = 3.0
 
+#: 수집 writer transaction의 문장 하나 상한(ms, 2026-11-24 Map 호출 검토 L5). 보고서 권고(30초)가
+#: 아니라 300초인 이유: odroid KMA 단기예보 게시는 run당 384~441천 fact에 5,539~7,881초(weather
+#: PR #286의 14일 운영 조회, 2,500 fact chunk 약 160개 → chunk 하나 평균 약 45초)이고, n150
+#: 디스크 대기 때는 chunk 하나가 수 분이었다(``docs/architecture/dagster-boundary.md``). 문장
+#: 하나가 정상 chunk 전체 평균을 넘는 일은 드물지만, 30초 상한은 디스크가 밀릴 때 정상 문장을 거짓
+#: 실패시켜 몇 시간짜리 run 전체를 버린다. 300초는 그 최악 chunk 평균(약 150초)의 두 배이며, 계획
+#: 회귀로 fact 표를 훑는 문장이 location lock을 몇 시간 쥐는 일(2026-10-02)을 5분으로 끊는다.
+#: 수집 경로에서만 걸고 넘기면 재시도하지 않고 그 chunk를 실패시킨다(같은 문장은 다시 느리다).
+INGEST_STATEMENT_TIMEOUT_MS = 300_000
+#: 수집 writer transaction이 문장 사이에서 쉬는 상한(ms, L5). transaction 안의 Python 일(원천
+#: 정규화 묶음, export chunk 준비)은 보통 1초 미만이고, provider HTTP와 재시도 휴지는 transaction
+#: 밖이다. 프로세스가 멈추거나 연결이 끊긴 채 lock을 쥔 writer를 서버가 60초 뒤 끊는다. 공개 읽기와
+#: export 읽기 transaction에는 걸지 않는다.
+INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
+
 #: Rows per set-based projection upsert statement (10 array parameters each).
 PROJECTION_UPSERT_ROWS = 1000
 #: 새 fact 배치의 행 수(완전한 psycopg 배치는 COPY, 그 밖은 executemany).
@@ -2853,6 +2868,37 @@ class WeatherRepository:
         timeout = ddl_lock_timeout_ms(session.connection())
         session.execute(text(f"SET LOCAL lock_timeout = '{timeout}ms'"))
 
+    def _set_ingest_write_limits(self, session: Session) -> None:
+        """원천·fact를 게시하는 수집 transaction의 lock·문장·유휴 상한(2026-11-24 L5).
+
+        lock 대기는 ``_set_ingest_lock_timeout``과 같다. 문장(``INGEST_STATEMENT_TIMEOUT_MS``)과
+        문장 사이 유휴(``INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS``)는 이 transaction에만
+        ``set_config(..., true)``로 걸어 끝나면 연결 설정으로 돌아간다. 연결·role에 이미 더 엄격한
+        값이 있으면 그 값을 둔다. ``_set_ingest_lock_timeout``을 쓰는 export 읽기·lifecycle
+        transaction에는 걸지 않는다(writer 경로만).
+        """
+        self._set_ingest_lock_timeout(session)
+        inherited = dict(session.execute(text(
+            "SELECT name, setting::bigint FROM pg_settings "
+            "WHERE name IN ('statement_timeout', 'idle_in_transaction_session_timeout')"
+        )).all())
+        statement = min(
+            inherited.get("statement_timeout") or INGEST_STATEMENT_TIMEOUT_MS,
+            INGEST_STATEMENT_TIMEOUT_MS,
+        )
+        idle = min(
+            inherited.get("idle_in_transaction_session_timeout")
+            or INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+            INGEST_IDLE_IN_TRANSACTION_TIMEOUT_MS,
+        )
+        session.execute(
+            text(
+                "SELECT set_config('statement_timeout', :statement, true), "
+                "set_config('idle_in_transaction_session_timeout', :idle, true)"
+            ),
+            {"statement": f"{int(statement)}ms", "idle": f"{int(idle)}ms"},
+        )
+
     def _retry_lock_race(self, step: Callable[[], _T]) -> _T:
         """Run one ingest transaction, retrying a lost lock race from scratch.
 
@@ -2910,7 +2956,7 @@ class WeatherRepository:
         if export_capture is None:
             def ordinary_step() -> int:
                 with self._session_factory.begin() as session:
-                    self._set_ingest_lock_timeout(session)
+                    self._set_ingest_write_limits(session)
                     return self._ingest_batch_session(session, records, facts)
             return self._retry_lock_race(ordinary_step)
 
@@ -2925,7 +2971,7 @@ class WeatherRepository:
         def step() -> tuple[int, PreparedExportChunk | None]:
             prepared: list[PreparedExportChunk] = []
             with self._session_factory.begin() as session:
-                self._set_ingest_lock_timeout(session)
+                self._set_ingest_write_limits(session)
                 loaded = self._ingest_batch_session(
                     session, records, facts, export_capture=export_capture, prepared=prepared,
                     input_digest=input_digest,
@@ -2978,7 +3024,7 @@ class WeatherRepository:
         def step() -> tuple[int, list[str]]:
             skipped: set[str] = set()
             with self._session_factory.begin() as session:
-                self._set_ingest_lock_timeout(session)
+                self._set_ingest_write_limits(session)
                 loaded = self._ingest_batch_session(session, records, facts, skipped=skipped)
             return loaded, sorted(skipped)
 
@@ -3016,7 +3062,7 @@ class WeatherRepository:
 
         def step() -> tuple[int, SyncRun, int]:
             with self._session_factory.begin() as session:
-                self._set_ingest_lock_timeout(session)
+                self._set_ingest_write_limits(session)
                 loaded = self._ingest_batch_session(session, source_records, values)
                 if values_loaded_offset is not None:
                     loaded += values_loaded_offset
