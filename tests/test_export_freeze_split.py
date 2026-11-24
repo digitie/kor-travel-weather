@@ -4,6 +4,8 @@
   RR이 계산한 값만 쓴다(catalog·승인·세대·주소를 다시 읽지 않는다).
 - 선택 RR 뒤에 commit된 변경은 manifest에 섞이지 않는다(같은 snapshot의 manifest·digest).
 - 선택 RR 동안 다른 요청이 발급한 같은 digest handle은 발급 TX가 보고 재사용한다.
+- '가장 최근 발급' 판정은 선택 RR 기준이다. RR 뒤에 발급된 다른 digest handle 때문에 오래된 plan의
+  handle을 새로 INSERT하지 않는다.
 - 발급 TX의 행 잠금 대기는 5초 문장 상한이 아니라 ``lock_timeout``(55P03)으로 끝난다.
 """
 
@@ -69,6 +71,20 @@ def _transactions(engine, run):
     return result, transactions
 
 
+def _add_address(repo, store, key):
+    """다른 transaction으로 주소를 commit해 다음 선택 RR의 manifest digest를 바꾼다."""
+    entries = _reader(repo, store).heads.metadata.tables["reverse_address_entries"]
+    with repo.engine.begin() as connection:
+        connection.execute(entries.insert().values(
+            provider_id=VworldKakaoAddressResolver.provider_id, target_key=key,
+            longitude=127, latitude=37.5,
+            coordinate_key=AddressTarget(key, 127, 37.5).coordinate_key,
+            status="ok", checked_at=func.now(), failures=0,
+            payload={"address": {"legal_dong_code": "1111000000"},
+                     "region": {"sido": "서울", "sigungu": "종로구"}},
+        ))
+
+
 def _snapshot_count(repo, reader):
     with repo.engine.connect() as connection:
         return connection.scalar(select(func.count()).select_from(reader.snapshots))
@@ -126,21 +142,12 @@ def test_changes_committed_after_the_selection_rr_do_not_enter_the_manifest(
 ):
     repo, store, keys = approved_catalog
     reader = _reader(repo, store, selection_cache=ExportSelectionCache(), page_liveness=True)
-    entries = reader.heads.metadata.tables["reverse_address_entries"]
     original = reader._issue_frozen
     seen = []
 
     def change_between(plan):
         # 선택 RR이 끝난 뒤, 발급 TX 전에 다른 transaction이 주소를 바꾼다.
-        with repo.engine.begin() as connection:
-            connection.execute(entries.insert().values(
-                provider_id=VworldKakaoAddressResolver.provider_id, target_key=keys[0],
-                longitude=127, latitude=37.5,
-                coordinate_key=AddressTarget(keys[0], 127, 37.5).coordinate_key,
-                status="ok", checked_at=func.now(), failures=0,
-                payload={"address": {"legal_dong_code": "1111000000"},
-                         "region": {"sido": "서울", "sigungu": "종로구"}},
-            ))
+        _add_address(repo, store, keys[0])
         seen.append(plan)
         return original(plan)
 
@@ -184,6 +191,64 @@ def test_a_same_digest_handle_issued_during_the_selection_rr_is_reused(
     assert issued and issued[0].get("_reused") is None
     assert frozen["snapshot_id"] == issued[0]["snapshot_id"] and frozen["_reused"] is True
     assert _snapshot_count(repo, reader) == 1
+
+
+def test_a_newer_handle_issued_after_the_selection_rr_does_not_block_reuse(
+    approved_catalog, monkeypatch,
+):
+    # 선택 RR이 최신으로 본 같은 digest handle은, RR 뒤에 다른 digest handle이 발급돼도
+    # 재사용한다(예전 단일 RR과 같은 판정). 오래된 plan의 handle을 새로 INSERT하면 selection의
+    # 최신 handle이 오래된 내용이 되고 다음 요청도 새 handle을 재사용하지 못한다.
+    repo, store, keys = approved_catalog
+    old = _reader(repo, store)._freeze()
+    reader = _reader(repo, store)
+    original = reader._issue_frozen
+    newer = []
+
+    def newer_issue(plan):
+        assert plan["reusable_snapshot_id"] == old["snapshot_id"]
+        _add_address(repo, store, keys[0])
+        newer.append(_reader(repo, store)._freeze())
+        return original(plan)
+
+    monkeypatch.setattr(reader, "_issue_frozen", newer_issue)
+    frozen = reader._freeze()
+    monkeypatch.undo()
+    assert newer and newer[0].get("_reused") is None
+    assert newer[0]["manifest_digest"] != old["manifest_digest"]
+    assert frozen["snapshot_id"] == old["snapshot_id"] and frozen["_reused"] is True
+    assert _snapshot_count(repo, reader) == 2
+    # selection의 최신 handle은 여전히 더 새 내용이고, 다음 같은 내용 요청은 그것을 재사용한다.
+    assert _reader(repo, store)._previous_success()["snapshot_id"] == newer[0]["snapshot_id"]
+    latest = _reader(repo, store)._freeze()
+    assert latest["snapshot_id"] == newer[0]["snapshot_id"] and latest["_reused"] is True
+    assert _snapshot_count(repo, reader) == 2
+
+
+def test_a_same_digest_handle_after_the_rr_is_skipped_when_a_newer_one_follows(
+    approved_catalog, monkeypatch,
+):
+    # 선택 RR 뒤 같은 digest handle 다음에 다른 digest handle이 또 발급됐으면 그것은 최신이 아니다.
+    # 선택 RR이 본 재사용 후보도 없으면 예전처럼 새로 발급한다.
+    repo, store, keys = approved_catalog
+    reader = _reader(repo, store)
+    original = reader._issue_frozen
+    issued = []
+
+    def interleave(plan):
+        assert plan["reusable_snapshot_id"] is None and plan["visible_issue_order"] is None
+        issued.append(_reader(repo, store)._freeze())
+        _add_address(repo, store, keys[0])
+        issued.append(_reader(repo, store)._freeze())
+        return original(plan)
+
+    monkeypatch.setattr(reader, "_issue_frozen", interleave)
+    frozen = reader._freeze()
+    assert issued[0]["manifest_digest"] == frozen["manifest_digest"]
+    assert issued[1]["manifest_digest"] != frozen["manifest_digest"]
+    assert frozen.get("_reused") is None
+    assert frozen["snapshot_id"] not in {row["snapshot_id"] for row in issued}
+    assert _snapshot_count(repo, reader) == 3
 
 
 def test_issue_lock_wait_ends_at_the_lock_timeout_and_leaves_no_handle(approved_catalog):

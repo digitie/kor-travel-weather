@@ -744,8 +744,10 @@ class FrozenCurrentExports:
         RR 일관성은 그대로다. manifest·digest·상태 판정·proof가 모두 1의 같은 snapshot에서
         나오고, 2는 다시 읽어 manifest를 바꾸지 않는다. 같은 digest면 manifest 전체(승인 head
         vector·ref·위치·selection)가 같으므로 2에서 찾은 handle이 1 뒤에 발급된 것이어도 내용은
-        같다. ref INSERT의 FK 검사가 1 뒤에 지워진 세대를 만나면 발급을 되돌리고 새 head로
-        다시 고정한다(``AtomicPinMissing``). 그래서 xmin을 고정하는 RR은 읽기 동안만 열리고,
+        같다. 재사용 조건의 'selection의 가장 최근 발급'은 1이 본 발급 기준이다(1 뒤에 발급된
+        다른 digest handle 때문에 오래된 plan의 handle을 새로 INSERT하지 않는다). ref INSERT의
+        FK 검사가 1 뒤에 지워진 세대를 만나면 발급을 되돌리고 새 head로 다시
+        고정한다(``AtomicPinMissing``). 그래서 xmin을 고정하는 RR은 읽기 동안만 열리고,
         INSERT·FK 검사·파일 guard 대기는 RR 밖에서 짧은 transaction으로 끝난다.
         """
         plan = self._freeze_plan()
@@ -863,8 +865,20 @@ class FrozenCurrentExports:
             # 첫 페이지의 상태 판정은 방금 manifest를 만든 같은 RR에서 한다. 같은 승인 선택과
             # catalog를 다른 RR에서 다시 읽고 검산하던 왕복(선택 무결성 2문장·roster)을 없앤다.
             status = self._freeze_state_proof(connection, manifest, status_started)
+            # 재사용 판정의 '가장 최근' 기준은 이 선택 RR이 본 발급들이다(예전 단일 RR과 같다).
+            # 발급 TX(READ COMMITTED)는 이 RR 뒤에 commit된 handle도 보므로, 여기서 본 같은 digest
+            # 최신 handle과 그것이 selection의 최신 발급이었는지를 plan에 남긴다.
+            visible = self._latest_same_digest(connection, digest, datetime.now(UTC))
+            reusable_id = (
+                visible.snapshot_id
+                if visible is not None
+                and self._newer_same_selection(connection, visible.issue_order) is None
+                else None
+            )
         return {
             "manifest": manifest, "digest": digest, "status": status,
+            "visible_issue_order": visible.issue_order if visible is not None else None,
+            "reusable_snapshot_id": reusable_id,
             "freshness": list(heads.values()),
             "generations": [scope["generation_id"] for scope in scopes],
             "refs": {
@@ -895,28 +909,38 @@ class FrozenCurrentExports:
             # 전체를 먼저 훑으면 행마다 큰 manifest json(평균 약 330 KB)을 해석해 65행에 약 3.7초가
             # 걸렸고(2026-11-02 odroid), 5초 statement 상한에 걸려 export 503이 됐다. digest 조회는
             # index로 1 ms 미만이고, 뒤의 확인은 더 새 행만 해석한다.
-            # READ COMMITTED라 선택 RR 동안 다른 요청이 commit한 같은 digest handle도 보인다.
-            existing = (
-                connection.execute(
-                    select(self.snapshots)
-                    .where(
-                        self.snapshots.c.manifest_digest == digest,
-                        self.snapshots.c.expires_at > now,
+            #
+            # '가장 최근'은 선택 RR 기준이다. 이 TX는 READ COMMITTED라 선택 RR 뒤에 commit된
+            # handle도 보이는데, 그중 다른 digest(더 새 승인 내용일 수 있다)를 근거로 재사용을
+            # 거부하면 오래된 plan의 handle이 그 뒤 순서로 INSERT되어 selection의 최신 handle이
+            # 오래된 내용이 된다(_previous_success·사전 구성 재사용이 그 행을 고른다).
+            # 1. 선택 RR 뒤에 commit된 같은 digest handle이 지금도 selection의 최신이면 재사용한다.
+            # 2. 아니면 선택 RR이 최신으로 본 같은 digest handle을 재사용한다(예전 단일 RR과 같다).
+            # 동시에 열린 발급 TX끼리는 서로의 미commit INSERT를 보지 못하므로 같은 digest
+            # handle이 둘 생길 수 있다(예전과 같다).
+            visible_order = plan["visible_issue_order"]
+            existing = self._latest_same_digest(connection, digest, now, full=True)
+            reused = None
+            if (
+                existing is not None
+                and (visible_order is None or existing["issue_order"] > visible_order)
+                and self._newer_same_selection(connection, existing["issue_order"]) is None
+            ):
+                reused = existing
+            elif plan["reusable_snapshot_id"] is not None:
+                reused = (
+                    connection.execute(
+                        select(self.snapshots).where(
+                            self.snapshots.c.snapshot_id == plan["reusable_snapshot_id"],
+                            self.snapshots.c.expires_at > now,
+                        )
                     )
-                    .order_by(self.snapshots.c.issue_order.desc())
-                    .limit(1)
+                    .mappings()
+                    .one_or_none()
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if existing is not None and connection.scalar(
-                select(self.snapshots.c.issue_order).where(
-                    self.snapshots.c.issue_order > existing["issue_order"],
-                    *self._same_selection(),
-                ).limit(1)
-            ) is None:
-                self._remember_freeze_status(existing["snapshot_id"], digest, plan["status"])
-                return {**existing, "_reused": True}
+            if reused is not None:
+                self._remember_freeze_status(reused["snapshot_id"], digest, plan["status"])
+                return {**reused, "_reused": True}
             row = {
                 "snapshot_id": str(uuid4()),
                 "manifest_digest": digest,
@@ -1202,6 +1226,34 @@ class FrozenCurrentExports:
         if self.current_selection is None:
             return (self.snapshots.c.selection_kind.is_(None),)
         return (self.snapshots.c.selection_signature == self.current_selection["signature"],)
+
+    def _latest_same_digest(self, connection, digest, now, *, full=False):
+        """같은 digest의 유효한 최신 handle(없으면 None). digest index로 찾는다.
+
+        ``full``이면 snapshot 행 전체(mapping), 아니면 ``snapshot_id``·``issue_order``만 읽는다.
+        """
+        columns = (
+            (self.snapshots,) if full
+            else (self.snapshots.c.snapshot_id, self.snapshots.c.issue_order)
+        )
+        result = connection.execute(
+            select(*columns)
+            .where(
+                self.snapshots.c.manifest_digest == digest,
+                self.snapshots.c.expires_at > now,
+            )
+            .order_by(self.snapshots.c.issue_order.desc())
+            .limit(1)
+        )
+        return (result.mappings() if full else result).one_or_none()
+
+    def _newer_same_selection(self, connection, issue_order):
+        """``issue_order``보다 뒤에 발급된 같은 selection handle의 순서(없으면 None)."""
+        return connection.scalar(
+            select(self.snapshots.c.issue_order).where(
+                self.snapshots.c.issue_order > issue_order, *self._same_selection(),
+            ).limit(1)
+        )
 
     def _previous_success(self):
         # reader TTL와 마지막 승인 data manifest의 수명은 다르다. 새 handle만 만든다.
