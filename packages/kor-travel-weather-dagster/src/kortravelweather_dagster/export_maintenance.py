@@ -225,7 +225,10 @@ def maintenance_policy() -> RecoveryPolicy:
 @job(
     name=JOB_NAME,
     executor_def=in_process_executor,
-    tags=_POLICY.tags(project="weather", job_name=JOB_NAME),
+    # dagster/priority 0: 매시지만 export 정리다(공용 queue 규칙). 분류의 정본은 definitions의
+    # ``JOB_PRIORITIES``이고 tests/test_run_priority.py가 이 값과 대조한다(순환 import라
+    # 상수로 둔다).
+    tags={**_POLICY.tags(project="weather", job_name=JOB_NAME), "dagster/priority": "0"},
     description="export 일괄 퇴역과 artifact GC를 publisher sensor 밖에서 매시 돈다.",
 )
 def weather_export_maintenance_job():
