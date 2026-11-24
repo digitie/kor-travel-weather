@@ -70,7 +70,6 @@ from sqlalchemy.orm import (
     aliased,
     defer,
     mapped_column,
-    sessionmaker,
 )
 from sqlalchemy.types import TypeDecorator
 
@@ -161,6 +160,7 @@ from .partitions import (
     write_deferral_mark,
 )
 from .read_deadline import ReadDeadlineQueuePool
+from .read_scope import ReadScopedSessionmaker, read_connection, shared_read
 from .retention import (
     MAX_BATCH_SIZE,
     SHORT_FORECAST_CANDIDATES_AFTER_SQL,
@@ -1460,7 +1460,7 @@ class WeatherRepository:
             r.location_id: AddressTarget(r.location_id, r.longitude, r.latitude).coordinate_key
             for r in locations
         }
-        with self.engine.connect() as connection:
+        with read_connection(self.engine) as connection:
             rows = connection.execute(select(entries.c.target_key, entries.c.coordinate_key,
                 entries.c.payload["region"]["sido"].as_string().label("sido"),
                 entries.c.payload["region"]["sigungu"].as_string().label("sigungu"),
@@ -1656,7 +1656,15 @@ class WeatherRepository:
         )
 
         event.listen(self.engine, "do_executemany", _copy_weather_facts)
-        self._session_factory = sessionmaker(self.engine, expire_on_commit=False)
+        # 공개 읽기 묶음(read_scope) 안의 읽기 세션은 그 연결 하나를 함께 쓴다.
+        self._session_factory = ReadScopedSessionmaker(self.engine, expire_on_commit=False)
+
+    def read_scope(self):
+        """이 블록 안의 읽기 함수가 연결·transaction 하나를 함께 쓴다(호출 검토 B9).
+
+        공개 API handler가 한 요청의 읽기를 묶을 때 쓴다. 쓰기 함수에는 쓰지 않는다.
+        """
+        return shared_read(self.engine)
 
     def create_schema(self) -> None:
         """Build the schema the way ``alembic upgrade head`` would.
