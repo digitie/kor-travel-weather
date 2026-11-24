@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { forecastWindowEnd, forecastWindowStart, getAllPublicLocations, getPublicLocations, getLatest, getForecast, getMarkerSummaries } from "./api";
+import { forecastWindowEnd, forecastWindowStart, getAllPublicLocations, getPublicLocations, getLatest, getForecast, getMarkerSummaries, getReadiness, type ApiReadiness } from "./api";
 
 function respond(body: string, init: ResponseInit) {
   const fetchMock = vi.fn(async () => new Response(body, init));
@@ -178,5 +178,31 @@ describe("날씨 종류 전달", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(getAllPublicLocations(undefined, undefined, false, [])).resolves.toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("시작 warmup 상태(/ready)", () => {
+  const running: ApiReadiness = {
+    ready: false, warm: "running", reason: null, elapsed_ms: 120,
+    steps: [{ name: "connections", outcome: "ok", elapsed_ms: 40 }],
+  };
+
+  it("진행 중 503도 본문을 그대로 돌려준다", async () => {
+    const fetchMock = respond(JSON.stringify(running), {
+      status: 503, headers: { "content-type": "application/json", "retry-after": "1" },
+    });
+    await expect(getReadiness()).resolves.toEqual(running);
+    expect(fetchMock).toHaveBeenCalledWith("/api/weather/ready", { cache: "no-store" });
+  });
+
+  it("완료·생략 200을 돌려준다", async () => {
+    const skipped: ApiReadiness = { ...running, ready: true, warm: "skipped", reason: "budget" };
+    respond(JSON.stringify(skipped), { status: 200, headers: { "content-type": "application/json" } });
+    await expect(getReadiness()).resolves.toEqual(skipped);
+  });
+
+  it("그 밖의 상태는 실패로 본다", async () => {
+    respond("Bad Gateway", { status: 502, headers: { "content-type": "text/plain" } });
+    await expect(getReadiness()).rejects.toThrow("API 연결 실패 (502)");
   });
 });
