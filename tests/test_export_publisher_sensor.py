@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 import test_export_publisher_recovery as fixtures
@@ -459,6 +460,52 @@ def test_daily_failure_counts_as_a_failing_stage(publisher_repository, tmp_path,
         first = evaluate(sensor, instance)
     assert "daily:statement_timeout:1" in first.skip_message
     assert module._FAILING_TICKS == [1]
+
+
+def test_failing_ticks_keep_the_sweep_moving(publisher_repository, tmp_path, monkeypatch):
+    # daily만 계속 실패해도(누락 artifact의 proof 등) sweep은 실패 tick마다 다음 구간으로 간다.
+    # Dagster는 실패 tick의 cursor를 저장하지 않는다. 시험도 실패 tick 뒤에는 앞서 저장된
+    # cursor를 그대로 넘겨 그 동작을 재현한다.
+    positions = [str(UUID(int=number)) for number in range(1, 10)]
+    seen = []
+
+    def sweep(*args, cursor, **kwargs):
+        seen.append(cursor)
+        index = 0 if cursor is None else positions.index(cursor) + 1
+        return _progress(1, {"NOT_READY": 1}, positions[index], False)
+
+    monkeypatch.setattr(module, "publish_fresh_exports", lambda *a, **k: _progress())
+    monkeypatch.setattr(module, "publish_pending_exports", sweep)
+    monkeypatch.setattr(
+        module, "refresh_publisher_daily",
+        lambda *a, **k: {"processed": 0, "has_more": True, "error": "proof"},
+    )
+    sensor, _ = build(publisher_repository, tmp_path)
+    stored, failed = None, 0
+    with DagsterInstance.ephemeral() as instance:
+        for _ in range(module.FAILING_TICKS_BEFORE_ERROR + 2):
+            try:
+                stored = evaluate(sensor, instance, cursor=stored).cursor
+            except Exception as raised:
+                assert "consecutive_failing_ticks:daily:proof" in str(raised)
+                failed += 1
+        assert failed == 3
+        # 실패 tick 셋도 매번 앞 tick이 끝난 위치에서 시작했다(같은 구간을 되풀이하지 않는다).
+        assert seen == [None, *positions[:4]]
+        assert json.loads(stored)["after"] == positions[1]
+        # 저장된 cursor가 바뀌면(운영자 reset 등) 메모리의 위치보다 저장된 cursor를 따른다.
+        stored = None
+        with pytest.raises(Exception, match="consecutive_failing_ticks:daily:proof"):
+            evaluate(sensor, instance, cursor=stored)
+        assert seen[-1] is None
+        # 실패가 끝나면 메모리의 위치(reset 뒤 실패 tick이 끝낸 곳)부터 잇고 cursor로 남긴다.
+        monkeypatch.setattr(
+            module, "refresh_publisher_daily", lambda *a, **k: {"processed": 0, "has_more": False},
+        )
+        healed = evaluate(sensor, instance, cursor=stored)
+    assert seen[-1] == positions[0]
+    assert json.loads(healed.cursor)["after"] == positions[1]
+    assert module._FAILING_TICKS == [0]
 
 
 def test_unexpected_tick_error_fails_the_tick_without_the_original_message(

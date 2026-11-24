@@ -21,8 +21,11 @@
   Dagster tick 실패로 보인다. 후보 처리가 DB 장애로 멈춘 tick(``tally.stopped``)과
   repository·lease 조회 자체의 예외는 바로 실패다.
 - 실패 tick의 메시지에는 분류(SQLSTATE 분류·예외 클래스 이름)만 남긴다. 원문은 없다.
-  실패 tick은 Dagster가 cursor를 저장하지 않으므로 그 tick의 sweep 진행은 다음 tick이
-  다시 본다(같은 후보를 다시 판정할 뿐 결과는 같다).
+- 실패 tick은 Dagster가 cursor를 저장하지 않는다. 그래서 실패 tick이 진행한 sweep 위치는
+  sensor process 메모리에 두고, 저장된 cursor가 그 tick이 읽은 값 그대로인 동안 다음 tick이
+  그 위치부터 잇는다. daily만 계속 실패하는 경우(누락 artifact 등)처럼 실패 tick이 이어져도
+  sweep(재시도·죽은 worker 복구)은 매 tick 같은 구간에 머물지 않고 다음 구간으로 간다.
+  저장된 cursor가 바뀌었거나(운영자 reset 등) process가 다시 시작되면 저장된 cursor를 따른다.
 """
 
 from __future__ import annotations
@@ -293,6 +296,9 @@ def build_export_publisher_sensor(
     미룬다. 마지막 문장 하나의 대기(statement 5초, 행 잠금 0.5초)까지 더해도 sensor gRPC
     60초 안이다.
     """
+    # 실패 tick이 진행한 sweep 위치: (그 tick이 읽은 저장 cursor 원문, 끝난 sweep 위치).
+    # Dagster가 실패 tick의 cursor를 저장하지 않으므로 이 sensor 정의의 process 메모리에 둔다.
+    unsaved: list[tuple[str | None, str | None] | None] = [None]
 
     @sensor(
         name="weather_export_publisher",
@@ -303,6 +309,8 @@ def build_export_publisher_sensor(
     def publisher(context):
         repository = None
         acquired = False
+        tick = None
+        stored = context.cursor
         try:
             settings = settings_factory()
             root = settings.service_export_artifact_root
@@ -314,10 +322,14 @@ def build_export_publisher_sensor(
             if not acquired:
                 return SkipReason("이 프로세스에서 export publisher를 평가 중입니다.")
             try:
-                after = _cursor(context.cursor)
+                saved = _cursor(stored)
             except (ValueError, TypeError):
                 context.log.warning("weather_export_publisher_cursor_reset")
-                after = None
+                saved = None
+            after = saved
+            if unsaved[0] is not None and unsaved[0][0] == stored:
+                # 앞선 실패 tick이 진행한 sweep 위치다. 저장된 cursor가 그대로일 때만 잇는다.
+                after = unsaved[0][1]
             repository = repository_factory(context, settings)
             with _publisher_lease(repository) as leased:
                 if not leased:
@@ -330,15 +342,21 @@ def build_export_publisher_sensor(
                 raise ExportPublisherTickError(
                     f"export publisher tick 실패({failure}) — {tick.message()}"
                 )
-            # sweep이 정상으로 끝났거나 실패 전에 진행했다면 그 위치를 남긴다.
-            if tick.sweep_ok or tick.after != after:
+            # sweep이 정상으로 끝났거나, 위치가 저장된 cursor와 달라졌다면(이번 진행 또는 앞선
+            # 실패 tick의 진행) 그 위치를 남긴다.
+            if tick.sweep_ok or tick.after != saved:
                 context.update_cursor(json.dumps(
                     {"v": 1, "after": tick.after}, separators=(",", ":"),
                 ))
+            unsaved[0] = None
             return SkipReason(tick.message())
         except ExportPublisherTickError:
+            if tick is not None:
+                unsaved[0] = (stored, tick.after)
             raise
         except Exception as exc:
+            if tick is not None:
+                unsaved[0] = (stored, tick.after)
             # DB URL/provider payload/token이 포함된 exception 원문을 남기지 않는다.
             # 정해진 분류(lock_timeout, statement_timeout, 클래스 이름 등)만 남기고,
             # 원래 예외 연결(__cause__)도 끊어 tick 오류 직렬화에 원문이 실리지 않게 한다.
