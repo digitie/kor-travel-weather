@@ -141,6 +141,31 @@ describe("durable 확인 캐시와 middleware", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["POST", "PATCH", "PUT", "DELETE"])(
+    "상태 변경 %s는 캐시된 active를 쓰지 않아 다른 replica의 로그아웃을 바로 본다", async (method) => {
+      const fetcher = vi.fn().mockImplementationOnce(async () => Response.json({ revoked: false }))
+        .mockImplementation(async () => Response.json({ revoked: true }));
+      vi.stubGlobal("fetch", fetcher);
+      expect(next(await middleware(request("/api/weather/v1/weather/markers")))).toBe("1");
+      // 다른 replica가 폐기를 기록했다. 같은 쿠키의 GET 캐시는 남아 있어도 write는 거부된다.
+      expect((await middleware(request("/api/weather/v1/admin/locations", method))).status).toBe(401);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect((await middleware(request())).status).toBe(401);
+      expect(fetcher).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it("상태 변경 요청은 저장소에 매번 묻고 GET 캐시를 채우지 않는다", async () => {
+    const fetcher = vi.fn().mockImplementation(async () => Response.json({ revoked: false }));
+    vi.stubGlobal("fetch", fetcher);
+    expect(next(await middleware(request("/api/weather/v1/admin/locations", "POST")))).toBe("1");
+    expect(next(await middleware(request("/api/weather/v1/admin/locations", "POST")))).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(next(await middleware(request()))).toBe("1");
+    expect(next(await middleware(request()))).toBe("1");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
   it("저장소 장애 503은 캐시하지 않아 회복 즉시 통과한다", async () => {
     const fetcher = vi.fn().mockRejectedValueOnce(new Error("store unavailable"))
       .mockImplementation(async () => Response.json({ revoked: false }));

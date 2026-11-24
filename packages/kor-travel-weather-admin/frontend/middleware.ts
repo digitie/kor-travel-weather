@@ -4,6 +4,7 @@ import { sanitizeLocalPath } from "@/lib/navigation";
 import {
   adminUsername,
   checkDurableSession,
+  durableSessionCacheAllowed,
   forgetDurableSession,
   SESSION_COOKIE,
   sessionSecret,
@@ -104,7 +105,10 @@ export async function middleware(request: NextRequest) {
   }
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (session && (await verifySessionValue(session, secret, request, username)) === username) {
-    const state = await checkDurableSession(session);
+    // 캐시된 active 판정은 GET/HEAD만 쓴다. 상태 변경 요청은 다른 replica의 로그아웃을 바로 본다.
+    const state = await checkDurableSession(session, process.env, {
+      fresh: !durableSessionCacheAllowed(request.method),
+    });
     if (state === "active") return NextResponse.next();
     if (state === "unavailable") return sessionStoreUnavailable();
   }

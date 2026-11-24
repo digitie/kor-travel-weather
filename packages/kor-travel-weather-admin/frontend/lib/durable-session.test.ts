@@ -3,6 +3,7 @@ import {
   checkDurableSession,
   clearDurableSessionCache,
   durableRevokeSession,
+  durableSessionCacheAllowed,
   durableSessionCacheTtlMs,
   forgetDurableSession,
   revokeSessionValue,
@@ -258,6 +259,53 @@ describe("durable 세션 확인 캐시", () => {
     expect(fetcher).toHaveBeenCalledTimes(1025);
     await checkDurableSession("bounded-0", env);
     expect(fetcher).toHaveBeenCalledTimes(1026);
+  });
+
+  it.each([
+    ["GET", true], ["get", true], ["HEAD", true],
+    ["POST", false], ["PATCH", false], ["PUT", false], ["DELETE", false], ["OPTIONS", false],
+  ])("%s의 캐시 사용 허용은 %s다", (method, expected) => {
+    expect(durableSessionCacheAllowed(method)).toBe(expected);
+  });
+
+  it("fresh 확인은 캐시된 active를 쓰지 않고 저장소에 다시 묻는다", async () => {
+    const fetcher = vi.fn().mockImplementationOnce(async () => active())
+      .mockImplementationOnce(async () => revoked());
+    vi.stubGlobal("fetch", fetcher);
+    await expect(checkDurableSession("write-session", env)).resolves.toBe("active");
+    await expect(checkDurableSession("write-session", env, { fresh: true })).resolves.toBe("revoked");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("fresh 확인이 revoked면 읽기 캐시도 버려 이후 GET이 다시 확인한다", async () => {
+    const fetcher = vi.fn().mockImplementationOnce(async () => active())
+      .mockImplementation(async () => revoked());
+    vi.stubGlobal("fetch", fetcher);
+    await checkDurableSession("write-session", env);
+    await checkDurableSession("write-session", env, { fresh: true });
+    await expect(checkDurableSession("write-session", env)).resolves.toBe("revoked");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("fresh 확인은 진행 중인 읽기 확인을 공유하지 않고 그 결과를 캐시에 넣지 않는다", async () => {
+    let release!: (response: Response) => void;
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }))
+      .mockImplementation(async () => revoked());
+    vi.stubGlobal("fetch", fetcher);
+    const read = checkDurableSession("racing-write", env);
+    await expect(checkDurableSession("racing-write", env, { fresh: true })).resolves.toBe("revoked");
+    release(active());
+    await expect(read).resolves.toBe("active");
+    await expect(checkDurableSession("racing-write", env)).resolves.toBe("revoked");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("fresh 확인의 active는 저장하지 않는다", async () => {
+    const fetcher = vi.fn().mockImplementation(async () => active());
+    vi.stubGlobal("fetch", fetcher);
+    await checkDurableSession("write-only", env, { fresh: true });
+    await checkDurableSession("write-only", env);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("0이면 동시 확인도 공유하지 않는다(이전 동작)", async () => {

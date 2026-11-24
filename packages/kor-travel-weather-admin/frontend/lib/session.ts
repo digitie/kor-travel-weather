@@ -72,7 +72,8 @@ const DURABLE_AUTH_READ_TIMEOUT_MS = 5000;
 // - 키는 서명 쿠키 값 전체다. 백엔드 폐기 저장소도 같은 값의 digest를 보므로 sid와 1:1이고,
 //   서명을 확인하지 않은 값이 다른 쿠키의 판정을 대신할 수 없다.
 // - 이 프로세스의 로그아웃·재로그인은 해당 쿠키를 즉시 잊고 폐기 기록이 끝날 동안 다시 캐시하지
-//   않는다. 다른 web replica·runtime에서 한 로그아웃은 최대 TTL 늦게 반영된다.
+//   않는다. 다른 web replica·runtime에서 한 로그아웃은 GET/HEAD에 최대 TTL 늦게 반영된다.
+// - 상태 변경 요청은 캐시를 쓰지 않는다(`fresh`). 지연 계약은 읽기에만 해당한다.
 const DURABLE_SESSION_CACHE_DEFAULT_SECONDS = 10;
 const DURABLE_SESSION_CACHE_MAX_SECONDS = 60;
 const DURABLE_SESSION_CACHE_MAX_ENTRIES = 1024;
@@ -145,14 +146,39 @@ export function clearDurableSessionCache() {
   cache.forgotten.clear();
 }
 
+/**
+ * 캐시된 active 판정을 써도 되는 method. 상태 변경 요청(POST/PATCH/PUT/DELETE 등)은 다른
+ * replica의 로그아웃을 TTL만큼 늦게 보지 않도록 매번 저장소에 확인한다.
+ */
+export function durableSessionCacheAllowed(method: string): boolean {
+  const normalized = method.toUpperCase();
+  return normalized === "GET" || normalized === "HEAD";
+}
+
+export type DurableSessionCheckOptions = {
+  /** 참이면 캐시·진행 중 확인을 쓰지 않고 저장소에 새로 묻는다(상태 변경 요청용). */
+  fresh?: boolean;
+};
+
 export async function checkDurableSession(
   session: string,
   env: Env = process.env,
+  options: DurableSessionCheckOptions = {},
 ): Promise<DurableSessionState> {
   if (env.NODE_ENV !== "production") return "active";
   const ttlMs = durableSessionCacheTtlMs(env);
   if (ttlMs <= 0) return fetchDurableSessionState(session, env);
   const cache = durableSessionCache();
+  if (options.fresh) {
+    const state = await fetchDurableSessionState(session, env);
+    // 새 확인이 active가 아니면 이 프로세스의 읽기 캐시와 진행 중 확인의 저장도 버린다.
+    // active는 저장하지 않는다(읽기 캐시는 읽기 경로의 확인만 채운다).
+    if (state !== "active") {
+      cache.active.delete(session);
+      cache.inflight.delete(session);
+    }
+    return state;
+  }
   const cachedUntil = cache.active.get(session);
   if (cachedUntil !== undefined) {
     if (cachedUntil > Date.now()) return "active";
