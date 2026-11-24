@@ -25,11 +25,17 @@ from alembic.config import Config
 from sqlalchemy import text
 
 from alembic import command
+from kortravelweather import partitions as partitions_module
 from kortravelweather import repository as repository_module
 from kortravelweather.models import kst_now
 from kortravelweather.partitions import (
+    AUTOVACUUM_BACKEND,
+    BRIEF_DDL_LOCK_TIMEOUT_MS,
+    conflicting_lock_holders,
     ensure_partitions,
     existing_partitions,
+    is_lock_conflict,
+    lock_for_partition_ddl,
     partition_name,
 )
 from kortravelweather.repository import WeatherRepository
@@ -315,7 +321,7 @@ def test_a_deferred_drop_leaves_the_sources_it_cites_for_the_next_run(
             {"at": known_at},
         )
 
-    def lost_race(connection):
+    def lost_race(connection, **_):
         raise OperationalError("LOCK TABLE", {}, SimpleNamespace(sqlstate="55P03"))
 
     monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
@@ -717,3 +723,213 @@ def test_a_mark_that_never_lands_is_carried_by_the_run_record(
     # And from here on the mark itself carries it.
     third = repository.purge_expired_history(retention_days=2, ahead_days=7)
     assert third.partitions_overdue == (expired,)
+
+
+# 2026-11-24 Map 호출 검토 L1·L2·L3: 야간 파티션 유지보수가 지도 읽기를 세우는 lock 구간을 줄인다.
+
+
+class _Holder:
+    """다른 세션이 ``statement``의 표 lock을 쥐고 있다가 놓는다.
+
+    ``release_after``초 뒤에 놓고, 없으면 블록이 끝날 때 놓는다.
+    """
+
+    def __init__(
+        self, repository: WeatherRepository, statement: str, *, release_after: float | None = None
+    ) -> None:
+        self._engine = repository.engine
+        self._statement = statement
+        self._release_after = release_after
+        self._held = threading.Event()
+        self._stop = threading.Event()
+        self.errors: list[BaseException] = []
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> _Holder:
+        self._thread.start()
+        assert self._held.wait(30)
+        assert self.errors == []
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(60)
+
+    def _run(self) -> None:
+        try:
+            with self._engine.begin() as connection:
+                connection.execute(text(self._statement))
+                self._held.set()
+                self._stop.wait(self._release_after)
+        except BaseException as exc:  # noqa: BLE001 - reported by the test
+            self.errors.append(exc)
+            self._held.set()
+
+
+class _ReaderProbe:
+    """지도 읽기처럼 ``weather_values``를 짧은 transaction으로 계속 읽는다.
+
+    ``longest``는 가장 오래 걸린 읽기 문장의 시간(초)이다.
+    """
+
+    def __init__(self, repository: WeatherRepository) -> None:
+        self._engine = repository.engine
+        self._stop = threading.Event()
+        self.longest = 0.0
+        self.reads = 0
+        self.errors: list[BaseException] = []
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> _ReaderProbe:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        self._thread.join(60)
+
+    def _run(self) -> None:
+        try:
+            with self._engine.connect() as connection:
+                while not self._stop.is_set():
+                    began = time.monotonic()
+                    connection.execute(text("SELECT count(*) FROM weather_values"))
+                    connection.rollback()
+                    self.longest = max(self.longest, time.monotonic() - began)
+                    self.reads += 1
+                    self._stop.wait(0.02)
+        except BaseException as exc:  # noqa: BLE001 - reported by the test
+            self.errors.append(exc)
+
+
+def test_a_brief_ddl_lock_wait_gives_way_to_a_writer_quickly(
+    repository: WeatherRepository,
+) -> None:
+    """L3: 야간 DDL은 수집에 지면 짧은 상한에 물러난다. 운영자·migration 경로는 그대로다."""
+    from sqlalchemy.exc import OperationalError
+
+    with _Holder(repository, "LOCK TABLE weather_values IN ROW EXCLUSIVE MODE"):
+        for brief, low, high in ((True, 0.3, 1.5), (False, 2.0, 10.0)):
+            began = time.monotonic()
+            with (
+                pytest.raises(OperationalError) as caught,
+                repository.engine.begin() as connection,
+            ):
+                lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=brief)
+            waited = time.monotonic() - began
+            assert is_lock_conflict(caught.value)
+            assert low <= waited < high, (brief, waited)
+
+
+def test_only_an_autovacuum_blocker_gets_the_long_wait(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L3: 짧은 상한에 진 뒤 차단자가 autovacuum뿐이면 ``ddl_lock_timeout_ms``까지 기다린다.
+
+    autovacuum은 대기자가 deadlock_timeout을 넘겨 기다려야 그 deadlock 검사가 취소한다.
+    시험에서 autovacuum worker를 마음대로 띄울 수 없어 보유자 종류 판정만 바꾸고, 판정 SQL은
+    아래 시험이 실제 세션으로 확인한다.
+    """
+    asked: list[tuple[str, str]] = []
+
+    def autovacuum_only(connection, table, mode):
+        asked.append((table, mode))
+        return {AUTOVACUUM_BACKEND}
+
+    monkeypatch.setattr(partitions_module, "conflicting_lock_holders", autovacuum_only)
+    with _Holder(
+        repository, "LOCK TABLE weather_values IN ROW EXCLUSIVE MODE", release_after=1.2
+    ):
+        began = time.monotonic()
+        with repository.engine.begin() as connection:
+            lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
+            waited = time.monotonic() - began
+            after = connection.execute(text("SHOW lock_timeout")).scalar_one()
+    assert asked == [("weather_values", "ACCESS EXCLUSIVE")]
+    assert 1.0 <= waited < 3.0, waited
+    # 긴 대기는 그 한 lock에만 쓰고 짧은 상한으로 되돌린다.
+    assert after == f"{BRIEF_DDL_LOCK_TIMEOUT_MS}ms"
+
+
+def test_lock_holder_kinds_follow_the_conflict_table_and_the_partition_tree(
+    repository: WeatherRepository,
+) -> None:
+    """차단자 판정 SQL: 충돌하지 않는 보유자는 빼고, 파티션 하나만 잡은 보유자도 부모의 차단자다."""
+    today = partition_name(kst_now().date())
+    with _LocationReader(repository), repository.engine.connect() as connection:
+        # 읽기(ACCESS SHARE)는 SHARE ROW EXCLUSIVE를 막지 않고 ACCESS EXCLUSIVE는 막는다.
+        assert "client backend" not in conflicting_lock_holders(
+            connection, "weather_locations", "SHARE ROW EXCLUSIVE"
+        )
+        assert "client backend" in conflicting_lock_holders(
+            connection, "weather_locations", "ACCESS EXCLUSIVE"
+        )
+    # autovacuum처럼 파티션 하나만 SHARE UPDATE EXCLUSIVE로 잡아도 부모 lock의 차단자로 보인다.
+    with (
+        _Holder(repository, f"LOCK TABLE {today} IN SHARE UPDATE EXCLUSIVE MODE"),
+        repository.engine.connect() as connection,
+    ):
+        assert "client backend" in conflicting_lock_holders(
+            connection, "weather_values", "ACCESS EXCLUSIVE"
+        )
+        assert "client backend" not in conflicting_lock_holders(
+            connection, "weather_source_records", "ACCESS EXCLUSIVE"
+        )
+
+
+def test_the_first_attempt_also_waits_for_a_quiet_moment(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L3: 첫 시도도 조용한 순간을 기다린다. 예전에는 첫 시도만 눈먼 채 수집 뒤에 줄을 섰다."""
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_RETRY_SECONDS", 5.0)
+
+    def timed():
+        began = time.monotonic()
+        calls: list[float] = []
+
+        def step(connection) -> bool:
+            calls.append(time.monotonic() - began)
+            return True
+
+        return calls, step
+
+    writer = "LOCK TABLE weather_values IN ROW EXCLUSIVE MODE"
+    with _Holder(repository, writer, release_after=1.0):
+        calls, step = timed()
+        assert repository._try_partition_ddl(step, breaker="forward") == (True, True)
+    assert len(calls) == 1 and 0.8 <= calls[0] < 4.0, calls
+    # 수집·reader와 충돌하지 않는 단계(floor 확인·VALIDATE)는 첫 시도 앞에서 기다리지 않는다.
+    with _Holder(repository, writer, release_after=1.0):
+        calls, step = timed()
+        assert repository._try_partition_ddl(
+            step, breaker="forward", quiet_first=False
+        ) == (True, True)
+    assert len(calls) == 1 and calls[0] < 0.5, calls
+
+
+def test_map_reads_wait_behind_a_lost_ddl_attempt_for_the_brief_wait_only(
+    repository: WeatherRepository, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L3 수용 지표의 로컬 재현: DDL 시도가 수집에 지는 동안 지도 reader가 기다린 가장 긴 시간.
+
+    ACCESS EXCLUSIVE 요청이 대기열에 있으면 뒤에 온 ACCESS SHARE도 그 뒤에 선다. 기본
+    상한(``ddl_lock_timeout_ms``, 3초)이면 reader가 약 3초, 짧은 상한이면 약 0.4초 멈춘다.
+    """
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_ATTEMPTS", 1)
+    monkeypatch.setattr(repository_module, "PARTITION_DDL_RETRY_SECONDS", 0.1)
+    stalls: dict[bool, float] = {}
+    for brief in (True, False):
+        with _Holder(repository, "LOCK TABLE weather_values IN ROW EXCLUSIVE MODE"):
+            with _ReaderProbe(repository) as reader:
+                time.sleep(0.2)
+                done, _ = repository._try_partition_ddl(
+                    lambda connection, brief=brief: lock_for_partition_ddl(
+                        connection, brief=brief
+                    ),
+                    breaker="forward",
+                )
+            assert done is False
+            assert reader.errors == [] and reader.reads > 0
+            stalls[brief] = reader.longest
+    assert stalls[True] < 1.5, stalls
+    assert stalls[False] >= 2.0, stalls

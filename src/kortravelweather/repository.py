@@ -147,6 +147,7 @@ from .partitions import (
     kst_midnight,
     lock_for_detached_drop,
     lock_for_partition_ddl,
+    lock_table,
     missing_forward_days,
     oldest_partition_age_days,
     other_sessions_locking,
@@ -935,7 +936,7 @@ SCHEMA_PARTITION_FUTURE_DAYS = 3
 #: Attempts for one partition-DDL step (one day created, one day detached,
 #: one detached day dropped) before it is deferred to the next nightly run.
 PARTITION_DDL_ATTEMPTS = 6
-#: The longest pause between two attempts.  It is spent watching for a moment
+#: The longest pause before an attempt.  It is spent watching for a moment
 #: when no other session holds the fact table or its source records
 #: (``_await_quiet_tables``), and ends as soon as one comes: an attempt made
 #: then usually succeeds at once, while one made blind queues behind every
@@ -943,6 +944,8 @@ PARTITION_DDL_ATTEMPTS = 6
 #: whole lock timeout.  2026-10-02..05 the blind attempts, twenty in two
 #: minutes, all lost; collectors publish in overlapping transactions of up to
 #: about a minute, with quiet gaps of seconds between bursts.
+#: 2026-11-24(L3)부터 첫 시도 앞에서도 기다린다. 그 전에는 첫 시도만 눈먼 채로 해서
+#: 수집 뒤에 lock 상한만큼 줄을 서고 그 뒤에 지도 reader를 세웠다.
 PARTITION_DDL_RETRY_SECONDS = 30.0
 #: How often ``_await_quiet_tables`` looks at ``pg_locks``.
 PARTITION_DDL_QUIET_POLL_SECONDS = 0.2
@@ -5150,8 +5153,10 @@ class WeatherRepository:
 
         Ingestion never pauses, so every step that needs the fact table
         exclusively is one short transaction for one day, takes its locks up
-        front in the ingest's order, waits for a quiet moment between a few
-        attempts (``_try_partition_ddl``) -- and when it still loses, is
+        front in the ingest's order, waits for a quiet moment before each of a
+        few attempts and gives up a lock wait after ``BRIEF_DDL_LOCK_TIMEOUT_MS``
+        unless only autovacuum is in the way (``_try_partition_ddl``,
+        ``lock_table``) -- and when it still loses, is
         *deferred*: named in the report and retried by the next run, while the
         rest of this run carries on.  Until 2026-10-05 one lost race failed the
         whole run, night after night, and retention stopped without anybody
@@ -5288,6 +5293,7 @@ class WeatherRepository:
         *,
         breaker: str,
         quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+        quiet_first: bool = True,
     ) -> tuple[bool, _T | None]:
         """``_partition_ddl`` that returns ``(False, None)`` instead of raising
         when every attempt lost its lock race: the step is deferred.
@@ -5296,10 +5302,15 @@ class WeatherRepository:
         ``breaker`` (``PARTITION_DDL_BREAKERS``) the run stops trying that
         kind of step: every later one is deferred without an attempt.  The
         other breaker's steps carry on.
+
+        ``quiet_first=False``는 수집·reader와 충돌하는 lock을 보통 잡지 않는 단계(이미 floor가
+        있는 DEFAULT 확인, SHARE UPDATE EXCLUSIVE의 VALIDATE)에서 첫 시도 앞의 대기를 건너뛴다.
         """
         if self._ddl_stopped(breaker):
             return False, None
-        done, result, _ = self._attempt_partition_ddl(step, quiet_on=quiet_on)
+        done, result, _ = self._attempt_partition_ddl(
+            step, quiet_on=quiet_on, quiet_first=quiet_first
+        )
         counts: dict[str, int] = self.__dict__.setdefault("_deferrals_in_a_row", {})
         counts[breaker] = 0 if done else counts.get(breaker, 0) + 1
         return done, result
@@ -5315,10 +5326,13 @@ class WeatherRepository:
         step: Callable[[Connection], _T],
         *,
         quiet_on: tuple[str, ...] = _PARTITION_DDL_HOT_TABLES,
+        quiet_first: bool = True,
     ) -> tuple[bool, _T | None, OperationalError | None]:
         last: OperationalError | None = None
         for attempt in range(1, PARTITION_DDL_ATTEMPTS + 1):
-            if attempt > 1:
+            # 첫 시도 앞에서도 조용한 순간을 기다린다(L3): 눈먼 첫 시도는 열린 수집 뒤에
+            # 줄을 서고, 그동안 뒤에 온 지도 reader를 자기 뒤에 세운다.
+            if attempt > 1 or quiet_first:
                 self._await_quiet_tables(PARTITION_DDL_RETRY_SECONDS, quiet_on)
             try:
                 with self.engine.begin() as connection:
@@ -5361,6 +5375,8 @@ class WeatherRepository:
         done, floor = self._try_partition_ddl(
             lambda connection: self._forward_floor(connection, start=start),
             breaker="forward",
+            # floor가 있으면 표 lock 없는 catalog 읽기다(없는 새 DB에서만 lock을 잡는다).
+            quiet_first=False,
         )
         if not done:
             # Only reachable while DEFAULT has no floor yet (a fresh database):
@@ -5417,7 +5433,7 @@ class WeatherRepository:
 
     @staticmethod
     def _create_forward_day(connection: Connection, day: date) -> list[str]:
-        lock_for_partition_ddl(connection)
+        lock_for_partition_ddl(connection, brief=True)
         return ensure_partitions(connection, start=day, end=day)
 
     @staticmethod
@@ -5599,7 +5615,7 @@ class WeatherRepository:
     def _detach_expired(connection: Connection, name: str) -> bool:
         if name not in {partition for partition, _ in existing_partitions(connection)}:
             return False  # another run got there first
-        lock_for_partition_ddl(connection, drop_foreign_keys=True)
+        lock_for_partition_ddl(connection, drop_foreign_keys=True, brief=True)
         WeatherRepository._preserve_short_forecast_partition(connection, name)
         keys = drop_foreign_keys_into_facts(connection)
         detach_partition(connection, name)
@@ -5610,8 +5626,8 @@ class WeatherRepository:
     def _drop_detached(connection: Connection, name: str) -> bool:
         if name not in {table for table, _ in detached_leftovers(connection)}:
             return False
-        lock_for_detached_drop(connection)
-        connection.execute(text(f'LOCK TABLE "{name}" IN ACCESS EXCLUSIVE MODE'))
+        lock_for_detached_drop(connection, brief=True)
+        lock_table(connection, name, "ACCESS EXCLUSIVE", brief=True)
         WeatherRepository._preserve_short_forecast_partition(connection, name)
         drop_detached_partition(connection, name)
         return True
@@ -5631,7 +5647,10 @@ class WeatherRepository:
         for _ in range(2):
             try:
                 done, _validated = self._try_partition_ddl(
-                    validate_foreign_keys_into_facts, breaker="retention"
+                    validate_foreign_keys_into_facts,
+                    breaker="retention",
+                    # SHARE UPDATE EXCLUSIVE: 수집·reader와 충돌하지 않아 기다릴 이유가 없다.
+                    quiet_first=False,
                 )
                 return done
             except OperationalError as exc:
