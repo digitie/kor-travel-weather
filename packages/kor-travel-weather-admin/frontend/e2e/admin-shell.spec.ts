@@ -15,10 +15,11 @@ const ADMIN_PAGES = [
 ] as const;
 
 const SIDO = ["서울특별시", "부산광역시", "대구광역시", "인천광역시", "광주광역시", "대전광역시", "울산광역시", "경기도", "강원특별자치도", "충청북도", "충청남도", "전북특별자치도", "전라남도", "경상북도", "경상남도", "제주특별자치도"];
+const SHELL_LOCATIONS = SIDO.map((sido, index) => ({ location_id: `shell-${index}`, name: `${sido} 시험 위치`, latitude: 34 + (index % 8) * 0.5, longitude: 126.5 + Math.floor(index / 8) * 1.5 + (index % 3) * 0.3, nx: null, ny: null, region_code: null, sido_name: sido, sigungu_name: null, enabled: true, metadata: {} }));
 
 async function routeWeather(page: Page) {
   const stamp = new Date().toISOString();
-  const locations = SIDO.map((sido, index) => ({ location_id: `shell-${index}`, name: `${sido} 시험 위치`, latitude: 34 + (index % 8) * 0.5, longitude: 126.5 + Math.floor(index / 8) * 1.5 + (index % 3) * 0.3, nx: null, ny: null, region_code: null, sido_name: sido, sigungu_name: null, enabled: true, metadata: {} }));
+  const locations = SHELL_LOCATIONS;
   const value = { value_id: "temperature", provider: "python-kma-api", dataset_key: "nowcast", weather_domain: "weather", forecast_style: "nowcast", metric_key: "T1H", metric_name: "기온", value_number: 20, value_text: null, unit: "°C", target_at: stamp, collected_at: stamp, source_record_key: "shell-fixture" };
   await page.route("**/api/weather/**", async (route) => {
     const url = new URL(route.request().url());
@@ -38,6 +39,45 @@ async function login(page: Page, destination: string) {
   await page.getByRole("button", { name: "로그인", exact: true }).click();
   // `/login?next=/`도 "/"로 끝나므로 경로를 정확히 비교한다.
   await expect.poll(() => new URL(page.url()).pathname, { timeout: 30_000 }).toBe(destination);
+}
+
+// 카탈로그가 도착하면 지도는 기본 카메라(전국, zoom 6)에서 첫 위치로 한 번 자동 이동한다.
+// 이동 전 전국 범위에 놓인 카드 중 새 범위 밖의 카드는 이동이 끝날 때 DOM에서 빠진다. 그 사이에
+// 포커스한 카드는 포커스를 BODY로 잃고 Enter가 아무 위치도 고르지 않는다(느린 CI의 간헐 실패).
+// 좌표 표시와 카드 범위는 같은 moveend 반영에서 함께 바뀌므로, 첫 위치 중심이 보이면 이동이 끝난 것이다.
+function firstSelectionCenter() {
+  const [first] = SHELL_LOCATIONS;
+  return `center ${first.longitude.toFixed(4)}, ${first.latitude.toFixed(4)}`;
+}
+
+async function waitForFirstSelectionCamera(page: Page) {
+  await expect(page.locator(".kt-map-coordinates")).toContainText(firstSelectionCenter(), { timeout: 20_000 });
+}
+
+type CameraSnapshot = { readout: string; cards: string[] };
+
+// 모든 DOM 변경 직후의 (좌표 표시, 카드 위치 이름) 쌍을 바뀔 때만 기록한다. 시간 대기 없이 반영 단위로
+// 보므로 CI 속도와 무관하게 결정적이다. 로그인 뒤 `/weather` 문서에서만 기록한다.
+async function recordCameraSnapshots(page: Page) {
+  await page.addInitScript(() => {
+    if (location.pathname !== "/weather") return;
+    const snapshots: CameraSnapshot[] = [];
+    Object.assign(window, { __weatherCameraSnapshots: snapshots });
+    new MutationObserver(() => {
+      const readout = document.querySelector(".kt-map-coordinates")?.textContent ?? "";
+      // aria-label은 "<위치 이름>: <상태> 날씨 보기"다. 날씨 요약 도착으로 바뀌는 상태는 빼고 위치만 본다.
+      const cards = [...document.querySelectorAll(".weather-region-marker .vworld-weather-marker-button")]
+        .map((card) => card.getAttribute("aria-label")?.split(":")[0] ?? "").sort();
+      const last = snapshots.at(-1);
+      if (!last || last.readout !== readout || last.cards.join("|") !== cards.join("|")) snapshots.push({ readout, cards });
+    }).observe(document, { childList: true, subtree: true, characterData: true });
+  });
+}
+
+async function readCameraSnapshots(page: Page) {
+  const snapshots = await page.evaluate(() => (window as unknown as { __weatherCameraSnapshots: CameraSnapshot[] }).__weatherCameraSnapshots);
+  // 좌표 표시가 첫 위치 중심을 처음 보인 반영이 자동 이동의 정착 시점이다.
+  return { snapshots, settledAt: snapshots.findIndex((snapshot) => snapshot.readout.includes(firstSelectionCenter())) };
 }
 
 async function tabTo(page: Page, target: Locator) {
@@ -128,11 +168,13 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
   test("지역 날씨 모두 보기 버튼과 목록이 없고 지도 마커는 키보드로 고른다", async ({ page }) => {
     test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
+    await recordCameraSnapshots(page);
     await routeWeather(page);
     await login(page, "/weather");
-    // 좁은 화면에서는 첫 위치 상세가 지도 대부분을 덮어 카드 자리가 없다. 닫고 본다.
+    await waitForFirstSelectionCamera(page);
+    // 첫 위치 자동 선택은 상세를 열지 않는다. 상세는 사용자가 위치를 고를 때만 열린다.
     const detail = page.getByRole("complementary", { name: "선택한 위치 상세" });
-    if (await detail.isVisible()) await detail.getByRole("button", { name: "상세 닫기", exact: true }).click();
+    await expect(detail).toHaveCount(0);
     const placed = page.locator('.weather-region-marker:not([aria-hidden="true"]) .vworld-weather-marker-button');
     await expect(placed.first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("button", { name: /지역 날씨/ })).toHaveCount(0);
@@ -144,9 +186,37 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     }
     const marker = placed.first();
     await expect(marker).toHaveAttribute("tabindex", "0");
+    // 정착한 뒤 고르기 직전까지 놓인 카드가 DOM에서 빠지지 않아야 포커스한 카드가 Enter까지 남는다.
+    // 빠졌다면 Enter 뒤 "상세 없음" 대신 어느 반영에서 어떤 카드가 빠졌는지로 실패한다.
+    const { snapshots, settledAt } = await readCameraSnapshots(page);
+    expect(settledAt).toBeGreaterThan(0);
+    const settledCards = snapshots[settledAt].cards;
+    for (const snapshot of snapshots.slice(settledAt + 1)) {
+      expect(settledCards.every((name) => snapshot.cards.includes(name)), JSON.stringify({ settledCards, snapshot })).toBe(true);
+    }
     await marker.focus();
     await page.keyboard.press("Enter");
     await expect(page.getByRole("complementary", { name: "선택한 위치 상세" })).toBeVisible();
+  });
+
+  test("첫 위치 자동 이동을 알리는 좌표 표시와 카드 범위는 같은 반영에서 바뀐다", async ({ page }) => {
+    test.skip(!process.env.E2E_UI_PASSWORD, "전용 로컬 UI 암호 필요");
+    // waitForFirstSelectionCamera의 전제(좌표 표시가 정착을 보이면 카드 범위도 이미 바뀌었다)를 DOM 반영 단위로 확인한다.
+    // 정착 뒤 고르기 전까지 카드가 빠지지 않는다는 다른 전제는 키보드 선택 시험이 고르기 직전에 본다.
+    await recordCameraSnapshots(page);
+    await routeWeather(page);
+    await login(page, "/weather");
+    await waitForFirstSelectionCamera(page);
+    const { snapshots, settledAt } = await readCameraSnapshots(page);
+    expect(settledAt).toBeGreaterThan(0);
+    // 이동 전 기본 카메라(전국)에는 이 fixture의 시도 카드가 가장 많이 놓인다.
+    const nationwide = snapshots.slice(0, settledAt).reduce<string[]>((most, snapshot) => snapshot.cards.length > most.length ? snapshot.cards : most, []);
+    const settledCards = snapshots[settledAt].cards;
+    // 좌표 표시가 첫 위치를 처음 보인 그 반영에서 새 범위 밖 카드는 이미 빠져 있다. 이 fixture의 첫 위치(남서쪽)
+    // 범위에는 북쪽 시도가 들어가지 않으므로, 같은 수라면 좌표만 먼저 바뀌고 카드는 뒤늦게 빠지는 것이다.
+    expect(settledCards.length).toBeGreaterThan(0);
+    expect(settledCards.every((name) => nationwide.includes(name))).toBe(true);
+    expect(settledCards.length, JSON.stringify({ nationwide, settledCards })).toBeLessThan(nationwide.length);
   });
 });
 
