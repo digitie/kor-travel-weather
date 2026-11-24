@@ -268,6 +268,29 @@ describe("마커 실패의 시간 기반 재시도(B6)", () => {
     view.render(["a", "b"]); expect(pending).toHaveLength(3); expect(pending[2].ids).toEqual(["a"]);
     view.cleanup();
   });
+  it("동시 묶음이 꽉 찬 동안 지난 재시도 위치로 0ms timer를 반복하지 않는다", async () => {
+    vi.useFakeTimers();
+    // 실패 위치 200곳(동시 2묶음 120곳 초과): 재시도 2묶음이 진행 중이면 남은 80곳은 시각이 지나도 기다린다.
+    const pending = setupFetch(); const view = mount(ids(200)).start();
+    respond(pending[0], 500); respond(pending[1], 500); await vi.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(4);
+    respond(pending[2], 500); respond(pending[3], 500); await vi.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(MARKER_ERROR_RETRY_MS);
+    expect(pending).toHaveLength(6); expect(pending[4].ids).toEqual(ids(60)); expect(pending[5].ids).toEqual(ids(60, 60));
+    const pumps = view.setMarkerError.mock.calls.length;
+    const timers = vi.getTimerCount();
+    await vi.advanceTimersByTimeAsync(2_000);
+    // 진행 중인 묶음이 끝나기 전에는 요청도, 깨우기(onError 호출)도, 새 timer도 늘지 않는다.
+    expect(pending).toHaveLength(6); expect(view.setMarkerError.mock.calls.length).toBe(pumps);
+    expect(vi.getTimerCount()).toBeLessThanOrEqual(timers);
+    // 묶음 하나가 끝나면 그 finally가 기다리던 위치를 바로 보낸다.
+    respond(pending[4]); await vi.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(7); expect(pending[6].ids).toEqual(ids(60, 120));
+    respond(pending[5]); await vi.advanceTimersByTimeAsync(0);
+    expect(pending).toHaveLength(8); expect(pending[7].ids).toEqual(ids(20, 180));
+    view.cleanup();
+  });
   it("범위가 바뀌면 옛 큐의 재시도 timer는 요청을 만들지 않는다", async () => {
     vi.useFakeTimers();
     const pending = setupFetch(); const view = mount(["a"]).start();

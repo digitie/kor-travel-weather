@@ -64,11 +64,15 @@ export function createMarkerQueue<T extends { location_id: string }>(
   };
 
   const schedule = () => {
-    // 화면에 남은 실패 위치 중 가장 이른 재시도 시각에 한 번 깨운다.
+    // 동시 묶음이 꽉 차 있으면 timer를 두지 않는다. 진행 중인 묶음의 finally가 pump를 다시 불러
+    // 재시도 시각이 지난 위치를 보내고 다음 timer를 잡는다(지난 시각으로 0ms timer를 반복하지 않는다).
+    if (active >= MARKER_BATCH_CONCURRENCY) return;
+    // 화면에 남은 실패 위치 중 아직 오지 않은 가장 이른 재시도 시각에 한 번 깨운다.
+    const current = now();
     let earliest = Infinity;
     for (const id of ids) {
       const failure = failed.get(id);
-      if (failure && !pending.has(id)) earliest = Math.min(earliest, failure.until);
+      if (failure && !pending.has(id) && failure.until > current) earliest = Math.min(earliest, failure.until);
     }
     if (earliest === Infinity || earliest >= timerAt) return;
     clearTimeout(timer);
@@ -77,7 +81,7 @@ export function createMarkerQueue<T extends { location_id: string }>(
       timer = undefined;
       timerAt = Infinity;
       pump();
-    }, Math.max(0, earliest - now()));
+    }, earliest - current);
   };
 
   const pump = () => {
