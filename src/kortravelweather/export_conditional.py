@@ -11,14 +11,20 @@ handle이 아니라 **내용**의 digest다.
 handle 고유 값(``snapshot_id``·``snapshot_generated_at``·``as_of``·``next_cursor``)과 요청마다
 바뀌는 ``generated_at``은 넣지 않는다. 그래서 ETag는 약한(``W/``) 의미 validator다. 304를 받은
 쪽은 이미 가진 본문의 항목·상태·수집 시각이 지금과 같다는 뜻으로만 써야 하고, 이어서 cursor를
-따라가려면 조건 없이 첫 페이지를 다시 받아야 한다(Map은 304면 순회하지 않는다).
+따라가려면 조건 없이 첫 페이지를 다시 받아야 한다(Map은 304면 순회하지 않는다). HTTP 캐시가 200
+본문을 저장해 304로 재사용하면 만료됐을 수 있는 cursor를 다시 내주므로 200·304는
+``cache-control: no-store``다. ``If-None-Match``는 소비자가 받은 ETag를 직접 보관해 보낸다.
 
 current·locations 첫 페이지는 freeze(또는 handle 재사용)와 상태 판정 직후, artifact 본문을 읽기
 전에 ``If-None-Match``를 비교한다. 맞으면 :class:`ExportNotModified`로 본문 읽기·검증·직렬화를
-건너뛴다. 이 예외는 오류가 아니라 제어 흐름이다. 페이지 캐시는 이 결과를 저장하지 않는다.
+건너뛴다. 이 예외는 오류가 아니라 제어 흐름이다. 페이지 캐시는 이 결과를 저장하지 않는다. 그래서
+current 리더는 비교 시점에 같은 키 대기자(슬롯 대기 포함)가 있으면 304로 끝내지 않고 본문을 만들어
+캐시에 남긴다. 그러지 않으면 끊긴 리더를 기다린 Map 재시도가 freeze를 처음부터 다시 한다.
 
 적용 범위: locations·current·daily-summaries. daily 요약 값은 같은 manifest에서도 사전 계산
 갱신과 시각 경계(``partial``)로 바뀌므로 본문을 ETag에 넣고, 비교는 값을 읽은 뒤 직렬화 전에 한다.
+fallback(이전 coverage digest 유지)이나 coverage를 못 읽은 페이지는 사전 계산 checkpoint도 넣어
+뒤 페이지 요약만 바뀌어도 첫 페이지 ETag가 바뀌게 한다.
 forecasts는 바꾸지 않았다(``snapshot_id``+본문). 본문이 응답 시각 이후 target만 담아 manifest만으로
 정해지지 않고, Map은 예보에 ``If-None-Match``를 보내지 않는다(Map ADR-122).
 """
