@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import inspect
 import re
+from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from time import perf_counter
 from typing import Annotated, Any, Literal
 
 from anyio import to_thread
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -23,6 +25,7 @@ from kortravelweather.repository import (
 )
 
 from ..auth import require_admin
+from ..public_response import PublicRequest, Rendered, read_scope, render, respond
 from ..response import BundleMeta, Envelope, envelope
 
 ProviderFilter = Annotated[
@@ -225,6 +228,7 @@ class SourceRecordSummary(BaseModel):
     response_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+RegionLocationsResponse = Envelope[RegionLocationsOut]
 LocationListResponse = Envelope[list[LocationOut]]
 LocationResponse = Envelope[LocationOut]
 WeatherValueListResponse = Envelope[list[WeatherValueOut]]
@@ -360,20 +364,30 @@ async def repository(request: Request) -> WeatherRepository:
     return request.app.state.repository
 
 
-def location_out(value: WeatherLocation, *, public: bool = True) -> LocationOut:
-    return LocationOut(
-        location_id=value.location_id,
-        name=value.name,
-        latitude=value.latitude,
-        longitude=value.longitude,
-        nx=value.nx,
-        ny=value.ny,
-        region_code=value.region_code,
-        enabled=value.enabled,
+def _location_fields(value: WeatherLocation, *, public: bool = True) -> dict[str, Any]:
+    return {
+        "location_id": value.location_id,
+        "name": value.name,
+        "latitude": value.latitude,
+        "longitude": value.longitude,
+        "nx": value.nx,
+        "ny": value.ny,
+        "region_code": value.region_code,
+        "enabled": value.enabled,
         # metadata may contain operational notes or credentials. It is an
         # admin-only field; public consumers receive an intentionally empty map.
-        metadata=value.metadata if not public else {},
-    )
+        "metadata": value.metadata if not public else {},
+    }
+
+
+def location_out(
+    value: WeatherLocation,
+    *,
+    public: bool = True,
+    region: dict[str, Any] | None = None,
+) -> LocationOut:
+    """``region``은 공개 행정구역(``sido_name``·``sigungu_name``)이다."""
+    return LocationOut(**_location_fields(value, public=public), **(region or {}))
 
 
 def value_out(value: WeatherValue) -> WeatherValueOut:
@@ -463,31 +477,41 @@ def _weather_bundle(
     forecast_rows: list[WeatherValue],
     alert_rows: list[WeatherValue],
     alert_scope_unverified: bool = False,
-) -> dict[str, Any]:
-    return {
-        **location_out(location).model_dump(mode="json"),
-        "distance_km": distance_km,
-        "measurement_point": (
-            measurement_point_out(location, distance_km=distance_km).model_dump(mode="json")
-            if measurement_point_out(location, distance_km=distance_km)
-            else None
-        ),
-        "latest": [value_out(row).model_dump(mode="json") for row in latest_rows],
-        "forecast": [value_out(row).model_dump(mode="json") for row in forecast_rows],
-        "alerts": [value_out(row).model_dump(mode="json") for row in alert_rows],
-        "alert_scope_unverified": alert_scope_unverified,
-    }
+) -> NearbyOut:
+    return NearbyOut(
+        **_location_fields(location),
+        distance_km=distance_km,
+        measurement_point=measurement_point_out(location, distance_km=distance_km),
+        latest=[value_out(row) for row in latest_rows],
+        forecast=[value_out(row) for row in forecast_rows],
+        alerts=[value_out(row) for row in alert_rows],
+        alert_scope_unverified=alert_scope_unverified,
+    )
 
 
-@router.get("/regions", response_model=Envelope[RegionLocationsOut])
+def _not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
+
+
+# 아래 공개 handler는 DB 읽기·DTO 변환·직렬화를 worker 함수 하나에서 끝내고(B3) 한 요청의
+# 읽기를 연결·transaction 하나로 묶는다(B9). 연결은 DTO 변환 전에 돌려준다.
+
+
+@router.get("/regions", response_model=RegionLocationsResponse)
 async def region_locations(
     request: Request,
     repo: Annotated[WeatherRepository, Depends(repository)],
-) -> dict[str, Any]:
+) -> Response:
     """대표 위치 참조가 미준비/불일치이면 기존 전체 카탈로그 경로로 돌아간다."""
-    started = perf_counter()
-    result = await run_in_threadpool(repo.region_locations)
-    return envelope(request, started, result)
+    public = PublicRequest.of(request)
+
+    def build() -> Rendered:
+        # REPEATABLE READ 읽기 하나뿐이라 공유 읽기 묶음을 쓰지 않는다. repository는 dict를
+        # 돌려주므로 여기서 한 번 검증한다(예전 FastAPI 응답 검증과 같은 변환).
+        result = RegionLocationsOut.model_validate(repo.region_locations())
+        return render(public, RegionLocationsResponse, result, public.meta())
+
+    return await respond(build)
 
 
 @router.get("/locations", response_model=LocationListResponse)
@@ -501,47 +525,44 @@ async def list_locations(
     search: str | None = None,
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
-    started = perf_counter()
+) -> Response:
+    public = PublicRequest.of(request)
     filters = {**_provider_kwargs(providers), **_kind_kwargs(kinds)}
     if weather_only:
         filters["weather_only"] = True
-    rows = await run_in_threadpool(
-        repo.list_locations,
-        enabled_only=True,
-        search=search,
-        limit=limit,
-        offset=offset,
-        include_metadata=False,
-        **filters,
-    )
-    total = await run_in_threadpool(
-        repo.count_locations, enabled_only=True, search=search, **filters,
-    )
-    regions = await run_in_threadpool(repo.public_location_regions, rows)
-    return envelope(
-        request,
-        started,
-        [
-            {**location_out(row).model_dump(mode="json"), **regions.get(row.location_id, {})}
-            for row in rows
-        ],
-        limit=limit,
-        offset=offset,
-        total=total,
-        returned=len(rows),
-    )
+
+    def build() -> Rendered:
+        with read_scope(repo):
+            rows = repo.list_locations(
+                enabled_only=True,
+                search=search,
+                limit=limit,
+                offset=offset,
+                include_metadata=False,
+                **filters,
+            )
+            total = repo.count_locations(enabled_only=True, search=search, **filters)
+            regions = repo.public_location_regions(rows)
+        data = [location_out(row, region=regions.get(row.location_id)) for row in rows]
+        meta = public.meta(limit=limit, offset=offset, total=total, returned=len(rows))
+        return render(public, LocationListResponse, data, meta)
+
+    return await respond(build)
 
 
 @router.get("/locations/{location_id}", response_model=LocationResponse)
 async def get_location(
     location_id: str, request: Request, repo: Annotated[WeatherRepository, Depends(repository)]
-) -> dict[str, Any]:
-    started = perf_counter()
-    row = await run_in_threadpool(repo.get_location, location_id)
-    if row is None or not row.enabled:
-        raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
-    return envelope(request, started, location_out(row).model_dump(mode="json"))
+) -> Response:
+    public = PublicRequest.of(request)
+
+    def build() -> Rendered:
+        row = repo.get_location(location_id)
+        if row is None or not row.enabled:
+            raise _not_found()
+        return render(public, LocationResponse, location_out(row), public.meta())
+
+    return await respond(build)
 
 
 @router.get("/locations/{location_id}/latest", response_model=WeatherValueListResponse)
@@ -552,30 +573,30 @@ async def latest(
     providers: ProviderFilter = None,
     kinds: KindFilter = None,
     limit: int = Query(default=100, ge=1, le=1000),
-) -> dict[str, Any]:
-    started = perf_counter()
-    location = await run_in_threadpool(repo.get_location, location_id)
-    if location is None or not location.enabled:
-        raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
-    rows = await run_in_threadpool(
-        repo.latest_values, location_id, limit=limit,
-        **_provider_kwargs(providers), **_kind_kwargs(kinds),
-    )
-    # ``latest_values`` includes alert facts for the location.  Apply the
-    # same active-alert projection used by markers/resolve so a named latest
-    # request cannot resurrect a released or stale notice.
-    scope_unverified = _unverified_alert_scope(rows, location)
-    current_rows, forecast_rows, alert_rows = _split_weather_values(rows, location)
-    rows = [*current_rows, *forecast_rows, *alert_rows]
-    result = envelope(
-        request,
-        started,
-        [value_out(row).model_dump(mode="json") for row in rows],
-        limit=limit,
-        returned=len(rows),
-    )
-    result["meta"]["alert_scope_unverified"] = scope_unverified
-    return result
+) -> Response:
+    public = PublicRequest.of(request)
+
+    def build() -> Rendered:
+        with read_scope(repo):
+            location = repo.get_location(location_id)
+            if location is None or not location.enabled:
+                raise _not_found()
+            rows = repo.latest_values(
+                location_id, limit=limit,
+                **_provider_kwargs(providers), **_kind_kwargs(kinds),
+            )
+        # ``latest_values`` includes alert facts for the location.  Apply the
+        # same active-alert projection used by markers/resolve so a named latest
+        # request cannot resurrect a released or stale notice.
+        scope_unverified = _unverified_alert_scope(rows, location)
+        current_rows, forecast_rows, alert_rows = _split_weather_values(rows, location)
+        rows = [*current_rows, *forecast_rows, *alert_rows]
+        meta = public.meta(
+            limit=limit, returned=len(rows), alert_scope_unverified=scope_unverified,
+        )
+        return render(public, WeatherValueListResponse, [value_out(row) for row in rows], meta)
+
+    return await respond(build)
 
 
 @router.get("/locations/{location_id}/forecast", response_model=WeatherValueListResponse)
@@ -591,7 +612,7 @@ async def forecast(
     providers: ProviderFilter = None,
     kinds: KindFilter = None,
     limit: int = Query(default=500, ge=1, le=5000),
-) -> dict[str, Any]:
+) -> Response:
     try:
         ForecastQuery(from_at=from_at, to_at=to_at)
     except ValidationError as exc:
@@ -599,29 +620,28 @@ async def forecast(
             status_code=422,
             detail="from/to 시간 범위가 올바르지 않습니다.",
         ) from exc
-    started = perf_counter()
-    location = await run_in_threadpool(repo.get_location, location_id)
-    if location is None or not location.enabled:
-        raise HTTPException(status_code=404, detail="location을 찾을 수 없습니다.")
-    rows = await run_in_threadpool(
-        repo.timeline,
-        location_id,
-        from_at=from_at,
-        to_at=to_at,
-        dataset_key=dataset_key,
-        metric_key=metric_key,
-        limit=limit,
-        include_revisions=history,
-        exclude_alerts=True,
-        **_provider_kwargs(providers), **_kind_kwargs(kinds),
-    )
-    return envelope(
-        request,
-        started,
-        [value_out(row).model_dump(mode="json") for row in rows],
-        limit=limit,
-        returned=len(rows),
-    )
+    public = PublicRequest.of(request)
+
+    def build() -> Rendered:
+        with read_scope(repo):
+            location = repo.get_location(location_id)
+            if location is None or not location.enabled:
+                raise _not_found()
+            rows = repo.timeline(
+                location_id,
+                from_at=from_at,
+                to_at=to_at,
+                dataset_key=dataset_key,
+                metric_key=metric_key,
+                limit=limit,
+                include_revisions=history,
+                exclude_alerts=True,
+                **_provider_kwargs(providers), **_kind_kwargs(kinds),
+            )
+        meta = public.meta(limit=limit, returned=len(rows))
+        return render(public, WeatherValueListResponse, [value_out(row) for row in rows], meta)
+
+    return await respond(build)
 
 
 @router.get("/nearby", response_model=NearbyListResponse)
@@ -632,11 +652,32 @@ async def nearby(
     lon: float = Query(ge=124, le=132),
     radius_km: float = Query(default=25, gt=0, le=500),
     limit: int = Query(default=20, ge=1, le=100),
-) -> dict[str, Any]:
-    started = perf_counter()
-    rows = await run_in_threadpool(
-        repo.nearest_locations, lat, lon, radius_km=radius_km, limit=limit
-    )
+) -> Response:
+    public = PublicRequest.of(request)
+
+    def build() -> Rendered:
+        with read_scope(repo):
+            reads = _nearby_reads(repo, lat, lon, radius_km=radius_km, limit=limit)
+        return _nearby_render(public, reads, limit=limit)
+
+    return await respond(build)
+
+
+@dataclass(frozen=True)
+class _NearbyReads:
+    rows: list[tuple[WeatherLocation, float]]
+    latest: dict[str, list[WeatherValue]]
+    forecast: dict[str, list[WeatherValue]]
+    alerts: dict[str, list[WeatherValue]]
+    dedicated_alerts: bool
+    bundle: BundleMeta
+
+
+def _nearby_reads(
+    repo: WeatherRepository, lat: float, lon: float, *, radius_km: float, limit: int,
+) -> _NearbyReads:
+    """``/nearby``의 DB 읽기. 변환은 :func:`_nearby_render`가 연결을 돌려준 뒤에 한다."""
+    rows = repo.nearest_locations(lat, lon, radius_km=radius_km, limit=limit)
     location_ids = [location.location_id for location, _ in rows]
     latest_per_location = _per_location_rows(
         len(location_ids),
@@ -651,25 +692,25 @@ async def nearby(
         floor=_NEARBY_FORECAST_FLOOR,
     )
     latest_many = getattr(repo, "latest_values_many", None)
-    latest_by_location = (
-        await run_in_threadpool(
-            latest_many, location_ids, limit_per_location=latest_per_location
-        )
-        if callable(latest_many)
-        else {}
-    )
+    if callable(latest_many):
+        latest_by_location = latest_many(location_ids, limit_per_location=latest_per_location)
+    else:
+        # 묶음 읽기가 없는 repository double은 위치마다 최근값 20행을 읽는다(예전과 같다).
+        latest_by_location = {
+            location_id: repo.latest_values(location_id, limit=20)
+            for location_id in location_ids
+        }
     forecast_many = getattr(repo, "forecast_many", None)
     timeline_many = getattr(repo, "timeline_many", None)
     if callable(forecast_many):
-        forecast_by_location = await run_in_threadpool(
-            forecast_many,
+        forecast_by_location = forecast_many(
             location_ids,
             from_at=_forecast_window_start(),
             limit_per_location=forecast_per_location,
         )
     elif callable(timeline_many):
-        forecast_by_location = await run_in_threadpool(
-            timeline_many, location_ids, limit_per_location=forecast_per_location
+        forecast_by_location = timeline_many(
+            location_ids, limit_per_location=forecast_per_location
         )
     else:
         forecast_by_location = {}
@@ -678,19 +719,31 @@ async def nearby(
     # them as soon as enough observations arrive after the announcement.
     dedicated_alerts_available = callable(alert_many)
     alert_by_location = (
-        await run_in_threadpool(
-            alert_many, location_ids, limit_per_location=_NEARBY_ALERT_PER_LOCATION
-        )
+        alert_many(location_ids, limit_per_location=_NEARBY_ALERT_PER_LOCATION)
         if dedicated_alerts_available
         else {}
     )
+    return _NearbyReads(
+        rows=rows,
+        latest=latest_by_location,
+        forecast=forecast_by_location,
+        alerts=alert_by_location,
+        dedicated_alerts=dedicated_alerts_available,
+        bundle=BundleMeta(
+            latest_per_location=latest_per_location,
+            forecast_per_location=forecast_per_location,
+        ),
+    )
+
+
+def _nearby_render(public: PublicRequest, reads: _NearbyReads, *, limit: int) -> Rendered:
+    latest_by_location = reads.latest
+    forecast_by_location = reads.forecast
+    alert_by_location = reads.alerts
+    dedicated_alerts_available = reads.dedicated_alerts
     data = []
-    for location, distance in rows:
+    for location, distance in reads.rows:
         latest_rows = latest_by_location.get(location.location_id, [])
-        if not latest_rows and not callable(latest_many):
-            latest_rows = await run_in_threadpool(
-                repo.latest_values, location.location_id, limit=20
-            )
         _, forecast_rows, timeline_alerts = _split_weather_values(
             forecast_by_location.get(location.location_id, []), location,
         )
@@ -721,17 +774,8 @@ async def nearby(
                 ),
             )
         )
-    return envelope(
-        request,
-        started,
-        data,
-        limit=limit,
-        returned=len(data),
-        bundle=BundleMeta(
-            latest_per_location=latest_per_location,
-            forecast_per_location=forecast_per_location,
-        ),
-    )
+    meta = public.meta(limit=limit, returned=len(data), bundle=reads.bundle)
+    return render(public, NearbyListResponse, data, meta)
 
 
 @router.get("/resolve", response_model=ResolvedWeatherResponse)
@@ -741,47 +785,79 @@ async def resolve_weather(
     lat: float = Query(ge=33, le=43),
     lon: float = Query(ge=124, le=132),
     radius_km: float = Query(default=100, gt=0, le=500),
-) -> dict[str, Any]:
+) -> Response:
     """Resolve a coordinate to one nearest anchor and all source projections."""
-    started = perf_counter()
-    # Prefer the nearest AirKorea measurement anchor when the catalog has one;
-    # the requested coordinate contract is specifically station-centred while
-    # the returned bundle still contains every provider fact for that anchor.
-    rows = await run_in_threadpool(
-        repo.nearest_locations, lat, lon, radius_km=radius_km, limit=10_000
-    )
+    public = PublicRequest.of(request)
+
+    def build() -> Rendered:
+        with read_scope(repo):
+            reads = _resolve_reads(repo, lat, lon, radius_km=radius_km)
+        return render(public, ResolvedWeatherResponse, _resolve_out(reads, lat, lon), public.meta())
+
+    return await respond(build)
+
+
+def _resolve_anchor(
+    repo: WeatherRepository, lat: float, lon: float, *, radius_km: float,
+) -> tuple[tuple[WeatherLocation, float], list[tuple[WeatherLocation, float]]] | None:
+    """기준 위치와 같은 지점의 원천 후보. 없으면 None.
+
+    Prefer the nearest AirKorea measurement anchor when the catalog has one;
+    the requested coordinate contract is specifically station-centred while
+    the returned bundle still contains every provider fact for that anchor.
+
+    A station anchor and a KMA/external anchor can be separate catalog rows
+    even when they represent the same requested place.  Include nearby
+    anchors in a small source-radius projection (``max(5, distance + 5)`` km)
+    and merge their current, forecast, and alert facts instead of silently
+    returning only the station row.
+
+    External providers are anchored to the selected AirKorea station.  Do
+    not fan a coordinate resolve out to every other station in a 5 km
+    circle: a dense catalog can turn one request into hundreds of thousands
+    of historical rows and exceed the gateway timeout.  Keep the selected
+    station plus nearby non-station anchors (for example a KMA grid anchor)
+    that can actually represent an additional source for that station.
+    """
+    rows = repo.nearest_locations(lat, lon, radius_km=radius_km, limit=10_000)
     if not rows:
-        raise HTTPException(status_code=404, detail="요청 좌표 주변에 위치가 없습니다.")
+        return None
     station_rows = [
         (location, distance)
         for location, distance in rows
         if measurement_point_out(location, distance_km=distance) is not None
     ]
     location, distance = (station_rows or rows)[0]
-    # 가장 가까운 관측소의 특보구역을 다른 요청 좌표에 그대로 적용하지 않는다.
-    alert_location = location
-    if (round(lat, 6), round(lon, 6)) != (location.latitude, location.longitude):
-        alert_location = location.model_copy(update={"metadata": {}})
-    # A station anchor and a KMA/external anchor can be separate catalog rows
-    # even when they represent the same requested place.  Include nearby
-    # anchors in a small source-radius projection and merge their current,
-    # forecast, and alert facts instead of silently returning only the station
-    # row.  ``nearby`` already returns deterministic distance ordering.
     source_radius = max(5.0, distance + 5.0)
-    # External providers are anchored to the selected AirKorea station.  Do
-    # not fan a coordinate resolve out to every other station in a 5 km
-    # circle: a dense catalog can turn one request into hundreds of thousands
-    # of historical rows and exceed the gateway timeout.  Keep the selected
-    # station plus nearby non-station anchors (for example a KMA grid anchor)
-    # that can actually represent an additional source for that station.
-    source_rows = [(location, distance)]
-    source_rows.extend(
+    return (location, distance), [
         (candidate, candidate_distance)
         for candidate, candidate_distance in rows
         if candidate.location_id != location.location_id
         and candidate_distance <= source_radius
         and measurement_point_out(candidate, distance_km=candidate_distance) is None
-    )
+    ]
+
+
+@dataclass(frozen=True)
+class _ResolveReads:
+    location: WeatherLocation
+    distance: float
+    source_rows: list[tuple[WeatherLocation, float]]
+    latest_rows: list[WeatherValue]
+    timeline_rows: list[WeatherValue]
+    alert_rows: list[WeatherValue]
+    dedicated_alerts: bool
+
+
+def _resolve_reads(
+    repo: WeatherRepository, lat: float, lon: float, *, radius_km: float,
+) -> _ResolveReads:
+    """``/resolve``의 DB 읽기. 변환은 :func:`_resolve_out`이 연결을 돌려준 뒤에 한다."""
+    resolved = _resolve_anchor(repo, lat, lon, radius_km=radius_km)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="요청 좌표 주변에 위치가 없습니다.")
+    (location, distance), candidates = resolved
+    source_rows = [(location, distance), *candidates]
     source_ids = [candidate.location_id for candidate, _ in source_rows]
     latest_many = getattr(repo, "latest_values_many", None)
     timeline_many = getattr(repo, "timeline_many", None)
@@ -789,9 +865,7 @@ async def resolve_weather(
     alert_rows: list[WeatherValue] = []
     dedicated_alerts_available = False
     if callable(latest_many) and callable(timeline_many):
-        latest_by_location = await run_in_threadpool(
-            latest_many, source_ids, limit_per_location=500
-        )
+        latest_by_location = latest_many(source_ids, limit_per_location=500)
         latest_rows = [
             value
             for candidate_id in source_ids
@@ -804,8 +878,8 @@ async def resolve_weather(
         # rather than exhausted by future ones.  /resolve is also the
         # documented full-history bundle for a point, so making it future-only
         # would drop the recent observations its consumers render.
-        forecast_by_location = await run_in_threadpool(
-            timeline_many, source_ids, limit_per_location=_RESOLVE_FORECAST_PER_LOCATION
+        forecast_by_location = timeline_many(
+            source_ids, limit_per_location=_RESOLVE_FORECAST_PER_LOCATION
         )
         timeline_rows = [
             value
@@ -817,8 +891,8 @@ async def resolve_weather(
             # the same cap, so /resolve could answer alerts=[] while /markers
             # shows a badge for the same coordinate.
             dedicated_alerts_available = True
-            alert_by_location = await run_in_threadpool(
-                alert_many, source_ids, limit_per_location=_RESOLVE_ALERT_PER_LOCATION
+            alert_by_location = alert_many(
+                source_ids, limit_per_location=_RESOLVE_ALERT_PER_LOCATION
             )
             alert_rows = [
                 value
@@ -829,14 +903,30 @@ async def resolve_weather(
         latest_rows = []
         timeline_rows = []
         for candidate_id in source_ids:
-            latest_rows.extend(
-                await run_in_threadpool(repo.latest_values, candidate_id, limit=500)
-            )
+            latest_rows.extend(repo.latest_values(candidate_id, limit=500))
             timeline_rows.extend(
-                await run_in_threadpool(
-                    repo.timeline, candidate_id, limit=2000, include_revisions=False
-                )
+                repo.timeline(candidate_id, limit=2000, include_revisions=False)
             )
+    return _ResolveReads(
+        location=location,
+        distance=distance,
+        source_rows=source_rows,
+        latest_rows=latest_rows,
+        timeline_rows=timeline_rows,
+        alert_rows=alert_rows,
+        dedicated_alerts=dedicated_alerts_available,
+    )
+
+
+def _resolve_out(reads: _ResolveReads, lat: float, lon: float) -> ResolvedWeatherOut:
+    location, distance = reads.location, reads.distance
+    latest_rows, timeline_rows = reads.latest_rows, reads.timeline_rows
+    alert_rows = reads.alert_rows
+    dedicated_alerts_available = reads.dedicated_alerts
+    # 가장 가까운 관측소의 특보구역을 다른 요청 좌표에 그대로 적용하지 않는다.
+    alert_location = location
+    if (round(lat, 6), round(lon, 6)) != (location.latitude, location.longitude):
+        alert_location = location.model_copy(update={"metadata": {}})
     _, forecast_values, timeline_alerts = _split_weather_values(timeline_rows, alert_location)
     latest_values, _, latest_alerts = _split_weather_values(latest_rows, alert_location)
     if dedicated_alerts_available:
@@ -849,12 +939,12 @@ async def resolve_weather(
     else:
         alert_values = timeline_alerts
     point = measurement_point_out(location, distance_km=distance)
-    data = ResolvedWeatherOut(
+    return ResolvedWeatherOut(
         requested=CoordinateRequestOut(latitude=lat, longitude=lon),
         location=location_out(location),
         distance_km=distance,
         measurement_point=point,
-        source_locations=[location_out(candidate) for candidate, _ in source_rows],
+        source_locations=[location_out(candidate) for candidate, _ in reads.source_rows],
         alert_scope_unverified=_unverified_alert_scope(
             [*latest_rows, *timeline_rows, *alert_rows], alert_location,
         ),
@@ -871,7 +961,6 @@ async def resolve_weather(
             )
         ],
     )
-    return envelope(request, started, data.model_dump(mode="json"))
 
 
 @router.get("/markers", response_model=WeatherMarkerListResponse)
@@ -881,97 +970,37 @@ async def marker_summaries(
     location_ids: Annotated[list[str] | None, Query(alias="location_id", min_length=1)] = None,
     providers: ProviderFilter = None,
     kinds: KindFilter = None,
-) -> dict[str, Any]:
+) -> Response:
     """Return current/alert marker state for a bounded visible-location batch."""
-    started = perf_counter()
+    public = PublicRequest.of(request)
+    # Keep the public marker endpoint bounded even when a client accidentally
+    # sends a whole unbounded catalog.  The UI chunks larger maps by request.
     if len(location_ids or []) > 500:
         raise HTTPException(status_code=422, detail="marker location 수는 500개 이하여야 합니다.")
     async with request.app.state.marker_limiter:
         # 대기하는 사이 지도 이동으로 취소된 요청은 DB 작업을 새로 시작하지 않는다.
         if await request.is_disconnected():
             raise HTTPException(status_code=499, detail="요청이 취소되었습니다.")
-        return await _marker_summaries(
-            request, repo, location_ids, started=started, providers=providers, kinds=kinds,
-        )
+        return await respond(partial(
+            _marker_summaries, public, repo, location_ids or [],
+            providers=providers, kinds=kinds,
+        ))
 
 
-async def _marker_summaries(
-    request: Request,
+def _marker_summaries(
+    public: PublicRequest,
     repo: WeatherRepository,
-    location_ids: list[str] | None,
+    requested_ids: list[str],
     *,
-    started: float,
     providers: list[str] | None = None,
     kinds: list[WeatherKind] | None = None,
-) -> dict[str, Any]:
-    """입장이 허용된 마커 배치만 조회·변환한다."""
-    # Keep the public marker endpoint bounded even when a client accidentally
-    # sends a whole unbounded catalog.  The UI chunks larger maps by request.
-    requested_ids = location_ids or []
-    if len(requested_ids) > 500:
-        raise HTTPException(status_code=422, detail="marker location 수는 500개 이하여야 합니다.")
+) -> Rendered:
+    """입장이 허용된 마커 배치만 조회·변환한다(worker thread)."""
     unique_ids = list(dict.fromkeys(requested_ids))
-    get_by_ids = getattr(repo, "get_locations_by_ids", None)
-    if callable(get_by_ids):
-        locations = await run_in_threadpool(
-            get_by_ids, unique_ids, enabled_only=True
-        )
-    else:
-        # Keep compatibility with lightweight repository doubles used by
-        # downstream integrations.  The production repository takes the
-        # primary-key path above and never scans the full catalog per batch.
-        locations = await run_in_threadpool(repo.list_locations, enabled_only=True, limit=None)
-    by_id = {location.location_id: location for location in locations}
-    valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
-    marker_many = getattr(repo, "marker_values_many", None)
-    if callable(marker_many):
-        # The marker projection is deliberately allow-listed at the
-        # repository boundary.  It avoids a second full current-row scan for
-        # alerts while retaining the weather-code/temperature rows needed by
-        # the map.
-        # 같은 위치 정보로 특보 구역을 거르고 판정한다(두 번 읽으면 그 사이 catalog
-        # 수정이 끼어들 수 있다). 이 인자를 모르는 repository double은 그대로 둔다.
-        same_catalog = (
-            {"locations": by_id}
-            if "locations" in inspect.signature(marker_many).parameters else {}
-        )
-        marker_by_location = await run_in_threadpool(
-            marker_many, valid_ids, limit_per_location=80,
-            **_provider_kwargs(providers), **_kind_kwargs(kinds), **same_catalog,
-        )
-        latest_by_location = marker_by_location
-        alert_by_location = marker_by_location
-    else:
-        latest_by_location = None
-        alert_by_location = None
-    latest_many = getattr(repo, "latest_values_many", None)
-    if latest_by_location is None and callable(latest_many):
-        latest_by_location = await run_in_threadpool(
-            latest_many, valid_ids, limit_per_location=40, **_provider_kwargs(providers)
-        )
-        alert_by_location = await run_in_threadpool(
-            latest_many,
-            valid_ids,
-            limit_per_location=80,
-            weather_domain="weather_alert",
-            **_provider_kwargs(providers),
-        )
-    elif latest_by_location is None:
-        latest_by_location = {
-            location_id: await run_in_threadpool(
-                repo.latest_values, location_id, limit=80, **_provider_kwargs(providers),
-            )
-            for location_id in valid_ids
-        }
-        alert_by_location = {
-            location_id: [
-                row
-                for row in latest_by_location.get(location_id, [])
-                if row.weather_domain == "weather_alert"
-            ]
-            for location_id in valid_ids
-        }
-    data: list[dict[str, Any]] = []
+    with read_scope(repo):
+        reads = _marker_reads(repo, unique_ids, providers=providers, kinds=kinds)
+    by_id, valid_ids, latest_by_location, alert_by_location = reads
+    data: list[WeatherMarkerOut] = []
     for location_id in valid_ids:
         latest, forecast, latest_alerts = _split_weather_values(
             latest_by_location.get(location_id, []), by_id[location_id],
@@ -997,9 +1026,77 @@ async def _marker_summaries(
                 alert_scope_unverified=_unverified_alert_scope(
                     alert_by_location.get(location_id, []), by_id[location_id],
                 ),
-            ).model_dump(mode="json")
+            )
         )
-    return envelope(request, started, data, limit=len(valid_ids), returned=len(data))
+    meta = public.meta(limit=len(valid_ids), returned=len(data))
+    return render(public, WeatherMarkerListResponse, data, meta)
+
+
+def _marker_reads(
+    repo: WeatherRepository,
+    unique_ids: list[str],
+    *,
+    providers: list[str] | None,
+    kinds: list[WeatherKind] | None,
+) -> tuple[
+    dict[str, WeatherLocation],
+    list[str],
+    dict[str, list[WeatherValue]],
+    dict[str, list[WeatherValue]],
+]:
+    """마커 묶음의 DB 읽기: 위치·유효 ID·현재값 묶음·특보 묶음(운영은 같은 묶음)."""
+    get_by_ids = getattr(repo, "get_locations_by_ids", None)
+    if callable(get_by_ids):
+        locations = get_by_ids(unique_ids, enabled_only=True)
+    else:
+        # Keep compatibility with lightweight repository doubles used by
+        # downstream integrations.  The production repository takes the
+        # primary-key path above and never scans the full catalog per batch.
+        locations = repo.list_locations(enabled_only=True, limit=None)
+    by_id = {location.location_id: location for location in locations}
+    valid_ids = [location_id for location_id in unique_ids if location_id in by_id]
+    marker_many = getattr(repo, "marker_values_many", None)
+    if callable(marker_many):
+        # The marker projection is deliberately allow-listed at the
+        # repository boundary.  It avoids a second full current-row scan for
+        # alerts while retaining the weather-code/temperature rows needed by
+        # the map.
+        # 같은 위치 정보로 특보 구역을 거르고 판정한다(두 번 읽으면 그 사이 catalog
+        # 수정이 끼어들 수 있다). 이 인자를 모르는 repository double은 그대로 둔다.
+        same_catalog = (
+            {"locations": by_id}
+            if "locations" in inspect.signature(marker_many).parameters else {}
+        )
+        marker_by_location = marker_many(
+            valid_ids, limit_per_location=80,
+            **_provider_kwargs(providers), **_kind_kwargs(kinds), **same_catalog,
+        )
+        return by_id, valid_ids, marker_by_location, marker_by_location
+    latest_many = getattr(repo, "latest_values_many", None)
+    if callable(latest_many):
+        latest_by_location = latest_many(
+            valid_ids, limit_per_location=40, **_provider_kwargs(providers)
+        )
+        alert_by_location = latest_many(
+            valid_ids,
+            limit_per_location=80,
+            weather_domain="weather_alert",
+            **_provider_kwargs(providers),
+        )
+        return by_id, valid_ids, latest_by_location, alert_by_location
+    latest_by_location = {
+        location_id: repo.latest_values(location_id, limit=80, **_provider_kwargs(providers))
+        for location_id in valid_ids
+    }
+    alert_by_location = {
+        location_id: [
+            row
+            for row in latest_by_location.get(location_id, [])
+            if row.weather_domain == "weather_alert"
+        ]
+        for location_id in valid_ids
+    }
+    return by_id, valid_ids, latest_by_location, alert_by_location
 
 
 @admin_router.get(
