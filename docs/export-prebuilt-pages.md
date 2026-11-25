@@ -110,6 +110,25 @@ manifest = f(활성 catalog 행, 주소 행, 승인 inventory 행, 세대·plan,
 - build는 snapshot handle을 FK(`ON DELETE CASCADE`)로 가리킨다. 기존 `prune_export_snapshots`가 만료
   6시간 뒤 handle을 지우면 그 build와 본문도 함께 지워진다.
 
+## 큰 이력 표 키 조회 묶음(2026-11-25)
+
+운영(odroid)에서 `weather_export_prebuild_job` 12회 중 2회(18:18·21:24 KST)가 `statement_timeout`으로
+실패했다. PostgreSQL 로그의 취소 문장은 두 번 모두 `_active_scope_states`의 시도 PK 조회
+(`weather_export_attempts.attempt_id = ANY(약 2,900개)`)였고, 상한은 freeze 선택 RR의 5초다.
+
+- 원인: current 승인 선택은 기대 원천 7개의 scope 약 2,900개마다 시도(112만 행·844 MB)·세대(75만 행·
+  470 MB)를 임의 UUID 배열 한 문장으로 찾는다. 키가 흩어져 있어 비용은 키 수만큼의 index leaf·heap
+  page 임의 읽기다. 같은 조회가 데워진 cache에서는 0.2초, 차가운 cache에서는 2.9~3.6초였다(한가한
+  13:04 UTC 실측: 시도 3.2초·세대 3.0초·plan 크기 예비 조회 3.6초, 선택 전체 18초). 실패한 두 시각은
+  초단기실황·WeatherAPI 수집과 transport `highway_collection_job`이 겹쳐 5초를 넘었다. builder는 run마다
+  새 프로세스라 plan 기억(`_parsed_plans`)도 늘 비어 있다.
+- 변경: 이 조회들(owner·시도·공개 세대·run·승인 세대·plan 존재·plan 크기 예비 조회·캐시 선택 검산)을
+  같은 RR 안에서 `KEY_LOOKUP_BATCH`(512)개씩 나눠 읽는다(`export_capacity.batched_rows`). 결과·RR
+  일관성은 같고, 한 문장의 일은 키 수와 무관하게 묶인다(키 512개 ≈ 차가운 cache 0.6초, 실패 때 관측한
+  최악 속도로도 1초 안팎). 합계 일은 같으므로 선택 전체 시간은 줄지 않는다. 문장 상한(5초)은 그대로다.
+- 같은 조회는 API 첫 페이지 freeze에서도 돈다(17:40 KST에 세대 조회가 같은 이유로 취소됐다). 이 변경은
+  두 경로에 같이 적용된다. 실패 대신 같은 총 시간으로 응답한다.
+
 ## 측정(로컬, 운영 아님)
 
 Windows 11 + WSL `postgres:16`(tmpfs) 위에서 `benchmarks/export_current_pages.py` 운영 규모 fixture
@@ -155,3 +174,25 @@ builder 한 번(freeze + 14페이지 조립 + 저장, 5.7MB)은 7.9초, 입력�
     창(예: :20~:25 사이 초단기실황 전)으로 맞춘다(Map 계약 변경). (c) 승격 뒤 일정 시간 조용하면
     builder를 돌리는 sensor(#289 판단과 run 수 비용을 다시 봐야 한다). (d) 바뀐 scope만 다시
     조립하는 부분 재사용(설계 변경이 크다).
+  - 재배포(19:25 KST) 뒤 지표의 `hit` 1건(19:26:43)은 127.0.0.1의 수동 첫 페이지 측정이었다. Map 순회
+    6번(:25:51~:25:53·:40:31~:40:48 UTC, 첫 페이지 + cursor 13페이지, limit 2000에 약 2.7만 항목)은
+    모두 첫 페이지가 `changed`였고, 그 순회의 cursor는 새 freeze manifest를 따라가 사전 구성 본문이
+    없다. 그래서 `ktw_export_prebuilt_pages_total{page="cursor"}`가 없는 것은 정상이다(적중 뒤 cursor
+    본문 사용은 `test_prebuilt_walk_serves_the_same_pages_without_reading_the_selection`이 지표까지
+    확인한다).
+  - 24시간 측정(11-24 21:40 ~ 11-25 21:40 KST, Map 순회 49번, 기대 원천 승격 생성 시각 기준). 승격은
+    매 분 있다(분당 승격 초 수 최소 :25~:26 106~109, 최대 :49~:55 357~392). Map 첫 페이지 직전 조용한
+    간격은 p10 1초·p50 34초·p90 29분이고, build 최소 시간(판정 뒤 약 57초)보다 긴 경우는 18/49(37%)다.
+    어떤 실행 시각을 골라도 이것이 상한이다. 사전 구성 run은 생성→시작 지연 45~3,308초(p50 71초),
+    실행 22~69초였고 실제 run 기준으로 적중 가능한 순회는 3/20이었다.
+
+    | 선택지 | 가정 | 예상 적중 | build 수/일 |
+    | --- | --- | --- | --- |
+    | 현재(:23·:38, 우선순위 0) | 관측 시작 지연 | 3/20 (15%) | 96 |
+    | (a) :23·:38 유지 + 우선순위 상향 | 시작 지연 ≤30초 | 14/49 (29%) | 96 |
+    | (a) :21·:36 + 우선순위 상향 | 시작 지연 ≤30초 | 12/49 (24%) | 96 |
+    | (c) 승격 뒤 60초 조용하면 sensor | tick 30초·시작 15초 | 14/49 (29%) | 약 92 |
+    | (c) 같은 sensor, 조용함 30초 | 같음 | 15/49 (31%) | 약 157 |
+
+    앞당기면 사이 승격이 늘어 오히려 떨어진다. (a)의 우선순위 상향(시작 지연을 줄이고 고르게)이 (c)와
+    같은 적중을 sensor·추가 run 없이 낸다. 37%를 넘으려면 (b) 또는 (d)가 필요하다(소유자 결정 대기).
