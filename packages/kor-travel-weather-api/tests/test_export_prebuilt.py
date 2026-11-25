@@ -253,20 +253,58 @@ def test_a_handle_issued_for_an_expired_build_handle_is_reused(repository, tmp_p
     assert _build(repository, tmp_path)["outcome"] == "unchanged"
 
 
-def test_build_past_its_time_boundary_falls_back(repository, tmp_path):
+def test_a_passed_time_boundary_recomputes_the_status_and_keeps_the_build(repository, tmp_path):
+    """운영(2026-11-25 odroid): 3천여 행의 가장 이른 health 경계가 판정 5초 뒤라 ``valid_until``이
+    ``built_at``보다 앞섰고, 요청은 모든 build를 ``expired``로 버렸다. 경계가 바꾸는 것은 만료
+    위치·미확인 여부뿐이라, 경계 뒤에는 builder 판정만 잇지 않고 새 판정으로 manifest를 검산한다.
+    """
     builds, _ = export_prebuilt_tables(Base.metadata)
     _collect(repository, tmp_path)
-    baseline = _items(_walk(_app(repository, tmp_path, enabled=False)))
-    _build(repository, tmp_path)
+    baseline = _walk(_app(repository, tmp_path, enabled=False))
+    report = _build(repository, tmp_path)
+    assert report["outcome"] == "built"
     with repository.engine.begin() as connection:
+        # builder 판정은 방금(60초 안) 했지만 시간 경계는 build 저장 전에 지났다.
         connection.execute(update(builds).values(
             valid_until=datetime.now(UTC) - timedelta(seconds=1),
         ))
     pages = _walk(_app(repository, tmp_path))
-    assert pages[0].headers["x-export-prebuilt"] == "expired"
-    assert _items(pages) == baseline
-    # 첫 페이지는 기존 freeze가 manifest를 정한다(본문은 그 manifest digest로 찾는다).
-    # 시간 경계를 지난 build는 builder가 다시 만든다.
+    assert pages[0].headers["x-export-prebuilt"] == "hit"
+    # 경계 뒤 builder 판정은 잇지 않는다(시각만으로 달라질 수 있다).
+    assert pages[0].headers["x-export-status-proof"] == "computed"
+    assert _items(pages) == _items(baseline)
+    assert [page.headers["etag"] for page in pages] == [page.headers["etag"] for page in baseline]
+    assert sum(int(page.headers["x-export-prebuilt-pages"]) for page in pages) == report["pages"]
+    # 승인 선택이 그대로면 시간 경계만으로 다시 만들지 않는다.
+    assert _build(repository, tmp_path)["outcome"] == "unchanged"
+
+
+def test_a_time_boundary_that_changes_the_selection_falls_back(
+    repository, tmp_path, monkeypatch,
+):
+    """경계가 실제로 승인 선택을 바꾸면(신선도 상한을 넘겨 미확인) build를 버리고 freeze한다."""
+    from kortravelweather import export_inventory_selection
+
+    builds, _ = export_prebuilt_tables(Base.metadata)
+    _collect(repository, tmp_path)
+    assert _build(repository, tmp_path)["outcome"] == "built"
+    with repository.engine.begin() as connection:
+        # Map은 builder 2분 뒤에 읽는다. builder 판정(60초)은 잇지 않는다.
+        connection.execute(update(builds).values(
+            status_checked_at=datetime.now(UTC) - timedelta(minutes=2),
+        ))
+
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 관측(초단기실황) 신선도 상한 3시간을 넘긴 시각. proof(행 내용)는 그대로다.
+            return datetime.now(tz) + timedelta(hours=3)
+
+    monkeypatch.setattr(export_inventory_selection, "datetime", Later)
+    pages = _walk(_app(repository, tmp_path))
+    assert pages[0].headers["x-export-prebuilt"] == "selection"
+    assert {page.json()["meta"]["source_status"] for page in pages} == {"stale"}
+    # builder도 같은 승인 선택 비교로 다시 만든다.
     assert _build(repository, tmp_path)["outcome"] == "built"
 
 
