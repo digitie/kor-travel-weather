@@ -7,7 +7,7 @@ import pytest
 import test_export_publisher_recovery as fixtures
 from dagster import DefaultScheduleStatus
 from kortravelweather_dagster import export_maintenance as module
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from kortravelweather.export_artifacts import prepare_export_chunk
 from kortravelweather.export_database_artifacts import export_artifact_store
@@ -120,6 +120,64 @@ def test_gc_walks_every_page_in_one_run_and_deletes_old_orphans(
     # 쉬는 시간은 그 호출 시간 이상이라 실제 시계로는 최소값만 확인한다.
     assert len(pauses) == report["gc_calls"] - 1
     assert all(pause >= module.GC_YIELD_SECONDS for pause in pauses)
+
+
+def _batch_bound_reference(monkeypatch, repo, *, limit):
+    """참조 판정 비용이 묶음 크기에 비례하는 운영 상황을 실제 PostgreSQL 취소로 재현한다.
+
+    odroid 2026-11-25: 256개 묶음 판정(평균 0.93초, 최대 3.56초)이 cold IO에서 3초 문장
+    상한을 넘겨 57014로 취소됐다. ``limit``개보다 큰 묶음은 같은 SQLSTATE로 취소된다.
+    """
+    from kortravelweather import export_database_gc
+
+    original = export_database_gc.live_artifact_digests
+    sizes = []
+
+    def live(*args, **kwargs):
+        sizes.append(len(kwargs["digests"]))
+        if len(kwargs["digests"]) > limit:
+            with repo.engine.begin() as connection:
+                connection.execute(text("SET LOCAL statement_timeout = '20ms'"))
+                connection.execute(text("SELECT pg_sleep(1)"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(export_database_gc, "live_artifact_digests", live)
+    return sizes
+
+
+def test_gc_shrinks_the_reference_batch_instead_of_failing_the_run(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    # 운영 실패 run(11-25 14:52·18:19·20:52·21:52)은 모두 첫 참조 판정에서 끝나 gc_calls=0이었다.
+    repo = publisher_repository
+    store, digests = _old_orphans(repo, tmp_path, 150)
+    sizes = _batch_bound_reference(monkeypatch, repo, limit=40)
+    report = module.run_export_maintenance(repo, _settings(tmp_path), sleep=lambda _: None)
+    with repo.engine.connect() as connection:
+        left = connection.scalar(select(func.count()).select_from(store.table).where(
+            store.table.c.digest.in_(digests),
+        ))
+    assert left == 0 and report["gc_deleted"] == 150 and report["gc_complete"] is True
+    # 처음 묶음은 job 상한이고, 취소된 뒤에는 절반 묶음으로 같은 후보를 다시 판정한다.
+    assert sizes[0] == module.GC_REFERENCE_BATCH and report["gc_statement_timeouts"] == 1
+    assert max(sizes[1:]) <= 40
+
+
+def test_gc_still_fails_when_the_smallest_batch_times_out(
+    publisher_repository, tmp_path, monkeypatch,
+):
+    repo = publisher_repository
+    store, digests = _old_orphans(repo, tmp_path, 20)
+    sizes = _batch_bound_reference(monkeypatch, repo, limit=0)
+    with pytest.raises(module.ExportMaintenanceError) as raised:
+        module.run_export_maintenance(repo, _settings(tmp_path), sleep=lambda _: None)
+    assert raised.value.report["failures"] == "gc:statement_timeout"
+    # 묶음을 최소까지 줄여 본 뒤에야 실패한다. 줄이는 횟수는 유한하다.
+    assert sizes == [20, 10, 8]
+    with repo.engine.connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(store.table).where(
+            store.table.c.digest.in_(digests),
+        )) == 20
 
 
 def test_gc_dry_run_counts_without_deleting(publisher_repository, tmp_path):
@@ -284,6 +342,22 @@ def test_gc_stops_without_progress(tmp_path, monkeypatch):
     assert len(calls) == 1 and report["gc_pending"] == 3 and report["gc_complete"] is False
     assert calls[0]["scan"].page_size == module.GC_SCAN_PAGE
     assert calls[0]["scan"].statement_seconds == module.GC_SCAN_STATEMENT_SECONDS
+    assert calls[0]["scan"].reference_batch == module.GC_REFERENCE_BATCH == 64
+
+
+def test_gc_continues_after_a_call_that_only_shrank_its_batch(tmp_path, monkeypatch):
+    # 3초 문장 상한에 걸린 호출은 남은 처리 예산을 넘겨 목록·판정 진척 없이 끝날 수 있다.
+    # batch를 줄인 것은 진척이므로 같은 run에서 다음 호출이 더 작은 batch로 잇는다.
+    clock = _scripted_gc(monkeypatch, [
+        {"mode": "delete", "visited": 0, "live": 0, "eligible": 0, "statement_timeouts": 1,
+         "complete": False, "pending": 9},
+        _gc_result(eligible=1, complete=True),
+    ], seconds_per_call=3.0)
+    report = module.run_export_maintenance(
+        object(), _settings(tmp_path), clock=lambda: clock[0], sleep=lambda _: None,
+    )
+    assert report["gc_calls"] == 2 and report["gc_complete"] is True
+    assert report["gc_statement_timeouts"] == 1
 
 
 def _state(name, *, kind="SENSOR", status="RUNNING", location=module.LOCATION_NAME):

@@ -20,6 +20,16 @@ job은 한 시간에 한 번이다(하루 24 run — odroid의 하루 약 1,000 
 GC 삭제 batch는 배타 artifact guard를 잡는다. 참조 판정은 공유 guard에서 먼저 하므로 보호
 행뿐인 batch는 배타 guard를 잡지 않는다. 배타 guard를 잡은 호출 뒤에는 그 호출 시간 이상
 쉬어, 회수할 것이 많은 run에서도 배타 점유가 GC 시간의 절반을 넘지 않게 한다.
+
+참조 판정 batch는 64개다(sensor 시절 256). 2026-11-25 odroid 실측: 9 run 중 4 run(14:52·
+18:19·20:52·21:52 KST)이 ``gc:statement_timeout``으로 실패했고 모두 첫 참조 판정에서
+끝났다(gc_calls=0). PostgreSQL 로그의 취소 문장은 256개 후보 참조 판정(``gc_candidates``)
+이었다. pg_stat_statements(11-17 이후 4,980회): 평균 0.93초·표준편차 0.63초·완료 최대 3.56초,
+호출당 평균 752 block을 디스크에서 읽었다. 첫 batch는 가장 오래 살아남은(보호된) artifact라
+generation·snapshot 행이 cache 밖이다(EXPLAIN ANALYZE 1.67초, 디스크 read 2,199 block). 판정
+비용은 digest마다의 random read라 batch 크기에 비례하고, checkpoint IO가 겹치면 3초를 넘는다.
+64개 batch는 같은 비용의 약 1/4이고, 그래도 상한에 걸리면 batch를 반씩 줄여(최소 8) 같은
+후보를 다시 판정한다. 최소 batch까지 걸리면 run은 그대로 실패한다.
 """
 
 from __future__ import annotations
@@ -62,6 +72,9 @@ RETIRE_STATEMENT_SECONDS = 30.0
 GC_BUDGET_SECONDS = 300.0
 GC_SCAN_PAGE = 2_000
 GC_SCAN_STATEMENT_SECONDS = 15.0
+#: 참조 판정·삭제 한 batch의 digest 수. 판정 문장 상한(3초)은 그대로다. 문장 상한에 걸린
+#: batch는 반씩 줄여(최소 ``MIN_REFERENCE_BATCH``) 다시 판정한다(모듈 docstring의 11-25 실측).
+GC_REFERENCE_BATCH = 64
 #: 삭제 batch는 배타 artifact guard를 잡는다. API reader(10ms polling, 최대 5초)와 capture
 #: writer(5초)가 굶지 않도록 호출 한 번은 sensor 시절과 같은 1.5초만 지우고 쉰다. 쉬는 시간은
 #: 최소 ``GC_YIELD_SECONDS``이고, 배타 guard를 잡은 호출 뒤에는 그 호출 시간 이상이다.
@@ -71,7 +84,7 @@ GC_YIELD_SECONDS = 0.25
 MAX_RUNTIME_SECONDS = 900
 
 _GC_SUM_KEYS = ("visited", "scanned", "live", "eligible", "eligible_bytes",
-                "deleted", "deleted_bytes", "errors")
+                "deleted", "deleted_bytes", "errors", "statement_timeouts")
 
 
 def maintenance_enabled(settings: WeatherSettings) -> bool:
@@ -132,6 +145,7 @@ def _collect_garbage(
     calls, complete, pending = 0, False, 0
     scan = DatabaseArtifactGCScan(
         page_size=GC_SCAN_PAGE, statement_seconds=GC_SCAN_STATEMENT_SECONDS,
+        reference_batch=GC_REFERENCE_BATCH,
     )
     gc_deadline = clock() + GC_BUDGET_SECONDS
     try:
@@ -148,8 +162,10 @@ def _collect_garbage(
             complete, pending = bool(result.get("complete")), int(result.get("pending", 0))
             if complete:
                 break
-            if not (result.get("visited") or result.get("live") or result.get("eligible")):
-                # 목록도 판정도 진척이 없다(guard 경합 등). 다음 run에 다시 본다.
+            if not (result.get("visited") or result.get("live") or result.get("eligible")
+                    or result.get("statement_timeouts")):
+                # 목록도 판정도 진척이 없다(guard 경합 등). 다음 run에 다시 본다. 문장 상한으로
+                # batch를 줄인 호출은 진척이다 — 줄이는 횟수는 유한하고 최소 batch는 실패한다.
                 break
             sleep(_gc_pause(mode, result, clock() - started))
     finally:

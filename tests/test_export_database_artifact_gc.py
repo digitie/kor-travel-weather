@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from kortravelweather import export_database_gc as gc
@@ -62,7 +63,7 @@ def test_gc_preserves_live_and_recent_and_dry_run_never_deletes(repo, monkeypatc
     report = collect(repo)
     assert report == dict(
         mode="dry_run", visited=2, scanned=2, live=1, eligible=1, eligible_bytes=size,
-        deleted=0, deleted_bytes=0, errors=0, complete=True, pending=0,
+        deleted=0, deleted_bytes=0, errors=0, complete=True, pending=0, statement_timeouts=0,
     )
     assert present(repo) == {live, stale, recent}
     report = collect(repo, mode="delete")
@@ -103,6 +104,62 @@ def test_delete_rollback_keeps_pending_and_counts_only_committed_deletes(repo, m
     result = collect(repo, mode="delete", scan=scan)
     assert result["deleted"] == 1 and result["deleted_bytes"] == size
     assert not present(repo)
+
+
+def _timeout(sqlstate="57014"):
+    return OperationalError("SELECT gc_candidates", {}, SimpleNamespace(sqlstate=sqlstate))
+
+
+def test_statement_timeout_halves_the_batch_without_consuming_it(repo, monkeypatch):
+    digests = [put(repo, i)[0] for i in range(40)]
+    scan = gc.DatabaseArtifactGCScan(reference_batch=32)
+    sizes = []
+
+    def live(*a, **kw):
+        sizes.append(len(kw["digests"]))
+        if len(sizes) == 1:
+            raise _timeout()
+        return set()
+
+    monkeypatch.setattr(gc, "live_artifact_digests", live)
+    result = collect(repo, mode="delete", scan=scan)
+    # 취소된 32개 batch를 소비하지 않고 16개씩 다시 판정한다(공유·배타 판정 각각).
+    assert sizes == [32, 16, 16, 16, 16, 8, 8]
+    assert scan.reference_batch == 16 and result["statement_timeouts"] == 1
+    assert result["deleted"] == 40 and result["complete"] and not present(repo) & set(digests)
+
+
+@pytest.mark.parametrize("error", [_timeout("55P03"), RuntimeError("other")])
+def test_only_statement_timeout_shrinks_the_batch(repo, monkeypatch, error):
+    put(repo, 1)
+    scan = gc.DatabaseArtifactGCScan()
+
+    def live(*a, **kw):
+        raise error
+
+    monkeypatch.setattr(gc, "live_artifact_digests", live)
+    with pytest.raises(type(error)):
+        collect(repo, mode="delete", scan=scan)
+    assert scan.reference_batch == gc.UNLINK_BATCH and len(scan.pending) == 1
+
+
+def test_smallest_batch_timeout_is_raised_with_pending_kept(repo, monkeypatch):
+    put(repo, 1)
+    scan = gc.DatabaseArtifactGCScan(reference_batch=gc.MIN_REFERENCE_BATCH)
+
+    def live(*a, **kw):
+        raise _timeout()
+
+    monkeypatch.setattr(gc, "live_artifact_digests", live)
+    with pytest.raises(OperationalError) as raised:
+        collect(repo, mode="delete", scan=scan)
+    assert raised.value.orig.sqlstate == "57014" and len(scan.pending) == 1
+
+
+@pytest.mark.parametrize("size", [0, gc.UNLINK_BATCH + 1])
+def test_reference_batch_is_validated(size):
+    with pytest.raises(ValueError):
+        gc.DatabaseArtifactGCScan(reference_batch=size)
 
 
 def test_busy_guard_preserves_pending(repo, monkeypatch):
