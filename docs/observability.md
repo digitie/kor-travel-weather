@@ -58,6 +58,11 @@ rule·알람을 새 이름으로 함께 전환한다.
   단계당 한 번, API만). `step`은 `connections`·`session_check`·`regions`·`locations`·`markers`·
   `location_detail`, `outcome`은 `ok`·`failed`·`skipped`. 상태는 `GET /ready`, 설계는
   [weather-api-prewarm.md](weather-api-prewarm.md)
+- `ktw_export_prebuilt_decisions_total{outcome}`·`ktw_export_prebuilt_pages_total{page}` — Map 표준
+  프로필(current limit 2000) 사전 구성의 첫 페이지 판정(`hit`·`none`·`changed`·`selection`·`missing`·
+  `artifacts`·`error`·`off`, 응답 header `x-export-prebuilt`와 같다)과 저장 본문을 쓴 페이지 수
+  (`first`·`cursor`, API만). 적중률은 `hit` / 전체 판정이다. 설계는
+  [export-prebuilt-pages.md](export-prebuilt-pages.md)
 - `ktw_provider_requests_total{provider,dataset,outcome}` — `outcome`은 `success`·`error`·`blocked`.
   `blocked`는 provider의 edge(WAF)가 API에 닿기 전에 요청을 거절한 것이고, **여전히 실패다** —
   실패의 종류를 구분할 뿐이다. 지금은 `python-krex-api`만 분류한다: HTTP 400/403이면서 본문이

@@ -73,6 +73,23 @@ def _builds(repository):
         )).mappings().all()
 
 
+def _metric(name, label):
+    from kortravelweather.metrics import metrics_payload
+
+    for line in metrics_payload().decode().splitlines():
+        if line.startswith(f"{name}{{{label}}} "):
+            return float(line.split()[-1])
+    return 0.0
+
+
+def _prebuilt_metrics():
+    return (
+        _metric("ktw_export_prebuilt_decisions_total", 'outcome="hit"'),
+        _metric("ktw_export_prebuilt_pages_total", 'page="first"'),
+        _metric("ktw_export_prebuilt_pages_total", 'page="cursor"'),
+    )
+
+
 def test_prebuilt_walk_serves_the_same_pages_without_reading_the_selection(
     repository, tmp_path,
 ):
@@ -80,6 +97,7 @@ def test_prebuilt_walk_serves_the_same_pages_without_reading_the_selection(
     baseline = _walk(_app(repository, tmp_path, enabled=False))
     assert baseline[0].headers["x-export-prebuilt"] == "-"
     report = _build(repository, tmp_path)
+    before = _prebuilt_metrics()
     assert report["outcome"] == "built" and report["pages"] == 5 and report["items"] == 24
     client = _app(repository, tmp_path)
     statements = []
@@ -108,6 +126,9 @@ def test_prebuilt_walk_serves_the_same_pages_without_reading_the_selection(
     conditional = client.get(URL, params={"limit": LIMIT},
                              headers={**HEADERS, "if-none-match": baseline[0].headers["etag"]})
     assert conditional.status_code == 304
+    # 적중률은 header 밖(지표)에서도 본다. 완료 페이지 재사용(판정 없음)은 판정으로 세지 않는다.
+    after = _prebuilt_metrics()
+    assert [b - a for a, b in zip(before, after, strict=True)] == [1, 1, 4]
 
 
 def test_builder_is_a_noop_until_an_input_changes(repository, tmp_path):

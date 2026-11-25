@@ -44,6 +44,7 @@ from kortravelweather.export_snapshots import (
 )
 from kortravelweather.export_source_registry import select_export_sources
 from kortravelweather.export_status_reader import ExportStatusPending, read_status
+from kortravelweather.metrics import observe_export_prebuilt
 from kortravelweather.models import kst_now
 from kortravelweather.read_performance import (
     MeasuredArtifacts,
@@ -615,10 +616,19 @@ async def _frozen_response(
             # 상태 판정의 출처: frozen(첫 페이지 freeze RR)·reused(앱 공용 판정)·computed(새 계산).
             # 완료 페이지 재사용(x-export-read=reused)이면 이 요청은 판정을 하지 않았다(none).
             headers["x-export-status-proof"] = getattr(reader, "page_status_proof", "none")
-            # 첫 페이지 사전 구성 판정(hit·none·changed·expired·selection 등, cursor는 "-")과
+            # 첫 페이지 사전 구성 판정(hit·none·changed·selection 등, cursor는 "-")과
             # 이 요청이 쓴 사전 구성 본문 수. 완료 페이지 재사용(reused)이면 둘 다 판정 없음이다.
-            headers["x-export-prebuilt"] = getattr(reader, "prebuilt_outcome", "-")
-            headers["x-export-prebuilt-pages"] = str(getattr(reader, "prebuilt_pages", 0))
+            outcome = getattr(reader, "prebuilt_outcome", "-")
+            served = getattr(reader, "prebuilt_pages", 0)
+            headers["x-export-prebuilt"] = outcome
+            headers["x-export-prebuilt-pages"] = str(served)
+            # header는 요청자만 본다. 적중률을 운영에서 보도록 같은 값을 지표·로그에도 남긴다.
+            observe_export_prebuilt(outcome, "cursor" if cursor else "first", served)
+            if outcome != "-":
+                logger.info(
+                    "weather_export_prebuilt_decision outcome=%s pages=%d status_proof=%s",
+                    outcome, served, headers["x-export-status-proof"],
+                )
     except ExportRequestCancelled as exc:
         # 응답을 받을 요청자가 없다. 경합 503 통계·statement_timeout 로그와 섞지 않는다.
         cause = exc.__cause__
