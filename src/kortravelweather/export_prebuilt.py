@@ -8,16 +8,18 @@ Map은 ``/v1/service/exports/current?limit=2000``을 매시 :25·:40에 처음�
 그 manifest의 모든 페이지 **본문(불변 data payload)**을 DB에 저장한다. 요청 경로는:
 
 1. 짧은 RR 하나에서 **입력 proof**(삭제 epoch 3개·승인 inventory digest·catalog/주소 digest)를
-   읽어 builder가 manifest를 만든 RR의 proof와 같은지, 시간 경계(``valid_until``) 전인지 본다.
-   같으면 지금 freeze해도 같은 manifest다(아래 "proof가 덮는 것").
+   읽어 builder가 manifest를 만든 RR의 proof와 같은지 본다. 같으면 시각에 따른 부분(만료
+   위치·미확인 여부)만 빼고 지금 freeze해도 같은 manifest다(아래 "proof가 덮는 것"). 시각에
+   따른 부분은 3번이 본다.
 2. handle 수명: 같은 manifest의 유효 handle은 freeze 재사용과 같은 조건(그 selection의 최근
    발급)으로 이어 쓴다(build handle이 만료된 뒤 앞 요청이 발급한 handle 포함). 유효 handle은 기존
    조건부 갱신을 먼저 시도하고, 그래도 남은 수명이 15분 미만이면 아래 검산을 모두 통과한 뒤 같은
    manifest로 새 handle을 발급한다. 만료 handle은 연장하지 않는다(새 handle만 발급). 새 handle의
    snapshot ref가 참조 세대를 GC에서 지킨다. 발급을 못 하면 기존 freeze 경로로 간다.
-3. 상태(``source_status``): builder 판정이 60초 승인 수명 안이고 삭제 epoch가 같으면 그 판정을
-   쓰고, 아니면 기존 첫 페이지처럼 새로 판정한다. 새 판정의 승인 선택이 manifest와 다르면
-   (scope 집합·미확인 여부) 사전 구성을 버리고 기존 freeze로 간다.
+3. 상태(``source_status``): builder 판정이 60초 승인 수명 안이고 시간 경계(``valid_until``)
+   전이며 삭제 epoch가 같으면 그 판정을 쓰고, 아니면 기존 첫 페이지처럼 새로 판정한다. 새
+   판정의 승인 선택이 manifest와 다르면(scope별 위치 집합·미확인 여부) 사전 구성을 버리고 기존
+   freeze로 간다.
 4. 본문은 저장된 payload의 sha256·byte·항목 수를 검산해 쓰고, 그 페이지가 읽었던 artifact의
    존재·크기는 기존 재사용 경로처럼 매번 확인한다. snapshot/cursor envelope(``snapshot_id``·
    ``next_cursor``·``generated_at``·상태)은 요청에서 결합한다.
@@ -28,8 +30,9 @@ Map은 ``/v1/service/exports/current?limit=2000``을 매시 :25·:40에 처음�
 proof가 덮는 것: manifest = f(활성 catalog 행, 주소 행, 승인 inventory 행, 세대·plan, 시각).
 inventory는 승격 TX에서만 upsert되고(``record_approved_locations``) 세대·plan은 불변이며 삭제는
 page liveness epoch가 센다. 시각에 따른 만료·신선도 경계는 builder 선택의
-``health_recheck_at``(가장 이른 경계)을 ``valid_until``로 둔다. 실행·시도 상태(실패 등)는
-manifest가 아니라 상태 판정의 몫이라 3번에서 다룬다.
+``health_recheck_at``(가장 이른 경계)을 ``valid_until``로 두고, builder 판정을 잇는 상한으로만
+쓴다(경계 뒤에는 새 판정의 승인 선택 비교가 manifest의 만료 위치·미확인 여부를 확인한다).
+실행·시도 상태(실패 등)는 manifest가 아니라 상태 판정의 몫이라 3번에서 다룬다.
 
 W5(daily-summaries)는 아직 하지 않는다. 설계 §P0-A는 W5 불변 프로필을 summary watermark·
 coverage digest를 key/proof에 넣은 가산 opt-in 계약 revision으로 요구하고 Map 소비자 검증을
@@ -89,10 +92,8 @@ MAX_BUILD_BYTES = 64 * 1024 * 1024
 KEEP_BUILDS = 2
 #: builder 한 번의 전체 예산(초). 넘으면 저장하지 않고 다음 실행으로 넘긴다.
 BUILD_BUDGET_SECONDS = 600.0
-#: builder 상태 판정을 요청이 이어받는 승인 수명(소유자 결정의 최대 60초)과 최소 남은 수명.
+#: builder 상태 판정을 요청이 이어받는 승인 수명(소유자 결정의 최대 60초).
 STATUS_MAX_AGE = timedelta(seconds=60)
-#: no-op 판정 때 시간 경계까지 이만큼은 남아야 다시 만들지 않는다.
-VALID_UNTIL_MARGIN = timedelta(minutes=5)
 #: builder의 정상 결과. CLI(배포 hook)와 Dagster job이 같은 집합을 쓴다. ``not_ready``는 아직 완결
 #: 승인 집합이 없거나 이전 승인 fallback 상태라 만들 것이 없다는 뜻이다(요청 경로가 기존
 #: fallback·503을 그대로 쓴다). ``unsupported``는 PostgreSQL이 아닌 저장소다.
@@ -314,14 +315,14 @@ def prebuilt_first_page(reader, limit):
                 reader.prebuilt_outcome = "none"
                 return None
             proof = state_proof(connection, reader)
-            now = datetime.now(UTC)
             if (proof is None or proof["digest"] != build["proof_digest"]
                     or proof["liveness"] != _build_liveness(build)):
                 reader.prebuilt_outcome = "changed"
                 return None
-            if now >= build["valid_until"]:
-                reader.prebuilt_outcome = "expired"
-                return None
+            # 시간 경계(``valid_until``)는 여기서 build를 버리지 않는다. 경계가 바꾸는 것은 승인
+            # 선택의 만료 위치·미확인 여부뿐이고, 경계 뒤에는 아래에서 builder 판정을 잇지 않고 새로
+            # 판정한 승인 선택을 manifest와 비교한다(``selection``). 운영(2026-11-25)은 기대 원천
+            # 3천여 행의 가장 이른 경계가 판정 몇 초 뒤라 build가 저장되기 전에 이미 지나 있었다.
             # build handle이 만료됐어도 앞 요청이 같은 manifest로 발급한 유효 handle이 있으면 쓴다.
             frozen = _reusable_handle(connection, reader, build)
             if frozen is None:
@@ -357,7 +358,11 @@ def prebuilt_first_page(reader, limit):
         frozen = reader._renew_reused(dict(frozen, _reused=True))
     # 갱신 실패(best-effort)·총 수명 상한·이미 만료: 판정 뒤 같은 manifest로 새 handle을 발급한다.
     needs_handle = frozen["expires_at"] - datetime.now(UTC) < SNAPSHOT_TTL
-    remaining = (build["status_checked_at"] + STATUS_MAX_AGE - datetime.now(UTC)).total_seconds()
+    # builder 판정은 승인 수명(60초)과 시간 경계 중 이른 것까지만 잇는다. 경계 뒤 판정은 시각만으로
+    # 달라질 수 있어 새로 판정하고 그 승인 선택을 manifest와 비교한다.
+    remaining = (
+        min(build["status_checked_at"] + STATUS_MAX_AGE, build["valid_until"]) - datetime.now(UTC)
+    ).total_seconds()
     builder_status = remaining > STATUS_PROOF_MIN_REMAINING
     reader.__dict__.pop("_state_selection_parity", None)
     if builder_status:
@@ -479,8 +484,10 @@ def _builder_reader(repository, settings):
 
 
 def _unchanged(repository, reader, key) -> bool:
-    """마지막 build의 proof·승인 선택이 지금과 같고 시간 경계·handle이 남아 있으면 그대로 둔다.
+    """마지막 build의 proof·승인 선택이 지금과 같으면 그대로 둔다.
 
+    시간 경계(``valid_until``)도 보지 않는다. 경계가 바꾸는 만료 위치·미확인 여부는 아래 승인 선택
+    비교가 잡고, 경계 뒤 요청은 builder 판정을 잇지 않고 새로 판정한다(``prebuilt_first_page``).
     handle 수명은 보지 않는다. 만료됐으면 첫 요청이 같은 manifest로 새 handle을 한 번 발급하고
     다음 요청부터는 그 handle을 이어 쓴다(``_reusable_handle``). 시도·run 실패와 복구처럼
     manifest의 미확인 여부만 바꾸는 변화는 proof에 없으므로, 요청 경로가 builder 판정 수명 뒤에
@@ -493,7 +500,7 @@ def _unchanged(repository, reader, key) -> bool:
     ) as connection, connection.begin():
         connection.exec_driver_sql("SET LOCAL statement_timeout = '5s'")
         build = _latest_build(connection, reader, key)
-        if build is None or build["valid_until"] <= datetime.now(UTC) + VALID_UNTIL_MARGIN:
+        if build is None:
             return False
         proof = state_proof(connection, reader)
         if (proof is None or proof["digest"] != build["proof_digest"]

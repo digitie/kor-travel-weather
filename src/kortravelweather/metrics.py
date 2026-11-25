@@ -290,6 +290,18 @@ API_PREWARM_STEP_DURATION = Histogram(
     registry=_INSTRUMENTATION_REGISTRY,
 )
 
+#: current 첫 페이지의 사전 구성 판정(응답 header ``x-export-prebuilt``와 같은 값)과 사전 구성
+#: 본문을 쓴 페이지 수. 적중률은 ``hit`` / 전체 판정이다(호출 검토 A3, export_prebuilt).
+EXPORT_PREBUILT_DECISIONS = Counter(
+    "ktw_export_prebuilt_decisions_total",
+    "Prebuilt current first-page decisions by outcome (hit, none, changed, selection, ...).",
+    ("outcome",), registry=_INSTRUMENTATION_REGISTRY,
+)
+EXPORT_PREBUILT_PAGES = Counter(
+    "ktw_export_prebuilt_pages_total",
+    "Current export pages whose body came from a prebuilt page (first or cursor).",
+    ("page",), registry=_INSTRUMENTATION_REGISTRY,
+)
 EXPORT_DATABASE_PAYLOAD_READS = Counter(
     "ktw_export_database_payload_reads_total", "Actual database payload SELECT calls.",
     ("mode",), registry=_INSTRUMENTATION_REGISTRY,
@@ -1020,6 +1032,27 @@ def observe_read_stage(resource, page, stage, outcome, duration):
         outcome if outcome in {"ok", "timeout", "error", "cancelled"} else "other",
     )
     _safe("read_stage", lambda: READ_STAGE_DURATION.labels(*labels).observe(max(0, duration)))
+
+
+#: 사전 구성 첫 페이지 판정 값(``export_prebuilt.prebuilt_first_page``). 밖의 값은 other.
+EXPORT_PREBUILT_OUTCOMES = frozenset({
+    "hit", "none", "changed", "missing", "artifacts", "selection", "error", "off",
+})
+
+
+def observe_export_prebuilt(outcome, page, pages):
+    """판정이 있는 요청(``outcome``이 ``-``가 아님)만 판정으로 세고, 쓴 본문 수는 늘 더한다."""
+    page = page if page in {"first", "cursor"} else "other"
+
+    def observe():
+        if outcome != "-":
+            EXPORT_PREBUILT_DECISIONS.labels(
+                outcome if outcome in EXPORT_PREBUILT_OUTCOMES else "other",
+            ).inc()
+        if pages > 0:
+            EXPORT_PREBUILT_PAGES.labels(page).inc(pages)
+
+    _safe("export_prebuilt", observe)
 
 
 def observe_database_payload_read(mode, rows):
