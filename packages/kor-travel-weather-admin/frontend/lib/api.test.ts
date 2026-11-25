@@ -184,7 +184,10 @@ describe("날씨 종류 전달", () => {
 describe("시작 warmup 상태(/ready)", () => {
   const running: ApiReadiness = {
     ready: false, warm: "running", reason: null, elapsed_ms: 120,
-    steps: [{ name: "connections", outcome: "ok", elapsed_ms: 40 }],
+    steps: [
+      { name: "connections", outcome: "ok", elapsed_ms: 40, warmed: null, planned: null },
+      { name: "markers", outcome: "failed", elapsed_ms: 9000, warmed: 45, planned: 120 },
+    ],
   };
 
   it("진행 중 503도 본문을 그대로 돌려준다", async () => {
