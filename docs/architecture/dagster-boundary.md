@@ -328,13 +328,19 @@ Manager 쪽 PR 머지 전에는 링크가 비어 있을 수 있다).
 
 | 값 | 기준 | weather job |
 | --- | --- | --- |
-| 10 | 현황(관측·상태)을 1시간 미만 주기로 갱신하는 정기 수집·상태 적재 | `kma_regional_alert_events_job`(5분) |
+| 10 | 현황(관측·상태)을 1시간 미만 주기로 갱신하는 정기 수집·상태 적재 | `kma_regional_alert_events_job`(5분). 소유자 예외: `weather_export_prebuild_job`(아래) |
 | 5 | 시간 단위로 바뀌는 값(예보·가격·관측 등)을 하루 미만 주기로 갱신하는 정기 수집(1시간 미만 주기여도 현황이 아니면 5) | 매시: `kma_ultra_short_forecast_job`·`kma_weather_alerts_job`·`kma_ultra_short_nowcast_job`·`airkorea_weather_job` / 3시간: `kma_short_forecast_job`, schedule 있는 외부 provider 6개(`{open_meteo,openweathermap,weatherapi}_{current,forecast}_weather_job`) / 12시간: `kma_mid_forecast_job`, 지역 원천 4개(`krforest_mountain_job`·`khoa_beach_index_job`·`krex_restarea_job`·`krforest_dust_job`) |
-| 0 | 그 밖 전부: 기준 자료(주기와 무관), 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), `weather_export_prebuild_job`(:23·:38이지만 export 사전 구성), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
+| 0 | 그 밖 전부: 기준 자료(주기와 무관), 하루 이상 주기, backfill·재적재, 정리·유지보수·검증·export, 수동·관리자 일괄 실행 | `weather_retention_job`(매일), `weather_short_forecast_retention_job`(10분 주기지만 정리), `weather_export_maintenance_job`(매시지만 export 정리), schedule 없는 외부 provider 6개(관리자 수동 실행 전용), `address_refresh_job`(6개월) |
 
 - 분류는 자료의 성격 + 주기다. 1시간 미만 주기 job은 특보 발표 관측(현황, 10)과 단기예보 정리(정리, 0)
   둘뿐이고 1시간 미만 주기의 예보 job은 없다. weather에는 기준 자료(목록·지점 catalog)만 받는 job이 없다 — AirKorea는
   측정소 catalog도 갱신하지만 일의 본체는 매시 관측이라 5다. 기준 자료 job이 생기면 주기와 무관하게 0이다.
+- 소유자 예외(2026-11-26): `weather_export_prebuild_job`(:23·:38)은 규칙대로면 export라 0이지만 10이다.
+  build가 Map 첫 페이지(:25:30·:40:30 무렵) 전에 끝나야 쓸모가 있어 cron을 앞당기지 않고 queue 대기만
+  줄인다(W-EXPORT-PREBUILT-TIMING 선택지 a). run은 1분 안팎·시간당 2개라 같은 10의 대기는 거의 늘지
+  않는다. 근거 수치와 한계(weather code location 상한 3·instance 상한 5가 찬 동안은 값과 무관하게
+  기다린다)는 [`export-prebuilt-pages.md`](../export-prebuilt-pages.md) "실행 시각과 승격 사이의 창"에
+  있다. 시험은 `OWNER_EXCEPTIONS`로 이 예외만 허용한다. Manager 정본 문서에도 예외로 적어야 한다.
 - 정본은 `definitions.py`의 `JOB_PRIORITIES` 한 표다. `_job_tags`가 job tags에 값을 실으므로(export
   정리 job은 `export_maintenance.py`가 같은 값을 job 정의에 직접 단다 — 순환 import)
   schedule·sensor·Launchpad·관리자 콘솔 launch·재실행(native retry, common infra retry)이 만드는

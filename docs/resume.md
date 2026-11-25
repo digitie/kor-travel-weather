@@ -1,3 +1,10 @@
+## 2026-11-26 — export 사전 구성 job 우선순위 10, 배포 대기
+
+소유자 결정 (a)대로 cron `23,38`은 두고 `weather_export_prebuild_job`의 `dagster/priority`를 10으로 올렸다.
+운영 측정상 queue 대기는 공용 instance 상한(weather 3·전체 5)이 찬 동안 생기므로 우선순위는 꼬리만 줄인다
+(예상 적중 18%→19%). 다음 한 작업: odroid code-server 배포 뒤 사전 구성 run 생성→시작과 적중 비율을 하루
+본다. 29%를 원하면 Manager 용량 결정이 먼저다. [상세](journal.md)
+
 ## 2026-11-25 — export 정리 job GC 간헐 실패(`gc:statement_timeout`) 수정, 배포 대기
 
 odroid 9 run 중 4 run이 첫 GC 참조 판정(256개 묶음, 3초 상한)의 cold IO로 취소돼 실패했다. 정리 job의 판정
