@@ -212,6 +212,63 @@ def test_active_scopes_raw_json_claims_and_missing_states_match_reference(scope_
     assert {row[0] for row in actual} == scopes - {"missing-attempt", "no-owner"}
 
 
+def _array_sizes(parameters):
+    values = parameters.values() if isinstance(parameters, dict) else parameters or ()
+    return [len(value) for value in values if isinstance(value, list | tuple)]
+
+
+def test_active_scopes_read_key_arrays_in_bounded_batches_of_the_same_rr(
+    scope_tables, monkeypatch,
+):
+    """운영(2026-11-25 odroid) current 약 2,900 scope의 시도 PK 배열 한 문장이 5초 상한을 넘어
+    사전 구성 job이 실패했다. 키 배열은 묶음 상한 안에서 나눠 읽고 결과는 한 번에 읽은 것과 같다.
+    """
+    from kortravelweather import export_capacity
+
+    connection, metadata = scope_tables
+    owners, attempts, runs, generations = (
+        metadata.tables[name]
+        for name in (
+            "weather_export_scope_owners",
+            "weather_export_attempts",
+            "weather_sync_runs",
+            "weather_export_generations",
+        )
+    )
+    scopes = {f"batch-{i}" for i in range(7)}
+    for i, scope in enumerate(sorted(scopes)):
+        connection.execute(owners.insert().values(
+            source_scope=scope, active_attempt_id=f"batch-attempt-{i}", owner_epoch=1,
+        ))
+        connection.execute(attempts.insert().values(
+            attempt_id=f"batch-attempt-{i}", run_id=f"batch-run-{i}",
+            status="failed" if i == 3 else "sealed", owner_epochs={scope: 1},
+        ))
+        connection.execute(runs.insert().values(
+            run_id=f"batch-run-{i}", status="running" if i == 2 else "success",
+        ))
+        if i != 5:
+            connection.execute(generations.insert().values(
+                generation_id=f"batch-g-{i}", attempt_id=f"batch-attempt-{i}",
+            ))
+    expected = _reference(connection, metadata, scopes)
+    monkeypatch.setattr(export_capacity, "KEY_LOOKUP_BATCH", 2, raising=False)
+    sizes = []
+
+    def capture(_conn, _cursor, _statement, parameters, *_rest):
+        sizes.extend(_array_sizes(parameters))
+
+    event.listen(connection, "before_cursor_execute", capture)
+    try:
+        actual = sorted(_active_scope_states(connection, metadata, scopes))
+    finally:
+        event.remove(connection, "before_cursor_execute", capture)
+    assert actual == expected
+    # owner·시도·공개 세대·run 키 7개씩을 2개 묶음 4개로 읽는다(한 문장은 키 수와 무관하게 작다).
+    assert sizes and max(sizes) <= 2
+    assert len(sizes) == 4 * 4
+
+
 def test_active_scopes_preserve_exponent_duplicate_keys_and_json_null(scope_tables):
     connection, metadata = scope_tables
     owners = metadata.tables["weather_export_scope_owners"]

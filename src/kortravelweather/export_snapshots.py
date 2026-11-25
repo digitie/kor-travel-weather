@@ -49,6 +49,7 @@ from .export_capacity import (
     ExportCapacityExceeded,
     MetadataBudget,
     any_of,
+    batched_rows,
     bounded_manifest_digest,
     read_generation_refs,
 )
@@ -594,13 +595,18 @@ class FrozenCurrentExports:
             return
         generations, plans = self.heads.generations, self.heads.plans
         # 큰 JOIN은 부하 중 5초 상한을 넘었다. 같은 RR의 두 PK 집합으로 같은 존재를 검산한다.
-        present = dict(connection.execute(select(
-            generations.c.generation_id, generations.c.attempt_id,
-        ).where(any_of(generations.c.generation_id, sorted(wanted)))).all())
+        # 키 배열은 승인 선택과 같이 묶음(``KEY_LOOKUP_BATCH``)마다 읽는다.
+        present = {row.generation_id: row.attempt_id for row in batched_rows(
+            connection, lambda keys: select(
+                generations.c.generation_id, generations.c.attempt_id,
+            ).where(any_of(generations.c.generation_id, keys)), sorted(wanted),
+        )}
         attempts = set(present.values())
-        if present.keys() != wanted or set(connection.scalars(select(plans.c.attempt_id).where(
-            any_of(plans.c.attempt_id, sorted(attempts)),
-        ))) != attempts:
+        if present.keys() != wanted or {row.attempt_id for row in batched_rows(
+            connection, lambda keys: select(plans.c.attempt_id).where(
+                any_of(plans.c.attempt_id, keys),
+            ), sorted(attempts),
+        )} != attempts:
             raise ExportArtifactError("승인 source의 불변 plan 또는 공개 세대가 유실됐습니다.")
 
     def require_current_selection(self):
