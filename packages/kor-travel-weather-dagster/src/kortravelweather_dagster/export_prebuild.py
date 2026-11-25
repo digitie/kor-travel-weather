@@ -41,6 +41,13 @@ LOCATION_NAME = "kortravelweather_dagster.definitions"
 CRON_SCHEDULE = "23,38 * * * *"
 #: builder 예산(600초)에 마지막 저장 문장(30초)과 여유를 더한 run 상한.
 MAX_RUNTIME_SECONDS = 900
+#: 공용 queue ``dagster/priority``. 공통 규칙대로면 export라 0이지만 소유자 결정(2026-11-26,
+#: W-EXPORT-PREBUILT-TIMING 선택지 a)으로 상한 10을 쓰는 예외다. cron은 그대로 두고 queue 대기만
+#: 줄인다 — :23·:38 build가 Map 첫 페이지(:25:30·:40:30 무렵) 전에 끝나야 쓸모가 있다. run은 1분
+#: 안팎이고 시간당 2개라 같은 10(특보 발표 관측·다른 테넌트 수집)의 대기는 거의 늘지 않는다(근거
+#: ``docs/export-prebuilt-pages.md`` "실행 시각과 승격 사이의 창"). 정본은 definitions의
+#: ``JOB_PRIORITIES``이고 tests/test_run_priority.py가 이 값과 대조한다(순환 import라 상수로 둔다).
+RUN_PRIORITY = "10"
 #: 정상 결과. 배포 hook CLI와 같은 집합이다(``export_prebuilt.SUCCESS_OUTCOMES`` 설명 참고).
 _SUCCESS = SUCCESS_OUTCOMES
 
@@ -82,10 +89,9 @@ def weather_export_prebuild(context) -> dict[str, Any]:
 @job(
     name=JOB_NAME,
     executor_def=in_process_executor,
-    # dagster/priority 0: 15분 간격이지만 수집이 아닌 export 사전 구성이다(공용 queue 규칙).
-    # 분류의 정본은 definitions의 ``JOB_PRIORITIES``이고 tests/test_run_priority.py가 이 값과
-    # 대조한다(정리 job과 같이 순환 import라 상수로 둔다).
-    tags={**_POLICY.tags(project="weather", job_name=JOB_NAME), "dagster/priority": "0"},
+    # dagster/priority는 ``RUN_PRIORITY``(소유자 결정 예외 10) 설명을 본다. job tags에 달아
+    # schedule·Launchpad·재실행 run이 모두 같은 값을 받는다.
+    tags={**_POLICY.tags(project="weather", job_name=JOB_NAME), "dagster/priority": RUN_PRIORITY},
     description="Map 표준 프로필(current limit 2000) export 페이지를 publisher 뒤 미리 만든다.",
 )
 def weather_export_prebuild_job():

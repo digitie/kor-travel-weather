@@ -45,6 +45,18 @@ def test_job_runs_in_process_two_minutes_before_map_current():
     assert job.executor_def.name == "in_process"
 
 
+def test_job_jumps_the_shared_queue_without_moving_the_schedule():
+    # 소유자 결정(2026-11-26, W-EXPORT-PREBUILT-TIMING 선택지 a): cron은 :23·:38 그대로 두고
+    # queue 대기만 줄인다. 공용 queue 상한 10이고, schedule이 덮지 않도록 job tags에만 단다.
+    repository = defs.get_repository_def()
+    job = repository.get_job(export_prebuild.JOB_NAME)
+    assert job.tags["dagster/priority"] == export_prebuild.RUN_PRIORITY == "10"
+    assert job.run_tags["dagster/priority"] == "10"
+    schedule = repository.get_schedule_def(export_prebuild.SCHEDULE_NAME)
+    assert schedule.cron_schedule == export_prebuild.CRON_SCHEDULE == "23,38 * * * *"
+    assert "dagster/priority" not in (schedule.tags or {})
+
+
 def test_schedule_waits_for_exports_and_the_publisher(monkeypatch, enabled):
     class Instance:
         def __init__(self, states):
