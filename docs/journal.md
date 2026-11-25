@@ -1,3 +1,32 @@
+## 2026-11-25 — export 정리 job GC의 간헐 `statement_timeout`: 참조 판정 묶음 64개·상한 시 반감
+
+odroid `weather_export_maintenance_job` 11-25 12:52~21:52 KST 9 run 중 4 run(14:52·18:19·20:52·21:52)이
+`export 정리 실패(gc:statement_timeout)`로 끝났다(18:19는 `retire:statement_timeout`도). 실패 run은 모두
+`gc_calls=0` — 첫 GC 호출의 첫 문장에서 끝났고 run 시간은 9~38초였다. 성공 run은 78~348초.
+PostgreSQL 로그의 취소 문장(05:53:00Z·09:20:04Z·11:52:54Z·12:52:51Z)은 모두 256개 후보의 참조 판정
+(`SELECT gc_candidates.digest FROM (VALUES …)`, `live_artifact_digests`, 문장 상한 3초)이었다. 목록
+문장(15초)·삭제 문장(5초)이 아니고, A3 사전 구성 표(0044)와도 무관하다(GC는 그 표를 읽지 않는다).
+
+- pg_stat_statements(11-17 이후): 판정 문장 4,980회, 평균 0.93초·표준편차 0.63초·완료 최대 3.56초,
+  호출당 평균 752 block 디스크 read. 취소된 문장은 집계에 없다.
+- 첫 묶음은 created_at 순으로 가장 오래 살아남은 artifact(11-17~11-24 생성, 현재 head 등이 보호)라
+  generation·snapshot 행이 cache 밖이다. 같은 묶음의 읽기 전용 EXPLAIN ANALYZE 1.67초(디스크 read
+  2,199 block, 계획 115ms). generation_chunks 참조는 digest당 1~3행뿐이라 계획 문제가 아니라 IO다.
+  같은 시각 checkpoint가 1GB WAL마다 6~13분씩 쓰고 있었다(`write=362~809 s`).
+- 18:19 run의 퇴역 실패(30초 상한)는 DB 전체가 느렸던 구간이다(08:40Z·09:18Z에 다른 export 문장도
+  취소됐다). 퇴역 문장은 평균 1.0~1.2초·완료 최대 20.5초이고 이번에 바꾸지 않았다.
+
+바꾼 것: 정리 job의 참조 판정·삭제 묶음을 256→64(`GC_REFERENCE_BATCH`)로 줄였다(판정 비용이 digest
+수에 비례하므로 약 1/4). 문장 상한(SQLSTATE 57014)에 걸린 묶음은 rollback돼 소비되지 않으며, scan의
+묶음을 그 묶음의 절반(최소 8, `MIN_REFERENCE_BATCH`)으로 줄여 같은 후보를 다시 판정하고
+`gc_statement_timeouts`에 센다. 8개 이하 묶음의 상한과 다른 SQL 오류는 그대로 올라가 run이 실패한다.
+판정 문장 상한 3초·guard 대기·목록 문장 상한은 그대로다. 묶음만 줄인 호출도 진척으로 보아 같은 run의
+다음 호출이 잇는다. `tests/test_export_maintenance.py`가 실제 PostgreSQL 57014 취소로 수정 전 실패
+(`gc:statement_timeout`)를 재현하고, 수정 뒤 150개 orphan을 모두 지우는 것과 최소 묶음 실패를 고정한다.
+
+배포 뒤 볼 것: run 성공률, `gc_statement_timeouts`(0이 정상), `gc_calls`·`gc_deleted`(묶음이 작아져
+호출당 지우는 수가 줄었는지), PostgreSQL 로그의 `gc_candidates` 취소.
+
 ## 2026-11-24 — Map 호출 검토 이행 정리(A1~A9·L1~L8·B1~B12)
 
 [Map 호출 검토](reports/2026-11-24-map-call-performance-review.md)의 개선 항목이 하루 동안 여러 작업자 PR로

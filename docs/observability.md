@@ -108,14 +108,21 @@ rule·알람을 새 이름으로 함께 전환한다.
   기존 배타 guard 안에서 후보 digest의 참조와 mtime을 확인한 뒤 실제 파일을 지운다.
   명시 `dry_run`은 세기만 하고 `off`는 GC를 실행하지 않는다. 알 수 없는 설정은 계속
   `dry_run`으로 보정한다. 기존 운영에 명시된 `dry_run`은 코드 배포만으로 바뀌지 않는다.
-  참조 조회는 후보 묶음별 EXISTS로 끝내며 전체 live set을 먼저 읽지 않는다. code-server는
+  참조 조회는 후보 묶음별 EXISTS로 끝내며 전체 live set을 먼저 읽지 않는다. 정리 job의 묶음은
+  64개이고 판정 문장 상한은 3초다. 판정 비용은 digest마다의 random read라 묶음 크기에
+  비례한다(2026-11-25 odroid: 256개 묶음이 평균 0.93초·완료 최대 3.56초, cold 첫 묶음 1.67초에
+  디스크 read 2,199 block — checkpoint IO와 겹친 4 run이 첫 판정에서 `gc:statement_timeout`으로
+  실패했다). 문장 상한(57014)에 걸린 묶음은 소비하지 않고 그 묶음의 절반(최소 8개)으로 같은
+  후보를 다시 판정하며, run metadata·log의 `gc_statement_timeouts`에 센다. 8개 묶음까지 상한에
+  걸리면 run은 `gc:statement_timeout`으로 실패한다 — 0이 아닌 `gc_statement_timeouts`가 이어지면
+  DB IO 포화를 먼저 본다. code-server는
   한 run 안에서 2,000행 page를 차례로 읽는다(run 사이에는 아무것도 보관하지 않는다). 새 파일·live 파일·
   알 수 없는 이름도 목록 예산에 포함하며, DB 실패/취소 후에는 같은 미처리 후보를 재확인한다.
   재시작하면 처음부터 돌아도 안전하다. 전환은 기존 정상 release 절차로 배포와 함께 조정한다.
   reclaimable은 **마지막 정리 run**(300초 예산 안의 제한된 패스)이 찾은 대상 중 아직
   저장소에 남은 byte이며, 볼륨 전체 회수량이 아니다. `weather_export_maintenance_job` run
   metadata·log의 `gc_deleted`, `gc_eligible_bytes`, `gc_complete`, `gc_visited`, `gc_pending`,
-  `gc_errors`와 실제 deleted byte counter를 함께 본다. snapshot handle은
+  `gc_errors`, `gc_statement_timeouts`와 실제 deleted byte counter를 함께 본다. snapshot handle은
   약 15~16분 후 만료되고 만료 후 6시간을 넘으면 DB 행과 ref만 정리한다. 그 삭제가 파일
   unlink를 대신하지 않으며, 실제 파일 정리는 위 보존·참조 검사에 따른다.
 - `ktw_metrics_errors_total{operation}`
