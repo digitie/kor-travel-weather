@@ -283,7 +283,7 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 | B1·B2·B4·B5 | weather #294 | 머지 `2e69dd1` | BFF 세션 확인 GET/HEAD 10초 캐시·single-flight, matcher에서 `maplibre/` 제외, 공개 경로 DB 단절 503 `DB_UNAVAILABLE`, GET 시도별 상한·502/503/504 재시도. 계약 `docs/weather-admin-map-call-resilience.md` | `auth_limiter`(2)는 바꾸지 않음. `/v1/admin/*`의 DB 단절 분류는 범위 밖. 운영 503 감소 측정 |
 | B3·B9·B10·B11 | weather #300 | 머지 `8b57b46` | 공개 handler의 DTO·직렬화·gzip을 worker thread로, 요청당 연결·transaction 하나와 마감 bind 1회, `/resolve` SQL 한 문장, 마커 자리 대기 3초 → 503 `MARKER_BUSY`. 계약 `docs/weather-public-read-path.md` | 요청 묶음 transaction의 lock 보유가 L3 연기에 주는 영향과 효과는 운영 미측정 |
 | B6·B7·B8·B12 | weather #304 | 머지 `c037fbc` | 마커 시간 기반 재시도, `initialCamera`로 load 전 마커 요청, `view=compact` 마커(기본 응답·OpenAPI 200 불변), 카탈로그 병렬 수신·TanStack 캐시·ETag/304. 계약 `docs/weather-admin-map-calls.md` | compact 모양은 `x-compact-schema`로만 문서화. 카탈로그 304는 DB 비용을 줄이지 않음 |
-| §4.3 경로 B warmup·`/ready` | weather #298 | 머지 `72dd9e9` | API lifespan 읽기 전용 warmup(30초 예산), `GET /ready`, `deploy.sh`의 `/ready` 확인(초과는 경고), compose web healthcheck. 설명 `docs/weather-api-prewarm.md` | Manager verify의 `/ready`, Manager 선언의 web healthcheck, HAProxy 트래픽 게이트는 Manager 저장소 일. odroid 효과 측정. `pg_prewarm`은 선택 사항이라 하지 않음 |
+| §4.3 경로 B warmup·`/ready` | weather #298 | 머지 `72dd9e9` | API lifespan 읽기 전용 warmup(30초 예산), `GET /ready`, `deploy.sh`의 `/ready` 확인(초과는 경고), compose web healthcheck. 설명 `docs/weather-api-prewarm.md` | Manager verify의 `/ready`, Manager 선언의 web healthcheck, HAProxy 트래픽 게이트는 Manager 저장소 일. odroid 효과 측정. `pg_prewarm`은 선택 사항이라 하지 않음. 2026-11-25 odroid 배포 직후 60곳 마커 묶음이 57014·예산 초과(markers 26.9초, 상세 생략)로 끝나 후속 PR에서 15곳 묶음·마커 몫·`/ready`의 `warmed`/`planned`로 고침(`docs/weather-api-prewarm.md` "마커를 15곳씩 나누는 이유") |
 
 ### 9.2 §7 순서별
 
@@ -294,7 +294,7 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 | 3 | B1·B2·B5·B4 | #294 | 머지 | 미측정 |
 | 4 | A2 + Map 계약 시험 | #299·map #1550 | 머지 | 미측정(304 비율) |
 | 5 | A3 + 배포 hook | #301 | W2만 머지, W5 남음 | 미측정 |
-| 6 | 경로 B warmup + `/ready` | #298 | 머지(Manager 쪽 남음) | 미측정 |
+| 6 | 경로 B warmup + `/ready` | #298 | 머지(Manager 쪽 남음), 마커 묶음 후속 수정 | 배포 직후 markers failed(57014)·warm=skipped(budget) 관측, 수정 뒤 재측정 |
 | 7 | A7·A8·A9 | map #1542 | 머지 | 미측정(current 실패율) |
 | 8 | L4~L8, B3·B6~B12 | #297·#305·#300·#304 | 머지 | 미측정 |
 
