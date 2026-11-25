@@ -9,6 +9,7 @@ from itertools import islice
 from typing import Any
 
 from sqlalchemy import select, text, tuple_
+from sqlalchemy.exc import DBAPIError
 
 from .export_artifacts import ExportArtifactError
 from .export_gc import (
@@ -23,6 +24,14 @@ from .export_gc import (
     live_artifact_digests,
 )
 
+#: 문장 상한에 걸린 batch를 반씩 줄이는 하한. 이 크기 이하의 batch가 상한에 걸리면 실패다.
+MIN_REFERENCE_BATCH = 8
+_STATEMENT_TIMEOUT = "57014"
+
+
+def _statement_timeout(exc: BaseException) -> bool:
+    return getattr(getattr(exc, "orig", None), "sqlstate", None) == _STATEMENT_TIMEOUT
+
 
 class DatabaseArtifactGCScan:
     """프로세스 메모리의 bounded cursor. 실패한 batch는 다음 tick에 재판정한다.
@@ -30,18 +39,28 @@ class DatabaseArtifactGCScan:
     ``page_size``·``statement_seconds``는 목록 한 번의 행 수와 문장 상한이다. 기본값은
     예전 sensor 경로 그대로다. 정리 job은 작은 page와 긴 문장 상한으로 여러 page를 읽는다
     (odroid 2026-11-23 실측: 20,000행 목록 한 번 6.7초 — sensor의 1.5초 안에 끝나지 못했다).
+
+    ``reference_batch``는 참조 판정·삭제 한 batch의 digest 수다(기본 ``UNLINK_BATCH``).
+    판정 비용은 digest마다 generation·snapshot 행을 따라가는 random read라 batch 크기에
+    비례한다. 문장 상한(57014)에 걸린 batch는 소비하지 않고, 이 scan의 batch를 그 batch의
+    절반(최소 ``MIN_REFERENCE_BATCH``)으로 줄여 같은 후보를 다시 판정한다.
     """
 
     def __init__(
         self, *, page_size: int | None = None,
         statement_seconds: float = GC_REFERENCE_SECONDS,
+        reference_batch: int | None = None,
     ) -> None:
         # 기본 page는 호출 시점의 모듈 상한을 읽는다(시험이 상한을 줄여 keyset을 본다).
         page_size = MAX_SCAN_CANDIDATES if page_size is None else page_size
         if not 1 <= page_size <= MAX_SCAN_CANDIDATES or not 0 < statement_seconds <= 60:
             raise ValueError("artifact GC 목록 page 설정이 올바르지 않습니다.")
+        reference_batch = UNLINK_BATCH if reference_batch is None else reference_batch
+        if not 1 <= reference_batch <= UNLINK_BATCH:
+            raise ValueError("artifact GC 참조 batch 설정이 올바르지 않습니다.")
         self.page_size = page_size
         self.statement_seconds = statement_seconds
+        self.reference_batch = reference_batch
         self.engine = None
         self.after: tuple[datetime, str] | None = None
         self.pending: deque[tuple[str, int]] = deque()
@@ -119,6 +138,8 @@ def collect_database_export_artifacts(
 
     기존 report key와 참조 조회 3초/guard 1초 reserve를 유지한다. SQL/commit 실패는
     전파하되 pending을 소비하지 않는다. busy guard는 다음 호출에서 재시도한다.
+    batch의 문장 상한(57014)은 batch를 반으로 줄여 다시 시도하고 ``statement_timeouts``에
+    센다. ``MIN_REFERENCE_BATCH`` 이하 batch의 문장 상한은 다른 SQL 실패처럼 전파한다.
     """
     from .export_database_artifacts import DatabaseExportArtifactStore
 
@@ -136,7 +157,7 @@ def collect_database_export_artifacts(
     report = {
         "mode": mode, "visited": 0, "scanned": 0, "live": 0, "eligible": 0,
         "eligible_bytes": 0, "deleted": 0, "deleted_bytes": 0, "errors": 0,
-        "complete": False, "pending": 0,
+        "complete": False, "pending": 0, "statement_timeouts": 0,
     }
     owned = scan is None
     state = DatabaseArtifactGCScan() if owned else _scan_state(scan)
@@ -146,7 +167,7 @@ def collect_database_export_artifacts(
         processing_deadline = time.monotonic() + delete_budget_seconds + reserve
         attempted = 0
         while state.pending and time.monotonic() + reserve <= processing_deadline:
-            batch = list(islice(state.pending, UNLINK_BATCH))
+            batch = list(islice(state.pending, state.reference_batch))
             if mode == "delete" and attempted + len(batch) > MAX_UNLINKS:
                 break
             try:
@@ -185,6 +206,12 @@ def collect_database_export_artifacts(
                     state.pending.popleft()
             except ExportArtifactError:
                 break
+            except DBAPIError as exc:
+                # rollback된 batch는 pending에 그대로다. 더 줄일 수 없으면 실패를 올린다.
+                if not _statement_timeout(exc) or len(batch) <= MIN_REFERENCE_BATCH:
+                    raise
+                state.reference_batch = max(MIN_REFERENCE_BATCH, len(batch) // 2)
+                report["statement_timeouts"] += 1
         report["pending"] = len(state.pending)
         report["complete"] = state.exhausted and not state.pending
         if report["complete"]:

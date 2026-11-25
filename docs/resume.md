@@ -1,3 +1,10 @@
+## 2026-11-25 — export 정리 job GC 간헐 실패(`gc:statement_timeout`) 수정, 배포 대기
+
+odroid 9 run 중 4 run이 첫 GC 참조 판정(256개 묶음, 3초 상한)의 cold IO로 취소돼 실패했다. 정리 job의 판정
+묶음을 64개로 줄이고, 상한에 걸린 묶음은 반씩(최소 8) 줄여 다시 판정한다(`gc_statement_timeouts`). 다음 한
+작업: odroid weather Dagster code-server 배포 뒤 매시 :52 run 성공률과 `gc_statement_timeouts`(0이 정상)·
+`gc_deleted`를 본다. [상세](journal.md)
+
 ## 2026-11-24 — Map 호출 검토 이행 완료(코드), 운영 수용 대기
 
 검토 문서의 A1~A9·L1~L8·B1~B12가 weather #290·#292·#294·#295·#297~#301·#304·#305와 map #1542·#1550으로
