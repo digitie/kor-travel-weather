@@ -26,31 +26,58 @@ MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MANIFEST_STATE_RESERVE = 128
 FAST_FETCH_ROWS = 1024
 FAST_FETCH_BYTES = 8 * 1024 * 1024
+#: 큰 이력 표를 임의 키(UUID) 배열로 찾는 한 문장의 키 상한.
+#: 키가 흩어져 있어 문장 비용은 키 수만큼의 index leaf·heap page 임의 읽기다. 운영(odroid,
+#: 2026-11-25)에서 current 승인 선택은 시도(112만 행·844 MB)·세대(75만 행·470 MB)를 약 2,900개씩
+#: 한 문장으로 찾았고, 차가운 cache에서 각 2.9~3.6초, 수집이 겹치면 5초 문장 상한(57014)을 넘어
+#: 사전 구성 job이 실패했다(18:18·21:24 KST). 같은 RR 안에서 키를 이만큼씩 나눠 한 문장의 일을
+#: 키 수와 무관하게 묶는다(합계 일은 같고, 문장 수는 최대 ``MAX_SELECTED_ROWS / 512``).
+KEY_LOOKUP_BATCH = 512
 
 
-def _metadata_fetch_rows(connection, table, column, predicate, count, maximum, fallback):
+def key_batches(values):
+    """키를 ``KEY_LOOKUP_BATCH``개씩 나눈다(순서 유지·중복 제거). 빈 목록이면 묶음이 없다."""
+    values = list(dict.fromkeys(values))
+    size = KEY_LOOKUP_BATCH
+    return [values[start:start + size] for start in range(0, len(values), size)]
+
+
+def batched_rows(connection, statement_for, keys, *, mappings=False):
+    """``statement_for(묶음)``을 ``key_batches`` 묶음마다 같은 connection(RR)에서 실행한 행 목록."""
+    rows = []
+    for batch in key_batches(keys):
+        result = connection.execute(statement_for(batch))
+        rows.extend(result.mappings() if mappings else result)
+    return rows
+
+
+def _metadata_fetch_rows(connection, table, column, key_column, keys, maximum, fallback):
     """같은 RR에서 비압축 JSON 전체가 8MiB 이하면 왕복만 묶는다.
 
     압축 TOAST 크기는 메모리 크기의 상한이 아니므로 작은 기존 buffer로 돌아간다.
     이 예비 조회는 JSON을 해석/전송하지 않는다. 거부·누적 예산 검사는 기존 경로 그대로다.
     READ COMMITTED에서는 두 문장 사이의 변경 때문에 크기 증명을 재사용하지 않는다.
+    크기는 키 묶음(``key_batches``)마다 같은 RR에서 더한다(한 문장의 임의 읽기를 묶는다).
     """
-    if (count <= FAST_FETCH_ROWS // 2 or connection.dialect.name != "postgresql"
+    if (len(keys) <= FAST_FETCH_ROWS // 2 or connection.dialect.name != "postgresql"
             or connection.get_execution_options().get("isolation_level")
             not in {"REPEATABLE READ", "SERIALIZABLE"}):
         return fallback
-    sizes = select(
-        (func.coalesce(func.pg_column_size(column), 0) + 4).label("size"),
-        func.pg_column_compression(column).label("compression"),
-    ).select_from(table).where(predicate).limit(maximum + 1).subquery()
-    row = connection.execute(select(
-        func.coalesce(func.sum(sizes.c.size), 0),
-        func.count(), func.bool_or(sizes.c.compression.is_not(None)),
-        func.current_setting("server_encoding"),
-    )).one()
-    if row[0] <= FAST_FETCH_BYTES and row[1] <= maximum and not row[2] and row[3] == "UTF8":
-        return FAST_FETCH_ROWS
-    return fallback
+    total = rows = 0
+    for batch in key_batches(keys):
+        sizes = select(
+            (func.coalesce(func.pg_column_size(column), 0) + 4).label("size"),
+            func.pg_column_compression(column).label("compression"),
+        ).select_from(table).where(any_of(key_column, batch)).limit(maximum + 1).subquery()
+        row = connection.execute(select(
+            func.coalesce(func.sum(sizes.c.size), 0),
+            func.count(), func.bool_or(sizes.c.compression.is_not(None)),
+            func.current_setting("server_encoding"),
+        )).one()
+        total, rows = total + row[0], rows + row[1]
+        if total > FAST_FETCH_BYTES or rows > maximum or row[2] or row[3] != "UTF8":
+            return fallback
+    return FAST_FETCH_ROWS
 
 
 class ExportCapacityExceeded(ExportArtifactError):
@@ -165,7 +192,7 @@ def read_scope_plans(connection, table, attempt_ids, *, byte_sizes=None):
     oversized = func.octet_length(cast(table.c.descriptor, Text)) > MAX_SCOPE_PLAN_BYTES
     predicate = any_of(table.c.attempt_id, attempt_ids)
     fetch_rows = _metadata_fetch_rows(
-        connection, table, table.c.descriptor, predicate, len(attempt_ids),
+        connection, table, table.c.descriptor, table.c.attempt_id, attempt_ids,
         MAX_SOURCE_SCOPES, PLAN_FETCH_ROWS,
     )
     statement = select(

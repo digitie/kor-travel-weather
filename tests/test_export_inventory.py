@@ -353,6 +353,54 @@ def test_owner_health_reads_run_status_per_run_and_big_lists_as_one_parameter(
     assert _selection(repo).unconfirmed  # 같은 묶음의 run 상태도 건강도에 들어간다
 
 
+#: 임의 키 배열로 찾는 큰 이력 표 조회. descriptor 본문은 server cursor FETCH 묶음으로 읽는다.
+_HISTORY_LOOKUPS = (
+    "FROM weather_export_attempts", "FROM weather_export_generations",
+    "FROM weather_export_scope_owners", "FROM weather_sync_runs",
+    "pg_column_size(weather_export_scope_plans.descriptor)",
+    "SELECT weather_export_scope_plans.attempt_id FROM weather_export_scope_plans WHERE",
+)
+
+
+def test_selection_reads_history_key_arrays_in_bounded_batches_with_the_same_result(
+    external_repository, tmp_path, monkeypatch,
+):
+    """운영(2026-11-25 odroid) current 승인 선택은 시도·세대 표를 약 2,900개 키 배열 한 문장으로
+    찾았고, 차가운 cache·수집 경합에서 5초 상한(57014)을 넘어 사전 구성 job이 실패했다.
+    같은 RR에서 키를 묶음 상한만큼 나눠 읽어도 선택 결과는 같다(plan 크기 예비 조회 포함).
+    """
+    from kortravelweather import export_capacity
+    from kortravelweather import export_inventory_selection as selection_module
+
+    repo = external_repository
+    targets = [ProviderLocation("batched-" + uuid.uuid4().hex, 37.5, 127, {}) for _ in range(3)]
+    for target in targets:
+        repo.create_location(WeatherLocation(
+            location_id=target.location_id, name="묶음 조회", latitude=37.5, longitude=127,
+        ))
+    _publish(repo, tmp_path, targets)
+    selection_module._parsed_plans.clear()
+    selection_module._parsed_plans_bytes = 0
+    baseline = _selection(repo)
+    selection_module._parsed_plans.clear()
+    selection_module._parsed_plans_bytes = 0
+    monkeypatch.setattr(export_capacity, "KEY_LOOKUP_BATCH", 1, raising=False)
+    # plan 3개도 크기 예비 조회를 하도록 문턱을 낮춘다(운영은 512개 초과에서 한다).
+    monkeypatch.setattr(export_capacity, "FAST_FETCH_ROWS", 2)
+    batched, seen = _captured(repo, lambda: _selection(repo))
+    def fields(selection):  # 판정 시각(health_*) 밖의 필드
+        return (selection.scopes, selection.unconfirmed, selection.expired,
+                sorted(selection.scope_states), selection.state_scopes)
+
+    assert fields(batched) == fields(baseline)
+    assert baseline.scopes and baseline.scope_states
+    lookups = [(s, p) for s, p in seen if any(name in s for name in _HISTORY_LOOKUPS)]
+    assert any("pg_column_size" in s for s, _ in lookups)
+    sizes = [len(value) for _, p in lookups for value in (p or {}).values()
+             if isinstance(value, list | tuple)]
+    assert sizes and max(sizes) == 1, [(s[:100], p) for s, p in lookups]
+
+
 def _age(repo, location_id, age):
     from sqlalchemy import update
 

@@ -15,6 +15,7 @@ from .export_capacity import (
     ExportCapacityExceeded,
     MetadataBudget,
     any_of,
+    batched_rows,
     read_scope_plans,
 )
 from .export_external import RetrievalScopeDescriptor
@@ -229,9 +230,11 @@ def parsed_scope_plans(connection, plans, attempt_ids):
         raise ExportCapacityExceeded("승인 source plan 수가 상한을 넘었습니다.")
     remembered = _remembered_plans(attempt_ids)
     if remembered:
-        present = set(connection.scalars(select(plans.c.attempt_id).where(
-            any_of(plans.c.attempt_id, sorted(remembered)),
-        )))
+        present = {row.attempt_id for row in batched_rows(
+            connection, lambda keys: select(plans.c.attempt_id).where(
+                any_of(plans.c.attempt_id, keys),
+            ), sorted(remembered),
+        )}
         if present != remembered.keys():
             raise ExportCapacityExceeded("승인 source의 불변 plan이 유실됐습니다.")
     missing = [key for key in attempt_ids if key not in remembered]
@@ -307,6 +310,8 @@ def _active_scope_states(connection, metadata, source_scopes, *, known_publicati
     Python에서 1.0이며 epoch 1과 다르다. 기존 str/32자 판정을 그대로 적용한다.
     복합 CTE가 운영 5초 상한에 걸려, 같은 RR에서 한정된 키 집합을 각각 한 번 읽는다.
     공유 시도의 큰 epoch JSON은 시도마다 한 번만 해석한다.
+    키 배열은 ``KEY_LOOKUP_BATCH``개씩 같은 RR에서 나눠 읽는다. 운영 current 약 2,900 scope의
+    시도 PK 조회 한 문장이 5초 상한을 넘어 사전 구성 job이 실패했다(2026-11-25 odroid).
     """
     if not source_scopes:
         return []
@@ -314,16 +319,18 @@ def _active_scope_states(connection, metadata, source_scopes, *, known_publicati
     attempts = metadata.tables["weather_export_attempts"]
     runs = metadata.tables["weather_sync_runs"]
     generations = metadata.tables["weather_export_generations"]
-    claims = list(connection.execute(select(
+    claims = batched_rows(connection, lambda keys: select(
         owners.c.active_attempt_id, owners.c.source_scope, owners.c.owner_epoch,
-    ).where(any_of(owners.c.source_scope, sorted(source_scopes)))))
+    ).where(any_of(owners.c.source_scope, keys)), sorted(source_scopes))
     attempt_ids = sorted({row.active_attempt_id for row in claims
                           if row.active_attempt_id is not None})
     if not attempt_ids:
         return []
-    selected_attempts = {row.attempt_id: row for row in connection.execute(select(
-        attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
-    ).where(any_of(attempts.c.attempt_id, attempt_ids)))}
+    selected_attempts = {row.attempt_id: row for row in batched_rows(
+        connection, lambda keys: select(
+            attempts.c.attempt_id, attempts.c.run_id, attempts.c.status, attempts.c.owner_epochs,
+        ).where(any_of(attempts.c.attempt_id, keys)), attempt_ids,
+    )}
     # inventory 검산이 같은 RR에서 이미 읽은 generation을 재사용한다. attempt_id는
     # UNIQUE이므로 알려진 시도에 다른 publication이 추가될 수 없다. 새 owner의 시도만 조회한다.
     publications = defaultdict(list)
@@ -332,14 +339,16 @@ def _active_scope_states(connection, metadata, source_scopes, *, known_publicati
             publications[attempt_id].append(generation_id)
     missing_publications = sorted(set(selected_attempts) - publications.keys())
     if missing_publications:
-        for row in connection.execute(select(
+        for row in batched_rows(connection, lambda keys: select(
             generations.c.attempt_id, generations.c.generation_id,
-        ).where(any_of(generations.c.attempt_id, missing_publications))):
+        ).where(any_of(generations.c.attempt_id, keys)), missing_publications):
             publications[row.attempt_id].append(row.generation_id)
     run_ids = sorted({row.run_id for row in selected_attempts.values() if row.run_id is not None})
-    selected_runs = dict(connection.execute(select(runs.c.run_id, runs.c.status).where(
-        any_of(runs.c.run_id, run_ids),
-    )).all())
+    selected_runs = {row.run_id: row.status for row in batched_rows(
+        connection, lambda keys: select(runs.c.run_id, runs.c.status).where(
+            any_of(runs.c.run_id, keys),
+        ), run_ids,
+    )}
     active = []
     for attempt_id, scope, epoch in claims:
         attempt = selected_attempts.get(attempt_id)
@@ -414,15 +423,16 @@ def approved_source_selection(
     if len(rows) > MAX_SELECTED_ROWS:
         raise ExportArtifactError("승인 source inventory metadata 상한을 넘었습니다.")
     generation_ids = sorted({row["generation_id"] for row in rows})
+    # 큰 세대 표의 임의 PK 배열은 묶음(``KEY_LOOKUP_BATCH``)마다 같은 RR에서 읽는다.
     approved = {
         row["generation_id"]: row
-        for row in connection.execute(select(
+        for row in batched_rows(connection, lambda keys: select(
             generations.c.generation_id,
             generations.c.attempt_id.label("plan_attempt_id"),
             generations.c.data_revision_at,
             generations.c.created_at.label("generation_published_at"),
-        ).where(any_of(generations.c.generation_id, generation_ids))).mappings()
-    } if generation_ids else {}
+        ).where(any_of(generations.c.generation_id, keys)), generation_ids, mappings=True)
+    }
     if len(approved) != len(generation_ids):
         raise ExportArtifactError("승인 inventory의 generation이 유실됐습니다.")
     for row in rows:
@@ -459,9 +469,11 @@ def approved_source_selection(
     hidden = {row["plan_attempt_id"] for row in rows} - shown
     if hidden:
         # 명시 비활성 위치의 plan은 descriptor를 읽지 않고 존재만 확인한다.
-        hidden -= set(connection.scalars(
-            select(plans.c.attempt_id).where(any_of(plans.c.attempt_id, sorted(hidden)))
-        ))
+        hidden -= {row.attempt_id for row in batched_rows(
+            connection, lambda keys: select(plans.c.attempt_id).where(
+                any_of(plans.c.attempt_id, keys),
+            ), sorted(hidden),
+        )}
     if hidden:
         raise ExportArtifactError("승인 source의 불변 plan이 유실됐습니다.")
     plan_namespaces = {key: value.namespace for key, value in parsed_plans.items()}
@@ -545,9 +557,11 @@ def approved_source_selection(
         and row["plan_attempt_id"] not in run_ids
     })
     if needed:
-        run_ids.update(connection.execute(select(attempts.c.attempt_id, attempts.c.run_id).where(
-            any_of(attempts.c.attempt_id, needed),
-        )).tuples().all())
+        run_ids.update((row.attempt_id, row.run_id) for row in batched_rows(
+            connection, lambda keys: select(attempts.c.attempt_id, attempts.c.run_id).where(
+                any_of(attempts.c.attempt_id, keys),
+            ), needed,
+        ))
     latest_runs = _latest_cohort_runs(connection, runs, declarations)
     for source in expected:
         row = declarations.get(source)
