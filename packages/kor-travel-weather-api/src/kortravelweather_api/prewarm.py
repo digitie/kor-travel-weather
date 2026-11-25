@@ -11,9 +11,13 @@
 - 읽기 전용. 쓰기 함수(``refresh_region_locations`` 등)는 부르지 않는다. 세션 폐기 확인은
   존재할 수 없는 무작위 값으로 해 lazy 삭제 분기에 들어가지 않는다.
 - 동시성 1. 단계를 차례로 한 thread에서 실행하고 마커는 사용자와 같은 ``marker_limiter``,
-  세션 확인은 같은 ``auth_limiter``로 들어간다. 마커 자리 대기도 전체 예산 안에서 한다.
+  세션 확인은 같은 ``auth_limiter``로 들어간다. 마커 자리 대기도 마커 몫의 시간 안에서 한다.
 - 문장당 5초·전체 30초. 공개 읽기 마감 장치(:mod:`.read_limits`)로 문장마다
   ``statement_timeout``을 걸고 pool 대기도 남은 시간으로 줄인다.
+- 마커는 15곳씩 나눠 읽는다. 사용자 묶음(60곳)을 한 번에 읽으면 배포 직후 한 묶음이 27초를
+  넘겨 남은 예산을 다 쓰고 57014로 끝나 아무것도 데우지 못했다(odroid 2026-11-25). 작은 묶음은
+  문장마다 5초 상한 안에 들고, 한 묶음이 실패해도 다음 묶음으로 간다. 마커 몫은 전체 예산에서
+  상세 단계 몫(문장 상한 하나)을 뺀 시각까지다.
 - 사용자 요청(``/v1/*``)이 2건 이상 처리 중이면 남은 단계를 생략한다.
 - 종료 시 취소는 worker thread에도 전해 다음 문장을 보내지 않는다.
 - 예외는 로그·지표로만 남기고 앱 기동·요청 처리에 영향을 주지 않는다. 지도 엔드포인트에는
@@ -55,9 +59,12 @@ PREWARM_BUDGET_SECONDS = 30.0
 PREWARM_STATEMENT_SECONDS = 5.0
 #: pool에 미리 열어 두는 연결 수(pool_size 10 안).
 PREWARM_CONNECTIONS = 3
-#: 관리 지도 ``MARKER_BATCH_SIZE``(weather-map.tsx)와 같다.
+#: 관리 지도 ``MARKER_BATCH_SIZE``(weather-marker-queue.ts)와 같다. 앞쪽 2묶음(120곳)을 데운다.
 MARKER_BATCH_SIZE = 60
 MARKER_BATCHES = 2
+#: warmup이 한 번에 읽는 마커 위치 수. 60곳 묶음의 배포 직후 문장 최댓값(사실 수화 12.4초,
+#: 특보 후보 9.7초, odroid ``pg_stat_statements``)을 4로 나누면 문장 상한 5초 안에 든다.
+MARKER_CHUNK_SIZE = 15
 #: ``/v1/weather/markers``가 ``marker_values_many``에 넘기는 위치당 행 수와 같다.
 MARKER_ROWS_PER_LOCATION = 80
 #: 관리 지도 위치 카탈로그 한 페이지(``getAllPublicLocations``)와 같다.
@@ -94,11 +101,24 @@ class RequestActivity:
         self.active = 0
 
 
+@dataclass(frozen=True)
+class StepItems:
+    """여러 묶음으로 나눠 읽는 단계(마커)의 진행. 위치 수다."""
+
+    warmed: int
+    planned: int
+
+
+#: 단계 함수의 반환값. 묶음으로 나눠 읽는 단계는 진행(:class:`StepItems`)을 같이 돌려준다.
+StepReport = StepOutcome | tuple[StepOutcome, StepItems]
+
+
 @dataclass
 class StepResult:
     name: StepName
     outcome: StepOutcome
     elapsed_ms: int
+    items: StepItems | None = None
 
 
 @dataclass
@@ -131,6 +151,14 @@ class ReadinessStepOut(BaseModel):
     name: StepName
     outcome: StepOutcome
     elapsed_ms: int = Field(ge=0)
+    warmed: int | None = Field(
+        ge=0,
+        description="markers: 읽기를 마친 위치 수(성공한 묶음의 위치 합). 다른 단계·생략은 null",
+    )
+    planned: int | None = Field(
+        ge=0,
+        description="markers: 데우려던 위치 수(카탈로그 앞쪽 최대 120곳). 다른 단계·생략은 null",
+    )
 
 
 class ReadinessOut(BaseModel):
@@ -154,7 +182,11 @@ class ReadinessOut(BaseModel):
             reason=state.reason,
             elapsed_ms=state.elapsed_ms(),
             steps=[
-                ReadinessStepOut(name=step.name, outcome=step.outcome, elapsed_ms=step.elapsed_ms)
+                ReadinessStepOut(
+                    name=step.name, outcome=step.outcome, elapsed_ms=step.elapsed_ms,
+                    warmed=None if step.items is None else step.items.warmed,
+                    planned=None if step.items is None else step.items.planned,
+                )
                 for step in state.steps
             ],
         )
@@ -206,7 +238,7 @@ class ApiPrewarm:
         return asyncio.create_task(self.run(), name="weather-api-prewarm")
 
     async def run(self) -> None:
-        steps: tuple[tuple[StepName, Callable[[], Awaitable[StepOutcome]]], ...] = (
+        steps: tuple[tuple[StepName, Callable[[], Awaitable[StepReport]]], ...] = (
             ("connections", self._connections),
             ("session_check", self._session_check),
             ("regions", self._regions),
@@ -260,30 +292,50 @@ class ApiPrewarm:
             return "busy"
         return None
 
-    def _record(self, name: StepName, outcome: StepOutcome, seconds: float) -> None:
+    def _record(
+        self, name: StepName, outcome: StepOutcome, seconds: float,
+        items: StepItems | None = None,
+    ) -> None:
         elapsed_ms = max(0, int(seconds * 1000))
-        self.state.steps.append(StepResult(name=name, outcome=outcome, elapsed_ms=elapsed_ms))
+        self.state.steps.append(
+            StepResult(name=name, outcome=outcome, elapsed_ms=elapsed_ms, items=items),
+        )
         observe_api_prewarm_step(name, outcome, seconds)
-        logger.info(
-            "weather_api_prewarm_step step=%s outcome=%s elapsed_ms=%d", name, outcome, elapsed_ms,
+        if items is None:
+            logger.info(
+                "weather_api_prewarm_step step=%s outcome=%s elapsed_ms=%d",
+                name, outcome, elapsed_ms,
+            )
+        else:
+            logger.info(
+                "weather_api_prewarm_step step=%s outcome=%s elapsed_ms=%d warmed=%d planned=%d",
+                name, outcome, elapsed_ms, items.warmed, items.planned,
+            )
+
+    @staticmethod
+    def _log_failure(name: StepName, exc: Exception, *, chunk: str | None = None) -> None:
+        # warmup 실패는 로그·지표로만 남긴다. 원문은 SQL·주소를 담을 수 있어 남기지 않고,
+        # DB 밖 예외(코드 결함)만 traceback을 남긴다.
+        logger.warning(
+            "weather_api_prewarm_step_failed step=%s%s type=%s sqlstate=%s driver=%s",
+            name, "" if chunk is None else f" chunk={chunk}", type(exc).__name__,
+            sqlstate(exc) or "-", driver_error_name(exc),
+            exc_info=not isinstance(exc, (SQLAlchemyError, PublicReadTimeout)),
         )
 
     async def _run_step(
-        self, name: StepName, step: Callable[[], Awaitable[StepOutcome]],
+        self, name: StepName, step: Callable[[], Awaitable[StepReport]],
     ) -> StepOutcome:
         started = monotonic()
+        items: StepItems | None = None
         try:
-            outcome = await step()
+            report = await step()
         except Exception as exc:
-            # warmup 실패는 로그·지표로만 남긴다. 원문은 SQL·주소를 담을 수 있어 남기지 않고,
-            # DB 밖 예외(코드 결함)만 traceback을 남긴다.
-            outcome = "failed"
-            logger.warning(
-                "weather_api_prewarm_step_failed step=%s type=%s sqlstate=%s driver=%s",
-                name, type(exc).__name__, sqlstate(exc) or "-", driver_error_name(exc),
-                exc_info=not isinstance(exc, (SQLAlchemyError, PublicReadTimeout)),
-            )
-        self._record(name, outcome, monotonic() - started)
+            outcome: StepOutcome = "failed"
+            self._log_failure(name, exc)
+        else:
+            outcome, items = report if isinstance(report, tuple) else (report, None)
+        self._record(name, outcome, monotonic() - started, items)
         return outcome
 
     async def _call(
@@ -291,10 +343,13 @@ class ApiPrewarm:
         function: Callable[..., _T],
         *args: Any,
         limiter: CapacityLimiter | None = None,
+        deadline: float | None = None,
         **kwargs: Any,
     ) -> _T:
-        """남은 예산을 마감으로, 5초를 문장 상한으로 걸고 worker thread에서 실행한다."""
+        """남은 예산(``deadline``이 있으면 그 시각까지)을 마감으로, 5초를 문장 상한으로 걸고
+        worker thread에서 실행한다."""
         started, finished = Event(), Event()
+        until = self._deadline if deadline is None else min(deadline, self._deadline)
 
         def bounded() -> _T:
             # 취소 확인보다 먼저 켠다. 취소 쪽은 신호를 켠 뒤 이 값을 보므로, 이 thread가 신호를
@@ -303,7 +358,7 @@ class ApiPrewarm:
             try:
                 if self._cancelled.is_set():
                     raise PublicReadTimeout("warmup이 취소되었습니다.")
-                remaining = self._deadline - monotonic()
+                remaining = until - monotonic()
                 if remaining <= 0:
                     raise PublicReadTimeout("warmup 예산이 끝났습니다.")
                 with public_read_deadline(
@@ -366,42 +421,67 @@ class ApiPrewarm:
         self.repository.public_location_regions(rows)
         return rows
 
-    async def _markers(self) -> StepOutcome:
+    async def _markers(self) -> StepReport:
+        """앞쪽 위치를 작은 묶음으로 나눠 사용자 마커 읽기를 한 번씩 밟는다.
+
+        묶음마다 따로 자리·연결·transaction을 쓰고, 실패한 묶음은 기록만 하고 다음 묶음으로
+        간다. 마커 몫(전체 마감에서 상세 단계 몫을 뺀 시각)이 문장 상한 하나보다 적게 남으면 새
+        묶음을 시작하지 않는다. 시작해도 마감에 잘릴 가능성이 크고, 상세 단계를 굶기지 않기
+        위해서다.
+        """
         ids = [row.location_id for row in self._locations[: MARKER_BATCH_SIZE * MARKER_BATCHES]]
-        batches = 0
-        for start in range(0, len(ids), MARKER_BATCH_SIZE):
-            if self._stop_reason() is not None:
+        chunks = [ids[start:start + MARKER_CHUNK_SIZE]
+                  for start in range(0, len(ids), MARKER_CHUNK_SIZE)]
+        deadline = self._marker_deadline()
+        last_start = deadline - self.statement_seconds
+        warmed = failed = attempted = 0
+        for index, chunk in enumerate(chunks, start=1):
+            if self._stop_reason() is not None or monotonic() >= last_start:
                 break
-            # 사용자 마커 묶음과 같은 limiter(2)를 나눠 쓴다. warmup은 한 자리만 쓴다.
-            if not await self._acquire_marker_slot():
+            # 사용자 마커와 같은 limiter(2)를 나눠 쓴다. warmup은 한 자리를 한 묶음 동안만 쓴다.
+            if not await self._acquire_marker_slot(last_start):
                 break
             try:
                 # 자리를 기다리는 사이 사용자 요청이 몰렸으면 묶음을 보내지 않고 자리를 돌려준다.
                 if self._stop_reason() is not None:
                     break
-                await self._call(self._marker_batch, ids[start:start + MARKER_BATCH_SIZE])
+                attempted += 1
+                await self._call(self._marker_batch, chunk, deadline=deadline)
+            except Exception as exc:
+                failed += 1
+                self._log_failure("markers", exc, chunk=f"{index}/{len(chunks)}")
+            else:
+                warmed += len(chunk)
             finally:
                 self.marker_limiter.release()
-            batches += 1
-        return "ok" if batches else "skipped"
+        items = StepItems(warmed=warmed, planned=len(ids))
+        if failed:
+            return "failed", items
+        return ("ok" if attempted else "skipped"), items
 
-    async def _acquire_marker_slot(self) -> bool:
-        """마커 자리를 남은 예산 안에서만 기다린다. 예산이 끝나면 거짓이다."""
-        with move_on_after(self._deadline - monotonic()):
+    def _marker_deadline(self) -> float:
+        """마커 단계의 마감. 상세 단계가 문장 상한 하나만큼은 쓸 수 있게 남긴다."""
+        return self._deadline - self.statement_seconds
+
+    async def _acquire_marker_slot(self, until: float) -> bool:
+        """마커 자리를 ``until``까지만 기다린다. 그때까지 못 얻으면 거짓이다."""
+        with move_on_after(until - monotonic()):
             await self.marker_limiter.acquire()
             return True
         return False
 
     def _marker_batch(self, ids: list[str]) -> None:
         # ``GET /v1/weather/markers``가 관리 지도 기본 필터(종류 6개 전체)로 하는 읽기와 같다.
+        # 위치 PK 조회는 자기 transaction, 값 읽기는 공유 읽기 묶음으로 라우터와 같게 나눈다.
         locations = self.repository.get_locations_by_ids(ids, enabled_only=True)
         by_id = {location.location_id: location for location in locations}
-        self.repository.marker_values_many(
-            [location_id for location_id in ids if location_id in by_id],
-            limit_per_location=MARKER_ROWS_PER_LOCATION,
-            kinds=list(WeatherKind),
-            locations=by_id,
-        )
+        with self.repository.read_scope():
+            self.repository.marker_values_many(
+                [location_id for location_id in ids if location_id in by_id],
+                limit_per_location=MARKER_ROWS_PER_LOCATION,
+                kinds=list(WeatherKind),
+                locations=by_id,
+            )
 
     async def _location_detail(self) -> StepOutcome:
         if not self._locations:
