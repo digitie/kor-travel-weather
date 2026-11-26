@@ -29,7 +29,7 @@ Map export(`/v1/service/exports/*`)는 이 warmup으로 거의 풀리지 않는�
 | 3 | `regions` | `region_locations()` 읽기만. 쓰기 `refresh_region_locations`는 부르지 않는다 |
 | 4 | `locations` | `list_locations(limit=1000, include_metadata=False)`·`count_locations`·`public_location_regions` (`GET /v1/weather/locations?limit=1000`과 같다) |
 | 5 | `markers` | 카탈로그 앞쪽 120곳(사용자 60곳 묶음 2개 분량)을 **15곳씩 최대 8묶음**으로 `get_locations_by_ids` + `marker_values_many(limit_per_location=80, kinds=6종 전체)`. 값 읽기는 라우터처럼 공유 읽기 묶음(`read_scope`) 안에서 한다. 묶음마다 사용자 마커와 같은 `marker_limiter`(2)에서 한 자리를 잡았다 돌려준다. 실패한 묶음은 로그만 남기고 다음 묶음으로 간다. 아래 "마커 몫"까지만 한다 |
-| 6 | `location_detail` | 첫 위치의 `get_location`·`latest_values(limit=200)`·`timeline(현재 시 정각~모레 0시 KST, limit=5000, exclude_alerts)` |
+| 6 | `location_detail` | 첫 위치의 하위 읽기 셋을 차례로: `location`=`get_location`, `latest`=`latest_values(limit=200)`, `forecast`=`timeline(현재 시 정각~모레 0시 KST, limit=5000, exclude_alerts)`. 하위 읽기마다 따로 연결·transaction을 쓰고, 시작 전에 문장 마감까지 문장 상한 하나(5초)가 남지 않으면 남은 하위 읽기를 시작하지 않는다. 실패한 하위 읽기는 로그만 남기고 다음으로 간다 |
 
 안전 장치:
 
@@ -42,15 +42,24 @@ Map export(`/v1/service/exports/*`)는 이 warmup으로 거의 풀리지 않는�
   다시 건다(`lock_timeout` 2초도 같이 건다, [weather-public-read-path.md](weather-public-read-path.md)).
   pool 대기도 남은 예산으로 줄어든다(`ReadDeadlineQueuePool`). 예산이 끝나면 다음 문장은
   보내지 않는다.
-- **마커 몫.** 마커 단계의 마감은 전체 마감에서 문장 상한 하나(5초)를 뺀 시각이다. 그 몫은
-  상세 단계(`location_detail`)에 남긴다. 마커 몫이 문장 상한 하나보다 적게 남으면 새 묶음을
-  시작하지 않는다(시작해도 마감에 잘릴 가능성이 크다). 마커 자리 대기도 그때까지만 한다.
-  운영 값으로는 시작 후 20초까지 새 묶음을 시작하고 25초에 마커를 끝낸다.
+- **마감 여유.** 문장 마감(“남은 예산”의 기준)은 전체 예산 끝에서 마감 여유
+  (`PREWARM_FINISH_MARGIN_SECONDS`, 0.5초)를 뺀 시각, 운영 값으로 시작 후 29.5초다.
+  `statement_timeout`은 다시 걸기 여유(50ms)와 왕복만큼 마감보다 늦게 문장을 끊을 수 있고,
+  끊긴 뒤 rollback·연결 반환·thread 복귀가 더 든다. 그 몫을 예산 안에 둬 전체 `elapsed_ms`가
+  30초를 넘지 않게 한다. 단계·마커 묶음·상세 하위 읽기도 문장 마감까지만 시작한다.
+- **마커 몫.** 마커 단계의 마감은 문장 마감에서 상세 단계 몫(문장 상한 하나 5초와 마감 여유
+  0.5초)을 뺀 시각이다. 마감에 잘린 마커 묶음의 정리도 마감 여유 안에 끝나므로, 상세 단계는
+  시작할 때 첫 하위 읽기에 문장 상한 하나를 온전히 쓸 수 있다. 마커 몫이 문장 상한 하나보다
+  적게 남으면 새 묶음을 시작하지 않는다(시작해도 마감에 잘릴 가능성이 크다). 마커 자리 대기도
+  그때까지만 한다. 운영 값으로는 시작 후 19초까지 새 묶음을 시작하고 24초에 마커를 끝낸다
+  (#309는 20초·25초였다).
 - **사용자 우선.** 처리 중인 사용자 요청(`/v1/*`, 점검·문서 경로 제외)이 2건 이상이면 남은 단계를
   생략한다(`RequestContextMiddleware`가 센다). 단계 사이와 마커 묶음 사이, 마커 자리를 얻은
   직후에 확인한다. 자리를 기다리는 사이 사용자 요청이 몰렸으면 묶음을 보내지 않고 자리를 돌려준다.
 - **예외는 로그·지표만.** 단계가 실패하면 다음 단계로 간다. 마커는 묶음 하나가 실패해도 다음
   묶음으로 가고, 하나라도 실패하면 단계 결과는 `failed`다(데운 위치 수는 `warmed`로 따로 보인다).
+  상세 단계도 같다. 하위 읽기 하나라도 실패(문장 상한·마감에 잘린 57014 포함)하면 `failed`이고,
+  실패 없이 예산 때문에 남은 하위 읽기를 시작하지 않았으면 `ok`에 `warmed < planned`다.
   단, 첫 단계(연결)가 실패하면 나머지는
   보내지 않는다(`reason=error`). 실패 로그는 원문(SQL·주소가 들어갈 수 있다) 대신 예외 형식·
   SQLSTATE·driver 예외 이름만 남기고, DB 밖 예외(코드 결함)만 traceback을 남긴다.
@@ -90,8 +99,45 @@ weather_api_prewarm_step_failed step=markers type=OperationalError sqlstate=5701
 
 시험(`test_api_prewarm.py`)은 예산·상한을 1/5(6초·1초)로 줄이고 마커 읽기에 위치당 0.04초를
 들게 해 이를 재현한다. 60곳 묶음은 두 묶음 모두 57014로 `warmed=0`이고, 15곳 묶음은 로컬에서
-`warmed=105/120`(7묶음)을 데운 뒤 상세 단계까지 `ok`로 4.5초에 끝났다. 로컬 값이며 운영 효과를
-뜻하지 않는다.
+`warmed=105/120`(7묶음)을 데운 뒤 상세 단계까지 `ok`로 4.5초에 끝났다(#309 시점, 마감 여유 전).
+로컬 값이며 운영 효과를 뜻하지 않는다.
+
+## 상세 단계를 하위 읽기로 나누고 마감 여유를 두는 이유
+
+#309(15곳 묶음)를 담은 main(`4932cbe`)을 odroid에 배포한 직후(2026-11-26 10:17 KST, API와
+Dagster code server가 같이 재시작해 DB가 차가웠다) `/ready`는 다음과 같았다.
+
+```
+warm=done elapsed_ms=30113
+connections ok 1019 · session_check ok 300 · regions ok 703 · locations ok 1099
+markers ok 19907 warmed=60/120 · location_detail failed 7077
+weather_api_prewarm_step_failed step=location_detail type=OperationalError sqlstate=57014 driver=QueryCanceled
+```
+
+- 직전 배포(11-25 19시대, 역시 재시작)는 `elapsed_ms=22669`, 마커 120/120(19131ms), 상세 `ok`
+  1583ms였다. 이번에는 DB가 더 차가워 마커 15곳 묶음이 약 5초씩 걸렸고 4묶음(60곳)이 시작 후
+  23.0초에 끝났다(다섯째 묶음은 새 묶음 시작 시각 20초를 넘겨 시작하지 않았다).
+- 상세 단계는 23.0초에 남은 7.0초를 받았다. 예전에는 위치·최신값·예보 세 읽기(문장 다섯: 위치
+  PK, 최신값 후보·사실 수화, 예보 후보·사실 수화)를 worker 호출 하나로 읽었고, 마지막 문장이
+  예산 마감에 잘렸다. PostgreSQL 로그의 잘린 문장(01:17:49.660 UTC)은 사실 수화
+  (`weather_values JOIN unnest(...) AS current_fact_keys`)였다. 같은 문장은 `pg_stat_statements`
+  (11-17 이후)에서 평균 446ms·최댓값 12.4초이고, 상세의 후보 문장은 최신값 후보가 최댓값 2.6초,
+  예보 후보가 1.2초였다. 잘린 문장은 통계에 남지 않으므로 이번 값은 "남은 몫 이상"까지만 안다.
+- 전체가 30113ms로 예산을 113ms 넘겼다. 문장 마감이 예산 끝과 같아, 마감에 잘린 문장의 정리
+  (`statement_timeout`이 마감보다 조금 늦게 끊는 몫, rollback·연결 반환·thread 복귀)가 예산 밖으로
+  나갔다. 단계가 마감 뒤에 시작한 것은 아니다(상세 단계는 23.0초에 시작했다).
+
+그래서 상세 단계를 하위 읽기 셋으로 나눠 하위 읽기마다 남은 예산을 다시 보고, 문장 상한 하나만큼
+남지 않으면 남은 하위 읽기를 시작하지 않는다(마커 묶음과 같은 규칙). 문장 마감은 예산 끝보다
+마감 여유 0.5초 앞에 둬 잘린 문장의 정리까지 예산 안에 든다. 문장 상한(5초)과 예산(30초)은
+그대로이고, 잘린 하위 읽기는 계속 `failed`와 57014 로그로 보인다. 같은 운영 상황이라면 상세
+단계는 29.5초까지 6.5초를 받아 위치·최신값을 읽고, 최신값 뒤 5초가 남지 않으면 예보는 시작하지
+않아 `ok`·`warmed=2/3`으로 30초 안에 끝난다.
+
+시험은 예산·상한을 1/5(6초·1초)로 줄이고 마커가 몫을 다 쓰게 한 뒤 하위 읽기에 0.3/0.9/0.9초를
+들게 한다. 예전 방식은 6002ms(예산 초과)·상세 `failed`(57014)였고, 지금은 `ok`·`warmed=2/3`으로
+6초 안에 끝난다. 예산 마감에 잘린 문장(시작 단계의 `pg_sleep`) 시험도 예전 2002ms에서 2초 안으로
+들어온다. 로컬 값이며 운영 효과를 뜻하지 않는다.
 
 ## 설정
 
@@ -116,8 +162,9 @@ double을 넘기면 설정과 무관하게 끈다. 저장소 `compose.yaml`의 a
 
 본문: `ready`(200이면 true), `warm`, `reason`, `elapsed_ms`(시작부터 끝까지, 진행 중이면 지금까지,
 꺼져 있으면 null), `steps[]`(`name`·`outcome`=`ok|failed|skipped`·`elapsed_ms`·`warmed`·
-`planned`). `warmed`/`planned`는 마커 단계만 채운다: 읽기를 마친 위치 수(성공한 묶음의 위치 합)와
-데우려던 위치 수(앞쪽 최대 120곳)다. 다른 단계와 생략된 마커 단계는 null이다. OpenAPI
+`planned`). `warmed`/`planned`는 마커와 상세 단계만 채운다. 마커는 읽기를 마친 위치 수(성공한
+묶음의 위치 합)와 데우려던 위치 수(앞쪽 최대 120곳), 상세는 마친 하위 읽기 수와 하위 읽기 수(3)다.
+다른 단계와 위치가 없어 생략된 단계는 null이다. OpenAPI
 `ReadinessOut`, 관리 웹 TS 타입은 `lib/api.ts`의 `ApiReadiness`·`getReadiness()`다.
 uvicorn worker가 여럿이면 `/ready`는 요청을 받은 worker 하나의 상태다.
 
@@ -131,9 +178,10 @@ uvicorn worker가 여럿이면 `/ready`는 요청을 받은 worker 하나의 상
 ## 관측
 
 - 지표 `ktw_api_prewarm_step_duration_seconds{step,outcome}`(histogram, 기동마다 단계당 1회).
-- 로그 `weather_api_prewarm_step step=… outcome=… elapsed_ms=…`(INFO, 마커는 `warmed=… planned=…`
-  추가), `weather_api_prewarm_step_failed step=… type=… sqlstate=… driver=…`(WARNING, 마커 묶음
-  실패는 `step=markers chunk=2/8 …`처럼 묶음 번호를 붙여 묶음마다 한 줄),
+- 로그 `weather_api_prewarm_step step=… outcome=… elapsed_ms=…`(INFO, 마커·상세는 `warmed=…
+  planned=…` 추가), `weather_api_prewarm_step_failed step=… type=… sqlstate=… driver=…`(WARNING,
+  마커 묶음 실패는 `step=markers chunk=2/8 …`, 상세 하위 읽기 실패는
+  `step=location_detail read=latest …`처럼 묶음 번호·하위 읽기 이름을 붙여 하나마다 한 줄),
   `weather_api_prewarm_finished warm=… reason=… elapsed_ms=… ok=… failed=… skipped=…`
   (예산 초과·연결 실패는 WARNING, 나머지는 INFO). API는 별도 logging 설정이 없어 기본 uvicorn
   실행에서는 WARNING 이상만 보인다. 정상 완료는 `/ready`·지표로 확인한다.
@@ -159,7 +207,9 @@ uvicorn worker가 여럿이면 `/ready`는 요청을 받은 worker 하나의 상
   실제 트래픽 게이트(HAProxy가 `/ready`를 보는 것)도 그쪽 결정이다.
 - 효과 수용 기준(배포 직후 첫 마커 묶음 대 두 번째 묶음 차이)은 운영 배포 뒤 측정한다. 로컬에서는
   빈 시험 DB라 warmup 전체가 수백 ms였고, 이 값은 운영 효과를 뜻하지 않는다. 배포 직후 `/ready`의
-  마커 `warmed`/`planned`·`outcome`과 `location_detail` 결과, 전체 `elapsed_ms`(30초 안)를 함께 본다.
+  마커 `warmed`/`planned`·`outcome`과 `location_detail`의 `outcome`·`warmed`/`planned`, 전체
+  `elapsed_ms`(30000 이하)를 함께 본다. 상세가 `failed`면 API 로그의 `read=…`로 잘린 하위 읽기를,
+  PostgreSQL 로그의 `canceling statement due to statement timeout`·`STATEMENT`로 잘린 문장을 본다.
 - warmup이 데우는 위치는 카탈로그 앞쪽이고 사용자의 첫 화면 위치와 다를 수 있다. 위치와 무관한
   몫(연결·catalog/plan cache·SQLAlchemy 컴파일·인덱스 상위 page)은 어느 위치로 데워도 같다.
 - `pg_prewarm`은 확장 설치·`shared_preload_libraries` 변경이 필요하고 DB가 여러 테넌트 공유라
