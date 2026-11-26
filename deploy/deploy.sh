@@ -102,7 +102,7 @@ echo
 # warmup은 첫 관리 지도 요청을 빠르게 할 뿐이고, 트래픽을 막을지는 HAProxy/Manager가 정한다.
 # /ready는 warmup이 끝났거나(done) 예산 초과·사용자 요청 겹침으로 생략됐거나(skipped)
 # 꺼져 있으면(disabled) 200, 진행 중이면 503이다. 단계별 결과와 시간은 본문의 steps에 있고,
-# 마커 단계는 데운 위치 수(warmed/planned)도 담는다.
+# 마커 단계는 데운 위치 수, 상세 단계는 마친 하위 읽기 수(warmed/planned)도 담는다.
 ready_deadline=$(( $(date +%s) + 60 ))
 ready_status=""
 ready_body=""

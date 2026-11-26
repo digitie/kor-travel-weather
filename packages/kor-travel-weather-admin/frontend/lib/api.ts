@@ -723,9 +723,15 @@ export type ApiReadinessStep = {
   name: "connections" | "session_check" | "regions" | "locations" | "markers" | "location_detail";
   outcome: "ok" | "failed" | "skipped";
   elapsed_ms: number;
-  /** markers: 읽기를 마친 위치 수(성공한 묶음의 위치 합). 다른 단계·생략은 null. */
+  /**
+   * markers: 읽기를 마친 위치 수(성공한 묶음의 위치 합). location_detail: 마친 하위 읽기 수
+   * (위치·최신값·예보 중). 다른 단계·생략은 null.
+   */
   warmed: number | null;
-  /** markers: 데우려던 위치 수(카탈로그 앞쪽 최대 120곳). 다른 단계·생략은 null. */
+  /**
+   * markers: 데우려던 위치 수(카탈로그 앞쪽 최대 120곳). location_detail: 하위 읽기 수(3).
+   * 다른 단계·생략은 null.
+   */
   planned: number | null;
 };
 
