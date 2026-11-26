@@ -18,8 +18,8 @@ artifact 본문 조립을 했고, 결과 캐시는 프로세스 메모리 60초�
   fallback을 써야 하는 상태면 만들지 않는다(`not_ready`).
 - **실행 표면**
   - Dagster `weather_export_prebuild_job`(schedule `weather_export_prebuild`, `23,38 * * * *` KST,
-    in-process, run 상한 900초, 실패 재시도 1). publisher sensor에 넣지 않았다. Map W2 2분 전에만
-    돈다. export·사전 구성이 켜져 있고 publisher sensor가 RUNNING일 때만 run을 만든다.
+    in-process, run 상한 900초, 실패 재시도 1, 공용 queue `dagster/priority` 10 — 아래 "실행 시각과
+    승격 사이의 창"). publisher sensor에 넣지 않았다. Map W2 2분 전에만 돈다. export·사전 구성이 켜져 있고 publisher sensor가 RUNNING일 때만 run을 만든다.
   - 배포 hook: `deploy/deploy.sh`가 `/ready` 확인 뒤 `docker compose exec -T api timeout 280 python -m
     kortravelweather.export_prebuilt --budget-seconds 240`을 한 번 돌린다. 호스트의 `timeout 300`은
     docker exec client만 끝내고 컨테이너 안 프로세스는 남기므로, 컨테이너 안 `timeout 280`이 builder
@@ -159,7 +159,7 @@ builder 한 번(freeze + 14페이지 조립 + 저장, 5.7MB)은 7.9초, 입력�
 - **적중률 관측**: 위 지표(`ktw_export_prebuilt_decisions_total`)로 본다. 시간 경계 문제는 위
   "시간 경계"에서 고쳤다. builder의 freeze·페이지 조립은 API export 동시성 제한 밖에서 돌아 :25 첫
   페이지와 DB를 다툴 수 있다(운영 미확인).
-- **실행 시각과 승격 사이의 창**(2026-11-25 운영 관측, 고치지 않음): 적중하려면 build가 Map 첫
+- **실행 시각과 승격 사이의 창**(2026-11-25 운영 관측, 2026-11-26 우선순위만 상향 — 아래 "결정과 적용"): 적중하려면 build가 Map 첫
   페이지 전에 저장돼 있고, 그 판정과 Map 첫 페이지 사이에 current 기대 원천(초단기실황·AirKorea·
   OpenWeatherMap·WeatherAPI·산림청·도로공사) 승격이 없어야 한다.
   - Dagster run 시작이 schedule보다 늦었다: :23 run은 03:23:55·04:24:18·05:30:17·06:23:52·07:24:45Z,
@@ -195,4 +195,47 @@ builder 한 번(freeze + 14페이지 조립 + 저장, 5.7MB)은 7.9초, 입력�
     | (c) 같은 sensor, 조용함 30초 | 같음 | 15/49 (31%) | 약 157 |
 
     앞당기면 사이 승격이 늘어 오히려 떨어진다. (a)의 우선순위 상향(시작 지연을 줄이고 고르게)이 (c)와
-    같은 적중을 sensor·추가 run 없이 낸다. 37%를 넘으려면 (b) 또는 (d)가 필요하다(소유자 결정 대기).
+    같은 적중을 sensor·추가 run 없이 낸다. 37%를 넘으려면 (b) 또는 (d)가 필요하다.
+  - **결정과 적용(2026-11-26)**: 소유자가 (a)를 골랐다 — cron `23,38`은 그대로 두고
+    `weather_export_prebuild_job`의 `dagster/priority`를 0에서 10(공용 상한)으로 올렸다(공통 규칙의
+    예외, [`dagster-boundary.md`](architecture/dagster-boundary.md) "공용 queue 우선순위").
+    아래는 바꾸기 전에 잰 queue 대기 원인이다(odroid 공용 Dagster 1.13.24, 11-25 12:00 ~ 11-26
+    08:00 KST, run 1,157개·사전 구성 run 34개, GraphQL·daemon 로그·instance 설정 읽기 전용).
+    - 운영 instance는 이 저장소 `deploy/dagster.yaml`이 아니라 Manager가 관리하는 공용 설정이다:
+      `max_concurrent_runs` 5, `dagster/code_location` 상한 weather 3·transport 3·geo 1,
+      `run_queue.dequeue_interval_seconds` 30, `DefaultRunLauncher`. daemon은 `dagster/priority`
+      순(같으면 생성 순)으로 dequeue한다(로그 "Priority sorting and checking tag concurrency limits").
+    - 생성→시작은 queue 대기(생성→`RUN_DEQUEUED`) p50 84초·20~5,729초와 launch+run worker 기동
+      (`RUN_DEQUEUED`→`RUN_START`) 22~33초(p50 27)의 합이다. 막는 것이 없어도 tick 간격 30초와
+      daemon의 직렬 launch(1 run p50 18초) 때문에 생성→시작이 45~60초 걸린다 — 우선순위로 줄지 않는
+      바닥이다. schedule tick은 늦지 않았다(run 생성 :23:01~:23:05).
+    - 시작 지연이 120초를 넘은 16번은 모두 상한이 찬 동안 기다렸다. 생성 시점에 weather location
+      3개가 긴 run(`kma_short_forecast_job` 1~2시간, slow 외부 sweep 30분, `weather_retention_job`
+      2시간)으로 찬 것이 7번, instance 5개가 찬 것이 5번(2번 겹침)이고, 나머지 6번은 남은 자리를
+      다른 run이 먼저 가져간 뒤 찼다. 상한이 풀릴 때마다 생성이 앞선 우선순위 0 run
+      (`weather_short_forecast_retention_job`은 최대 1시간 넘게 대기)과 5·10 run(transport
+      `highway`·`airport` 5분 주기 10, 특보 발표 관측 10, 매시 수집 5)이 먼저 나갔다. 지난 26시간
+      daemon tick 2,205번 중 1,034번이 "Maximum is 5"였다.
+    - 같은 이력으로 공용 coordinator를 재현한 시뮬레이션(실제 생성 시각·점유 시간·tag 상한, tick 30초):
+
+      | 조건 | 생성→시작 p50 / p75 / p90 / 최대 | 120초 이하 | 예상 적중(위 49 순회) |
+      | --- | --- | --- | --- |
+      | 우선순위 0(재현, 실제 p50 109) | 86 / 402 / 614 / 5,742초 | 19/34 | 8.6/49 (18%) |
+      | 우선순위 5 | 43 / 342 / 458 / 1,272초 | 21/34 | 9.5/49 (19%) |
+      | **우선순위 10(적용)** | 43 / 189 / 314 / 579초 | 21/34 | 9.5/49 (19%) |
+      | 10 + weather location 상한 4 | 42 / 131 / 215 / 579초 | 24/34 | 10.9/49 (22%) |
+      | 10 + location 4 + instance 6 | 39 / 42 / 98 / 312초 | 33/34 | 14.4/49 (29%) |
+
+      시뮬레이션은 launch 직렬 시간을 빼서 바닥을 실제보다 10~30초 짧게 잡는다(우선순위 0의 실제 p50은
+      109초). 우선순위 10은 꼬리(한 시간 넘게 밀린 run)를 없애지만, 120초를 넘긴 대기의 대부분은
+      상한이 찬 동안이라 값과 무관하게 남는다. 적중은 build 끝이 Map 첫 페이지보다 늦으면 0이므로 거의
+      늘지 않는다(18%→19%). 다른 job의 대기는 시뮬레이션에서 바뀌지 않았다(특보 발표 관측 queue p90
+      613초 그대로) — 사전 구성 run은 1분 안팎·시간당 2개다.
+    - 이전 표의 29%(시작 지연 ≤30초 가정)에 닿으려면 공용 instance 용량이 필요하다: weather
+      location 상한 3→4와 `max_concurrent_runs` 5→6(Manager 설정, 이 저장소 밖). 그때는 우선순위와
+      무관하게 29%다. 용량을 늘리면 odroid 부하(측정 중 load average 21~27)와 KMA·외부 provider 동시
+      호출도 함께 늘므로 Manager 쪽 결정이다(`W-EXPORT-PREBUILT-CAPACITY-20261126`).
+    - 배포 뒤 볼 것: 사전 구성 run의 생성→시작(`creationTime`→`startTime`) 분포와 꼬리,
+      `increase(ktw_export_prebuilt_decisions_total{outcome="hit"}[1d]) /
+      increase(ktw_export_prebuilt_decisions_total[1d])`, 같은 기간 특보 발표 관측·transport 10 run의
+      queue 대기.

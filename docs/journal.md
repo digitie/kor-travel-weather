@@ -1,3 +1,25 @@
+## 2026-11-26 — export 사전 구성 job 우선순위 10(소유자 결정 W-EXPORT-PREBUILT-TIMING (a))
+
+소유자가 (a)를 골랐다: cron `23,38`은 그대로 두고 `weather_export_prebuild_job`의 `dagster/priority`를
+0→10으로 올린다. 바꾸기 전에 odroid 공용 Dagster를 읽기 전용으로 쟀다(11-25 12:00 ~ 11-26 08:00 KST,
+run 1,157개·사전 구성 34개, GraphQL·daemon 로그·instance 설정).
+
+- 운영 instance는 Manager 공용 설정이다: `max_concurrent_runs` 5, `dagster/code_location` 상한 weather 3,
+  `dequeue_interval_seconds` 30. 이 저장소 `deploy/dagster.yaml`(10·project 6)은 compose 배포용이다.
+- 사전 구성 생성→시작 = queue 대기 p50 84초(20~5,729초) + launch·기동 22~33초. schedule tick 지연은 없다.
+  막는 것이 없어도 tick 30초·직렬 launch(1 run p50 18초) 때문에 45~60초가 바닥이다.
+- 120초를 넘긴 16번은 상한이 찬 동안 기다렸다(생성 시점 weather 3 찬 것 7번, instance 5 찬 것 5번,
+  2번 겹침). 풀릴 때 생성이 앞선 0 run(단기예보 정리)과 5·10 run이 먼저 나갔다.
+- 같은 이력의 coordinator 재현 시뮬레이션: 0→10이면 생성→시작 p75 402→189초·최대 5,742→579초,
+  예상 적중 18%→19%. 5는 꼬리가 덜 준다(최대 1,272초). weather location 4 + instance 6이면 우선순위와
+  무관하게 29%. 다른 job queue 대기는 바뀌지 않았다.
+
+바꾼 것: `export_prebuild.RUN_PRIORITY = "10"`(job tags), `JOB_PRIORITIES`를 `PRIORITY_REALTIME`으로.
+`tests/test_run_priority.py`는 `OWNER_EXCEPTIONS`로 이 예외만 허용하고 주기 45분·값 10을 고정한다.
+`tests/test_export_prebuild_job.py`가 job·run tag 10, cron 유지, schedule tag 비움을 본다. 남은 일:
+배포 뒤 수용(`W-EXPORT-PREBUILT-ACCEPT-20261126`), 용량은 Manager 결정(`W-EXPORT-PREBUILT-CAPACITY-20261126`),
+Manager `docs/dagster-tenant-fairness.md`에 예외 기록.
+
 ## 2026-11-25 — export 정리 job GC의 간헐 `statement_timeout`: 참조 판정 묶음 64개·상한 시 반감
 
 odroid `weather_export_maintenance_job` 11-25 12:52~21:52 KST 9 run 중 4 run(14:52·18:19·20:52·21:52)이

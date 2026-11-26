@@ -2,7 +2,7 @@
 
 정본: kor-travel-docker-manager ``docs/dagster-tenant-fairness.md``. 10 = 1시간 미만 주기
 수집·상태 적재, 5 = 1시간 이상·하루 미만 주기 수집, 0 = 하루 이상 주기·정리·유지보수·
-수동·관리자 일괄 실행.
+수동·관리자 일괄 실행. 규칙과 다른 값은 소유자 예외(``OWNER_EXCEPTIONS``)로만 둔다.
 Dagster 1.13.24 ``QueuedRunCoordinatorDaemon._priority_sort``는 run tag만 읽으므로(없으면 0) 값이
 schedule·sensor·재실행이 만드는 run tag까지 닿는지도 본다.
 
@@ -45,9 +45,12 @@ MAINTENANCE_JOBS = frozenset({
     "weather_retention_job",
     "weather_short_forecast_retention_job",
     "weather_export_maintenance_job",
-    "weather_export_prebuild_job",
     "address_refresh_job",
 })
+#: 규칙과 다른 값을 소유자가 정한 job. export 사전 구성은 규칙대로면 export라 0이지만 Map 첫
+#: 페이지 전에 끝나야 쓸모가 있어 queue 대기를 줄이려고 10이다(소유자 결정 2026-11-26,
+#: ``docs/export-prebuilt-pages.md``). 새 예외는 결정 근거와 함께만 넣는다.
+OWNER_EXCEPTIONS = {"weather_export_prebuild_job": 10}
 
 
 def _jobs():
@@ -57,13 +60,15 @@ def _jobs():
     return jobs
 
 
-def _expected(period: timedelta | None, *, maintenance: bool) -> int:
+def _expected(name: str, period: timedelta | None, *, maintenance: bool) -> int:
     """규칙 그대로: 주기가 없으면(수동 전용) 0.
 
     1시간 미만 주기는 현황이면 10, 예보처럼 현황이 아니면 5다. weather의 1시간 미만 주기 수집은
     특보 발표 관측(현황) 하나뿐이라 주기만으로 판정한다 — 1시간 미만 예보 job이 생기면
     여기를 고친다.
     """
+    if name in OWNER_EXCEPTIONS:
+        return OWNER_EXCEPTIONS[name]
     if maintenance or period is None or period >= timedelta(days=1):
         return 0
     if period < timedelta(hours=1):
@@ -125,7 +130,7 @@ def test_priority_follows_the_scheduled_period() -> None:
         period = periods.get(job.name)
         seen[job.name] = (period, definitions.JOB_PRIORITIES[job.name])
         assert definitions.JOB_PRIORITIES[job.name] == _expected(
-            period, maintenance=job.name in MAINTENANCE_JOBS
+            job.name, period, maintenance=job.name in MAINTENANCE_JOBS
         ), (job.name, period)
     # 규칙의 경계값을 실제 job으로 고정한다(1시간 정각은 5, 5분은 10, 하루는 0).
     assert seen["kma_ultra_short_forecast_job"] == (timedelta(hours=1), 5)
@@ -134,6 +139,8 @@ def test_priority_follows_the_scheduled_period() -> None:
     assert seen["weather_short_forecast_retention_job"] == (timedelta(minutes=10), 0)
     assert seen["weather_export_maintenance_job"] == (timedelta(hours=1), 0)
     assert seen["kma_mid_forecast_job"] == (timedelta(hours=12), 5)
+    # :23·:38 사이 가장 긴 간격은 45분이다. 값은 주기가 아니라 소유자 예외에서 온다.
+    assert seen["weather_export_prebuild_job"] == (timedelta(minutes=45), 10)
     # schedule이 없는 외부 provider는 관리자 수동 실행 전용이다. 지금은 여섯이 있다 — 모두
     # slow 집합으로 옮기면 이 고정을 함께 지운다.
     unscheduled = {
@@ -146,11 +153,14 @@ def test_priority_follows_the_scheduled_period() -> None:
         assert seen[name] == (None, 0), name
 
 
-def test_only_the_five_minute_collection_is_on_top_and_nothing_is_negative() -> None:
+def test_only_the_five_minute_collection_and_the_owner_exception_are_on_top() -> None:
     values = definitions.JOB_PRIORITIES
     assert {name for name, value in values.items() if value == 10} == {
         "kma_regional_alert_events_job",
+        *(name for name, value in OWNER_EXCEPTIONS.items() if value == 10),
     }
+    # 예외는 정리 job 목록과 겹치지 않는다(둘 다 있으면 어느 쪽이 값인지 흐려진다).
+    assert not set(OWNER_EXCEPTIONS) & MAINTENANCE_JOBS
     # 공용 queue에서 다른 테넌트(기본 0)보다 뒤로 미는 음수·10 초과는 두지 않는다. 10이 하나도
     # 없게 되는 변경(5분 job 제거)이면 위 집합과 함께 이 고정도 고친다.
     assert min(values.values()) == 0 and max(values.values()) == 10
