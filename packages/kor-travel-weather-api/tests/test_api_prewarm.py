@@ -214,9 +214,12 @@ def test_prewarm_reads_admin_map_paths_once_within_statement_cap(
     assert set(markers[0]["locations"]) == set(markers[0]["ids"])
     marker_step = next(step for step in body["steps"] if step["name"] == "markers")
     assert (marker_step["warmed"], marker_step["planned"]) == (120, 120)
-    # 다른 단계는 묶음 진행이 없다.
+    # 상세 단계는 하위 읽기 셋(위치·최신값·예보)을 모두 마쳤다.
+    detail_step = next(step for step in body["steps"] if step["name"] == "location_detail")
+    assert (detail_step["warmed"], detail_step["planned"]) == (3, 3)
+    # 다른 단계는 나눠 읽는 진행이 없다.
     assert all(step["warmed"] is None and step["planned"] is None
-               for step in body["steps"] if step["name"] != "markers")
+               for step in body["steps"] if step["name"] not in {"markers", "location_detail"})
     # 세션 확인은 auth_limiter, 마커 묶음은 marker_limiter의 한 자리를 묶음마다 사용자와 나눠 썼다.
     assert auth_slots == [1]
     assert marker_slots == [1] * 8
@@ -338,6 +341,113 @@ def test_failed_marker_chunk_is_logged_and_later_chunks_still_run(
     assert len(failures) == 1
     assert "step=markers chunk=2/8 " in failures[0]
     assert "sqlstate=57014" in failures[0]
+
+
+def _slow_detail_reads(
+    repository: WeatherRepository, seconds: dict[str, float],
+) -> list[str]:
+    """배포 직후처럼 상세 하위 읽기마다 차가운 비용을 더한다(자기 연결의 문장 하나)."""
+    calls: list[str] = []
+    for read, method in (
+        ("location", "get_location"), ("latest", "latest_values"), ("forecast", "timeline"),
+    ):
+        original = getattr(repository, method)
+
+        def slow(*args, _read=read, _original=original, **kwargs):
+            calls.append(_read)
+            with repository.engine.connect() as connection:
+                connection.execute(text("SELECT pg_sleep(:s)"), {"s": seconds[_read]})
+            return _original(*args, **kwargs)
+
+        setattr(repository, method, slow)
+    return calls
+
+
+async def _markers_use_their_whole_share(self):
+    """마커 단계가 마커 몫을 끝까지 쓴 상황. 상세 단계는 마커 몫이 끝난 뒤 시작한다."""
+    await asyncio.sleep(max(0.0, self._marker_deadline() - monotonic()))
+    return "skipped"
+
+
+def test_cold_location_detail_stays_within_the_budget(
+    repository, weather_test_database_url, monkeypatch, caplog,
+):
+    """odroid 2026-11-26 재현: 차가운 상세 읽기가 남은 몫을 넘겨 예산 마감에 잘렸다.
+
+    운영은 마커가 23.0초에 끝나 상세 단계가 7.0초를 받았고, 세 읽기를 한 번에 하다 마지막 사실
+    수화 문장이 마감에 잘려(57014) 전체가 30113ms였다. 예산·상한을 1/5(6초·1초)로 줄이고 마커가
+    몫을 다 쓰게 한 뒤 하위 읽기에 0.3/0.9/0.9초를 들게 하면, 예전 방식은 1초 남은 상세 단계를
+    통째로 시작해 예산 마감(6초)에 잘리고 전체가 6초를 넘는다. 지금은 하위 읽기마다 남은 예산을
+    보고, 문장 상한 하나만큼 남지 않은 예보 읽기를 시작하지 않아 예산 안에 끝난다.
+    """
+    _seed(repository, 2)
+    monkeypatch.setattr(prewarm, "PREWARM_BUDGET_SECONDS", 6.0)
+    monkeypatch.setattr(prewarm, "PREWARM_STATEMENT_SECONDS", 1.0)
+    monkeypatch.setattr(ApiPrewarm, "_markers", _markers_use_their_whole_share)
+    calls = _slow_detail_reads(repository, {"location": 0.3, "latest": 0.9, "forecast": 0.9})
+    app = create_app(_settings(weather_test_database_url), repository)
+    caplog.set_level(logging.WARNING, logger="kortravelweather_api.prewarm")
+    with TestClient(app) as client:
+        body = _wait_ready(client)
+    assert body["elapsed_ms"] < 6000
+    assert body["warm"] == "done"
+    detail = next(step for step in body["steps"] if step["name"] == "location_detail")
+    # 위치·최신값을 마치고, 남은 몫이 문장 상한보다 적어 예보는 시작하지 않았다. 부분 진행은
+    # warmed/planned로 보이고 잘린 문장이 없으므로 실패 로그도 없다.
+    assert detail["outcome"] == "ok"
+    assert (detail["warmed"], detail["planned"]) == (2, 3)
+    assert calls == ["location", "latest"]
+    assert not [record for record in caplog.records
+                if "weather_api_prewarm_step_failed" in record.getMessage()]
+
+
+def test_failed_detail_read_is_reported_and_later_reads_still_run(
+    repository, weather_test_database_url, monkeypatch, caplog,
+):
+    """상한에 잘린 하위 읽기는 숨기지 않고 failed로 남기며, 예산이 남으면 다음 하위 읽기로 간다."""
+    _seed(repository, 2)
+    monkeypatch.setattr(prewarm, "PREWARM_STATEMENT_SECONDS", 0.5)
+    calls = _slow_detail_reads(repository, {"location": 0.0, "latest": 5.0, "forecast": 0.0})
+    app = create_app(_settings(weather_test_database_url), repository)
+    caplog.set_level(logging.WARNING, logger="kortravelweather_api.prewarm")
+    with TestClient(app) as client:
+        body = _wait_ready(client)
+    detail = next(step for step in body["steps"] if step["name"] == "location_detail")
+    assert detail["outcome"] == "failed"
+    assert (detail["warmed"], detail["planned"]) == (2, 3)
+    assert calls == ["location", "latest", "forecast"]
+    failures = [record.getMessage() for record in caplog.records
+                if "weather_api_prewarm_step_failed" in record.getMessage()]
+    assert len(failures) == 1
+    assert "step=location_detail read=latest " in failures[0]
+    assert "sqlstate=57014" in failures[0]
+
+
+def test_statement_cut_by_the_budget_still_finishes_within_it(
+    repository, weather_test_database_url, monkeypatch,
+):
+    """예산 마감에 잘린 문장의 취소·rollback도 예산 안에 끝난다(마감 여유).
+
+    예전에는 문장 마감이 예산 끝과 같아 잘린 문장을 정리하는 시간만큼 전체가 예산을 넘겼다.
+    """
+    _seed(repository, 2)
+    monkeypatch.setattr(prewarm, "PREWARM_BUDGET_SECONDS", 2.0)
+
+    def endless_regions():
+        with repository.engine.connect() as connection:
+            connection.execute(text("SELECT pg_sleep(10)"))
+
+    repository.region_locations = endless_regions
+    app = create_app(_settings(weather_test_database_url), repository)
+    with TestClient(app) as client:
+        body = _wait_ready(client)
+    assert body["elapsed_ms"] < 2000
+    assert body["warm"] == "skipped"
+    assert body["reason"] == "budget"
+    assert _outcomes(body) == {
+        "connections": "ok", "session_check": "ok", "regions": "failed",
+        "locations": "skipped", "markers": "skipped", "location_detail": "skipped",
+    }
 
 
 def test_unexpected_error_is_logged_and_does_not_stop_the_app(
@@ -526,12 +636,14 @@ def test_marker_slot_wait_ends_with_the_marker_share_and_detail_still_runs(
 ):
     """사용자 마커 묶음이 두 자리를 모두 쥐면 warmup은 같은 limiter에서 마커 몫까지만 기다린다.
 
-    마커 몫은 전체 예산(3초)에서 상세 몫(문장 상한 0.5초)을 빼고, 새 묶음을 시작할 여유(문장 상한
-    하나)를 남긴 2초까지다. 그 뒤 상세 단계는 남긴 몫으로 실행된다.
+    문장 마감은 전체 예산(3초)에서 마감 여유(0.25초)를 뺀 2.75초다. 마커 몫은 거기서 상세 몫(문장
+    상한 0.5초와 마감 여유)을 빼고, 새 묶음을 시작할 여유(문장 상한 하나)를 남긴 1.5초까지다. 그 뒤
+    상세 단계는 남긴 몫으로 실행된다.
     """
     _seed(repository, 2)
     monkeypatch.setattr(prewarm, "PREWARM_BUDGET_SECONDS", 3.0)
     monkeypatch.setattr(prewarm, "PREWARM_STATEMENT_SECONDS", 0.5)
+    monkeypatch.setattr(prewarm, "PREWARM_FINISH_MARGIN_SECONDS", 0.25)
     entered, release = _gate_regions(repository)
     app = create_app(_settings(weather_test_database_url), repository)
     limiter = app.state.marker_limiter
@@ -547,10 +659,10 @@ def test_marker_slot_wait_ends_with_the_marker_share_and_detail_still_runs(
             client.portal.call(limiter.release_on_behalf_of, user)
     assert body["warm"] == "done"
     assert body["reason"] is None
-    # 사용자가 자리를 돌려줄 때까지가 아니라 마커 몫(2초)까지만 기다리고 예산 안에 끝났다.
+    # 사용자가 자리를 돌려줄 때까지가 아니라 마커 몫(1.5초)까지만 기다리고 예산 안에 끝났다.
     markers = next(step for step in body["steps"] if step["name"] == "markers")
     assert markers["elapsed_ms"] >= 1000
-    assert 2000 <= body["elapsed_ms"] < 3000
+    assert 1500 <= body["elapsed_ms"] < 3000
     assert (markers["warmed"], markers["planned"]) == (0, 2)
     assert _outcomes(body) == {
         "connections": "ok", "session_check": "ok", "regions": "ok", "locations": "ok",

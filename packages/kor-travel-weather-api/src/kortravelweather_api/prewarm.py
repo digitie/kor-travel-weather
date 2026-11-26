@@ -13,11 +13,15 @@
 - 동시성 1. 단계를 차례로 한 thread에서 실행하고 마커는 사용자와 같은 ``marker_limiter``,
   세션 확인은 같은 ``auth_limiter``로 들어간다. 마커 자리 대기도 마커 몫의 시간 안에서 한다.
 - 문장당 5초·전체 30초. 공개 읽기 마감 장치(:mod:`.read_limits`)로 문장마다
-  ``statement_timeout``을 걸고 pool 대기도 남은 시간으로 줄인다.
+  ``statement_timeout``을 걸고 pool 대기도 남은 시간으로 줄인다. 문장 마감은 전체 예산에서
+  마감 여유(0.5초)를 뺀 시각이다. 마감에 잘린 문장의 취소·rollback도 예산 안에 끝나게 한다.
 - 마커는 15곳씩 나눠 읽는다. 사용자 묶음(60곳)을 한 번에 읽으면 배포 직후 한 묶음이 27초를
   넘겨 남은 예산을 다 쓰고 57014로 끝나 아무것도 데우지 못했다(odroid 2026-11-25). 작은 묶음은
-  문장마다 5초 상한 안에 들고, 한 묶음이 실패해도 다음 묶음으로 간다. 마커 몫은 전체 예산에서
-  상세 단계 몫(문장 상한 하나)을 뺀 시각까지다.
+  문장마다 5초 상한 안에 들고, 한 묶음이 실패해도 다음 묶음으로 간다. 마커 몫은 문장 마감에서
+  상세 단계 몫(문장 상한 하나와 마감 여유)을 뺀 시각까지다.
+- 상세 단계는 하위 읽기 셋(위치·최신값·예보)으로 나눠 읽고, 문장 상한 하나만큼 남지 않으면 남은
+  하위 읽기를 시작하지 않는다. 차가운 상세 읽기가 남은 예산을 넘겨 예산 마감에 잘리고 전체가
+  30초를 넘긴 일을 막는다(odroid 2026-11-26).
 - 사용자 요청(``/v1/*``)이 2건 이상 처리 중이면 남은 단계를 생략한다.
 - 종료 시 취소는 worker thread에도 전해 다음 문장을 보내지 않는다.
 - 예외는 로그·지표로만 남기고 앱 기동·요청 처리에 영향을 주지 않는다. 지도 엔드포인트에는
@@ -34,6 +38,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from datetime import time as day_time
+from functools import partial
 from threading import Event
 from time import monotonic
 from typing import Any, Literal, TypeVar, get_args
@@ -57,6 +62,10 @@ logger = logging.getLogger(__name__)
 PREWARM_BUDGET_SECONDS = 30.0
 #: 문장 하나의 ``statement_timeout`` 상한(초).
 PREWARM_STATEMENT_SECONDS = 5.0
+#: 문장 마감을 전체 예산보다 이만큼 앞에 둔다(초). ``statement_timeout``은 마감보다 조금 늦게
+#: 문장을 끊고(다시 걸기 여유 50ms·왕복), 끊긴 뒤 rollback·연결 반환·thread 복귀가 더 든다.
+#: odroid 2026-11-26 배포 직후 이 몫으로 전체가 30113ms였다(113ms 초과). 그 4배 남짓이다.
+PREWARM_FINISH_MARGIN_SECONDS = 0.5
 #: pool에 미리 열어 두는 연결 수(pool_size 10 안).
 PREWARM_CONNECTIONS = 3
 #: 관리 지도 ``MARKER_BATCH_SIZE``(weather-marker-queue.ts)와 같다. 앞쪽 2묶음(120곳)을 데운다.
@@ -90,6 +99,9 @@ StepName = Literal[
 ]
 StepOutcome = Literal["ok", "failed", "skipped"]
 STEP_NAMES: tuple[StepName, ...] = get_args(StepName)
+#: 상세 단계의 하위 읽기. 관리 지도 상세가 부르는 순서와 같다.
+DetailRead = Literal["location", "latest", "forecast"]
+DETAIL_READS: tuple[DetailRead, ...] = get_args(DetailRead)
 
 _T = TypeVar("_T")
 
@@ -103,13 +115,13 @@ class RequestActivity:
 
 @dataclass(frozen=True)
 class StepItems:
-    """여러 묶음으로 나눠 읽는 단계(마커)의 진행. 위치 수다."""
+    """나눠 읽는 단계의 진행. 마커는 위치 수, 상세는 하위 읽기 수다."""
 
     warmed: int
     planned: int
 
 
-#: 단계 함수의 반환값. 묶음으로 나눠 읽는 단계는 진행(:class:`StepItems`)을 같이 돌려준다.
+#: 단계 함수의 반환값. 나눠 읽는 단계(마커·상세)는 진행(:class:`StepItems`)을 같이 돌려준다.
 StepReport = StepOutcome | tuple[StepOutcome, StepItems]
 
 
@@ -153,11 +165,17 @@ class ReadinessStepOut(BaseModel):
     elapsed_ms: int = Field(ge=0)
     warmed: int | None = Field(
         ge=0,
-        description="markers: 읽기를 마친 위치 수(성공한 묶음의 위치 합). 다른 단계·생략은 null",
+        description=(
+            "markers: 읽기를 마친 위치 수(성공한 묶음의 위치 합). location_detail: 마친 하위 "
+            "읽기 수(위치·최신값·예보 중). 다른 단계·생략은 null"
+        ),
     )
     planned: int | None = Field(
         ge=0,
-        description="markers: 데우려던 위치 수(카탈로그 앞쪽 최대 120곳). 다른 단계·생략은 null",
+        description=(
+            "markers: 데우려던 위치 수(카탈로그 앞쪽 최대 120곳). location_detail: 하위 읽기 "
+            "수(3). 다른 단계·생략은 null"
+        ),
     )
 
 
@@ -212,6 +230,7 @@ class ApiPrewarm:
         auth_limiter: CapacityLimiter,
         budget_seconds: float | None = None,
         statement_seconds: float | None = None,
+        finish_margin_seconds: float | None = None,
     ) -> None:
         self.repository = repository
         self.state = state
@@ -222,6 +241,12 @@ class ApiPrewarm:
         self.statement_seconds = (
             PREWARM_STATEMENT_SECONDS if statement_seconds is None else statement_seconds
         )
+        self.finish_margin_seconds = (
+            PREWARM_FINISH_MARGIN_SECONDS if finish_margin_seconds is None
+            else finish_margin_seconds
+        )
+        # 문장 마감. 전체 예산 끝에서 마감 여유를 뺀 시각이며, 단계·묶음·하위 읽기도 이때까지만
+        # 시작한다.
         self._deadline = 0.0
         self._locations: list[WeatherLocation] = []
         # 종료 취소를 worker thread에 전한다. 켜지면 다음 문장을 보내지 않는다.
@@ -234,7 +259,9 @@ class ApiPrewarm:
         self.state.started_at = monotonic()
         self.state.finished_at = None
         self.state.steps = []
-        self._deadline = self.state.started_at + self.budget_seconds
+        self._deadline = (
+            self.state.started_at + self.budget_seconds - self.finish_margin_seconds
+        )
         return asyncio.create_task(self.run(), name="weather-api-prewarm")
 
     async def run(self) -> None:
@@ -313,12 +340,13 @@ class ApiPrewarm:
             )
 
     @staticmethod
-    def _log_failure(name: StepName, exc: Exception, *, chunk: str | None = None) -> None:
+    def _log_failure(name: StepName, exc: Exception, *, part: str | None = None) -> None:
         # warmup 실패는 로그·지표로만 남긴다. 원문은 SQL·주소를 담을 수 있어 남기지 않고,
-        # DB 밖 예외(코드 결함)만 traceback을 남긴다.
+        # DB 밖 예외(코드 결함)만 traceback을 남긴다. ``part``는 ``chunk=2/8``·``read=latest``처럼
+        # 실패한 묶음·하위 읽기다.
         logger.warning(
             "weather_api_prewarm_step_failed step=%s%s type=%s sqlstate=%s driver=%s",
-            name, "" if chunk is None else f" chunk={chunk}", type(exc).__name__,
+            name, "" if part is None else f" {part}", type(exc).__name__,
             sqlstate(exc) or "-", driver_error_name(exc),
             exc_info=not isinstance(exc, (SQLAlchemyError, PublicReadTimeout)),
         )
@@ -425,7 +453,7 @@ class ApiPrewarm:
         """앞쪽 위치를 작은 묶음으로 나눠 사용자 마커 읽기를 한 번씩 밟는다.
 
         묶음마다 따로 자리·연결·transaction을 쓰고, 실패한 묶음은 기록만 하고 다음 묶음으로
-        간다. 마커 몫(전체 마감에서 상세 단계 몫을 뺀 시각)이 문장 상한 하나보다 적게 남으면 새
+        간다. 마커 몫(문장 마감에서 상세 단계 몫을 뺀 시각)이 문장 상한 하나보다 적게 남으면 새
         묶음을 시작하지 않는다. 시작해도 마감에 잘릴 가능성이 크고, 상세 단계를 굶기지 않기
         위해서다.
         """
@@ -449,7 +477,7 @@ class ApiPrewarm:
                 await self._call(self._marker_batch, chunk, deadline=deadline)
             except Exception as exc:
                 failed += 1
-                self._log_failure("markers", exc, chunk=f"{index}/{len(chunks)}")
+                self._log_failure("markers", exc, part=f"chunk={index}/{len(chunks)}")
             else:
                 warmed += len(chunk)
             finally:
@@ -460,8 +488,15 @@ class ApiPrewarm:
         return ("ok" if attempted else "skipped"), items
 
     def _marker_deadline(self) -> float:
-        """마커 단계의 마감. 상세 단계가 문장 상한 하나만큼은 쓸 수 있게 남긴다."""
-        return self._deadline - self.statement_seconds
+        """마커 단계의 마감. 상세 단계가 문장 상한 하나를 온전히 쓸 수 있게 남긴다.
+
+        마감에 잘린 마커 묶음도 취소·rollback에 마감 여유만큼 더 쓸 수 있으므로 그 몫도 뺀다.
+        그래야 상세 단계가 시작할 때 첫 하위 읽기를 시작할 시간(문장 상한 하나)이 남는다.
+        """
+        return self._deadline - self.statement_seconds - self.finish_margin_seconds
+
+    def _remaining(self) -> float:
+        return self._deadline - monotonic()
 
     async def _acquire_marker_slot(self, until: float) -> bool:
         """마커 자리를 ``until``까지만 기다린다. 그때까지 못 얻으면 거짓이다."""
@@ -483,21 +518,51 @@ class ApiPrewarm:
                 locations=by_id,
             )
 
-    async def _location_detail(self) -> StepOutcome:
+    async def _location_detail(self) -> StepReport:
+        """첫 위치의 관리 지도 상세 읽기를 하위 읽기 셋(위치·최신값·예보)으로 나눠 밟는다.
+
+        예전에는 셋을 worker 호출 하나로 읽었다. 배포 직후 차가운 DB에서는 셋이 남은 예산(약
+        7초)을 넘겨 마지막 문장이 예산 마감에 잘렸고(57014) 전체가 예산을 넘겼다(odroid
+        2026-11-26, 30113ms). 이제 하위 읽기마다 따로 연결·transaction을 쓰고, 시작 전에 남은
+        예산이 문장 상한 하나보다 적으면 남은 하위 읽기를 시작하지 않는다. 그 경우 진행은
+        ``warmed < planned``로 보인다. 실패한 하위 읽기는 기록하고 다음 하위 읽기로 간다.
+        """
         if not self._locations:
             return "skipped"
-        await self._call(self._read_detail, self._locations[0].location_id)
-        return "ok"
+        reads = self._detail_reads(self._locations[0].location_id)
+        warmed = failed = attempted = 0
+        for name, read in reads:
+            if self._stop_reason() is not None or self._remaining() < self.statement_seconds:
+                break
+            attempted += 1
+            try:
+                await self._call(read)
+            except Exception as exc:
+                failed += 1
+                self._log_failure("location_detail", exc, part=f"read={name}")
+            else:
+                warmed += 1
+        items = StepItems(warmed=warmed, planned=len(reads))
+        if failed:
+            return "failed", items
+        return ("ok" if attempted else "skipped"), items
 
-    def _read_detail(self, location_id: str) -> None:
-        # 관리 지도 상세의 ``/latest?limit=200``과 ``/forecast?from&to&limit=5000``.
-        self.repository.get_location(location_id)
-        self.repository.latest_values(location_id, limit=DETAIL_LATEST_LIMIT)
+    def _detail_reads(
+        self, location_id: str,
+    ) -> tuple[tuple[DetailRead, Callable[[], object]], ...]:
+        # 관리 지도 상세의 위치 조회, ``/latest?limit=200``, ``/forecast?from&to&limit=5000``.
         start, end = _forecast_detail_window(kst_now())
-        self.repository.timeline(
-            location_id, from_at=start, to_at=end, limit=DETAIL_FORECAST_LIMIT,
-            include_revisions=False, exclude_alerts=True,
-        )
+        reads: dict[DetailRead, Callable[[], object]] = {
+            "location": partial(self.repository.get_location, location_id),
+            "latest": partial(
+                self.repository.latest_values, location_id, limit=DETAIL_LATEST_LIMIT,
+            ),
+            "forecast": partial(
+                self.repository.timeline, location_id, from_at=start, to_at=end,
+                limit=DETAIL_FORECAST_LIMIT, include_revisions=False, exclude_alerts=True,
+            ),
+        }
+        return tuple((name, reads[name]) for name in DETAIL_READS)
 
 
 async def stop_prewarm(task: asyncio.Task[None]) -> None:
