@@ -1,3 +1,12 @@
+## 2026-11-28 — export 사전 구성 용량: Manager가 odroid weather 4·전역 6 반영(W-EXPORT-PREBUILT-CAPACITY)
+
+소유자가 odroid 공용 Dagster의 weather `dagster/code_location` 상한 3→4와 `max_concurrent_runs` 5→6을 승인했다.
+Manager PR #657(머지 `4f7ede8`, Manager ADR-69)이 `config/docker-targets.yml` `hosts.odroid`만 바꿨다(transport 3·geo 1,
+n150 불변). 우선순위 10 예외는 Manager `docs/dagster-tenant-fairness.md` §3에 기록됐다. 시뮬레이션 예상 적중은 29%(시작 지연
+p75 42초)다. 받아들인 위험은 odroid 부하(실측 load 21~27)·weather code-server 메모리(2.5 GB를 최대 4 run이 나눔)·provider
+동시 호출이다. 운영 적용은 소유자가 Manager 설치와 plane 수렴으로 한다 — 적용 뒤 확인은
+`W-EXPORT-PREBUILT-CAPACITY-DEPLOY-20261128`.
+
 ## 2026-11-26 — export 사전 구성 job 우선순위 10(소유자 결정 W-EXPORT-PREBUILT-TIMING (a))
 
 소유자가 (a)를 골랐다: cron `23,38`은 그대로 두고 `weather_export_prebuild_job`의 `dagster/priority`를
