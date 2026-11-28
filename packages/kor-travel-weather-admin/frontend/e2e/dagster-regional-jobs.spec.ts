@@ -101,7 +101,7 @@ test("공통 오류 로그 필터로 불러온 처리 내역을 전환한다", a
       checkedAt: null, cursor: cursor ? null : "next", hasMore: !cursor,
       events: cursor
         ? [event("RunFailureEvent", "다음 페이지 실패")]
-        : [event("ExecutionStepStartEvent", "정상 처리"), event("ExecutionStepFailureEvent", "단계 실패")],
+        : [event("ExecutionStepStartEvent", "정상 처리")],
     }});
   });
   await login(page);
@@ -111,9 +111,10 @@ test("공통 오류 로그 필터로 불러온 처리 내역을 전환한다", a
   await expect(events).toContainText("정상 처리");
   await filter.click();
   await expect(filter).toHaveAttribute("aria-pressed", "true");
-  await expect(events).not.toContainText("정상 처리");
-  await expect(events).toContainText("단계 실패");
+  await expect(page.getByRole("status").filter({hasText: "불러온 내역에 오류 로그가 없습니다."})).toBeVisible();
+  await expect(filter).toBeFocused();
   await page.getByRole("button", {name: "다음 내역 보기"}).click();
   await expect(events).toContainText("다음 페이지 실패");
   await expect(events).not.toContainText("정상 처리");
+  await expect(page.getByRole("status").filter({hasText: "오류 로그 1건"})).toBeAttached();
 });

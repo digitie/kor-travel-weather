@@ -284,8 +284,16 @@ function RunEvents({ detail, loading, onNextPage, jobLabel }: {
 }) {
   const [errorsOnly, setErrorsOnly] = useState(false);
   const events = errorsOnly
-    ? detail.events.filter(event => event.kind === "ExecutionStepFailureEvent" || event.kind === "RunFailureEvent")
+    ? detail.events.filter(event => ["ExecutionStepFailureEvent", "RunFailureEvent", "UNAVAILABLE"].includes(event.kind))
     : detail.events;
+  let result = "";
+  if (!events.length) {
+    result = errorsOnly ? "불러온 내역에 오류 로그가 없습니다." : "이 범위에는 표시할 처리 내역이 없습니다.";
+  } else if (errorsOnly) {
+    result = events.some(event => event.kind === "UNAVAILABLE")
+      ? "일부 처리 내역을 읽지 못했습니다."
+      : `오류 로그 ${events.length}건`;
+  }
 
   return <>
     <div className="flex flex-wrap items-center gap-2">
@@ -295,13 +303,12 @@ function RunEvents({ detail, loading, onNextPage, jobLabel }: {
         ? <Button size="sm" type="button" variant="outline" loading={loading} onClick={onNextPage}>다음 내역 보기</Button>
         : null}
     </div>
+    <p role="status" className={events.length ? "sr-only" : "text-xs text-text-secondary"}>{result}</p>
     {events.length
       ? <ol aria-label="안전한 처리 내역" className="flex flex-col gap-3">
           {eventRows(events).map(({ event, key }) => <RunEvent key={key} event={event} jobLabel={jobLabel} />)}
         </ol>
-      : <p className="text-xs text-text-secondary">
-          {errorsOnly ? "불러온 내역에 오류 로그가 없습니다." : "이 범위에는 표시할 처리 내역이 없습니다."}
-        </p>}
+      : null}
   </>;
 }
 
