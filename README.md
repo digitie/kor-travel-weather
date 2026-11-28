@@ -92,7 +92,7 @@ projection과 forecast preview가 오른쪽 inspector에 열린다. `/login`은 
 repository, schedule 상태와 최근 run을 확인하고 Dagster 원본 화면으로 이동한다.
 브라우저에는 backend admin token이 내려가지 않는다.
 
-Prometheus 계측은 [`docs/observability.md`](docs/observability.md)에 정의되어 있다.
+Prometheus 계측은 [`docs/architecture/observability.md`](docs/architecture/observability.md)에 정의되어 있다.
 Compose의 Prometheus는 `127.0.0.1:14104`에만 노출하며 API scrape에는 전용
 `KOR_TRAVEL_WEATHER_METRICS_TOKEN` bearer token을 사용한다. API와 Dagster의
 집계 지표에는 위치/실행 ID·URL·credential이 label로 들어가지 않는다.
@@ -147,10 +147,10 @@ weather fact 저장소와는 결합하지 않는다.
 - `/v1/admin/provider-credentials`: provider API key 암호화 저장·교체·삭제
 - `/health`, `/version`: 의존성 없는 liveness와 버전 확인
 - `/ready`: API 시작 warmup 상태(진행 중 503, 완료·생략·비활성 200;
-  [`docs/weather-api-prewarm.md`](docs/weather-api-prewarm.md))
+  [`docs/architecture/weather-api-prewarm.md`](docs/architecture/weather-api-prewarm.md))
 
 응답은 `{data, meta}` envelope이며 `meta.request_id`로 로그와 Dagster run을 연결한다.
-자세한 내용은 [`docs/architecture/rest-api.md`](docs/architecture/rest-api.md)와
+자세한 내용은 [`docs/architecture/weather-api.md`](docs/architecture/weather-api.md)와
 [`docs/integration-map.md`](docs/integration-map.md)를 참고한다.
 
 UI 정보구조와 화면별 상태/반응형 계약은
@@ -170,7 +170,7 @@ response idempotency와 run overlap guard로 중복 publish를 막고 매 실행
 
 GPL-3.0-or-later. Provider 원천 데이터와 API 응답은 각 기관의 이용약관을 따른다.
 
-공식 기상특보 발표 관측의 원천·지역 검증·수집/보존·공개 API 경계는 [특보 이벤트 계약](docs/pinvi-alert-events.md)을 따른다. 기존 활성 카드와 빈 목록의 의미는 유지한다.
+공식 기상특보 발표 관측의 원천·지역 검증·수집/보존·공개 API 경계는 [특보 이벤트 계약](docs/architecture/pinvi-alert-events.md)을 따른다. 기존 활성 카드와 빈 목록의 의미는 유지한다.
 
 ### 프론트엔드 필수 검증
 
