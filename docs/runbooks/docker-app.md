@@ -88,7 +88,7 @@ immutable facts를 삭제하거나 부분 publish하지 않는다. MVP는 durabl
   PG `11000`·fresh DB·메모리·시계·전환 절차·odroid 상태)은 `deploy/n150.md` "계획: odroid 호스트"
   한 곳에 두고 여기 복제하지 않는다.
 - 5의 운영 endpoint(`weather-api.`·`weather.`)는 HAProxy backend만 `.13`으로 바뀌고 이름은
-  같다. odroid 자체 plane의 공개 host는 ADR-58 열린 결정 §14-4(`weather-dagster.` 재사용 또는
+  같다. odroid 자체 plane의 공개 host는 Manager ADR-58 열린 결정 §14-4(`weather-dagster.` 재사용 또는
   새 이름; Manager `KTDM_PROD_URL_DAGSTER` 선행)로 아직 정해지지 않았다 — 결정 전에는 URL을 쓰지
   않고, 5의 Dagster 주소는 n150 공용 plane 링크(`dagster.`)를 쓴다. smoke는 `/version`의 `git_commit`과 odroid access log의 peer(`192.168.1.14` =
   PinVi)로 확인한다 — 200만으로 판단하지 않는다.
@@ -97,7 +97,7 @@ immutable facts를 삭제하거나 부분 publish하지 않는다. MVP는 durabl
   (`deploy/n150.md` "0017" 절, 컨테이너명 동일). 접속은 WSL에서 `ssh digitie@192.168.1.13`(직접,
   2026-10-13부터), root 작업은 `sudo -n`(NOPASSWD 설정 완료). 긴 작업은 ssh timeout 밖(tmux/nohup)에서.
 - 보류된 소유자 결정 중 이 runbook에 닿는 것: `KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS=7`
-  축소 여부(ADR-58 열린 결정 §14-17; `compose.yaml:66` 기본 7, 운영 `.env`로만 바뀐다) — 결정
+  축소 여부(Manager ADR-58 열린 결정 §14-17; `compose.yaml:66` 기본 7, 운영 `.env`로만 바뀐다) — 결정
   전에는 7 유지.
   `KOR_TRAVEL_WEATHER_RETENTION_DAYS`는 운영 7(2026-10-13 결정, `deploy/n150.md`)을 odroid root
   `.env`에도 명시한다.

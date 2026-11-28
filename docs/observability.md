@@ -183,7 +183,7 @@ firing alert는 아직 어디에도 전달되지 않는다(위 `alerting:` 참�
 weather 스택이 odroid(`192.168.1.13`)로 옮겨가면(`deploy/n150.md` "계획: odroid 호스트")
 관측은 Manager ADR-58 결정 11(관측 (b)) — **Prometheus·Grafana는 n150 하나**, odroid에는
 exporter만 — 를 따른다. weather 자신의 Prometheus `14104`는 그 예외로 **1단계에서 odroid에
-그대로 남고**, n150의 Manager Prometheus(`12102`)가 거기서 federate한다. ADR-58 본문의 소제목은
+그대로 남고**, n150의 Manager Prometheus(`12102`)가 거기서 federate한다. Manager ADR-58 본문의 소제목은
 컨텍스트 / 결정(1~13) / 근거 / 결과(긍정·부정) / 관계 / 바뀌는 테스트 / 열린 결정(설계 §14 번호)이고
 운영 절차는 Manager `docs/prod-deployment.md` §9다 — 아래 인용은 "결정 N"·"§14-N"을 쓴다. 두 호스트
 Prometheus가 LAN에서 서로 닿는 전제는 bind가 loopback이 아니라는 것이다 — Manager compose의
@@ -205,14 +205,14 @@ code-server metrics `14103`은 `0.0.0.0` 기본(`src/kortravelweather/metrics.py
   `14101`/`metrics`는 1단계에서 n150이 직접 scrape하지 **않는다** — bearer token
   (`KOR_TRAVEL_WEATHER_METRICS_TOKEN`)을 두 호스트 Prometheus에 중복 주입하지 않기 위해서다
   (odroid `14104`가 지금처럼 secret 파일로 읽고, n150은 그 결과를 federate로 받는다). 타깃은
-  Manager registry에서 계산한 **커밋된 파생물**이고 결박 테스트가 지킨다(ADR-58 결정 5·Manager
+  Manager registry에서 계산한 **커밋된 파생물**이고 결박 테스트가 지킨다(Manager ADR-58 결정 5·Manager
   `docs/bindings.md` B-8).
 - 왜 `14104`를 바로 퇴역시키지 않는가: 이 저장소의 `deploy/prometheus/alerts.yml`(규칙 10개)은
   Manager compose가 weather **체크아웃 디렉터리**를 bind해 읽는다(Manager
   `config/docker-targets.yml:969-971`, 위 "규칙 변경 배포"). 체크아웃·규칙·SIGHUP 경로가 전부
   호스트 로컬이라 odroid로 옮겨도 그대로 성립하고, n150에서 체크아웃을 지우는 해체(Manager
   `docs/prod-deployment.md` §9.6) 뒤에는 n150에 규칙 정본이 없다. 2단계 퇴역(시점은 소유자 결정,
-  ADR-58 열린 결정 §14-11)에서 token·규칙 자리를 n150 Prometheus로 옮긴 뒤에만 `14104`를 내린다.
+  Manager ADR-58 열린 결정 §14-11)에서 token·규칙 자리를 n150 Prometheus로 옮긴 뒤에만 `14104`를 내린다.
 - **federate는 샘플 타임스탬프에 의존한다.** `/federate` 응답은 odroid Prometheus가 scrape한
   시각을 달고 오므로 odroid 시계가 틀리면 n150 Prometheus가 out-of-bounds로 **조용히 버린다**
   (`up`은 1인데 `ktw_*`가 비는 모양). 직접 scrape(`14103`)는 n150 시각을 쓰므로 영향이 없다.

@@ -1,4 +1,4 @@
-# ADR-114 연계 Weather·Transport Map 서비스 export 설계
+# Map ADR-114 연계 Weather·Transport Map 서비스 export 설계
 
 - 상태 갱신(2026-10-24, source #164): **W1~W5 producer 구현·머지 완료, 운영 활성화/Map 소비자 수용은 별도**. 현재 확정 계약·PR은 [인계](../reports/2026-10-23-map-service-api-handoff.md), 운영 잔여는 [tasks](../tasks.md)를 따른다. 아래 단계/선행 조사·제안은 최초 설계 기준선을 보존한다.
 - 초안 독립 적대 리뷰 2인: 조건부 PASS. W5 관측 범위는 2026-10-23 사용자 선택으로 확정했다.
@@ -7,7 +7,7 @@
 - 관측 선택 갱신 기준: `b31c33d4d5188810d52dd102d4e59346b4aacc33`(PR #132 머지 뒤).
 - W5 선택: 사용자 “기상청 실황도 관측으로 포함(권장)” 승인. #148/#152/#163에서 실제 reducer/REST와 다중 원천 eligibility를 구현했으며 초기 운영 투영/소비 수용은 별도다.
 - 작성일: 2026-10-23.
-- Map 정본: ADR-114(Valkey 현재/예보 + Weather 요약, PinVi는 Map REST).
+- Map 정본: Map ADR-114(Valkey 현재/예보 + Weather 요약, PinVi는 Map REST).
 - 입력 정본: coordinator가 전달한 W1~W5/T1~T5. 최신 사용자 명시 W5의 KST 3개 slot이
   Map ADR-114의 기존 오전/오후 요약 표현보다 우선한다. 문서 이행 때 양쪽을 함께 맞춘다.
 - 기존 history·통계·dashboard·공개/admin API를 보존하는 additive 변경이다.

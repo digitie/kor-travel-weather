@@ -3,7 +3,7 @@
 | consumer | reads | owns | does not own |
 | --- | --- | --- | --- |
 | PinVi | public weather REST/OpenAPI (`/resolve`, `/markers`, `/latest`, `/forecast`, `/nearby`) | UI presentation | KMA credentials/ETL |
-| kor-travel-map | service export `GET /v1/service/exports/{locations,current,forecasts,daily-summaries}`(W1·W2·W3·W5, `X-Admin-Token`). Map Dagster `weather_state_*` job 일곱이 첫 페이지 `If-None-Match`·cursor로 끝까지 읽어 **Valkey에 세대 단위로 교체**한다 | Valkey의 weather 상태 세대, Map REST `/v1/service/weather/*`(PinVi용) | weather 수집·승인·export 계약, Map PG의 날씨 저장(ADR-105 — Map DB에 날씨를 **저장하지 않는다**는 결정이며 ADR-114가 Valkey로 부분 대체) |
+| kor-travel-map | service export `GET /v1/service/exports/{locations,current,forecasts,daily-summaries}`(W1·W2·W3·W5, `X-Admin-Token`). Map Dagster `weather_state_*` job 일곱이 첫 페이지 `If-None-Match`·cursor로 끝까지 읽어 **Valkey에 세대 단위로 교체**한다 | Valkey의 weather 상태 세대, Map REST `/v1/service/weather/*`(PinVi용) | weather 수집·승인·export 계약, Map PG의 날씨 저장(Map ADR-105 — Map DB에 날씨를 **저장하지 않는다**는 결정이며 Map ADR-114가 Valkey로 부분 대체) |
 | Dagster | WeatherLocation catalog, KMA | source/fact publication, sync runs | consumer UI |
 | admin UI | admin REST proxy | location enablement, run observation | direct DB/raw SQL |
 
@@ -41,10 +41,10 @@ compose다(PinVi 저장소 `.env.example`은 개발용 기본값만 가진다). 
 
 | PinVi 호출자 | 값의 자리(운영 정본) | 지금 | 계획 |
 | --- | --- | --- | --- |
-| ETL code-server(Dagster resource `kor_travel_weather` = `KorTravelWeatherResource(base_url=EnvVar("PINVI_KOR_TRAVEL_WEATHER_BASE_URL"))`, `apps/etl/pinvi/etl/definitions.py:66-68`) | Manager `docker-compose.yml:2134` 리터럴(`PINVI_KOR_TRAVEL_WEATHER_BASE_URL`) | `http://127.0.0.1:14101` | `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:14101}` — registry에서 계산한 커밋된 파생물(ADR-58 결정 4 R2·결정 5; weather 플립 PR, Manager T-MGR-01c/06) |
-| **pinvi-api 런타임**(trip 날씨·weather card·location resolver·admin weather values; `apps/api/app/core/config.py:903` `pinvi_kor_travel_weather_base_url` 기본 `http://localhost:14101`) | **없음** — Manager compose의 pinvi-api 블록에 이 변수가 주입되지 않아 코드 기본값으로 돈다 | `localhost:14101`(같은 호스트라 동작) | 같은 변수를 pinvi-api 블록에도 주입(T-MGR-01c, ADR-58 결정 4 R2). 없으면 이전 뒤 PinVi 여행 날씨가 **조용히 빈다** — pinvi-api는 `KorTravelWeatherError`를 삼켜 빈 날씨로 응답한다 |
+| ETL code-server(Dagster resource `kor_travel_weather` = `KorTravelWeatherResource(base_url=EnvVar("PINVI_KOR_TRAVEL_WEATHER_BASE_URL"))`, `apps/etl/pinvi/etl/definitions.py:66-68`) | Manager `docker-compose.yml:2134` 리터럴(`PINVI_KOR_TRAVEL_WEATHER_BASE_URL`) | `http://127.0.0.1:14101` | `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:14101}` — registry에서 계산한 커밋된 파생물(Manager ADR-58 결정 4 R2·결정 5; weather 플립 PR, Manager T-MGR-01c/06) |
+| **pinvi-api 런타임**(trip 날씨·weather card·location resolver·admin weather values; `apps/api/app/core/config.py:903` `pinvi_kor_travel_weather_base_url` 기본 `http://localhost:14101`) | **없음** — Manager compose의 pinvi-api 블록에 이 변수가 주입되지 않아 코드 기본값으로 돈다 | `localhost:14101`(같은 호스트라 동작) | 같은 변수를 pinvi-api 블록에도 주입(T-MGR-01c, Manager ADR-58 결정 4 R2). 없으면 이전 뒤 PinVi 여행 날씨가 **조용히 빈다** — pinvi-api는 `KorTravelWeatherError`를 삼켜 빈 날씨로 응답한다 |
 
-- 전환 게이트(ADR-58 결정 13; Manager `docs/prod-deployment.md` §9.2 **순서 7**(target당 절차 ③·④),
+- 전환 게이트(Manager ADR-58 결정 13; Manager `docs/prod-deployment.md` §9.2 **순서 7**(target당 절차 ③·④),
   HAProxy 전환표 §9.4; weather 행만 추린 표는 `deploy/n150.md` "전환 절차"): **n150 weather-api가
   stop인 상태에서** PinVi ETL 1 run 성공 **+** PinVi trip view weather card가 비어 있지 않음 + odroid
   weather access log의 peer가 `192.168.1.14` — 이것이 ③이고, HAProxy `.13` 전환(④)은 그 뒤다. "200이면
@@ -112,5 +112,5 @@ proposed, 미구현)의 범위에서 다룰 일이다). 두 ADR 번호는 2026-1
   재키된다(provider 주도).
 - KMA 경보 fan-out `_warning_matches_target`은 `region_code` 부분문자열 비교다
   (`kma_weather.py:515-545`) — 행정구역 명칭 개편이 provider 문자열에 반영되면 매칭이
-  어긋날 수 있다. 기존 하드닝 항목 "지역별 발령기관 매핑"(`docs/decisions.md:12-15`)과
+  어긋날 수 있다. 기존 하드닝 항목 "지역별 발령기관 매핑"([ADR-101](adr/101-kma-alert-dataset.md))과
   같은 축이다.
