@@ -30,12 +30,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: digitie/kor-travel-common
-          ref: 120c749b7f87e5b5d3e63f43edd6a136cf421db7
+          ref: 73761c5d0a14e3df409e5b1c86f954eb219dae66
           path: common-policy
           persist-credentials: false
       - name: Check used shared backend source and lock
         run: |
-          test "$(git -C common-policy rev-parse HEAD)" = 120c749b7f87e5b5d3e63f43edd6a136cf421db7
+          test "$(git -C common-policy rev-parse HEAD)" = 73761c5d0a14e3df409e5b1c86f954eb219dae66
           python3 -B common-policy/tools/check_versions.py "$GITHUB_WORKSPACE/consumer" \
             --registry "$GITHUB_WORKSPACE/common-policy/versions.json" \
             --repo kor-travel-weather --strict-python-application \
