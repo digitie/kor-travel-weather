@@ -1,5 +1,6 @@
 "use client";
 
+import { DagsterLogControls } from "@kor-travel/ui/dagster-workbench";
 import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -275,10 +276,32 @@ function RunEvent({event,jobLabel}:{event:ConsoleEvent;jobLabel:JobLabel}) {
   </li>;
 }
 
-function RunEvents({detail,loading,onNextPage,jobLabel}:{detail:ConsoleRunDetail;loading:boolean;onNextPage:()=>void;jobLabel:JobLabel}) {
+function RunEvents({ detail, loading, onNextPage, jobLabel }: {
+  detail: ConsoleRunDetail;
+  loading: boolean;
+  onNextPage: () => void;
+  jobLabel: JobLabel;
+}) {
+  const [errorsOnly, setErrorsOnly] = useState(false);
+  const events = errorsOnly
+    ? detail.events.filter(event => event.kind === "ExecutionStepFailureEvent" || event.kind === "RunFailureEvent")
+    : detail.events;
+
   return <>
-    <div className="flex flex-wrap items-center gap-2"><h4 className="font-semibold">처리 내역</h4>{detail.hasMore?<Button size="sm" type="button" variant="outline" loading={loading} onClick={onNextPage}>다음 내역 보기</Button>:null}</div>
-    {detail.events.length?<ol aria-label="안전한 처리 내역" className="flex flex-col gap-3">{eventRows(detail.events).map(({event,key})=><RunEvent key={key} event={event} jobLabel={jobLabel}/>)}</ol>:<p className="text-xs text-text-secondary">이 범위에는 표시할 처리 내역이 없습니다.</p>}
+    <div className="flex flex-wrap items-center gap-2">
+      <h4 className="font-semibold">처리 내역</h4>
+      <DagsterLogControls errorsOnly={errorsOnly} onFilter={setErrorsOnly} />
+      {detail.hasMore
+        ? <Button size="sm" type="button" variant="outline" loading={loading} onClick={onNextPage}>다음 내역 보기</Button>
+        : null}
+    </div>
+    {events.length
+      ? <ol aria-label="안전한 처리 내역" className="flex flex-col gap-3">
+          {eventRows(events).map(({ event, key }) => <RunEvent key={key} event={event} jobLabel={jobLabel} />)}
+        </ol>
+      : <p className="text-xs text-text-secondary">
+          {errorsOnly ? "불러온 내역에 오류 로그가 없습니다." : "이 범위에는 표시할 처리 내역이 없습니다."}
+        </p>}
   </>;
 }
 

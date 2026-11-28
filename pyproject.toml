@@ -12,7 +12,7 @@ license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "digitie" }]
 keywords = ["weather", "korea", "kma", "dagster", "fastapi", "data-source"]
 dependencies = [
-  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@f1faf56365854cefcc9e1f02f51c5b9c7e6a13ae#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@aefdc8695aecc09fd73c97c083b00e6379681c07#subdirectory=packages/py/kor-travel-common",
   "pydantic==2.14.4",
   "pydantic-settings==2.16.3",
   "sqlalchemy==2.1.9",
@@ -52,7 +52,7 @@ dev = [
 # version bump done together with the shared host, never a side effect.
 # dagster-graphql/-pipes/-shared follow from dagster's own ``==`` requirements.
 dagster = [
-  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@f1faf56365854cefcc9e1f02f51c5b9c7e6a13ae#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@aefdc8695aecc09fd73c97c083b00e6379681c07#subdirectory=packages/py/kor-travel-common",
   "dagster==1.13.24",
   "dagster-webserver==1.13.24",
   "croniter>=6,<7",

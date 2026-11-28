@@ -1,5 +1,8 @@
 # Dagster boundary
 
+관리 Dagster 화면의 실행 상세에서 공통 **오류 로그만 보기**를 켜면 현재 불러온 실행 실패·단계 실패 내역이 표시된다. 다음 내역을 불러와도 필터가 유지된다.
+
+
 KMA는 **dataset마다 하나씩** asset/job/schedule 경계를 갖는다: `kma_ultra_short_nowcast_sync`
 (초단기실황, hourly `20 * * * *`), `kma_ultra_short_forecast_sync`(초단기예보, hourly
 `0 * * * *`), `kma_short_forecast_sync`(단기예보, KMA 실제 발표시각인

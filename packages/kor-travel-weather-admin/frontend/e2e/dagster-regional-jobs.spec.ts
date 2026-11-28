@@ -83,3 +83,37 @@ test("지역 원천 job은 원천 이름으로 보이고 실패 원인이 그 �
     await expect(detail.getByText("KrexConnectionError", { exact: false }).first()).toBeVisible();
   });
 });
+
+test("공통 오류 로그 필터로 불러온 처리 내역을 전환한다", async ({ page }) => {
+  await routeDagster(page);
+  const event = (kind: string, title: string) => ({
+    kind, title, time: null, step: null, detail: null, warning: false, counts: {},
+  });
+  await page.route("**/api/dagster/console", route => {
+    const {operation, cursor} = route.request().postDataJSON();
+    if (operation === "catalog") return route.fulfill({json: {
+      jobs: [], schedules: [], sensors: [], capabilities: {}, checkedAt: null,
+    }});
+    expect(operation).toBe("detail");
+    return route.fulfill({json: {
+      ...RUNS[0], creationTime: null, queuedTime: null, canCancel: false, canRetry: false,
+      steps: [], stepsSucceeded: 0, stepsFailed: 1, materializations: 0, stepsTruncated: false,
+      checkedAt: null, cursor: cursor ? null : "next", hasMore: !cursor,
+      events: cursor
+        ? [event("RunFailureEvent", "다음 페이지 실패")]
+        : [event("ExecutionStepStartEvent", "정상 처리"), event("ExecutionStepFailureEvent", "단계 실패")],
+    }});
+  });
+  await login(page);
+  await page.getByRole("button", {name: /실행 상세: 고속도로 휴게소 날씨 수집/}).first().click();
+  const events = page.getByRole("list", {name: "안전한 처리 내역"});
+  const filter = page.getByRole("button", {name: "오류 로그만 보기"});
+  await expect(events).toContainText("정상 처리");
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "true");
+  await expect(events).not.toContainText("정상 처리");
+  await expect(events).toContainText("단계 실패");
+  await page.getByRole("button", {name: "다음 내역 보기"}).click();
+  await expect(events).toContainText("다음 페이지 실패");
+  await expect(events).not.toContainText("정상 처리");
+});
