@@ -811,14 +811,14 @@ James/Popper가 지적한 현재 관측보다 예보 기온을 우선하던 문�
 위치 상세에 현재/내일 요약, 미세먼지 등 지표, 마지막 시간별 기온 그래프·강수/습도/바람을 배치했다.
 한국 날짜 경계와 미제공·0도·결측 공백을 검사했다. 고정 예시 데이터의 수정 전후 Firefox750/375 캡처를 보존했다.
 WSL/Docker 회귀30개, 타입·UI lint·Next 빌드, 별도 PG16 관련 API9개·Ruff 통과.
-기존 지역 DTO 변경의 CI 예상값과 OpenAPI 누락도 보완했다. [범위·전후 비교](regional-weather-details.md).
+기존 지역 DTO 변경의 CI 예상값과 OpenAPI 누락도 보완했다. [범위·전후 비교](architecture/regional-weather-details.md).
 운영 배포나 실측 자료 전체 수용은 아니다.
 
 ## 2026-10-30 — 지역별 날씨 대표값·유가 평균과 상세 예보
 
 첨부 화면을 참고한 날씨 현재/시간별 상세와 줌8/12 행정구역 전환을 구현했다.
 유가는 전체 지역의 유효 최신 가격을 유종별 집계하고, 날씨는 좌표가 일치하는 저장 역주소의 실제 대표 지점을 선택한다.
-[계약·검증 범위](regional-weather-details.md). 운영 배포/수집 변경은 없다.
+[계약·검증 범위](architecture/regional-weather-details.md). 운영 배포/수집 변경은 없다.
 
 ## 2026-10-29 — 최신 Weather 전체 이미지 배포
 
@@ -1040,7 +1040,7 @@ WSL/Docker 회귀30개, 타입·UI lint·Next 빌드, 별도 PG16 관련 API9개
   두 번 지났고(머리 탐색 cold 15.3초·34,708 read), 진척이 있어도 완료가 아니면 Failure였다.
 - 수정: 부분 인덱스 순서의 위치 이어 읽기(batch는 앞 마지막 키 뒤, 실행은 앞 materialization의
   `resume_*`), 잠근 행의 tableoid+ctid 삭제, lock_timeout 대기(SKIP LOCKED 제거), 잠금/timeout은 batch
-  연기. [원인·동작·확인 방법](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
+  연기. [원인·동작·확인 방법](architecture/shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
 - 적대 리뷰 반영: 위치는 정책 해시·DB 이름·경계 앞섬·24시간 주기 머리 훑기로 검사한 뒤에만 쓰고
   (훑기가 시간 초과면 같은 실행이 저장 위치에서 이어 정리), dry-run은 진척이 아니다.
 - 소유자 지시(job이 실패를 멈출 것) 반영: Failure는 진척0과 "24시간 넘게 뒤처진 채 지연 상한이 7회(약70분) 연속
@@ -1170,9 +1170,9 @@ ee82c26 전체CI 통과 뒤 James가 전체 종류 선택의 예보 마커 누�
 WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 필터30px·176px·PC한줄·실제좌표/줌·종류요청·상세배치·선택위치이동·Escape/포커스·가로 overflow2 PASS. 독립 Popper 지적을 반영했다. 전체 Python·CI·최종 소비자 통합 gate는 아직 정산 전이다. [정산](reports/2026-10-24-shared-map-ui.md). 다음은 후보 CI/최종 소비자 검증이며 자체 운영 빌드·배포는 하지 않는다.
 ## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
 
-- 이 저장소의 기존 프론트엔드/공용 테스트 243개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](npm-security-alignment-2026-10-24.md).
+- 이 저장소의 기존 프론트엔드/공용 테스트 243개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](archive/npm-security-alignment-2026-10-24.md).
 - 직접/전이 npm 의존성과 잠금 파일을 갱신하고 여섯 프로젝트의 공통 버전을 맞췄다.
-- 호환성 예외·미수정 상류 권고·검증 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+- 호환성 예외·미수정 상류 권고·검증 범위는 [정합 기록](archive/npm-security-alignment-2026-10-24.md)을 따른다.
 - 소스·잠금 파일 정합과 WSL 검증을 완료했다. 최종 CI·두 독립 확인·N150 후보 UI 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-weather/pull/166)에서 정산하며 통과 확인 전 머지하지 않는다.
 
 ## 2026-10-24 — Next.js 16.4.3 보안 의존성 갱신
@@ -1421,7 +1421,7 @@ Common40의 522525a pin과 잠금을 갱신한 뒤 주소 회귀 4 PASS를 확�
 
 ## 2026-10-18 주소 갱신 구현·로컬 검증
 
-VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin 수동 실행을 구현했다. 두 앱은 같은 Common Python 엔진을 고정 commit으로 사용한다. [설계·설정 및 검증 범위](reverse-address-refresh.md)를 참조한다. 원천 주소·좌표는 보존한다.
+VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin 수동 실행을 구현했다. 두 앱은 같은 Common Python 엔진을 고정 commit으로 사용한다. [설계·설정 및 검증 범위](architecture/reverse-address-refresh.md)를 참조한다. 원천 주소·좌표는 보존한다.
 
 로컬 실브라우저 최종 재검증은 앱별 13개(합계 26개) 통과했고 실제 인증·상태 API·Dagster 큐 예약·중복 차단·모바일/키보드·오류 복구를 포함한다. 제공자는 주입 fixture다. Python 전체 검증은 Common 509개, Weather 658개, Transport 838개 통과·환경 조건 10개 skip이다. Common39·Weather111은 두 독립 리뷰/CI 통과 후 머지했다. [최종 리뷰 기록](reviews/2026-10-18-address-refresh-final.md)을 참조한다. Transport 정식 gate는 별도이며 운영 migration·실제 제공자 실호출·배포·운영 UI 수용은 미실행이다. Daemon은 중지 상태를 유지한다.
 
@@ -1438,7 +1438,7 @@ VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin �
 ## 2026-10-18 수집 카탈로그 CPU/할당 peak 개선
 
 metadata 포함 카탈로그를 ORM 대신 DTO 컬럼 projection으로 조회한다. 실제 DB→DTO→target
-1,450행 로컬 비교와 한계를 [측정 기록](collector-catalog-cpu-20261018.md)에 기록했다.
+1,450행 로컬 비교와 한계를 [측정 기록](archive/collector-catalog-cpu-20261018.md)에 기록했다.
 두 명의 독립 소스 리뷰·exact-head CI·ARM64 API/CS native build·r4 prepare는 통과했다.
 ARM 격리 fixture 10표본에서 CPU 중앙값 약 12.2%, Python 할당 peak 약 16.0% 감소했고
 RSS의 실질적 저감은 주장하지 않는다. API/CS 배포065661ca PASS와 배포 후 WSL

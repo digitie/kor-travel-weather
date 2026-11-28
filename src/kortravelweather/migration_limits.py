@@ -15,7 +15,7 @@ migration의 ``ALTER TABLE``·``CREATE INDEX``가 열린 수집·읽기 transact
 
 ``CREATE INDEX CONCURRENTLY``처럼 더 오래 기다려야 하는 새 migration은 자기 transaction이나
 autocommit 블록에서 명시적으로 늘린다. 재시도 헬퍼는 migration마다 다르게 두고 표준화하지 않는다
-(``docs/write-path-bounds.md``).
+(``docs/architecture/write-path-bounds.md``).
 """
 
 from __future__ import annotations

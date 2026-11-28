@@ -1293,7 +1293,7 @@ PURGE_SOURCE_RECORDS_SQL = (
 #: transaction에 몰리고, 그동안 같은 포인터 행을 쓰는 수집 CAS가 그 행 lock 뒤에 줄을 섰다.
 #: 지금은 기본키 순서의 keyset batch마다 commit하고, batch마다 아래 문장·lock 상한을 건다.
 #: 1,000행은 단기예보 정리(``MAX_BATCH_SIZE``)와 같은 크기다. 그쪽 운영 실측(약 3초/1,000행,
-#: ``docs/shortterm-retention.md``)이 10초 문장 상한 안에 든다. 이 두 DELETE의 운영 시간은
+#: ``docs/architecture/shortterm-retention.md``)이 10초 문장 상한 안에 든다. 이 두 DELETE의 운영 시간은
 #: 재지 않았다.
 HISTORY_PURGE_BATCH_ROWS = 1000
 HISTORY_PURGE_STATEMENT_TIMEOUT_MS = 10_000

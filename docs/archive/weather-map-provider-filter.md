@@ -44,7 +44,7 @@ migration `0022_provider_marker_index`는 현재 projection에 부분 인덱스 
 
 최종 표본의 각 SQL은 5초 내 완료했다. KMA 전체 6.769초는 여러 SQL·전송·Python 처리를 합친 시간이므로 SQL별 제한과 구분한다. 부하·캐시를 통제한 반복 p95 측정이나 전체 서버 CPU 감소율은 아니다. 인덱스 쓰기 비용과 추가 디스크 사용도 있으므로 효과를 전체 수집 성능으로 확대 해석하지 않는다.
 
-[이전 읽기 측정](reviews/evidence/2026-10-22-weather-provider-filter-before.json), [최종 읽기 측정](reviews/evidence/2026-10-22-weather-provider-filter-after.json)에 실제 응답 수·SQL별 시간·전체 시간을 남겼다.
+[이전 읽기 측정](../reviews/evidence/2026-10-22-weather-provider-filter-before.json), [최종 읽기 측정](../reviews/evidence/2026-10-22-weather-provider-filter-after.json)에 실제 응답 수·SQL별 시간·전체 시간을 남겼다.
 
 ## 검증 및 운영 배포
 
@@ -52,8 +52,8 @@ migration `0022_provider_marker_index`는 현재 projection에 부분 인덱스 
 
 기능 PR [#126](https://github.com/digitie/kor-travel-weather/pull/126)은 `bdeeae6df767d0b7657875f071434d1307559e7a`로 머지했다. 최종 제품 커밋 CI 두 실행(39687822655, 39687814870)에서 Python 709개, 프론트엔드 218개와 Ruff·타입·lint·빌드·OpenAPI 검사가 통과했다.
 
-스테이징의 실제 로그인·VWorld 지도에서 14개 UI 시나리오를 통과했다. 전체 선택/해제, 키보드 열기·Space 선택·Escape 초점 복귀, 단일/복수 제공처, 제공처와 검색의 조합, 전체 재선택 정규화, 빠른 선택 변경, 390px 모바일 메뉴, 실제 로그아웃을 포함한다. 단일·복수 제공처의 마커 API 응답도 직접 검사해 선택 외 제공처가 없음을 확인했다. JavaScript 오류와 예상하지 않은 HTTP 오류는 없었다. 로그아웃 직후 이미 전송된 마커 요청 2개의 401은 세션 폐기에 따른 정상 거절로 별도 기록했다. [스테이징 UI 증거](reviews/evidence/2026-10-22-weather-provider-filter-stage-e2e.json)
+스테이징의 실제 로그인·VWorld 지도에서 14개 UI 시나리오를 통과했다. 전체 선택/해제, 키보드 열기·Space 선택·Escape 초점 복귀, 단일/복수 제공처, 제공처와 검색의 조합, 전체 재선택 정규화, 빠른 선택 변경, 390px 모바일 메뉴, 실제 로그아웃을 포함한다. 단일·복수 제공처의 마커 API 응답도 직접 검사해 선택 외 제공처가 없음을 확인했다. JavaScript 오류와 예상하지 않은 HTTP 오류는 없었다. 로그아웃 직후 이미 전송된 마커 요청 2개의 401은 세션 폐기에 따른 정상 거절로 별도 기록했다. [스테이징 UI 증거](../reviews/evidence/2026-10-22-weather-provider-filter-stage-e2e.json)
 
-운영 API·웹에는 ARM64 이미지 `codex-local/weather126-api:eabcece0`, `codex-local/weather126-web:eabcece0`을 배포했다. 공개 `/health`, `/version`, `/login`은 모두 HTTP 200이며 `/version`은 최종 제품 커밋과 일치한다. 공유 compose에서 두 이미지 값만 바꾸고 `up -d --no-deps`로 적용했다. Geo·Transport·공유 PostgreSQL·Dagster 및 Weather code-server 등 10개 컨테이너의 ID와 실행 상태를 보존했다. Dagster daemon과 code-server는 계속 실행 중이다. [배포·인덱스 증거](reviews/evidence/2026-10-22-weather-provider-filter-deployment.json)
+운영 API·웹에는 ARM64 이미지 `codex-local/weather126-api:eabcece0`, `codex-local/weather126-web:eabcece0`을 배포했다. 공개 `/health`, `/version`, `/login`은 모두 HTTP 200이며 `/version`은 최종 제품 커밋과 일치한다. 공유 compose에서 두 이미지 값만 바꾸고 `up -d --no-deps`로 적용했다. Geo·Transport·공유 PostgreSQL·Dagster 및 Weather code-server 등 10개 컨테이너의 ID와 실행 상태를 보존했다. Dagster daemon과 code-server는 계속 실행 중이다. [배포·인덱스 증거](../reviews/evidence/2026-10-22-weather-provider-filter-deployment.json)
 
-운영 공개 HTTPS 주소에서도 같은 14개 시나리오를 모두 통과했다. 단일/복수 제공처의 실제 마커 응답 2건을 검사했고 VWorld 요청 9건은 모두 성공했다. JavaScript 오류와 예상하지 않은 HTTP 오류는 없었다. 실제 로그아웃 뒤 남아 있던 마커 요청 1건의 정상 401만 따로 기록했다. 데스크톱 및 390px 모바일 캡처도 확인했다. 테스트용 API·웹 컨테이너와 임시 환경 파일은 정리했고 운영 롤백 이미지·compose 백업·배포 영수증은 보존했다. [운영 UI 증거](reviews/evidence/2026-10-22-weather-provider-filter-prod-e2e.json)
+운영 공개 HTTPS 주소에서도 같은 14개 시나리오를 모두 통과했다. 단일/복수 제공처의 실제 마커 응답 2건을 검사했고 VWorld 요청 9건은 모두 성공했다. JavaScript 오류와 예상하지 않은 HTTP 오류는 없었다. 실제 로그아웃 뒤 남아 있던 마커 요청 1건의 정상 401만 따로 기록했다. 데스크톱 및 390px 모바일 캡처도 확인했다. 테스트용 API·웹 컨테이너와 임시 환경 파일은 정리했고 운영 롤백 이미지·compose 백업·배포 영수증은 보존했다. [운영 UI 증거](../reviews/evidence/2026-10-22-weather-provider-filter-prod-e2e.json)

@@ -65,7 +65,7 @@ stats_reset은 null로 초기화 경위가 불명이다. 약899만live·120만de
 - [x] 현재API210/웹5098의 기존 공개 기본UI21 한정 수용. 과거UI21 승계 대신 후속 실제 실행으로 확인했다.
 - [ ] 마커 성능·추가 상호작용/모바일·공유 plane 건강은 별도 수용. 기본UI21 PASS로 완료 처리하지 않는다.
 
-[기존 보존 정책](../shortterm-retention.md)과 [당시 source·취소·UI 수용](2026-10-27-current-dagster-and-export-cancellation.md)을 함께 읽는다. 원 실패와 과거 관측은 각각의 시점·범위로 보존한다.
+[기존 보존 정책](../architecture/shortterm-retention.md)과 [당시 source·취소·UI 수용](2026-10-27-current-dagster-and-export-cancellation.md)을 함께 읽는다. 원 실패와 과거 관측은 각각의 시점·범위로 보존한다.
 
 ## 저장 원장 지문
 

@@ -1,6 +1,6 @@
 # 쓰기 경로 상한: 이력 정리 batch·수집 문장 상한·payload 미적재·migration lock 기본값
 
-2026-11-24 [Map 호출 검토](reports/2026-11-24-map-call-performance-review.md) §3.2의 L4~L7을
+2026-11-24 [Map 호출 검토](../reports/2026-11-24-map-call-performance-review.md) §3.2의 L4~L7을
 반영한다. L8(freeze RR 분리)은 A4와 같은 일이라 이 묶음에 넣지 않았다.
 
 | # | 위치 | 전 | 후 |
@@ -31,7 +31,7 @@
 잡고(예전과 같이 상한 없이), 그 뒤에 `SET LOCAL statement_timeout = '10000ms'`와
 `lock_timeout = '1000ms'`를 건다. lock 상한을 먼저 걸면 운영자 DEFAULT 교체가 쥔 advisory lock
 대기까지 1초에 끊긴다. 1,000행은 단기예보 정리 batch와 같은 크기다. 그쪽 운영 실측은 약 3초/1,000행
-(`docs/shortterm-retention.md`)이라 10초 안에 든다. 이 두 DELETE의 운영 batch 시간은 재지 않았다.
+(`docs/architecture/shortterm-retention.md`)이라 10초 안에 든다. 이 두 DELETE의 운영 batch 시간은 재지 않았다.
 
 **keyset을 기본키로 고른 이유.** 두 표 모두 `known_at`·`fetched_at` 단독 인덱스가 없다. 새 인덱스는
 큰 표의 `CREATE INDEX CONCURRENTLY` migration이 필요해 이 범위에 넣지 않았다. 두 표에서 후보 비율은
@@ -93,7 +93,7 @@ transaction이 끼어든다: 같은 advisory lock을 try로 잡는 단기예보 
 
 - **문장 하나 300초**(`INGEST_STATEMENT_TIMEOUT_MS`). 보고서 권고는 30초였다. 그러나 odroid의 KMA
   단기예보 게시는 run당 384~441천 fact에 5,539~7,881초(weather PR #286의 14일 운영 Dagster storage
-  읽기 전용 조회, 그 PR의 `docs/kma-short-forecast-runtime.md`)라 2,500 fact chunk 하나가 평균 약
+  읽기 전용 조회, 그 PR의 `docs/archive/kma-short-forecast-runtime.md`)라 2,500 fact chunk 하나가 평균 약
   45초(추산)이고, n150 디스크 대기 때는 chunk 하나가 수 분이었다
   (`docs/architecture/dagster-boundary.md`). 30초는 디스크가 밀릴 때 정상 문장을 거짓 실패시켜 몇
   시간짜리 run 전체를 버린다. 300초는 그 최악 chunk 평균(약 150초)의 두 배이고, 계획 회귀로 fact 표를

@@ -198,7 +198,7 @@ builder 한 번(freeze + 14페이지 조립 + 저장, 5.7MB)은 7.9초, 입력�
     같은 적중을 sensor·추가 run 없이 낸다. 37%를 넘으려면 (b) 또는 (d)가 필요하다.
   - **결정과 적용(2026-11-26)**: 소유자가 (a)를 골랐다 — cron `23,38`은 그대로 두고
     `weather_export_prebuild_job`의 `dagster/priority`를 0에서 10(공용 상한)으로 올렸다(공통 규칙의
-    예외, [`dagster-boundary.md`](architecture/dagster-boundary.md) "공용 queue 우선순위").
+    예외, [`dagster-boundary.md`](dagster-boundary.md) "공용 queue 우선순위").
     아래는 바꾸기 전에 잰 queue 대기 원인이다(odroid 공용 Dagster 1.13.24, 11-25 12:00 ~ 11-26
     08:00 KST, run 1,157개·사전 구성 run 34개, GraphQL·daemon 로그·instance 설정 읽기 전용).
     - 운영 instance는 이 저장소 `deploy/dagster.yaml`이 아니라 Manager가 관리하는 공용 설정이다:

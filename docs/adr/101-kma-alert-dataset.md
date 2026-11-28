@@ -25,4 +25,4 @@ adapter와 주기 asset이 수집하고, 다른 weather dataset과 같은 source
 
 - 특보 표시는 weather API 한 곳에서 나온다.
 - 지역별 발령기관 매핑과 철회 reconciliation은 이 결정의 범위가 아니라 운영 hardening으로
-  추적한다. 발표 관측 이력 계약은 [`../pinvi-alert-events.md`](../pinvi-alert-events.md)를 따른다.
+  추적한다. 발표 관측 이력 계약은 [`../pinvi-alert-events.md`](../architecture/pinvi-alert-events.md)를 따른다.

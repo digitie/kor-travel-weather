@@ -65,7 +65,7 @@ function pruneRevocations(now = Date.now()) {
 export type DurableSessionState = "active" | "revoked" | "unavailable";
 const DURABLE_AUTH_READ_TIMEOUT_MS = 5000;
 
-// durable 확인 결과의 프로세스 메모리 캐시(docs/weather-admin-map-call-resilience.md B1).
+// durable 확인 결과의 프로세스 메모리 캐시(docs/architecture/weather-admin-map-call-resilience.md B1).
 // - active 판정만 TTL(기본 10초) 동안 재사용한다. revoked·unavailable은 저장하지 않으므로
 //   저장소 장애는 지금처럼 매 요청 503(fail-closed)이다.
 // - 같은 쿠키의 동시 확인은 진행 중인 요청 하나를 공유한다(single-flight).

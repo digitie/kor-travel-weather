@@ -98,4 +98,4 @@ worker 수가 줄지 않았다. 실제 소유 builder의 Docker process 목록�
 ## 후속 변경(2026-11-24)
 
 헤더 수신 예산은 15초로 줄고 모든 GET에 적용된다. 위치 목록·공급자 키 상태의 socket 1회 복구는
-그 15초 안에서 하고, 남은 복구는 브라우저 GET 재시도가 맡는다(`docs/weather-admin-map-call-resilience.md`).
+그 15초 안에서 하고, 남은 복구는 브라우저 GET 재시도가 맡는다(`docs/architecture/weather-admin-map-call-resilience.md`).

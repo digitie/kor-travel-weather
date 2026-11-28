@@ -48,4 +48,4 @@ PR은 초안으로 먼저 만들고, 기능 단위로 작은 커밋을 남긴다
 - 반복 빌드는 기존 persistent builder와 필요 시 외부 `--cache-from`/`--cache-to`를 사용한다.
 - GDAL·Python·npm 등 의존성 cache는 단순 source 변경이나 나이만을 이유로 삭제하지 않는다.
 - 공간 정리는 정확한 own unused 앱 산출물부터 수행한다. cache 적중을 실제 로그로 확인한다.
-- 캐시와 관계없이 source/lock/runtime 검증을 유지한다. 세부 명령은 docs/weather-normal-build-producer.md를 따른다.
+- 캐시와 관계없이 source/lock/runtime 검증을 유지한다. 세부 명령은 docs/architecture/weather-normal-build-producer.md를 따른다.

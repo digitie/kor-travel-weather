@@ -62,7 +62,7 @@ Python traced peak는 SQL 구성과 계측 중의 Python allocation이며 backen
 실패로 운영 OOM이나 전체 장시간 작업의 원인을 단정할 수 없다.
 
 벤치마크의 각 표본과 반환 digest는
-[로컬 계측 원문](reviews/evidence/2026-10-16-replay-fact-lookup-benchmark.json)에 보존한다.
+[로컬 계측 원문](../reviews/evidence/2026-10-16-replay-fact-lookup-benchmark.json)에 보존한다.
 
 ## 검증
 

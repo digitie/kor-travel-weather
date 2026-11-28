@@ -1,6 +1,6 @@
 # API 시작 warmup과 `/ready`
 
-[Map 호출 검토](reports/2026-11-24-map-call-performance-review.md) §4.3 경로 B, 권장 순서 6번의
+[Map 호출 검토](../reports/2026-11-24-map-call-performance-review.md) §4.3 경로 B, 권장 순서 6번의
 구현 기록이다. 관리 지도(`/v1/weather/*`)의 배포 직후 첫 호출 비용을 줄이고, 배포 확인이
 그 상태를 볼 수 있게 한다.
 

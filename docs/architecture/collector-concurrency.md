@@ -41,4 +41,4 @@ cgroup은 프로세스 RSS와 다르며 이 peak를 해당 run만의 메모리�
 초기 n150 UI의 504 원인은 미확정이다. 배포 후에도 별도 최종 공개 HTTPS UI 22개 case가
 모두 통과했고 예상 밖 JS/HTTP 오류 0, VWorld 48회 성공/0회 실패를 확인했다. API/Web은
 PR #128 이미지를 유지했다. 이 성공이 최초 504 원인을 확정하거나 영구 해결을 증명하지는 않는다.
-세부 수치·실패 기록·범위는 [배포 증거 보고](reviews/2026-10-23-weather130-runtime-evidence.md)를 본다.
+세부 수치·실패 기록·범위는 [배포 증거 보고](../reviews/2026-10-23-weather130-runtime-evidence.md)를 본다.

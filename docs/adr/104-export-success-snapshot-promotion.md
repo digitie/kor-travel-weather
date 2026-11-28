@@ -33,7 +33,7 @@ Map은 Weather 서비스 export(W1~W5, `/v1/service/exports/*`)를 cursor로 여
 - 소비자는 실패 run의 값을 보지 않고, 페이지 순회 중 누락·중복이 없다.
 - 공개 지연은 run 길이만큼 늘어난다. 승격·artifact 저장·GC 비용과 handle 보존
   ([ADR-103](103-export-snapshot-handle-retention.md))을 운영해야 한다.
-- 표준 profile 첫 페이지 사전 구성([`../export-prebuilt-pages.md`](../export-prebuilt-pages.md))은
+- 표준 profile 첫 페이지 사전 구성([`../export-prebuilt-pages.md`](../architecture/export-prebuilt-pages.md))은
   이 snapshot 위의 최적화이며 이 결정을 바꾸지 않는다.
 - 세부 설계(receipt, scope barrier, COW artifact, cursor 형식)는
   [`../design/map-service-exports.md`](../design/map-service-exports.md) §3이 정본이다.

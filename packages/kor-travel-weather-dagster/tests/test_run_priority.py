@@ -49,7 +49,7 @@ MAINTENANCE_JOBS = frozenset({
 })
 #: 규칙과 다른 값을 소유자가 정한 job. export 사전 구성은 규칙대로면 export라 0이지만 Map 첫
 #: 페이지 전에 끝나야 쓸모가 있어 queue 대기를 줄이려고 10이다(소유자 결정 2026-11-26,
-#: ``docs/export-prebuilt-pages.md``). 새 예외는 결정 근거와 함께만 넣는다.
+#: ``docs/architecture/export-prebuilt-pages.md``). 새 예외는 결정 근거와 함께만 넣는다.
 OWNER_EXCEPTIONS = {"weather_export_prebuild_job": 10}
 
 

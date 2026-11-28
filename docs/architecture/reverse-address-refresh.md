@@ -4,11 +4,11 @@
 
 Weather #115 배포와 migration0021을 완료했다. 기존 UI36(WSL)·새 주소 UI10(n150),
 실제 제공자 단일 대상 갱신 및 원천 위치1,450행 보존을 확인했다.
-[운영 결과와 미검증 범위](reviews/2026-10-18-address-live-deployment.md)를 따른다.
+[운영 결과와 미검증 범위](../reviews/2026-10-18-address-live-deployment.md)를 따른다.
 Daemon OFF를 유지하며 아래의 운영 미실행 문장은 각 작성 시점의 이력이다.
 
 
-정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/522525aed3db934767c1c9e742b3bfc68e91679c/docs/reverse-address-refresh.md)를 따른다.
+정본 구현 계약은 [Common 구현 가이드](https://github.com/digitie/kor-travel-common/blob/522525aed3db934767c1c9e742b3bfc68e91679c/docs/architecture/reverse-address-refresh.md)를 따른다.
 Transport와 같은 VWorld 우선·Kakao 보조를 적용하며 Geo API나 데이터 토큰에는 의존하지 않는다.
 
 환경변수: KOR_TRAVEL_WEATHER_VWORLD_API_KEY, KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY,
@@ -88,7 +88,7 @@ Transport의 소유 Docker 전체 회귀는 dd66363 기준 835 PASS/13 SKIP다.
 최종 공통 c067 pin에서 Weather CI Python658·Admin211, Transport Docker Python19·Admin211도 통과했다.
 Common PR39는 두 독립 FULL source 리뷰·최종 CI14개 통과 후 merge됐으며 소비자 최종 리뷰는 별도다.
 
-Weather의 최종 두 독립 리뷰·CI와 PR111 merge 근거는 [최종 closure](reviews/2026-10-18-address-refresh-final.md)에 보존했다. 이 후속 문서는 제품·스키마·배포를 바꾸지 않는다.
+Weather의 최종 두 독립 리뷰·CI와 PR111 merge 근거는 [최종 closure](../reviews/2026-10-18-address-refresh-final.md)에 보존했다. 이 후속 문서는 제품·스키마·배포를 바꾸지 않는다.
 
 ## 현재 원천의 최근 정상 확인 시각 보정
 
@@ -98,7 +98,7 @@ Common40의 522525a pin은 현재 원천 SELECT에 있고 좌표가 같은 파�
 이 pin의 검증·CI·두 독립 리뷰와 운영 수용은 이전 기능 검증과 구분한다.
 
 Common40·Weather113은 두 FULL SOURCE PASS/최종 CI 후 머지했다. 새 pin의 전체661·UI13 및
-[독립 원문과 운영 미실행 범위](reviews/2026-10-18-address-summary-final.md)를 확인한다.
+[독립 원문과 운영 미실행 범위](../reviews/2026-10-18-address-summary-final.md)를 확인한다.
 
 ## 시간대·응답 유실 후 재시도 회귀
 
@@ -143,4 +143,4 @@ loopback 24602 프록시는 첫 요청을 지연시켜 24102 native GraphQL로 �
 최종 pin의 독립 재리뷰·CI·소비자 검증은 별도로 확인하며 운영 배포 전이다.
 
 최종 두 독립 검토·CI·지연 재시도 결과와 운영 미실행 범위는
-[후속 종결 기록](reviews/2026-10-18-native-address-final.md)에 보존했다.
+[후속 종결 기록](../reviews/2026-10-18-native-address-final.md)에 보존했다.

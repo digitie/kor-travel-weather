@@ -88,7 +88,7 @@ Origin 검증에 사용하지 않는다. 로그아웃한 세션 cookie는 서버
 읽기 요청에 최대 그 시간만큼 늦게 반영되고, 그 사이 탈취된 cookie가 읽기를 통과할 수 있다.
 상태 변경 요청(POST/PATCH/PUT/DELETE, Dagster console·주소 갱신 POST 포함)은 캐시 없이 매번
 저장소에서 확인하고, 저장소 장애(확인 실패)는 캐시하지 않고 계속 503으로 닫힌다. 자세한 계약은
-[관리 지도 호출 무실패화](../weather-admin-map-call-resilience.md)를 따른다.
+[관리 지도 호출 무실패화](weather-admin-map-call-resilience.md)를 따른다.
 
 Provider API key override는 `/settings/providers`에서 관리한다. API와 Dagster가
 공유하는 `KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY`(Fernet URL-safe key)가
@@ -116,7 +116,7 @@ Provider API key override는 `/settings/providers`에서 관리한다. API와 Da
 마커는 `view=compact`로 받고, 실패한 위치는 시간 기반으로 다시 묻는다. 지도 load 전에도
 첫 카메라로 범위를 계산해 마커 요청을 시작하고, 위치 카탈로그는 나머지 페이지를 병렬로
 받아 화면·필터 사이에 캐시하며 페이지 ETag로 다시 확인한다. 새로고침은 그린 마커를 남긴 채
-다시 받는다. 자세한 계약은 [관리 지도 호출 줄이기](../weather-admin-map-calls.md)를 따른다.
+다시 받는다. 자세한 계약은 [관리 지도 호출 줄이기](weather-admin-map-calls.md)를 따른다.
 
 제공처 필터의 특보는 이벤트별 revision·상한을 적용한 key를 먼저 확정하고,
 `(value_id, known_at)` PK LATERAL 조회와 날짜 범위로 전체 fact를 읽는다.

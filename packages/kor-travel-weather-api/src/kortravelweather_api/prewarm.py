@@ -3,7 +3,7 @@
 배포 직후 관리 지도의 첫 마커 묶음(60곳)은 이어진 묶음보다 약 10초 느렸다(26초 대 15초).
 빈 DB pool·지연 import·catalog/plan cache·PG 버퍼가 첫 요청에 몰린 탓이다
 (``docs/reports/2026-11-24-map-call-performance-review.md`` §4, 설계는
-``docs/weather-api-prewarm.md``). 포트 열기를 막지 않는 task 하나가 관리 지도가 처음 밟는
+``docs/architecture/weather-api-prewarm.md``). 포트 열기를 막지 않는 task 하나가 관리 지도가 처음 밟는
 읽기 경로를 사용자 요청과 같은 인자로 한 번 밟는다.
 
 안전 장치:

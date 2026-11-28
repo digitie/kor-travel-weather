@@ -126,7 +126,7 @@ CTE 한 문장으로 기준 1행과 후보만 읽는다.
 모두 오래 걸리는 묶음에 잡혀 있으면 마감 15초까지 매달리지 않고 `503`, `retry-after: 1`,
 problem `code=MARKER_BUSY`로 끝난다. 거절된 요청은 DB 읽기를 시작하지 않고 자리도 남기지 않는다.
 관리 웹 브라우저는 `/v1/weather/*`의 503을 `Retry-After`에 따라 최대 2회 다시 보낸다
-(`docs/weather-admin-map-call-resilience.md` B5). 값은 `routers.weather.MARKER_ADMISSION_SECONDS`다.
+(`docs/architecture/weather-admin-map-call-resilience.md` B5). 값은 `routers.weather.MARKER_ADMISSION_SECONDS`다.
 
 ## 공개 조회 503 code
 

@@ -15,14 +15,14 @@ Unicode·URL query secret·시간/Decimal canonical identity와 원본/반환 �
 
 ## 동일 작업량 측정
 
-[재현 벤치](../benchmarks/provider_source_record.py)는 제품 함수만 AST로 로드해 외부
+[재현 벤치](../../benchmarks/provider_source_record.py)는 제품 함수만 AST로 로드해 외부
 provider/DB/SDK/network 없이 source record를 만든다. natural OpenMeteo hourly336 응답
 (8변수, 수집 provider 호출 없음)과 raw6000행을 동일 객체·동일 호출수로 비교한다.
 warmup 뒤 ABBA(old/new/new/old)3회, CPU sample당3회 호출, 각경로6표본의 중앙값이다.
 CPU는 process_time, memory는 tracemalloc 단일호출 peak이며 입력 fixture는 측정 전에 만든다.
 원본 입력과 전체 반환값 동등성을 매 fixture에서 확인한다.
 
-Python3.12.13/WSL x86_64의 [전체 표본](../benchmarks/results/source-record-py312.json):
+Python3.12.13/WSL x86_64의 [전체 표본](../../benchmarks/results/source-record-py312.json):
 
 | fixture | old CPU/호출 | new CPU/호출 | 감소 | old Python peak | new Python peak |
 |---|---:|---:|---:|---:|---:|

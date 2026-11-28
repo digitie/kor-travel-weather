@@ -5,7 +5,7 @@
 
 2026-10-17 root 초기 정리에서 기존55,987 fact 삭제와 현재 경계 만료0건을 확인했다.
 미래 예보8개 표본·참조/인덱스 보존 및 삭제 뒤36개 live UI 통과는
-[운영 결과](reviews/2026-10-17-weather-short-forecast-initial-purge.md)에 기록한다.
+[운영 결과](../reviews/2026-10-17-weather-short-forecast-initial-purge.md)에 기록한다.
 아래 구현 당시 사전 상태·실패는 시점 근거로 유지하며 현재 실행 완료로 소급하지 않는다.
 
 ## 확정 요구와 범위
@@ -141,7 +141,7 @@ collected_at/issued_at/valid_at/payload/source_record_key는 바꾸지 않는다
 배치당 기존 catalog 조회를 공유하고, 원 source를 이미 가진 재입장 후보만 value_id별 최초 row를
 최대1000개씩 조회한다. row별 query, DEFAULT CHECK 변경, 과거 partition ingest DDL은 없다.
 현재 재입장 시각 자체도 수용할 partition이 없으면 schema 오류를 숨기지 않고 실패한다.
-새 예외는 [ADR-072](adr/072-weather-bitemporal.md)와 data-model에 명시했다.
+새 예외는 [ADR-072](../adr/072-weather-bitemporal.md)와 data-model에 명시했다.
 
 ## 검증 범위와 실패 이력
 
@@ -171,7 +171,7 @@ JIT는 장시간 CPU 집약 쿼리에 유리할 수 있고 짧은 쿼리에서�
 [PostgreSQL16 공식 설명](https://www.postgresql.org/docs/16/jit-decision.html)
 
 독립 리뷰의 최초 반례·수정·시험 이력은
-[closure](reviews/2026-10-16-weather-shortterm-retention-closure.md)에 보관한다.
+[closure](../reviews/2026-10-16-weather-shortterm-retention-closure.md)에 보관한다.
 
 ## 2026-10-27 상시 실패와 이어 읽기
 
