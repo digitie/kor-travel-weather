@@ -5,7 +5,7 @@
 Weather base28f731e6dcb12d5f4cde2ad86fd25acbf3da2eac → 최종 제품ba40131d224fdb34dfd125c27e15e4a2a1f6df17.
 [PR111](https://github.com/digitie/kor-travel-weather/pull/111)은 2026-10-18T02:49:09Z,
 merge f3ab79e4cd82554eaff5a07eb91288026db143cd로 완료됐다.
-[공통 가이드와 설정](../reverse-address-refresh.md), [r1/r2 원문·당시 REQUEST_CHANGES](2026-10-18-address-refresh-r1-r2.md)를 연결한다.
+[공통 가이드와 설정](../architecture/reverse-address-refresh.md), [r1/r2 원문·당시 REQUEST_CHANGES](2026-10-18-address-refresh-r1-r2.md)를 연결한다.
 과거 판정을 덮어쓰지 않고 양쪽 최종 원문 확정 뒤 통합했다.
 
 ## Disposition과 독립 검증

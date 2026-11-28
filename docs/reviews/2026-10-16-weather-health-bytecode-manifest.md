@@ -23,8 +23,8 @@ Common37 병합 c48595880aaad4367802ad71af2525a8a5e17c6a를 사용한다.
 | compose.yaml | f1319e59803b7262db7e3bbe777ce12692f8886393615e86ba071e9ad54df8b2 |
 | deploy/Dockerfile.python | 3789d7e0bb1af5c7b616e80775e2aed6209e7529e6ff2c1e7c2c7b755d6c9ae3 |
 | docs/runbooks/dagster-recovery.md | a3938e52677ae50e5de8532c8526159033fbe84fb7556689b792b42c4d1c12a5 |
-| docs/weather-health-bytecode.md | bc2113eb8fc027374f3577b9b8a752c4b45573f46ab23a5e2599b25e87ac2343 |
-| docs/weather-recovery-executor-adoption.md | 068c771f3b645151601cbdae1a9870c643f22075502db6fa1dbb8e1c28082e5c |
+| docs/archive/weather-health-bytecode.md | bc2113eb8fc027374f3577b9b8a752c4b45573f46ab23a5e2599b25e87ac2343 |
+| docs/architecture/weather-recovery-executor-adoption.md | 068c771f3b645151601cbdae1a9870c643f22075502db6fa1dbb8e1c28082e5c |
 | packages/kor-travel-weather-dagster/pyproject.toml | 5d8e778adc8a06777ad439fd0e5fd25ab35ef202f5f559fc7b19cc7fbb896627 |
 | pyproject.toml | 17050cfe54dacdb4108121075bec5293de7859fe856cf67ac6f4fbf6d3ae094f |
 | tests/test_common_health_adoption.py | 8a9eb80e00cc4b5d2ab970a6404fbb053e093b5da07b0b3a3ed7ec54627078c9 |

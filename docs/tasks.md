@@ -3,13 +3,13 @@
 코드 항목은 모두 머지됐다([검토 문서 §9](reports/2026-11-24-map-call-performance-review.md)). 아래는 남은 일이다.
 
 - [ ] **MAP-CALL-ACCEPT-20261124 / P1** — odroid weather API·Dagster를 #290~#305 이후 이미지와 migration 0044로 배포(Codex)한 뒤 검토 문서 §7 수용 기준을 잰다: Map current run 시간·상한 초과 건수(7일 전후), 응답 header `x-export-status-proof`·`x-export-prebuilt` 분포, 첫 페이지 304 비율, 499(`weather_service_export_cancelled`) 건수, 야간 유지보수 중 지도 읽기 p95·`partitions_deferred`, 배포 직후 첫 마커 묶음 대 두 번째 묶음. `W-EXPORT-CURSOR-REUSE-20261124`의 수용과 함께 한다. 로컬 수치를 운영 수치로 옮기지 않는다.
-- [x] **W-EXPORT-PREBUILT-TIMING-20261125 / 소유자 결정** — 결정 (a): cron `23,38` 유지, `weather_export_prebuild_job`의 `dagster/priority` 0→10(공통 규칙 예외). queue 대기 원인은 공용 instance 상한(weather location 3·instance 5)이 찬 동안의 대기와 tick 30초·직렬 launch 바닥(45~60초)이라 우선순위만으로는 꼬리(최대 5,742→579초, 시뮬레이션)만 줄고 예상 적중은 18%→19%다([`export-prebuilt-pages.md`](export-prebuilt-pages.md) "결정과 적용").
+- [x] **W-EXPORT-PREBUILT-TIMING-20261125 / 소유자 결정** — 결정 (a): cron `23,38` 유지, `weather_export_prebuild_job`의 `dagster/priority` 0→10(공통 규칙 예외). queue 대기 원인은 공용 instance 상한(weather location 3·instance 5)이 찬 동안의 대기와 tick 30초·직렬 launch 바닥(45~60초)이라 우선순위만으로는 꼬리(최대 5,742→579초, 시뮬레이션)만 줄고 예상 적중은 18%→19%다([`export-prebuilt-pages.md`](architecture/export-prebuilt-pages.md) "결정과 적용").
 - [ ] **W-EXPORT-PREBUILT-ACCEPT-20261126 / P2** — 우선순위 10 배포(Codex) 뒤 하루: 사전 구성 run 생성→시작 분포·꼬리, `ktw_export_prebuilt_decisions_total{outcome}` 적중 비율, 같은 기간 특보 발표 관측·transport 10 run의 queue 대기가 늘지 않았는지 본다(근거 수치는 위 문서 표).
 - [x] **W-EXPORT-PREBUILT-CAPACITY-20261126 / 소유자 결정 (Manager 저장소)** — 적중 29%(시작 지연 ≤30초 가정 수치)에 닿으려면 공용 instance 용량이 필요하다: 시뮬레이션상 weather `dagster/code_location` 상한 3→4만이면 22%, 4 + `max_concurrent_runs` 5→6이면 29%(우선순위 무관). odroid 부하·provider 동시 호출과 함께 Manager가 정한다. 37%를 넘으려면 Map 순회 시각(b) 또는 부분 재사용(d)이다. **결정·머지(2026-11-28)**: 소유자가 odroid weather location 상한 3→4·`max_concurrent_runs` 5→6을 승인했고 Manager PR #657(머지 `4f7ede8`, Manager ADR-69)이 `hosts.odroid`에 반영했다. transport 3·geo 1은 그대로다. 우선순위 10 예외도 Manager `docs/dagster-tenant-fairness.md` §3에 기록됐다. 운영 적용(Manager 설치 → `dagster-plane converge`)은 소유자 몫이며 아직이다 — 2026-11-28 읽기 전용 확인으로 odroid daemon은 여전히 5·weather 3이다.
 - [ ] **W-EXPORT-PREBUILT-CAPACITY-DEPLOY-20261128 / P2** — Manager #657 운영 적용 뒤: daemon `dagster.yaml`이 `max_concurrent_runs` 6·weather 4인지, 사전 구성 run 생성→시작 p75(시뮬레이션 42초)와 적중 비율(`W-EXPORT-PREBUILT-ACCEPT-20261126`과 함께), weather code-server 메모리(상한 2.5 GB)·OOM, 외부 provider 429, 다른 테넌트(transport·geo) queue 대기와 odroid load를 1~2주 본다. 나빠지면 Manager에서 두 값을 되돌린다.
-- [ ] **W-EXPORT-PREBUILT-W5-20261124 / P2** — A3의 W5(daily-summaries, days 14) 사전 구성 프로필. 설계 `docs/design/weather-performance-use-cases-20261109.md` §P0-A대로 요약 watermark·coverage digest·날짜창·partial 경계를 key/proof에 넣고, 가산 opt-in 계약(`summary_watermark`·`summary_as_of`·전체 count/hash)을 OpenAPI·TS 타입과 Map 소비자 검증과 함께 바꾼다([`docs/export-prebuilt-pages.md`](export-prebuilt-pages.md)).
+- [ ] **W-EXPORT-PREBUILT-W5-20261124 / P2** — A3의 W5(daily-summaries, days 14) 사전 구성 프로필. 설계 `docs/design/weather-performance-use-cases-20261109.md` §P0-A대로 요약 watermark·coverage digest·날짜창·partial 경계를 key/proof에 넣고, 가산 opt-in 계약(`summary_watermark`·`summary_as_of`·전체 count/hash)을 OpenAPI·TS 타입과 Map 소비자 검증과 함께 바꾼다([`docs/architecture/export-prebuilt-pages.md`](architecture/export-prebuilt-pages.md)).
 - [ ] **W-EXPORT-FREEZE-STALE-20261124 / 소유자 결정** — current freeze 예산 초과 때 503 대신 `_previous_success`를 `source_status=stale`로 줄지 정한다. Map #1542가 503을 상류 미준비로 건너뛰므로 지금은 필요가 크지 않다. 근거 [`reports/2026-11-24-export-freeze-split.md`](reports/2026-11-24-export-freeze-split.md).
-- [ ] **MGR-WEATHER-READY-20261124 / P2 (Manager 저장소)** — Manager 배포 verify가 `/ready`를 최대 60초 보고(초과는 경고), web healthcheck를 Manager 선언에 옮기고, 운영 배포 뒤 `python -m kortravelweather.export_prebuilt` hook을 한 번 돌린다. HAProxy 트래픽 게이트 여부도 Manager가 정한다([`weather-api-prewarm.md`](weather-api-prewarm.md)).
+- [ ] **MGR-WEATHER-READY-20261124 / P2 (Manager 저장소)** — Manager 배포 verify가 `/ready`를 최대 60초 보고(초과는 경고), web healthcheck를 Manager 선언에 옮기고, 운영 배포 뒤 `python -m kortravelweather.export_prebuilt` hook을 한 번 돌린다. HAProxy 트래픽 게이트 여부도 Manager가 정한다([`weather-api-prewarm.md`](architecture/weather-api-prewarm.md)).
 
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
@@ -231,7 +231,7 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
   2026-10-27: 운영 job이 10-20 22:50Z 마지막 성공 뒤 상시 FAILURE(최근7일 FAILURE835)임을 읽기 전용으로 실측했다.
   원인(인덱스 머리 dead 재탐색·진척에도 Failure)과 수정(검사한 위치 이어 읽기·ctid 삭제·예산150초 설정·
   진척0/뒤처진 채 7회 연속 미감소만 실패)은
-  [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)와 [보존정책 2026-10-27 절](shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
+  [PR #174](https://github.com/digitie/kor-travel-weather/pull/174)와 [보존정책 2026-10-27 절](architecture/shortterm-retention.md#2026-10-27-상시-실패와-이어-읽기).
   남은 수용: 배포 뒤 첫 run SUCCESS·`resumed` 전환·`backlog_lag_seconds` 감소와 처리량/유입 비교.
 - [ ] W-OPS-05 / P2: 같은 workload CPU/RSS·3h/12h 포함24h OOM/swap·실제 memory 정책 수용. PR #118의 고정 격자 입력 RSS 약15% 감소·DB 포함 CPU 동등 및 복구2건은 아래와 같이 부분 수용했으며 전체·장시간 조건은 남는다.
 - [ ] W-DOC-01 / P2: 실제 경로/효과 증거 확정 뒤 옛 runbook 현행 절차만 최소 갱신. T-WEA-03/04는 조건부 후보로 유지한다.
@@ -244,7 +244,7 @@ W-MARKER-PREFIX-01의 원 후보 API-only 배포·첫60지점×3 수용은
 ## 2026-10-18 수집 카탈로그 CPU/할당 peak 개선
 
 metadata 포함 카탈로그를 ORM 대신 DTO 컬럼 projection으로 조회한다. 실제 DB→DTO→target
-1,450행 로컬 비교와 한계를 [측정 기록](collector-catalog-cpu-20261018.md)에 기록했다.
+1,450행 로컬 비교와 한계를 [측정 기록](archive/collector-catalog-cpu-20261018.md)에 기록했다.
 두 명의 독립 소스 리뷰·exact-head CI·ARM64 API/CS native build·r4 prepare는 통과했다.
 ARM 격리 fixture 10표본에서 CPU 중앙값 약 12.2%, Python 할당 peak 약 16.0% 감소했고
 RSS의 실질적 저감은 주장하지 않는다. API/CS 배포065661ca PASS와 배포 후 WSL

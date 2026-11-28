@@ -6,6 +6,58 @@ consumer can resolve one requested coordinate to the nearest published
 measurement point, then read all available provider observations, forecasts,
 and KMA advisories from that point.
 
+이 문서가 weather REST API의 유일한 설명서다(예전 `rest-api.md`를 합쳤다). 필드명과 DTO 형식의 정본은
+`packages/kor-travel-weather-api/openapi.json`이며, 이 문서는 경로·인증·오류·신선도 같은 의미만 설명한다.
+
+## 경로 목록과 공통 규칙
+
+운영 Base URL은 `https://weather-api.digitie.mywire.org`이며, 로컬 Compose Base URL은
+`http://127.0.0.1:14101`이다. 성공 응답은 `{data, meta}` envelope다.
+목록의 `meta.page`에는 `limit`, `offset`, `returned`, `total`이 포함된다.
+`meta.request_id`는 `X-Request-ID`와 같다. raw payload는 public response에 노출하지 않고
+`source_record_key`만 반환한다.
+
+### Public
+
+- `GET /health`, `GET /version`
+- `GET /ready` (API 시작 warmup 상태. 진행 중이면 503·`retry-after: 1`, 완료·생략·비활성이면
+  200. DB를 읽지 않으며 DB 건강 검사가 아니다. 본문·공개 범위는
+  [weather-api-prewarm.md](weather-api-prewarm.md))
+- `GET /v1/weather/locations?search=&limit=&offset=` (항상 enabled만. 페이지 내용의 약한 `ETag`,
+  `If-None-Match`가 맞으면 본문 없는 304)
+- `GET /v1/weather/markers?location_id=...&view=full|compact` (기본 full. compact는 같은 행의 지도
+  표시 필드만, [weather-admin-map-calls.md](weather-admin-map-calls.md))
+- `GET /v1/weather/locations/{location_id}`
+- `GET /v1/weather/locations/{location_id}/latest?limit=`
+- `GET /v1/weather/locations/{location_id}/forecast?from=&to=&dataset_key=&metric_key=&history=&limit=`
+- `GET /v1/weather/nearby?lat=&lon=&radius_km=&limit=` (각 결과에 측정소,
+  `latest`, `forecast`, `alerts` 포함)
+- `GET /v1/weather/resolve?lat=&lon=&radius_km=` (가장 가까운 AirKorea 측정소의
+  모든 provider bundle)
+
+`from > to`, timezone 없는 ISO-8601, 대한민국 밖 좌표, 과도한 limit은 422다.
+disabled location은 404로 숨긴다. forecast의 기본 응답은 current projection이고
+`history=true`가 명시된 경우에만 correction revision이 포함된다.
+
+공개 200 응답은 `Vary: Accept-Encoding`을 붙이고, 요청이 gzip을 허용하고 본문이 1,024 bytes
+이상이면 gzip으로 보낸다. 일시 지연·경합은 `503`, `retry-after: 1`, problem `code`
+(`READ_TIMEOUT`·`POOL_BUSY`·`DB_UNAVAILABLE`·`LOCK_TIMEOUT`·`MARKER_BUSY`)로 알리며 같은 요청을
+다시 보내면 된다. 자세한 계약은 [weather-public-read-path.md](weather-public-read-path.md)다.
+
+### Admin
+
+`X-Admin-Token`이 설정된 환경에서는 constant-time 비교로 보호한다.
+OpenAPI의 `AdminToken` api-key security scheme(`x-admin-token`)로 생성 client가
+헤더를 주입할 수 있다.
+
+- `GET /v1/admin/locations`
+- `POST /v1/admin/locations`
+- `PATCH /v1/admin/locations/{location_id}` (`enabled=false` 비활성화)
+- `GET /v1/admin/sync-runs`
+- `GET /v1/admin/sync-runs/{run_id}/sources` (raw rows를 제외한 redacted lineage)
+
+admin에도 DELETE는 없다. 운영 설정에서 token이 없으면 app startup이 실패한다.
+오류는 `application/problem+json`의 `status`, `code`, `request_id`를 사용한다.
 ## Base URL and authentication
 
 The public API is served under `/v1/weather` by `weather-api`. Public reads do
@@ -114,7 +166,7 @@ real 단기예보 publish times), `kma_mid_forecast_publish_hours` (`30 6,18 * *
 `hourly_kma_weather_alerts` (`5 * * * *`). `hourly_airkorea_weather` refreshes
 AirKorea's station catalog and measurements independently at `35 * * * *`. The
 ultra-short forecast, nowcast and AirKorea take turns because they lock the same
-station anchors; see [Dagster boundary](architecture/dagster-boundary.md#매시-station-lock-job의-시간-분리).
+station anchors; see [Dagster boundary](dagster-boundary.md#매시-station-lock-job의-시간-분리).
 A `three_hourly_<provider>_<part>_weather`
 schedule per sweeping external provider (Open-Meteo, OpenWeatherMap, WeatherAPI; current and
 forecast each) then collects from the latest enabled AirKorea station anchors. An AirKorea
@@ -204,7 +256,7 @@ that is not in that list is skipped before its credential is even requested.
 edge answers with its "Request Blocked" page (HTTP 400/403, HTML) the step fails
 as before, but its error and metadata carry `failure_kind=upstream_blocked` and
 `http_status`, and the request counts as
-`ktw_provider_requests_total{outcome="blocked"}` (`docs/observability.md`).
+`ktw_provider_requests_total{outcome="blocked"}` (`docs/architecture/observability.md`).
 The other regional assets are separate steps and are not affected by it. Every
 other krex error fails the step unlabelled, as it always did.
 
@@ -361,3 +413,25 @@ records, which are small and not partitioned.
 The checked-in OpenAPI document is generated from the running FastAPI app with
 `python scripts/export_openapi.py`; clients should regenerate typed models from
 that document rather than infer fields from a single provider.
+
+### Consumer adapter boundary
+
+이 서비스의 canonical key는 `location_id`다. `kor-travel-map` feature는 자체
+feature identity와 좌표를 유지하고, `/resolve`로 가장 가까운 AirKorea 측정소의
+all-source bundle을 받는다. PinVi도 같은 adapter를 사용한다. 지도 전용
+`/v1/features/*` 경로는 이 source가 소유하지 않지만, KMA 특보는 `alerts`와
+지도 marker 상태로 제공한다.
+
+## current·daily·forecasts export의 검증 완료 결과 재사용
+
+forecasts(중기 제외)의 cursor 페이지도 상태 검사에 같은 앱 공용 승인 선택(최대60초)을 쓴다.
+그 페이지의 승인/실패 반영은 최대60초 늦을 수 있다(소유자 결정 2026-11-11, current·daily와 같은
+허용). 첫 페이지는 예전처럼 승인 선택을 새로 읽어 바로 반영하고 60초 상한을 걸지 않는다. 완성
+페이지 재사용은 하지 않는다. 삭제 epoch token으로 head·plan 삭제 뒤에는 공용 선택을 다시 읽는다.
+
+API만 승인 상태 조회 시작 뒤 최대60초의 완성 페이지를 재사용한다. 인증은 매 요청 수행하며 provider/limit/cursor/days/location와 설정·서명키 범위를 구분한다. x-export-read는 generated/reused다. generated_at은 wire 생성 시각이고 source_collected_at·snapshot_generated_at·as_of는 실제 검증한 데이터의 시각을 유지한다. 승인/실패·derived summary 반영은 이60초 한도 안에 지연될 수 있다.
+
+cache hit는 snapshot TTL·manifest fingerprint·세대/plan/head와 실제 사용 파일 hash/count를 확인한다. 만료/재검산/갱신 실패를 이전 정상200/304로 연장하지 않는다. 주기적 전체 재생성은 없으며 요청이 있는 miss만 생성하고 같은 키는 합친다. 최초 미준비나 상한 밖 요청은 원 경로다. current의 긴 metadata 구성은 파일 guard 밖이고 새 pin의 파일 존재 검사와 DB commit만 GC와 직렬화한다. current freeze는 읽기 전용 선택 RR(manifest·digest·상태 판정 계산)과 짧은 READ COMMITTED 발급 TX(`lock_timeout` 1초, 계산한 값만 INSERT)로 나뉜다. 참조 INSERT는512개 묶음으로 발급 TX 안에서 처리한다([freeze 분리](../reports/2026-11-24-export-freeze-split.md)). SDK 기본 경로·SQL5초·파일 FD 검산은 유지한다. [근거와 실제 수용 단계](../reports/2026-11-08-aggressive-export-read.md).
+
+
+0039의 API 완료 페이지 모드는 같은 RR의 삭제 epoch3행으로 불변 plan/세대/head 삭제 유무를 대조한다. 최초 전체 검산과 실제 사용 파일 hash/count는 유지한다. DELETE/TRUNCATE와 epoch 변경은 원자적이며 일반 수집 INSERT/UPDATE는 epoch를 쓰지 않는다. plan/세대 삭제는503·폐기, head 삭제는 재구성/stale, PG proof 미설치는503이다. 새로운 FK·원본 삭제·자동 backfill은 없다. worker 대기는 승인 조회 전이며60초는 실제 miss 읽기 시작부터 센다. 기존 캐시 hit나 이미 읽은 페이지의 시점은 다시 시작하지 않는다.

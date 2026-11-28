@@ -54,8 +54,8 @@ CPU는 수집 구간 내 약 10초 간격 샘플의 한 코어 환산값이며 �
 
 ## 근거 파일
 
-- [기준·전체 격자 시뮬레이션](reviews/evidence/2026-10-22-kma-coverage-baseline.json)
-- [두 리뷰어·단위 검사·CI](reviews/evidence/2026-10-22-kma-coverage-validation.json)
-- [staging UI](reviews/evidence/2026-10-22-kma-coverage-stage-ui.json), [운영 배포](reviews/evidence/2026-10-22-kma-coverage-rollout.json)
-- [수집·자원·freshness 실측](reviews/evidence/2026-10-22-kma-coverage-post.json), [5곳의 원천 결측값](reviews/evidence/2026-10-22-kma-coverage-temperature-quality.json)
-- [스케줄·센서 복원](reviews/evidence/2026-10-22-kma-coverage-instigators.json), [공개 운영 UI](reviews/evidence/2026-10-22-kma-coverage-production-ui.json)
+- [기준·전체 격자 시뮬레이션](../reviews/evidence/2026-10-22-kma-coverage-baseline.json)
+- [두 리뷰어·단위 검사·CI](../reviews/evidence/2026-10-22-kma-coverage-validation.json)
+- [staging UI](../reviews/evidence/2026-10-22-kma-coverage-stage-ui.json), [운영 배포](../reviews/evidence/2026-10-22-kma-coverage-rollout.json)
+- [수집·자원·freshness 실측](../reviews/evidence/2026-10-22-kma-coverage-post.json), [5곳의 원천 결측값](../reviews/evidence/2026-10-22-kma-coverage-temperature-quality.json)
+- [스케줄·센서 복원](../reviews/evidence/2026-10-22-kma-coverage-instigators.json), [공개 운영 UI](../reviews/evidence/2026-10-22-kma-coverage-production-ui.json)

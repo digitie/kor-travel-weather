@@ -156,7 +156,7 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 | 비용 | 경로 | 근거 |
 | --- | --- | --- |
 | 빈 DB pool(10+10, pre-ping) — 첫 요청들이 TCP·인증·catalog cache 비용 | A·B | `repository.py:1492-1501` |
-| psycopg prepare는 연결마다 5회 뒤 — generic plan 전환 시점이 연결마다 다름 | A·B | `docs/weather-marker-generic-plan-performance.md` |
+| psycopg prepare는 연결마다 5회 뒤 — generic plan 전환 시점이 연결마다 다름 | A·B | `docs/archive/weather-marker-generic-plan-performance.md` |
 | SQLAlchemy 컴파일 캐시(프로세스별) | A·B | `repository.py:3904-3905` |
 | 지연 import(`kortravelcommon.address_providers`) | B | `repository.py:1299,1383` |
 | export 캐시 3종·복호 캐시(재시작 시 빈 상태) | A | §2.2 |
@@ -169,7 +169,7 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 ### 4.2 지금 있는 것
 
 없다. API에 lifespan/startup hook이 없고(`app.py:144-383`), `/health`는 DB를 쓰지 않는 고정 응답
-(`app.py:234-236`, `docs/weather-health-bytecode.md:20-21`), compose healthcheck는 `start_period` 없이
+(`app.py:234-236`, `docs/archive/weather-health-bytecode.md:20-21`), compose healthcheck는 `start_period` 없이
 그것만 본다(`compose.yaml:157-161`). `deploy.sh`는 `/version` commit만 확인한다(`:85-97`).
 운영은 HAProxy·host network라 포트가 열리면 바로 트래픽이 들어온다.
 
@@ -266,7 +266,7 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 | --- | --- | --- | --- | --- |
 | A1 | weather #290 (다른 작업자) | 머지 `677c39a` | current cursor 페이지 상태 판정을 snapshot·manifest digest당 한 번(승인 수명 60초 안, 남은 수명 20초 이상이면 재사용, head·generation·plan 삭제 epoch는 즉시 반영), current 페이지 상한 128→512, artifact 64개 묶음 읽기 | 배포 뒤 수용(`W-EXPORT-CURSOR-REUSE-20261124`). 판정 만료 순간 동시 재계산은 합치지 않음 |
 | A2 | weather #299, map #1550 | 둘 다 머지 `2dfade8`·`8a6e3c5` | 약한 내용 ETag(`content-v1`: manifest digest+페이지+상태), current·locations 첫 페이지는 본문 읽기 전 304, 200·304 모두 `Cache-Control: no-store, private`. Map은 계약 시험만 추가(소비 코드 변경 없음) | daily는 값을 읽은 뒤 비교(요약 revision token 필요), forecasts는 그대로(Map이 INM 안 보냄), current 304도 freeze 비용은 남음. 배포 직후 옛 ETag는 데이터셋마다 한 번 200. 304 비율 운영 측정 |
-| A3 | weather #301 | 머지 `5f6bf6f` | W2 current(limit 2000) 표준 페이지 사전 구성: migration 0044, `weather_export_prebuild_job`(KST :23·:38, priority 0), 요청은 입력 proof·시간 경계만 검산, 끄기 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED`, `deploy/deploy.sh` hook(실패는 경고). 설명은 `docs/export-prebuilt-pages.md` | **W5(daily, days 14) 프로필 미착수** — 요약 watermark 등 가산 opt-in DTO와 Map 소비자 검증이 함께 필요. 운영 적중률(`x-export-prebuilt`) 측정. 운영 배포 경로(Manager)의 hook은 Manager 저장소 일(없어도 다음 :23·:38 job이 만든다) |
+| A3 | weather #301 | 머지 `5f6bf6f` | W2 current(limit 2000) 표준 페이지 사전 구성: migration 0044, `weather_export_prebuild_job`(KST :23·:38, priority 0), 요청은 입력 proof·시간 경계만 검산, 끄기 `KOR_TRAVEL_WEATHER_SERVICE_EXPORT_PREBUILD_ENABLED`, `deploy/deploy.sh` hook(실패는 경고). 설명은 `docs/architecture/export-prebuilt-pages.md` | **W5(daily, days 14) 프로필 미착수** — 요약 watermark 등 가산 opt-in DTO와 Map 소비자 검증이 함께 필요. 운영 적중률(`x-export-prebuilt`) 측정. 운영 배포 경로(Manager)의 hook은 Manager 저장소 일(없어도 다음 :23·:38 job이 만든다) |
 | A4 | weather #305 | 머지 `ca3c0a6` | current freeze를 읽기 전용 선택 RR + 짧은 발급 TX(`lock_timeout` 1초)로 분리, 재사용은 선택 RR 기준 최신 handle | freeze 예산 초과 시 `_previous_success`를 stale로 주는 경로는 **하지 않음**(503 계약·stale 의미 차이, 소유자 결정 필요 — `docs/reports/2026-11-24-export-freeze-split.md`). 선택 RR 자체 길이와 daily·forecast·locations freeze는 그대로 |
 | A5 | weather #295 | 머지 `ec70c30` | INM 없는 예보 첫 페이지의 페이지 캐시 강제 우회(`force`) 제거, 기존 캐시 hit 검사로 재사용(첫 페이지 즉시 반영 계약 유지) | hit 검사의 fresh freeze 비용은 남음 |
 | A6 | weather #295 | 머지 `ec70c30` | `http.disconnect` 감시, 단계·SQL 문장 앞 checkpoint, 실행 중 SQL은 psycopg `cancel_safe()`, 응답 499·`cancelled` 지표. 같은 키 대기자가 있으면 leader는 45초 유예 | 운영 proxy가 연결 끊김을 upstream에 전하는지 미확인. 진행 중 FETCH는 취소되지 않음(문장 5초 상한) |
@@ -275,15 +275,15 @@ lock 대기열에 무한정 매달리지는 않지만, `lock_timeout`이 없어 
 | A9 | map #1542 | 머지 `e2e7e66` | 200+stale은 교체하되 run tag `kor_travel_map.upstream_state=stale`·WARNING, 서비스 세대 나이가 `stale_alert_after`를 넘으면 재시도 없는 실패(소유자 결정 "나이 기준 혼합") | n150 회전 뒤 확인(#1542 본문 "회전 뒤 확인" 목록) |
 | L1·L2·L3 | weather #292 | 머지 `a0b5ef5` | detach 보존 검사를 lock 전으로(lock 뒤 300ms 재확인), drop 검사를 참조 표 lock 전으로, 야간 DDL lock 대기 400ms·차단자가 autovacuum뿐일 때만 긴 대기·첫 시도 전 quiet 대기 | 야간 유지보수 중 지도 읽기 p95·lock 대기 운영 측정. 실제 autovacuum 경로는 대역 세션으로만 시험. 연기(`partitions_deferred`)가 늘 수 있음 |
 | L4 | weather #297 | 머지 `6b4e655` | 포인터·원천 정리를 기본키 keyset 1,000행 batch·batch별 commit·`statement_timeout` 10초·`lock_timeout` 1초로, 원천은 실행당 1,800초 예산·이어 읽기 | 운영 batch 시간·원천 한 바퀴 길이 미측정 |
-| L5 | weather #297 | 머지 `6b4e655` | 수집 writer transaction에 문장 **300초**(권고 30초는 정상 chunk를 거짓 실패시킴)·유휴 60초 | role 수준 `idle_in_transaction_session_timeout`은 API·Dagster가 같은 role이라 하지 않음(`docs/write-path-bounds.md`) |
+| L5 | weather #297 | 머지 `6b4e655` | 수집 writer transaction에 문장 **300초**(권고 30초는 정상 chunk를 거짓 실패시킴)·유휴 60초 | role 수준 `idle_in_transaction_session_timeout`은 API·Dagster가 같은 role이라 하지 않음(`docs/architecture/write-path-bounds.md`) |
 | L6 | weather #297 | 머지 `6b4e655` | 재수집 판정 조회에서 `defer(SourceRecordRow.payload)` | 없음 |
 | L7 | weather #297 | 머지 `6b4e655` | `alembic/env.py` 연결 옵션 `lock_timeout=5s` | 재시도 헬퍼 표준화는 하지 않음(근거가 서로 달라 문서 규칙만) |
 | L8 | weather #305 | 머지 `ca3c0a6` | A4와 같음 | A4와 같음 |
 | §3.2 공개 읽기 `lock_timeout` | weather #300 | 머지 `8b57b46` | 공개 읽기 `lock_timeout = min(2초, 남은 마감)`, 55P03 → 503 `LOCK_TIMEOUT` | 없음 |
-| B1·B2·B4·B5 | weather #294 | 머지 `2e69dd1` | BFF 세션 확인 GET/HEAD 10초 캐시·single-flight, matcher에서 `maplibre/` 제외, 공개 경로 DB 단절 503 `DB_UNAVAILABLE`, GET 시도별 상한·502/503/504 재시도. 계약 `docs/weather-admin-map-call-resilience.md` | `auth_limiter`(2)는 바꾸지 않음. `/v1/admin/*`의 DB 단절 분류는 범위 밖. 운영 503 감소 측정 |
-| B3·B9·B10·B11 | weather #300 | 머지 `8b57b46` | 공개 handler의 DTO·직렬화·gzip을 worker thread로, 요청당 연결·transaction 하나와 마감 bind 1회, `/resolve` SQL 한 문장, 마커 자리 대기 3초 → 503 `MARKER_BUSY`. 계약 `docs/weather-public-read-path.md` | 요청 묶음 transaction의 lock 보유가 L3 연기에 주는 영향과 효과는 운영 미측정 |
-| B6·B7·B8·B12 | weather #304 | 머지 `c037fbc` | 마커 시간 기반 재시도, `initialCamera`로 load 전 마커 요청, `view=compact` 마커(기본 응답·OpenAPI 200 불변), 카탈로그 병렬 수신·TanStack 캐시·ETag/304. 계약 `docs/weather-admin-map-calls.md` | compact 모양은 `x-compact-schema`로만 문서화. 카탈로그 304는 DB 비용을 줄이지 않음 |
-| §4.3 경로 B warmup·`/ready` | weather #298 | 머지 `72dd9e9` | API lifespan 읽기 전용 warmup(30초 예산), `GET /ready`, `deploy.sh`의 `/ready` 확인(초과는 경고), compose web healthcheck. 설명 `docs/weather-api-prewarm.md` | Manager verify의 `/ready`, Manager 선언의 web healthcheck, HAProxy 트래픽 게이트는 Manager 저장소 일. odroid 효과 측정. `pg_prewarm`은 선택 사항이라 하지 않음. 2026-11-25 odroid 배포 직후 60곳 마커 묶음이 57014·예산 초과(markers 26.9초, 상세 생략)로 끝나 후속 PR에서 15곳 묶음·마커 몫·`/ready`의 `warmed`/`planned`로 고침(`docs/weather-api-prewarm.md` "마커를 15곳씩 나누는 이유") |
+| B1·B2·B4·B5 | weather #294 | 머지 `2e69dd1` | BFF 세션 확인 GET/HEAD 10초 캐시·single-flight, matcher에서 `maplibre/` 제외, 공개 경로 DB 단절 503 `DB_UNAVAILABLE`, GET 시도별 상한·502/503/504 재시도. 계약 `docs/architecture/weather-admin-map-call-resilience.md` | `auth_limiter`(2)는 바꾸지 않음. `/v1/admin/*`의 DB 단절 분류는 범위 밖. 운영 503 감소 측정 |
+| B3·B9·B10·B11 | weather #300 | 머지 `8b57b46` | 공개 handler의 DTO·직렬화·gzip을 worker thread로, 요청당 연결·transaction 하나와 마감 bind 1회, `/resolve` SQL 한 문장, 마커 자리 대기 3초 → 503 `MARKER_BUSY`. 계약 `docs/architecture/weather-public-read-path.md` | 요청 묶음 transaction의 lock 보유가 L3 연기에 주는 영향과 효과는 운영 미측정 |
+| B6·B7·B8·B12 | weather #304 | 머지 `c037fbc` | 마커 시간 기반 재시도, `initialCamera`로 load 전 마커 요청, `view=compact` 마커(기본 응답·OpenAPI 200 불변), 카탈로그 병렬 수신·TanStack 캐시·ETag/304. 계약 `docs/architecture/weather-admin-map-calls.md` | compact 모양은 `x-compact-schema`로만 문서화. 카탈로그 304는 DB 비용을 줄이지 않음 |
+| §4.3 경로 B warmup·`/ready` | weather #298 | 머지 `72dd9e9` | API lifespan 읽기 전용 warmup(30초 예산), `GET /ready`, `deploy.sh`의 `/ready` 확인(초과는 경고), compose web healthcheck. 설명 `docs/architecture/weather-api-prewarm.md` | Manager verify의 `/ready`, Manager 선언의 web healthcheck, HAProxy 트래픽 게이트는 Manager 저장소 일. odroid 효과 측정. `pg_prewarm`은 선택 사항이라 하지 않음. 2026-11-25 odroid 배포 직후 60곳 마커 묶음이 57014·예산 초과(markers 26.9초, 상세 생략)로 끝나 후속 PR에서 15곳 묶음·마커 몫·`/ready`의 `warmed`/`planned`로 고침(`docs/architecture/weather-api-prewarm.md` "마커를 15곳씩 나누는 이유") |
 
 ### 9.2 §7 순서별
 

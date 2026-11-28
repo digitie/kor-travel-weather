@@ -30,7 +30,7 @@ root가 같은 실제 대표60·동일시각으로 새 고정 조건 쿼리3개�
 PG18 custom/generic rawplan4개는 alert_lookup와 정확한 fact 복합 키·partition pruning을
 확인했지만, 이 후속을 포함하기 전 운영 API210의 cold60×3은19701ms200/30020ms504/21016ms200으로 실패했다.
 운영 연결의 generic 선택·지연 기여는 미확정이고 전체 pointer/fact ORM·JSON 수화/입장대기는
-별도다. browser 요청 예산 후속과 검증 게이트는 [새 정산](reports/2026-10-28-marker-request-budget.md)을 따른다.
+별도다. browser 요청 예산 후속과 검증 게이트는 [새 정산](../reports/2026-10-28-marker-request-budget.md)을 따른다.
 
 
 ### 전체 QA 정산과 운영 미검증

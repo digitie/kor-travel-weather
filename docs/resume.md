@@ -533,7 +533,7 @@ API·웹 `e8733c5e`를 운영 반영하고 수집기·기존 수집 실행·DB·
 위치 상세에 현재/내일 요약, 미세먼지 등 지표, 마지막 시간별 기온 그래프·강수/습도/바람을 배치했다.
 한국 날짜 경계와 미제공·0도·결측 공백을 검사했다. 고정 예시 데이터의 수정 전후 Firefox750/375 캡처를 보존했다.
 WSL/Docker 회귀30개, 타입·UI lint·Next 빌드, 별도 PG16 관련 API9개·Ruff 통과.
-기존 지역 DTO 변경의 CI 예상값과 OpenAPI 누락도 보완했다. [범위·전후 비교](regional-weather-details.md).
+기존 지역 DTO 변경의 CI 예상값과 OpenAPI 누락도 보완했다. [범위·전후 비교](architecture/regional-weather-details.md).
 운영 배포나 실측 자료 전체 수용은 아니다.
 
 다음 한 작업: PR #193의 최신 CI 결과를 확인하고 기존 지역 대표값과 상세 UI를 함께 검토한다.
@@ -736,7 +736,7 @@ WSL/Docker 회귀30개, 타입·UI lint·Next 빌드, 별도 PG16 관련 API9개
   실행당 예산 설정 기본150초·진척0 또는 뒤처진 채 7회(약70분) 연속 줄지 않을 때만 Failure)이다. n150 CI-parity 게이트와
   GitHub CI·독립 리뷰 결과는 PR이 정본이다.
 - 당시 다음 한 작업: 머지·배포 뒤 job 첫 run SUCCESS(`resumed=false`→다음 run `true`)와 `backlog_lag_seconds`
-  감소를 확인한다([확인 방법](shortterm-retention.md#배포-후-확인)). 이어서 `@kor-travel/ui` dev.9를 별도
+  감소를 확인한다([확인 방법](architecture/shortterm-retention.md#배포-후-확인)). 이어서 `@kor-travel/ui` dev.9를 별도
   PR로 vendoring한다(로그인 hydration 준비 전 입력·제출 비활성).
 
 ## 2026-10-27 — 지도 마커 실제 값 수용 보강 중 (173 배포 전 이력)
@@ -835,7 +835,7 @@ WSL 타입·frontend251·종류/제공처 PostgreSQL20 PASS. Chromium375/1440px 
 
 ## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
 
-- 현재 상태: npm 보안·공통 버전 소스 정합 및 WSL 검증 완료. [버전과 예외](npm-security-alignment-2026-10-24.md). 최종 CI·UI·머지 상태의 정본은 [PR](https://github.com/digitie/kor-travel-weather/pull/166)이다.
+- 현재 상태: npm 보안·공통 버전 소스 정합 및 WSL 검증 완료. [버전과 예외](archive/npm-security-alignment-2026-10-24.md). 최종 CI·UI·머지 상태의 정본은 [PR](https://github.com/digitie/kor-travel-weather/pull/166)이다.
 - 다음 한 작업: 운영 반영을 요청받으면 Manager 정본과 현재 배포 런북에 따라 릴리스를 적용한다. 소스 머지와 운영 배포는 구분한다.
 
 ## 2026-10-24 — 현재 상태: Next.js 보안 갱신 후보
@@ -914,7 +914,7 @@ W-MAP-01 계약/프록시 → W-MAP-02 receipt → 성공 승격 → 실제 조�
 브랜치 `feat/recovery-sensor-budget-stall`. Common pin `e746e4b`, `weather_sync_recovery`에
 `budget_seconds=40`·`on_stall`, 정체 경보 로그 `weather_sync_recovery.stalled`와 gauge
 `ktw_sync_recovery_stalled`·규칙 `KorTravelWeatherSyncRecoveryStalled`. 자세한 것은
-`docs/journal.md` 같은 날짜 절과 `docs/observability.md`. 배포(odroid, codex 관리)는 스키마 변경이 없어 migrate가 필요 없고, code-server 이미지(sensor가 도는
+`docs/journal.md` 같은 날짜 절과 `docs/architecture/observability.md`. 배포(odroid, codex 관리)는 스키마 변경이 없어 migrate가 필요 없고, code-server 이미지(sensor가 도는
 곳; `/opt/kor-travel-odroid/compose.yml`의 `kor-travel-weather-dagster-code-server` image 태그)와
 같은 소스의 API 이미지를 새 main으로 재빌드·교체하면 된다. 공용 plane의 sensor gRPC timeout 60초 안에
 예산 40초가 들어간다. odroid에는 weather Prometheus가 없어 새 규칙은 아직 평가되지 않는다 — 그동안
@@ -952,7 +952,7 @@ PR #118의 배포 수용 기록이며 daemon OFF를 유지한다. 전체 수집�
 제품8c503fa8의 두 독립 소스 리뷰·exact-head CI·전체 Python663·frontend214/type-check·
 Ruff·ARM64 API/CS native build를 통과했다. 실제 배포065661ca PASS 뒤
 WSL Chromium1243 live UI36 PASS/exit0, role lifecycle 불변·daemon OFF를 확인했다.
-[제품·이미지·원시 측정 및 수용 근거](collector-catalog-cpu-20261018.md)를 따른다.
+[제품·이미지·원시 측정 및 수용 근거](archive/collector-catalog-cpu-20261018.md)를 따른다.
 ARM 고정 fixture CPU 중앙값은 약12.2%, Python 할당 peak는 약16.0% 감소했다.
 RSS의 실질적 개선, 전체 provider 수집 성능, 장시간 안정성, Kakao 실제 fallback과
 주소 전체 sweep, Track 1/2 미검증 운영 수용의 완료를 주장하지 않는다.
@@ -1003,7 +1003,7 @@ Daemon OFF를 유지하며 운영 배포·provider 실호출은 이번 검증에
 
 ## 2026-10-18 주소 갱신 구현·로컬 검증
 
-VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin 수동 실행을 구현했다. 두 앱은 같은 Common Python 엔진을 고정 commit으로 사용한다. [설계·설정 및 검증 범위](reverse-address-refresh.md)를 참조한다. 원천 주소·좌표는 보존한다.
+VWorld 우선·Kakao fallback, 위치별 달력 6개월 자동 갱신과 Admin 수동 실행을 구현했다. 두 앱은 같은 Common Python 엔진을 고정 commit으로 사용한다. [설계·설정 및 검증 범위](architecture/reverse-address-refresh.md)를 참조한다. 원천 주소·좌표는 보존한다.
 
 로컬 실브라우저 최종 재검증은 앱별 13개(합계 26개) 통과했고 실제 인증·상태 API·Dagster 큐 예약·중복 차단·모바일/키보드·오류 복구를 포함한다. 제공자는 주입 fixture다. Python 전체 검증은 Common 509개, Weather 658개, Transport 838개 통과·환경 조건 10개 skip이다. Common39·Weather111은 두 독립 리뷰/CI 통과 후 머지했다. [최종 리뷰 기록](reviews/2026-10-18-address-refresh-final.md)을 참조한다. Transport 정식 gate는 별도이며 운영 migration·실제 제공자 실호출·배포·운영 UI 수용은 미실행이다. Daemon은 중지 상태를 유지한다.
 

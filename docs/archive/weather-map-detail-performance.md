@@ -62,7 +62,7 @@ SQL·표시 개선만 적용한 첫 검증 배포에서는 연속 선택·확대
 
 초기 가평 latest/forecast는 8,670/6,089ms였고, 배포 후 최초 동일 위치 요청은 3,502/3,148ms였다. 다른 시각·부하의 단일 표본이며 모든 위치의 보장 시간은 아니다. 상세가 여전히 수 초 걸리는 경우가 있으므로 이후에는 DB/worker 대기와 payload 직렬화를 분리해 반복 측정할 수 있다.
 
-[운영 UI 결과](reviews/evidence/2026-10-21-weather-map-detail-production.json), [배포 증거](reviews/evidence/2026-10-21-weather-map-detail-deployment.json)에 시나리오·타이밍·이미지 revision·공개 상태를 기록했다. 임시 검증 컨테이너 2개와 임시 인증 환경 파일은 운영 검증 후 제거했고 이전 운영 이미지와 비공개 compose 백업은 롤백용으로 유지한다.
+[운영 UI 결과](../reviews/evidence/2026-10-21-weather-map-detail-production.json), [배포 증거](../reviews/evidence/2026-10-21-weather-map-detail-deployment.json)에 시나리오·타이밍·이미지 revision·공개 상태를 기록했다. 임시 검증 컨테이너 2개와 임시 인증 환경 파일은 운영 검증 후 제거했고 이전 운영 이미지와 비공개 compose 백업은 롤백용으로 유지한다.
 
 ## HTTP 표본과 해석
 
@@ -76,4 +76,4 @@ SQL·표시 개선만 적용한 첫 검증 배포에서는 연속 선택·확대
 
 표본의 부하·캐시 상태가 통제되지 않았으므로 반복 벤치마크의 p95나 전체 CPU 감소율로 해석하지 않는다. 독립 렌더링으로 빠른 정보부터 표시하지만 shared DB 자체의 장시간 대기까지 제거한 것은 아니다.
 
-[검증 UI 결과](reviews/evidence/2026-10-21-weather-map-detail-stage.json), [API 비교 표본](reviews/evidence/2026-10-21-weather-map-detail-api-compare.json)에 시나리오와 측정을 남겼다. 비밀번호·세션·원천 payload·DB 접속 정보는 증거 파일에 포함하지 않았다.
+[검증 UI 결과](../reviews/evidence/2026-10-21-weather-map-detail-stage.json), [API 비교 표본](../reviews/evidence/2026-10-21-weather-map-detail-api-compare.json)에 시나리오와 측정을 남겼다. 비밀번호·세션·원천 payload·DB 접속 정보는 증거 파일에 포함하지 않았다.

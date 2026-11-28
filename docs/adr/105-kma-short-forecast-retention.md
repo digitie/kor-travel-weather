@@ -32,4 +32,4 @@ KMA 단기예보는 발표마다 같은 대상시각을 다시 예보하므로 f
 - 지난 대상시각의 단기예보 이력은 6시간 뒤 사라진다. 지난 예보의 정확도 비교 같은 분석은 이
   dataset으로 할 수 없다. 되돌릴 수 없는 삭제이므로 이 기준을 바꾸려면 새 ADR이 필요하다.
 - partition DROP 대신 행 단위 batch 삭제를 하므로 정리 job과 인덱스 운영 비용이 든다.
-- batch 크기·예산·실패 판정 같은 운영 값은 [`../shortterm-retention.md`](../shortterm-retention.md)가 정본이다.
+- batch 크기·예산·실패 판정 같은 운영 값은 [`../shortterm-retention.md`](../architecture/shortterm-retention.md)가 정본이다.

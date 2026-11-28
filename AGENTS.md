@@ -26,6 +26,12 @@
 - admin write endpoint는 token이 설정된 환경에서 fail-closed하고, 삭제 대신 비활성화를 우선한다.
 - API DTO를 변경하면 OpenAPI export와 TypeScript client 타입을 같이 갱신한다.
 - 문서·주석은 한국어를 기본으로 하되 코드 식별자, URL, provider 원문은 그대로 둔다.
+- 문서 위치는 `docs/README.md`를 따른다. ADR은 되돌리기 비싸거나, 다른 저장소를 제약하거나,
+  대안을 버리고 고른 결정일 때만 `docs/adr/`에 쓰고, 상수·필드명·구현 세부는 넣지 않는다.
+- 성능 개선·버그 수정 같은 변경 하나의 이유는 새 문서를 만들지 않고 PR 본문과 커밋 메시지에 쓴다.
+  바뀐 현재 동작만 `docs/architecture/`의 해당 주제 문서에 반영한다.
+- `docs/reports/`, `docs/reviews/`, `docs/audits/`, `docs/archive/`는 시점 기록이므로 고치지 않고
+  정본으로 가리키지 않는다.
 
 ## 변경 후 확인
 
@@ -48,4 +54,4 @@ PR은 초안으로 먼저 만들고, 기능 단위로 작은 커밋을 남긴다
 - 반복 빌드는 기존 persistent builder와 필요 시 외부 `--cache-from`/`--cache-to`를 사용한다.
 - GDAL·Python·npm 등 의존성 cache는 단순 source 변경이나 나이만을 이유로 삭제하지 않는다.
 - 공간 정리는 정확한 own unused 앱 산출물부터 수행한다. cache 적중을 실제 로그로 확인한다.
-- 캐시와 관계없이 source/lock/runtime 검증을 유지한다. 세부 명령은 docs/weather-normal-build-producer.md를 따른다.
+- 캐시와 관계없이 source/lock/runtime 검증을 유지한다. 세부 명령은 docs/architecture/weather-normal-build-producer.md를 따른다.

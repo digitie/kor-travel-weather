@@ -231,7 +231,7 @@ def run_external_weather_sync(
                     # 위치 격리는 사실값 게시와 run 성공까지만 지킨다. HTTP 전에 선언한 cohort
                     # roster에는 이 위치가 남고 그 attempt는 failed라, 이 run의 cohort는 승인
                     # 조건(roster 전 위치의 승인 head가 이 run)을 채우지 못한다. Map export는
-                    # 다음 완전 sweep까지 source_status=stale이다(docs/weather-api.md).
+                    # 다음 완전 sweep까지 source_status=stale이다(docs/architecture/weather-api.md).
                     export_collector._reject(prepared.identity, "SOURCE_LOCATION_FAILED")
                     prepared = None
                 if consecutive_failures >= MAX_CONSECUTIVE_LOCATION_FAILURES:
@@ -319,7 +319,7 @@ def run_external_weather_sync(
             # 응답은 quota를 쓴 정상 자료이므로 버리지 않고 게시한 뒤 run을 failed로 닫는다.
             # lease 만료·계약 위반·DB 오류에서는 게시하지 않는다. 게시가 실패해도 원래 오류로
             # run을 닫는다. 이 run의 export cohort는 failed라 승인되지 않는다
-            # (docs/weather-api.md "Hourly ingestion and providers").
+            # (docs/architecture/weather-api.md "Hourly ingestion and providers").
             try:
                 heartbeat = getattr(repository, "heartbeat_sync_run", None)
                 if not callable(heartbeat) or heartbeat(run.run_id) is not False:

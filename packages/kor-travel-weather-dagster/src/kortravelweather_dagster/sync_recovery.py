@@ -54,7 +54,7 @@ from kortravelweather.repository import (
 )
 
 SENSOR_NAME = "weather_sync_recovery"
-#: 정체 경보 로그의 고정 접두. 운영 검색어다(`docs/observability.md`).
+#: 정체 경보 로그의 고정 접두. 운영 검색어다(`docs/architecture/observability.md`).
 STALL_EVENT = "weather_sync_recovery.stalled"
 #: Dagster sensor 평가 상한(`DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS`, 기본·운영 60초)보다 작게,
 #: 경보 기록 시간까지 들어가도록 둔다.

@@ -73,5 +73,5 @@ wall 53.2504→51.5106초(3.3%)였다. 순수 redaction만의 CPU는
   함께 보존해야 하며 이 branch만으로 운영 API 이미지를 교체하지 않는다.
 
 각 시료·소스 SHA·원문 SHA·한계는
-[버전별 로컬 측정 증거](reviews/adversarial/evidence/2026-10-16-owm-cpu-local-measurements.json)의
+[버전별 로컬 측정 증거](../reviews/adversarial/evidence/2026-10-16-owm-cpu-local-measurements.json)의
 initial_rejected_candidate/final_postfix_candidate에 구분한다.

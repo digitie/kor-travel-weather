@@ -87,7 +87,7 @@ L5)부터 원천·fact를 게시하는 transaction(`ingest_batch`·`ingest_skip_
 chunk를 거짓 실패시키지 않도록 크게 잡았다: transaction 길이는 여전히 chunk 크기가 묶고, n150처럼
 디스크 대기가 큰 호스트에서 chunk 하나가 수 분 걸린 적이 있다. 300초는 계획 회귀 같은 병적인
 문장이 location lock을 몇 시간씩 쥐는 것만 끊는다. 상한에 걸리면 재시도하지 않고 그 chunk가
-실패한다(근거와 값은 [쓰기 경로 상한](../write-path-bounds.md)). location·source advisory lock은
+실패한다(근거와 값은 [쓰기 경로 상한](write-path-bounds.md)). location·source advisory lock은
 transaction당 한 번만 잡고(예전엔 fact마다 네 번 왕복), replay 확인은 1,000건씩 묶은
 primary-key 조회, current projection 갱신은 `INSERT ... ON CONFLICT DO UPDATE ... WHERE
 newer` 한 문장(1,000행씩)이다 — 비교·교체가 문장 안에서 행 단위로 원자적이다.
@@ -339,7 +339,7 @@ Manager 쪽 PR 머지 전에는 링크가 비어 있을 수 있다).
   build가 Map 첫 페이지(:25:30·:40:30 무렵) 전에 끝나야 쓸모가 있어 cron을 앞당기지 않고 queue 대기만
   줄인다(W-EXPORT-PREBUILT-TIMING 선택지 a). run은 1분 안팎·시간당 2개라 같은 10의 대기는 거의 늘지
   않는다. 근거 수치와 한계(weather code location 상한 3·instance 상한 5가 찬 동안은 값과 무관하게
-  기다린다)는 [`export-prebuilt-pages.md`](../export-prebuilt-pages.md) "실행 시각과 승격 사이의 창"에
+  기다린다)는 [`export-prebuilt-pages.md`](export-prebuilt-pages.md) "실행 시각과 승격 사이의 창"에
   있다. 시험은 `OWNER_EXCEPTIONS`로 이 예외만 허용한다. Manager 정본 문서에도 예외로 적어야 한다.
 - 정본은 `definitions.py`의 `JOB_PRIORITIES` 한 표다. `_job_tags`가 job tags에 값을 실으므로(export
   정리 job은 `export_maintenance.py`가 같은 값을 job 정의에 직접 단다 — 순환 import)

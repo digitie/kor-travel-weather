@@ -36,7 +36,7 @@
    컨테이너 안 `timeout 280`이 builder 프로세스 자체를 끊는다. 입력이 마지막 build와 같으면
    `unchanged`, export·사전 구성이 꺼져 있으면 `disabled`, 승인 집합이 아직 없으면
    `not_ready`로 정상 종료한다. 실패해도 경고만 하고 배포는 성공이다
-   (`docs/export-prebuilt-pages.md`).
+   (`docs/architecture/export-prebuilt-pages.md`).
 3. migration 복구가 필요하면 `docker compose -f compose.yaml run --rm migrate`를
    별도로 실행하고, `docker compose ... ps`에서 완료 상태를 확인한다.
 4. API/Dagster/DB는 compose 기본값처럼 loopback/internal network에 두고,
@@ -73,7 +73,7 @@ server-side 환경변수로만 주입한다. Next proxy가 브라우저에 backe
 web은 GET/HEAD 요청의 폐기 확인 active 판정만 `WEATHER_UI_SESSION_CHECK_CACHE_SECONDS`(기본 10초,
 `0`이면 끔) 동안 프로세스 메모리에 재사용하므로, 다른 replica에서 한 로그아웃은 읽기에 최대 그
 시간만큼 늦게 반영된다. 상태 변경 요청(POST/PATCH/PUT/DELETE)은 캐시 없이 매번 확인한다. 저장소
-장애는 캐시하지 않고 계속 503이다(`docs/weather-admin-map-call-resilience.md`).
+장애는 캐시하지 않고 계속 503이다(`docs/architecture/weather-admin-map-call-resilience.md`).
 
 서비스 key가 없거나 target이 비어 있으면 Dagster run은 실패해야 하며, 기존
 immutable facts를 삭제하거나 부분 publish하지 않는다. MVP는 durable cursor 없이
@@ -92,7 +92,7 @@ immutable facts를 삭제하거나 부분 publish하지 않는다. MVP는 durabl
   새 이름; Manager `KTDM_PROD_URL_DAGSTER` 선행)로 아직 정해지지 않았다 — 결정 전에는 URL을 쓰지
   않고, 5의 Dagster 주소는 n150 공용 plane 링크(`dagster.`)를 쓴다. smoke는 `/version`의 `git_commit`과 odroid access log의 peer(`192.168.1.14` =
   PinVi)로 확인한다 — 200만으로 판단하지 않는다.
-- 운영자가 odroid에서 손으로 하는 것(계획): 규칙 변경 SIGHUP(`docs/observability.md`, 같은 절차를
+- 운영자가 odroid에서 손으로 하는 것(계획): 규칙 변경 SIGHUP(`docs/architecture/observability.md`, 같은 절차를
   odroid 체크아웃에서), `scripts/weather_values_forward_partitions.py`·`weather_values_purge_default.py`
   (`deploy/n150.md` "0017" 절, 컨테이너명 동일). 접속은 WSL에서 `ssh digitie@192.168.1.13`(직접,
   2026-10-13부터), root 작업은 `sudo -n`(NOPASSWD 설정 완료). 긴 작업은 ssh timeout 밖(tmux/nohup)에서.

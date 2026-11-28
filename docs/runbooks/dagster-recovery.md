@@ -106,7 +106,7 @@ HTTP health 및 gRPC health가 함께 들어 있다. Weather는 이 pin을 root�
 Dagster 패키지에서 같이 사용한다. Docker의 `INSTALL_DAGSTER=1` 경로가 설치하는
 root `dagster` extra에 `kor-travel-common[grpc-health]`를 명시한다. API-only 설치에는
 이 extra를 요구하지 않는다. API HTTP healthcheck와 stdlib cache 준비는
-[별도 도입 문서](../weather-health-bytecode.md)의 경량 CLI를 사용한다.
+[별도 도입 문서](../archive/weather-health-bytecode.md)의 경량 CLI를 사용한다.
 
 코드서버 Docker healthcheck는 다음의 조회 전용 CLI를 사용한다.
 

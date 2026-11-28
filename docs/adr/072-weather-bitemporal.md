@@ -13,4 +13,4 @@ revision 전체를 반환한다.
 원 수신 시각을 저장할 partition이 없을 때에만 실제 재입장 시각을 `known_at`으로 쓴다. 원
 시각은 source의 `fetched_at`에 남고 `source_record_key`·raw payload는 바뀌지 않는다. 일반
 provider의 `known_at` 정의는 바뀌지 않는다. 판정과 행 재사용 규칙은
-[`../shortterm-retention.md`](../shortterm-retention.md) "늦은 미래 응답의 재입장"이 정본이다.
+[`../shortterm-retention.md`](../architecture/shortterm-retention.md) "늦은 미래 응답의 재입장"이 정본이다.
