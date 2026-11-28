@@ -45,7 +45,8 @@ MAX_RUNTIME_SECONDS = 900
 #: W-EXPORT-PREBUILT-TIMING 선택지 a)으로 상한 10을 쓰는 예외다. cron은 그대로 두고 queue 대기만
 #: 줄인다 — :23·:38 build가 Map 첫 페이지(:25:30·:40:30 무렵) 전에 끝나야 쓸모가 있다. run은 1분
 #: 안팎이고 시간당 2개라 같은 10(특보 발표 관측·다른 테넌트 수집)의 대기는 거의 늘지 않는다(근거
-#: ``docs/architecture/export-prebuilt-pages.md`` "실행 시각과 승격 사이의 창"). 정본은 definitions의
+#: ``docs/architecture/export-prebuilt-pages.md`` "실행 시각과 승격 사이의 창").
+#: 정본은 definitions의
 #: ``JOB_PRIORITIES``이고 tests/test_run_priority.py가 이 값과 대조한다(순환 import라 상수로 둔다).
 RUN_PRIORITY = "10"
 #: 정상 결과. 배포 hook CLI와 같은 집합이다(``export_prebuilt.SUCCESS_OUTCOMES`` 설명 참고).
