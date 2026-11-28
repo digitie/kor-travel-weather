@@ -42,7 +42,7 @@ Dagster daemon은 켜지 않았고 외부 provider와 운영 DB는 호출하지 
 배포 전 기존 CS 이미지와 새 ARM64 CS 이미지의 실제 repository 메서드를 각각 실행했다.
 양쪽 모두 동일한 가상 측정소 1,450행과 인메모리 SQLite를 사용했고, 새 프로세스로
 기존/신규를 교대로 5회씩 측정했다. 모든 DTO JSON SHA256이 같았다.
-[원시 10개 표본과 이미지 ID](../collector-catalog-arm-benchmark-20261018.json)에 최종
+[원시 10개 표본과 이미지 ID](collector-catalog-arm-benchmark-20261018.json)에 최종
 PASS_ARM_ISOLATED 결과를 보관한다. 운영 DB·외부 provider는 호출하지 않았다.
 
 | 중앙값 | 기존 ARM 이미지 | 신규 ARM 이미지 |
