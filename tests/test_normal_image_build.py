@@ -642,12 +642,13 @@ class NativeBoundaryTests(unittest.TestCase):
 
 
 class RealVendorTests(unittest.TestCase):
-    def test_actual_c11_vendor_sri_and_file_inventory(self):
+    def test_actual_vendor_sri_and_file_inventory(self):
         files = contract.common_manifest(ROOT)
         self.assertEqual(set(files), contract.COMMON_PACKAGES)
         # 후보12: vworld-map-web 1.0.4가 dist/src vworldTileRequest 3파일을 더했다(263 -> 266).
         # ui 0.2.3: 관리자 셸 dist/admin-shell.js·.d.ts 2파일을 더했다(266 -> 268).
-        self.assertEqual(sum(len(x) for x in files.values()), 268)
+        # UI 0.2.8은 Dagster 수집 파이프라인 진입점 4개 파일을 더한다(268 -> 272).
+        self.assertEqual(sum(len(x) for x in files.values()), 272)
 
 
 
