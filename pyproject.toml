@@ -12,7 +12,7 @@ license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "digitie" }]
 keywords = ["weather", "korea", "kma", "dagster", "fastapi", "data-source"]
 dependencies = [
-  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@f1faf56365854cefcc9e1f02f51c5b9c7e6a13ae#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@aefdc8695aecc09fd73c97c083b00e6379681c07#subdirectory=packages/py/kor-travel-common",
   "pydantic==2.14.4",
   "pydantic-settings==2.16.3",
   "sqlalchemy==2.1.9",
@@ -28,7 +28,7 @@ dependencies = [
   "python-airkorea-api",
   "python-khoa-api @ git+https://github.com/digitie/python-khoa-api.git@9c952bb8613472ccd4e532d1267680ab23d66dbd",
   "python-krforest-api @ git+https://github.com/digitie/python-krforest-api.git@70814c9f21532b931151a0a667cb94a2afa13dd8",
-  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@6646be516bcb5f2f206044186066baae2f5b63c6",
+  "python-krex-api @ git+https://github.com/digitie/python-krex-api.git@989dfebfea38c6da35c491b8d728c94a5258c3b1",
   "pyproj>=3.5",
 ]
 
@@ -52,7 +52,7 @@ dev = [
 # version bump done together with the shared host, never a side effect.
 # dagster-graphql/-pipes/-shared follow from dagster's own ``==`` requirements.
 dagster = [
-  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@f1faf56365854cefcc9e1f02f51c5b9c7e6a13ae#subdirectory=packages/py/kor-travel-common",
+  "kor-travel-common[grpc-health,reverse-address] @ git+https://github.com/digitie/kor-travel-common.git@aefdc8695aecc09fd73c97c083b00e6379681c07#subdirectory=packages/py/kor-travel-common",
   "dagster==1.13.24",
   "dagster-webserver==1.13.24",
   "croniter>=6,<7",

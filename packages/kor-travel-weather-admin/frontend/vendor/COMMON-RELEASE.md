@@ -1,5 +1,13 @@
 # Common 정본 산출물 채택
 
+## 2026-11-28 — 공통 UI 0.2.8·Tokens 0.1.9
+
+공식 산출물의 소스는 `e131a1efb195f618561fd6ca00833007ddc2721b`이고, 정책과 SHA256·SHA512 SRI는 머지된 카탈로그에서 확인한다. [Common 0.2.8 카탈로그](https://github.com/digitie/kor-travel-common/blob/73761c5d0a14e3df409e5b1c86f954eb219dae66/docs/evidence/releases/collection-pipeline-ui-0.2.8-catalog.md)
+
+생산 이미지 검증은 공용 패키지 6개의 272개 파일을 대조한다.
+
+## 이전 (UI 0.2.5·Tokens 0.1.6)
+
 Pack source는 `fe141143cc8ba75e8fd0b6134e1c9e518e294fa2`이며 중앙 원장은 Common PR #82의
 [0.2.5 산출물 카탈로그](https://github.com/digitie/kor-travel-common/blob/ade7b3eb50c0197caad4a1c98fcb97cffbc2a8a4/docs/evidence/releases/field-focus-ui-0.2.5-catalog.md)다.
 중앙 CI 산출물 `14782962353`의 원본 bytes를 사용한다.
